@@ -84,19 +84,19 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 
 ### Phase 3 — Identity, Radzen-styled login, admin CLI
 
-- [ ] Add `Microsoft.AspNetCore.Identity.EntityFrameworkCore`
-- [ ] `ApplicationUser : IdentityUser<Guid>`; integrate Identity tables into `KrakenDbContext`
-- [ ] Migration: `AddIdentity`
-- [ ] Identity config: confirmed account = false, sensible password policy
-- [ ] **Radzen-styled login page** at `/login` (no default Identity Razor pages):
-  - [ ] `RadzenCard` centered layout, app logo, email + password fields, "Sign in" button, error display
-  - [ ] Cookie auth scheme; `[Authorize]` is the default for the rest of the app
-  - [ ] Logout endpoint
-- [ ] No registration page (admin-created users only for M1)
-- [ ] **Admin bootstrap CLI**: `KrakenDeploy.Server users create-admin --email <e> --password <p>`
-  - [ ] Use `System.CommandLine` or simple arg parsing in `Program.cs`
-  - [ ] When invoked with `users create-admin`, build host, run command, exit (don't start the web server)
-  - [ ] Idempotent: if user exists, print "already exists" and exit 0
+- [x] Add `Microsoft.AspNetCore.Identity.EntityFrameworkCore`
+- [x] `ApplicationUser : IdentityUser<Guid>`; integrate Identity tables into `KrakenDbContext`
+- [x] Migration: `AddIdentity`
+- [x] Identity config: confirmed account = false, sensible password policy
+- [x] **Radzen-styled login page** at `/login` (no default Identity Razor pages):
+  - [x] `RadzenCard` centered layout, app logo, email + password fields, "Sign in" button, error display
+  - [x] Cookie auth scheme; `[Authorize]` is the default for the rest of the app
+  - [x] Logout endpoint
+- [x] No registration page (admin-created users only for M1)
+- [x] **Admin bootstrap CLI**: `KrakenDeploy.Server users create-admin --email <e> --password <p>`
+  - [x] Use `System.CommandLine` or simple arg parsing in `Program.cs`
+  - [x] When invoked with `users create-admin`, build host, run command, exit (don't start the web server)
+  - [x] Idempotent: if user exists, print "already exists" and exit 0
   - [ ] Document in README and print a hint on server startup if zero users exist
 - [ ] Defer: roles, fine-grained permissions, OIDC, password reset, MFA
 

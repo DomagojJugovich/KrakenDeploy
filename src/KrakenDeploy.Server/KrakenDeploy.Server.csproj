@@ -1,16 +1,23 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>kraken-server-d3a4b6e1-2f9c-4a17-8a43-2b1e9c5f7a02</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Radzen.Blazor" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.Authorization" />
+    <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\KrakenDeploy.Server.Core\KrakenDeploy.Server.Core.csproj" />
     <ProjectReference Include="..\KrakenDeploy.Server.Data\KrakenDeploy.Server.Data.csproj" />
     <ProjectReference Include="..\KrakenDeploy.Server.Transport\KrakenDeploy.Server.Transport.csproj" />
     <ProjectReference Include="..\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
   </ItemGroup>
-
-  <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
-  </PropertyGroup>
 
 </Project>

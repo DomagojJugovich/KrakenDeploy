@@ -1,0 +1,117 @@
+@page "/login"
+@layout EmptyLayout
+@using System.ComponentModel.DataAnnotations
+@using KrakenDeploy.Server.Data.Identity
+@using Microsoft.AspNetCore.Identity
+@inject SignInManager<ApplicationUser> SignInManager
+@inject UserManager<ApplicationUser> UserManager
+@inject NavigationManager Navigation
+@inject ILogger<Login> Logger
+@attribute [AllowAnonymous]
+
+<PageTitle>Sign in - KrakenDeploy</PageTitle>
+
+<div class="kraken-login-container">
+    <RadzenCard class="kraken-login-card" Variant="Variant.Filled">
+        <RadzenStack Gap="1.5rem">
+            <div class="kraken-login-brand">
+                <h1 class="rz-display-h5">KrakenDeploy</h1>
+                <span class="rz-text-secondary">Sign in to continue</span>
+            </div>
+
+            <EditForm Model="Input" method="post" OnValidSubmit="LoginAsync" FormName="login">
+                <DataAnnotationsValidator />
+                <RadzenStack Gap="1rem">
+                    <div>
+                        <label for="login-email" class="rz-text-subtitle2">Email</label>
+                        <InputText id="login-email"
+                                   @bind-Value="Input.Email"
+                                   class="rz-textbox"
+                                   autocomplete="username"
+                                   style="width: 100%" />
+                        <ValidationMessage For="() => Input.Email" class="kraken-validation-error" />
+                    </div>
+
+                    <div>
+                        <label for="login-password" class="rz-text-subtitle2">Password</label>
+                        <InputText id="login-password"
+                                   type="password"
+                                   @bind-Value="Input.Password"
+                                   class="rz-textbox"
+                                   autocomplete="current-password"
+                                   style="width: 100%" />
+                        <ValidationMessage For="() => Input.Password" class="kraken-validation-error" />
+                    </div>
+
+                    @if (!string.IsNullOrEmpty(_errorMessage))
+                    {
+                        <div class="kraken-login-error rz-text-body2">@_errorMessage</div>
+                    }
+
+                    <RadzenButton ButtonType="ButtonType.Submit"
+                                  ButtonStyle="ButtonStyle.Primary"
+                                  Variant="Variant.Filled"
+                                  Size="ButtonSize.Large"
+                                  Text="Sign in"
+                                  Style="width: 100%" />
+                </RadzenStack>
+            </EditForm>
+        </RadzenStack>
+    </RadzenCard>
+</div>
+
+@code {
+    [SupplyParameterFromForm]
+    private LoginModel Input { get; set; } = new();
+
+    [SupplyParameterFromQuery]
+    private string? ReturnUrl { get; set; }
+
+    private string? _errorMessage;
+
+    private async Task LoginAsync()
+    {
+        var user = await UserManager.FindByEmailAsync(Input.Email);
+        if (user is null)
+        {
+            _errorMessage = "Invalid email or password.";
+            return;
+        }
+
+        var result = await SignInManager.PasswordSignInAsync(
+            user, Input.Password, isPersistent: true, lockoutOnFailure: true);
+
+        if (result.Succeeded)
+        {
+            Logger.LogInformation("User {Email} signed in.", Input.Email);
+            Navigation.NavigateTo(GetSafeReturnUrl());
+        }
+        else if (result.IsLockedOut)
+        {
+            _errorMessage = "Account is locked due to too many failed sign-in attempts. Try again later.";
+        }
+        else
+        {
+            _errorMessage = "Invalid email or password.";
+        }
+    }
+
+    private string GetSafeReturnUrl()
+    {
+        if (string.IsNullOrEmpty(ReturnUrl))
+        {
+            return "/";
+        }
+
+        return Uri.IsWellFormedUriString(ReturnUrl, UriKind.Relative) ? ReturnUrl : "/";
+    }
+
+    private sealed class LoginModel
+    {
+        [Required, EmailAddress]
+        public string Email { get; set; } = "";
+
+        [Required, DataType(DataType.Password)]
+        public string Password { get; set; } = "";
+    }
+}

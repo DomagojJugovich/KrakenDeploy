@@ -1,9 +1,36 @@
-﻿@inherits LayoutComponentBase
+@inherits LayoutComponentBase
 
-@Body
+<div class="kraken-shell">
+    <header class="kraken-topbar">
+        <div class="kraken-brand">
+            <span class="kraken-brand-name">KrakenDeploy</span>
+            <span class="kraken-brand-env">@Environment</span>
+        </div>
+        <div class="kraken-userbar">
+            <AuthorizeView>
+                <Authorized>
+                    <span class="kraken-user-email">@context.User.Identity?.Name</span>
+                    <form method="post" action="/logout" class="kraken-logout-form">
+                        <AntiforgeryToken />
+                        <button type="submit" class="rz-button rz-button-md rz-light">Sign out</button>
+                    </form>
+                </Authorized>
+            </AuthorizeView>
+        </div>
+    </header>
+    <main class="kraken-main">
+        @Body
+    </main>
+</div>
 
 <div id="blazor-error-ui" data-nosnippet>
     An unhandled error has occurred.
     <a href="." class="reload">Reload</a>
     <span class="dismiss">🗙</span>
 </div>
+
+@code {
+    [Inject] private IConfiguration Configuration { get; set; } = default!;
+
+    private string Environment => Configuration["Environment:Name"] ?? "dev";
+}
