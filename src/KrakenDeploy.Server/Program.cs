@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Radzen;
 
 namespace KrakenDeploy.Server;
 
@@ -56,6 +57,7 @@ public static class Program
 
         builder.Services.AddCascadingAuthenticationState();
         builder.Services.AddHttpContextAccessor();
+        builder.Services.AddRadzenComponents();
 
         builder.Services.AddRazorComponents()
             .AddInteractiveServerComponents();
@@ -89,6 +91,17 @@ public static class Program
             await signInManager.SignOutAsync().ConfigureAwait(false);
             return Results.Redirect("/login");
         }).RequireAuthorization();
+
+        app.MapGet("/healthz", async (KrakenDbContext db, CancellationToken ct) =>
+        {
+            var canConnect = await db.Database.CanConnectAsync(ct).ConfigureAwait(false);
+            if (!canConnect)
+            {
+                return Results.Json(new { status = "unhealthy", reason = "database unreachable" }, statusCode: 503);
+            }
+            var targets = await db.DeploymentTargets.CountAsync(ct).ConfigureAwait(false);
+            return Results.Ok(new { status = "ok", targets });
+        }).AllowAnonymous();
 
         await app.RunAsync().ConfigureAwait(false);
         return 0;

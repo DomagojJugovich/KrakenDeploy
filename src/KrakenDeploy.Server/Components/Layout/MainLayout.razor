@@ -1,27 +1,62 @@
 @inherits LayoutComponentBase
 
-<div class="kraken-shell">
-    <header class="kraken-topbar">
-        <div class="kraken-brand">
+<RadzenLayout>
+    <RadzenHeader>
+        <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.5rem" Style="height: 100%; padding: 0 1rem;">
+            <RadzenSidebarToggle />
             <span class="kraken-brand-name">KrakenDeploy</span>
-            <span class="kraken-brand-env">@Environment</span>
-        </div>
-        <div class="kraken-userbar">
+            <span class="kraken-env-badge">@EnvironmentName</span>
             <AuthorizeView>
                 <Authorized>
-                    <span class="kraken-user-email">@context.User.Identity?.Name</span>
-                    <form method="post" action="/logout" class="kraken-logout-form">
-                        <AntiforgeryToken />
-                        <button type="submit" class="rz-button rz-button-md rz-light">Sign out</button>
-                    </form>
+                    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.75rem" Style="margin-left: auto;">
+                        <span class="kraken-user-email">@context.User.Identity?.Name</span>
+                        <form method="post" action="/logout" style="display:inline;">
+                            <AntiforgeryToken />
+                            <button type="submit" class="kraken-signout-btn">Sign out</button>
+                        </form>
+                    </RadzenStack>
                 </Authorized>
             </AuthorizeView>
+        </RadzenStack>
+    </RadzenHeader>
+
+    <RadzenSidebar>
+        <RadzenPanelMenu>
+            <RadzenPanelMenuItem Text="Dashboard" Icon="dashboard" Path="/" />
+
+            <RadzenPanelMenuItem Text="Deploy" Icon="rocket_launch" Expanded="true">
+                <RadzenPanelMenuItem Text="Projects"     Icon="folder_open"  Path="/projects" />
+                <RadzenPanelMenuItem Text="Releases"     Icon="tag"          Path="/releases" />
+                <RadzenPanelMenuItem Text="Deployments"  Icon="play_circle"  Path="/deployments" />
+            </RadzenPanelMenuItem>
+
+            <RadzenPanelMenuItem Text="Infrastructure" Icon="dns" Expanded="true">
+                <RadzenPanelMenuItem Text="Targets"      Icon="computer"     Path="/targets" />
+                <RadzenPanelMenuItem Text="Environments" Icon="layers"       Path="/environments" />
+                <RadzenPanelMenuItem Text="Tenants"      Icon="people"       Path="/tenants" />
+            </RadzenPanelMenuItem>
+
+            <RadzenPanelMenuItem Text="Library" Icon="library_books" Expanded="true">
+                <RadzenPanelMenuItem Text="Variable Sets"    Icon="data_object"             Path="/variable-sets" />
+                <RadzenPanelMenuItem Text="Step Templates"   Icon="extension"               Path="/step-templates" />
+                <RadzenPanelMenuItem Text="Lifecycles"       Icon="timeline"                Path="/lifecycles" />
+                <RadzenPanelMenuItem Text="Channels"         Icon="alt_route"               Path="/channels" />
+            </RadzenPanelMenuItem>
+
+            <RadzenPanelMenuItem Text="System" Icon="settings_applications" Expanded="true">
+                <RadzenPanelMenuItem Text="Tasks"    Icon="task"    Path="/tasks" />
+                <RadzenPanelMenuItem Text="Audit"    Icon="history" Path="/audit" />
+                <RadzenPanelMenuItem Text="Settings" Icon="tune"    Path="/settings" />
+            </RadzenPanelMenuItem>
+        </RadzenPanelMenu>
+    </RadzenSidebar>
+
+    <RadzenBody>
+        <div class="kraken-page-body">
+            @Body
         </div>
-    </header>
-    <main class="kraken-main">
-        @Body
-    </main>
-</div>
+    </RadzenBody>
+</RadzenLayout>
 
 <div id="blazor-error-ui" data-nosnippet>
     An unhandled error has occurred.
@@ -32,5 +67,5 @@
 @code {
     [Inject] private IConfiguration Configuration { get; set; } = default!;
 
-    private string Environment => Configuration["Environment:Name"] ?? "dev";
+    private string EnvironmentName => Configuration["Environment:Name"] ?? "dev";
 }

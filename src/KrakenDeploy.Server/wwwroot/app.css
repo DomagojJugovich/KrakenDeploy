@@ -1,73 +1,71 @@
+/* ── Global ───────────────────────────────────────────────────── */
 html, body {
     height: 100%;
     margin: 0;
     font-family: var(--rz-body-font-family, 'Roboto', sans-serif);
-    background: var(--rz-base-background-color, #f6f7fb);
 }
 
-/* Shell layout */
-.kraken-shell {
-    display: flex;
-    flex-direction: column;
-    min-height: 100vh;
+/* ── Radzen header overrides ──────────────────────────────────── */
+.rz-header {
+    background: var(--rz-primary, #1976d2) !important;
+    color: white !important;
+    border-bottom: none !important;
 }
 
-.kraken-topbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 1.5rem;
-    height: 56px;
-    background: var(--rz-primary, #1976d2);
-    color: white;
-    flex-shrink: 0;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-}
-
-.kraken-brand {
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
+.rz-sidebar-toggle .rzi {
+    color: white !important;
 }
 
 .kraken-brand-name {
-    font-size: 1.1rem;
+    font-size: 1.05rem;
     font-weight: 700;
     letter-spacing: 0.03em;
+    color: white;
 }
 
-.kraken-brand-env {
-    font-size: 0.7rem;
-    font-weight: 500;
+.kraken-env-badge {
+    font-size: 0.68rem;
+    font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    opacity: 0.75;
-    background: rgba(255,255,255,0.15);
-    padding: 2px 6px;
+    color: rgba(255, 255, 255, 0.85);
+    background: rgba(255, 255, 255, 0.18);
+    padding: 2px 7px;
     border-radius: 3px;
-}
-
-.kraken-userbar {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
+    line-height: 1.6;
 }
 
 .kraken-user-email {
     font-size: 0.85rem;
-    opacity: 0.9;
+    color: rgba(255, 255, 255, 0.9);
 }
 
-.kraken-logout-form {
-    display: inline;
+.kraken-signout-btn {
+    background: rgba(255, 255, 255, 0.15);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-radius: 4px;
+    padding: 4px 12px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    font-family: inherit;
 }
 
-.kraken-main {
-    flex: 1;
-    padding: 2rem;
+.kraken-signout-btn:hover {
+    background: rgba(255, 255, 255, 0.25);
 }
 
-/* Login page */
+/* ── Page body ────────────────────────────────────────────────── */
+.kraken-page-body {
+    padding: 1.5rem 2rem;
+}
+
+/* ── Dashboard stat cards ─────────────────────────────────────── */
+.kraken-stat-icon {
+    font-size: 2rem !important;
+}
+
+/* ── Login page ───────────────────────────────────────────────── */
 .kraken-login-container {
     min-height: 100vh;
     display: flex;
@@ -87,7 +85,6 @@ html, body {
 
 .kraken-login-brand h1 {
     margin: 0 0 0.25rem 0;
-    color: var(--rz-text-color);
 }
 
 .kraken-login-error {
@@ -105,7 +102,7 @@ html, body {
     display: block;
 }
 
-/* Blazor error UI */
+/* ── Blazor error UI ──────────────────────────────────────────── */
 #blazor-error-ui {
     background: #b32121;
     color: white;

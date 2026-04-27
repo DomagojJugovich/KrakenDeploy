@@ -102,33 +102,33 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 
 ### Phase 4 — Blazor shell with Radzen
 
-- [ ] Install `Radzen.Blazor`; register services in `Program.cs`
-- [ ] `_Imports.razor` adds Radzen usings
-- [ ] Pick a Radzen theme (recommend `material3` or `software`); reference CSS in `App.razor`
-- [ ] `MainLayout.razor`:
-  - [ ] Top bar (`RadzenLayout` + `RadzenHeader`): logo, environment badge from config, user menu (account, logout)
-  - [ ] Left sidebar (`RadzenSidebar` + `RadzenPanelMenu`):
+- [x] Install `Radzen.Blazor`; register services in `Program.cs`
+- [x] `_Imports.razor` adds Radzen usings
+- [x] Pick a Radzen theme (recommend `material3` or `software`); reference CSS in `App.razor`
+- [x] `MainLayout.razor`:
+  - [x] Top bar (`RadzenLayout` + `RadzenHeader`): logo, environment badge from config, user menu (account, logout)
+  - [x] Left sidebar (`RadzenSidebar` + `RadzenPanelMenu`):
     - **Deploy:** Projects, Releases, Deployments
     - **Infrastructure:** Targets, Environments, Tenants
     - **Library:** Variable Sets, Step Templates, Lifecycles, Channels
     - **System:** Tasks, Audit, Settings
-  - [ ] Content area `RadzenBody`
-- [ ] Empty pages with route, title, `[Authorize]`:
-  - [ ] `/` Dashboard (placeholder cards: targets online, deployments today, failed deployments, pending offline results)
-  - [ ] `/projects`, `/projects/{slug}`
-  - [ ] `/environments`
-  - [ ] `/targets`
-  - [ ] `/tenants`
-  - [ ] `/variable-sets`
-  - [ ] `/step-templates`
-  - [ ] `/lifecycles`
-  - [ ] `/channels`
-  - [ ] `/releases`
-  - [ ] `/deployments`
-  - [ ] `/tasks`
-  - [ ] `/audit`
-  - [ ] `/settings`
-- [ ] `/healthz` minimal-API health endpoint (Postgres ping, target count)
+  - [x] Content area `RadzenBody`
+- [x] Empty pages with route, title, `[Authorize]`:
+  - [x] `/` Dashboard (placeholder cards: targets online, deployments today, failed deployments, pending offline results)
+  - [x] `/projects`, `/projects/{slug}`
+  - [x] `/environments`
+  - [x] `/targets`
+  - [x] `/tenants`
+  - [x] `/variable-sets`
+  - [x] `/step-templates`
+  - [x] `/lifecycles`
+  - [x] `/channels`
+  - [x] `/releases`
+  - [x] `/deployments`
+  - [x] `/tasks`
+  - [x] `/audit`
+  - [x] `/settings`
+- [x] `/healthz` minimal-API health endpoint (Postgres ping, target count)
 
 ### Phase 5 — CRUD on the M1 entities
 

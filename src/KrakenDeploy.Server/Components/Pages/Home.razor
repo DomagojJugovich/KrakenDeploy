@@ -1,15 +1,57 @@
 @page "/"
+@attribute [Authorize]
 
-<PageTitle>KrakenDeploy</PageTitle>
+<PageTitle>Dashboard - KrakenDeploy</PageTitle>
 
-<h1>Dashboard</h1>
+<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">Dashboard</RadzenText>
 
-<AuthorizeView>
-    <Authorized>
-        <p>Signed in as <strong>@context.User.Identity?.Name</strong>.</p>
-        <p class="rz-text-secondary">
-            This is the M1 walking skeleton. Project, environment, and target
-            management land in Phases 4–9.
-        </p>
-    </Authorized>
-</AuthorizeView>
+<RadzenRow Gap="1.5rem" class="rz-mb-6">
+    <RadzenColumn Size="12" SizeSM="6" SizeLG="3">
+        <RadzenCard>
+            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="1rem">
+                <RadzenIcon Icon="computer" class="kraken-stat-icon" Style="color: var(--rz-success);" />
+                <RadzenStack Gap="0">
+                    <RadzenText TextStyle="TextStyle.H5" class="rz-mb-0">—</RadzenText>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-mb-0">Targets Online</RadzenText>
+                </RadzenStack>
+            </RadzenStack>
+        </RadzenCard>
+    </RadzenColumn>
+    <RadzenColumn Size="12" SizeSM="6" SizeLG="3">
+        <RadzenCard>
+            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="1rem">
+                <RadzenIcon Icon="check_circle" class="kraken-stat-icon" Style="color: var(--rz-success);" />
+                <RadzenStack Gap="0">
+                    <RadzenText TextStyle="TextStyle.H5" class="rz-mb-0">—</RadzenText>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-mb-0">Deployments Today</RadzenText>
+                </RadzenStack>
+            </RadzenStack>
+        </RadzenCard>
+    </RadzenColumn>
+    <RadzenColumn Size="12" SizeSM="6" SizeLG="3">
+        <RadzenCard>
+            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="1rem">
+                <RadzenIcon Icon="error" class="kraken-stat-icon" Style="color: var(--rz-danger);" />
+                <RadzenStack Gap="0">
+                    <RadzenText TextStyle="TextStyle.H5" class="rz-mb-0">—</RadzenText>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-mb-0">Failed Deployments</RadzenText>
+                </RadzenStack>
+            </RadzenStack>
+        </RadzenCard>
+    </RadzenColumn>
+    <RadzenColumn Size="12" SizeSM="6" SizeLG="3">
+        <RadzenCard>
+            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="1rem">
+                <RadzenIcon Icon="pending" class="kraken-stat-icon" Style="color: var(--rz-warning);" />
+                <RadzenStack Gap="0">
+                    <RadzenText TextStyle="TextStyle.H5" class="rz-mb-0">—</RadzenText>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-mb-0">Pending Offline Results</RadzenText>
+                </RadzenStack>
+            </RadzenStack>
+        </RadzenCard>
+    </RadzenColumn>
+</RadzenRow>
+
+<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+    Project, environment, target management, and live deployment data land in Phases 5–9.
+</RadzenText>
