@@ -1,9 +1,122 @@
 @page "/environments"
+@rendermode InteractiveServer
 @attribute [Authorize]
+
+@inject EnvironmentService EnvironmentSvc
+@inject DialogService Dialog
+@inject NotificationService Notifications
 
 <PageTitle>Environments - KrakenDeploy</PageTitle>
 
-<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">Environments</RadzenText>
-<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-    Environment list with drag-to-reorder — Phase 5.
-</RadzenText>
+<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+             Gap="1rem" class="rz-mb-4">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">
+        Environments
+    </RadzenText>
+    <RadzenButton Icon="add" Text="New Environment"
+                  ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                  Click="OpenCreateDialogAsync" />
+</RadzenStack>
+
+<RadzenDataGrid Data="@_envs" TItem="DeploymentEnvironment"
+                AllowSorting="false"
+                AllowFiltering="false"
+                AllowColumnResize="true"
+                EmptyText="No environments yet. Click 'New Environment' to get started.">
+    <Columns>
+        <RadzenDataGridColumn TItem="DeploymentEnvironment" Title="#" Width="56px"
+                              TextAlign="TextAlign.Center">
+            <Template Context="e">
+                <span>@(_envs.IndexOf(e) + 1)</span>
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="DeploymentEnvironment" Property="Name" Title="Name"
+                              Width="220px" />
+        <RadzenDataGridColumn TItem="DeploymentEnvironment" Property="Slug" Title="Slug"
+                              Width="180px" />
+        <RadzenDataGridColumn TItem="DeploymentEnvironment" Title="" Width="140px"
+                              TextAlign="TextAlign.Right">
+            <Template Context="e">
+                <RadzenButton Icon="arrow_upward" ButtonStyle="ButtonStyle.Light"
+                              Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                              Disabled="@(_envs.IndexOf(e) == 0)"
+                              Click="@(() => MoveUpAsync(e))"
+                              title="Move up" />
+                <RadzenButton Icon="arrow_downward" ButtonStyle="ButtonStyle.Light"
+                              Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                              Disabled="@(_envs.IndexOf(e) == _envs.Count - 1)"
+                              Click="@(() => MoveDownAsync(e))"
+                              title="Move down" />
+                <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
+                              Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                              Click="@(() => OpenEditDialogAsync(e))"
+                              title="Edit" />
+                <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                              Size="ButtonSize.ExtraSmall"
+                              Click="@(() => DeleteAsync(e))"
+                              title="Delete" />
+            </Template>
+        </RadzenDataGridColumn>
+    </Columns>
+</RadzenDataGrid>
+
+@code {
+    private List<DeploymentEnvironment> _envs = [];
+
+    protected override async Task OnInitializedAsync()
+        => _envs = await EnvironmentSvc.GetAllOrderedAsync();
+
+    private async Task OpenCreateDialogAsync()
+    {
+        var result = await Dialog.OpenAsync<EnvironmentFormDialog>(
+            "New Environment",
+            new Dictionary<string, object>(),
+            new DialogOptions { Width = "480px" });
+
+        if (result is true)
+        {
+            _envs = await EnvironmentSvc.GetAllOrderedAsync();
+        }
+    }
+
+    private async Task OpenEditDialogAsync(DeploymentEnvironment env)
+    {
+        var result = await Dialog.OpenAsync<EnvironmentFormDialog>(
+            "Edit Environment",
+            new Dictionary<string, object> { [nameof(EnvironmentFormDialog.Environment)] = env },
+            new DialogOptions { Width = "480px" });
+
+        if (result is true)
+        {
+            _envs = await EnvironmentSvc.GetAllOrderedAsync();
+        }
+    }
+
+    private async Task MoveUpAsync(DeploymentEnvironment env)
+    {
+        await EnvironmentSvc.MoveUpAsync(env.Id);
+        _envs = await EnvironmentSvc.GetAllOrderedAsync();
+    }
+
+    private async Task MoveDownAsync(DeploymentEnvironment env)
+    {
+        await EnvironmentSvc.MoveDownAsync(env.Id);
+        _envs = await EnvironmentSvc.GetAllOrderedAsync();
+    }
+
+    private async Task DeleteAsync(DeploymentEnvironment env)
+    {
+        var confirmed = await Dialog.Confirm(
+            $"Delete environment '{env.Name}'? This cannot be undone.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+
+        if (confirmed == true)
+        {
+            await EnvironmentSvc.DeleteAsync(env.Id);
+            _envs = await EnvironmentSvc.GetAllOrderedAsync();
+            Notifications.Notify(NotificationSeverity.Success, "Deleted",
+                $"'{env.Name}' was deleted.", 4000);
+        }
+    }
+}

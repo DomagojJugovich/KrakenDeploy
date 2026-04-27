@@ -1,0 +1,106 @@
+@inject DialogService Dialog
+@inject EnvironmentService EnvironmentSvc
+
+<div style="min-width: 420px; padding: 0.25rem 0;">
+    <EditForm Model="_model" OnValidSubmit="SaveAsync">
+        <DataAnnotationsValidator />
+        <RadzenStack Gap="1rem">
+            <div>
+                <RadzenLabel Text="Name *" />
+                <RadzenTextBox @bind-Value="_model.Name"
+                               Change="@OnNameChanged"
+                               Style="width:100%"
+                               aria-label="Name" />
+                <ValidationMessage For="() => _model.Name" class="kraken-validation-error" />
+            </div>
+            <div>
+                <RadzenLabel Text="Slug *" />
+                <RadzenTextBox @bind-Value="_model.Slug"
+                               Style="width:100%"
+                               aria-label="Slug" />
+                <ValidationMessage For="() => _model.Slug" class="kraken-validation-error" />
+            </div>
+
+            @if (_errorMessage is not null)
+            {
+                <div class="kraken-login-error rz-text-body2">@_errorMessage</div>
+            }
+
+            <RadzenStack Orientation="Orientation.Horizontal"
+                         JustifyContent="JustifyContent.End"
+                         Gap="0.5rem">
+                <RadzenButton Text="Cancel"
+                              ButtonStyle="ButtonStyle.Light"
+                              Click="@(_ => Dialog.Close(false))" />
+                <RadzenButton Text="Save"
+                              ButtonType="ButtonType.Submit"
+                              ButtonStyle="ButtonStyle.Primary" />
+            </RadzenStack>
+        </RadzenStack>
+    </EditForm>
+</div>
+
+@code {
+    [Parameter] public DeploymentEnvironment? Environment { get; set; }
+
+    private readonly FormModel _model = new();
+    private string? _errorMessage;
+    private bool _isEdit;
+    private string _lastAutoSlug = "";
+
+    protected override void OnParametersSet()
+    {
+        if (Environment is not null)
+        {
+            _isEdit = true;
+            _model.Name = Environment.Name;
+            _model.Slug = Environment.Slug;
+            _lastAutoSlug = Environment.Slug;
+        }
+    }
+
+    private void OnNameChanged(string? value)
+    {
+        if (_isEdit || value is null) return;
+        if (_model.Slug != _lastAutoSlug) return;
+
+        _lastAutoSlug = EnvironmentService.Slugify(value);
+        _model.Slug = _lastAutoSlug;
+    }
+
+    private async Task SaveAsync()
+    {
+        _errorMessage = null;
+        try
+        {
+            if (_isEdit)
+            {
+                await EnvironmentSvc.UpdateAsync(Environment!.Id, _model.Name, _model.Slug);
+            }
+            else
+            {
+                await EnvironmentSvc.CreateAsync(_model.Name, _model.Slug);
+            }
+
+            Dialog.Close(true);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _errorMessage = ex.Message;
+        }
+    }
+
+    private sealed class FormModel
+    {
+        [System.ComponentModel.DataAnnotations.Required]
+        [System.ComponentModel.DataAnnotations.MaxLength(200)]
+        public string Name { get; set; } = "";
+
+        [System.ComponentModel.DataAnnotations.Required]
+        [System.ComponentModel.DataAnnotations.MaxLength(64)]
+        [System.ComponentModel.DataAnnotations.RegularExpression(
+            @"^[a-z0-9][a-z0-9\-]*[a-z0-9]$|^[a-z0-9]$",
+            ErrorMessage = "Slug must be lowercase letters, digits, and hyphens (no leading/trailing hyphens).")]
+        public string Slug { get; set; } = "";
+    }
+}

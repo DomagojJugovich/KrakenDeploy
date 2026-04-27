@@ -1,9 +1,72 @@
 @page "/targets"
+@rendermode InteractiveServer
 @attribute [Authorize]
+
+@inject TargetService TargetSvc
 
 <PageTitle>Deployment Targets - KrakenDeploy</PageTitle>
 
-<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">Deployment Targets</RadzenText>
-<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-    Target list with live status — registration wizard in Phase 7, live heartbeat in Phase 9.
+<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">
+    Deployment Targets
 </RadzenText>
+
+<RadzenDataGrid Data="@_targets" TItem="DeploymentTarget"
+                AllowPaging="true" PageSize="25"
+                AllowSorting="true"
+                AllowFiltering="true" FilterMode="FilterMode.Simple"
+                AllowColumnResize="true"
+                EmptyText="No targets registered yet. Registration wizard coming in Phase 7.">
+    <Columns>
+        <RadzenDataGridColumn TItem="DeploymentTarget" Property="Name" Title="Name" Width="180px" />
+        <RadzenDataGridColumn TItem="DeploymentTarget" Property="Status" Title="Status"
+                              Width="110px" Filterable="false">
+            <Template Context="t">
+                <RadzenBadge Text="@t.Status.ToString()" BadgeStyle="@StatusStyle(t.Status)" />
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="DeploymentTarget" Property="MachineName" Title="Hostname"
+                              Width="160px" />
+        <RadzenDataGridColumn TItem="DeploymentTarget" Property="OperatingSystem" Title="OS"
+                              Width="130px" />
+        <RadzenDataGridColumn TItem="DeploymentTarget" Property="AgentVersion" Title="Agent"
+                              Width="100px" />
+        <RadzenDataGridColumn TItem="DeploymentTarget" Title="Roles" Filterable="false"
+                              Sortable="false">
+            <Template Context="t">
+                @string.Join(", ", t.Roles)
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="DeploymentTarget" Title="Last Seen" Width="120px"
+                              Filterable="false" Sortable="false">
+            <Template Context="t">
+                @RelativeTime(t.LastSeenUtc)
+            </Template>
+        </RadzenDataGridColumn>
+    </Columns>
+</RadzenDataGrid>
+
+@code {
+    private IReadOnlyList<DeploymentTarget> _targets = [];
+
+    protected override async Task OnInitializedAsync()
+        => _targets = await TargetSvc.GetAllAsync();
+
+    private static BadgeStyle StatusStyle(TargetStatus status) => status switch
+    {
+        TargetStatus.Online       => BadgeStyle.Success,
+        TargetStatus.Offline      => BadgeStyle.Danger,
+        TargetStatus.Disabled     => BadgeStyle.Warning,
+        TargetStatus.ShuttingDown => BadgeStyle.Warning,
+        _                         => BadgeStyle.Light,
+    };
+
+    private static string RelativeTime(DateTimeOffset? dt)
+    {
+        if (dt is null) return "never";
+        var diff = DateTimeOffset.UtcNow - dt.Value;
+        if (diff.TotalSeconds < 60) return "just now";
+        if (diff.TotalMinutes < 60) return $"{(int)diff.TotalMinutes}m ago";
+        if (diff.TotalHours < 24) return $"{(int)diff.TotalHours}h ago";
+        return $"{(int)diff.TotalDays}d ago";
+    }
+}

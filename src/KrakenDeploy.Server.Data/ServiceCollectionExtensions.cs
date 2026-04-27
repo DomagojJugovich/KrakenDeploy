@@ -1,5 +1,6 @@
 using KrakenDeploy.Server.Data.Identity;
 using KrakenDeploy.Server.Data.Interceptors;
+using KrakenDeploy.Server.Data.Services;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -21,6 +22,10 @@ public static class ServiceCollectionExtensions
             options.UseSnakeCaseNamingConvention();
             options.AddInterceptors(sp.GetRequiredService<AuditableEntityInterceptor>());
         });
+
+        services.AddScoped<ProjectService>();
+        services.AddScoped<EnvironmentService>();
+        services.AddScoped<TargetService>();
 
         return services;
     }

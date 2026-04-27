@@ -1,0 +1,118 @@
+@inject DialogService Dialog
+@inject ProjectService ProjectSvc
+
+<div style="min-width: 460px; padding: 0.25rem 0;">
+    <EditForm Model="_model" OnValidSubmit="SaveAsync">
+        <DataAnnotationsValidator />
+        <RadzenStack Gap="1rem">
+            <div>
+                <RadzenLabel Text="Name *" />
+                <RadzenTextBox @bind-Value="_model.Name"
+                               Change="@OnNameChanged"
+                               Style="width:100%"
+                               aria-label="Name" />
+                <ValidationMessage For="() => _model.Name" class="kraken-validation-error" />
+            </div>
+            <div>
+                <RadzenLabel Text="Slug *" />
+                <RadzenTextBox @bind-Value="_model.Slug"
+                               Style="width:100%"
+                               aria-label="Slug" />
+                <ValidationMessage For="() => _model.Slug" class="kraken-validation-error" />
+            </div>
+            <div>
+                <RadzenLabel Text="Description" />
+                <RadzenTextArea @bind-Value="_model.Description"
+                                Rows="3"
+                                Style="width:100%"
+                                aria-label="Description" />
+                <ValidationMessage For="() => _model.Description" class="kraken-validation-error" />
+            </div>
+
+            @if (_errorMessage is not null)
+            {
+                <div class="kraken-login-error rz-text-body2">@_errorMessage</div>
+            }
+
+            <RadzenStack Orientation="Orientation.Horizontal"
+                         JustifyContent="JustifyContent.End"
+                         Gap="0.5rem">
+                <RadzenButton Text="Cancel"
+                              ButtonStyle="ButtonStyle.Light"
+                              Click="@(_ => Dialog.Close(false))" />
+                <RadzenButton Text="Save"
+                              ButtonType="ButtonType.Submit"
+                              ButtonStyle="ButtonStyle.Primary" />
+            </RadzenStack>
+        </RadzenStack>
+    </EditForm>
+</div>
+
+@code {
+    [Parameter] public Project? Project { get; set; }
+
+    private readonly FormModel _model = new();
+    private string? _errorMessage;
+    private bool _isEdit;
+    private string _lastAutoSlug = "";
+
+    protected override void OnParametersSet()
+    {
+        if (Project is not null)
+        {
+            _isEdit = true;
+            _model.Name = Project.Name;
+            _model.Slug = Project.Slug;
+            _model.Description = Project.Description;
+            _lastAutoSlug = Project.Slug;
+        }
+    }
+
+    private void OnNameChanged(string? value)
+    {
+        if (_isEdit || value is null) return;
+        if (_model.Slug != _lastAutoSlug) return;
+
+        _lastAutoSlug = ProjectService.Slugify(value);
+        _model.Slug = _lastAutoSlug;
+    }
+
+    private async Task SaveAsync()
+    {
+        _errorMessage = null;
+        try
+        {
+            if (_isEdit)
+            {
+                await ProjectSvc.UpdateAsync(Project!.Id, _model.Name, _model.Slug, _model.Description);
+            }
+            else
+            {
+                await ProjectSvc.CreateAsync(_model.Name, _model.Slug, _model.Description);
+            }
+
+            Dialog.Close(true);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _errorMessage = ex.Message;
+        }
+    }
+
+    private sealed class FormModel
+    {
+        [System.ComponentModel.DataAnnotations.Required]
+        [System.ComponentModel.DataAnnotations.MaxLength(200)]
+        public string Name { get; set; } = "";
+
+        [System.ComponentModel.DataAnnotations.Required]
+        [System.ComponentModel.DataAnnotations.MaxLength(64)]
+        [System.ComponentModel.DataAnnotations.RegularExpression(
+            @"^[a-z0-9][a-z0-9\-]*[a-z0-9]$|^[a-z0-9]$",
+            ErrorMessage = "Slug must be lowercase letters, digits, and hyphens (no leading/trailing hyphens).")]
+        public string Slug { get; set; } = "";
+
+        [System.ComponentModel.DataAnnotations.MaxLength(2000)]
+        public string? Description { get; set; }
+    }
+}

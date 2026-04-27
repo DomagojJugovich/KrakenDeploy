@@ -132,12 +132,12 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 
 ### Phase 5 — CRUD on the M1 entities
 
-- [ ] **Projects** page: `RadzenDataGrid` with paging/sorting/filtering, "New Project" via `RadzenDialogService`, edit, delete-with-confirm
-- [ ] **Environments** page: same pattern, drag-to-reorder for `SortOrder`
-- [ ] **Targets** page: read-only DataGrid (creation via Phase 7 wizard); columns: name, status pill, hostname, OS, agent version, roles (chip list), last-seen relative time
-- [ ] **Releases** / **Deployments** pages: read-only empty grids, populated in M2
-- [ ] All persistence via repository or service classes in `Server.Core`; no `DbContext` in `.razor` files
-- [ ] Validation via `DataAnnotations`, surfaced via Radzen form components
+- [x] **Projects** page: `RadzenDataGrid` with paging/sorting/filtering, "New Project" via `RadzenDialogService`, edit, delete-with-confirm
+- [x] **Environments** page: same pattern, ↑/↓ buttons for `SortOrder` reorder
+- [x] **Targets** page: read-only DataGrid (creation via Phase 7 wizard); columns: name, status pill, hostname, OS, agent version, roles, last-seen relative time
+- [x] **Releases** / **Deployments** pages: read-only empty grids, populated in M2
+- [x] All persistence via service classes in `Server.Data.Services`; no `DbContext` in `.razor` files
+- [x] Validation via `DataAnnotations`, surfaced via Radzen form components
 
 ### Phase 6 — SignalR agent control hub
 

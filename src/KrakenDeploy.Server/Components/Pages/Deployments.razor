@@ -4,6 +4,24 @@
 <PageTitle>Deployments - KrakenDeploy</PageTitle>
 
 <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">Deployments</RadzenText>
-<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-    Deployment queue and history — Phase 5 placeholder, live execution M2.
-</RadzenText>
+
+<RadzenDataGrid Data="@_deployments" TItem="Deployment"
+                AllowPaging="true" PageSize="25"
+                AllowSorting="true"
+                AllowColumnResize="true"
+                EmptyText="No deployments yet. Deployment execution lands in M2.">
+    <Columns>
+        <RadzenDataGridColumn TItem="Deployment" Property="Status" Title="Status" Width="120px" />
+        <RadzenDataGridColumn TItem="Deployment" Property="ReleaseId" Title="Release" Width="220px" />
+        <RadzenDataGridColumn TItem="Deployment" Property="EnvironmentId" Title="Environment"
+                              Width="200px" />
+        <RadzenDataGridColumn TItem="Deployment" Property="StartedUtc" Title="Started"
+                              FormatString="{0:yyyy-MM-dd HH:mm}" />
+        <RadzenDataGridColumn TItem="Deployment" Property="CompletedUtc" Title="Completed"
+                              FormatString="{0:yyyy-MM-dd HH:mm}" />
+    </Columns>
+</RadzenDataGrid>
+
+@code {
+    private readonly IReadOnlyList<Deployment> _deployments = [];
+}
