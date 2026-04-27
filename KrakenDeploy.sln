@@ -1,0 +1,92 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{D0C490EE-0ACE-45C9-B592-342BB7F79A7C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Server", "src\KrakenDeploy.Server\KrakenDeploy.Server.csproj", "{8C241820-C88A-41AF-A420-3261786FBB8F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Server.Core", "src\KrakenDeploy.Server.Core\KrakenDeploy.Server.Core.csproj", "{441B5D77-7F84-4A41-B965-C4CD8514F7AA}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Server.Data", "src\KrakenDeploy.Server.Data\KrakenDeploy.Server.Data.csproj", "{6A1E0414-7823-4897-BFB6-2548854E5F93}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Server.Transport", "src\KrakenDeploy.Server.Transport\KrakenDeploy.Server.Transport.csproj", "{9159953B-7CE9-4389-9E12-AEF47390E743}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Agent", "src\KrakenDeploy.Agent\KrakenDeploy.Agent.csproj", "{E6B00C8F-5A28-4664-B8F7-631BB7A971D0}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Agent.Transport", "src\KrakenDeploy.Agent.Transport\KrakenDeploy.Agent.Transport.csproj", "{47D23986-D30F-4133-8158-9035E9756150}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Contracts", "src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj", "{B8171F2F-9EB3-4B6D-9103-560E733C71EC}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{70566D49-9AF4-40FA-A1B1-6AF8A81B21E1}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Server.Core.Tests", "tests\KrakenDeploy.Server.Core.Tests\KrakenDeploy.Server.Core.Tests.csproj", "{CBE79B89-A199-4A9C-A2FF-8DEAC7288F0A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Server.Data.Tests", "tests\KrakenDeploy.Server.Data.Tests\KrakenDeploy.Server.Data.Tests.csproj", "{9EAEF31B-2A93-4B36-A19C-E9E311ECB072}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Agent.Tests", "tests\KrakenDeploy.Agent.Tests\KrakenDeploy.Agent.Tests.csproj", "{EDCC6243-9884-40F9-B1EB-B3906FFAC058}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8C241820-C88A-41AF-A420-3261786FBB8F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8C241820-C88A-41AF-A420-3261786FBB8F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8C241820-C88A-41AF-A420-3261786FBB8F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8C241820-C88A-41AF-A420-3261786FBB8F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{441B5D77-7F84-4A41-B965-C4CD8514F7AA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{441B5D77-7F84-4A41-B965-C4CD8514F7AA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{441B5D77-7F84-4A41-B965-C4CD8514F7AA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{441B5D77-7F84-4A41-B965-C4CD8514F7AA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6A1E0414-7823-4897-BFB6-2548854E5F93}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6A1E0414-7823-4897-BFB6-2548854E5F93}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6A1E0414-7823-4897-BFB6-2548854E5F93}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6A1E0414-7823-4897-BFB6-2548854E5F93}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9159953B-7CE9-4389-9E12-AEF47390E743}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9159953B-7CE9-4389-9E12-AEF47390E743}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9159953B-7CE9-4389-9E12-AEF47390E743}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9159953B-7CE9-4389-9E12-AEF47390E743}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E6B00C8F-5A28-4664-B8F7-631BB7A971D0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E6B00C8F-5A28-4664-B8F7-631BB7A971D0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E6B00C8F-5A28-4664-B8F7-631BB7A971D0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E6B00C8F-5A28-4664-B8F7-631BB7A971D0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{47D23986-D30F-4133-8158-9035E9756150}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{47D23986-D30F-4133-8158-9035E9756150}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{47D23986-D30F-4133-8158-9035E9756150}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{47D23986-D30F-4133-8158-9035E9756150}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B8171F2F-9EB3-4B6D-9103-560E733C71EC}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B8171F2F-9EB3-4B6D-9103-560E733C71EC}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B8171F2F-9EB3-4B6D-9103-560E733C71EC}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B8171F2F-9EB3-4B6D-9103-560E733C71EC}.Release|Any CPU.Build.0 = Release|Any CPU
+		{CBE79B89-A199-4A9C-A2FF-8DEAC7288F0A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{CBE79B89-A199-4A9C-A2FF-8DEAC7288F0A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{CBE79B89-A199-4A9C-A2FF-8DEAC7288F0A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{CBE79B89-A199-4A9C-A2FF-8DEAC7288F0A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9EAEF31B-2A93-4B36-A19C-E9E311ECB072}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9EAEF31B-2A93-4B36-A19C-E9E311ECB072}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9EAEF31B-2A93-4B36-A19C-E9E311ECB072}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9EAEF31B-2A93-4B36-A19C-E9E311ECB072}.Release|Any CPU.Build.0 = Release|Any CPU
+		{EDCC6243-9884-40F9-B1EB-B3906FFAC058}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{EDCC6243-9884-40F9-B1EB-B3906FFAC058}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{EDCC6243-9884-40F9-B1EB-B3906FFAC058}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{EDCC6243-9884-40F9-B1EB-B3906FFAC058}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{8C241820-C88A-41AF-A420-3261786FBB8F} = {D0C490EE-0ACE-45C9-B592-342BB7F79A7C}
+		{441B5D77-7F84-4A41-B965-C4CD8514F7AA} = {D0C490EE-0ACE-45C9-B592-342BB7F79A7C}
+		{6A1E0414-7823-4897-BFB6-2548854E5F93} = {D0C490EE-0ACE-45C9-B592-342BB7F79A7C}
+		{9159953B-7CE9-4389-9E12-AEF47390E743} = {D0C490EE-0ACE-45C9-B592-342BB7F79A7C}
+		{E6B00C8F-5A28-4664-B8F7-631BB7A971D0} = {D0C490EE-0ACE-45C9-B592-342BB7F79A7C}
+		{47D23986-D30F-4133-8158-9035E9756150} = {D0C490EE-0ACE-45C9-B592-342BB7F79A7C}
+		{B8171F2F-9EB3-4B6D-9103-560E733C71EC} = {D0C490EE-0ACE-45C9-B592-342BB7F79A7C}
+		{CBE79B89-A199-4A9C-A2FF-8DEAC7288F0A} = {70566D49-9AF4-40FA-A1B1-6AF8A81B21E1}
+		{9EAEF31B-2A93-4B36-A19C-E9E311ECB072} = {70566D49-9AF4-40FA-A1B1-6AF8A81B21E1}
+		{EDCC6243-9884-40F9-B1EB-B3906FFAC058} = {70566D49-9AF4-40FA-A1B1-6AF8A81B21E1}
+	EndGlobalSection
+EndGlobal

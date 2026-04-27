@@ -46,21 +46,21 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 
 ### Phase 1 — Solution structure
 
-- [ ] `KrakenDeploy.sln` at repo root
-- [ ] Create projects (empty templates):
-  - [ ] `src/KrakenDeploy.Server` (ASP.NET Core Blazor Web App, InteractiveServer)
-  - [ ] `src/KrakenDeploy.Server.Core` (classlib — domain, no infra refs)
-  - [ ] `src/KrakenDeploy.Server.Data` (classlib — EF Core, migrations)
-  - [ ] `src/KrakenDeploy.Server.Transport` (classlib — SignalR hubs, gRPC services)
-  - [ ] `src/KrakenDeploy.Agent` (worker service)
-  - [ ] `src/KrakenDeploy.Agent.Transport` (classlib — `IServerLink` impls)
-  - [ ] `src/KrakenDeploy.Contracts` (classlib — shared DTOs, hub interfaces, `.proto`)
-  - [ ] `tests/KrakenDeploy.Server.Core.Tests`
-  - [ ] `tests/KrakenDeploy.Server.Data.Tests` (with Testcontainers.PostgreSql)
-  - [ ] `tests/KrakenDeploy.Agent.Tests`
-- [ ] Wire project references
-- [ ] Add CPM packages: Microsoft.AspNetCore.SignalR.Client, Microsoft.EntityFrameworkCore, Npgsql.EntityFrameworkCore.PostgreSQL, Radzen.Blazor, Serilog.AspNetCore, Serilog.Sinks.File, OpenTelemetry.Extensions.Hosting, xunit, FluentAssertions, Testcontainers.PostgreSql
-- [ ] `dotnet build` clean
+- [x] `KrakenDeploy.sln` at repo root
+- [x] Create projects (empty templates):
+  - [x] `src/KrakenDeploy.Server` (ASP.NET Core Blazor Web App, InteractiveServer, --empty)
+  - [x] `src/KrakenDeploy.Server.Core` (classlib — domain, no infra refs)
+  - [x] `src/KrakenDeploy.Server.Data` (classlib — EF Core, migrations)
+  - [x] `src/KrakenDeploy.Server.Transport` (classlib — SignalR hubs, gRPC services)
+  - [x] `src/KrakenDeploy.Agent` (worker service)
+  - [x] `src/KrakenDeploy.Agent.Transport` (classlib — `IServerLink` impls)
+  - [x] `src/KrakenDeploy.Contracts` (classlib — shared DTOs, hub interfaces, `.proto`)
+  - [x] `tests/KrakenDeploy.Server.Core.Tests`
+  - [x] `tests/KrakenDeploy.Server.Data.Tests` (with Testcontainers.PostgreSql)
+  - [x] `tests/KrakenDeploy.Agent.Tests`
+- [x] Wire project references
+- [x] Add CPM packages: Microsoft.AspNetCore.SignalR.Client, Microsoft.EntityFrameworkCore, Npgsql.EntityFrameworkCore.PostgreSQL, Radzen.Blazor, Serilog.AspNetCore, Serilog.Sinks.File, OpenTelemetry.Extensions.Hosting, xunit, FluentAssertions, Testcontainers.PostgreSql
+- [x] `dotnet build` clean
 
 ### Phase 2 — Postgres and EF Core
 
