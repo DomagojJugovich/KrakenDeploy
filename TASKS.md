@@ -64,22 +64,23 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 
 ### Phase 2 — Postgres and EF Core
 
-- [ ] `docker-compose.yml` at repo root: `postgres:16-alpine`, named volume, healthcheck, port 5432, default db `krakendeploy_dev`
-- [ ] Domain entities in `Server.Core/Domain/`:
-  - [ ] `Project` (Id `Guid`, Slug, Name, Description, CreatedUtc, ModifiedUtc)
-  - [ ] `Environment` (Id, Slug, Name, SortOrder)
-  - [ ] `DeploymentTarget` (Id, Name, Status enum, LastSeenUtc, MachineName, OperatingSystem, AgentVersion, Roles `string[]` → `text[]`, TransportMode enum, RegistrationKeyHash)
-  - [ ] `Release` (Id, ProjectId, Version, CreatedUtc) — placeholder
-  - [ ] `Deployment` (Id, ReleaseId, EnvironmentId, TargetId, Status enum, StartedUtc, CompletedUtc) — placeholder
-- [ ] Base `Entity` class + `IAuditable` interceptor for audit timestamps
-- [ ] `KrakenDbContext` in `Server.Data` with the DbSets above
-- [ ] `IEntityTypeConfiguration<>` per entity (snake_case table names, explicit FKs)
-- [ ] `jsonb` column convention helper for later
-- [ ] `appsettings.Development.json` connection string + user-secrets for password
-- [ ] `DesignTimeDbContextFactory` so `dotnet ef` works
-- [ ] First migration: `Initial`
-- [ ] Auto-apply migrations on startup in Development; document `dotnet ef database update` for Production
-- [ ] Integration test: spin up Postgres testcontainer, apply migrations, assert no pending model changes
+- [x] `docker-compose.yml` at repo root: `postgres:16-alpine`, named volume, healthcheck, port 5432, default db `krakendeploy_dev`
+- [x] Domain entities in `Server.Core/Domain/`:
+  - [x] `Project` (Id `Guid`, Slug, Name, Description, CreatedUtc, ModifiedUtc)
+  - [x] `DeploymentEnvironment` (Id, Slug, Name, SortOrder) — class renamed from `Environment` to avoid clash with `System.Environment`; table is still `environments`
+  - [x] `DeploymentTarget` (Id, Name, Status enum, LastSeenUtc, MachineName, OperatingSystem, AgentVersion, Roles `List<string>` → `text[]`, TransportMode enum, RegistrationKeyHash)
+  - [x] `Release` (Id, ProjectId, Version, CreatedUtc) — placeholder
+  - [x] `Deployment` (Id, ReleaseId, EnvironmentId, TargetId, Status enum, StartedUtc, CompletedUtc) — placeholder
+- [x] Base `Entity` class with `Guid.CreateVersion7()` + `IAuditable` interceptor for audit timestamps
+- [x] `KrakenDbContext` in `Server.Data` with the DbSets above
+- [x] `IEntityTypeConfiguration<>` per entity (snake_case table names via EFCore.NamingConventions, explicit FKs and indexes)
+- [x] `jsonb` column convention helper for later (`HasJsonbColumn<T>()` extension)
+- [x] `appsettings.Development.json` connection string (user-secrets deferred)
+- [x] `DesignTimeDbContextFactory` so `dotnet ef` works (reads `KRAKEN_DESIGN_TIME_CONNECTION_STRING` env var with local-Postgres fallback)
+- [x] First migration: `Initial` (timestamp `20260427152352`)
+- [x] Auto-apply migrations on startup in Development; document `dotnet ef database update` for Production
+- [x] Integration test: spin up Postgres testcontainer, apply migrations, assert `HasPendingModelChanges() == false`, plus CRUD smoke tests (Project audit timestamps, DeploymentTarget role array roundtrip)
+- [x] Local tool manifest with `dotnet-ef` 9.0.0 pinned
 
 ### Phase 3 — Identity, Radzen-styled login, admin CLI
 

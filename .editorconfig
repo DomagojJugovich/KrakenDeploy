@@ -188,3 +188,25 @@ dotnet_naming_rule.locals_camel.style                               = camel_styl
 dotnet_naming_symbols.local_symbol.applicable_kinds                 = local,parameter
 dotnet_naming_symbols.local_symbol.applicable_accessibilities       = *
 dotnet_naming_style.camel_style.capitalization                      = camel_case
+
+# =====================================================================
+# EF Core generated migration files — relax style and quality rules
+# =====================================================================
+[**/Migrations/**.cs]
+generated_code = true
+csharp_style_namespace_declarations = block_scoped:none
+dotnet_diagnostic.IDE0161.severity = none
+dotnet_diagnostic.CA1861.severity = none
+dotnet_diagnostic.CA1062.severity = none
+dotnet_diagnostic.CA1822.severity = none
+dotnet_diagnostic.CA1812.severity = none
+dotnet_diagnostic.CA2227.severity = none
+dotnet_diagnostic.CS1591.severity = none
+
+# =====================================================================
+# Test projects — allow snake_case method names that read as sentences
+# =====================================================================
+[tests/**/*.cs]
+dotnet_diagnostic.CA1707.severity = none
+dotnet_diagnostic.CA1812.severity = none
+dotnet_diagnostic.CA1515.severity = none
