@@ -1,0 +1,70 @@
+# Auto-detect text files and normalize line endings on commit.
+* text=auto
+
+# Source code — force LF
+*.cs       text eol=lf diff=csharp
+*.csx      text eol=lf diff=csharp
+*.vb       text eol=lf
+*.fs       text eol=lf
+*.fsx      text eol=lf
+*.proto    text eol=lf
+*.razor    text eol=lf
+*.cshtml   text eol=lf
+
+# Project / build files — force LF
+*.csproj          text eol=lf
+*.fsproj          text eol=lf
+*.vbproj          text eol=lf
+*.props           text eol=lf
+*.targets         text eol=lf
+*.json            text eol=lf
+*.yml             text eol=lf
+*.yaml            text eol=lf
+*.toml            text eol=lf
+*.config          text eol=lf
+*.editorconfig    text eol=lf
+*.gitattributes   text eol=lf
+*.gitignore       text eol=lf
+.dockerignore     text eol=lf
+Dockerfile        text eol=lf
+
+# Documentation — force LF
+*.md       text eol=lf
+*.txt      text eol=lf
+LICENSE    text eol=lf
+
+# Shell / scripts that run on Linux — force LF
+*.sh       text eol=lf
+
+# Solution files — Visual Studio prefers CRLF
+*.sln      text eol=crlf
+
+# Windows-only scripts — force CRLF
+*.bat      text eol=crlf
+*.cmd      text eol=crlf
+*.ps1      text eol=crlf
+*.psm1     text eol=crlf
+*.psd1     text eol=crlf
+
+# Binary files
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.gif      binary
+*.ico      binary
+*.svg      text eol=lf
+*.pdf      binary
+*.zip      binary
+*.tar      binary
+*.gz       binary
+*.7z       binary
+*.dll      binary
+*.exe      binary
+*.pdb      binary
+*.snk      binary
+*.pfx      binary
+
+# Mark large generated files for GitHub linguist
+*.Designer.cs    linguist-generated=true
+*.g.cs           linguist-generated=true
+*.g.i.cs         linguist-generated=true
