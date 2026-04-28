@@ -191,9 +191,12 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 
 ### Phase 10 — Logging and telemetry skeleton
 
-- [ ] Serilog config in server and agent: console + rolling file; correlation-id enricher; `RequestId`, `AgentId`, `DeploymentId` (latter unused in M1)
-- [ ] OpenTelemetry packages added (Tracing + Metrics) in server with console exporter only — wired but not exporting anywhere
-- [ ] `/healthz` includes Postgres ping and `IAgentConnectionRegistry.Count`
+- [x] Serilog on the server: bootstrap logger → `UseSerilog` (console + rolling daily file `logs/server-.log`); `Enrich.FromLogContext`, `WithMachineName`, `WithThreadId`; `ReadFrom.Configuration` picks up level overrides from the `Serilog` section in appsettings; `UseSerilogRequestLogging` logs each HTTP request with method, path, status, and elapsed ms
+- [x] Serilog on the agent was completed in Phase 8 (bootstrap logger + `AddSerilog` with console + rolling file)
+- [x] `RequestId` available via `Enrich.FromLogContext()` (set by `UseSerilogRequestLogging`); `AgentId` and `DeploymentId` unused in M1 but pushable via `LogContext.PushProperty`
+- [x] OpenTelemetry: tracing + metrics wired via `AddOpenTelemetry()` with `AddAspNetCoreInstrumentation()` + `AddHttpClientInstrumentation()`; console exporter enabled in Development only; service name `KrakenDeploy.Server` set via `ConfigureResource`
+- [x] `IAgentConnectionRegistry.Count` added; `InMemoryAgentConnectionRegistry` returns `_byConnection.Count`
+- [x] `/healthz` now includes `connectedAgents = registry.Count` alongside Postgres ping and total target count
 
 ### Phase 11 — Dev experience
 

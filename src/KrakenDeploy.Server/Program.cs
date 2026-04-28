@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Commands;
@@ -13,7 +14,11 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 using Radzen;
+using Serilog;
 
 namespace KrakenDeploy.Server;
 
@@ -28,13 +33,59 @@ public static class Program
             return await UserCommands.RunAsync(args.AsSpan(1).ToArray()).ConfigureAwait(false);
         }
 
-        return await RunWebAsync(args).ConfigureAwait(false);
+        // Bootstrap logger — active until the full Serilog pipeline is configured
+        // via UseSerilog() below.  Writes to stdout only.
+        Log.Logger = new LoggerConfiguration()
+            .MinimumLevel.Information()
+            .WriteTo.Console(
+                outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}",
+                formatProvider: CultureInfo.InvariantCulture)
+            .CreateBootstrapLogger();
+
+        try
+        {
+            return await RunWebAsync(args).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Log.Fatal(ex, "Server terminated unexpectedly.");
+            return 1;
+        }
+        finally
+        {
+            await Log.CloseAndFlushAsync();
+        }
     }
 
     private static async Task<int> RunWebAsync(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
 
+        // ── Serilog ─────────────────────────────────────────────────────────
+        // ReadFrom.Configuration picks up the "Serilog" section in appsettings
+        // (level overrides, minimum level, etc.).  ReadFrom.Services enables
+        // enrichers/sinks that need services from the DI container.
+        builder.Host.UseSerilog((context, services, lc) => lc
+            .ReadFrom.Configuration(context.Configuration)
+            .ReadFrom.Services(services)
+            .Enrich.FromLogContext()
+            .Enrich.WithMachineName()
+            .Enrich.WithThreadId()
+            .WriteTo.Console(
+                outputTemplate:
+                    "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext}{NewLine}" +
+                    "{Message:lj}{NewLine}{Exception}",
+                formatProvider: CultureInfo.InvariantCulture)
+            .WriteTo.File(
+                "logs/server-.log",
+                rollingInterval: RollingInterval.Day,
+                retainedFileCountLimit: 30,
+                outputTemplate:
+                    "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} {Level:u3}] " +
+                    "{SourceContext}{NewLine}{Message:lj}{NewLine}{Exception}",
+                formatProvider: CultureInfo.InvariantCulture));
+
+        // ── Data & identity ─────────────────────────────────────────────────
         var connectionString = builder.Configuration.GetConnectionString("KrakenDb")
             ?? throw new InvalidOperationException(
                 "Connection string 'KrakenDb' is not configured. " +
@@ -43,6 +94,7 @@ public static class Program
         builder.Services.AddKrakenDeployData(connectionString);
         builder.Services.AddKrakenDeployIdentityCore();
 
+        // ── Authentication ───────────────────────────────────────────────────
         builder.Services.AddAuthentication(IdentityConstants.ApplicationScheme)
             .AddCookie(IdentityConstants.ApplicationScheme, options =>
             {
@@ -98,6 +150,7 @@ public static class Program
                 };
             });
 
+        // ── SignalR & transport ──────────────────────────────────────────────
         builder.Services.AddSignalR(options =>
         {
             options.MaximumReceiveMessageSize = 1_048_576; // 1 MiB — control plane only
@@ -108,11 +161,47 @@ public static class Program
         builder.Services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
         builder.Services.AddSingleton<TargetStatusPublisher>();
 
+        // ── Authorization ────────────────────────────────────────────────────
         builder.Services.AddAuthorizationBuilder()
             .SetFallbackPolicy(new AuthorizationPolicyBuilder()
                 .RequireAuthenticatedUser()
                 .Build());
 
+        // ── OpenTelemetry ────────────────────────────────────────────────────
+        // Tracing and metrics are wired; console exporter is enabled in
+        // Development only.  Production exporters (Jaeger, Prometheus, OTLP)
+        // are added in a later phase.
+        var serviceVersion =
+            typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
+
+        builder.Services
+            .AddOpenTelemetry()
+            .ConfigureResource(rb => rb
+                .AddService(serviceName: "KrakenDeploy.Server", serviceVersion: serviceVersion))
+            .WithTracing(tracing =>
+            {
+                tracing
+                    .AddAspNetCoreInstrumentation()
+                    .AddHttpClientInstrumentation();
+
+                if (builder.Environment.IsDevelopment())
+                {
+                    tracing.AddConsoleExporter();
+                }
+            })
+            .WithMetrics(metrics =>
+            {
+                metrics
+                    .AddAspNetCoreInstrumentation()
+                    .AddHttpClientInstrumentation();
+
+                if (builder.Environment.IsDevelopment())
+                {
+                    metrics.AddConsoleExporter();
+                }
+            });
+
+        // ── Blazor UI ────────────────────────────────────────────────────────
         builder.Services.AddCascadingAuthenticationState();
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddRadzenComponents();
@@ -120,6 +209,7 @@ public static class Program
         builder.Services.AddRazorComponents()
             .AddInteractiveServerComponents();
 
+        // ── Build & configure pipeline ────────────────────────────────────────
         var app = builder.Build();
 
         if (app.Environment.IsDevelopment())
@@ -127,7 +217,8 @@ public static class Program
             await using var scope = app.Services.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
             await db.Database.MigrateAsync().ConfigureAwait(false);
-            await PrintFirstRunHintIfNoUsersAsync(scope.ServiceProvider, app.Logger).ConfigureAwait(false);
+            await PrintFirstRunHintIfNoUsersAsync(scope.ServiceProvider, app.Logger)
+                .ConfigureAwait(false);
         }
         else
         {
@@ -136,6 +227,16 @@ public static class Program
         }
 
         app.UseHttpsRedirection();
+
+        // Serilog request logging — writes one structured log line per HTTP request.
+        // Must come before auth middleware so it captures the full request duration.
+        app.UseSerilogRequestLogging(options =>
+        {
+            options.MessageTemplate =
+                "HTTP {RequestMethod} {RequestPath} responded {StatusCode} " +
+                "in {Elapsed:0.0} ms";
+        });
+
         app.UseAuthentication();
         app.UseAuthorization();
         app.UseAntiforgery();
@@ -180,22 +281,36 @@ public static class Program
                 return Results.Ok(new RegisterAgentResponse(target.Id, jwt));
             }).AllowAnonymous();
 
-        app.MapGet("/healthz", async (KrakenDbContext db, CancellationToken ct) =>
-        {
-            var canConnect = await db.Database.CanConnectAsync(ct).ConfigureAwait(false);
-            if (!canConnect)
+        app.MapGet("/healthz",
+            async (
+                KrakenDbContext db,
+                IAgentConnectionRegistry registry,
+                CancellationToken ct) =>
             {
-                return Results.Json(new { status = "unhealthy", reason = "database unreachable" }, statusCode: 503);
-            }
-            var targets = await db.DeploymentTargets.CountAsync(ct).ConfigureAwait(false);
-            return Results.Ok(new { status = "ok", targets });
-        }).AllowAnonymous();
+                var canConnect = await db.Database.CanConnectAsync(ct).ConfigureAwait(false);
+                if (!canConnect)
+                {
+                    return Results.Json(
+                        new { status = "unhealthy", reason = "database unreachable" },
+                        statusCode: 503);
+                }
+
+                var targets = await db.DeploymentTargets.CountAsync(ct).ConfigureAwait(false);
+                return Results.Ok(new
+                {
+                    status = "ok",
+                    targets,
+                    connectedAgents = registry.Count,
+                });
+            }).AllowAnonymous();
 
         await app.RunAsync().ConfigureAwait(false);
         return 0;
     }
 
-    private static async Task PrintFirstRunHintIfNoUsersAsync(IServiceProvider services, ILogger logger)
+    private static async Task PrintFirstRunHintIfNoUsersAsync(
+        IServiceProvider services,
+        Microsoft.Extensions.Logging.ILogger logger)
     {
         var userManager = services.GetRequiredService<UserManager<ApplicationUser>>();
         if (!await userManager.Users.AnyAsync().ConfigureAwait(false))

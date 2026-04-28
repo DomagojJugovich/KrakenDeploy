@@ -23,4 +23,7 @@ public interface IAgentConnectionRegistry
 
     /// <summary>Returns the connection ID for a target, or <c>null</c> if offline.</summary>
     string? GetConnectionId(Guid targetId);
+
+    /// <summary>Total number of currently connected agents.</summary>
+    int Count { get; }
 }

@@ -39,4 +39,6 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
 
     public string? GetConnectionId(Guid targetId)
         => _byTarget.TryGetValue(targetId, out var connId) ? connId : null;
+
+    public int Count => _byConnection.Count;
 }
