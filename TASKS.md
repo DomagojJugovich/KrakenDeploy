@@ -97,7 +97,7 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
   - [x] Use `System.CommandLine` or simple arg parsing in `Program.cs`
   - [x] When invoked with `users create-admin`, build host, run command, exit (don't start the web server)
   - [x] Idempotent: if user exists, print "already exists" and exit 0
-  - [ ] Document in README and print a hint on server startup if zero users exist
+  - [x] Document in README and print a hint on server startup if zero users exist
 - [ ] Defer: roles, fine-grained permissions, OIDC, password reset, MFA
 
 ### Phase 4 — Blazor shell with Radzen
@@ -200,16 +200,18 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 
 ### Phase 11 — Dev experience
 
-- [ ] `README.md` filled in:
-  - prerequisites (.NET 9 SDK, Docker)
+- [x] `README.md` filled in:
+  - prerequisites (.NET 9 SDK, Docker, pwsh)
   - `docker compose up -d postgres`
-  - `dotnet ef database update --project src/KrakenDeploy.Server.Data --startup-project src/KrakenDeploy.Server`
+  - `dotnet ef database update --project src/KrakenDeploy.Server.Data --startup-project src/KrakenDeploy.Server.Data`
   - `dotnet run --project src/KrakenDeploy.Server -- users create-admin --email you@example.com --password ...`
   - `dotnet run --project src/KrakenDeploy.Server`
   - agent run instructions with registration token
-- [ ] `launchSettings.json` for server (HTTPS on fixed port, e.g. 5443) and agent
-- [ ] `scripts/` folder with cross-platform PowerShell scripts (pwsh runs on both): `build.ps1`, `run-server.ps1`, `run-agent.ps1`, `migrate.ps1`, `reset-db.ps1`, `create-admin.ps1`
-- [ ] `appsettings.Development.json` checked in with placeholder values; real secrets via user-secrets
+  - `/healthz` check documented
+  - scripts reference table
+- [x] `launchSettings.json` for server (HTTPS on port 5443, HTTP on port 5080) and agent (`Server__Url` env var pointing to localhost:5443)
+- [x] `scripts/` folder with cross-platform PowerShell scripts (pwsh runs on both): `build.ps1`, `run-server.ps1`, `run-agent.ps1`, `migrate.ps1`, `reset-db.ps1`, `create-admin.ps1`
+- [x] `appsettings.Development.json` checked in with placeholder values; real secrets via user-secrets (documented in README)
 
 ### Phase 12 — CI
 

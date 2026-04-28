@@ -2,11 +2,12 @@
 
 A self-hosted, .NET-native deployment platform for Windows and Linux targets. Inspired by Octopus Deploy: projects, environments, releases, deployments, channels, lifecycles, tenants with tag-based scoping, and a pluggable step engine compatible with Octopus step templates.
 
-> **Status:** early development. Not yet usable. See [TASKS.md](TASKS.md) for the milestone plan and current progress.
+> **Status:** early development — M1 walking skeleton in progress. Not yet usable in production.
+> See [TASKS.md](TASKS.md) for the milestone plan and current progress.
 
 ## Highlights
 
-- **Reverse-tunnel agents** — agents dial out over HTTPS, no inbound firewall rules required at customer sites. Direct and polling modes are pluggable behind `IAgentTransport` / `IServerLink`.
+- **Reverse-tunnel agents** — agents dial out over HTTPS; no inbound firewall rules required at customer sites. Direct and polling modes are pluggable behind `IAgentTransport` / `IServerLink`.
 - **SignalR + gRPC split transport** — SignalR for control (heartbeats, commands, status, logs); gRPC bidirectional streaming for binary data (package transfer with backpressure and resume).
 - **Octopus step-template compatibility** — community step templates from the [Octopus Library](https://github.com/OctopusDeploy/Library) import and run unchanged.
 - **Octodiff delta packages** — only ship the bytes that changed.
@@ -41,35 +42,142 @@ src/
   KrakenDeploy.Agent/              Cross-platform agent worker service
   KrakenDeploy.Agent.Transport/    IServerLink implementations
   KrakenDeploy.Contracts/          Shared DTOs, hub interfaces, .proto
+scripts/
+  build.ps1                        Build the solution
+  migrate.ps1                      Apply EF Core migrations
+  reset-db.ps1                     Drop + recreate dev database
+  create-admin.ps1                 Bootstrap the first admin user
+  run-server.ps1                   Start the server (dev)
+  run-agent.ps1                    Start an agent (dev)
 tests/
-  ...
+  KrakenDeploy.Server.Core.Tests/
+  KrakenDeploy.Server.Data.Tests/  Uses Testcontainers (Postgres)
+  KrakenDeploy.Agent.Tests/
 ```
+
+## Prerequisites
+
+- [.NET 9 SDK](https://dotnet.microsoft.com/download)
+- [Docker](https://www.docker.com/) (for the local Postgres container)
+- [PowerShell 7+](https://github.com/PowerShell/PowerShell) (`pwsh`) for the helper scripts
 
 ## Getting started
 
-> Prerequisites: [.NET 9 SDK](https://dotnet.microsoft.com/download), [Docker](https://www.docker.com/) (for Postgres in development).
+### 1 — Start Postgres
 
 ```bash
-# 1. Start Postgres
 docker compose up -d postgres
+```
 
-# 2. Apply migrations
+### 2 — Apply migrations
+
+```bash
 dotnet ef database update \
   --project src/KrakenDeploy.Server.Data \
-  --startup-project src/KrakenDeploy.Server
+  --startup-project src/KrakenDeploy.Server.Data
+```
 
-# 3. Create an admin user
+Or via the script (reads the same local-Postgres defaults):
+
+```pwsh
+./scripts/migrate.ps1
+```
+
+### 3 — Configure secrets (optional but recommended)
+
+The development `appsettings.Development.json` ships with placeholder values that work against the local Docker Postgres. For a non-default database or a custom JWT signing key, store them in [user-secrets](https://learn.microsoft.com/en-us/aspnet/core/security/app-secrets) so they never end up in git:
+
+```bash
+# Server secrets
+dotnet user-secrets set "ConnectionStrings:KrakenDb" \
+  "Host=localhost;Port=5432;Database=krakendeploy_dev;Username=postgres;Password=postgres" \
+  --project src/KrakenDeploy.Server
+
+dotnet user-secrets set "Agent:JwtSigningKey" \
+  "replace-with-a-32-plus-char-random-string" \
+  --project src/KrakenDeploy.Server
+```
+
+### 4 — Create an admin user
+
+```bash
 dotnet run --project src/KrakenDeploy.Server -- \
-  users create-admin --email you@example.com --password ChangeMe123!
+  users create-admin --email you@example.com --password 'ChangeMe123!'
+```
 
-# 4. Run the server
+Or:
+
+```pwsh
+./scripts/create-admin.ps1 -Email you@example.com -Password 'ChangeMe123!'
+```
+
+The command is idempotent: if the user already exists it prints a notice and exits 0.
+
+### 5 — Run the server
+
+```bash
 dotnet run --project src/KrakenDeploy.Server
+```
 
-# 5. Run an agent (on the same or another machine, after generating a registration token in the UI)
+Or:
+
+```pwsh
+./scripts/run-server.ps1          # HTTPS on https://localhost:5443
+./scripts/run-server.ps1 -Profile http  # HTTP on http://localhost:5080
+```
+
+Open **https://localhost:5443** in a browser and log in with the admin account created above.
+
+### 6 — Register and run an agent
+
+1. Log into the UI, go to **Infrastructure → Targets**, click **Add Target**.
+2. Fill in the target name, roles, and transport mode.
+3. Copy the one-time registration token shown on the final step.
+4. On the machine that will run the agent:
+
+```bash
 dotnet run --project src/KrakenDeploy.Agent -- \
-  --Server:Url https://localhost:5443 \
+  --Server:Url https://<server-host>:5443 \
   --Server:RegistrationToken <token-from-ui>
 ```
+
+Or via the script:
+
+```pwsh
+./scripts/run-agent.ps1 -RegistrationToken <token-from-ui>
+# (ServerUrl defaults to https://localhost:5443 for local dev)
+```
+
+On successful registration the token is consumed server-side and the agent writes an identity file to its data directory (`%ProgramData%\KrakenDeploy\Agent` on Windows, `/var/lib/krakendeploy-agent` on Linux/macOS). Subsequent runs need no token.
+
+The **Targets** page in the UI will show the agent as **Online** with hostname, OS, agent version, and a live heartbeat timestamp.
+
+### Health check
+
+```
+GET https://localhost:5443/healthz
+```
+
+Returns `200 OK` with a JSON body:
+
+```json
+{ "status": "ok", "targets": 3, "connectedAgents": 1 }
+```
+
+Returns `503` if the database is unreachable.
+
+## Scripts reference
+
+All scripts live in `scripts/` and run with `pwsh` on Windows, Linux, and macOS.
+
+| Script | Purpose |
+| --- | --- |
+| `build.ps1 [-Configuration Debug\|Release]` | Build the solution |
+| `migrate.ps1` | Apply pending EF Core migrations |
+| `reset-db.ps1 [-WhatIf]` | Drop + recreate dev database and re-apply migrations |
+| `create-admin.ps1 -Email … -Password …` | Create (or no-op if exists) an admin user |
+| `run-server.ps1 [-Profile http\|https]` | Start the server in dev mode |
+| `run-agent.ps1 [-ServerUrl …] [-RegistrationToken …] [-DataPath …]` | Start an agent |
 
 ## License
 
