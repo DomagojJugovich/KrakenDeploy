@@ -1,0 +1,39 @@
+# ── Build stage ──────────────────────────────────────────────────────────────
+FROM mcr.microsoft.com/dotnet/sdk:9.0-alpine AS build
+WORKDIR /src
+
+# Copy Central Package Management and tooling manifests first — these rarely
+# change, so Docker caches the restore layer efficiently.
+COPY Directory.Build.props Directory.Packages.props global.json ./
+
+# Copy project files only so 'dotnet restore' is its own cached layer.
+COPY src/KrakenDeploy.Contracts/KrakenDeploy.Contracts.csproj                src/KrakenDeploy.Contracts/
+COPY src/KrakenDeploy.Server.Core/KrakenDeploy.Server.Core.csproj             src/KrakenDeploy.Server.Core/
+COPY src/KrakenDeploy.Server.Data/KrakenDeploy.Server.Data.csproj             src/KrakenDeploy.Server.Data/
+COPY src/KrakenDeploy.Server.Transport/KrakenDeploy.Server.Transport.csproj   src/KrakenDeploy.Server.Transport/
+COPY src/KrakenDeploy.Server/KrakenDeploy.Server.csproj                       src/KrakenDeploy.Server/
+
+RUN dotnet restore src/KrakenDeploy.Server/KrakenDeploy.Server.csproj
+
+# Copy source and publish a self-contained-ready, framework-dependent binary.
+COPY src/ ./src/
+RUN dotnet publish src/KrakenDeploy.Server/KrakenDeploy.Server.csproj \
+    --configuration Release \
+    --no-restore \
+    --output /app
+
+# ── Runtime stage ─────────────────────────────────────────────────────────────
+FROM mcr.microsoft.com/dotnet/aspnet:9.0-alpine AS runtime
+WORKDIR /app
+
+# curl is needed for the Docker health check.
+RUN apk add --no-cache curl \
+ && addgroup -S kraken \
+ && adduser  -S kraken -G kraken
+
+COPY --from=build /app ./
+
+USER kraken
+EXPOSE 5080
+
+ENTRYPOINT ["dotnet", "KrakenDeploy.Server.dll"]

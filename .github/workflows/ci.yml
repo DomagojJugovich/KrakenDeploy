@@ -56,3 +56,18 @@ jobs:
           name: test-results-${{ matrix.os }}
           path: '**/TestResults/*.trx'
           if-no-files-found: warn
+
+  smoke:
+    name: M1 Smoke Test
+    runs-on: ubuntu-latest
+    # Only run on pushes to main; PRs run build-and-test only.
+    # Building both Docker images on every PR is too slow for a quick feedback loop.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build-and-test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run smoke test
+        run: bash scripts/smoke-test.sh

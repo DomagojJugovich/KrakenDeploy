@@ -220,11 +220,11 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 
 ### Phase 13 — Tests for M1
 
-- [ ] Unit: entity invariants (Project slug rules, Environment ordering)
-- [ ] Integration (Postgres testcontainer): migrations apply cleanly, basic Project CRUD via repo, idempotent
-- [ ] Hub test: `AgentHub.RegisterAsync` updates target row and notifies UI hub group
-- [ ] Agent test: registration host service exchanges one-time token correctly against a fake server
-- [ ] **Cross-platform smoke (CI):** docker-compose with server in one container and agent in a Linux container; assert the target goes Online — this is the real M1 exit-criterion check
+- [x] Unit: entity invariants (Project slug rules, Environment ordering)
+- [x] Integration (Postgres testcontainer): migrations apply cleanly, basic Project CRUD via repo, idempotent
+- [x] Hub test: `AgentHub.RegisterAsync` updates target row and notifies UI hub group
+- [x] Agent test: registration host service exchanges one-time token correctly against a fake server
+- [x] **Cross-platform smoke (CI):** docker-compose with server in one container and agent in a Linux container; assert the target goes Online — this is the real M1 exit-criterion check
 
 ---
 

@@ -8,6 +8,7 @@ using KrakenDeploy.Server.Data.Identity;
 using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Services;
 using KrakenDeploy.Server.Transport;
+using KrakenDeploy.Server.Core.Domain.Targets;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -303,6 +304,22 @@ public static class Program
                     connectedAgents = registry.Count,
                 });
             }).AllowAnonymous();
+
+        // Dev-only: creates a smoke-test target and returns its registration token.
+        // Guards behind IsDevelopment so it is never registered in production.
+        if (app.Environment.IsDevelopment())
+        {
+            app.MapPost("/api/dev/smoke-register",
+                async (
+                    TargetRegistrationService registrationSvc,
+                    CancellationToken ct) =>
+                {
+                    var (_, token) = await registrationSvc
+                        .CreateAsync("smoke-agent", ["smoke"], TransportMode.Reverse, ct)
+                        .ConfigureAwait(false);
+                    return Results.Ok(new { token });
+                }).AllowAnonymous();
+        }
 
         await app.RunAsync().ConfigureAwait(false);
         return 0;

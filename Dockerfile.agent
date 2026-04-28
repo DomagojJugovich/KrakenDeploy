@@ -1,0 +1,35 @@
+# ── Build stage ──────────────────────────────────────────────────────────────
+FROM mcr.microsoft.com/dotnet/sdk:9.0-alpine AS build
+WORKDIR /src
+
+COPY Directory.Build.props Directory.Packages.props global.json ./
+
+COPY src/KrakenDeploy.Contracts/KrakenDeploy.Contracts.csproj              src/KrakenDeploy.Contracts/
+COPY src/KrakenDeploy.Agent.Transport/KrakenDeploy.Agent.Transport.csproj   src/KrakenDeploy.Agent.Transport/
+COPY src/KrakenDeploy.Agent/KrakenDeploy.Agent.csproj                       src/KrakenDeploy.Agent/
+
+RUN dotnet restore src/KrakenDeploy.Agent/KrakenDeploy.Agent.csproj
+
+COPY src/ ./src/
+RUN dotnet publish src/KrakenDeploy.Agent/KrakenDeploy.Agent.csproj \
+    --configuration Release \
+    --no-restore \
+    --output /app
+
+# ── Runtime stage ─────────────────────────────────────────────────────────────
+FROM mcr.microsoft.com/dotnet/runtime:9.0-alpine AS runtime
+WORKDIR /app
+
+RUN addgroup -S kraken \
+ && adduser  -S kraken -G kraken
+
+COPY --from=build /app ./
+
+# The agent writes its identity file to /var/lib/krakendeploy-agent (Linux default).
+# Give the kraken user ownership so it can write there.
+RUN mkdir -p /var/lib/krakendeploy-agent \
+ && chown kraken:kraken /var/lib/krakendeploy-agent
+
+USER kraken
+
+ENTRYPOINT ["dotnet", "KrakenDeploy.Agent.dll"]

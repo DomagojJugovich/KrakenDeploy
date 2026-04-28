@@ -25,8 +25,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- AspNetCore.App is needed transitively by KrakenDeploy.Server.Transport (SignalR, HubCallerContext, etc.) -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\KrakenDeploy.Server.Core\KrakenDeploy.Server.Core.csproj" />
     <ProjectReference Include="..\..\src\KrakenDeploy.Server.Data\KrakenDeploy.Server.Data.csproj" />
+    <ProjectReference Include="..\..\src\KrakenDeploy.Server.Transport\KrakenDeploy.Server.Transport.csproj" />
   </ItemGroup>
 
 </Project>
