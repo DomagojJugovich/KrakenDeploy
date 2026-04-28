@@ -167,15 +167,18 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 
 ### Phase 8 — Agent worker service
 
-- [ ] Agent config (env + appsettings + CLI args): `Server:Url`, `Server:RegistrationToken` (one-time), `Agent:Id` (generated), `Agent:Token` (long-lived), `Agent:DataPath`
-- [ ] Persist agent identity to `%ProgramData%\KrakenDeploy\Agent\agent.json` on Windows, `/var/lib/krakendeploy-agent/agent.json` on Linux. File permissions locked to owner on Linux.
-- [ ] Hosted services in order:
-  - [ ] `RegistrationHostedService` — if no persisted JWT, exchange one-time token, persist, scrub the token from config
-  - [ ] `ServerLinkHostedService` — opens SignalR connection with `WithAutomaticReconnect`, calls `RegisterAsync` with full machine info, exposes the connection
-  - [ ] `HeartbeatHostedService` — every 30s while connection is up, calls `HeartbeatAsync`
-- [ ] Machine-info collector: hostname, OS + version, .NET runtime, free disk on install volume, total RAM, agent assembly version
-- [ ] Logging: Serilog console + rolling file under data path
-- [ ] Graceful shutdown: cancellation cascades, hub connection disposed, status `ShuttingDown` reported
+- [x] Agent config (env + appsettings + CLI args): `Server:Url`, `Server:RegistrationToken` (one-time), `Agent:DataPath`, `Agent:Roles`
+- [x] Persist agent identity to `%ProgramData%\KrakenDeploy\Agent\agent.json` on Windows, `/var/lib/krakendeploy-agent/agent.json` on Linux. File permissions locked to owner on Linux (chmod 600).
+- [x] Hosted services in order:
+  - [x] `RegistrationHostedService` — loads existing identity or exchanges one-time token (5× retry with exponential back-off); stops host on unrecoverable failure
+  - [x] `ServerLinkHostedService` — opens SignalR connection with `WithAutomaticReconnect`, calls `RegisterAsync` with full machine info; reports `ShuttingDown` on exit
+  - [x] `HeartbeatHostedService` — every 30s while connected, calls `HeartbeatAsync`
+- [x] `AgentContext` singleton — `TaskCompletionSource`-based gate so ServerLink and Heartbeat services wait safely for registration to complete
+- [x] `MachineInfoCollector` — hostname, `RuntimeInformation.OSDescription`, agent assembly version, free disk on data-path volume, total RAM via `GC.GetGCMemoryInfo()`
+- [x] `AgentIdentityStore` — `System.Text.Json` serialise/deserialise, Unix file mode 600 on Linux/macOS
+- [x] Logging: Serilog bootstrap logger + full pipeline (console + rolling daily file under data path)
+- [x] Graceful shutdown: `OperationCanceledException` cascades through all services; `ShuttingDown` status reported to hub; `IServerLink.DisposeAsync` cleans up connection
+- [x] `AgentHub.RegisterAsync` fixed: only overwrites server-side roles when agent sends a non-empty list (preserves wizard-configured roles otherwise)
 
 ### Phase 9 — Live target status in the UI
 

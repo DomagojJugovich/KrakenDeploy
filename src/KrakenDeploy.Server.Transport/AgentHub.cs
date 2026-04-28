@@ -112,7 +112,13 @@ public sealed class AgentHub(
         target.MachineName = request.MachineName;
         target.OperatingSystem = request.OperatingSystem;
         target.AgentVersion = request.AgentVersion;
-        target.Roles = request.Roles.ToList();
+        // Only overwrite roles when the agent sends a non-empty list; otherwise
+        // preserve what was configured in the registration wizard.
+        if (request.Roles.Count > 0)
+        {
+            target.Roles = request.Roles.ToList();
+        }
+
         target.Status = TargetStatus.Online;
         target.LastSeenUtc = timeProvider.GetUtcNow();
 

@@ -1,6 +1,2 @@
-﻿namespace KrakenDeploy.Agent.Transport;
-
-public class Class1
-{
-
-}
+// Placeholder file kept so the project existed before Phase 8 — no longer needed.
+// IServerLink.cs and SignalRServerLink.cs replaced it.
