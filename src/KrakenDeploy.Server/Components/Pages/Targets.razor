@@ -1,8 +1,10 @@
 @page "/targets"
 @rendermode InteractiveServer
 @attribute [Authorize]
+@implements IAsyncDisposable
 
 @inject TargetService TargetSvc
+@inject ITargetStatusNotifier StatusNotifier
 @inject DialogService Dialog
 @inject NotificationService Notification
 
@@ -30,9 +32,11 @@
     <Columns>
         <RadzenDataGridColumn TItem="DeploymentTarget" Property="Name" Title="Name" Width="180px" />
         <RadzenDataGridColumn TItem="DeploymentTarget" Property="Status" Title="Status"
-                              Width="110px" Filterable="false">
+                              Width="120px" Filterable="false">
             <Template Context="t">
-                <RadzenBadge Text="@t.Status.ToString()" BadgeStyle="@StatusStyle(t.Status)" />
+                <span title="@LastSeenTitle(t.LastSeenUtc)">
+                    <RadzenBadge Text="@t.Status.ToString()" BadgeStyle="@StatusBadgeStyle(t.Status)" />
+                </span>
             </Template>
         </RadzenDataGridColumn>
         <RadzenDataGridColumn TItem="DeploymentTarget" Property="MachineName" Title="Hostname"
@@ -47,20 +51,59 @@
                 @string.Join(", ", t.Roles)
             </Template>
         </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="DeploymentTarget" Title="Last Seen" Width="120px"
+        <RadzenDataGridColumn TItem="DeploymentTarget" Title="Last Seen" Width="130px"
                               Filterable="false" Sortable="false">
             <Template Context="t">
-                @RelativeTime(t.LastSeenUtc)
+                <span title="@(t.LastSeenUtc.HasValue ? t.LastSeenUtc.Value.ToString("u") : "never")">
+                    @RelativeTime(t.LastSeenUtc)
+                </span>
             </Template>
         </RadzenDataGridColumn>
     </Columns>
 </RadzenDataGrid>
 
 @code {
-    private IReadOnlyList<DeploymentTarget> _targets = [];
+    private List<DeploymentTarget> _targets = [];
+
+    // ── Lifecycle ───────────────────────────────────────────────────────────
 
     protected override async Task OnInitializedAsync()
         => _targets = await TargetSvc.GetAllAsync();
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        StatusNotifier.TargetStatusChanged += OnTargetStatusChanged;
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        StatusNotifier.TargetStatusChanged -= OnTargetStatusChanged;
+        return ValueTask.CompletedTask;
+    }
+
+    // ── Live status update ──────────────────────────────────────────────────
+
+    private void OnTargetStatusChanged(Guid targetId, TargetStatus status, DateTimeOffset? lastSeenUtc)
+    {
+        var target = _targets.FirstOrDefault(t => t.Id == targetId);
+        if (target is null)
+        {
+            return;
+        }
+
+        target.Status = status;
+        target.LastSeenUtc = lastSeenUtc;
+
+        // Schedule a UI re-render on the correct Blazor synchronisation context.
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    // ── Wizard ─────────────────────────────────────────────────────────────
 
     private async Task OpenAddWizardAsync()
     {
@@ -85,7 +128,9 @@
         }
     }
 
-    private static BadgeStyle StatusStyle(TargetStatus status) => status switch
+    // ── Helpers ─────────────────────────────────────────────────────────────
+
+    private static BadgeStyle StatusBadgeStyle(TargetStatus status) => status switch
     {
         TargetStatus.Online       => BadgeStyle.Success,
         TargetStatus.Offline      => BadgeStyle.Danger,
@@ -93,6 +138,11 @@
         TargetStatus.ShuttingDown => BadgeStyle.Warning,
         _                         => BadgeStyle.Light,
     };
+
+    private static string LastSeenTitle(DateTimeOffset? dt)
+        => dt.HasValue
+            ? $"Last seen {dt.Value:u}"
+            : "Never connected";
 
     private static string RelativeTime(DateTimeOffset? dt)
     {

@@ -20,6 +20,7 @@ public sealed class AgentHub(
     IAgentConnectionRegistry registry,
     KrakenDbContext db,
     IServiceScopeFactory scopeFactory,
+    TargetStatusPublisher statusPublisher,
     TimeProvider timeProvider,
     ILogger<AgentHub> logger)
     : Hub<IAgentHubClient>, IAgentHubServer
@@ -49,9 +50,14 @@ public sealed class AgentHub(
             target.Status = TargetStatus.Online;
             target.LastSeenUtc = timeProvider.GetUtcNow();
             await db.SaveChangesAsync().ConfigureAwait(false);
+
             logger.LogInformation(
                 "Target {TargetId} connected (conn {ConnectionId}); marked Online.",
                 targetId.Value, Context.ConnectionId);
+
+            await statusPublisher
+                .PublishAsync(targetId.Value, TargetStatus.Online, target.LastSeenUtc)
+                .ConfigureAwait(false);
         }
         else
         {
@@ -82,7 +88,8 @@ public sealed class AgentHub(
             }
 
             // Fire-and-forget with 30 s grace period so brief reconnects don't flicker.
-            _ = MarkOfflineAfterGraceAsync(targetId, scopeFactory, registry, timeProvider, logger);
+            _ = MarkOfflineAfterGraceAsync(
+                targetId, scopeFactory, registry, statusPublisher, timeProvider, logger);
         }
 
         await base.OnDisconnectedAsync(exception).ConfigureAwait(false);
@@ -192,6 +199,7 @@ public sealed class AgentHub(
         Guid targetId,
         IServiceScopeFactory scopeFactory,
         IAgentConnectionRegistry registry,
+        TargetStatusPublisher statusPublisher,
         TimeProvider timeProvider,
         ILogger logger)
     {
@@ -223,6 +231,10 @@ public sealed class AgentHub(
 
             logger.LogInformation(
                 "Target {TargetId} marked Offline after 30 s grace period.", targetId);
+
+            await statusPublisher
+                .PublishAsync(targetId, TargetStatus.Offline, target.LastSeenUtc)
+                .ConfigureAwait(false);
         }
         catch (Exception ex)
         {

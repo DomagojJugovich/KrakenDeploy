@@ -182,10 +182,12 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 
 ### Phase 9 — Live target status in the UI
 
-- [ ] `IUiHub` at `/hubs/ui` for browser SignalR clients
-- [ ] When `IAgentConnectionRegistry` changes a target's online state, publish `TargetStatusChanged(targetId, status, lastSeenUtc)` on `IUiHub`
-- [ ] Targets page Razor component subscribes to UI hub, updates grid row in place
-- [ ] Status pill component: green Online / red Offline / amber Unknown, with last-seen tooltip
+- [x] `UiHub` + `IUiHubClient` at `/hubs/ui` — SignalR hub for external browser clients; pushes `TargetStatusChangedAsync(targetId, status, lastSeenUtc)` to all connected clients
+- [x] `ITargetStatusNotifier` / `InMemoryTargetStatusNotifier` — in-process event bus for Blazor Server circuits (avoids second network round-trip from component)
+- [x] `TargetStatusPublisher` singleton — single `PublishAsync` call fans out to both in-process notifier and UI hub context
+- [x] `AgentHub` injects `TargetStatusPublisher`; calls `PublishAsync` on `OnConnectedAsync` (Online) and in `MarkOfflineAfterGraceAsync` (Offline)
+- [x] `Targets.razor` subscribes to `ITargetStatusNotifier.TargetStatusChanged` in `OnAfterRender(firstRender)`, unsubscribes in `IAsyncDisposable.DisposeAsync`; mutates the target in `_targets` in-place and calls `InvokeAsync(StateHasChanged)`
+- [x] Status badge wraps a `<span title="Last seen …">` tooltip; Last Seen column also has the ISO timestamp as title
 
 ### Phase 10 — Logging and telemetry skeleton
 

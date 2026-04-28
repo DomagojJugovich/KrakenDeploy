@@ -105,6 +105,8 @@ public static class Program
 
         builder.Services.AddSingleton<IAgentConnectionRegistry, InMemoryAgentConnectionRegistry>();
         builder.Services.AddSingleton<AgentJwtService>();
+        builder.Services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
+        builder.Services.AddSingleton<TargetStatusPublisher>();
 
         builder.Services.AddAuthorizationBuilder()
             .SetFallbackPolicy(new AuthorizationPolicyBuilder()
@@ -149,6 +151,7 @@ public static class Program
         }).RequireAuthorization();
 
         app.MapHub<AgentHub>("/hubs/agent");
+        app.MapHub<UiHub>("/hubs/ui");
 
         // Agent self-registration — exchanges a one-time token for a long-lived JWT.
         // Intentionally AllowAnonymous: the token itself is the credential.
