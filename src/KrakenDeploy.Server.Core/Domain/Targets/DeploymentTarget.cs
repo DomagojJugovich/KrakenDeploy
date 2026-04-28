@@ -13,4 +13,5 @@ public class DeploymentTarget : AuditableEntity
     public List<string> Roles { get; set; } = [];
     public TransportMode TransportMode { get; set; } = TransportMode.Reverse;
     public string? RegistrationKeyHash { get; set; }
+    public DateTimeOffset? RegistrationTokenExpiresUtc { get; set; }
 }

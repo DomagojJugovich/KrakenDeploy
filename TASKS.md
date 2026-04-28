@@ -155,13 +155,15 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 
 ### Phase 7 — Target registration flow
 
-- [ ] "Add Deployment Target" button on `/targets` opens a Radzen dialog wizard:
-  - [ ] Step 1: name, roles
-  - [ ] Step 2: transport mode (Reverse default; Direct/Polling disabled in M1)
-  - [ ] Step 3: server generates a one-time registration token (24h TTL, single-use, stored hashed); shows install command for Windows and Linux with token embedded
-- [ ] `POST /api/agents/register` endpoint: exchanges one-time token for a long-lived agent JWT; returns `agentId` + `agentJwt`
-- [ ] Server stores `RegistrationKeyHash` per target; rotation supported
-- [ ] No installer in M1 — instructions tell the user to clone, `dotnet run`, paste token
+- [x] "Add Deployment Target" button on `/targets` opens a Radzen dialog wizard:
+  - [x] Step 1: name, roles
+  - [x] Step 2: transport mode (Reverse default; Direct/Polling available)
+  - [x] Step 3: server generates a one-time registration token (24h TTL, single-use, stored hashed); shows install command for Windows and Linux with token embedded
+- [x] `POST /api/agents/register` endpoint: exchanges one-time token for a long-lived agent JWT; returns `agentId` + `agentJwt`
+- [x] Server stores `RegistrationKeyHash` per target; rotation supported (`TargetRegistrationService.RotateTokenAsync`)
+- [x] `AgentJwtService` — HS256 JWT issuance using `Agent:JwtSigningKey`; 1-year token lifetime
+- [x] `DeploymentTarget.RegistrationTokenExpiresUtc` column added; EF migration `AddRegistrationTokenExpiry`
+- [x] No installer in M1 — instructions tell the user to download binary, pass token flag
 
 ### Phase 8 — Agent worker service
 

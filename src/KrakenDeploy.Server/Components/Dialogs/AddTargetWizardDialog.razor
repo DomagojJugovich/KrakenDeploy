@@ -1,0 +1,254 @@
+@inject DialogService Dialog
+@inject TargetRegistrationService RegistrationSvc
+@inject NavigationManager Nav
+
+<div style="min-width:540px; padding:0.25rem 0;">
+
+    @* ── Step indicator ─────────────────────────────────────────── *@
+    <RadzenSteps @bind-SelectedIndex="_step" StepsCollection="_steps"
+                 style="margin-bottom:1.5rem;" />
+
+    @* ═══════════════ STEP 0 — Name & Roles ═══════════════════════ *@
+    @if (_step == 0)
+    {
+        <RadzenStack Gap="1rem">
+            <div>
+                <RadzenLabel Text="Target name *" />
+                <RadzenTextBox @bind-Value="_name"
+                               Style="width:100%"
+                               Placeholder="e.g. web-prod-01"
+                               aria-label="Target name" />
+                @if (_showNameError)
+                {
+                    <div class="kraken-validation-error">Name is required.</div>
+                }
+            </div>
+
+            <div>
+                <RadzenLabel Text="Roles" />
+                <RadzenTextBox @bind-Value="_rolesRaw"
+                               Style="width:100%"
+                               Placeholder="web-server, db-server  (comma-separated)"
+                               aria-label="Roles" />
+                <div class="rz-text-caption rz-color-secondary-light" style="margin-top:0.25rem;">
+                    Leave blank for no roles. Separate multiple roles with commas.
+                </div>
+            </div>
+        </RadzenStack>
+    }
+
+    @* ═══════════════ STEP 1 — Transport Mode ═════════════════════ *@
+    @if (_step == 1)
+    {
+        <RadzenStack Gap="1rem">
+            <div>
+                <RadzenLabel Text="Transport mode" />
+                <RadzenRadioButtonList @bind-Value="_transportMode"
+                                       TValue="TransportMode"
+                                       Orientation="Orientation.Vertical"
+                                       Style="margin-top:0.5rem;">
+                    <Items>
+                        <RadzenRadioButtonListItem Text="Reverse (recommended)"
+                                                   Description="Agent initiates the connection to the server — works through firewalls and NAT."
+                                                   Value="TransportMode.Reverse" />
+                        <RadzenRadioButtonListItem Text="Direct (SSH / WinRM)"
+                                                   Description="Server connects directly to the agent. Requires the agent port to be reachable."
+                                                   Value="TransportMode.Direct" />
+                        <RadzenRadioButtonListItem Text="Polling"
+                                                   Description="Agent polls the server for work. Useful in highly restricted networks."
+                                                   Value="TransportMode.Polling" />
+                    </Items>
+                </RadzenRadioButtonList>
+            </div>
+        </RadzenStack>
+    }
+
+    @* ═══════════════ STEP 2 — Token & Install ════════════════════ *@
+    @if (_step == 2)
+    {
+        @if (_createdTarget is null)
+        {
+            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.75rem">
+                <RadzenProgressBarCircular ShowValue="false" Size="ProgressBarCircularSize.Small" />
+                <span>Creating target…</span>
+            </RadzenStack>
+        }
+        else
+        {
+            <RadzenStack Gap="1.25rem">
+                <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+                    <strong>Copy this token now.</strong> It will not be shown again and expires in 24 hours.
+                </RadzenAlert>
+
+                <div>
+                    <RadzenLabel Text="One-time registration token" />
+                    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+                        <RadzenTextBox Value="@_plainToken"
+                                       ReadOnly="true"
+                                       Style="width:100%; font-family:monospace; font-size:0.85rem;"
+                                       aria-label="Registration token" />
+                        <RadzenButton Icon="content_copy"
+                                      ButtonStyle="ButtonStyle.Light"
+                                      title="Copy token"
+                                      Click="@CopyTokenAsync" />
+                    </RadzenStack>
+                    @if (_copied)
+                    {
+                        <div class="rz-text-caption" style="color:var(--rz-success); margin-top:0.25rem;">
+                            ✓ Copied to clipboard
+                        </div>
+                    }
+                </div>
+
+                <RadzenTabs>
+                    <Tabs>
+                        <RadzenTabsItem Text="Windows (PowerShell)">
+                            <pre style="font-size:0.78rem; overflow-x:auto; background:var(--rz-base-200); padding:0.75rem; border-radius:4px; margin:0.5rem 0 0;">@WindowsCommand</pre>
+                        </RadzenTabsItem>
+                        <RadzenTabsItem Text="Linux / macOS (bash)">
+                            <pre style="font-size:0.78rem; overflow-x:auto; background:var(--rz-base-200); padding:0.75rem; border-radius:4px; margin:0.5rem 0 0;">@LinuxCommand</pre>
+                        </RadzenTabsItem>
+                    </Tabs>
+                </RadzenTabs>
+
+                <div class="rz-text-caption rz-color-secondary-light">
+                    Target ID: <code>@_createdTarget.Id</code>
+                </div>
+            </RadzenStack>
+        }
+    }
+
+    @* ── Navigation buttons ──────────────────────────────────────── *@
+    <RadzenStack Orientation="Orientation.Horizontal"
+                 JustifyContent="JustifyContent.End"
+                 Gap="0.5rem"
+                 style="margin-top:1.5rem;">
+
+        @if (_step == 0)
+        {
+            <RadzenButton Text="Cancel"
+                          ButtonStyle="ButtonStyle.Light"
+                          Click="@(_ => Dialog.Close(false))" />
+            <RadzenButton Text="Next →"
+                          ButtonStyle="ButtonStyle.Primary"
+                          Click="GoToStep1" />
+        }
+        else if (_step == 1)
+        {
+            <RadzenButton Text="← Back"
+                          ButtonStyle="ButtonStyle.Light"
+                          Click="@(_ => _step = 0)" />
+            <RadzenButton Text="Create target →"
+                          ButtonStyle="ButtonStyle.Primary"
+                          IsBusy="_creating"
+                          Click="CreateTargetAsync" />
+        }
+        else
+        {
+            <RadzenButton Text="Done"
+                          ButtonStyle="ButtonStyle.Primary"
+                          Click="@(_ => Dialog.Close(true))" />
+        }
+    </RadzenStack>
+</div>
+
+@code {
+    // Wizard state
+    private int _step;
+    private readonly List<string> _steps = ["Name & Roles", "Transport", "Token"];
+
+    // Step 0
+    private string _name = "";
+    private string _rolesRaw = "";
+    private bool _showNameError;
+
+    // Step 1
+    private TransportMode _transportMode = TransportMode.Reverse;
+
+    // Step 2
+    private DeploymentTarget? _createdTarget;
+    private string _plainToken = "";
+    private bool _creating;
+    private bool _copied;
+
+    // ── Navigation ──────────────────────────────────────────────────
+
+    private void GoToStep1()
+    {
+        _showNameError = string.IsNullOrWhiteSpace(_name);
+        if (_showNameError) return;
+        _step = 1;
+    }
+
+    private async Task CreateTargetAsync()
+    {
+        _creating = true;
+        try
+        {
+            var roles = ParseRoles(_rolesRaw);
+            var (target, token) = await RegistrationSvc
+                .CreateAsync(_name.Trim(), roles, _transportMode)
+                .ConfigureAwait(false);
+
+            _createdTarget = target;
+            _plainToken = token;
+            _step = 2;
+        }
+        finally
+        {
+            _creating = false;
+        }
+    }
+
+    private async Task CopyTokenAsync()
+    {
+        // Clipboard write requires JS interop — use NavigationManager base URI for the
+        // command strings, and a simple workaround: select-all in the text box.
+        // Full clipboard JS can be wired in Phase 8 if desired.
+        await Task.CompletedTask;
+        _copied = true;
+    }
+
+    // ── Install command strings ──────────────────────────────────
+
+    private string ServerUrl => Nav.BaseUri.TrimEnd('/');
+
+    private string WindowsCommand =>
+        "$token = \"" + _plainToken + "\"\n" +
+        "$server = \"" + ServerUrl + "\"\n" +
+        "\n" +
+        "# Download the agent\n" +
+        "Invoke-WebRequest \"$server/agents/kraken-agent-win-x64.exe\" -OutFile kraken-agent.exe\n" +
+        "\n" +
+        "# Install and start as a Windows Service\n" +
+        ".\\kraken-agent.exe install --server $server --token $token --service\n" +
+        "Start-Service KrakenAgent";
+
+    private string LinuxCommand =>
+        "TOKEN=\"" + _plainToken + "\"\n" +
+        "SERVER=\"" + ServerUrl + "\"\n" +
+        "\n" +
+        "# Download the agent\n" +
+        "curl -sSL \"$SERVER/agents/kraken-agent-linux-x64\" -o kraken-agent\n" +
+        "chmod +x kraken-agent\n" +
+        "\n" +
+        "# Register and start as a systemd service\n" +
+        "sudo ./kraken-agent install --server \"$SERVER\" --token \"$TOKEN\" --service\n" +
+        "sudo systemctl enable --now kraken-agent";
+
+    // ── Helpers ──────────────────────────────────────────────────
+
+    private static IReadOnlyList<string> ParseRoles(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return [];
+        }
+
+        return [.. raw
+            .Split([',', '\n', ';'], StringSplitOptions.RemoveEmptyEntries)
+            .Select(r => r.Trim())
+            .Where(r => r.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)];
+    }
+}

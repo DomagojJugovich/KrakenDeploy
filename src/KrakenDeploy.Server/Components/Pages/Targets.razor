@@ -3,19 +3,30 @@
 @attribute [Authorize]
 
 @inject TargetService TargetSvc
+@inject DialogService Dialog
+@inject NotificationService Notification
 
 <PageTitle>Deployment Targets - KrakenDeploy</PageTitle>
 
-<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">
-    Deployment Targets
-</RadzenText>
+<RadzenStack Orientation="Orientation.Horizontal"
+             JustifyContent="JustifyContent.SpaceBetween"
+             AlignItems="AlignItems.Center"
+             class="rz-mb-4">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" style="margin:0;">
+        Deployment Targets
+    </RadzenText>
+    <RadzenButton Text="Add Deployment Target"
+                  Icon="add_circle_outline"
+                  ButtonStyle="ButtonStyle.Primary"
+                  Click="OpenAddWizardAsync" />
+</RadzenStack>
 
 <RadzenDataGrid Data="@_targets" TItem="DeploymentTarget"
                 AllowPaging="true" PageSize="25"
                 AllowSorting="true"
                 AllowFiltering="true" FilterMode="FilterMode.Simple"
                 AllowColumnResize="true"
-                EmptyText="No targets registered yet. Registration wizard coming in Phase 7.">
+                EmptyText="No targets registered yet. Click 'Add Deployment Target' to get started.">
     <Columns>
         <RadzenDataGridColumn TItem="DeploymentTarget" Property="Name" Title="Name" Width="180px" />
         <RadzenDataGridColumn TItem="DeploymentTarget" Property="Status" Title="Status"
@@ -50,6 +61,29 @@
 
     protected override async Task OnInitializedAsync()
         => _targets = await TargetSvc.GetAllAsync();
+
+    private async Task OpenAddWizardAsync()
+    {
+        var result = await Dialog.OpenAsync<AddTargetWizardDialog>(
+            "Add Deployment Target",
+            options: new DialogOptions
+            {
+                Width = "600px",
+                CloseDialogOnOverlayClick = false,
+            });
+
+        if (result is true)
+        {
+            _targets = await TargetSvc.GetAllAsync();
+            Notification.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Success,
+                Summary = "Target created",
+                Detail = "The deployment target has been created. Install the agent using the provided token.",
+                Duration = 6000,
+            });
+        }
+    }
 
     private static BadgeStyle StatusStyle(TargetStatus status) => status switch
     {

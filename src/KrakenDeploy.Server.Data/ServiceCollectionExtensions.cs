@@ -26,6 +26,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ProjectService>();
         services.AddScoped<EnvironmentService>();
         services.AddScoped<TargetService>();
+        services.AddScoped<TargetRegistrationService>();
 
         return services;
     }

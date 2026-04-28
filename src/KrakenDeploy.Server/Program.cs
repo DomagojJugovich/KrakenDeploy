@@ -1,8 +1,11 @@
 using System.Text;
+using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Commands;
 using KrakenDeploy.Server.Components;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Identity;
+using KrakenDeploy.Server.Data.Services;
+using KrakenDeploy.Server.Services;
 using KrakenDeploy.Server.Transport;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -101,6 +104,7 @@ public static class Program
         });
 
         builder.Services.AddSingleton<IAgentConnectionRegistry, InMemoryAgentConnectionRegistry>();
+        builder.Services.AddSingleton<AgentJwtService>();
 
         builder.Services.AddAuthorizationBuilder()
             .SetFallbackPolicy(new AuthorizationPolicyBuilder()
@@ -145,6 +149,33 @@ public static class Program
         }).RequireAuthorization();
 
         app.MapHub<AgentHub>("/hubs/agent");
+
+        // Agent self-registration — exchanges a one-time token for a long-lived JWT.
+        // Intentionally AllowAnonymous: the token itself is the credential.
+        app.MapPost("/api/agents/register",
+            async (
+                RegisterAgentRequest req,
+                TargetRegistrationService registrationSvc,
+                AgentJwtService jwtSvc,
+                CancellationToken ct) =>
+            {
+                if (string.IsNullOrWhiteSpace(req.Token))
+                {
+                    return Results.BadRequest(new { error = "Token is required." });
+                }
+
+                var target = await registrationSvc
+                    .ValidateAndConsumeTokenAsync(req.Token, ct)
+                    .ConfigureAwait(false);
+
+                if (target is null)
+                {
+                    return Results.Unauthorized();
+                }
+
+                var jwt = jwtSvc.Issue(target.Id);
+                return Results.Ok(new RegisterAgentResponse(target.Id, jwt));
+            }).AllowAnonymous();
 
         app.MapGet("/healthz", async (KrakenDbContext db, CancellationToken ct) =>
         {
