@@ -1,11 +1,15 @@
+using System.Text;
 using KrakenDeploy.Server.Commands;
 using KrakenDeploy.Server.Components;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Identity;
+using KrakenDeploy.Server.Transport;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using Radzen;
 
 namespace KrakenDeploy.Server;
@@ -50,6 +54,54 @@ public static class Program
                 options.SlidingExpiration = true;
             });
 
+        // Agent JWT bearer — separate scheme so it doesn't conflict with the
+        // cookie auth used by the Blazor UI.
+        var agentJwtKey = builder.Configuration["Agent:JwtSigningKey"];
+        if (string.IsNullOrWhiteSpace(agentJwtKey))
+        {
+            throw new InvalidOperationException(
+                "Agent:JwtSigningKey is not configured. " +
+                "Set it in appsettings or user-secrets (minimum 32 characters for HS256).");
+        }
+
+        builder.Services.AddAuthentication()
+            .AddJwtBearer("AgentJwt", options =>
+            {
+                options.TokenValidationParameters = new TokenValidationParameters
+                {
+                    ValidateIssuerSigningKey = true,
+                    IssuerSigningKey = new SymmetricSecurityKey(
+                        Encoding.UTF8.GetBytes(agentJwtKey)),
+                    ValidateIssuer = false,
+                    ValidateAudience = false,
+                    ClockSkew = TimeSpan.FromMinutes(2),
+                };
+                // SignalR WebSocket upgrades cannot carry custom headers,
+                // so the token is passed in the query string.
+                options.Events = new JwtBearerEvents
+                {
+                    OnMessageReceived = context =>
+                    {
+                        var token = context.Request.Query["access_token"];
+                        if (!string.IsNullOrEmpty(token) &&
+                            context.HttpContext.Request.Path
+                                .StartsWithSegments("/hubs/agent", StringComparison.OrdinalIgnoreCase))
+                        {
+                            context.Token = token;
+                        }
+
+                        return Task.CompletedTask;
+                    },
+                };
+            });
+
+        builder.Services.AddSignalR(options =>
+        {
+            options.MaximumReceiveMessageSize = 1_048_576; // 1 MiB — control plane only
+        });
+
+        builder.Services.AddSingleton<IAgentConnectionRegistry, InMemoryAgentConnectionRegistry>();
+
         builder.Services.AddAuthorizationBuilder()
             .SetFallbackPolicy(new AuthorizationPolicyBuilder()
                 .RequireAuthenticatedUser()
@@ -91,6 +143,8 @@ public static class Program
             await signInManager.SignOutAsync().ConfigureAwait(false);
             return Results.Redirect("/login");
         }).RequireAuthorization();
+
+        app.MapHub<AgentHub>("/hubs/agent");
 
         app.MapGet("/healthz", async (KrakenDbContext db, CancellationToken ct) =>
         {

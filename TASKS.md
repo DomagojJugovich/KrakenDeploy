@@ -141,16 +141,17 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 
 ### Phase 6 — SignalR agent control hub
 
-- [ ] In `Contracts`:
-  - [ ] `IAgentHubServer` (agent → server): `RegisterAsync`, `HeartbeatAsync`, `ReportStatusAsync`, `AppendLogAsync`
-  - [ ] `IAgentHubClient` (server → agent): `PingAsync`, `RunDeploymentAsync` (stubbed for M1)
-- [ ] In `Server.Transport`: `AgentHub : Hub<IAgentHubClient>` implementing `IAgentHubServer`; authorize with agent JWT scheme `AgentJwt`
-- [ ] `IAgentConnectionRegistry` singleton (in-memory for M1; Redis-backed in scale-out later) mapping connectionId ↔ agentId
-- [ ] `OnConnectedAsync`: validate agent JWT, mark target Online, update `LastSeenUtc`, broadcast change
-- [ ] `OnDisconnectedAsync`: schedule mark Offline with grace period via Hangfire (or simple background job for M1)
-- [ ] Heartbeat handler: bump `LastSeenUtc`, accept updated machine info
-- [ ] Configure SignalR with `AddSignalR(o => { o.MaximumReceiveMessageSize = 1_048_576; })` — control plane only
-- [ ] Map hub at `/hubs/agent`
+- [x] In `Contracts`:
+  - [x] `IAgentHubServer` (agent → server): `RegisterAsync`, `HeartbeatAsync`, `ReportStatusAsync`, `AppendLogAsync`
+  - [x] `IAgentHubClient` (server → agent): `PingAsync`, `RunDeploymentAsync` (stubbed for M1)
+  - [x] `AgentRegistrationRequest` and `HeartbeatRequest` DTOs
+- [x] In `Server.Transport`: `AgentHub : Hub<IAgentHubClient>` implementing `IAgentHubServer`; authorize with agent JWT scheme `AgentJwt`
+- [x] `IAgentConnectionRegistry` + `InMemoryAgentConnectionRegistry` singleton (ConcurrentDictionary; Redis-backed in scale-out)
+- [x] `OnConnectedAsync`: validate agent JWT, mark target Online, update `LastSeenUtc`
+- [x] `OnDisconnectedAsync`: fire-and-forget 30 s grace period task; marks Offline if agent hasn't reconnected
+- [x] Heartbeat handler: bump `LastSeenUtc`, accept updated machine info (null = no-op)
+- [x] `AddSignalR(o => o.MaximumReceiveMessageSize = 1_048_576)` — control plane
+- [x] Map hub at `/hubs/agent`; JWT token via `?access_token=` query string for WebSocket compatibility
 
 ### Phase 7 — Target registration flow
 
