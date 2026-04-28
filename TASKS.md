@@ -215,8 +215,8 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 
 ### Phase 12 — CI
 
-- [ ] `.github/workflows/ci.yml`: triggers on push + PR; matrix on `ubuntu-latest` and `windows-latest`; restore → build (TreatWarningsAsErrors catches drift) → test; upload test results
-- [ ] Defer: container image build, signing, releases, dependency scanning
+- [x] `.github/workflows/ci.yml`: triggers on push + PR; matrix on `ubuntu-latest` and `windows-latest`; restore → build (TreatWarningsAsErrors catches drift) → test; upload test results; `concurrency` cancels stale in-progress runs; `TESTCONTAINERS_RYUK_DISABLED=true` for Windows runner stability
+- [x] Defer: container image build, signing, releases, dependency scanning
 
 ### Phase 13 — Tests for M1
 

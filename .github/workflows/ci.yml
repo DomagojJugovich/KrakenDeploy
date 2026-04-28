@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel an in-progress run for the same ref when a new one is pushed.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & Test / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # global.json pins 9.0.101 with rollForward: latestFeature,
+      # so 9.0.x will satisfy it and keep the runner SDK up to date.
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Restore
+        run: dotnet restore KrakenDeploy.sln
+
+      # TreatWarningsAsErrors=true in Directory.Build.props means any
+      # new IDE/analyzer warning will fail the build here before merging.
+      - name: Build
+        run: dotnet build KrakenDeploy.sln --no-restore --configuration Release
+
+      # Testcontainers.PostgreSql pulls a postgres:16 image at test time.
+      # Docker is pre-installed on both ubuntu-latest and windows-latest
+      # GitHub runners. Ryuk (the cleanup sidecar) is disabled because it
+      # can be flaky on Windows runner networking.
+      - name: Test
+        run: dotnet test KrakenDeploy.sln --no-build --configuration Release --logger trx --results-directory TestResults
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}
+          path: '**/TestResults/*.trx'
+          if-no-files-found: warn
