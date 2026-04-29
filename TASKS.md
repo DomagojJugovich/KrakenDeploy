@@ -231,7 +231,56 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 ## Future milestones (sketches)
 
 ### M2 — first real deployment
-Package upload to server, manual release creation, gRPC channel from agent, full-package transfer on deploy command, single built-in step `Octopus.Script` (PowerShell on Windows, Bash on Linux), live log streaming agent → server → UI.
+
+**Exit criterion.** Upload a zip package, define a one-step Script process, create a release, trigger a deployment — the agent downloads the package via gRPC, extracts it, runs the script, streams every log line back to the server in real time, and the deployment completes Succeeded or Failed with a full log visible in the UI.
+
+#### Phase 14 — Package management
+
+- [x] `Package` domain entity (`PackageId`, `Version`, `FileName`, `StoredPath`, `SizeBytes`, `UploadedUtc`)
+- [x] `IPackageStore` abstraction + `LocalPackageStore` (stores at `{dataPath}/packages/{id}/{ver}/{file}`)
+- [x] `PackageConfiguration` EF config (table `packages`, unique index on `(package_id, version)`)
+- [x] `PackageService` — `UploadAsync` (with `MeasuredStream` byte counter), `GetSummariesAsync`, `GetVersionsAsync`, `GetAsync`, `DeleteAsync`
+- [x] REST: `POST /api/packages/upload`, `GET /api/packages`, `GET /api/packages/{id}/versions`, `DELETE /api/packages/{id:guid}`
+
+#### Phase 15 — Deployment process & steps
+
+- [x] `DeploymentProcess` + `DeploymentStep` domain entities (one-to-one with Project, ordered by `SortOrder`)
+- [x] EF configs for `deployment_processes` and `deployment_steps` (jsonb `Config`, `text[]` `TargetRoles`)
+- [x] `ProcessService` — `GetOrCreateAsync`, `AddStepAsync` (appends with `maxSort+1`), `UpdateStepAsync`, `RemoveStepAsync` (re-sequences)
+- [x] REST: `GET+POST /api/projects/{id}/process/steps`, `DELETE /api/projects/{id}/process/steps/{stepId}`
+
+#### Phase 16 — Releases with process snapshot
+
+- [x] `StepSnapshot` value object (immutable copy of a step at release time)
+- [x] `Release.ProcessSnapshot` (`List<StepSnapshot>` stored as jsonb) + `Release.ReleaseNotes`
+- [x] `ReleaseService.CreateAsync` — validates uniqueness, snapshots process, pins package versions (explicit map or latest uploaded)
+- [x] REST: `GET+POST /api/projects/{id}/releases`
+
+#### Phase 17 — gRPC package delivery channel
+
+- [x] `kraken.proto`: `PackageDelivery.Download` server-streaming RPC returning 64 KB `DownloadChunk` messages with `IsLast` marker
+- [x] Contracts project: `GrpcServices="Both"` codegen + `Grpc.Net.Client` dependency; `Grpc.AspNetCore` added to Server
+- [x] `GrpcPackageDeliveryService` (server): streams file in 64 KB chunks, `[Authorize(AuthenticationSchemes="AgentJwt")]`
+- [x] `GrpcPackageDownloader` (agent-side): lazily creates channel per server URL, bearer token in default headers, `AppContext.SetSwitch` for HTTP/2 cleartext
+
+#### Phase 18 — Deployment orchestration
+
+- [x] `DeploymentLogEntry` entity (per-deployment monotonic `Sequence`, `Level`, `Message`, `Timestamp`)
+- [x] `DeploymentService.CreateAsync` — validates, creates `Deployment` (Queued), writes ID to `Channel<Guid>`
+- [x] `DeploymentWorker` background service — reads channel, loads deployment + release + snapshot, builds `DeploymentPlan`, marks Running, sends `RunDeploymentAsync(plan)` to agent via `IHubContext<AgentHub, IAgentHubClient>`; marks Failed if target offline
+- [x] `AgentHub.AppendLogAsync` — allocates `NextLogSequence`, persists `DeploymentLogEntry`, broadcasts to `UiHub` group `deployment:{id}`
+- [x] `AgentHub.CompleteDeploymentAsync` — transitions `Succeeded`/`Failed`, broadcasts status change
+- [x] `IUiHubClient` extended with `DeploymentLogAppendedAsync` and `DeploymentStatusChangedAsync`
+
+#### Phase 19 — Agent execution engine
+
+- [x] `ScriptRunner` — writes script to temp file, spawns `pwsh -NonInteractive -NoProfile` / `bash`, captures stdout→`info` and stderr→`error` via `OutputDataReceived`/`ErrorDataReceived`
+- [x] `PackageExtractor` — static `ExtractAsync` wraps `ZipFile.ExtractToDirectory` in `Task.Run`
+- [x] `DeploymentExecutor` — per-step: log header → download → extract → validate step type → inject env vars → run script → log result → cleanup staging
+- [x] `IServerLink` extended: `AppendLogAsync`, `CompleteDeploymentAsync`, `OnRunDeployment(Func<DeploymentPlan,Task>)`
+- [x] `SignalRServerLink` — pre-registers handlers before hub start; `OnRunDeployment` list allows late registration
+- [x] `ServerLinkHostedService` — wires `OnRunDeployment` before `StartAsync` so no messages are dropped
+- [x] EF migration `AddM2Schema` — new tables + `process_snapshot`/`release_notes`/`next_log_sequence` columns
 
 ### M2.5 — `kraken` CLI
 Standalone CI integration tool, distributed as a `dotnet tool` (`dotnet tool install -g KrakenDeploy.Cli`) and as single-file self-contained binaries on GitHub Releases (Windows x64, Linux x64, Linux arm64). Auth via `KRAKEN_SERVER` + `KRAKEN_API_KEY` env vars or `--server` / `--api-key` flags. Commands: `package create` (zip from a publish directory), `package upload`, `release create`, `release deploy [--wait] [--timeout]` (tails log stream to stdout, exits with deployment exit code), `release list`, `target list`, `target health`. `--wait` makes the CLI usable as a pass/fail gate in any pipeline. GitHub Actions wrapper action (`krakendeploy/deploy-action`) as a thin YAML wrapper over the CLI, published separately after the CLI ships.
