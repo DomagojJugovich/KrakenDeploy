@@ -17,6 +17,15 @@ public interface IAgentHubServer
     /// <summary>Reports an agent-observed status change (e.g. shutting down).</summary>
     Task ReportStatusAsync(string status);
 
-    /// <summary>Streams a log chunk for an in-progress deployment.</summary>
-    Task AppendLogAsync(Guid deploymentId, string chunk);
+    /// <summary>
+    /// Streams a single log line from an executing deployment step.
+    /// The server persists it and broadcasts it to the UI in real time.
+    /// </summary>
+    Task AppendLogAsync(Guid deploymentId, string level, string message);
+
+    /// <summary>
+    /// Called by the agent when all steps have finished (or a step has failed).
+    /// The server transitions the deployment to <c>Succeeded</c> or <c>Failed</c>.
+    /// </summary>
+    Task CompleteDeploymentAsync(Guid deploymentId, bool success, string? errorMessage);
 }

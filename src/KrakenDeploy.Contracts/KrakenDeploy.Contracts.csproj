@@ -1,9 +1,26 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Protobuf serialisation runtime needed at compile and run time. -->
+    <PackageReference Include="Google.Protobuf" />
+    <!-- Grpc.Tools is build-only: generates C# stubs from .proto files. -->
+    <PackageReference Include="Grpc.Tools" PrivateAssets="All" />
+    <!-- Grpc.Net.Client brings in Grpc.Core.Api which provides ClientBase<T>,
+         ServerCallContext, ServiceBinderBase, etc. required by the generated stubs. -->
+    <PackageReference Include="Grpc.Net.Client" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- GrpcServices="Both" generates both client and server stubs.
+         The server project implements PackageDeliveryBase;
+         the agent project uses PackageDeliveryClient. -->
+    <Protobuf Include="Protos\kraken.proto" GrpcServices="Both" />
+  </ItemGroup>
 
 </Project>

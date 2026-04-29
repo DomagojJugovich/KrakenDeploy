@@ -10,6 +10,11 @@ public interface IAgentHubClient
     /// <summary>Round-trip connectivity check.</summary>
     Task PingAsync();
 
-    /// <summary>Instructs the agent to begin a deployment. Stubbed for M1.</summary>
-    Task RunDeploymentAsync(Guid deploymentId);
+    /// <summary>
+    /// Instructs the agent to execute the given deployment plan.
+    /// The agent runs all steps autonomously and reports progress via
+    /// <see cref="IAgentHubServer.AppendLogAsync"/> /
+    /// <see cref="IAgentHubServer.CompleteDeploymentAsync"/>.
+    /// </summary>
+    Task RunDeploymentAsync(DeploymentPlan plan);
 }

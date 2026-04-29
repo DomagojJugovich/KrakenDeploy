@@ -1,4 +1,5 @@
 using KrakenDeploy.Agent.Config;
+using KrakenDeploy.Agent.Deployment;
 using KrakenDeploy.Agent.Identity;
 using KrakenDeploy.Agent.Machine;
 using KrakenDeploy.Agent.Transport;
@@ -18,6 +19,7 @@ namespace KrakenDeploy.Agent.Services;
 public sealed class ServerLinkHostedService(
     AgentContext context,
     IServerLink serverLink,
+    DeploymentExecutor deploymentExecutor,
     MachineInfoCollector machineCollector,
     IOptions<ServerOptions> serverOptions,
     IOptions<AgentConfig> agentConfig,
@@ -43,6 +45,11 @@ public sealed class ServerLinkHostedService(
 
         try
         {
+            // Register deployment handler BEFORE opening the connection so no
+            // RunDeploymentAsync messages can arrive before the handler is wired.
+            serverLink.OnRunDeployment(plan =>
+                Task.Run(() => deploymentExecutor.ExecuteAsync(plan), stoppingToken));
+
             await serverLink
                 .StartAsync(serverUrl, identity.AgentToken, stoppingToken)
                 .ConfigureAwait(false);

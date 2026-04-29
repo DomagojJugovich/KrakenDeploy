@@ -22,6 +22,7 @@ public sealed class AgentHub(
     IServiceScopeFactory scopeFactory,
     TargetStatusPublisher statusPublisher,
     TimeProvider timeProvider,
+    IHubContext<UiHub, IUiHubClient> uiHub,
     ILogger<AgentHub> logger)
     : Hub<IAgentHubClient>, IAgentHubServer
 {
@@ -177,14 +178,68 @@ public sealed class AgentHub(
         return Task.CompletedTask;
     }
 
-    public Task AppendLogAsync(Guid deploymentId, string chunk)
+    public async Task AppendLogAsync(Guid deploymentId, string level, string message)
     {
-        ArgumentNullException.ThrowIfNull(chunk);
-        // M1 stub — full log streaming lands in M2.
-        logger.LogDebug(
-            "Log chunk ({Bytes} bytes) from deployment {DeploymentId}.",
-            chunk.Length, deploymentId);
-        return Task.CompletedTask;
+        ArgumentNullException.ThrowIfNull(message);
+
+        var deployment = await db.Deployments
+            .FindAsync(new object?[] { deploymentId })
+            .ConfigureAwait(false);
+
+        if (deployment is null)
+        {
+            logger.LogWarning(
+                "AppendLog for unknown deployment {DeploymentId}; ignored.", deploymentId);
+            return;
+        }
+
+        var seq = deployment.NextLogSequence++;
+        var timestamp = timeProvider.GetUtcNow();
+
+        db.DeploymentLogEntries.Add(new KrakenDeploy.Server.Core.Domain.Deployments.DeploymentLogEntry
+        {
+            DeploymentId = deploymentId,
+            Sequence = seq,
+            Timestamp = timestamp,
+            Message = message,
+            Level = level,
+        });
+        await db.SaveChangesAsync().ConfigureAwait(false);
+
+        await uiHub.Clients.Group($"deployment:{deploymentId}")
+            .DeploymentLogAppendedAsync(deploymentId, seq, timestamp, level, message)
+            .ConfigureAwait(false);
+    }
+
+    public async Task CompleteDeploymentAsync(
+        Guid deploymentId, bool success, string? errorMessage)
+    {
+        var deployment = await db.Deployments
+            .FindAsync(new object?[] { deploymentId })
+            .ConfigureAwait(false);
+
+        if (deployment is null)
+        {
+            logger.LogWarning(
+                "CompleteDeployment for unknown deployment {DeploymentId}; ignored.", deploymentId);
+            return;
+        }
+
+        deployment.Status = success
+            ? KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Succeeded
+            : KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Failed;
+        deployment.CompletedUtc = timeProvider.GetUtcNow();
+        await db.SaveChangesAsync().ConfigureAwait(false);
+
+        var statusStr = deployment.Status.ToString();
+        await uiHub.Clients.Group($"deployment:{deploymentId}")
+            .DeploymentStatusChangedAsync(deploymentId, statusStr)
+            .ConfigureAwait(false);
+
+        logger.LogInformation(
+            "Deployment {DeploymentId} completed: {Status}{Error}.",
+            deploymentId, statusStr,
+            errorMessage is null ? "" : $" — {errorMessage}");
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────

@@ -15,6 +15,9 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
 {
     private HubConnection? _connection;
 
+    // Handlers registered before StartAsync; wired onto _connection in StartAsync.
+    private readonly List<Func<DeploymentPlan, Task>> _deploymentHandlers = [];
+
     // ── IServerLink ────────────────────────────────────────────────────────
 
     public bool IsConnected => _connection?.State == HubConnectionState.Connected;
@@ -62,6 +65,13 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
             return Task.CompletedTask;
         };
 
+        // Wire up server-push handlers BEFORE starting the connection so no
+        // messages can arrive before the handlers are registered.
+        foreach (var handler in _deploymentHandlers)
+        {
+            _connection.On<DeploymentPlan>("RunDeploymentAsync", handler);
+        }
+
         await _connection.StartAsync(ct).ConfigureAwait(false);
     }
 
@@ -72,6 +82,8 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
             await _connection.StopAsync(ct).ConfigureAwait(false);
         }
     }
+
+    // ── Agent → Server ─────────────────────────────────────────────────────
 
     public Task RegisterAsync(AgentRegistrationRequest request, CancellationToken ct)
     {
@@ -95,6 +107,35 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
         return _connection is not null
             ? _connection.InvokeAsync("ReportStatusAsync", status, ct)
             : Task.CompletedTask;
+    }
+
+    public Task AppendLogAsync(
+        Guid deploymentId, string level, string message, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        return _connection is not null
+            ? _connection.InvokeAsync("AppendLogAsync", deploymentId, level, message, ct)
+            : Task.CompletedTask;
+    }
+
+    public Task CompleteDeploymentAsync(
+        Guid deploymentId, bool success, string? errorMessage, CancellationToken ct)
+    {
+        return _connection is not null
+            ? _connection.InvokeAsync("CompleteDeploymentAsync",
+                deploymentId, success, errorMessage, ct)
+            : Task.CompletedTask;
+    }
+
+    // ── Server → Agent ─────────────────────────────────────────────────────
+
+    public void OnRunDeployment(Func<DeploymentPlan, Task> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        _deploymentHandlers.Add(handler);
+
+        // If already connected (e.g. re-wiring after reconnect), register immediately.
+        _connection?.On<DeploymentPlan>("RunDeploymentAsync", handler);
     }
 
     // ── IAsyncDisposable ───────────────────────────────────────────────────

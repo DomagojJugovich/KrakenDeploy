@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package krakendeploy.v1;
+option csharp_namespace = "KrakenDeploy.Contracts.Grpc";
+
+// ── Package delivery ─────────────────────────────────────────────────────────
+// The agent calls Download(); the server streams the package file in chunks.
+// Authentication uses the same agent JWT delivered via the Authorization header.
+
+service PackageDelivery {
+    rpc Download(DownloadRequest) returns (stream DownloadChunk);
+}
+
+message DownloadRequest {
+    string package_id = 1;
+    string version    = 2;
+}
+
+message DownloadChunk {
+    bytes  data        = 1;
+    int64  total_bytes = 2;  // populated only on the first chunk (for progress reporting)
+    bool   is_last     = 3;
+}

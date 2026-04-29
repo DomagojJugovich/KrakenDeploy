@@ -105,6 +105,7 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
             new NeverUsedScopeFactory(),
             publisher,
             TimeProvider.System,
+            new NullUiHubContext(),
             NullLogger<AgentHub>.Instance);
 
         hub.Context = new FakeHubCallerContext(targetId);
@@ -159,6 +160,14 @@ file sealed class NullUiHubContext : IHubContext<UiHub, IUiHubClient>
     private sealed class NullUiHubClient : IUiHubClient
     {
         public Task TargetStatusChangedAsync(Guid targetId, string status, DateTimeOffset? lastSeenUtc)
+            => Task.CompletedTask;
+
+        public Task DeploymentLogAppendedAsync(
+            Guid deploymentId, int sequence, DateTimeOffset timestamp,
+            string level, string message)
+            => Task.CompletedTask;
+
+        public Task DeploymentStatusChangedAsync(Guid deploymentId, string status)
             => Task.CompletedTask;
     }
 }

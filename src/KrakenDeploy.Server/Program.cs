@@ -92,7 +92,8 @@ public static class Program
                 "Connection string 'KrakenDb' is not configured. " +
                 "Set ConnectionStrings:KrakenDb in appsettings.{Environment}.json or via user-secrets.");
 
-        builder.Services.AddKrakenDeployData(connectionString);
+        var dataPath = builder.Configuration["Server:DataPath"] ?? "data";
+        builder.Services.AddKrakenDeployData(connectionString, dataPath);
         builder.Services.AddKrakenDeployIdentityCore();
 
         // ── Authentication ───────────────────────────────────────────────────
@@ -157,10 +158,13 @@ public static class Program
             options.MaximumReceiveMessageSize = 1_048_576; // 1 MiB — control plane only
         });
 
+        builder.Services.AddGrpc();
+
         builder.Services.AddSingleton<IAgentConnectionRegistry, InMemoryAgentConnectionRegistry>();
         builder.Services.AddSingleton<AgentJwtService>();
         builder.Services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
         builder.Services.AddSingleton<TargetStatusPublisher>();
+        builder.Services.AddHostedService<DeploymentWorker>();
 
         // ── Authorization ────────────────────────────────────────────────────
         builder.Services.AddAuthorizationBuilder()
@@ -254,6 +258,7 @@ public static class Program
 
         app.MapHub<AgentHub>("/hubs/agent");
         app.MapHub<UiHub>("/hubs/ui");
+        app.MapGrpcService<GrpcPackageDeliveryService>();
 
         // Agent self-registration — exchanges a one-time token for a long-lived JWT.
         // Intentionally AllowAnonymous: the token itself is the credential.
@@ -304,6 +309,143 @@ public static class Program
                     connectedAgents = registry.Count,
                 });
             }).AllowAnonymous();
+
+        // ── Package API ──────────────────────────────────────────────────────
+        // Upload a package: POST /api/packages/upload
+        // Body: multipart/form-data with fields packageId, version, and file.
+        app.MapPost("/api/packages/upload",
+            async (HttpRequest req, PackageService packageSvc, CancellationToken ct) =>
+            {
+                if (!req.HasFormContentType)
+                {
+                    return Results.BadRequest(new { error = "Multipart form required." });
+                }
+
+                var form = await req.ReadFormAsync(ct).ConfigureAwait(false);
+                var packageId = form["packageId"].ToString();
+                var version = form["version"].ToString();
+                var file = form.Files["file"];
+
+                if (string.IsNullOrWhiteSpace(packageId) ||
+                    string.IsNullOrWhiteSpace(version) ||
+                    file is null)
+                {
+                    return Results.BadRequest(
+                        new { error = "packageId, version, and file are required." });
+                }
+
+                try
+                {
+                    await using var stream = file.OpenReadStream();
+                    var pkg = await packageSvc
+                        .UploadAsync(packageId, version, file.FileName, stream, ct)
+                        .ConfigureAwait(false);
+                    return Results.Ok(new
+                    {
+                        pkg.Id, pkg.PackageId, pkg.Version,
+                        pkg.FileName, pkg.SizeBytes, pkg.UploadedUtc,
+                    });
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.Conflict(new { error = ex.Message });
+                }
+            }).RequireAuthorization();
+
+        app.MapGet("/api/packages",
+            async (PackageService packageSvc, CancellationToken ct) =>
+                Results.Ok(await packageSvc.GetSummariesAsync(ct).ConfigureAwait(false))
+        ).RequireAuthorization();
+
+        app.MapGet("/api/packages/{packageId}/versions",
+            async (string packageId, PackageService packageSvc, CancellationToken ct) =>
+                Results.Ok(await packageSvc.GetVersionsAsync(packageId, ct).ConfigureAwait(false))
+        ).RequireAuthorization();
+
+        app.MapDelete("/api/packages/{id:guid}",
+            async (Guid id, PackageService packageSvc, CancellationToken ct) =>
+            {
+                var deleted = await packageSvc.DeleteAsync(id, ct).ConfigureAwait(false);
+                return deleted ? Results.NoContent() : Results.NotFound();
+            }).RequireAuthorization();
+
+        // ── Process API ──────────────────────────────────────────────────────
+        app.MapGet("/api/projects/{projectId:guid}/process",
+            async (Guid projectId, ProcessService processSvc, CancellationToken ct) =>
+            {
+                var process = await processSvc.GetAsync(projectId, ct).ConfigureAwait(false);
+                return process is null ? Results.NotFound() : Results.Ok(process);
+            }).RequireAuthorization();
+
+        app.MapPost("/api/projects/{projectId:guid}/process/steps",
+            async (Guid projectId, AddStepRequest req, ProcessService processSvc, CancellationToken ct) =>
+            {
+                var step = await processSvc.AddStepAsync(
+                    projectId, req.Name, req.StepType, req.PackageId,
+                    req.TargetRoles, req.Config, ct).ConfigureAwait(false);
+                return Results.Created($"/api/projects/{projectId}/process/steps/{step.Id}", step);
+            }).RequireAuthorization();
+
+        app.MapDelete("/api/projects/{projectId:guid}/process/steps/{stepId:guid}",
+            async (Guid projectId, Guid stepId, ProcessService processSvc, CancellationToken ct) =>
+            {
+                var removed = await processSvc.RemoveStepAsync(stepId, ct).ConfigureAwait(false);
+                return removed ? Results.NoContent() : Results.NotFound();
+            }).RequireAuthorization();
+
+        // ── Release API ──────────────────────────────────────────────────────
+        app.MapGet("/api/projects/{projectId:guid}/releases",
+            async (Guid projectId, ReleaseService releaseSvc, CancellationToken ct) =>
+                Results.Ok(await releaseSvc.GetAllAsync(projectId, ct).ConfigureAwait(false))
+        ).RequireAuthorization();
+
+        app.MapPost("/api/projects/{projectId:guid}/releases",
+            async (Guid projectId, CreateReleaseRequest req, ReleaseService releaseSvc,
+                CancellationToken ct) =>
+            {
+                try
+                {
+                    var release = await releaseSvc.CreateAsync(
+                        projectId, req.Version, req.PackageVersions, req.ReleaseNotes, ct)
+                        .ConfigureAwait(false);
+                    return Results.Created(
+                        $"/api/projects/{projectId}/releases/{release.Id}", release);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.Conflict(new { error = ex.Message });
+                }
+            }).RequireAuthorization();
+
+        // ── Deployment API ───────────────────────────────────────────────────
+        app.MapGet("/api/deployments",
+            async (Guid? projectId, DeploymentService deploymentSvc, CancellationToken ct) =>
+                Results.Ok(await deploymentSvc.GetAllAsync(projectId, ct).ConfigureAwait(false))
+        ).RequireAuthorization();
+
+        app.MapGet("/api/deployments/{id:guid}",
+            async (Guid id, DeploymentService deploymentSvc, CancellationToken ct) =>
+            {
+                var d = await deploymentSvc.GetAsync(id, ct).ConfigureAwait(false);
+                return d is null ? Results.NotFound() : Results.Ok(d);
+            }).RequireAuthorization();
+
+        app.MapPost("/api/deployments",
+            async (TriggerDeploymentRequest req, DeploymentService deploymentSvc,
+                CancellationToken ct) =>
+            {
+                try
+                {
+                    var deployment = await deploymentSvc
+                        .CreateAsync(req.ReleaseId, req.EnvironmentId, req.TargetId, ct)
+                        .ConfigureAwait(false);
+                    return Results.Created($"/api/deployments/{deployment.Id}", deployment);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequireAuthorization();
 
         // Dev-only: creates a smoke-test target and returns its registration token.
         // Guards behind IsDevelopment so it is never registered in production.

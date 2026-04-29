@@ -1,6 +1,7 @@
 using System.Globalization;
 using KrakenDeploy.Agent;
 using KrakenDeploy.Agent.Config;
+using KrakenDeploy.Agent.Deployment;
 using KrakenDeploy.Agent.Identity;
 using KrakenDeploy.Agent.Machine;
 using KrakenDeploy.Agent.Services;
@@ -70,6 +71,11 @@ static async Task<int> RunAsync(string[] args)
     builder.Services.AddSingleton<AgentIdentityStore>();
     builder.Services.AddSingleton<MachineInfoCollector>();
     builder.Services.AddSingleton<IServerLink, SignalRServerLink>();
+    builder.Services.AddSingleton<GrpcPackageDownloader>();
+
+    // ── Scoped/Transient services ────────────────────────────────────────
+    builder.Services.AddTransient<ScriptRunner>();
+    builder.Services.AddTransient<DeploymentExecutor>();
 
     // ── Hosted services — registered in start-up order ───────────────────
     // 1. RegistrationHostedService populates AgentContext.

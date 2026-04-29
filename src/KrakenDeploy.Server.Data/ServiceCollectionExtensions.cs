@@ -1,6 +1,9 @@
+using System.Threading.Channels;
+using KrakenDeploy.Server.Core.Domain.Packages;
 using KrakenDeploy.Server.Data.Identity;
 using KrakenDeploy.Server.Data.Interceptors;
 using KrakenDeploy.Server.Data.Services;
+using KrakenDeploy.Server.Data.Storage;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -11,7 +14,8 @@ public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddKrakenDeployData(
         this IServiceCollection services,
-        string connectionString)
+        string connectionString,
+        string dataPath = "data")
     {
         services.TryAddTimeProvider();
         services.AddSingleton<AuditableEntityInterceptor>();
@@ -23,10 +27,23 @@ public static class ServiceCollectionExtensions
             options.AddInterceptors(sp.GetRequiredService<AuditableEntityInterceptor>());
         });
 
+        // Package store — local filesystem for M2.
+        services.AddSingleton<IPackageStore>(_ => new LocalPackageStore(dataPath));
+
+        // In-process deployment dispatch queue.
+        // Unbounded: a server restart drops in-flight Queued deployments; they will
+        // be re-queued on next startup (handled at startup in a future polish pass).
+        services.AddSingleton(Channel.CreateUnbounded<Guid>(
+            new UnboundedChannelOptions { SingleReader = true }));
+
         services.AddScoped<ProjectService>();
         services.AddScoped<EnvironmentService>();
         services.AddScoped<TargetService>();
         services.AddScoped<TargetRegistrationService>();
+        services.AddScoped<PackageService>();
+        services.AddScoped<ProcessService>();
+        services.AddScoped<ReleaseService>();
+        services.AddScoped<DeploymentService>();
 
         return services;
     }

@@ -1,5 +1,7 @@
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Environments;
+using KrakenDeploy.Server.Core.Domain.Packages;
+using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Targets;
@@ -19,6 +21,10 @@ public class KrakenDbContext(DbContextOptions<KrakenDbContext> options)
     public DbSet<DeploymentTarget> DeploymentTargets => Set<DeploymentTarget>();
     public DbSet<Release> Releases => Set<Release>();
     public DbSet<Deployment> Deployments => Set<Deployment>();
+    public DbSet<Package> Packages => Set<Package>();
+    public DbSet<DeploymentProcess> DeploymentProcesses => Set<DeploymentProcess>();
+    public DbSet<DeploymentStep> DeploymentSteps => Set<DeploymentStep>();
+    public DbSet<DeploymentLogEntry> DeploymentLogEntries => Set<DeploymentLogEntry>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {

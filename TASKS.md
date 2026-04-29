@@ -233,6 +233,9 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 ### M2 — first real deployment
 Package upload to server, manual release creation, gRPC channel from agent, full-package transfer on deploy command, single built-in step `Octopus.Script` (PowerShell on Windows, Bash on Linux), live log streaming agent → server → UI.
 
+### M2.5 — `kraken` CLI
+Standalone CI integration tool, distributed as a `dotnet tool` (`dotnet tool install -g KrakenDeploy.Cli`) and as single-file self-contained binaries on GitHub Releases (Windows x64, Linux x64, Linux arm64). Auth via `KRAKEN_SERVER` + `KRAKEN_API_KEY` env vars or `--server` / `--api-key` flags. Commands: `package create` (zip from a publish directory), `package upload`, `release create`, `release deploy [--wait] [--timeout]` (tails log stream to stdout, exits with deployment exit code), `release list`, `target list`, `target health`. `--wait` makes the CLI usable as a pass/fail gate in any pipeline. GitHub Actions wrapper action (`krakendeploy/deploy-action`) as a thin YAML wrapper over the CLI, published separately after the CLI ships.
+
 ### M3 — variables and Octostache
 Variable sets, scoped variables, scope resolution. Octostache integration in step inputs and scripts. **`StringArray`** type with iteration syntax and dual `$OctopusParameters` / `$OctopusArrays` exposure. Sensitive variable encryption.
 
@@ -241,6 +244,9 @@ Local package cache on agent. Server-side Octodiff signature/delta generation. R
 
 ### M5 — Octopus step-template compatibility
 Importer for step-template JSON from the Library repo. Parameter-controlType mapping to Radzen form controls. Day-one handlers: `Octopus.Script`, `Octopus.IIS` (basic), `Octopus.WindowsService`, `Octopus.FileTransform`, `Octopus.SubstituteVariables`, `Octopus.Manual`. Kraken PowerShell module shipped to agents with cross-platform helpers and Octopus-compat aliases.
+
+### M5.5 — deployment artifacts
+Collect files produced by steps (screenshots, HTML reports, logs, any binary) and make them downloadable from the deployment detail page. Agent collects files from `$KRAKEN_ARTIFACTS_PATH` (auto-created per step, implicit) and via `Register-KrakenArtifact` / `kraken_artifact` (explicit, from the Kraken module). Files streamed to the server over the gRPC data channel after each step completes. Server stores under `artifacts/{deploymentId}/{stepName}/` behind an `IArtifactStore` interface (local filesystem for now, pluggable for S3/Azure Blob later). `DeploymentArtifact` entity tracks name, content-type, size, path, and collection timestamp. UI: artifacts tab on deployment detail; inline thumbnail preview for images; sandboxed iframe preview for HTML reports (Playwright etc.); download link for everything else.
 
 ### M6 — multi-tenancy and tags
 Tenants, Tag Sets, tenant tags, tag-set scoping for variables and deployment targets. Project-tenant connections. Tenant common variables and per-project tenant variables.
@@ -256,3 +262,12 @@ Full superset action type covering app pool process model + recycle settings (in
 
 ### M10 — operational polish
 Direct + polling transport modes. Hangfire scheduled deployments and retention. Audit log, RBAC, API tokens. Agent auto-update. OIDC SSO. OpenTelemetry export to Grafana stack or Seq. Caddy reverse-proxy reference deployment.
+
+### M11 — AI integration (MCP server, autonomous diagnosis, process assistant)
+Three features sharing a common `IAiProvider` abstraction (pluggable: Anthropic, OpenAI, Azure OpenAI — user supplies API key) and a shared MCP tool layer.
+
+**MCP server (`KrakenDeploy.Mcp` project):** Exposes KrakenDeploy to any MCP-compatible AI agent (Claude, Copilot, Cursor, etc.) via stdio or HTTP+SSE transport, authenticated with the same API key as the REST API. Resources: deployment logs, artifacts, target status, release history. Tools: `get_deployment_log`, `list_failed_deployments`, `get_target_health`, `retry_deployment`, `get_release_history`, `get_step_config`, `query_targets`, `get_deployment_diff` (structured delta between a failing run and the last successful one — variables changed, package version bumped, target OS patched, etc.).
+
+**Autonomous failure diagnosis:** Hangfire job triggered on deployment failure. Assembles a context packet (full log, failed step config, target info, `get_deployment_diff` output) and calls the configured AI provider. Stores a structured `DeploymentDiagnosis` — probable cause, confidence level, suggested fix, relevant log lines. Rendered as an **"AI Analysis"** card on the failed deployment detail page. Optional webhook push (Slack, Teams) with the summary.
+
+**Process builder assistant (UI):** Step suggester proposes a starter process from package contents (detects ASP.NET, Windows Service, static site, etc.). Inline script editor sidebar helps write PowerShell/Bash steps — explains available variables, suggests error handling, flags risky patterns. Step configuration helper provides contextual field explanations and smart defaults based on project and target context.

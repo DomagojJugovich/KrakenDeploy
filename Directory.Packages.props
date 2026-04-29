@@ -14,6 +14,16 @@
     <PackageVersion Include="Microsoft.AspNetCore.SignalR.Client" Version="9.0.0" />
   </ItemGroup>
 
+  <ItemGroup Label="gRPC">
+    <!-- Google.Protobuf + Grpc.Tools generate code from .proto files.
+         Grpc.Net.Client is the managed .NET gRPC client (agent-side).
+         Grpc.AspNetCore provides AddGrpc() and MapGrpcService<T>() for the server. -->
+    <PackageVersion Include="Google.Protobuf" Version="3.29.3" />
+    <PackageVersion Include="Grpc.Tools" Version="2.70.0" />
+    <PackageVersion Include="Grpc.Net.Client" Version="2.70.0" />
+    <PackageVersion Include="Grpc.AspNetCore" Version="2.70.0" />
+  </ItemGroup>
+
   <ItemGroup Label="Entity Framework Core / Postgres">
     <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="9.0.0" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.0" />

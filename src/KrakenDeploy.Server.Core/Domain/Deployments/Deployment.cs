@@ -16,4 +16,13 @@ public class Deployment : AuditableEntity
     public DeploymentStatus Status { get; set; } = DeploymentStatus.Queued;
     public DateTimeOffset? StartedUtc { get; set; }
     public DateTimeOffset? CompletedUtc { get; set; }
+
+    /// <summary>Log lines written by the agent during execution.</summary>
+    public ICollection<DeploymentLogEntry> LogEntries { get; set; } = [];
+
+    /// <summary>
+    /// Tracks the next sequence number for log entries.
+    /// Incremented atomically in the hub to guarantee ordering under concurrency.
+    /// </summary>
+    public int NextLogSequence { get; set; }
 }
