@@ -74,8 +74,10 @@ public class ProjectService(KrakenDbContext db)
                 sb.Append(ch);
                 lastDash = false;
             }
-            else if ((ch is ' ' or '-' or '_') && !lastDash && sb.Length > 0)
+            else if (!lastDash && sb.Length > 0)
             {
+                // Any non-alphanumeric character (space, dash, dot, slash, #, etc.)
+                // becomes a single separator dash; consecutive separators are collapsed.
                 sb.Append('-');
                 lastDash = true;
             }

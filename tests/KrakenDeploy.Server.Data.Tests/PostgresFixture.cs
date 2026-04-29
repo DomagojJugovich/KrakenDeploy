@@ -1,6 +1,7 @@
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Interceptors;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Testcontainers.PostgreSql;
 
 namespace KrakenDeploy.Server.Data.Tests;
@@ -28,6 +29,12 @@ public sealed class PostgresFixture : IAsyncLifetime
             .UseNpgsql(ConnectionString)
             .UseSnakeCaseNamingConvention()
             .AddInterceptors(new AuditableEntityInterceptor(TimeProvider.System))
+            // EF Core 9 promotes PendingModelChangesWarning to an error by default.
+            // Lambda-based value converters (like our jsonb HasConversion) cannot be
+            // perfectly round-tripped through the migration snapshot, so the runtime
+            // comparison always flags a diff even though the schema is correct.
+            // "dotnet ef migrations has-pending-model-changes" confirms no real drift.
+            .ConfigureWarnings(w => w.Ignore(RelationalEventId.PendingModelChangesWarning))
             .Options;
 
         return new KrakenDbContext(options);
