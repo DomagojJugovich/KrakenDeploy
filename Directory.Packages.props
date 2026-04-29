@@ -62,6 +62,8 @@
   <ItemGroup Label="Variables / templating">
     <!-- Octostache: Octopus Deploy's #{VarName} template engine -->
     <PackageVersion Include="Octostache" Version="3.9.2" />
+    <!-- Octodiff: binary delta/patching library (signature + delta build + delta apply) -->
+    <PackageVersion Include="Octodiff" Version="1.3.23" />
   </ItemGroup>
 
   <ItemGroup Label="CLI">

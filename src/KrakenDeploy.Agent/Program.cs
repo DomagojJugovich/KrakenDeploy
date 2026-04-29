@@ -6,6 +6,7 @@ using KrakenDeploy.Agent.Identity;
 using KrakenDeploy.Agent.Machine;
 using KrakenDeploy.Agent.Services;
 using KrakenDeploy.Agent.Transport;
+using Microsoft.Extensions.Options;
 using Serilog;
 
 // Bootstrap logger — active until the full Serilog pipeline is wired in.
@@ -71,6 +72,15 @@ static async Task<int> RunAsync(string[] args)
     builder.Services.AddSingleton<AgentIdentityStore>();
     builder.Services.AddSingleton<MachineInfoCollector>();
     builder.Services.AddSingleton<IServerLink, SignalRServerLink>();
+
+    // Package cache — stored under {dataPath}/package-cache/{packageId}/{version}/
+    builder.Services.AddSingleton<IPackageCache>(sp =>
+    {
+        var config    = sp.GetRequiredService<IOptions<AgentConfig>>().Value;
+        var cacheRoot = Path.Combine(config.ResolvedDataPath, "package-cache");
+        return new LocalPackageCache(cacheRoot);
+    });
+
     builder.Services.AddSingleton<GrpcPackageDownloader>();
 
     // ── Scoped/Transient services ────────────────────────────────────────

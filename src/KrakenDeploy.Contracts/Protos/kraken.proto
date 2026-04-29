@@ -6,18 +6,38 @@ option csharp_namespace = "KrakenDeploy.Contracts.Grpc";
 // ── Package delivery ─────────────────────────────────────────────────────────
 // The agent calls Download(); the server streams the package file in chunks.
 // Authentication uses the same agent JWT delivered via the Authorization header.
+//
+// Delta transfer:
+//   Set base_version to the version the agent already has in its local cache.
+//   The server will stream an Octodiff delta (is_delta = true) instead of the
+//   full zip.  The agent applies the delta to its cached copy to produce the
+//   target version, which is then stored in the cache.
+//
+// Resumable full transfer:
+//   Set resume_offset to the number of bytes already written to resume a
+//   previously interrupted full download.
 
 service PackageDelivery {
     rpc Download(DownloadRequest) returns (stream DownloadChunk);
 }
 
 message DownloadRequest {
-    string package_id = 1;
-    string version    = 2;
+    string package_id    = 1;
+    string version       = 2;
+    // Optional: if set and the server can find the base package, the response
+    // will be an Octodiff delta (base_version → version) rather than the full file.
+    string base_version  = 3;
+    // Optional: byte offset into the full file at which to resume streaming.
+    // Ignored when base_version is also set.
+    int64  resume_offset = 4;
 }
 
 message DownloadChunk {
     bytes  data        = 1;
-    int64  total_bytes = 2;  // populated only on the first chunk (for progress reporting)
+    // Populated only on the first chunk; 0 on subsequent chunks.
+    // When is_delta is true this is the delta size, not the final zip size.
+    int64  total_bytes = 2;
     bool   is_last     = 3;
+    // True when the stream contains Octodiff delta bytes rather than the raw zip.
+    bool   is_delta    = 4;
 }

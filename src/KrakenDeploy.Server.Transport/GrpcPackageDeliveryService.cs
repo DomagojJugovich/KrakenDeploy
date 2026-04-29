@@ -2,6 +2,7 @@ using Grpc.Core;
 using KrakenDeploy.Contracts.Grpc;
 using KrakenDeploy.Server.Core.Domain.Packages;
 using KrakenDeploy.Server.Data;
+using KrakenDeploy.Server.Data.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -11,15 +12,26 @@ namespace KrakenDeploy.Server.Transport;
 /// <summary>
 /// gRPC service that streams a package file to the requesting agent.
 /// Authenticated with the same "AgentJwt" bearer scheme as <see cref="AgentHub"/>.
+/// <para>
+/// Supports two transfer modes:
+/// <list type="bullet">
+///   <item><b>Delta</b> — when the agent supplies a <c>base_version</c> it already
+///   has in cache, the server streams an Octodiff delta instead of the full zip.
+///   Falls back to a full download if delta generation fails or the base is missing.</item>
+///   <item><b>Full / resumable</b> — optional <c>resume_offset</c> causes the server
+///   to seek into the file and stream from that byte position onward.</item>
+/// </list>
+/// </para>
 /// </summary>
 [Authorize(AuthenticationSchemes = "AgentJwt")]
 public sealed class GrpcPackageDeliveryService(
     KrakenDbContext db,
     IPackageStore packageStore,
+    PackageDeltaService deltaService,
     ILogger<GrpcPackageDeliveryService> logger)
     : PackageDelivery.PackageDeliveryBase
 {
-    private const int ChunkSize = 64 * 1024; // 64 KB chunks
+    private const int ChunkSize = 64 * 1024; // 64 KB
 
     public override async Task Download(
         DownloadRequest request,
@@ -27,49 +39,150 @@ public sealed class GrpcPackageDeliveryService(
         ServerCallContext context)
     {
         ArgumentNullException.ThrowIfNull(request);
+        var ct = context.CancellationToken;
 
+        // ── Resolve the requested package ─────────────────────────────────────
         var package = await db.Packages
             .FirstOrDefaultAsync(
-                p => p.PackageId == request.PackageId && p.Version == request.Version,
-                context.CancellationToken)
+                p => p.PackageId == request.PackageId && p.Version == request.Version, ct)
             .ConfigureAwait(false)
             ?? throw new RpcException(new Status(
                 StatusCode.NotFound,
                 $"Package '{request.PackageId}' version '{request.Version}' not found."));
 
-        logger.LogInformation(
-            "Streaming package {PackageId} v{Version} ({Bytes:N0} bytes) to agent.",
-            package.PackageId, package.Version, package.SizeBytes);
+        // ── Route to delta or full path ───────────────────────────────────────
+        if (!string.IsNullOrEmpty(request.BaseVersion))
+        {
+            await ServeDeltaAsync(request, package, responseStream, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            await ServeFullAsync(request, package, responseStream, ct).ConfigureAwait(false);
+        }
+    }
 
-        await using var fileStream = await packageStore
-            .OpenReadAsync(package.StoredPath, context.CancellationToken)
+    // ── Delta path ────────────────────────────────────────────────────────────
+
+    private async Task ServeDeltaAsync(
+        DownloadRequest request,
+        Package package,
+        IServerStreamWriter<DownloadChunk> responseStream,
+        CancellationToken ct)
+    {
+        var basePackage = await db.Packages
+            .FirstOrDefaultAsync(
+                p => p.PackageId == request.PackageId && p.Version == request.BaseVersion, ct)
             .ConfigureAwait(false);
 
-        var buffer = new byte[ChunkSize];
+        if (basePackage is null)
+        {
+            logger.LogWarning(
+                "Delta requested but base {PackageId} v{Base} not found; serving full file.",
+                request.PackageId, request.BaseVersion);
+            await ServeFullAsync(request, package, responseStream, ct).ConfigureAwait(false);
+            return;
+        }
+
+        var basePath = packageStore.GetFullPath(basePackage.StoredPath);
+        var newPath  = packageStore.GetFullPath(package.StoredPath);
+
+        MemoryStream? delta;
+        try
+        {
+            delta = await deltaService.BuildDeltaAsync(basePath, newPath, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex,
+                "Delta generation failed for {PackageId} {Base}→{New}; serving full file.",
+                request.PackageId, request.BaseVersion, request.Version);
+            delta = null;
+        }
+
+        if (delta is null)
+        {
+            await ServeFullAsync(request, package, responseStream, ct).ConfigureAwait(false);
+            return;
+        }
+
+        logger.LogInformation(
+            "Streaming delta for {PackageId} v{Base}→v{New} ({DeltaBytes:N0} bytes).",
+            request.PackageId, request.BaseVersion, request.Version, delta.Length);
+
+        await using (delta)
+        {
+            await StreamFromAsync(
+                delta, isDelta: true, totalBytes: delta.Length, responseStream, ct)
+                .ConfigureAwait(false);
+        }
+    }
+
+    // ── Full / resumable path ─────────────────────────────────────────────────
+
+    private async Task ServeFullAsync(
+        DownloadRequest request,
+        Package package,
+        IServerStreamWriter<DownloadChunk> responseStream,
+        CancellationToken ct)
+    {
+        var resumeOffset = request.ResumeOffset;
+        var reportedSize = resumeOffset > 0
+            ? package.SizeBytes - resumeOffset
+            : package.SizeBytes;
+
+        logger.LogInformation(
+            "Streaming package {PackageId} v{Version} ({Bytes:N0} bytes){Resume}.",
+            package.PackageId, package.Version, package.SizeBytes,
+            resumeOffset > 0 ? $" from offset {resumeOffset:N0}" : string.Empty);
+
+        await using var fileStream = await packageStore
+            .OpenReadAsync(package.StoredPath, ct).ConfigureAwait(false);
+
+        if (resumeOffset > 0 && fileStream.CanSeek)
+        {
+            fileStream.Seek(resumeOffset, SeekOrigin.Begin);
+        }
+
+        await StreamFromAsync(
+            fileStream, isDelta: false, totalBytes: reportedSize, responseStream, ct)
+            .ConfigureAwait(false);
+    }
+
+    // ── Shared streaming loop ─────────────────────────────────────────────────
+
+    private static async Task StreamFromAsync(
+        Stream source,
+        bool isDelta,
+        long totalBytes,
+        IServerStreamWriter<DownloadChunk> responseStream,
+        CancellationToken ct)
+    {
+        var buffer  = new byte[ChunkSize];
         var isFirst = true;
         int bytesRead;
 
-        while ((bytesRead = await fileStream
-                   .ReadAsync(buffer, context.CancellationToken)
-                   .ConfigureAwait(false)) > 0)
+        while ((bytesRead = await source.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
         {
             var chunk = new DownloadChunk
             {
-                Data = Google.Protobuf.ByteString.CopyFrom(buffer, 0, bytesRead),
-                TotalBytes = isFirst ? package.SizeBytes : 0,
-                IsLast = false,
+                Data       = Google.Protobuf.ByteString.CopyFrom(buffer, 0, bytesRead),
+                TotalBytes = isFirst ? totalBytes : 0,
+                IsLast     = false,
+                IsDelta    = isDelta,
             };
 
-            await responseStream.WriteAsync(chunk, context.CancellationToken)
-                .ConfigureAwait(false);
-
+            await responseStream.WriteAsync(chunk, ct).ConfigureAwait(false);
             isFirst = false;
         }
 
-        // Send an explicit last-chunk marker so the agent can finalise without
-        // relying solely on stream-end detection.
+        // Explicit end-of-stream marker so the agent does not depend solely on
+        // gRPC stream completion for finalisation.
         await responseStream.WriteAsync(
-            new DownloadChunk { Data = Google.Protobuf.ByteString.Empty, IsLast = true },
-            context.CancellationToken).ConfigureAwait(false);
+            new DownloadChunk
+            {
+                Data    = Google.Protobuf.ByteString.Empty,
+                IsLast  = true,
+                IsDelta = isDelta,
+            }, ct).ConfigureAwait(false);
     }
 }

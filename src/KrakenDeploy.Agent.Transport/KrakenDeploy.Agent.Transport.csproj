@@ -3,6 +3,7 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" />
     <PackageReference Include="Grpc.Net.Client" />
+    <PackageReference Include="Octodiff" />
   </ItemGroup>
 
   <ItemGroup>
