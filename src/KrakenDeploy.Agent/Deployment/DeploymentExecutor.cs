@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
@@ -10,6 +12,12 @@ namespace KrakenDeploy.Agent.Deployment;
 /// Executes a <see cref="DeploymentPlan"/> received from the server.
 /// Downloads each step's package via gRPC, extracts it, runs the script,
 /// streams log lines back via SignalR, and signals completion.
+/// <para>
+/// Before invoking the user script, a PowerShell preamble is injected that
+/// populates <c>$OctopusParameters</c> (all scalar variables) and
+/// <c>$OctopusArrays</c> (StringArray variables as native arrays).
+/// Bash scripts receive variables via environment variables.
+/// </para>
 /// </summary>
 public sealed class DeploymentExecutor(
     AgentContext context,
@@ -80,7 +88,7 @@ public sealed class DeploymentExecutor(
         var tempRoot = Path.Combine(
             agentConfig.Value.ResolvedDataPath, "staging",
             plan.DeploymentId.ToString("N"),
-            step.Index.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            step.Index.ToString(CultureInfo.InvariantCulture));
 
         Directory.CreateDirectory(tempRoot);
 
@@ -138,9 +146,10 @@ public sealed class DeploymentExecutor(
             return false;
         }
 
+        // Environment variables injected for all script types.
         var envVars = new Dictionary<string, string>(plan.Variables)
         {
-            ["OctopusEnvironmentName"]     = plan.EnvironmentName,
+            ["OctopusEnvironmentName"]      = plan.EnvironmentName,
             ["OctopusPackageDirectoryPath"] = extractDir,
             ["KrakenDeploymentId"]          = plan.DeploymentId.ToString(),
             ["KrakenStepName"]              = step.Name,
@@ -148,8 +157,19 @@ public sealed class DeploymentExecutor(
             ["KrakenPackageVersion"]        = step.PackageVersion,
         };
 
+        var isBash = scriptSyntax?.Equals("Bash", StringComparison.OrdinalIgnoreCase) == true;
+
+        // For PowerShell: prepend the $OctopusParameters / $OctopusArrays preamble.
+        // For Bash: variables are already available as env vars (set above).
+        var fullScript = isBash
+            ? scriptBody
+            : BuildPowerShellPreamble(plan.Variables, plan.ArrayVariables,
+                plan.EnvironmentName, plan.DeploymentId)
+              + Environment.NewLine + Environment.NewLine
+              + scriptBody;
+
         var success = await scriptRunner.RunAsync(
-            scriptBody,
+            fullScript,
             scriptSyntax ?? "PowerShell",
             extractDir,
             envVars,
@@ -168,7 +188,67 @@ public sealed class DeploymentExecutor(
         return success;
     }
 
-    // ── Helpers ────────────────────────────────────────────────────────────
+    // ── PowerShell preamble ────────────────────────────────────────────────
+
+    /// <summary>
+    /// Builds a PowerShell preamble that populates:
+    /// <list type="bullet">
+    ///   <item><c>$OctopusParameters</c> — all scalar variables (Octopus back-compat)</item>
+    ///   <item><c>$OctopusArrays</c> — StringArray variables as native PS arrays</item>
+    /// </list>
+    /// </summary>
+    private static string BuildPowerShellPreamble(
+        IReadOnlyDictionary<string, string> variables,
+        IReadOnlyDictionary<string, string[]> arrayVariables,
+        string environmentName,
+        Guid deploymentId)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("# ── KrakenDeploy: variable injection ──────────────────────────────────");
+        sb.AppendLine("$OctopusParameters = [ordered]@{");
+
+        // Standard Octopus variables.
+        sb.Append("    'Octopus.Environment.Name' = '")
+          .Append(EscapePs(environmentName))
+          .AppendLine("'");
+        sb.Append("    'Octopus.Deployment.Id'    = '")
+          .Append(deploymentId.ToString())
+          .AppendLine("'");
+
+        foreach (var (name, value) in variables)
+        {
+            // Skip the standard vars already added above.
+            if (name.Equals("Octopus.Environment.Name", StringComparison.OrdinalIgnoreCase) ||
+                name.Equals("Octopus.Deployment.Id", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            sb.Append("    '").Append(EscapePs(name)).Append("' = '")
+              .Append(EscapePs(value)).AppendLine("'");
+        }
+
+        sb.AppendLine("}");
+        sb.AppendLine();
+
+        sb.AppendLine("$OctopusArrays = [ordered]@{");
+        foreach (var (name, items) in arrayVariables)
+        {
+            var quotedItems = string.Join(", ", items.Select(v => $"'{EscapePs(v)}'"));
+            sb.Append("    '").Append(EscapePs(name)).Append("' = @(")
+              .Append(quotedItems).AppendLine(")");
+        }
+
+        sb.AppendLine("}");
+        sb.AppendLine("# ────────────────────────────────────────────────────────────────────");
+
+        return sb.ToString();
+    }
+
+    /// <summary>Escapes a string for use inside single-quoted PowerShell strings.</summary>
+    private static string EscapePs(string s) => s.Replace("'", "''");
+
+    // ── Logging helper ─────────────────────────────────────────────────────
 
     private async Task LogAsync(
         Guid deploymentId, string level, string message, CancellationToken ct)

@@ -25,3 +25,18 @@ public sealed record TriggerDeploymentRequest(
     Guid ReleaseId,
     Guid EnvironmentId,
     Guid TargetId);
+
+// ── Variable API ───────────────────────────────────────────────────────────────
+
+/// <summary>
+/// Request body for POST /api/projects/{projectId}/variables and
+/// PUT /api/projects/{projectId}/variables/{variableId}.
+/// </summary>
+public sealed record UpsertVariableRequest(
+    string Name,
+    string Value,
+    /// <summary>"String", "Sensitive", or "StringArray".</summary>
+    string Type,
+    Guid? ScopeEnvironmentId,
+    Guid? ScopeTargetId,
+    List<string>? ScopeRoles);

@@ -59,6 +59,11 @@
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.1" />
   </ItemGroup>
 
+  <ItemGroup Label="Variables / templating">
+    <!-- Octostache: Octopus Deploy's #{VarName} template engine -->
+    <PackageVersion Include="Octostache" Version="3.9.2" />
+  </ItemGroup>
+
   <ItemGroup Label="CLI">
     <PackageVersion Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
   </ItemGroup>

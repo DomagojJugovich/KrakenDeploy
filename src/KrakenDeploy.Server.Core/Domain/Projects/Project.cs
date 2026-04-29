@@ -1,5 +1,6 @@
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Processes;
+using KrakenDeploy.Server.Core.Domain.Variables;
 
 namespace KrakenDeploy.Server.Core.Domain.Projects;
 
@@ -11,4 +12,7 @@ public class Project : AuditableEntity
 
     /// <summary>Deployment process for this project (one-to-one, created lazily).</summary>
     public DeploymentProcess? Process { get; set; }
+
+    /// <summary>Variable set for this project (one-to-one, created lazily).</summary>
+    public VariableSet? VariableSet { get; set; }
 }

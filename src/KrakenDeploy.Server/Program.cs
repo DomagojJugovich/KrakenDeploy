@@ -4,11 +4,13 @@ using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Commands;
 using KrakenDeploy.Server.Components;
 using KrakenDeploy.Server.Data;
+using KrakenDeploy.Server.Data.Encryption;
 using KrakenDeploy.Server.Data.Identity;
 using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Services;
 using KrakenDeploy.Server.Transport;
 using KrakenDeploy.Server.Core.Domain.Targets;
+using KrakenDeploy.Server.Core.Domain.Variables;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -95,6 +97,22 @@ public static class Program
         var dataPath = builder.Configuration["Server:DataPath"] ?? "data";
         builder.Services.AddKrakenDeployData(connectionString, dataPath);
         builder.Services.AddKrakenDeployIdentityCore();
+
+        // ── Encryption (AES-256-GCM for sensitive variables) ────────────────
+        // In production, set Encryption:MasterKey to a base64-encoded 32-byte key.
+        // Generate with: Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32))
+        var masterKey = builder.Configuration["Encryption:MasterKey"];
+        if (string.IsNullOrWhiteSpace(masterKey))
+        {
+            masterKey = Convert.ToBase64String(
+                System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+            Log.Warning(
+                "Encryption:MasterKey is not configured — using an ephemeral key. " +
+                "Sensitive variables encrypted in this session will be unreadable after restart. " +
+                "Set Encryption:MasterKey in appsettings or user-secrets for production.");
+        }
+
+        builder.Services.AddSingleton<IEncryptionService>(_ => new AesEncryptionService(masterKey));
 
         // ── Authentication ───────────────────────────────────────────────────
         builder.Services.AddAuthentication(IdentityConstants.ApplicationScheme)
@@ -415,6 +433,80 @@ public static class Program
                 {
                     return Results.Conflict(new { error = ex.Message });
                 }
+            }).RequireAuthorization();
+
+        // ── Variable API ─────────────────────────────────────────────────────
+        app.MapGet("/api/projects/{projectId:guid}/variables",
+            async (Guid projectId, VariableService variableSvc, CancellationToken ct) =>
+                Results.Ok(await variableSvc.GetVariablesAsync(projectId, ct).ConfigureAwait(false))
+        ).RequireAuthorization();
+
+        app.MapPost("/api/projects/{projectId:guid}/variables",
+            async (Guid projectId, UpsertVariableRequest req,
+                VariableService variableSvc, CancellationToken ct) =>
+            {
+                if (!Enum.TryParse<VariableType>(req.Type, ignoreCase: true, out var type))
+                {
+                    return Results.BadRequest(new
+                    {
+                        error = $"Unknown variable type '{req.Type}'. Valid: String, Sensitive, StringArray.",
+                    });
+                }
+
+                var scope = new VariableScope
+                {
+                    EnvironmentId = req.ScopeEnvironmentId,
+                    TargetId = req.ScopeTargetId,
+                    Roles = req.ScopeRoles,
+                };
+
+                try
+                {
+                    var variable = await variableSvc
+                        .CreateVariableAsync(projectId, req.Name, req.Value, type, scope, ct)
+                        .ConfigureAwait(false);
+
+                    return Results.Created(
+                        $"/api/projects/{projectId}/variables/{variable.Id}",
+                        new { variable.Id, variable.Name, Type = variable.Type.ToString(), variable.Scope });
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequireAuthorization();
+
+        app.MapPut("/api/projects/{projectId:guid}/variables/{variableId:guid}",
+            async (Guid projectId, Guid variableId, UpsertVariableRequest req,
+                VariableService variableSvc, CancellationToken ct) =>
+            {
+                if (!Enum.TryParse<VariableType>(req.Type, ignoreCase: true, out var type))
+                {
+                    return Results.BadRequest(new
+                    {
+                        error = $"Unknown variable type '{req.Type}'. Valid: String, Sensitive, StringArray.",
+                    });
+                }
+
+                var scope = new VariableScope
+                {
+                    EnvironmentId = req.ScopeEnvironmentId,
+                    TargetId = req.ScopeTargetId,
+                    Roles = req.ScopeRoles,
+                };
+
+                var variable = await variableSvc
+                    .UpdateVariableAsync(variableId, req.Name, req.Value, type, scope, ct)
+                    .ConfigureAwait(false);
+
+                return variable is null ? Results.NotFound() : Results.Ok(variable);
+            }).RequireAuthorization();
+
+        app.MapDelete("/api/projects/{projectId:guid}/variables/{variableId:guid}",
+            async (Guid projectId, Guid variableId, VariableService variableSvc, CancellationToken ct) =>
+            {
+                var deleted = await variableSvc.DeleteVariableAsync(variableId, ct).ConfigureAwait(false);
+                return deleted ? Results.NoContent() : Results.NotFound();
             }).RequireAuthorization();
 
         // ── Deployment API ───────────────────────────────────────────────────
