@@ -27,6 +27,7 @@ public class KrakenDbContext(DbContextOptions<KrakenDbContext> options)
     public DbSet<DeploymentProcess> DeploymentProcesses => Set<DeploymentProcess>();
     public DbSet<DeploymentStep> DeploymentSteps => Set<DeploymentStep>();
     public DbSet<DeploymentLogEntry> DeploymentLogEntries => Set<DeploymentLogEntry>();
+    public DbSet<DeploymentArtifact> DeploymentArtifacts => Set<DeploymentArtifact>();
     public DbSet<VariableSet> VariableSets => Set<VariableSet>();
     public DbSet<Variable> Variables => Set<Variable>();
     public DbSet<StepTemplate> StepTemplates => Set<StepTemplate>();

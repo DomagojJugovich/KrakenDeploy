@@ -20,6 +20,9 @@ public class Deployment : AuditableEntity
     /// <summary>Log lines written by the agent during execution.</summary>
     public ICollection<DeploymentLogEntry> LogEntries { get; set; } = [];
 
+    /// <summary>Files collected from the agent at the end of each step.</summary>
+    public ICollection<DeploymentArtifact> Artifacts { get; set; } = [];
+
     /// <summary>
     /// Tracks the next sequence number for log entries.
     /// Incremented atomically in the hub to guarantee ordering under concurrency.

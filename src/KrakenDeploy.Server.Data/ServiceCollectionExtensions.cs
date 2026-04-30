@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using KrakenDeploy.Server.Core.Domain.Packages;
+using KrakenDeploy.Server.Data.ArtifactStorage;
 using KrakenDeploy.Server.Data.Identity;
 using KrakenDeploy.Server.Data.Interceptors;
 using KrakenDeploy.Server.Data.Services;
@@ -29,6 +30,10 @@ public static class ServiceCollectionExtensions
 
         // Package store — local filesystem for M2.
         services.AddSingleton<IPackageStore>(_ => new LocalPackageStore(dataPath));
+
+        // Artifact store — local filesystem for M5.5.
+        services.AddSingleton<IArtifactStore>(_ => new LocalArtifactStore(dataPath));
+        services.AddScoped<ArtifactService>();
 
         // In-process deployment dispatch queue.
         // Unbounded: a server restart drops in-flight Queued deployments; they will

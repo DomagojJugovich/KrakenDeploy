@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using KrakenDeploy.Server.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -12,9 +13,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace KrakenDeploy.Server.Data.Migrations
 {
     [DbContext(typeof(KrakenDbContext))]
-    partial class KrakenDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260430141532_AddM55Schema")]
+    partial class AddM55Schema
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

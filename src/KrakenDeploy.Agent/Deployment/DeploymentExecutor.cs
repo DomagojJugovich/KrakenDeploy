@@ -23,6 +23,7 @@ public sealed class DeploymentExecutor(
     AgentContext context,
     IServerLink serverLink,
     GrpcPackageDownloader packageDownloader,
+    GrpcArtifactUploader artifactUploader,
     IEnumerable<IStepHandler> stepHandlers,
     IOptions<AgentConfig> agentConfig,
     ILogger<DeploymentExecutor> logger)
@@ -103,6 +104,11 @@ public sealed class DeploymentExecutor(
 
         Directory.CreateDirectory(tempRoot);
 
+        // Per-step artifacts directory — scripts write files here and they are
+        // streamed back to the server after the step completes.
+        var artifactsDir = Path.Combine(tempRoot, "artifacts");
+        Directory.CreateDirectory(artifactsDir);
+
         var extractDir = string.Empty;
 
         // ── Package download + extract (skipped for steps that don't need it) ──
@@ -154,10 +160,11 @@ public sealed class DeploymentExecutor(
         {
             var handlerCtx = new StepHandlerContext
             {
-                Plan       = plan,
-                Step       = step,
-                ExtractDir = extractDir,
-                LogAsync   = (level, msg) => LogAsync(plan.DeploymentId, level, msg, ct),
+                Plan         = plan,
+                Step         = step,
+                ExtractDir   = extractDir,
+                ArtifactsDir = artifactsDir,
+                LogAsync     = (level, msg) => LogAsync(plan.DeploymentId, level, msg, ct),
             };
 
             success = await handler.HandleAsync(handlerCtx, ct).ConfigureAwait(false);
@@ -174,11 +181,68 @@ public sealed class DeploymentExecutor(
             success ? $"Step '{step.Name}' succeeded." : $"Step '{step.Name}' failed.",
             ct).ConfigureAwait(false);
 
+        // ── Artifact collection ────────────────────────────────────────────────
+        await CollectArtifactsAsync(plan, step, artifactsDir, ct).ConfigureAwait(false);
+
         // ── Cleanup staging ────────────────────────────────────────────────────
         try { Directory.Delete(tempRoot, recursive: true); }
         catch { /* non-fatal */ }
 
         return success;
+    }
+
+    // ── Artifact collection ────────────────────────────────────────────────────
+
+    private async Task CollectArtifactsAsync(
+        DeploymentPlan plan,
+        DeploymentStepPlan step,
+        string artifactsDir,
+        CancellationToken ct)
+    {
+        string[] files;
+        try
+        {
+            files = Directory.GetFiles(artifactsDir, "*", SearchOption.AllDirectories);
+        }
+        catch
+        {
+            return; // directory was cleaned up or never created — nothing to do
+        }
+
+        if (files.Length == 0)
+        {
+            return;
+        }
+
+        var identity = context.Identity;
+        if (identity is null)
+        {
+            logger.LogWarning(
+                "Cannot upload artifacts for step '{StepName}' — agent identity not available.",
+                step.Name);
+            return;
+        }
+
+        await LogAsync(plan.DeploymentId, "info",
+            $"Collecting {files.Length} artifact(s) from step '{step.Name}'…", ct)
+            .ConfigureAwait(false);
+
+        foreach (var filePath in files)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var artifactId = await artifactUploader.UploadAsync(
+                identity.ServerUrl, identity.AgentToken,
+                plan.DeploymentId, step.Name, filePath, ct)
+                .ConfigureAwait(false);
+
+            if (artifactId is not null)
+            {
+                var rel = Path.GetRelativePath(artifactsDir, filePath);
+                await LogAsync(plan.DeploymentId, "info",
+                    $"Artifact collected: {rel}", ct).ConfigureAwait(false);
+            }
+        }
     }
 
     // ── Logging helper ─────────────────────────────────────────────────────────

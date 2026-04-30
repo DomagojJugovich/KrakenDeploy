@@ -41,3 +41,30 @@ message DownloadChunk {
     // True when the stream contains Octodiff delta bytes rather than the raw zip.
     bool   is_delta    = 4;
 }
+
+// ── Artifact upload ───────────────────────────────────────────────────────────
+// After each deployment step the agent streams back any files found in the
+// step's artifact directory.  Authentication uses the same agent JWT.
+
+service ArtifactUpload {
+    // Client-streaming: agent sends header fields in the first chunk,
+    // then raw file bytes until is_last = true.
+    rpc Upload(stream ArtifactChunk) returns (ArtifactUploadResult);
+}
+
+message ArtifactChunk {
+    // Populated only on the FIRST message.
+    string deployment_id = 1;
+    string step_name     = 2;
+    string file_name     = 3;
+    string content_type  = 4;
+    // Every message.
+    bytes  data          = 5;
+    bool   is_last       = 6;
+}
+
+message ArtifactUploadResult {
+    string artifact_id = 1;
+    bool   success     = 2;
+    string error       = 3;
+}

@@ -83,6 +83,7 @@ static async Task<int> RunAsync(string[] args)
     });
 
     builder.Services.AddSingleton<GrpcPackageDownloader>();
+    builder.Services.AddSingleton<GrpcArtifactUploader>();
 
     // ── Step handlers — registered in priority order ─────────────────────
     // DeploymentExecutor resolves the first handler that CanHandle() the step type.

@@ -243,10 +243,13 @@ public sealed class StepHandlerTests : IDisposable
 
         return new StepHandlerContext
         {
-            Plan       = plan,
-            Step       = step,
-            ExtractDir = extractDir ?? string.Empty,
-            LogAsync   = (level, msg) =>
+            Plan         = plan,
+            Step         = step,
+            ExtractDir   = extractDir ?? string.Empty,
+            ArtifactsDir = extractDir is not null
+                ? Path.Combine(extractDir, "artifacts")
+                : string.Empty,
+            LogAsync     = (level, msg) =>
             {
                 logSink.Add((level, msg));
                 return Task.CompletedTask;

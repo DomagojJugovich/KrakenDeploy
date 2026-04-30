@@ -1,5 +1,9 @@
 @page "/deployments"
 @attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.Deployments
+@using KrakenDeploy.Server.Data.Services
+@inject DeploymentService DeploymentSvc
+@inject NavigationManager Nav
 
 <PageTitle>Deployments - KrakenDeploy</PageTitle>
 
@@ -9,19 +13,44 @@
                 AllowPaging="true" PageSize="25"
                 AllowSorting="true"
                 AllowColumnResize="true"
-                EmptyText="No deployments yet. Deployment execution lands in M2.">
+                RowClick="@(args => Nav.NavigateTo($"/deployments/{args.Data.Id}"))"
+                EmptyText="No deployments yet.">
     <Columns>
-        <RadzenDataGridColumn TItem="Deployment" Property="Status" Title="Status" Width="120px" />
-        <RadzenDataGridColumn TItem="Deployment" Property="ReleaseId" Title="Release" Width="220px" />
-        <RadzenDataGridColumn TItem="Deployment" Property="EnvironmentId" Title="Environment"
-                              Width="200px" />
+        <RadzenDataGridColumn TItem="Deployment" Property="Status" Title="Status" Width="120px">
+            <Template Context="d">
+                <RadzenBadge Text="@d.Status.ToString()" BadgeStyle="@StatusStyle(d.Status)" />
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="Deployment" Title="Project / Release" Width="240px">
+            <Template Context="d">
+                @(d.Release?.Project?.Name ?? "—") / @(d.Release?.Version ?? "—")
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="Deployment" Title="Environment" Width="160px">
+            <Template Context="d">@(d.Environment?.Name ?? "—")</Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="Deployment" Title="Target" Width="160px">
+            <Template Context="d">@(d.Target?.Name ?? "—")</Template>
+        </RadzenDataGridColumn>
         <RadzenDataGridColumn TItem="Deployment" Property="StartedUtc" Title="Started"
-                              FormatString="{0:yyyy-MM-dd HH:mm}" />
+                              Width="160px" FormatString="{0:yyyy-MM-dd HH:mm}" />
         <RadzenDataGridColumn TItem="Deployment" Property="CompletedUtc" Title="Completed"
-                              FormatString="{0:yyyy-MM-dd HH:mm}" />
+                              Width="160px" FormatString="{0:yyyy-MM-dd HH:mm}" />
     </Columns>
 </RadzenDataGrid>
 
 @code {
-    private readonly IReadOnlyList<Deployment> _deployments = [];
+    private List<Deployment> _deployments = [];
+
+    protected override async Task OnInitializedAsync()
+        => _deployments = await DeploymentSvc.GetAllAsync();
+
+    private static BadgeStyle StatusStyle(DeploymentStatus status) => status switch
+    {
+        DeploymentStatus.Succeeded => BadgeStyle.Success,
+        DeploymentStatus.Failed    => BadgeStyle.Danger,
+        DeploymentStatus.Running   => BadgeStyle.Info,
+        DeploymentStatus.Queued    => BadgeStyle.Warning,
+        _                          => BadgeStyle.Light,
+    };
 }

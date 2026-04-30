@@ -1,0 +1,183 @@
+@page "/deployments/{Id:guid}"
+@attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.Deployments
+@using KrakenDeploy.Server.Data.Services
+@inject DeploymentService DeploymentSvc
+@inject ArtifactService ArtifactSvc
+@inject NavigationManager Nav
+
+<PageTitle>Deployment @(Deployment?.Id.ToString()[..8]) - KrakenDeploy</PageTitle>
+
+@if (Deployment is null)
+{
+    <RadzenText>Loading…</RadzenText>
+}
+else
+{
+    <div class="rz-mb-4 rz-d-flex rz-align-items-center rz-gap-3">
+        <RadzenBreadCrumb>
+            <RadzenBreadCrumbItem Path="/deployments" Text="Deployments" />
+            <RadzenBreadCrumbItem Text="@Deployment.Id.ToString()[..8]" />
+        </RadzenBreadCrumb>
+    </div>
+
+    <RadzenCard class="rz-mb-4">
+        <div class="rz-grid-table" style="grid-template-columns: auto 1fr auto 1fr;">
+            <span class="rz-color-secondary">Status</span>
+            <span><RadzenBadge Text="@Deployment.Status.ToString()"
+                               BadgeStyle="@StatusStyle(Deployment.Status)" /></span>
+            <span class="rz-color-secondary">Project</span>
+            <span>@(Deployment.Release?.Project?.Name ?? "—")</span>
+
+            <span class="rz-color-secondary">Release</span>
+            <span>@(Deployment.Release?.Version ?? "—")</span>
+            <span class="rz-color-secondary">Environment</span>
+            <span>@(Deployment.Environment?.Name ?? "—")</span>
+
+            <span class="rz-color-secondary">Target</span>
+            <span>@(Deployment.Target?.Name ?? "—")</span>
+            <span class="rz-color-secondary">Started</span>
+            <span>@(Deployment.StartedUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—")</span>
+
+            <span class="rz-color-secondary">Completed</span>
+            <span>@(Deployment.CompletedUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—")</span>
+            <span class="rz-color-secondary">Duration</span>
+            <span>@FormatDuration()</span>
+        </div>
+    </RadzenCard>
+
+    <RadzenTabs>
+        <Tabs>
+            <RadzenTabsItem Text="Log" Icon="terminal">
+                <div style="font-family: monospace; font-size: 0.85rem; background: #1e1e1e; color: #d4d4d4;
+                             padding: 1rem; border-radius: 4px; max-height: 600px; overflow-y: auto;">
+                    @foreach (var entry in Deployment.LogEntries.OrderBy(l => l.Sequence))
+                    {
+                        <div class="@LevelClass(entry.Level)">
+                            <span style="color: #888; user-select: none;">@entry.Timestamp.ToString("HH:mm:ss")</span>
+                            <span> @entry.Message</span>
+                        </div>
+                    }
+                    @if (!Deployment.LogEntries.Any())
+                    {
+                        <span style="color:#888;">No log entries yet.</span>
+                    }
+                </div>
+            </RadzenTabsItem>
+
+            <RadzenTabsItem Text=@($"Artifacts ({_artifacts.Count})") Icon="attach_file">
+                @if (_artifacts.Count == 0)
+                {
+                    <RadzenText class="rz-color-secondary rz-mt-4">
+                        No artifacts collected for this deployment.
+                    </RadzenText>
+                }
+                else
+                {
+                    <RadzenDataGrid Data="@_artifacts" TItem="DeploymentArtifact"
+                                    AllowSorting="true" AllowColumnResize="true"
+                                    class="rz-mt-3">
+                        <Columns>
+                            <RadzenDataGridColumn TItem="DeploymentArtifact"
+                                                  Property="StepName" Title="Step" Width="200px" />
+                            <RadzenDataGridColumn TItem="DeploymentArtifact"
+                                                  Property="FileName" Title="File">
+                                <Template Context="a">
+                                    @if (IsImage(a.ContentType))
+                                    {
+                                        <img src="@DownloadUrl(a.Id)" alt="@a.FileName"
+                                             style="max-height:48px; max-width:80px; object-fit:contain;
+                                                    vertical-align:middle; margin-right:8px;" />
+                                    }
+                                    <a href="@DownloadUrl(a.Id)" target="_blank"
+                                       rel="noopener noreferrer">@a.FileName</a>
+                                </Template>
+                            </RadzenDataGridColumn>
+                            <RadzenDataGridColumn TItem="DeploymentArtifact"
+                                                  Property="ContentType" Title="Type" Width="180px" />
+                            <RadzenDataGridColumn TItem="DeploymentArtifact"
+                                                  Property="SizeBytes" Title="Size" Width="100px">
+                                <Template Context="a">@FormatBytes(a.SizeBytes)</Template>
+                            </RadzenDataGridColumn>
+                            <RadzenDataGridColumn TItem="DeploymentArtifact"
+                                                  Property="CollectedUtc" Title="Collected"
+                                                  Width="160px">
+                                <Template Context="a">
+                                    @a.CollectedUtc.ToString("yyyy-MM-dd HH:mm")
+                                </Template>
+                            </RadzenDataGridColumn>
+                            <RadzenDataGridColumn TItem="DeploymentArtifact" Title="Download"
+                                                  Width="100px" Sortable="false">
+                                <Template Context="a">
+                                    <RadzenButton Icon="download" ButtonStyle="ButtonStyle.Light"
+                                                  Size="ButtonSize.Small"
+                                                  Click="@(() => Nav.NavigateTo(DownloadUrl(a.Id)))"
+                                                  title="@($"Download {a.FileName}")" />
+                                </Template>
+                            </RadzenDataGridColumn>
+                        </Columns>
+                    </RadzenDataGrid>
+                }
+            </RadzenTabsItem>
+        </Tabs>
+    </RadzenTabs>
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private Deployment? Deployment { get; set; }
+    private List<DeploymentArtifact> _artifacts = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        Deployment = await DeploymentSvc.GetAsync(Id);
+        if (Deployment is not null)
+        {
+            _artifacts = await ArtifactSvc.GetByDeploymentAsync(Id);
+        }
+    }
+
+    private string FormatDuration()
+    {
+        if (Deployment?.StartedUtc is null)    { return "—"; }
+        var end = Deployment.CompletedUtc ?? DateTimeOffset.UtcNow;
+        var dur = end - Deployment.StartedUtc.Value;
+        return dur.TotalHours >= 1
+            ? $"{(int)dur.TotalHours}h {dur.Minutes}m {dur.Seconds}s"
+            : $"{dur.Minutes}m {dur.Seconds}s";
+    }
+
+    private static string LevelClass(string level) => level switch
+    {
+        "error"   => "rz-color-danger",
+        "warning" => "rz-color-warning",
+        _         => "",
+    };
+
+    private string DownloadUrl(Guid artifactId)
+        => $"/api/deployments/{Id}/artifacts/{artifactId}/download";
+
+    private static BadgeStyle StatusStyle(DeploymentStatus status) => status switch
+    {
+        DeploymentStatus.Succeeded => BadgeStyle.Success,
+        DeploymentStatus.Failed    => BadgeStyle.Danger,
+        DeploymentStatus.Running   => BadgeStyle.Info,
+        DeploymentStatus.Queued    => BadgeStyle.Warning,
+        _                          => BadgeStyle.Light,
+    };
+
+    private static bool IsImage(string contentType) =>
+        contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase);
+
+    private static string FormatBytes(long bytes)
+    {
+        const long KB = 1024;
+        const long MB = 1024 * 1024;
+        const long GB = 1024 * 1024 * 1024;
+        if (bytes < KB) { return $"{bytes} B"; }
+        if (bytes < MB) { return $"{bytes / (double)KB:F1} KB"; }
+        if (bytes < GB) { return $"{bytes / (double)MB:F1} MB"; }
+        return $"{bytes / (double)GB:F2} GB";
+    }
+}

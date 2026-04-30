@@ -41,6 +41,8 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
             ["KrakenStepName"]              = context.Step.Name,
             ["KrakenPackageId"]             = context.Step.PackageId,
             ["KrakenPackageVersion"]        = context.Step.PackageVersion,
+            // Scripts write artifact files here; the executor uploads them after the step.
+            ["KRAKEN_ARTIFACTS_PATH"]       = context.ArtifactsDir,
         };
 
         var isBash = scriptSyntax.Equals("Bash", StringComparison.OrdinalIgnoreCase);
@@ -138,7 +140,21 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
         sb.AppendLine("function Write-KrakenWarning { param([string]$Message) Write-Warning $Message }");
         sb.AppendLine("function Write-KrakenError   { param([string]$Message) Write-Error $Message }");
         sb.AppendLine("function Get-KrakenVariable  { param([string]$Name) $OctopusParameters[$Name] }");
-        sb.AppendLine("function Register-KrakenArtifact { param([string]$Path, [string]$Name) Write-Host \"[Artifact] $Path\" }");
+        // Register-KrakenArtifact: copies a file into the KRAKEN_ARTIFACTS_PATH directory
+        // so the executor picks it up and streams it to the server.
+        // The optional -Name parameter overrides the destination filename.
+        sb.AppendLine("""
+function Register-KrakenArtifact {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [string]$Name = [System.IO.Path]::GetFileName($Path)
+    )
+    $dest = [System.IO.Path]::Combine($env:KRAKEN_ARTIFACTS_PATH, $Name)
+    [System.IO.Directory]::CreateDirectory($env:KRAKEN_ARTIFACTS_PATH) | Out-Null
+    Copy-Item -Path $Path -Destination $dest -Force
+    Write-Host "[Artifact] Registered '$Name'"
+}
+""");
         sb.AppendLine("# Octopus-compat aliases");
         sb.AppendLine("Set-Alias -Name 'Write-Verbose' -Value 'Write-KrakenInfo' -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("# ────────────────────────────────────────────────────────────────────");

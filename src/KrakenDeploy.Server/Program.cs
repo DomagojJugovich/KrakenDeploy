@@ -293,6 +293,7 @@ public static class Program
         app.MapHub<AgentHub>("/hubs/agent");
         app.MapHub<UiHub>("/hubs/ui");
         app.MapGrpcService<GrpcPackageDeliveryService>();
+        app.MapGrpcService<GrpcArtifactUploadService>();
 
         // Agent self-registration — exchanges a one-time token for a long-lived JWT.
         // Intentionally AllowAnonymous: the token itself is the credential.
@@ -701,6 +702,29 @@ public static class Program
                 catch (InvalidOperationException ex)
                 {
                     return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequireAuthorization();
+
+        // ── Artifact API ─────────────────────────────────────────────────────────
+        app.MapGet("/api/deployments/{id:guid}/artifacts",
+            async (Guid id, ArtifactService artifactSvc, CancellationToken ct) =>
+                Results.Ok(await artifactSvc.GetByDeploymentAsync(id, ct).ConfigureAwait(false))
+        ).RequireAuthorization();
+
+        app.MapGet("/api/deployments/{deploymentId:guid}/artifacts/{artifactId:guid}/download",
+            async (Guid deploymentId, Guid artifactId,
+                ArtifactService artifactSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var (stream, artifact) = await artifactSvc
+                        .OpenReadAsync(artifactId, ct).ConfigureAwait(false);
+                    return Results.Stream(stream, artifact.ContentType,
+                        fileDownloadName: artifact.FileName, enableRangeProcessing: true);
+                }
+                catch (InvalidOperationException)
+                {
+                    return Results.NotFound();
                 }
             }).RequireAuthorization();
 
