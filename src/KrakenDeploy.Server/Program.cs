@@ -10,6 +10,7 @@ using KrakenDeploy.Server.Data.Identity;
 using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Services;
 using KrakenDeploy.Server.Transport;
+using KrakenDeploy.Server.Core.Domain.StepTemplates;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using Microsoft.AspNetCore.Authentication;
@@ -554,6 +555,98 @@ public static class Program
             {
                 var deleted = await variableSvc.DeleteVariableAsync(variableId, ct).ConfigureAwait(false);
                 return deleted ? Results.NoContent() : Results.NotFound();
+            }).RequireAuthorization();
+
+        // ── Step-template API ────────────────────────────────────────────────
+        app.MapGet("/api/step-templates",
+            async (StepTemplateService svc, CancellationToken ct) =>
+            {
+                var templates = await svc.GetAllAsync(ct).ConfigureAwait(false);
+                var summaries = templates.Select(t => new StepTemplateSummaryDto(
+                    t.Id, t.Name, t.Description, t.ActionType,
+                    t.Parameters.Count, t.Version, t.CreatedUtc));
+                return Results.Ok(summaries);
+            }).RequireAuthorization();
+
+        app.MapGet("/api/step-templates/{id:guid}",
+            async (Guid id, StepTemplateService svc, CancellationToken ct) =>
+            {
+                var template = await svc.GetAsync(id, ct).ConfigureAwait(false);
+                return template is null ? Results.NotFound() : Results.Ok(template);
+            }).RequireAuthorization();
+
+        app.MapPost("/api/step-templates",
+            async (CreateStepTemplateRequest req, StepTemplateService svc,
+                CancellationToken ct) =>
+            {
+                var parameters = req.Parameters?.Select(p =>
+                    new StepTemplateParameter
+                    {
+                        Name          = p.Name,
+                        Label         = p.Label,
+                        HelpText      = p.HelpText,
+                        DefaultValue  = p.DefaultValue,
+                        ControlType   = p.ControlType,
+                        SelectOptions = p.SelectOptions ?? [],
+                    }).ToList();
+
+                var template = await svc.CreateAsync(
+                    req.Name, req.ActionType, req.Description,
+                    req.Properties, parameters, ct)
+                    .ConfigureAwait(false);
+
+                return Results.Created($"/api/step-templates/{template.Id}", template);
+            }).RequireAuthorization();
+
+        app.MapPut("/api/step-templates/{id:guid}",
+            async (Guid id, UpdateStepTemplateRequest req, StepTemplateService svc,
+                CancellationToken ct) =>
+            {
+                var parameters = req.Parameters?.Select(p =>
+                    new StepTemplateParameter
+                    {
+                        Name          = p.Name,
+                        Label         = p.Label,
+                        HelpText      = p.HelpText,
+                        DefaultValue  = p.DefaultValue,
+                        ControlType   = p.ControlType,
+                        SelectOptions = p.SelectOptions ?? [],
+                    }).ToList();
+
+                var template = await svc.UpdateAsync(
+                    id, req.Name, req.Description, req.Properties, parameters, ct)
+                    .ConfigureAwait(false);
+
+                return template is null ? Results.NotFound() : Results.Ok(template);
+            }).RequireAuthorization();
+
+        app.MapDelete("/api/step-templates/{id:guid}",
+            async (Guid id, StepTemplateService svc, CancellationToken ct) =>
+            {
+                var deleted = await svc.DeleteAsync(id, ct).ConfigureAwait(false);
+                return deleted ? Results.NoContent() : Results.NotFound();
+            }).RequireAuthorization();
+
+        app.MapPost("/api/step-templates/import",
+            async (ImportStepTemplateRequest req, StepTemplateService svc,
+                CancellationToken ct) =>
+            {
+                if (string.IsNullOrWhiteSpace(req.Json))
+                {
+                    return Results.BadRequest(new { error = "Json is required." });
+                }
+
+                try
+                {
+                    var template = await svc.ImportFromJsonAsync(
+                        req.Json, req.ImportSource, ct)
+                        .ConfigureAwait(false);
+                    return Results.Ok(template);
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or System.Text.Json.JsonException)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
             }).RequireAuthorization();
 
         // ── Deployment API ───────────────────────────────────────────────────

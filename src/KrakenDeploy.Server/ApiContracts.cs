@@ -26,6 +26,37 @@ public sealed record TriggerDeploymentRequest(
     Guid EnvironmentId,
     Guid TargetId);
 
+// ── Step-template API ──────────────────────────────────────────────────────────
+
+/// <summary>Request body for POST /api/step-templates.</summary>
+public sealed record CreateStepTemplateRequest(
+    string Name,
+    string ActionType,
+    string? Description,
+    Dictionary<string, string>? Properties,
+    List<StepTemplateParameterRequest>? Parameters);
+
+/// <summary>Request body for PUT /api/step-templates/{id:guid}.</summary>
+public sealed record UpdateStepTemplateRequest(
+    string Name,
+    string? Description,
+    Dictionary<string, string>? Properties,
+    List<StepTemplateParameterRequest>? Parameters);
+
+/// <summary>Request body for POST /api/step-templates/import.</summary>
+public sealed record ImportStepTemplateRequest(
+    string Json,
+    string? ImportSource);
+
+/// <summary>Parameter definition within a step-template create/update request.</summary>
+public sealed record StepTemplateParameterRequest(
+    string Name,
+    string Label,
+    string? HelpText,
+    string? DefaultValue,
+    string ControlType,
+    List<string>? SelectOptions);
+
 // ── Variable API ───────────────────────────────────────────────────────────────
 
 /// <summary>

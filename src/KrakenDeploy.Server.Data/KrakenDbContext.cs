@@ -4,6 +4,7 @@ using KrakenDeploy.Server.Core.Domain.Packages;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.StepTemplates;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data.Configurations;
@@ -28,6 +29,7 @@ public class KrakenDbContext(DbContextOptions<KrakenDbContext> options)
     public DbSet<DeploymentLogEntry> DeploymentLogEntries => Set<DeploymentLogEntry>();
     public DbSet<VariableSet> VariableSets => Set<VariableSet>();
     public DbSet<Variable> Variables => Set<Variable>();
+    public DbSet<StepTemplate> StepTemplates => Set<StepTemplate>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {

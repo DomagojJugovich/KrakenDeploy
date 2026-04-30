@@ -1,6 +1,6 @@
 using System.Globalization;
-using System.Text;
 using KrakenDeploy.Agent.Config;
+using KrakenDeploy.Agent.Deployment.StepHandlers;
 using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
 using Microsoft.Extensions.Logging;
@@ -10,23 +10,25 @@ namespace KrakenDeploy.Agent.Deployment;
 
 /// <summary>
 /// Executes a <see cref="DeploymentPlan"/> received from the server.
-/// Downloads each step's package via gRPC, extracts it, runs the script,
-/// streams log lines back via SignalR, and signals completion.
-/// <para>
-/// Before invoking the user script, a PowerShell preamble is injected that
-/// populates <c>$OctopusParameters</c> (all scalar variables) and
-/// <c>$OctopusArrays</c> (StringArray variables as native arrays).
-/// Bash scripts receive variables via environment variables.
-/// </para>
+/// For each step the executor:
+/// <list type="number">
+///   <item>Resolves the first registered <see cref="IStepHandler"/> that can handle the step type.</item>
+///   <item>Optionally downloads and extracts the step's package (if the handler requires it).</item>
+///   <item>Delegates execution to the handler.</item>
+///   <item>Streams log lines back via <see cref="IServerLink"/>.</item>
+///   <item>Signals completion to the server.</item>
+/// </list>
 /// </summary>
 public sealed class DeploymentExecutor(
     AgentContext context,
     IServerLink serverLink,
     GrpcPackageDownloader packageDownloader,
-    ScriptRunner scriptRunner,
+    IEnumerable<IStepHandler> stepHandlers,
     IOptions<AgentConfig> agentConfig,
     ILogger<DeploymentExecutor> logger)
 {
+    private readonly IReadOnlyList<IStepHandler> _handlers = [.. stepHandlers];
+
     public async Task ExecuteAsync(DeploymentPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
@@ -76,7 +78,7 @@ public sealed class DeploymentExecutor(
         }
     }
 
-    // ── Step execution ─────────────────────────────────────────────────────
+    // ── Step execution ─────────────────────────────────────────────────────────
 
     private async Task<bool> ExecuteStepAsync(
         DeploymentPlan plan, DeploymentStepPlan step, CancellationToken ct)
@@ -84,7 +86,16 @@ public sealed class DeploymentExecutor(
         await LogAsync(plan.DeploymentId, "info",
             $"--- Step {step.Index + 1}: {step.Name} ---", ct).ConfigureAwait(false);
 
-        // ── 1. Download package ────────────────────────────────────────────
+        // Resolve a handler for this step type.
+        var handler = _handlers.FirstOrDefault(h => h.CanHandle(step.StepType));
+        if (handler is null)
+        {
+            await LogAsync(plan.DeploymentId, "error",
+                $"Unknown step type '{step.StepType}'. No handler is registered for it.", ct)
+                .ConfigureAwait(false);
+            return false;
+        }
+
         var tempRoot = Path.Combine(
             agentConfig.Value.ResolvedDataPath, "staging",
             plan.DeploymentId.ToString("N"),
@@ -92,163 +103,85 @@ public sealed class DeploymentExecutor(
 
         Directory.CreateDirectory(tempRoot);
 
-        string zipPath;
+        var extractDir = string.Empty;
+
+        // ── Package download + extract (skipped for steps that don't need it) ──
+        if (handler.RequiresPackage && !string.IsNullOrWhiteSpace(step.PackageId))
+        {
+            string zipPath;
+            try
+            {
+                await LogAsync(plan.DeploymentId, "info",
+                    $"Downloading {step.PackageId} v{step.PackageVersion}…", ct)
+                    .ConfigureAwait(false);
+
+                var identity = context.Identity!;
+                zipPath = await packageDownloader
+                    .DownloadAsync(identity.ServerUrl, identity.AgentToken,
+                        step.PackageId, step.PackageVersion, tempRoot, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await LogAsync(plan.DeploymentId, "error",
+                    $"Package download failed: {ex.Message}", ct).ConfigureAwait(false);
+                return false;
+            }
+
+            extractDir = Path.Combine(tempRoot, "extracted");
+            try
+            {
+                await LogAsync(plan.DeploymentId, "info", "Extracting package…", ct)
+                    .ConfigureAwait(false);
+                await PackageExtractor.ExtractAsync(zipPath, extractDir, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                await LogAsync(plan.DeploymentId, "error",
+                    $"Package extraction failed: {ex.Message}", ct).ConfigureAwait(false);
+                return false;
+            }
+        }
+        else if (handler.RequiresPackage)
+        {
+            // Handler wants a package but none is configured — use the staging root.
+            extractDir = tempRoot;
+        }
+
+        // ── Delegate to the handler ────────────────────────────────────────────
+        bool success;
         try
         {
-            await LogAsync(plan.DeploymentId, "info",
-                $"Downloading {step.PackageId} v{step.PackageVersion}…", ct)
-                .ConfigureAwait(false);
+            var handlerCtx = new StepHandlerContext
+            {
+                Plan       = plan,
+                Step       = step,
+                ExtractDir = extractDir,
+                LogAsync   = (level, msg) => LogAsync(plan.DeploymentId, level, msg, ct),
+            };
 
-            var identity = context.Identity!;
-            zipPath = await packageDownloader
-                .DownloadAsync(identity.ServerUrl, identity.AgentToken,
-                    step.PackageId, step.PackageVersion, tempRoot, ct)
-                .ConfigureAwait(false);
+            success = await handler.HandleAsync(handlerCtx, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             await LogAsync(plan.DeploymentId, "error",
-                $"Package download failed: {ex.Message}", ct).ConfigureAwait(false);
-            return false;
-        }
-
-        // ── 2. Extract ─────────────────────────────────────────────────────
-        var extractDir = Path.Combine(tempRoot, "extracted");
-        try
-        {
-            await LogAsync(plan.DeploymentId, "info", "Extracting package…", ct)
+                $"Step handler threw an unhandled exception: {ex.Message}", ct)
                 .ConfigureAwait(false);
-
-            await PackageExtractor.ExtractAsync(zipPath, extractDir, ct).ConfigureAwait(false);
+            success = false;
         }
-        catch (Exception ex)
-        {
-            await LogAsync(plan.DeploymentId, "error",
-                $"Package extraction failed: {ex.Message}", ct).ConfigureAwait(false);
-            return false;
-        }
-
-        // ── 3. Run script ──────────────────────────────────────────────────
-        if (!step.StepType.Equals("KrakenDeploy.Script", StringComparison.OrdinalIgnoreCase))
-        {
-            await LogAsync(plan.DeploymentId, "error",
-                $"Unknown step type '{step.StepType}'.", ct).ConfigureAwait(false);
-            return false;
-        }
-
-        step.Config.TryGetValue("scriptBody", out var scriptBody);
-        step.Config.TryGetValue("scriptSyntax", out var scriptSyntax);
-
-        if (string.IsNullOrWhiteSpace(scriptBody))
-        {
-            await LogAsync(plan.DeploymentId, "error",
-                "Step has no script body.", ct).ConfigureAwait(false);
-            return false;
-        }
-
-        // Environment variables injected for all script types.
-        var envVars = new Dictionary<string, string>(plan.Variables)
-        {
-            ["OctopusEnvironmentName"]      = plan.EnvironmentName,
-            ["OctopusPackageDirectoryPath"] = extractDir,
-            ["KrakenDeploymentId"]          = plan.DeploymentId.ToString(),
-            ["KrakenStepName"]              = step.Name,
-            ["KrakenPackageId"]             = step.PackageId,
-            ["KrakenPackageVersion"]        = step.PackageVersion,
-        };
-
-        var isBash = scriptSyntax?.Equals("Bash", StringComparison.OrdinalIgnoreCase) == true;
-
-        // For PowerShell: prepend the $OctopusParameters / $OctopusArrays preamble.
-        // For Bash: variables are already available as env vars (set above).
-        var fullScript = isBash
-            ? scriptBody
-            : BuildPowerShellPreamble(plan.Variables, plan.ArrayVariables,
-                plan.EnvironmentName, plan.DeploymentId)
-              + Environment.NewLine + Environment.NewLine
-              + scriptBody;
-
-        var success = await scriptRunner.RunAsync(
-            fullScript,
-            scriptSyntax ?? "PowerShell",
-            extractDir,
-            envVars,
-            async (level, message) =>
-                await LogAsync(plan.DeploymentId, level, message, ct).ConfigureAwait(false),
-            ct).ConfigureAwait(false);
 
         await LogAsync(plan.DeploymentId, success ? "info" : "error",
             success ? $"Step '{step.Name}' succeeded." : $"Step '{step.Name}' failed.",
             ct).ConfigureAwait(false);
 
-        // ── 4. Cleanup staging ─────────────────────────────────────────────
+        // ── Cleanup staging ────────────────────────────────────────────────────
         try { Directory.Delete(tempRoot, recursive: true); }
         catch { /* non-fatal */ }
 
         return success;
     }
 
-    // ── PowerShell preamble ────────────────────────────────────────────────
-
-    /// <summary>
-    /// Builds a PowerShell preamble that populates:
-    /// <list type="bullet">
-    ///   <item><c>$OctopusParameters</c> — all scalar variables (Octopus back-compat)</item>
-    ///   <item><c>$OctopusArrays</c> — StringArray variables as native PS arrays</item>
-    /// </list>
-    /// </summary>
-    private static string BuildPowerShellPreamble(
-        IReadOnlyDictionary<string, string> variables,
-        IReadOnlyDictionary<string, string[]> arrayVariables,
-        string environmentName,
-        Guid deploymentId)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine("# ── KrakenDeploy: variable injection ──────────────────────────────────");
-        sb.AppendLine("$OctopusParameters = [ordered]@{");
-
-        // Standard Octopus variables.
-        sb.Append("    'Octopus.Environment.Name' = '")
-          .Append(EscapePs(environmentName))
-          .AppendLine("'");
-        sb.Append("    'Octopus.Deployment.Id'    = '")
-          .Append(deploymentId.ToString())
-          .AppendLine("'");
-
-        foreach (var (name, value) in variables)
-        {
-            // Skip the standard vars already added above.
-            if (name.Equals("Octopus.Environment.Name", StringComparison.OrdinalIgnoreCase) ||
-                name.Equals("Octopus.Deployment.Id", StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            sb.Append("    '").Append(EscapePs(name)).Append("' = '")
-              .Append(EscapePs(value)).AppendLine("'");
-        }
-
-        sb.AppendLine("}");
-        sb.AppendLine();
-
-        sb.AppendLine("$OctopusArrays = [ordered]@{");
-        foreach (var (name, items) in arrayVariables)
-        {
-            var quotedItems = string.Join(", ", items.Select(v => $"'{EscapePs(v)}'"));
-            sb.Append("    '").Append(EscapePs(name)).Append("' = @(")
-              .Append(quotedItems).AppendLine(")");
-        }
-
-        sb.AppendLine("}");
-        sb.AppendLine("# ────────────────────────────────────────────────────────────────────");
-
-        return sb.ToString();
-    }
-
-    /// <summary>Escapes a string for use inside single-quoted PowerShell strings.</summary>
-    private static string EscapePs(string s) => s.Replace("'", "''");
-
-    // ── Logging helper ─────────────────────────────────────────────────────
+    // ── Logging helper ─────────────────────────────────────────────────────────
 
     private async Task LogAsync(
         Guid deploymentId, string level, string message, CancellationToken ct)

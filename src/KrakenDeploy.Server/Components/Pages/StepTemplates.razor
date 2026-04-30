@@ -1,9 +1,160 @@
 @page "/step-templates"
 @attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.StepTemplates
+@using KrakenDeploy.Server.Data.Services
+@inject StepTemplateService TemplateSvc
+@inject DialogService DialogService
+@inject NotificationService NotificationService
 
 <PageTitle>Step Templates - KrakenDeploy</PageTitle>
 
-<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">Step Templates</RadzenText>
-<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-    Octopus Library-compatible step templates — M2.
-</RadzenText>
+<RadzenRow class="rz-mb-4" AlignItems="AlignItems.Center" JustifyContent="JustifyContent.SpaceBetween">
+    <RadzenColumn>
+        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">Step Templates</RadzenText>
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            Reusable step templates — Octopus Community Library compatible.
+        </RadzenText>
+    </RadzenColumn>
+    <RadzenColumn class="rz-text-align-end">
+        <RadzenButton Icon="upload_file" ButtonStyle="ButtonStyle.Light"
+                      Text="Import JSON" class="rz-mr-2"
+                      Click="@ShowImportDialog" />
+        <RadzenButton Icon="add" ButtonStyle="ButtonStyle.Primary"
+                      Text="New Template"
+                      Click="@ShowCreateDialog" />
+    </RadzenColumn>
+</RadzenRow>
+
+<RadzenDataGrid @ref="_grid"
+                Data="@_templates"
+                TItem="StepTemplate"
+                AllowFiltering="true"
+                AllowSorting="true"
+                AllowPaging="true"
+                PageSize="20"
+                IsLoading="@_loading"
+                EmptyText="No step templates defined yet.">
+    <Columns>
+        <RadzenDataGridColumn TItem="StepTemplate" Property="Name" Title="Name" Width="220px">
+            <Template Context="t">
+                <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-0">@t.Name</RadzenText>
+                @if (!string.IsNullOrWhiteSpace(t.Description))
+                {
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                        @(t.Description.Length > 80 ? t.Description[..80] + "…" : t.Description)
+                    </RadzenText>
+                }
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="StepTemplate" Property="ActionType" Title="Action Type" Width="220px">
+            <Template Context="t">
+                <RadzenBadge BadgeStyle="BadgeStyle.Light" Text="@t.ActionType" />
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="StepTemplate" Title="Parameters" Width="100px" Sortable="false" Filterable="false">
+            <Template Context="t">@t.Parameters.Count</Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="StepTemplate" Property="Version" Title="Version" Width="80px" />
+        <RadzenDataGridColumn TItem="StepTemplate" Property="CreatedUtc" Title="Created" Width="150px">
+            <Template Context="t">@t.CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="StepTemplate" Property="ImportedFrom" Title="Source" Width="140px">
+            <Template Context="t">
+                @if (!string.IsNullOrWhiteSpace(t.ImportedFrom))
+                {
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">@t.ImportedFrom</RadzenText>
+                }
+                else
+                {
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">Local</RadzenText>
+                }
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="StepTemplate" Sortable="false" Filterable="false" Width="100px" TextAlign="TextAlign.End">
+            <Template Context="t">
+                <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
+                              Variant="Variant.Flat"
+                              Click="@(() => DeleteTemplateAsync(t))"
+                              title="Delete template" />
+            </Template>
+        </RadzenDataGridColumn>
+    </Columns>
+</RadzenDataGrid>
+
+@code {
+    private RadzenDataGrid<StepTemplate> _grid = default!;
+    private List<StepTemplate> _templates = [];
+    private bool _loading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _templates = await TemplateSvc.GetAllAsync();
+        _loading = false;
+    }
+
+    // ── Import dialog ────────────────────────────────────────────────────────
+
+    private async Task ShowImportDialog()
+    {
+        var result = await DialogService.OpenAsync<Dialogs.ImportStepTemplateDialog>(
+            "Import Step Template",
+            options: new DialogOptions
+            {
+                Width = "700px",
+                CloseDialogOnOverlayClick = false,
+            });
+
+        if (result is true)
+        {
+            await LoadAsync();
+            NotificationService.Notify(NotificationSeverity.Success,
+                "Template imported", "The step template was imported successfully.");
+        }
+    }
+
+    // ── Create dialog ────────────────────────────────────────────────────────
+
+    private async Task ShowCreateDialog()
+    {
+        var result = await DialogService.OpenAsync<Dialogs.CreateStepTemplateDialog>(
+            "New Step Template",
+            options: new DialogOptions
+            {
+                Width = "600px",
+                CloseDialogOnOverlayClick = false,
+            });
+
+        if (result is true)
+        {
+            await LoadAsync();
+            NotificationService.Notify(NotificationSeverity.Success,
+                "Template created", "The step template was created successfully.");
+        }
+    }
+
+    // ── Delete ────────────────────────────────────────────────────────────────
+
+    private async Task DeleteTemplateAsync(StepTemplate template)
+    {
+        var confirmed = await DialogService.Confirm(
+            $"Delete template '{template.Name}'? This action cannot be undone.",
+            "Delete Template",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+
+        if (confirmed != true)
+        {
+            return;
+        }
+
+        await TemplateSvc.DeleteAsync(template.Id);
+        await LoadAsync();
+        NotificationService.Notify(NotificationSeverity.Info,
+            "Template deleted", $"'{template.Name}' has been removed.");
+    }
+}

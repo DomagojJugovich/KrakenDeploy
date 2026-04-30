@@ -1,0 +1,69 @@
+@using KrakenDeploy.Server.Data.Services
+@inject StepTemplateService TemplateSvc
+@inject DialogService DialogService
+
+<RadzenStack Gap="1rem">
+    <RadzenFormField Text="Name" Variant="Variant.Outlined" style="width:100%">
+        <RadzenTextBox @bind-Value="_name" Placeholder="e.g. Deploy ASP.NET Site" style="width:100%" />
+    </RadzenFormField>
+
+    <RadzenFormField Text="Action Type" Variant="Variant.Outlined" style="width:100%">
+        <RadzenTextBox @bind-Value="_actionType" Placeholder="e.g. KrakenDeploy.Script" style="width:100%" />
+    </RadzenFormField>
+
+    <RadzenFormField Text="Description" Variant="Variant.Outlined" style="width:100%">
+        <RadzenTextArea @bind-Value="_description" Rows="3" style="width:100%"
+                        Placeholder="Optional description of what this template does." />
+    </RadzenFormField>
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" Shade="Shade.Lighter">@_error</RadzenAlert>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End" Gap="0.5rem">
+        <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => DialogService.Close(false))" />
+        <RadzenButton Text="Create" ButtonStyle="ButtonStyle.Primary" Icon="add"
+                      IsBusy="@_busy" Click="@CreateAsync" />
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    private string _name = string.Empty;
+    private string _actionType = "KrakenDeploy.Script";
+    private string _description = string.Empty;
+    private string _error = string.Empty;
+    private bool _busy;
+
+    private async Task CreateAsync()
+    {
+        _error = string.Empty;
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            _error = "Name is required.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_actionType))
+        {
+            _error = "Action Type is required.";
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            await TemplateSvc.CreateAsync(_name, _actionType, _description, null, null);
+            DialogService.Close(true);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

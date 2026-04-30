@@ -1,0 +1,59 @@
+@using KrakenDeploy.Server.Data.Services
+@inject StepTemplateService TemplateSvc
+@inject DialogService DialogService
+
+<RadzenStack Gap="1rem">
+    <RadzenText TextStyle="TextStyle.Body1">
+        Paste a step-template JSON from the
+        <RadzenLink Path="https://github.com/OctopusDeploy/Library/tree/master/step-templates"
+                    Target="_blank" Text="Octopus Community Library" /> or any compatible source.
+    </RadzenText>
+
+    <RadzenFormField Text="JSON" Variant="Variant.Outlined" style="width:100%">
+        <RadzenTextArea @bind-Value="_json" Rows="16" style="width:100%; font-family:monospace"
+                        Placeholder='{ "Name": "My Template", "ActionType": "Octopus.Script", ... }' />
+    </RadzenFormField>
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" Shade="Shade.Lighter">@_error</RadzenAlert>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End" Gap="0.5rem">
+        <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => DialogService.Close(false))" />
+        <RadzenButton Text="Import" ButtonStyle="ButtonStyle.Primary" Icon="upload_file"
+                      IsBusy="@_busy" Click="@ImportAsync" />
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    private string _json = string.Empty;
+    private string _error = string.Empty;
+    private bool _busy;
+
+    private async Task ImportAsync()
+    {
+        _error = string.Empty;
+        if (string.IsNullOrWhiteSpace(_json))
+        {
+            _error = "Please paste the template JSON.";
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            await TemplateSvc.ImportFromJsonAsync(_json, "Manual import");
+            DialogService.Close(true);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}
