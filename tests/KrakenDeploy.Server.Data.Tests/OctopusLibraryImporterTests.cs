@@ -127,7 +127,8 @@ public sealed class OctopusLibraryImporterTests
         var p = template.Parameters[0];
         p.ControlType.Should().Be("Select");
         p.SelectOptions.Should().HaveCount(3);
-        p.SelectOptions.Should().ContainInOrder("red", "green", "blue");
+        // Full "value|Label" pairs are stored so the UI can show human-readable labels.
+        p.SelectOptions.Should().ContainInOrder("red|Red", "green|Green", "blue|Blue");
     }
 
     [Fact]

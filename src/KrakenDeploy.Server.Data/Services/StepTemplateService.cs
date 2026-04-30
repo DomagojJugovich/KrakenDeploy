@@ -179,7 +179,10 @@ public static class OctopusLibraryImporter
         var actionType       = root["ActionType"]?.GetValue<string>()?.Trim()
                                ?? throw new InvalidOperationException("'ActionType' is required.");
         var description      = root["Description"]?.GetValue<string>()?.Trim();
-        var communityId      = root["CommunityActionTemplateId"]?.GetValue<string>()?.Trim();
+        // Library JSON files use "Id"; the Octopus API uses "CommunityActionTemplateId".
+        // Accept both so imports work from either source.
+        var communityId      = (root["CommunityActionTemplateId"] ?? root["Id"])
+                               ?.GetValue<string>()?.Trim();
 
         // ── Properties ────────────────────────────────────────────────────────
         var properties = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -278,13 +281,15 @@ public static class OctopusLibraryImporter
         var raw = displaySettings["Octopus.SelectOptions"]?.GetValue<string>();
         if (!string.IsNullOrWhiteSpace(raw))
         {
+            // Keep the full "value|Label" string so the UI can show human-readable
+            // labels while submitting the machine value.  Real Library templates use
+            // entries like "0|Local System" — stripping to "0" makes dropdowns unreadable.
             foreach (var line in raw.Split('\n', StringSplitOptions.RemoveEmptyEntries))
             {
-                var pipe = line.IndexOf('|');
-                var val  = pipe >= 0 ? line[..pipe].Trim() : line.Trim();
-                if (!string.IsNullOrEmpty(val))
+                var trimmed = line.Trim();
+                if (!string.IsNullOrEmpty(trimmed))
                 {
-                    options.Add(val);
+                    options.Add(trimmed);
                 }
             }
         }
