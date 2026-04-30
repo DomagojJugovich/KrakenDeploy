@@ -282,20 +282,62 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 - [x] `ServerLinkHostedService` — wires `OnRunDeployment` before `StartAsync` so no messages are dropped
 - [x] EF migration `AddM2Schema` — new tables + `process_snapshot`/`release_notes`/`next_log_sequence` columns
 
-### M2.5 — `kraken` CLI
-Standalone CI integration tool, distributed as a `dotnet tool` (`dotnet tool install -g KrakenDeploy.Cli`) and as single-file self-contained binaries on GitHub Releases (Windows x64, Linux x64, Linux arm64). Auth via `KRAKEN_SERVER` + `KRAKEN_API_KEY` env vars or `--server` / `--api-key` flags. Commands: `package create` (zip from a publish directory), `package upload`, `release create`, `release deploy [--wait] [--timeout]` (tails log stream to stdout, exits with deployment exit code), `release list`, `target list`, `target health`. `--wait` makes the CLI usable as a pass/fail gate in any pipeline. GitHub Actions wrapper action (`krakendeploy/deploy-action`) as a thin YAML wrapper over the CLI, published separately after the CLI ships.
+### M2.5 — `kraken` CLI ✅
 
-### M3 — variables and Octostache
-Variable sets, scoped variables, scope resolution. Octostache integration in step inputs and scripts. **`StringArray`** type with iteration syntax and dual `$OctopusParameters` / `$OctopusArrays` exposure. Sensitive variable encryption.
+- [x] `KrakenDeploy.Cli` project (`dotnet tool` + single-file self-contained binaries)
+- [x] Auth via `KRAKEN_SERVER` + `KRAKEN_API_KEY` env vars or `--server` / `--api-key` flags; `ApiKeyAuthenticationHandler` on server
+- [x] `package create` — zip a publish directory
+- [x] `package upload` — multipart POST to `/api/packages/upload`
+- [x] `release create` — POST to `/api/projects/{id}/releases`
+- [x] `release deploy [--wait] [--timeout]` — POST then poll `/api/deployments/{id}/logs`; tails log to stdout; exits with deployment exit code
+- [x] `release list`, `target list`, `target health`
+- [x] `--wait` gate usable in any CI pipeline
 
-### M4 — Octodiff and large packages
-Local package cache on agent. Server-side Octodiff signature/delta generation. Resumable chunked transfer with ACKs. Benchmark vs. plain transfer; tune chunk size.
+### M3 — variables and Octostache ✅
 
-### M5 — Octopus step-template compatibility
-Importer for step-template JSON from the Library repo. Parameter-controlType mapping to Radzen form controls. Day-one handlers: `Octopus.Script`, `Octopus.IIS` (basic), `Octopus.WindowsService`, `Octopus.FileTransform`, `Octopus.SubstituteVariables`, `Octopus.Manual`. Kraken PowerShell module shipped to agents with cross-platform helpers and Octopus-compat aliases.
+- [x] `VariableSet` + `Variable` domain entities; `VariableType` enum (String, Sensitive, StringArray)
+- [x] `VariableScope` jsonb column (EnvironmentId, TargetId, Roles)
+- [x] `VariableService.ResolveAsync` — scope priority (env+target+role > env+target > env+role > target+role > env > target > role > unscoped)
+- [x] AES-256-GCM encryption for Sensitive variables (`AesEncryptionService`, `Encryption:MasterKey`)
+- [x] **`StringArray`** type — stored as `text[]`; comma-joined for Octostache; `$OctopusArrays` hashtable in PowerShell preamble
+- [x] Octostache `#{VarName}` substitution injected into PowerShell preamble via `$OctopusParameters`
+- [x] Variable Sets UI page; REST API; EF migration `AddM3Schema`
 
-### M5.5 — deployment artifacts
-Collect files produced by steps (screenshots, HTML reports, logs, any binary) and make them downloadable from the deployment detail page. Agent collects files from `$KRAKEN_ARTIFACTS_PATH` (auto-created per step, implicit) and via `Register-KrakenArtifact` / `kraken_artifact` (explicit, from the Kraken module). Files streamed to the server over the gRPC data channel after each step completes. Server stores under `artifacts/{deploymentId}/{stepName}/` behind an `IArtifactStore` interface (local filesystem for now, pluggable for S3/Azure Blob later). `DeploymentArtifact` entity tracks name, content-type, size, path, and collection timestamp. UI: artifacts tab on deployment detail; inline thumbnail preview for images; sandboxed iframe preview for HTML reports (Playwright etc.); download link for everything else.
+### M4 — Octodiff and large packages ✅
+
+- [x] `IPackageCache` / `LocalPackageCache` on agent (`{dataPath}/package-cache/`)
+- [x] `PackageDeltaService` — server-side Octodiff signature + delta generation, signatures cached alongside package files
+- [x] `GrpcPackageDownloader` — cache-hit → delta → full-download priority; `resume_offset` for resumable full transfers
+- [x] `DownloadRequest.base_version` + `DownloadChunk.is_delta` proto fields
+- [x] EF migration included in `AddM2Schema`
+
+### M5 — Octopus step-template compatibility ✅
+
+- [x] `StepTemplate` + `StepTemplateParameter` domain entities (jsonb `Properties` and `Parameters`)
+- [x] `OctopusLibraryImporter.Parse` — accepts Library JSON (`"Id"` key) and Octopus API JSON (`"CommunityActionTemplateId"` key); trailing commas; all 5 control types; full `"value|Label"` SelectOptions preserved
+- [x] `StepTemplateService` — CRUD + `ImportFromJsonAsync` (upsert by community id)
+- [x] `IStepHandler` dispatch pattern in `DeploymentExecutor` (replaces hard-coded script runner)
+- [x] Handlers: `ScriptStepHandler` (`KrakenDeploy.Script` + `Octopus.Script`), `SubstituteVariablesStepHandler`, `FileTransformStepHandler`, `ManualInterventionStepHandler`
+- [x] PowerShell preamble: `$OctopusParameters`, `$OctopusArrays`, `Write-KrakenInfo/Warning/Error`, `Get-KrakenVariable`, `Register-KrakenArtifact` (stub — completed in M5.5), Octopus-compat `Set-Alias`
+- [x] Step Templates UI page (import JSON, create, delete); `ImportStepTemplateDialog`, `CreateStepTemplateDialog`
+- [x] REST API for step templates; EF migration `AddM5Schema`
+- [x] 11 `OctopusLibraryImporterTests` + 31 `StepHandlerTests`
+
+### M5.5 — deployment artifacts ✅
+
+- [x] `DeploymentArtifact` entity (StepName, FileName, ContentType, SizeBytes, StoredPath, CollectedUtc)
+- [x] `IArtifactStore` / `LocalArtifactStore` — `{dataPath}/artifacts/{deploymentId}/{stepName}/{file}`
+- [x] `ArtifactService` — Save, List, OpenRead, Delete
+- [x] Proto: `ArtifactUpload` service, `Upload(stream ArtifactChunk) → ArtifactUploadResult`
+- [x] `GrpcArtifactUploadService` (server-side, `AgentJwt` auth)
+- [x] `GrpcArtifactUploader` (agent-side, 64 KB chunks, channel reuse)
+- [x] `StepHandlerContext.ArtifactsDir`; `KRAKEN_ARTIFACTS_PATH` env var set per step
+- [x] `DeploymentExecutor` scans artifacts dir and uploads after every step
+- [x] `Register-KrakenArtifact` copies file into artifacts dir (was stub in M5)
+- [x] REST: `GET /api/deployments/{id}/artifacts`, `GET /api/deployments/{id}/artifacts/{artifactId}/download`
+- [x] `Deployments.razor` — real data grid with status badges, row-click to detail
+- [x] `DeploymentDetail.razor` (`/deployments/{id}`) — info card, log tab, artifacts tab with image thumbnails and download links
+- [x] EF migration `AddM55Schema`
 
 ### M6 — multi-tenancy and tags
 Tenants, Tag Sets, tenant tags, tag-set scoping for variables and deployment targets. Project-tenant connections. Tenant common variables and per-project tenant variables.
