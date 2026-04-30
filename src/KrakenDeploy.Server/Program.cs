@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Server.Auth;
 using KrakenDeploy.Server.Commands;
 using KrakenDeploy.Server.Components;
 using KrakenDeploy.Server.Data;
@@ -11,6 +12,7 @@ using KrakenDeploy.Server.Services;
 using KrakenDeploy.Server.Transport;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -139,6 +141,12 @@ public static class Program
                 "Set it in appsettings or user-secrets (minimum 32 characters for HS256).");
         }
 
+        // CLI API-key scheme — validated against ApiKey:Key configuration.
+        // When ApiKey:Key is not configured the handler returns NoResult() harmlessly.
+        builder.Services.AddAuthentication()
+            .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(
+                ApiKeyAuthenticationHandler.SchemeName, _ => { });
+
         builder.Services.AddAuthentication()
             .AddJwtBearer("AgentJwt", options =>
             {
@@ -185,8 +193,15 @@ public static class Program
         builder.Services.AddHostedService<DeploymentWorker>();
 
         // ── Authorization ────────────────────────────────────────────────────
+        // The fallback policy covers all endpoints that call RequireAuthorization().
+        // Specifying multiple schemes here tells the authorization middleware to try
+        // each one in turn; the first success wins.  AgentJwt is handled separately
+        // via [Authorize(AuthenticationSchemes = "AgentJwt")] on AgentHub.
         builder.Services.AddAuthorizationBuilder()
             .SetFallbackPolicy(new AuthorizationPolicyBuilder()
+                .AddAuthenticationSchemes(
+                    IdentityConstants.ApplicationScheme,
+                    ApiKeyAuthenticationHandler.SchemeName)
                 .RequireAuthenticatedUser()
                 .Build());
 
@@ -327,6 +342,38 @@ public static class Program
                     connectedAgents = registry.Count,
                 });
             }).AllowAnonymous();
+
+        // ── Project API (CLI / REST) ─────────────────────────────────────────
+        app.MapGet("/api/projects",
+            async (ProjectService projectSvc, CancellationToken ct) =>
+                Results.Ok(await projectSvc.GetAllAsync(ct).ConfigureAwait(false))
+        ).RequireAuthorization();
+
+        app.MapGet("/api/projects/{id:guid}",
+            async (Guid id, ProjectService projectSvc, CancellationToken ct) =>
+            {
+                var project = await projectSvc.GetAsync(id, ct).ConfigureAwait(false);
+                return project is null ? Results.NotFound() : Results.Ok(project);
+            }).RequireAuthorization();
+
+        app.MapGet("/api/projects/by-slug/{slug}",
+            async (string slug, ProjectService projectSvc, CancellationToken ct) =>
+            {
+                var project = await projectSvc.GetBySlugAsync(slug, ct).ConfigureAwait(false);
+                return project is null ? Results.NotFound() : Results.Ok(project);
+            }).RequireAuthorization();
+
+        // ── Environment API (CLI / REST) ─────────────────────────────────────
+        app.MapGet("/api/environments",
+            async (EnvironmentService envSvc, CancellationToken ct) =>
+                Results.Ok(await envSvc.GetAllOrderedAsync(ct).ConfigureAwait(false))
+        ).RequireAuthorization();
+
+        // ── Target API (CLI / REST) ──────────────────────────────────────────
+        app.MapGet("/api/targets",
+            async (TargetService targetSvc, CancellationToken ct) =>
+                Results.Ok(await targetSvc.GetAllAsync(ct).ConfigureAwait(false))
+        ).RequireAuthorization();
 
         // ── Package API ──────────────────────────────────────────────────────
         // Upload a package: POST /api/packages/upload
@@ -520,6 +567,31 @@ public static class Program
             {
                 var d = await deploymentSvc.GetAsync(id, ct).ConfigureAwait(false);
                 return d is null ? Results.NotFound() : Results.Ok(d);
+            }).RequireAuthorization();
+
+        // Returns log entries for a deployment, optionally filtered by sequence number.
+        // The CLI --wait flag polls this endpoint and prints new lines incrementally.
+        app.MapGet("/api/deployments/{id:guid}/logs",
+            async (Guid id, DeploymentService deploymentSvc, CancellationToken ct, int from = 0) =>
+            {
+                var d = await deploymentSvc.GetAsync(id, ct).ConfigureAwait(false);
+                if (d is null)
+                {
+                    return Results.NotFound();
+                }
+
+                var entries = d.LogEntries
+                    .Where(e => e.Sequence >= from)
+                    .OrderBy(e => e.Sequence)
+                    .Select(e => new
+                    {
+                        e.Sequence,
+                        e.Timestamp,
+                        e.Level,
+                        e.Message,
+                    });
+
+                return Results.Ok(entries);
             }).RequireAuthorization();
 
         app.MapPost("/api/deployments",

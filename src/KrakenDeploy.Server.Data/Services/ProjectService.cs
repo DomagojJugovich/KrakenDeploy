@@ -8,6 +8,12 @@ public class ProjectService(KrakenDbContext db)
     public Task<List<Project>> GetAllAsync(CancellationToken ct = default)
         => db.Projects.OrderBy(p => p.Name).ToListAsync(ct);
 
+    public Task<Project?> GetAsync(Guid id, CancellationToken ct = default)
+        => db.Projects.FindAsync(new object?[] { id }, ct).AsTask();
+
+    public Task<Project?> GetBySlugAsync(string slug, CancellationToken ct = default)
+        => db.Projects.FirstOrDefaultAsync(p => p.Slug == slug, ct);
+
     public async Task<Project> CreateAsync(
         string name, string slug, string? description, CancellationToken ct = default)
     {
