@@ -460,12 +460,154 @@ Full superset action type covering app pool process model + recycle settings (in
 - [ ] Login page: shows "Sign in with {Provider}" buttons + (conditionally) email/password form, depending on policy
 - [ ] Per-Space OIDC tenant restriction (cloud SaaS): only accept tokens whose `tid`/`hd`/`iss` matches the Space's allowed list
 
-**RBAC:**
+**RBAC — full Octopus-parity Users / Roles / Teams model (path 2):**
 
-- [ ] Roles: `SystemAdmin` (all Spaces), `SpaceAdmin`, `ProjectContributor`, `Deployer`, `Viewer`
-- [ ] Role assignments stored on `SpaceMembership` (per-Space), plus a global `IsSystemAdmin` flag on `ApplicationUser`
-- [ ] Policy-based authorization in Blazor + minimal-API endpoints; helpers `[RequireSpaceRole(SpaceRole.Deployer)]`
-- [ ] Migrate existing single-role `[Authorize]` checkpoints to policy-based checks
+The atom is a `Permission` enum. Roles bundle Permissions. Teams bundle members (users + external SSO group claims). Role Assignments connect a Team to a Role with a composite scope (Project Groups, Projects, Environments, Tenants, Tenant Tags). The same flexibility Octopus offers — same vocabulary, same evaluation semantics — so an Octopus customer's mental model maps 1:1.
+
+**Permission atoms (~80 atoms covering everything currently built in M1–M9). Final enum will live in `KrakenDeploy.Server.Core/Domain/Security/Permission.cs`.**
+
+System / cross-Space:
+- `AdministerSystem` — god mode; implies every other permission everywhere
+- `ConfigureServer` — server settings, license, OIDC config, agent auto-update settings
+- `SpaceView`, `SpaceCreate`, `SpaceEdit`, `SpaceDelete`
+- `UserView`, `UserEdit`, `UserInvite`, `UserChangePassword`
+- `TeamView`, `TeamCreate`, `TeamEdit`, `TeamDelete`
+- `RoleView`, `RoleCreate`, `RoleEdit`, `RoleDelete` (custom roles)
+- `EventViewUnscoped` — full audit log across Spaces
+
+Project / process:
+- `ProjectGroupView`, `ProjectGroupCreate`, `ProjectGroupEdit`, `ProjectGroupDelete`
+- `ProjectView`, `ProjectCreate`, `ProjectEdit`, `ProjectDelete`
+- `ProjectExport`, `ProjectImport`
+- `ProcessView`, `ProcessEdit` (the deployment-process step list)
+
+Release / deployment:
+- `ReleaseView`, `ReleaseCreate`, `ReleaseEdit`, `ReleaseDelete`
+- `DeploymentView`, `DeploymentCreate`, `DeploymentDelete`
+- `ArtifactView`, `ArtifactDownload`, `ArtifactCreate`, `ArtifactDelete`
+- `OfflineResultUpload` (offline-drop result ingest — M8)
+
+Environment / target:
+- `EnvironmentView`, `EnvironmentCreate`, `EnvironmentEdit`, `EnvironmentDelete`
+- `MachineView`, `MachineCreate`, `MachineEdit`, `MachineDelete` (DeploymentTarget)
+- `MachineRetire` (mark target offline / disable)
+
+Variables (sensitive ones are explicit, mirroring Octopus):
+- `VariableView`, `VariableEdit`
+- `VariableViewUnscoped`, `VariableEditUnscoped` — sensitive variables (decrypted)
+- `LibraryVariableSetView`, `LibraryVariableSetCreate`, `LibraryVariableSetEdit`, `LibraryVariableSetDelete`
+
+Lifecycle / channel:
+- `LifecycleView`, `LifecycleCreate`, `LifecycleEdit`, `LifecycleDelete`
+- `ChannelView`, `ChannelCreate`, `ChannelEdit`, `ChannelDelete`
+
+Tenants:
+- `TenantView`, `TenantCreate`, `TenantEdit`, `TenantDelete`
+- `TagSetView`, `TagSetCreate`, `TagSetEdit`, `TagSetDelete`
+
+Runbooks:
+- `RunbookView`, `RunbookEdit`
+- `RunbookRunView`, `RunbookRunCreate`, `RunbookRunDelete`
+
+Step templates:
+- `StepTemplateView`, `StepTemplateCreate`, `StepTemplateEdit`, `StepTemplateDelete`
+
+Package library:
+- `PackageView`, `PackageEdit` (upload), `PackageDelete`
+
+Tasks / interruptions:
+- `TaskView`, `TaskCancel`, `TaskEdit`, `TaskRerun`
+- `InterruptionView`, `InterruptionViewSubmitResponsible` (approve / reject manual intervention)
+
+Audit (within scope):
+- `EventView` — audit entries within the scopes the user has access to
+
+API keys:
+- `ApiKeyView`, `ApiKeyCreate`, `ApiKeyEdit`, `ApiKeyDelete` (own keys)
+- `ApiKeyViewAll`, `ApiKeyDeleteAll` (admin: see/revoke any user's keys)
+
+OIDC / external auth:
+- `IdentityProviderView`, `IdentityProviderCreate`, `IdentityProviderEdit`, `IdentityProviderDelete`
+
+(Reserved for future features so the enum doesn't churn: `WorkerView/Create/Edit/Delete`, `WorkerPoolView/Create/Edit/Delete`, `AccountView/Create/Edit/Delete`, `CertificateView`, `CertificateExportPrivateKey`, `SubscriptionView/Create/Edit/Delete`. Add when the entity lands.)
+
+**Domain entities for the access-control model:**
+
+- [ ] `ProjectGroup` entity (new): `Id`, `SpaceId`, `Slug`, `Name`, `Description`, `SortOrder`. Project gets a nullable `ProjectGroupId` FK. Default group "Default Project Group" auto-created per Space. Surfaces in the Projects page as a folder grouping.
+- [ ] `Permission` C# enum — the ~80 atoms listed above. Backed by an integer column when persisted (no permission strings on the wire — typed everywhere).
+- [ ] `Role` entity: `Id`, `SpaceId` (nullable — null = system role), `Name`, `Description`, `IsBuiltIn` (built-ins can't be renamed/deleted), `GrantedPermissions` (List<Permission> stored as `int[]` in jsonb), `SupportedScopes` (which scope dimensions the role accepts — e.g. `AdministerSystem` ignores all scope), `CanBeAssignedToTenants` (bool — Octopus terminology), `CreatedUtc`, `ModifiedUtc`.
+- [ ] `Team` entity: `Id`, `SpaceId` (nullable — null = system team that lives outside any Space), `Name`, `Description`, `IsBuiltIn`, `CreatedUtc`, `ModifiedUtc`.
+- [ ] `TeamMember` join table: `(TeamId, UserId)` — explicit user membership.
+- [ ] `TeamExternalGroup` entity: `Id`, `TeamId`, `IdentityProviderId` (which OIDC config), `GroupClaim` (the claim value, e.g. an AD group SID, an Entra group ObjectId, an Okta group name), `DisplayName`. When a user signs in via SSO, group claims in the token are matched here to compute dynamic team membership for that session.
+- [ ] `RoleAssignment` entity: `Id`, `TeamId`, `RoleId`, scope columns:
+  - `ProjectGroupIds` (`Guid[]` jsonb — empty = all project groups in the space)
+  - `ProjectIds` (`Guid[]` jsonb — empty = all projects)
+  - `EnvironmentIds` (`Guid[]` jsonb — empty = all environments)
+  - `TenantIds` (`Guid[]` jsonb — empty = all tenants)
+  - `TenantTagIds` (`Guid[]` jsonb — match tenants carrying any of these tags; OR-ed with TenantIds)
+
+  **Scope evaluation rule (matches Octopus):** dimensions are AND-ed; values within a dimension are OR-ed. Empty dimension = "all". If a role doesn't support a dimension (e.g. `LibraryVariableSetEdit` is not environment-scopable), the dimension is ignored during evaluation.
+
+- [ ] `IdentityProvider` entity: `Id`, `Name`, `Type` (Local / Oidc / Saml — Saml later), `IsEnabled`, `Authority`, `ClientId`, `ClientSecretEncrypted`, `Scopes`, `GroupsClaim` (which token claim contains group IDs — defaults to `groups`), `EmailClaim`, `UsernameClaim`, `IsBuiltIn` (Local IdP is built-in), `CreatedUtc`, `ModifiedUtc`. One row per configured provider; Local is always row 1.
+
+**Built-in Roles (auto-seeded, can't be deleted):**
+
+System roles (`SpaceId = null`):
+- `SystemAdministrator` — every permission, ignores scope
+- `SystemReadOnly` — every `*View` permission across the system
+
+Space roles (one set per Space, conceptually built-in but seeded per-Space):
+- `SpaceManager` — every permission within the Space (excludes system perms)
+- `ProjectDeployer` — view projects + create releases + create deployments + view variables + run runbooks; scope: typically environments
+- `ProjectContributor` — edit projects/process/variables but no `DeploymentCreate`; scope: typically projects
+- `ProjectViewer` — `*View` permissions for projects, releases, deployments, variables (non-sensitive)
+- `TenantManager` — full tenant CRUD + tenant variables
+- `RunbookConsumer` — view runbooks + run runbooks (read + execute, no edit)
+- `RunbookProducer` — full runbook edit + run
+
+**Built-in Teams (auto-seeded, can't be deleted):**
+
+System teams (`SpaceId = null`):
+- `KrakenDeploy Administrators` — auto-assigned `SystemAdministrator` role; the bootstrap user from `users create-admin` lands here
+- `Everyone` — every authenticated user is implicitly a member; assignable to read-only roles
+
+Per-Space teams (auto-created per Space):
+- `Space Managers` — assigned `SpaceManager` role for that Space
+- `Project Deployers`, `Project Contributors`, `Project Viewers` — assigned the matching role with empty (= all) scope
+- `Everyone (Space)` — every Space member; assignable to space-wide read-only roles
+
+**Permission evaluation pipeline:**
+
+- [ ] `IPermissionEvaluator` service:
+  - `bool HasPermission(ClaimsPrincipal user, Permission perm, PermissionScope? scope = null)`
+  - `IReadOnlySet<Permission> GetEffectivePermissions(ClaimsPrincipal user, PermissionScope scope)` — for "what can I do here?" UI hints
+  - `IReadOnlySet<Guid> GetAccessibleProjects(ClaimsPrincipal user, Permission perm)` — drives EF query filters so users only see projects they have access to
+  - Same for `GetAccessibleEnvironments`, `GetAccessibleTenants`
+- [ ] Resolution order (cached per request via `IUserSecurityContext` scoped service):
+  1. Resolve user's effective Teams = explicit `TeamMember` rows + dynamic teams from this session's SSO group claims (matched against `TeamExternalGroup` rows)
+  2. Walk all `RoleAssignment` rows for those teams
+  3. For each, expand `Role.GrantedPermissions` and intersect with `RoleAssignment` scope
+  4. Union all matching grants
+  5. `AdministerSystem` short-circuits to "yes, everywhere"
+- [ ] Authorization integrations:
+  - Minimal-API: `.RequirePermission(Permission.ReleaseCreate)` extension method that resolves the scope from route values (`{projectId}`, `{environmentId}`, `{tenantId}`)
+  - Blazor: `<RequirePermission Perm="Permission.DeploymentCreate" ProjectId="@Project.Id">…</RequirePermission>` component that conditionally renders children
+  - Razor `[Authorize(Policy = "Permission.X")]` attribute support via dynamic policy provider
+- [ ] EF Core `IQueryable<T>` filters: `db.Projects.AccessibleBy(currentUser, Permission.ProjectView)` extension methods so list pages only show what the user can see
+
+**Migration of existing call sites:**
+
+- [ ] Audit every `RequireAuthorization()` and `[Authorize]` in the codebase (47 files identified — see grep)
+- [ ] Replace each with the matching `RequirePermission(Permission.X)` based on the operation; default for "any authenticated user" cases stays as `RequireAuthorization()`
+- [ ] Bootstrap user (the one from `users create-admin`) goes into `KrakenDeploy Administrators` team automatically
+
+**UI:**
+
+- [ ] Configuration → Users page: list, invite, edit, change-password, view team membership
+- [ ] Configuration → Teams page: list, create, edit (members + external groups), view assigned roles
+- [ ] Configuration → Roles page: list, view (built-ins are read-only), create custom roles, clone existing role as starting point
+- [ ] Configuration → Test Permission tool: pick a user + a context (Space, Project, Environment, Tenant) → see their effective permissions and which Role Assignment granted each one. Critical for debugging "why can't user X do Y?"
+- [ ] Project / Environment / Tenant detail pages: "Access" tab listing the role assignments scoped to this entity
 
 **API tokens:**
 
