@@ -7,8 +7,10 @@ namespace KrakenDeploy.Server.Core.Domain.Lifecycles;
 /// release must pass through on its way to production. Channels reference a lifecycle;
 /// the lifecycle gate is enforced on every <c>POST /api/deployments</c> call.
 /// </summary>
-public class Lifecycle : AuditableEntity
+public class Lifecycle : AuditableEntity, ISpaceScoped
 {
+    public Guid SpaceId { get; set; }
+
     public required string Name { get; set; }
 
     public string? Description { get; set; }

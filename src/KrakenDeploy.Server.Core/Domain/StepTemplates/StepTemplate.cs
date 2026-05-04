@@ -8,8 +8,10 @@ namespace KrakenDeploy.Server.Core.Domain.StepTemplates;
 /// When applied to a deployment process step, the template's <see cref="ActionType"/>
 /// and <see cref="Properties"/> are copied onto the <c>DeploymentStep</c>.
 /// </summary>
-public class StepTemplate : AuditableEntity
+public class StepTemplate : AuditableEntity, ISpaceScoped
 {
+    public Guid SpaceId { get; set; }
+
     /// <summary>Display name shown in the Library and step picker.</summary>
     public required string Name { get; set; }
 

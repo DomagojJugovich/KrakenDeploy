@@ -1,13 +1,16 @@
 using System.Threading.Channels;
 using KrakenDeploy.Server.Core.Domain.Packages;
+using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Data.ArtifactStorage;
 using KrakenDeploy.Server.Data.Identity;
 using KrakenDeploy.Server.Data.Interceptors;
 using KrakenDeploy.Server.Data.Services;
+using KrakenDeploy.Server.Data.Spaces;
 using KrakenDeploy.Server.Data.Storage;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace KrakenDeploy.Server.Data;
 
@@ -21,11 +24,22 @@ public static class ServiceCollectionExtensions
         services.TryAddTimeProvider();
         services.AddSingleton<AuditableEntityInterceptor>();
 
+        // ── Space context ─────────────────────────────────────────────────────
+        // Default impl always returns the Default Space — used by tests, the
+        // migration host, and the create-admin CLI. The Server project replaces
+        // this with HttpSpaceContext so requests resolve the Space from routing
+        // / claims. Scoped because per-request overrides via WithSpace() must
+        // not leak across requests.
+        services.TryAddScoped<ISpaceContext, DefaultSpaceContext>();
+        services.AddScoped<SpaceScopingInterceptor>();
+
         services.AddDbContext<KrakenDbContext>((sp, options) =>
         {
             options.UseNpgsql(connectionString);
             options.UseSnakeCaseNamingConvention();
-            options.AddInterceptors(sp.GetRequiredService<AuditableEntityInterceptor>());
+            options.AddInterceptors(
+                sp.GetRequiredService<AuditableEntityInterceptor>(),
+                sp.GetRequiredService<SpaceScopingInterceptor>());
         });
 
         // Package store — local filesystem for M2.

@@ -9,8 +9,10 @@ namespace KrakenDeploy.Server.Core.Domain.Runbooks;
 /// <see cref="RunbookProcess"/> (its editable steps), and each execution is recorded
 /// as a <see cref="RunbookRun"/> that snaps the current process at trigger time.
 /// </summary>
-public class Runbook : AuditableEntity
+public class Runbook : AuditableEntity, ISpaceScoped
 {
+    public Guid SpaceId { get; set; }
+
     public Guid ProjectId { get; set; }
     public Project Project { get; set; } = null!;
 

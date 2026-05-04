@@ -1,5 +1,6 @@
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Interceptors;
+using KrakenDeploy.Server.Data.Spaces;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Testcontainers.PostgreSql;
@@ -25,10 +26,13 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     public KrakenDbContext CreateContext()
     {
+        var spaceContext = new DefaultSpaceContext();
         var options = new DbContextOptionsBuilder<KrakenDbContext>()
             .UseNpgsql(ConnectionString)
             .UseSnakeCaseNamingConvention()
-            .AddInterceptors(new AuditableEntityInterceptor(TimeProvider.System))
+            .AddInterceptors(
+                new AuditableEntityInterceptor(TimeProvider.System),
+                new SpaceScopingInterceptor(spaceContext))
             // EF Core 9 promotes PendingModelChangesWarning to an error by default.
             // Lambda-based value converters (like our jsonb HasConversion) cannot be
             // perfectly round-tripped through the migration snapshot, so the runtime
@@ -37,7 +41,7 @@ public sealed class PostgresFixture : IAsyncLifetime
             .ConfigureWarnings(w => w.Ignore(RelationalEventId.PendingModelChangesWarning))
             .Options;
 
-        return new KrakenDbContext(options);
+        return new KrakenDbContext(options, spaceContext);
     }
 
     public async Task InitializeAsync()

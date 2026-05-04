@@ -1,3 +1,4 @@
+using KrakenDeploy.Server.Data.Spaces;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 
@@ -25,6 +26,8 @@ public class KrakenDbContextDesignTimeFactory : IDesignTimeDbContextFactory<Krak
             .UseSnakeCaseNamingConvention()
             .Options;
 
-        return new KrakenDbContext(options);
+        // Design-time tooling has no HTTP context, so use the simple
+        // Default-Space-only ISpaceContext implementation.
+        return new KrakenDbContext(options, new DefaultSpaceContext());
     }
 }

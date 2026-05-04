@@ -6,8 +6,10 @@ using KrakenDeploy.Server.Core.Domain.Tenants;
 
 namespace KrakenDeploy.Server.Core.Domain.Deployments;
 
-public class Deployment : AuditableEntity
+public class Deployment : AuditableEntity, ISpaceScoped
 {
+    public Guid SpaceId { get; set; }
+
     public Guid ReleaseId { get; set; }
     public Release Release { get; set; } = null!;
     public Guid EnvironmentId { get; set; }

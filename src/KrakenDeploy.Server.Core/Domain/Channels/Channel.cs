@@ -9,8 +9,10 @@ namespace KrakenDeploy.Server.Core.Domain.Channels;
 /// Every project has at least one channel (the default). Releases created without an
 /// explicit channel are assigned to the project's default channel.
 /// </summary>
-public class Channel : AuditableEntity
+public class Channel : AuditableEntity, ISpaceScoped
 {
+    public Guid SpaceId { get; set; }
+
     public Guid ProjectId { get; set; }
     public Project Project { get; set; } = null!;
 

@@ -7,8 +7,10 @@ using KrakenDeploy.Server.Core.Domain.Variables;
 
 namespace KrakenDeploy.Server.Core.Domain.Projects;
 
-public class Project : AuditableEntity
+public class Project : AuditableEntity, ISpaceScoped
 {
+    public Guid SpaceId { get; set; }
+
     public required string Slug { get; set; }
     public required string Name { get; set; }
     public string? Description { get; set; }

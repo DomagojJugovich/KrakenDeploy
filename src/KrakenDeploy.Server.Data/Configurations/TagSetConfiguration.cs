@@ -11,6 +11,8 @@ public class TagSetConfiguration : IEntityTypeConfiguration<TagSet>
         builder.ToTable("tag_sets");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.Property(x => x.Name).IsRequired().HasMaxLength(200);
         builder.Property(x => x.Description).HasMaxLength(1000);
         builder.Property(x => x.SortOrder).IsRequired();

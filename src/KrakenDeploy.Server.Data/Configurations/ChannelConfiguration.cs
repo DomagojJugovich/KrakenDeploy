@@ -11,6 +11,8 @@ public class ChannelConfiguration : IEntityTypeConfiguration<Channel>
         builder.ToTable("channels");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.Property(x => x.Name).IsRequired().HasMaxLength(200);
         builder.Property(x => x.IsDefault).IsRequired();
         builder.Property(x => x.VersionRange).HasMaxLength(200);

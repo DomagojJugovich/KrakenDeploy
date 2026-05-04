@@ -6,8 +6,10 @@ namespace KrakenDeploy.Server.Core.Domain.Tenants;
 /// A named group of tags belonging to a tenant (e.g. "Region", "Tier").
 /// Tags within a set are mutually exclusive per target by convention.
 /// </summary>
-public class TagSet : AuditableEntity
+public class TagSet : AuditableEntity, ISpaceScoped
 {
+    public Guid SpaceId { get; set; }
+
     public Guid TenantId { get; set; }
     public Tenant Tenant { get; set; } = null!;
 

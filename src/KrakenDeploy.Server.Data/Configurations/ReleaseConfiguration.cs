@@ -13,6 +13,8 @@ public class ReleaseConfiguration : IEntityTypeConfiguration<Release>
         builder.ToTable("releases");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.Property(x => x.Version).HasMaxLength(128).IsRequired();
         builder.Property(x => x.ReleaseNotes);
 

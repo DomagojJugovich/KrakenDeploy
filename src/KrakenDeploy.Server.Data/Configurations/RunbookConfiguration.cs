@@ -11,6 +11,8 @@ public class RunbookConfiguration : IEntityTypeConfiguration<Runbook>
         builder.ToTable("runbooks");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.Property(x => x.Name).IsRequired().HasMaxLength(200);
         builder.Property(x => x.Description).HasMaxLength(1000);
 

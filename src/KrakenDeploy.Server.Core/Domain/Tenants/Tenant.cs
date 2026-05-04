@@ -9,8 +9,10 @@ namespace KrakenDeploy.Server.Core.Domain.Tenants;
 /// Each tenant optionally owns a <see cref="Variables.VariableSet"/> for common variables
 /// that supplement project-level scoping.
 /// </summary>
-public class Tenant : AuditableEntity
+public class Tenant : AuditableEntity, ISpaceScoped
 {
+    public Guid SpaceId { get; set; }
+
     /// <summary>URL-safe identifier (e.g. "acme-corp").</summary>
     public required string Slug { get; set; }
 

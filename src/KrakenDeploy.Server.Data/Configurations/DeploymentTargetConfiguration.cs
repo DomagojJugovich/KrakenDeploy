@@ -12,6 +12,8 @@ public class DeploymentTargetConfiguration : IEntityTypeConfiguration<Deployment
         builder.ToTable("deployment_targets");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.Property(x => x.Name).HasMaxLength(200).IsRequired();
 
         builder.Property(x => x.Status).IsRequired().HasConversion<int>();

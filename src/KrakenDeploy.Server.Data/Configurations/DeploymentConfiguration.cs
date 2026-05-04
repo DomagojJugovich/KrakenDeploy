@@ -12,6 +12,8 @@ public class DeploymentConfiguration : IEntityTypeConfiguration<Deployment>
         builder.ToTable("deployments");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.Property(x => x.Status).IsRequired().HasConversion<int>();
         builder.HasIndex(x => x.Status);
 

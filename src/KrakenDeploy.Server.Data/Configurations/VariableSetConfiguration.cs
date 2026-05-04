@@ -11,6 +11,8 @@ public class VariableSetConfiguration : IEntityTypeConfiguration<VariableSet>
         builder.ToTable("variable_sets");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.HasOne(x => x.Project)
             .WithOne(p => p.VariableSet)
             .HasForeignKey<VariableSet>(x => x.ProjectId)

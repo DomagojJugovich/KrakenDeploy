@@ -11,8 +11,10 @@ public class DeploymentEnvironmentConfiguration : IEntityTypeConfiguration<Deplo
         builder.ToTable("environments");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.Property(x => x.Slug).HasMaxLength(64).IsRequired();
-        builder.HasIndex(x => x.Slug).IsUnique();
+        builder.HasIndex(x => new { x.SpaceId, x.Slug }).IsUnique();
 
         builder.Property(x => x.Name).HasMaxLength(200).IsRequired();
 

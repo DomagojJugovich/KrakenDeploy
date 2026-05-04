@@ -12,6 +12,8 @@ public class StepTemplateConfiguration : IEntityTypeConfiguration<StepTemplate>
         builder.ToTable("step_templates");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.Property(x => x.Name).HasMaxLength(256).IsRequired();
         builder.Property(x => x.Description).HasMaxLength(4096);
         builder.Property(x => x.ActionType).HasMaxLength(256).IsRequired();

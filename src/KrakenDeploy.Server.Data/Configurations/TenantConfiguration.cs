@@ -11,8 +11,10 @@ public class TenantConfiguration : IEntityTypeConfiguration<Tenant>
         builder.ToTable("tenants");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.Property(x => x.Slug).IsRequired().HasMaxLength(100);
-        builder.HasIndex(x => x.Slug).IsUnique();
+        builder.HasIndex(x => new { x.SpaceId, x.Slug }).IsUnique();
 
         builder.Property(x => x.Name).IsRequired().HasMaxLength(200);
         builder.Property(x => x.Description).HasMaxLength(1000);

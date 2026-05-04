@@ -3,8 +3,10 @@ using KrakenDeploy.Server.Core.Domain.Tenants;
 
 namespace KrakenDeploy.Server.Core.Domain.Targets;
 
-public class DeploymentTarget : AuditableEntity
+public class DeploymentTarget : AuditableEntity, ISpaceScoped
 {
+    public Guid SpaceId { get; set; }
+
     public required string Name { get; set; }
     public TargetStatus Status { get; set; } = TargetStatus.Unknown;
     public DateTimeOffset? LastSeenUtc { get; set; }

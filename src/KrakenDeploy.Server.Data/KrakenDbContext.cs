@@ -1,4 +1,6 @@
+using System.Linq.Expressions;
 using KrakenDeploy.Server.Core.Domain.Channels;
+using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Environments;
 using KrakenDeploy.Server.Core.Domain.Lifecycles;
@@ -7,6 +9,7 @@ using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
+using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.StepTemplates;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Tenants;
@@ -19,9 +22,14 @@ using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data;
 
-public class KrakenDbContext(DbContextOptions<KrakenDbContext> options)
+public class KrakenDbContext(
+    DbContextOptions<KrakenDbContext> options,
+    ISpaceContext spaceContext)
     : IdentityDbContext<ApplicationUser, IdentityRole<Guid>, Guid>(options)
 {
+    private readonly ISpaceContext _spaceContext = spaceContext;
+
+    public DbSet<Space> Spaces => Set<Space>();
     public DbSet<Project> Projects => Set<Project>();
     public DbSet<DeploymentEnvironment> Environments => Set<DeploymentEnvironment>();
     public DbSet<DeploymentTarget> DeploymentTargets => Set<DeploymentTarget>();
@@ -46,10 +54,48 @@ public class KrakenDbContext(DbContextOptions<KrakenDbContext> options)
     public DbSet<RunbookRun> RunbookRuns => Set<RunbookRun>();
     public DbSet<RunbookRunLogEntry> RunbookRunLogEntries => Set<RunbookRunLogEntry>();
 
+    /// <summary>
+    /// Read by the EF Core global query filter for every <see cref="ISpaceScoped"/>
+    /// entity. EF treats this as a parameter and re-evaluates per query, so changing
+    /// the active Space (e.g. via <c>ISpaceContext.WithSpace</c>) takes effect
+    /// immediately on the next query — no model rebuild required.
+    /// </summary>
+    public Guid CurrentSpaceId => _spaceContext.CurrentSpaceId;
+
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
         builder.ConfigureIdentity();
         builder.ApplyConfigurationsFromAssembly(typeof(KrakenDbContext).Assembly);
+
+        ApplySpaceQueryFilters(builder);
+    }
+
+    /// <summary>
+    /// Applies an EF Core global query filter to every entity that implements
+    /// <see cref="ISpaceScoped"/>: <c>e =&gt; e.SpaceId == CurrentSpaceId</c>.
+    /// Use <c>IQueryable&lt;T&gt;.IgnoreQueryFilters()</c> to bypass for admin /
+    /// cross-Space queries.
+    /// </summary>
+    private void ApplySpaceQueryFilters(ModelBuilder builder)
+    {
+        foreach (var entityType in builder.Model.GetEntityTypes())
+        {
+            if (!typeof(ISpaceScoped).IsAssignableFrom(entityType.ClrType))
+            {
+                continue;
+            }
+
+            // Build: e => e.SpaceId == this.CurrentSpaceId
+            var param = Expression.Parameter(entityType.ClrType, "e");
+            var spaceIdProp = Expression.Property(param, nameof(ISpaceScoped.SpaceId));
+            var contextProp = Expression.Property(
+                Expression.Constant(this),
+                nameof(CurrentSpaceId));
+            var body = Expression.Equal(spaceIdProp, contextProp);
+            var lambda = Expression.Lambda(body, param);
+
+            builder.Entity(entityType.ClrType).HasQueryFilter(lambda);
+        }
     }
 }
