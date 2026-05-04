@@ -434,8 +434,115 @@ Full superset action type covering app pool process model + recycle settings (in
 - [x] Server.Data project references Contracts (for shared step config keys)
 - [x] Unit tests: 17 new tests covering required-key validation, defaults, full config parse, binding parser (HTTP, HTTPS, multiline, comments), handler step-type matching
 
-### M10 — operational polish
-Direct + polling transport modes. Hangfire scheduled deployments and retention. Audit log, RBAC, API tokens. Agent auto-update. OIDC SSO. OpenTelemetry export to Grafana stack or Seq. Caddy reverse-proxy reference deployment.
+### M10 — operational polish + Spaces foundation
+
+**Deployment-model strategy:** path **B** — both on-prem and cloud SaaS, on-prem first. M10 delivers the shared baseline that both scenarios need; M10.1 packages the on-prem product; M10.2 hardens for cloud SaaS. The Spaces entity is added in M10 (cheap now, painful later) so the cloud milestone doesn't have to migrate live tenant data.
+
+**Spaces foundation (the load-bearing change for the cloud roadmap):**
+
+- [ ] `Space` entity: `Id`, `Slug` (URL-friendly), `Name`, `Description`, `IsDefault`, `CreatedUtc`, `Status` (Active/Suspended)
+- [ ] Add `SpaceId` FK to every space-scoped entity: Project, Environment, DeploymentTarget, Release, Deployment, VariableSet, Variable, Tenant, TagSet, Lifecycle, Channel, Runbook, RunbookRun, StepTemplate, DeploymentArtifact, Package, ApiKey, AuditEntry. Identity tables (`AspNetUsers` etc.) are platform-level — users can be members of multiple Spaces with per-Space roles.
+- [ ] `SpaceMembership` entity: `(UserId, SpaceId, Role)` — a user's role within a Space. System admins implicitly have access to all Spaces.
+- [ ] EF Core global query filter: every space-scoped query is auto-filtered by the current user's active Space; `ISpaceContext` scoped service holds the resolved `SpaceId`
+- [ ] Single-tenant default: a "Default" Space is created on first run; on-prem installs see no Space picker (one Space, transparent); when more than one Space exists the UI exposes a switcher
+- [ ] Migration `AddSpacesFoundation` — backfills `SpaceId` on existing rows to the Default Space
+- [ ] Slug-based routing optional: `/s/{spaceSlug}/projects/...` (off by default for on-prem; turned on for cloud)
+- [ ] Audit log scoped to Space; system events (admin, billing) live in a Platform space
+- [ ] **Octopus terminology mapping:** what Octopus calls a "Space" maps to KrakenDeploy `Space`; what Octopus calls a "Tenant" remains the existing `Tenant` entity (a deployment-target customer *within* a Space). Don't conflate them.
+
+**Authentication — local accounts and OIDC coexist:**
+
+- [ ] Local accounts remain the default and bootstrap path (existing `users create-admin` CLI keeps working)
+- [ ] OIDC plug: configurable per-deployment, multiple providers (Microsoft Entra / Azure AD, Okta, Google, Auth0, generic OIDC). Uses `Microsoft.AspNetCore.Authentication.OpenIdConnect`.
+- [ ] Just-in-time provisioning: first OIDC sign-in creates an `ApplicationUser` with linked `ExternalLogins` row (no pre-creation needed)
+- [ ] Admin policy: "Restrict local password login to Administrator role" — tightens to SSO-only for normal users while keeping break-glass admin login
+- [ ] Admin policy: "Auto-assign role X to JIT-provisioned users" + "Auto-add to Space Y"
+- [ ] Login page: shows "Sign in with {Provider}" buttons + (conditionally) email/password form, depending on policy
+- [ ] Per-Space OIDC tenant restriction (cloud SaaS): only accept tokens whose `tid`/`hd`/`iss` matches the Space's allowed list
+
+**RBAC:**
+
+- [ ] Roles: `SystemAdmin` (all Spaces), `SpaceAdmin`, `ProjectContributor`, `Deployer`, `Viewer`
+- [ ] Role assignments stored on `SpaceMembership` (per-Space), plus a global `IsSystemAdmin` flag on `ApplicationUser`
+- [ ] Policy-based authorization in Blazor + minimal-API endpoints; helpers `[RequireSpaceRole(SpaceRole.Deployer)]`
+- [ ] Migrate existing single-role `[Authorize]` checkpoints to policy-based checks
+
+**API tokens:**
+
+- [ ] Already exist from M2.5; extend with: `SpaceId` scope (a token belongs to one Space), expiry, last-used timestamp, optional IP allowlist
+- [ ] UI page under Settings → API Tokens for create/revoke/list
+
+**Audit log:**
+
+- [ ] `AuditEntry` entity: `Id`, `SpaceId` (nullable for platform events), `UserId`, `UserDisplay`, `OccurredUtc`, `EventType` (e.g. `Deployment.Created`, `Variable.Updated`, `Target.Deleted`, `User.SignedIn`), `Subject` (entity type + id), `Before`/`After` JSONB snapshots, `IpAddress`, `UserAgent`
+- [ ] EF Core `SaveChangesInterceptor` writes audit entries automatically for tracked entity changes; explicit `IAuditLog.RecordAsync(...)` for non-EF events (login, API call, file download)
+- [ ] `/audit` page: filterable by user, event type, date range, entity; export to CSV
+- [ ] Retention: configurable, default 365 days; nightly Hangfire purge
+
+**Hangfire scheduled work:**
+
+- [ ] Wire Hangfire on Postgres (already in stack decisions)
+- [ ] Scheduled deployments: a Deployment can carry a `ScheduledFor` timestamp; Hangfire picks it up and dispatches at that time
+- [ ] Recurring jobs: package retention sweep, audit retention sweep, registration-token expiry cleanup, drop-bundle retention sweep, agent last-seen → `Offline` transition
+- [ ] Hangfire dashboard at `/hangfire` (SystemAdmin only)
+
+**Agent auto-update:**
+
+- [ ] Server hosts agent binaries at `/agents/kraken-agent-{rid}.{ext}` with a `version.json` manifest
+- [ ] Agent on heartbeat compares own version to server's published agent version; when newer is available downloads to staging dir
+- [ ] Maintenance window: agent only swaps to new binary during a configurable window (default 02:00–04:00 local) — avoids killing in-flight deployments
+- [ ] On Windows, the service supervisor restarts; on Linux, systemd `Restart=always` handles it
+- [ ] Pin override: target-level "do not auto-update" flag for agents under change-control
+
+**Direct + polling transport modes:**
+
+- [ ] `IServerLink` already abstracts the transport; add `DirectServerLink` (server pushes via agent's HTTPS listener — for trusted LAN scenarios) and `PollingServerLink` (agent polls server every N seconds — for highly restricted networks)
+- [ ] Per-target transport selection respected end-to-end (already in `TransportMode` enum from M1)
+
+**Caddy reverse-proxy reference deployment (shared between on-prem and cloud):**
+
+- [ ] `deploy/caddy/Caddyfile` — reverse-proxy with auto-HTTPS, gzip/zstd, SignalR/gRPC long-lived connection tuning
+- [ ] `deploy/caddy/docker-compose.yml` — Postgres + KrakenDeploy.Server + Caddy with named volumes
+- [ ] `deploy/caddy/README.md` — DNS prerequisites, port-80/443 firewall, log rotation, cert auto-renewal verification
+- [ ] Note: this is a *reference*, not a constraint; nginx/IIS/Traefik docs follow as time permits
+
+**Out of scope for M10** (moved to M12 and split scenarios below): OpenTelemetry export, on-prem installer packaging, cloud SaaS hardening.
+
+---
+
+### M10.1 — On-prem packaging
+
+**Customer profile:** software sold to a company; their IT installs on their own hardware (Windows or Linux). One install per company. Often air-gapped or behind a corporate proxy. Auth against their AD / Okta / Azure AD.
+
+- [ ] **Windows MSI installer** (WiX or Velopack): installs the `KrakenDeploy.Server` service, prompts for Postgres connection string, registers as a Windows Service, opens firewall, drops shortcuts. Uninstaller preserves the database.
+- [ ] **Linux packaging**: `.deb` and `.rpm` packages with systemd unit; `apt install krakendeploy-server` style install. PostgreSQL listed as a dependency or external.
+- [ ] **Docker Compose stack**: `deploy/onprem/docker-compose.yml` — Postgres + Server + Caddy + named volumes for `data/` and `pg-data/`. One-command bring-up.
+- [ ] **License key enforcement**: signed JWT-style key with claims (`maxTargets`, `maxUsers`, `expiresUtc`, `customerName`); validated on startup and warned in UI when approaching limits or expiring. Air-gapped activation: customer pastes the key, no phone-home required.
+- [ ] **Backup/restore documentation**: `pg_dump` schedule + `data/` folder rsync; documented restore procedure. CLI helper: `KrakenDeploy.Server backup --to <path>` and `restore --from <path>`.
+- [ ] **Update path**: documented in-place upgrade (stop service, run new installer, migrations apply on restart). Rollback procedure (restore DB, downgrade binaries).
+- [ ] **Bundled OIDC config templates** for the common cases: Active Directory (via Microsoft Entra Connect), ADFS, Azure AD, Okta, Google Workspace.
+- [ ] **HA pair** (optional, for larger customers): two `KrakenDeploy.Server` nodes against shared Postgres, with sticky-session reverse proxy (Caddy `lb_policy` or external load balancer). SignalR connection registry moves to a Postgres-backed implementation (no Redis dependency for on-prem).
+- [ ] **Single Space mode**: when only the Default Space exists, the UI hides the Space switcher entirely — feels like a single-tenant product.
+
+---
+
+### M10.2 — Cloud SaaS hardening
+
+**Customer profile:** signs up at `krakendeploy.com`, gets a workspace at `acme.krakendeploy.com` (or `app.krakendeploy.com/s/acme`), pays subscription. Their agents in their infrastructure connect outbound to the central cloud server.
+
+- [ ] **Object storage backends**: `IPackageStore` and `IArtifactStore` get S3 + Azure Blob + Cloudflare R2 implementations with per-Space prefixes (`s3://bucket/spaces/{spaceId}/packages/...`) and quotas. Local-FS impl stays for on-prem.
+- [ ] **SignalR Redis backplane**: replace in-memory `IAgentConnectionRegistry` with Redis-backed for multi-replica server scale-out. Agent control-plane scales horizontally.
+- [ ] **Per-Space rate limiting**: deployments per hour, package upload size, total storage, concurrent agents. Enforced in middleware; quota usage visible in Space settings.
+- [ ] **Signup + trial lifecycle**: self-serve signup creates a Space + admin user + 14-day trial. States: Trial / Active / PastDue / Suspended / Deleted. Hangfire job handles transitions.
+- [ ] **Stripe (or similar) billing**: subscription tiers (`Starter`, `Team`, `Business`, `Enterprise`); usage metering (extra targets / extra storage); webhook handler updates Space status.
+- [ ] **Domain routing**: `app.krakendeploy.com/s/{spaceSlug}` baseline; optional CNAME → custom domain (Caddy on-demand TLS).
+- [ ] **Blue/green / rolling deploys**: zero-downtime release process. EF migrations must be backwards-compatible across one version.
+- [ ] **Status page integration**: Statuspage.io / Instatus webhook + in-app banner driven by current incidents.
+- [ ] **Per-tenant observability**: Sentry tags by `space_id`, OTLP metrics labeled by `space_id`, per-Space audit log retention.
+- [ ] **GDPR data export + delete**: Space admin can download all Space data as a tarball; "Delete Space" performs cryptographic erasure (drop encryption keys) + asynchronous data purge.
+- [ ] **Anti-abuse**: suspicious-activity detection (mass deployment failures, rapid-fire signups from one IP, large package uploads from new accounts), automated holds with admin review queue.
+- [ ] **Customer-side agent registration UX**: registration token encodes the target Space; agents bind to a Space they can never leave.
+- [ ] **Caddy / Cloudflare in production**: Cloudflare in front for WAF + DDoS, Caddy on each replica for TLS to origin + gRPC fan-in.
 
 ### M11 — AI integration (MCP server, autonomous diagnosis, process assistant)
 Three features sharing a common `IAiProvider` abstraction (pluggable: Anthropic, OpenAI, Azure OpenAI — user supplies API key) and a shared MCP tool layer.
@@ -445,3 +552,6 @@ Three features sharing a common `IAiProvider` abstraction (pluggable: Anthropic,
 **Autonomous failure diagnosis:** Hangfire job triggered on deployment failure. Assembles a context packet (full log, failed step config, target info, `get_deployment_diff` output) and calls the configured AI provider. Stores a structured `DeploymentDiagnosis` — probable cause, confidence level, suggested fix, relevant log lines. Rendered as an **"AI Analysis"** card on the failed deployment detail page. Optional webhook push (Slack, Teams) with the summary.
 
 **Process builder assistant (UI):** Step suggester proposes a starter process from package contents (detects ASP.NET, Windows Service, static site, etc.). Inline script editor sidebar helps write PowerShell/Bash steps — explains available variables, suggests error handling, flags risky patterns. Step configuration helper provides contextual field explanations and smart defaults based on project and target context.
+
+### M12 additinal polish 
+OpenTelemetry export to Grafana stack or Seq.
