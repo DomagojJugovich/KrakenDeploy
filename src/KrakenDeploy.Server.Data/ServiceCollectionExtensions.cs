@@ -59,6 +59,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<RunbookService>();
         services.AddScoped<DropBundleService>();
         services.AddScoped<OfflineResultService>();
+        services.AddScoped<BuiltInStepTemplateSeeder>();
 
         // Octodiff delta generation — singleton because it has no mutable state;
         // signatures are cached on disk alongside the package files.

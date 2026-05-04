@@ -410,8 +410,29 @@ Drop bundle generation. Result bundle ingestion (manual upload, auto-email, HTTP
 - [x] EF migration `AddM8Schema` (drop_bundle_path, offline_drop_config JSONB)
 - [x] DI registration of `DropBundleService` and `OfflineResultService`
 
-### M9 — Kraken.IIS comprehensive
+### M9 — Kraken.IIS comprehensive ✅
+
 Full superset action type covering app pool process model + recycle settings (incl. `loadUserProfile` and recycle event log entry flags), rapid-fail protection, identity, complete site bindings (cert from variable), application init/preload, URL Rewrite, request filtering, response headers, MIME types, default documents, virtual directories, sub-applications, atomic-swap deploy with rollback, drain-mode recycle, post-deploy health probe.
+
+**Completed:**
+- [x] `KrakenIisConfigKeys` — flat string keys for the entire IIS configuration surface (general, app pool, recycling, rapid-fail, bindings, preload, deploy, health)
+- [x] `KrakenIisConfig` strongly-typed parsed view with `Parse()` from step config dictionary; sub-records `KrakenIisAppPool`, `KrakenIisRecycle`, `KrakenIisRapidFail`, `KrakenIisBinding`, `KrakenIisDeploy`, `KrakenIisHealthCheck`
+- [x] `KrakenIisBinding` with pipe-delimited line parser (HTTP/HTTPS, SNI, cert thumbprint + store, SSL flags)
+- [x] `KrakenIisStepHandler` registered in agent DI; claims both `Kraken.IIS` and `Octopus.IIS` step types; Windows-only with clean error on non-Windows
+- [x] `IisScriptGenerator` produces idempotent PowerShell using `WebAdministration` module:
+  - App pool ensure + full process model (runtime, pipeline, 32-bit, loadUserProfile, identity incl. SpecificUser)
+  - App pool recycling (regular interval, private/virtual memory limits, request limit, specific times, all 7 log-event flags)
+  - Rapid-fail protection (enabled, max crashes, interval)
+  - Site ensure with placeholder, then bindings replaced; HTTPS bindings bind cert from store with SNI and SSL flags
+  - Application preload + always-running
+  - **Atomic-swap deploy** with versioned subdirectories under WebRoot, physicalPath swap, retention of N old versions
+  - In-place deploy alternative
+  - **Drain-mode recycle** (overlapping) by default, hard recycle option
+  - **Post-deploy HTTP health probe** with retries, expected status, expected body fragment
+- [x] Generated PowerShell script saved as `kraken-iis-deploy.ps1` in step artifacts directory for troubleshooting
+- [x] `BuiltInStepTemplateSeeder` seeds the `Kraken.IIS — Deploy Web Site` template on startup with 38 form parameters (text, select, checkbox, sensitive, multiline) so users get a Radzen form picker
+- [x] Server.Data project references Contracts (for shared step config keys)
+- [x] Unit tests: 17 new tests covering required-key validation, defaults, full config parse, binding parser (HTTP, HTTPS, multiline, comments), handler step-type matching
 
 ### M10 — operational polish
 Direct + polling transport modes. Hangfire scheduled deployments and retention. Audit log, RBAC, API tokens. Agent auto-update. OIDC SSO. OpenTelemetry export to Grafana stack or Seq. Caddy reverse-proxy reference deployment.

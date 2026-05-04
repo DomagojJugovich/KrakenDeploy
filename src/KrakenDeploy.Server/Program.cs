@@ -258,6 +258,11 @@ public static class Program
             await using var scope = app.Services.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
             await db.Database.MigrateAsync().ConfigureAwait(false);
+
+            // Seed built-in step templates (Kraken.IIS, etc.). Idempotent.
+            var seeder = scope.ServiceProvider.GetRequiredService<BuiltInStepTemplateSeeder>();
+            await seeder.SeedAsync().ConfigureAwait(false);
+
             await PrintFirstRunHintIfNoUsersAsync(scope.ServiceProvider, app.Logger)
                 .ConfigureAwait(false);
         }
