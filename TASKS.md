@@ -656,7 +656,7 @@ Per-Space teams (auto-created per Space):
 
 **Customer profile:** software sold to a company; their IT installs on their own hardware (Windows or Linux). One install per company. Often air-gapped or behind a corporate proxy. Auth against their AD / Okta / Azure AD.
 
-- [ ] **Windows MSI installer** (WiX or Velopack): installs the `KrakenDeploy.Server` service, prompts for Postgres connection string, registers as a Windows Service, opens firewall, drops shortcuts. Uninstaller preserves the database.
+- [ ] **Windows MSI installer** (WiX or Velopack, preferably Velopack): installs the `KrakenDeploy.Server` service, prompts for Postgres connection string, registers as a Windows Service, opens firewall, drops shortcuts. Uninstaller preserves the database.
 - [ ] **Linux packaging**: `.deb` and `.rpm` packages with systemd unit; `apt install krakendeploy-server` style install. PostgreSQL listed as a dependency or external.
 - [ ] **Docker Compose stack**: `deploy/onprem/docker-compose.yml` — Postgres + Server + Caddy + named volumes for `data/` and `pg-data/`. One-command bring-up.
 - [ ] **License key enforcement**: signed JWT-style key with claims (`maxTargets`, `maxUsers`, `expiresUtc`, `customerName`); validated on startup and warned in UI when approaching limits or expiring. Air-gapped activation: customer pastes the key, no phone-home required.

@@ -55,6 +55,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(Channel.CreateUnbounded<Guid>(
             new UnboundedChannelOptions { SingleReader = true }));
 
+        services.AddScoped<SpaceService>();
         services.AddScoped<ProjectService>();
         services.AddScoped<EnvironmentService>();
         services.AddScoped<TargetService>();

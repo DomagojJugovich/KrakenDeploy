@@ -11,9 +11,11 @@ using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Services;
 using KrakenDeploy.Server.Transport;
 using KrakenDeploy.Server.Core.Domain.Lifecycles;
+using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.StepTemplates;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
+using KrakenDeploy.Server.Spaces;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -101,6 +103,12 @@ public static class Program
         var dataPath = builder.Configuration["Server:DataPath"] ?? "data";
         builder.Services.AddKrakenDeployData(connectionString, dataPath);
         builder.Services.AddKrakenDeployIdentityCore();
+
+        // ── Space context (HTTP-aware override of DefaultSpaceContext) ───────
+        // Reads the active Space from the kraken-active-space cookie set by
+        // the Space switcher; falls back to WellKnown.DefaultSpaceId.
+        builder.Services.AddHttpContextAccessor();
+        builder.Services.AddScoped<ISpaceContext, HttpSpaceContext>();
 
         // ── Encryption (AES-256-GCM for sensitive variables) ────────────────
         // In production, set Encryption:MasterKey to a base64-encoded 32-byte key.
@@ -259,6 +267,12 @@ public static class Program
             var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
             await db.Database.MigrateAsync().ConfigureAwait(false);
 
+            // Defensive: ensure the Default Space exists. The AddSpacesFoundation
+            // migration seeds it, but a fresh DB created by `EnsureCreated()` (or
+            // a corrupted seed) would leave us without one.
+            var spaceService = scope.ServiceProvider.GetRequiredService<SpaceService>();
+            await spaceService.EnsureDefaultAsync().ConfigureAwait(false);
+
             // Seed built-in step templates (Kraken.IIS, etc.). Idempotent.
             var seeder = scope.ServiceProvider.GetRequiredService<BuiltInStepTemplateSeeder>();
             await seeder.SeedAsync().ConfigureAwait(false);
@@ -353,6 +367,74 @@ public static class Program
             }).AllowAnonymous();
 
         // ── Project API (CLI / REST) ─────────────────────────────────────────
+        // ── Spaces API ──────────────────────────────────────────────────────────
+        app.MapGet("/api/spaces",
+            async (SpaceService spaceSvc, CancellationToken ct) =>
+                Results.Ok(await spaceSvc.GetAllAsync(ct).ConfigureAwait(false))
+        ).RequireAuthorization();
+
+        // Switch the active Space — sets the kraken-active-space cookie. Two
+        // entry points:
+        //   POST /api/spaces/switch/{id} — for programmatic / API clients
+        //   GET  /space/switch?id={id}    — for the Blazor SpaceSwitcher
+        //                                   (browser nav with full reload so
+        //                                    DI scopes pick up the new context)
+        static async Task<IResult> SwitchSpaceAsync(
+            Guid spaceId,
+            string? returnUrl,
+            SpaceService spaceSvc,
+            HttpContext http,
+            CancellationToken ct,
+            bool redirect)
+        {
+            // Validate the Space exists. Membership / authorization checks
+            // come with the M10 Permission/Role/Team model — for now any
+            // authenticated user can switch to any Space.
+            var space = await spaceSvc.GetAsync(spaceId, ct).ConfigureAwait(false);
+            if (space is null)
+            {
+                return Results.NotFound(new { error = "Space not found." });
+            }
+
+            if (space.Status != SpaceStatus.Active)
+            {
+                return Results.BadRequest(new { error = $"Space is {space.Status} and cannot be selected." });
+            }
+
+            http.Response.Cookies.Append(
+                HttpSpaceContext.ActiveSpaceCookieName,
+                spaceId.ToString(),
+                new CookieOptions
+                {
+                    HttpOnly = true,
+                    Secure   = http.Request.IsHttps,
+                    SameSite = SameSiteMode.Lax,
+                    Path     = "/",
+                    Expires  = DateTimeOffset.UtcNow.AddDays(365),
+                });
+
+            if (redirect)
+            {
+                // Only allow same-origin returnUrls — never trust user-supplied
+                // absolute URLs (open-redirect attack).
+                var safe = !string.IsNullOrEmpty(returnUrl) && returnUrl.StartsWith('/')
+                    ? returnUrl : "/";
+                return Results.Redirect(safe);
+            }
+
+            return Results.Ok(new { spaceId, space.Slug, space.Name });
+        }
+
+        app.MapPost("/api/spaces/switch/{spaceId:guid}",
+            (Guid spaceId, SpaceService spaceSvc, HttpContext http, CancellationToken ct)
+                => SwitchSpaceAsync(spaceId, returnUrl: null, spaceSvc, http, ct, redirect: false))
+            .RequireAuthorization();
+
+        app.MapGet("/space/switch",
+            (Guid id, string? returnUrl, SpaceService spaceSvc, HttpContext http, CancellationToken ct)
+                => SwitchSpaceAsync(id, returnUrl, spaceSvc, http, ct, redirect: true))
+            .RequireAuthorization();
+
         app.MapGet("/api/projects",
             async (ProjectService projectSvc, CancellationToken ct) =>
                 Results.Ok(await projectSvc.GetAllAsync(ct).ConfigureAwait(false))

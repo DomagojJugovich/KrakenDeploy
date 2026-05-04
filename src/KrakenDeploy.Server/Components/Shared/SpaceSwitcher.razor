@@ -1,0 +1,53 @@
+@using KrakenDeploy.Server.Core.Domain.Spaces
+@using KrakenDeploy.Server.Data.Services
+@inject SpaceService SpaceSvc
+@inject ISpaceContext SpaceContext
+@inject NavigationManager Nav
+
+@* Hidden entirely when only the Default Space exists — keeps the on-prem
+   single-Space install free of UI clutter. *@
+@if (_spaces.Count > 1)
+{
+    <RadzenDropDown TValue="Guid"
+                    Data="@_spaces"
+                    Value="@_currentSpaceId"
+                    ValueProperty="Id"
+                    TextProperty="Name"
+                    Change="@OnSpaceChanged"
+                    Style="min-width: 180px;"
+                    title="Switch active Space" />
+}
+
+@code {
+    private List<Space> _spaces = [];
+    private Guid _currentSpaceId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Cross-Space query — Space itself is platform-level (not ISpaceScoped)
+        // so the global filter doesn't apply here.
+        _spaces = (await SpaceSvc.GetAllAsync())
+            .Where(s => s.Status == SpaceStatus.Active)
+            .ToList();
+
+        _currentSpaceId = SpaceContext.CurrentSpaceId;
+
+        // Defensive: if the cookie points at an archived/deleted Space, snap
+        // back to Default so subsequent queries don't return zero rows.
+        if (_spaces.Count > 0 && _spaces.All(s => s.Id != _currentSpaceId))
+        {
+            _currentSpaceId = _spaces.First(s => s.IsDefault).Id;
+        }
+    }
+
+    private void OnSpaceChanged(object value)
+    {
+        if (value is Guid newSpaceId && newSpaceId != _currentSpaceId)
+        {
+            // Switch via the API endpoint so the cookie is set, then full
+            // reload so server-side state (DI scopes, query filters) picks up
+            // the new active Space everywhere.
+            Nav.NavigateTo($"/space/switch?id={newSpaceId}", forceLoad: true);
+        }
+    }
+}
