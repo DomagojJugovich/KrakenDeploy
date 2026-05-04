@@ -1,0 +1,162 @@
+@page "/runbooks"
+@attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.Projects
+@using KrakenDeploy.Server.Core.Domain.Runbooks
+@using KrakenDeploy.Server.Data.Services
+@inject ProjectService ProjectSvc
+@inject RunbookService RunbookSvc
+@inject NavigationManager Nav
+@inject NotificationService Notify
+
+<PageTitle>Runbooks - KrakenDeploy</PageTitle>
+
+<div class="rz-display-flex rz-align-items-center rz-justify-content-between rz-mb-4">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1">Runbooks</RadzenText>
+</div>
+
+@* Project selector *@
+<RadzenCard class="rz-mb-4">
+    <RadzenRow AlignItems="AlignItems.Center" Gap="1rem">
+        <RadzenColumn Size="4">
+            <RadzenFormField Text="Project" style="width:100%">
+                <RadzenDropDown TValue="Guid?"
+                                Data="@_projects"
+                                TextProperty="Name"
+                                ValueProperty="Id"
+                                @bind-Value="_selectedProjectId"
+                                Change="@OnProjectChangedAsync"
+                                Placeholder="Select a project…"
+                                style="width:100%" />
+            </RadzenFormField>
+        </RadzenColumn>
+        @if (_selectedProjectId.HasValue)
+        {
+            <RadzenColumn Size="8" class="rz-display-flex rz-justify-content-end">
+                <RadzenButton Text="New Runbook" Icon="add" ButtonStyle="ButtonStyle.Primary"
+                              Click="@(() => { _createOpen = true; _name = ""; _description = null; })" />
+            </RadzenColumn>
+        }
+    </RadzenRow>
+</RadzenCard>
+
+@if (_selectedProjectId is null)
+{
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+        Select a project above to view and manage its runbooks.
+    </RadzenText>
+}
+else
+{
+    @if (_createOpen)
+    {
+        <RadzenCard class="rz-mb-4">
+            <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">New Runbook</RadzenText>
+            <RadzenFormField Text="Name" class="rz-mb-3" style="width:100%">
+                <RadzenTextBox @bind-Value="_name" Placeholder="Database Backup" style="width:100%" />
+            </RadzenFormField>
+            <RadzenFormField Text="Description (optional)" class="rz-mb-3" style="width:100%">
+                <RadzenTextBox @bind-Value="_description" style="width:100%" />
+            </RadzenFormField>
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+                <RadzenButton Text="Create" ButtonStyle="ButtonStyle.Primary" Click="@CreateAsync" />
+                <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                              Click="@(() => _createOpen = false)" />
+            </RadzenStack>
+        </RadzenCard>
+    }
+
+    <RadzenDataGrid Data="@_runbooks" TItem="Runbook"
+                    AllowPaging="true" PageSize="20"
+                    AllowSorting="true"
+                    AllowColumnResize="true"
+                    RowClick="@(args => Nav.NavigateTo($"/runbooks/{args.Data.Id}"))"
+                    EmptyText="No runbooks yet — create one to automate tasks without a release.">
+        <Columns>
+            <RadzenDataGridColumn TItem="Runbook" Property="Name" Title="Name" />
+            <RadzenDataGridColumn TItem="Runbook" Property="Description" Title="Description" />
+            <RadzenDataGridColumn TItem="Runbook" Property="CreatedUtc" Title="Created"
+                                  Width="140px" FormatString="{0:yyyy-MM-dd}" />
+            <RadzenDataGridColumn TItem="Runbook" Title="" Width="70px" TextAlign="TextAlign.Center">
+                <Template Context="rb">
+                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
+                                  Variant="Variant.Text"
+                                  Click="@(async _ => await DeleteAsync(rb))"
+                                  title="Delete" />
+                </Template>
+            </RadzenDataGridColumn>
+        </Columns>
+    </RadzenDataGrid>
+}
+
+<RadzenNotification />
+
+@code {
+    private List<Project> _projects = [];
+    private Guid? _selectedProjectId;
+    private List<Runbook> _runbooks = [];
+    private bool _createOpen;
+    private string _name = "";
+    private string? _description;
+
+    protected override async Task OnInitializedAsync()
+        => _projects = await ProjectSvc.GetAllAsync();
+
+    private async Task OnProjectChangedAsync(object? _)
+    {
+        _runbooks    = [];
+        _createOpen  = false;
+        if (_selectedProjectId.HasValue)
+        {
+            _runbooks = await RunbookSvc.GetAllAsync(_selectedProjectId.Value);
+        }
+    }
+
+    private async Task CreateAsync()
+    {
+        if (!_selectedProjectId.HasValue || string.IsNullOrWhiteSpace(_name))
+        {
+            return;
+        }
+
+        try
+        {
+            var rb = await RunbookSvc.CreateAsync(
+                _selectedProjectId.Value, _name.Trim(), _description?.Trim());
+            _runbooks    = [.. _runbooks.Append(rb).OrderBy(r => r.Name)];
+            _createOpen  = false;
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Success,
+                Summary  = "Runbook created",
+                Detail   = rb.Name,
+                Duration = 3000,
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary  = "Error",
+                Detail   = ex.Message,
+                Duration = 5000,
+            });
+        }
+    }
+
+    private async Task DeleteAsync(Runbook rb)
+    {
+        var deleted = await RunbookSvc.DeleteAsync(rb.Id);
+        if (deleted)
+        {
+            _runbooks = _runbooks.Where(r => r.Id != rb.Id).ToList();
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Info,
+                Summary  = "Deleted",
+                Detail   = rb.Name,
+                Duration = 3000,
+            });
+        }
+    }
+}

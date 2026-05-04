@@ -1,3 +1,4 @@
+using KrakenDeploy.Server.Core.Domain.Channels;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using Microsoft.EntityFrameworkCore;
 
@@ -28,6 +29,7 @@ public class ReleaseService(KrakenDbContext db)
         string version,
         IReadOnlyDictionary<string, string>? packageVersions = null,
         string? releaseNotes = null,
+        Guid? channelId = null,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(version);
@@ -40,6 +42,15 @@ public class ReleaseService(KrakenDbContext db)
         {
             throw new InvalidOperationException(
                 $"Release '{version}' already exists for this project.");
+        }
+
+        // Validate channel if provided.
+        if (channelId.HasValue)
+        {
+            var channel = await db.Channels
+                .FirstOrDefaultAsync(c => c.Id == channelId.Value && c.ProjectId == projectId, ct)
+                .ConfigureAwait(false)
+                ?? throw new InvalidOperationException($"Channel {channelId} not found for this project.");
         }
 
         // Load the current process snapshot.
@@ -81,6 +92,7 @@ public class ReleaseService(KrakenDbContext db)
             Version = version,
             ProcessSnapshot = snapshot,
             ReleaseNotes = releaseNotes,
+            ChannelId = channelId,
         };
 
         db.Releases.Add(release);

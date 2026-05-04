@@ -16,7 +16,8 @@ public sealed record AddStepRequest(
 public sealed record CreateReleaseRequest(
     string Version,
     IReadOnlyDictionary<string, string>? PackageVersions,
-    string? ReleaseNotes);
+    string? ReleaseNotes,
+    Guid? ChannelId = null);
 
 // ── Deployment API ─────────────────────────────────────────────────────────────
 
@@ -24,7 +25,8 @@ public sealed record CreateReleaseRequest(
 public sealed record TriggerDeploymentRequest(
     Guid ReleaseId,
     Guid EnvironmentId,
-    Guid TargetId);
+    Guid TargetId,
+    Guid? TenantId = null);
 
 // ── Step-template API ──────────────────────────────────────────────────────────
 
@@ -57,6 +59,59 @@ public sealed record StepTemplateParameterRequest(
     string ControlType,
     List<string>? SelectOptions);
 
+// ── Lifecycle API ──────────────────────────────────────────────────────────────
+
+public sealed record CreateLifecycleRequest(string Name, string? Description);
+
+public sealed record UpdateLifecycleRequest(
+    string Name,
+    string? Description,
+    List<KrakenDeploy.Server.Core.Domain.Lifecycles.LifecyclePhase> Phases);
+
+// ── Channel API ────────────────────────────────────────────────────────────────
+
+public sealed record UpsertChannelRequest(
+    string Name,
+    bool IsDefault = false,
+    Guid? LifecycleId = null,
+    string? VersionRange = null,
+    string? VersionTag = null);
+
+// ── Runbook API ────────────────────────────────────────────────────────────────
+
+public sealed record CreateRunbookRequest(string Name, string? Description);
+
+public sealed record TriggerRunbookRunRequest(
+    Guid EnvironmentId,
+    Guid TargetId,
+    Guid? TenantId = null);
+
+// ── Tenant API ─────────────────────────────────────────────────────────────────
+
+public sealed record CreateTenantRequest(string Name, string Slug, string? Description);
+
+public sealed record CreateTagSetRequest(string Name, string? Description, int SortOrder = 0);
+
+public sealed record CreateTenantTagRequest(string Name, string? Color);
+
+// ── Offline Drop API ──────────────────────────────────────────────────────
+
+/// <summary>Request body for POST /api/targets/{id}/offline-drop-config.</summary>
+public sealed record SaveOfflineDropConfigRequest(
+    KrakenDeploy.Server.Core.Domain.Targets.OfflineDropDeliveryChannel DeliveryChannel,
+    string? SmtpHost = null,
+    int SmtpPort = 587,
+    bool SmtpUseSsl = true,
+    string? SmtpUsername = null,
+    string? SmtpPassword = null,
+    string? SmtpRecipient = null,
+    string? SmtpSender = null,
+    string? WebhookUrl = null,
+    string? WebhookSecret = null,
+    string? FileSharePath = null,
+    string? FileShareUsername = null,
+    string? FileSharePassword = null);
+
 // ── Variable API ───────────────────────────────────────────────────────────────
 
 /// <summary>
@@ -70,4 +125,5 @@ public sealed record UpsertVariableRequest(
     string Type,
     Guid? ScopeEnvironmentId,
     Guid? ScopeTargetId,
-    List<string>? ScopeRoles);
+    List<string>? ScopeRoles,
+    Guid? ScopeTenantId = null);

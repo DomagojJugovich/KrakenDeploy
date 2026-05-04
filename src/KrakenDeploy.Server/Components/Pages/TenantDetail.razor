@@ -1,0 +1,244 @@
+@page "/tenants/{Id:guid}"
+@attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.Tenants
+@using KrakenDeploy.Server.Data.Services
+@inject TenantService TenantSvc
+@inject NavigationManager Nav
+@inject NotificationService Notify
+
+<PageTitle>@(_tenant?.Name ?? "Tenant") - KrakenDeploy</PageTitle>
+
+@if (_tenant is null)
+{
+    <RadzenText>Loading…</RadzenText>
+    return;
+}
+
+<div class="rz-display-flex rz-align-items-center rz-mb-4" style="gap:1rem">
+    <RadzenButton Icon="arrow_back" Variant="Variant.Text" Click="@(() => Nav.NavigateTo("/tenants"))" />
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1">@_tenant.Name</RadzenText>
+    <RadzenBadge Text="@_tenant.Slug" BadgeStyle="BadgeStyle.Light" />
+</div>
+
+@if (!string.IsNullOrEmpty(_tenant.Description))
+{
+    <RadzenText TextStyle="TextStyle.Body1" class="rz-mb-4 rz-color-secondary">@_tenant.Description</RadzenText>
+}
+
+@* ── Tag Sets ─────────────────────────────────────────────────────────────── *@
+<div class="rz-display-flex rz-align-items-center rz-justify-content-between rz-mb-3">
+    <RadzenText TextStyle="TextStyle.H6">Tag Sets</RadzenText>
+    <RadzenButton Text="Add Tag Set" Icon="add" Size="ButtonSize.Small"
+                  ButtonStyle="ButtonStyle.Secondary"
+                  Click="@(() => { _newTagSetName = ""; _newTagSetDesc = null; _newTagSetSortOrder = _tenant.TagSets.Count; _addTagSetOpen = true; })" />
+</div>
+
+@if (_addTagSetOpen)
+{
+    <RadzenCard class="rz-mb-3">
+        <RadzenRow Gap="1rem" class="rz-mb-2">
+            <RadzenColumn Size="5">
+                <RadzenFormField Text="Name" style="width:100%">
+                    <RadzenTextBox @bind-Value="_newTagSetName" Placeholder="Region" style="width:100%" />
+                </RadzenFormField>
+            </RadzenColumn>
+            <RadzenColumn Size="5">
+                <RadzenFormField Text="Description" style="width:100%">
+                    <RadzenTextBox @bind-Value="_newTagSetDesc" style="width:100%" />
+                </RadzenFormField>
+            </RadzenColumn>
+            <RadzenColumn Size="2">
+                <RadzenFormField Text="Order" style="width:100%">
+                    <RadzenNumeric @bind-Value="_newTagSetSortOrder" style="width:100%" />
+                </RadzenFormField>
+            </RadzenColumn>
+        </RadzenRow>
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+            <RadzenButton Text="Save" ButtonStyle="ButtonStyle.Primary" Click="@CreateTagSetAsync" />
+            <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                          Click="@(() => _addTagSetOpen = false)" />
+        </RadzenStack>
+    </RadzenCard>
+}
+
+@foreach (var ts in _tenant.TagSets.OrderBy(x => x.SortOrder).ThenBy(x => x.Name))
+{
+    <RadzenCard class="rz-mb-3">
+        <div class="rz-display-flex rz-align-items-center rz-justify-content-between rz-mb-2">
+            <RadzenText TextStyle="TextStyle.Subtitle1">@ts.Name</RadzenText>
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" AlignItems="AlignItems.Center">
+                @if (_addTagOpen == ts.Id)
+                {
+                    <RadzenTextBox @bind-Value="_newTagName" Placeholder="Tag name" style="width:120px" />
+                    <RadzenTextBox @bind-Value="_newTagColor" Placeholder="#hex" style="width:80px" />
+                    <RadzenButton Text="Add" Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Primary"
+                                  Click="@(async () => await CreateTagAsync(ts.Id))" />
+                    <RadzenButton Icon="close" Size="ButtonSize.Small" Variant="Variant.Text"
+                                  Click="@(() => _addTagOpen = Guid.Empty)" />
+                }
+                else
+                {
+                    <RadzenButton Icon="add" Size="ButtonSize.Small" Variant="Variant.Text"
+                                  title="Add tag"
+                                  Click="@(() => { _addTagOpen = ts.Id; _newTagName = ""; _newTagColor = null; })" />
+                }
+                <RadzenButton Icon="delete" Size="ButtonSize.Small" Variant="Variant.Text"
+                              ButtonStyle="ButtonStyle.Danger"
+                              title="Delete tag set"
+                              Click="@(async () => await DeleteTagSetAsync(ts))" />
+            </RadzenStack>
+        </div>
+        @if (!string.IsNullOrEmpty(ts.Description))
+        {
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-2">@ts.Description</RadzenText>
+        }
+        <div style="display:flex;flex-wrap:wrap;gap:0.5rem">
+            @foreach (var tag in ts.Tags.OrderBy(t => t.Name))
+            {
+                <div style="display:flex;align-items:center;gap:0.25rem">
+                    @if (!string.IsNullOrEmpty(tag.Color))
+                    {
+                        <span style="@($"display:inline-block;width:10px;height:10px;border-radius:50%;background:{tag.Color}")">&nbsp;</span>
+                    }
+                    <RadzenBadge Text="@tag.Name" BadgeStyle="BadgeStyle.Info" />
+                    <RadzenButton Icon="close" Size="ButtonSize.ExtraSmall" Variant="Variant.Text"
+                                  Click="@(async () => await DeleteTagAsync(ts, tag))" />
+                </div>
+            }
+            @if (!ts.Tags.Any())
+            {
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">No tags — click + to add.</RadzenText>
+            }
+        </div>
+    </RadzenCard>
+}
+
+@if (!_tenant.TagSets.Any() && !_addTagSetOpen)
+{
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+        No tag sets yet. Tag sets group related tags (e.g. "Region", "Tier").
+    </RadzenText>
+}
+
+<RadzenNotification />
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private Tenant? _tenant;
+
+    // TagSet create state
+    private bool _addTagSetOpen;
+    private string _newTagSetName = "";
+    private string? _newTagSetDesc;
+    private int _newTagSetSortOrder;
+
+    // Tag create state
+    private Guid _addTagOpen;
+    private string _newTagName = "";
+    private string? _newTagColor;
+
+    protected override async Task OnInitializedAsync()
+        => _tenant = await TenantSvc.GetWithTagsAsync(Id);
+
+    private async Task CreateTagSetAsync()
+    {
+        if (_tenant is null || string.IsNullOrWhiteSpace(_newTagSetName))
+        {
+            return;
+        }
+
+        try
+        {
+            var ts = await TenantSvc.CreateTagSetAsync(
+                _tenant.Id, _newTagSetName.Trim(), _newTagSetDesc?.Trim(), _newTagSetSortOrder);
+
+            _tenant.TagSets.Add(ts);
+            _addTagSetOpen = false;
+
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Success,
+                Summary = "Tag set created",
+                Detail = ts.Name,
+                Duration = 3000,
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary = "Error",
+                Detail = ex.Message,
+                Duration = 5000,
+            });
+        }
+    }
+
+    private async Task DeleteTagSetAsync(TagSet ts)
+    {
+        var deleted = await TenantSvc.DeleteTagSetAsync(ts.Id);
+        if (deleted && _tenant is not null)
+        {
+            _tenant.TagSets.Remove(ts);
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Info,
+                Summary = "Tag set deleted",
+                Detail = ts.Name,
+                Duration = 3000,
+            });
+        }
+    }
+
+    private async Task CreateTagAsync(Guid tagSetId)
+    {
+        if (_tenant is null || string.IsNullOrWhiteSpace(_newTagName))
+        {
+            return;
+        }
+
+        try
+        {
+            var tag = await TenantSvc.CreateTagAsync(tagSetId, _newTagName.Trim(), _newTagColor?.Trim());
+            var ts = _tenant.TagSets.FirstOrDefault(x => x.Id == tagSetId);
+            ts?.Tags.Add(tag);
+            _addTagOpen = Guid.Empty;
+
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Success,
+                Summary = "Tag created",
+                Detail = tag.Name,
+                Duration = 3000,
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary = "Error",
+                Detail = ex.Message,
+                Duration = 5000,
+            });
+        }
+    }
+
+    private async Task DeleteTagAsync(TagSet ts, TenantTag tag)
+    {
+        var deleted = await TenantSvc.DeleteTagAsync(tag.Id);
+        if (deleted)
+        {
+            ts.Tags.Remove(tag);
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Info,
+                Summary = "Tag deleted",
+                Detail = tag.Name,
+                Duration = 3000,
+            });
+        }
+    }
+}

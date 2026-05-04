@@ -1,4 +1,5 @@
 using KrakenDeploy.Server.Core.Domain.Targets;
+using KrakenDeploy.Server.Data.Conventions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -31,6 +32,15 @@ public class DeploymentTargetConfiguration : IEntityTypeConfiguration<Deployment
 
         builder.Property(x => x.RegistrationKeyHash).HasMaxLength(128);
         builder.Property(x => x.RegistrationTokenExpiresUtc);
+
+        // Offline-drop configuration — nullable JSONB, only populated when
+        // TransportMode == OfflineDrop. Suppressing CS8620: the converter handles
+        // null values correctly via EF Core's built-in null propagation.
+#pragma warning disable CS8620
+        builder.Property(x => x.OfflineDropConfig)
+            .HasColumnType("jsonb")
+            .HasConversion(new JsonbValueConverter<OfflineDropConfig>());
+#pragma warning restore CS8620
 
         builder.Property(x => x.CreatedUtc).IsRequired();
     }

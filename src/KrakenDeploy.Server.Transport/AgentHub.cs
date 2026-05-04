@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Transport;
 
@@ -182,64 +183,139 @@ public sealed class AgentHub(
     {
         ArgumentNullException.ThrowIfNull(message);
 
+        var timestamp = timeProvider.GetUtcNow();
+
+        // Try Deployment first, then RunbookRun (same ID space, non-overlapping GUIDs).
         var deployment = await db.Deployments
             .FindAsync(new object?[] { deploymentId })
             .ConfigureAwait(false);
 
-        if (deployment is null)
+        if (deployment is not null)
         {
-            logger.LogWarning(
-                "AppendLog for unknown deployment {DeploymentId}; ignored.", deploymentId);
+            var seq = deployment.NextLogSequence++;
+            db.DeploymentLogEntries.Add(new KrakenDeploy.Server.Core.Domain.Deployments.DeploymentLogEntry
+            {
+                DeploymentId = deploymentId,
+                Sequence = seq,
+                Timestamp = timestamp,
+                Message = message,
+                Level = level,
+            });
+            await db.SaveChangesAsync().ConfigureAwait(false);
+
+            await uiHub.Clients.Group($"deployment:{deploymentId}")
+                .DeploymentLogAppendedAsync(deploymentId, seq, timestamp, level, message)
+                .ConfigureAwait(false);
             return;
         }
 
-        var seq = deployment.NextLogSequence++;
-        var timestamp = timeProvider.GetUtcNow();
-
-        db.DeploymentLogEntries.Add(new KrakenDeploy.Server.Core.Domain.Deployments.DeploymentLogEntry
-        {
-            DeploymentId = deploymentId,
-            Sequence = seq,
-            Timestamp = timestamp,
-            Message = message,
-            Level = level,
-        });
-        await db.SaveChangesAsync().ConfigureAwait(false);
-
-        await uiHub.Clients.Group($"deployment:{deploymentId}")
-            .DeploymentLogAppendedAsync(deploymentId, seq, timestamp, level, message)
+        var run = await db.RunbookRuns
+            .FindAsync(new object?[] { deploymentId })
             .ConfigureAwait(false);
+
+        if (run is not null)
+        {
+            var seq = run.NextLogSequence++;
+            db.RunbookRunLogEntries.Add(new KrakenDeploy.Server.Core.Domain.Runbooks.RunbookRunLogEntry
+            {
+                RunbookRunId = deploymentId,
+                Sequence = seq,
+                Timestamp = timestamp,
+                Message = message,
+                Level = level,
+            });
+            await db.SaveChangesAsync().ConfigureAwait(false);
+
+            await uiHub.Clients.Group($"deployment:{deploymentId}")
+                .DeploymentLogAppendedAsync(deploymentId, seq, timestamp, level, message)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        logger.LogWarning("AppendLog for unknown run {Id}; ignored.", deploymentId);
     }
 
     public async Task CompleteDeploymentAsync(
         Guid deploymentId, bool success, string? errorMessage)
     {
+        var completedAt = timeProvider.GetUtcNow();
+
+        // Try Deployment first.
         var deployment = await db.Deployments
             .FindAsync(new object?[] { deploymentId })
             .ConfigureAwait(false);
 
-        if (deployment is null)
+        if (deployment is not null)
         {
-            logger.LogWarning(
-                "CompleteDeployment for unknown deployment {DeploymentId}; ignored.", deploymentId);
+            deployment.Status = success
+                ? KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Succeeded
+                : KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Failed;
+            deployment.CompletedUtc = completedAt;
+            await db.SaveChangesAsync().ConfigureAwait(false);
+
+            var statusStr = deployment.Status.ToString();
+            await uiHub.Clients.Group($"deployment:{deploymentId}")
+                .DeploymentStatusChangedAsync(deploymentId, statusStr)
+                .ConfigureAwait(false);
+
+            logger.LogInformation(
+                "Deployment {Id} completed: {Status}{Error}.",
+                deploymentId, statusStr,
+                errorMessage is null ? "" : $" — {errorMessage}");
+
+            // Prune old deployments per retention policy.
+            if (success)
+            {
+                _ = PruneRetentionAsync(deploymentId, scopeFactory, logger);
+            }
+
             return;
         }
 
-        deployment.Status = success
-            ? KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Succeeded
-            : KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Failed;
-        deployment.CompletedUtc = timeProvider.GetUtcNow();
-        await db.SaveChangesAsync().ConfigureAwait(false);
-
-        var statusStr = deployment.Status.ToString();
-        await uiHub.Clients.Group($"deployment:{deploymentId}")
-            .DeploymentStatusChangedAsync(deploymentId, statusStr)
+        // Try RunbookRun.
+        var run = await db.RunbookRuns
+            .FindAsync(new object?[] { deploymentId })
             .ConfigureAwait(false);
 
-        logger.LogInformation(
-            "Deployment {DeploymentId} completed: {Status}{Error}.",
-            deploymentId, statusStr,
-            errorMessage is null ? "" : $" — {errorMessage}");
+        if (run is not null)
+        {
+            run.Status = success
+                ? KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Succeeded
+                : KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Failed;
+            run.CompletedUtc = completedAt;
+            await db.SaveChangesAsync().ConfigureAwait(false);
+
+            var statusStr = run.Status.ToString();
+            await uiHub.Clients.Group($"deployment:{deploymentId}")
+                .DeploymentStatusChangedAsync(deploymentId, statusStr)
+                .ConfigureAwait(false);
+
+            logger.LogInformation(
+                "RunbookRun {Id} completed: {Status}{Error}.",
+                deploymentId, statusStr,
+                errorMessage is null ? "" : $" — {errorMessage}");
+            return;
+        }
+
+        logger.LogWarning("CompleteDeployment for unknown run {Id}; ignored.", deploymentId);
+    }
+
+    private static async Task PruneRetentionAsync(
+        Guid deploymentId,
+        IServiceScopeFactory scopeFactory,
+        ILogger logger)
+    {
+        try
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var retention = scope.ServiceProvider
+                .GetRequiredService<KrakenDeploy.Server.Data.Services.RetentionService>();
+            await retention.PruneAfterDeploymentAsync(deploymentId).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error running retention pruning for deployment {Id}.", deploymentId);
+        }
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────

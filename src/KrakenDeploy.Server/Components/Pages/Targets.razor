@@ -30,7 +30,11 @@
                 AllowColumnResize="true"
                 EmptyText="No targets registered yet. Click 'Add Deployment Target' to get started.">
     <Columns>
-        <RadzenDataGridColumn TItem="DeploymentTarget" Property="Name" Title="Name" Width="180px" />
+        <RadzenDataGridColumn TItem="DeploymentTarget" Property="Name" Title="Name" Width="180px">
+            <Template Context="t">
+                <a href="/targets/@t.Id">@t.Name</a>
+            </Template>
+        </RadzenDataGridColumn>
         <RadzenDataGridColumn TItem="DeploymentTarget" Property="Status" Title="Status"
                               Width="120px" Filterable="false">
             <Template Context="t">
@@ -45,6 +49,12 @@
                               Width="130px" />
         <RadzenDataGridColumn TItem="DeploymentTarget" Property="AgentVersion" Title="Agent"
                               Width="100px" />
+        <RadzenDataGridColumn TItem="DeploymentTarget" Property="TransportMode" Title="Transport"
+                              Width="110px">
+            <Template Context="t">
+                @t.TransportMode.ToString()
+            </Template>
+        </RadzenDataGridColumn>
         <RadzenDataGridColumn TItem="DeploymentTarget" Title="Roles" Filterable="false"
                               Sortable="false">
             <Template Context="t">

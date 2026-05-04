@@ -1,0 +1,541 @@
+@page "/runbooks/{Id:guid}"
+@attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.Deployments
+@using KrakenDeploy.Server.Core.Domain.Environments
+@using KrakenDeploy.Server.Core.Domain.Runbooks
+@using KrakenDeploy.Server.Core.Domain.Targets
+@using KrakenDeploy.Server.Data.Services
+@inject RunbookService RunbookSvc
+@inject EnvironmentService EnvSvc
+@inject TargetService TargetSvc
+@inject NavigationManager Nav
+@inject NotificationService Notify
+
+<PageTitle>@(_runbook?.Name ?? "Runbook") - KrakenDeploy</PageTitle>
+
+@if (_runbook is null)
+{
+    <RadzenText>Loading…</RadzenText>
+    return;
+}
+
+<div class="rz-display-flex rz-align-items-center rz-mb-4" style="gap:1rem">
+    <RadzenButton Icon="arrow_back" Variant="Variant.Text"
+                  Click="@(() => Nav.NavigateTo("/runbooks"))" />
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1">@_runbook.Name</RadzenText>
+    <RadzenBadge Text="@(_runbook.Project?.Name ?? "?")" BadgeStyle="BadgeStyle.Light" />
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" style="margin-left:auto">
+        <RadzenButton Text="Run Now" Icon="play_arrow" ButtonStyle="ButtonStyle.Success"
+                      Click="@(() => _triggerOpen = !_triggerOpen)" />
+    </RadzenStack>
+</div>
+
+@if (!string.IsNullOrEmpty(_runbook.Description))
+{
+    <RadzenText TextStyle="TextStyle.Body1" class="rz-mb-4 rz-color-secondary">@_runbook.Description</RadzenText>
+}
+
+@* ── Trigger panel ────────────────────────────────────────────────────────── *@
+@if (_triggerOpen)
+{
+    <RadzenCard class="rz-mb-4" style="border-left:4px solid var(--rz-success)">
+        <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">Trigger Run</RadzenText>
+        <RadzenRow Gap="1rem" class="rz-mb-3">
+            <RadzenColumn Size="4">
+                <RadzenFormField Text="Environment" style="width:100%">
+                    <RadzenDropDown TValue="Guid?"
+                                    Data="@_environments"
+                                    TextProperty="Name"
+                                    ValueProperty="Id"
+                                    @bind-Value="_triggerEnvId"
+                                    Placeholder="Select environment…"
+                                    style="width:100%" />
+                </RadzenFormField>
+            </RadzenColumn>
+            <RadzenColumn Size="4">
+                <RadzenFormField Text="Target" style="width:100%">
+                    <RadzenDropDown TValue="Guid?"
+                                    Data="@_targets"
+                                    TextProperty="Name"
+                                    ValueProperty="Id"
+                                    @bind-Value="_triggerTargetId"
+                                    Placeholder="Select target…"
+                                    style="width:100%" />
+                </RadzenFormField>
+            </RadzenColumn>
+        </RadzenRow>
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+            <RadzenButton Text="Trigger" Icon="play_arrow" ButtonStyle="ButtonStyle.Success"
+                          Click="@TriggerRunAsync"
+                          Disabled="@(!_triggerEnvId.HasValue || !_triggerTargetId.HasValue)" />
+            <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                          Click="@(() => _triggerOpen = false)" />
+        </RadzenStack>
+    </RadzenCard>
+}
+
+<RadzenTabs @bind-SelectedIndex="_tabIndex">
+    <Tabs>
+
+        @* ── Steps tab ────────────────────────────────────────────────────────── *@
+        <RadzenTabsItem Text="Steps" Icon="list">
+            <div class="rz-mt-3">
+                <div class="rz-display-flex rz-justify-content-end rz-mb-3">
+                    <RadzenButton Text="Add Step" Icon="add" Size="ButtonSize.Small"
+                                  ButtonStyle="ButtonStyle.Secondary"
+                                  Click="@(() => { _addStepOpen = true; ResetStepForm(); })" />
+                </div>
+
+                @if (_addStepOpen || _editingStepId.HasValue)
+                {
+                    <RadzenCard class="rz-mb-3" style="border-left:4px solid var(--rz-info)">
+                        <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">
+                            @(_editingStepId.HasValue ? "Edit Step" : "New Step")
+                        </RadzenText>
+                        <RadzenRow Gap="1rem" class="rz-mb-3">
+                            <RadzenColumn Size="4">
+                                <RadzenFormField Text="Name" style="width:100%">
+                                    <RadzenTextBox @bind-Value="_stepName" Placeholder="Run cleanup" style="width:100%" />
+                                </RadzenFormField>
+                            </RadzenColumn>
+                            <RadzenColumn Size="4">
+                                <RadzenFormField Text="Step Type" style="width:100%">
+                                    <RadzenDropDown TValue="string"
+                                                    Data="@_stepTypes"
+                                                    @bind-Value="_stepType"
+                                                    style="width:100%" />
+                                </RadzenFormField>
+                            </RadzenColumn>
+                            <RadzenColumn Size="4">
+                                <RadzenFormField Text="Package ID (optional)" style="width:100%">
+                                    <RadzenTextBox @bind-Value="_stepPackageId" style="width:100%" />
+                                </RadzenFormField>
+                            </RadzenColumn>
+                        </RadzenRow>
+                        <RadzenFormField Text="Script Body" class="rz-mb-3" style="width:100%">
+                            <RadzenTextArea @bind-Value="_stepScript" Rows="6" style="width:100%;font-family:monospace" />
+                        </RadzenFormField>
+                        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+                            @if (_editingStepId.HasValue)
+                            {
+                                <RadzenButton Text="Save" ButtonStyle="ButtonStyle.Primary" Click="@SaveStepAsync" />
+                            }
+                            else
+                            {
+                                <RadzenButton Text="Add" ButtonStyle="ButtonStyle.Primary" Click="@AddStepAsync" />
+                            }
+                            <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                                          Click="@CancelStepEdit" />
+                        </RadzenStack>
+                    </RadzenCard>
+                }
+
+                @if (_steps.Count == 0)
+                {
+                    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                        No steps yet — click <strong>Add Step</strong>.
+                    </RadzenText>
+                }
+                else
+                {
+                    @foreach (var (step, si) in _steps.Select((s, i) => (s, i)))
+                    {
+                        <RadzenCard class="rz-mb-2">
+                            <div class="rz-display-flex rz-align-items-center" style="gap:0.75rem">
+                                <RadzenBadge Text="@((si + 1).ToString())" BadgeStyle="BadgeStyle.Light"
+                                             style="min-width:2rem;text-align:center" />
+                                <div style="flex:1">
+                                    <RadzenText TextStyle="TextStyle.Subtitle2" style="margin:0">@step.Name</RadzenText>
+                                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary" style="margin:0">
+                                        @step.StepType
+                                        @if (!string.IsNullOrEmpty(step.PackageId))
+                                        {
+                                            <span> · @step.PackageId</span>
+                                        }
+                                    </RadzenText>
+                                </div>
+                                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.25rem">
+                                    <RadzenButton Icon="edit" Size="ButtonSize.Small" Variant="Variant.Text"
+                                                  title="Edit"
+                                                  Click="@(() => BeginEditStep(step))" />
+                                    <RadzenButton Icon="delete" Size="ButtonSize.Small" Variant="Variant.Text"
+                                                  ButtonStyle="ButtonStyle.Danger" title="Delete"
+                                                  Click="@(async () => await DeleteStepAsync(step))" />
+                                </RadzenStack>
+                            </div>
+                        </RadzenCard>
+                    }
+                }
+            </div>
+        </RadzenTabsItem>
+
+        @* ── Runs tab ─────────────────────────────────────────────────────────── *@
+        <RadzenTabsItem Text="@($"Runs ({_runs.Count})")" Icon="history">
+            <div class="rz-mt-3 rz-mb-3 rz-display-flex rz-justify-content-end">
+                <RadzenButton Text="Refresh" Icon="refresh" Size="ButtonSize.Small"
+                              ButtonStyle="ButtonStyle.Light" Click="@RefreshRunsAsync" />
+            </div>
+            <RadzenDataGrid Data="@_runs" TItem="RunbookRun"
+                            AllowPaging="true" PageSize="10"
+                            AllowSorting="true"
+                            RowClick="@(args => ToggleRunLog(args.Data))"
+                            EmptyText="No runs yet — click 'Run Now' to trigger the runbook.">
+                <Columns>
+                    <RadzenDataGridColumn TItem="RunbookRun" Property="Status" Title="Status" Width="120px">
+                        <Template Context="r">
+                            <RadzenBadge Text="@r.Status.ToString()" BadgeStyle="@RunStatusStyle(r.Status)" />
+                        </Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="RunbookRun" Title="Environment" Width="160px">
+                        <Template Context="r">@(r.Environment?.Name ?? "—")</Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="RunbookRun" Title="Target" Width="160px">
+                        <Template Context="r">@(r.Target?.Name ?? "—")</Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="RunbookRun" Title="Started" Width="160px">
+                        <Template Context="r">
+                            @(r.StartedUtc?.ToString("yyyy-MM-dd HH:mm") ?? "—")
+                        </Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="RunbookRun" Title="Duration" Width="110px">
+                        <Template Context="r">@FormatDuration(r)</Template>
+                    </RadzenDataGridColumn>
+                </Columns>
+            </RadzenDataGrid>
+
+            @* Inline log viewer for the selected run *@
+            @if (_selectedRun is not null)
+            {
+                <RadzenCard class="rz-mt-3">
+                    <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-2">
+                        Log — @_selectedRun.Environment?.Name / @_selectedRun.Target?.Name
+                    </RadzenText>
+                    <div style="font-family:monospace;font-size:0.82rem;background:#1e1e1e;color:#d4d4d4;
+                                 padding:1rem;border-radius:4px;max-height:400px;overflow-y:auto">
+                        @if (_selectedRunLogs.Count == 0)
+                        {
+                            <span style="color:#888">No log entries.</span>
+                        }
+                        else
+                        {
+                            @foreach (var entry in _selectedRunLogs)
+                            {
+                                <div class="@LevelClass(entry.Level)">
+                                    <span style="color:#888;user-select:none">
+                                        @entry.Timestamp.ToString("HH:mm:ss")
+                                    </span>
+                                    <span> @entry.Message</span>
+                                </div>
+                            }
+                        }
+                    </div>
+                </RadzenCard>
+            }
+        </RadzenTabsItem>
+
+    </Tabs>
+</RadzenTabs>
+
+<RadzenNotification />
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private Runbook? _runbook;
+    private List<RunbookStep> _steps = [];
+    private List<RunbookRun> _runs = [];
+    private List<DeploymentEnvironment> _environments = [];
+    private List<DeploymentTarget> _targets = [];
+
+    // tabs
+    private int _tabIndex;
+
+    // trigger panel
+    private bool _triggerOpen;
+    private Guid? _triggerEnvId;
+    private Guid? _triggerTargetId;
+
+    // step editing
+    private bool _addStepOpen;
+    private Guid? _editingStepId;
+    private string _stepName = "";
+    private string _stepType = "KrakenDeploy.Script";
+    private string _stepPackageId = "";
+    private string _stepScript = "";
+
+    // run log viewer
+    private RunbookRun? _selectedRun;
+    private List<RunbookRunLogEntry> _selectedRunLogs = [];
+
+    private static readonly string[] _stepTypes =
+    [
+        "KrakenDeploy.Script",
+        "Octopus.Script",
+        "KrakenDeploy.SubstituteVariables",
+        "KrakenDeploy.FileTransform",
+    ];
+
+    protected override async Task OnInitializedAsync()
+    {
+        var rbTask  = RunbookSvc.GetAsync(Id);
+        var runsTask = RunbookSvc.GetRunsAsync(Id);
+        var envTask = EnvSvc.GetAllOrderedAsync();
+        var tgtTask = TargetSvc.GetAllAsync();
+        await Task.WhenAll(rbTask, runsTask, envTask, tgtTask);
+
+        _runbook      = rbTask.Result;
+        _runs         = runsTask.Result;
+        _environments = envTask.Result;
+        _targets      = tgtTask.Result;
+
+        if (_runbook?.Process?.Steps is not null)
+        {
+            _steps = [.. _runbook.Process.Steps.OrderBy(s => s.SortOrder)];
+        }
+    }
+
+    // ── Step management ────────────────────────────────────────────────────────
+
+    private void ResetStepForm()
+    {
+        _stepName      = "";
+        _stepType      = "KrakenDeploy.Script";
+        _stepPackageId = "";
+        _stepScript    = "";
+        _editingStepId = null;
+    }
+
+    private void BeginEditStep(RunbookStep step)
+    {
+        _editingStepId = step.Id;
+        _stepName      = step.Name;
+        _stepType      = step.StepType;
+        _stepPackageId = step.PackageId;
+        _stepScript    = step.Config.TryGetValue("ScriptBody", out var sb) ? sb : "";
+        _addStepOpen   = false;
+    }
+
+    private void CancelStepEdit()
+    {
+        _addStepOpen   = false;
+        _editingStepId = null;
+        ResetStepForm();
+    }
+
+    private async Task AddStepAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_stepName))
+        {
+            return;
+        }
+
+        try
+        {
+            var config = BuildConfig();
+            var step = await RunbookSvc.AddStepAsync(
+                Id,
+                _stepName.Trim(),
+                _stepType,
+                _stepPackageId.Trim(),
+                [],
+                config);
+
+            _steps.Add(step);
+            _addStepOpen = false;
+            ResetStepForm();
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Success,
+                Summary  = "Step added",
+                Detail   = step.Name,
+                Duration = 3000,
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary  = "Error",
+                Detail   = ex.Message,
+                Duration = 5000,
+            });
+        }
+    }
+
+    private async Task SaveStepAsync()
+    {
+        if (!_editingStepId.HasValue || string.IsNullOrWhiteSpace(_stepName))
+        {
+            return;
+        }
+
+        try
+        {
+            var config = BuildConfig();
+            var step = await RunbookSvc.UpdateStepAsync(
+                _editingStepId.Value,
+                _stepName.Trim(),
+                _stepType,
+                _stepPackageId.Trim(),
+                [],
+                config);
+
+            if (step is not null)
+            {
+                var idx = _steps.FindIndex(s => s.Id == step.Id);
+                if (idx >= 0)
+                {
+                    _steps[idx] = step;
+                }
+            }
+
+            CancelStepEdit();
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Success,
+                Summary  = "Step updated",
+                Duration = 3000,
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary  = "Error",
+                Detail   = ex.Message,
+                Duration = 5000,
+            });
+        }
+    }
+
+    private async Task DeleteStepAsync(RunbookStep step)
+    {
+        var deleted = await RunbookSvc.DeleteStepAsync(step.Id);
+        if (deleted)
+        {
+            _steps.Remove(step);
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Info,
+                Summary  = "Step deleted",
+                Detail   = step.Name,
+                Duration = 3000,
+            });
+        }
+    }
+
+    private Dictionary<string, string> BuildConfig()
+    {
+        var cfg = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(_stepScript))
+        {
+            cfg["ScriptBody"] = _stepScript;
+        }
+
+        return cfg;
+    }
+
+    // ── Trigger ────────────────────────────────────────────────────────────────
+
+    private async Task TriggerRunAsync()
+    {
+        if (!_triggerEnvId.HasValue || !_triggerTargetId.HasValue)
+        {
+            return;
+        }
+
+        try
+        {
+            var run = await RunbookSvc.TriggerAsync(
+                Id,
+                _triggerEnvId.Value,
+                _triggerTargetId.Value);
+
+            _runs = [run, .. _runs];
+            _triggerOpen   = false;
+            _triggerEnvId  = null;
+            _triggerTargetId = null;
+
+            // Switch to Runs tab
+            _tabIndex = 1;
+
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Success,
+                Summary  = "Run triggered",
+                Detail   = $"Run {run.Id.ToString()[..8]} queued",
+                Duration = 4000,
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary  = "Error",
+                Detail   = ex.Message,
+                Duration = 5000,
+            });
+        }
+    }
+
+    // ── Runs ───────────────────────────────────────────────────────────────────
+
+    private async Task RefreshRunsAsync()
+    {
+        _runs = await RunbookSvc.GetRunsAsync(Id);
+        _selectedRun = null;
+        _selectedRunLogs = [];
+    }
+
+    private async Task ToggleRunLog(RunbookRun run)
+    {
+        if (_selectedRun?.Id == run.Id)
+        {
+            _selectedRun     = null;
+            _selectedRunLogs = [];
+            return;
+        }
+
+        var full = await RunbookSvc.GetRunAsync(run.Id);
+        if (full is not null)
+        {
+            _selectedRun     = full;
+            _selectedRunLogs = [.. full.LogEntries.OrderBy(l => l.Sequence)];
+        }
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────────
+
+    private static BadgeStyle RunStatusStyle(DeploymentStatus status) => status switch
+    {
+        DeploymentStatus.Succeeded => BadgeStyle.Success,
+        DeploymentStatus.Failed    => BadgeStyle.Danger,
+        DeploymentStatus.Running   => BadgeStyle.Info,
+        DeploymentStatus.Queued    => BadgeStyle.Warning,
+        _                          => BadgeStyle.Light,
+    };
+
+    private static string LevelClass(string level) => level switch
+    {
+        "error"   => "rz-color-danger",
+        "warning" => "rz-color-warning",
+        _         => "",
+    };
+
+    private static string FormatDuration(RunbookRun r)
+    {
+        if (r.StartedUtc is null)
+        {
+            return "—";
+        }
+
+        var end = r.CompletedUtc ?? DateTimeOffset.UtcNow;
+        var dur = end - r.StartedUtc.Value;
+        return dur.TotalHours >= 1
+            ? $"{(int)dur.TotalHours}h {dur.Minutes}m {dur.Seconds}s"
+            : $"{dur.Minutes}m {dur.Seconds}s";
+    }
+}

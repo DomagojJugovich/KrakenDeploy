@@ -10,6 +10,7 @@ using KrakenDeploy.Server.Data.Identity;
 using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Services;
 using KrakenDeploy.Server.Transport;
+using KrakenDeploy.Server.Core.Domain.Lifecycles;
 using KrakenDeploy.Server.Core.Domain.StepTemplates;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
@@ -192,6 +193,7 @@ public static class Program
         builder.Services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
         builder.Services.AddSingleton<TargetStatusPublisher>();
         builder.Services.AddHostedService<DeploymentWorker>();
+        builder.Services.AddHostedService<RunbookRunWorker>();
 
         // ── Authorization ────────────────────────────────────────────────────
         // The fallback policy covers all endpoints that call RequireAuthorization().
@@ -473,7 +475,7 @@ public static class Program
                 try
                 {
                     var release = await releaseSvc.CreateAsync(
-                        projectId, req.Version, req.PackageVersions, req.ReleaseNotes, ct)
+                        projectId, req.Version, req.PackageVersions, req.ReleaseNotes, req.ChannelId, ct)
                         .ConfigureAwait(false);
                     return Results.Created(
                         $"/api/projects/{projectId}/releases/{release.Id}", release);
@@ -504,6 +506,7 @@ public static class Program
 
                 var scope = new VariableScope
                 {
+                    TenantId = req.ScopeTenantId,
                     EnvironmentId = req.ScopeEnvironmentId,
                     TargetId = req.ScopeTargetId,
                     Roles = req.ScopeRoles,
@@ -539,6 +542,7 @@ public static class Program
 
                 var scope = new VariableScope
                 {
+                    TenantId = req.ScopeTenantId,
                     EnvironmentId = req.ScopeEnvironmentId,
                     TargetId = req.ScopeTargetId,
                     Roles = req.ScopeRoles,
@@ -695,7 +699,7 @@ public static class Program
                 try
                 {
                     var deployment = await deploymentSvc
-                        .CreateAsync(req.ReleaseId, req.EnvironmentId, req.TargetId, ct)
+                        .CreateAsync(req.ReleaseId, req.EnvironmentId, req.TargetId, req.TenantId, ct)
                         .ConfigureAwait(false);
                     return Results.Created($"/api/deployments/{deployment.Id}", deployment);
                 }
@@ -725,6 +729,497 @@ public static class Program
                 catch (InvalidOperationException)
                 {
                     return Results.NotFound();
+                }
+            }).RequireAuthorization();
+
+        // ── Offline Drop API ────────────────────────────────────────────────────────
+
+        app.MapGet("/api/deployments/{id:guid}/drop-bundle",
+            async (Guid id, DeploymentService deploymentSvc,
+                IConfiguration config, CancellationToken ct) =>
+            {
+                var deployment = await deploymentSvc.GetAsync(id, ct).ConfigureAwait(false);
+                if (deployment is null)
+                {
+                    return Results.NotFound();
+                }
+
+                if (string.IsNullOrEmpty(deployment.DropBundlePath))
+                {
+                    return Results.NotFound(new { error = "No drop bundle available for this deployment." });
+                }
+
+                var dataPath = config["DataPath"] ?? "data";
+                try
+                {
+                    var stream = DropBundleService.OpenRead(deployment.DropBundlePath, dataPath);
+                    return Results.Stream(stream, "application/zip",
+                        fileDownloadName: $"drop-{id}.zip", enableRangeProcessing: true);
+                }
+                catch (FileNotFoundException)
+                {
+                    return Results.NotFound(new { error = "Drop bundle file not found on disk." });
+                }
+            }).RequireAuthorization();
+
+        app.MapPost("/api/deployments/{id:guid}/offline-result",
+            async (Guid id, HttpRequest request, OfflineResultService resultSvc,
+                CancellationToken ct) =>
+            {
+                if (!request.HasFormContentType || request.Form.Files.Count == 0)
+                {
+                    return Results.BadRequest(new { error = "Upload a result bundle zip file." });
+                }
+
+                var file = request.Form.Files[0];
+                try
+                {
+                    await using var stream = file.OpenReadStream();
+                    var deployment = await resultSvc.IngestAsync(id, stream, ct)
+                        .ConfigureAwait(false);
+                    return Results.Ok(new
+                    {
+                        deployment.Id,
+                        Status = deployment.Status.ToString(),
+                        deployment.CompletedUtc,
+                    });
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequireAuthorization().DisableAntiforgery();
+
+        app.MapPost("/api/targets/{id:guid}/offline-drop-config",
+            async (Guid id, SaveOfflineDropConfigRequest req,
+                TargetService targetSvc,
+                KrakenDeploy.Server.Core.Domain.Variables.IEncryptionService encryption,
+                CancellationToken ct) =>
+            {
+                var target = await targetSvc.GetAsync(id, ct).ConfigureAwait(false);
+                if (target is null)
+                {
+                    return Results.NotFound();
+                }
+
+                var cfg = target.OfflineDropConfig ?? new KrakenDeploy.Server.Core.Domain.Targets.OfflineDropConfig();
+                cfg.DeliveryChannel = req.DeliveryChannel;
+
+                // SMTP
+                cfg.SmtpHost = req.SmtpHost;
+                cfg.SmtpPort = req.SmtpPort;
+                cfg.SmtpUseSsl = req.SmtpUseSsl;
+                cfg.SmtpUsername = req.SmtpUsername;
+                cfg.SmtpPasswordEncrypted = !string.IsNullOrEmpty(req.SmtpPassword)
+                    ? encryption.Encrypt(req.SmtpPassword)
+                    : cfg.SmtpPasswordEncrypted;
+                cfg.SmtpRecipient = req.SmtpRecipient;
+                cfg.SmtpSender = req.SmtpSender;
+
+                // Webhook
+                cfg.WebhookUrl = req.WebhookUrl;
+                cfg.WebhookSecretEncrypted = !string.IsNullOrEmpty(req.WebhookSecret)
+                    ? encryption.Encrypt(req.WebhookSecret)
+                    : cfg.WebhookSecretEncrypted;
+
+                // File share
+                cfg.FileSharePath = req.FileSharePath;
+                cfg.FileShareUsername = req.FileShareUsername;
+                cfg.FileSharePasswordEncrypted = !string.IsNullOrEmpty(req.FileSharePassword)
+                    ? encryption.Encrypt(req.FileSharePassword)
+                    : cfg.FileSharePasswordEncrypted;
+
+                target.OfflineDropConfig = cfg;
+                await targetSvc.UpdateAsync(target, ct).ConfigureAwait(false);
+                return Results.Ok(new { saved = true });
+            }).RequireAuthorization();
+
+        app.MapPost("/api/targets/{id:guid}/generate-hmac-key",
+            async (Guid id, TargetService targetSvc,
+                KrakenDeploy.Server.Core.Domain.Variables.IEncryptionService encryption,
+                CancellationToken ct) =>
+            {
+                var target = await targetSvc.GetAsync(id, ct).ConfigureAwait(false);
+                if (target is null)
+                {
+                    return Results.NotFound();
+                }
+
+                var cfg = target.OfflineDropConfig ?? new KrakenDeploy.Server.Core.Domain.Targets.OfflineDropConfig();
+                var rawKey = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+                cfg.HmacKeyEncrypted = encryption.Encrypt(Convert.ToBase64String(rawKey));
+                target.OfflineDropConfig = cfg;
+                await targetSvc.UpdateAsync(target, ct).ConfigureAwait(false);
+                return Results.Ok(new { hmacKeyGenerated = true });
+            }).RequireAuthorization();
+
+        // ── Tenant API ─────────────────────────────────────────────────────────────
+
+        app.MapGet("/api/tenants",
+            async (TenantService tenantSvc, CancellationToken ct) =>
+                Results.Ok(await tenantSvc.GetAllAsync(ct).ConfigureAwait(false)))
+            .RequireAuthorization();
+
+        app.MapGet("/api/tenants/{id:guid}",
+            async (Guid id, TenantService tenantSvc, CancellationToken ct) =>
+            {
+                var tenant = await tenantSvc.GetWithTagsAsync(id, ct).ConfigureAwait(false);
+                return tenant is null ? Results.NotFound() : Results.Ok(tenant);
+            }).RequireAuthorization();
+
+        app.MapPost("/api/tenants",
+            async (CreateTenantRequest req, TenantService tenantSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var tenant = await tenantSvc.CreateAsync(req.Name, req.Slug, req.Description, ct)
+                        .ConfigureAwait(false);
+                    return Results.Created($"/api/tenants/{tenant.Id}", tenant);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequireAuthorization();
+
+        app.MapPut("/api/tenants/{id:guid}",
+            async (Guid id, CreateTenantRequest req, TenantService tenantSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var tenant = await tenantSvc.UpdateAsync(id, req.Name, req.Slug, req.Description, ct)
+                        .ConfigureAwait(false);
+                    return tenant is null ? Results.NotFound() : Results.Ok(tenant);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequireAuthorization();
+
+        app.MapDelete("/api/tenants/{id:guid}",
+            async (Guid id, TenantService tenantSvc, CancellationToken ct) =>
+            {
+                var deleted = await tenantSvc.DeleteAsync(id, ct).ConfigureAwait(false);
+                return deleted ? Results.NoContent() : Results.NotFound();
+            }).RequireAuthorization();
+
+        // Project-Tenant connections
+        app.MapPost("/api/tenants/{tenantId:guid}/projects/{projectId:guid}",
+            async (Guid tenantId, Guid projectId, TenantService tenantSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    await tenantSvc.ConnectProjectAsync(tenantId, projectId, ct).ConfigureAwait(false);
+                    return Results.NoContent();
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequireAuthorization();
+
+        app.MapDelete("/api/tenants/{tenantId:guid}/projects/{projectId:guid}",
+            async (Guid tenantId, Guid projectId, TenantService tenantSvc, CancellationToken ct) =>
+            {
+                await tenantSvc.DisconnectProjectAsync(tenantId, projectId, ct).ConfigureAwait(false);
+                return Results.NoContent();
+            }).RequireAuthorization();
+
+        // Tag Sets
+        app.MapGet("/api/tenants/{tenantId:guid}/tag-sets",
+            async (Guid tenantId, TenantService tenantSvc, CancellationToken ct) =>
+                Results.Ok(await tenantSvc.GetTagSetsAsync(tenantId, ct).ConfigureAwait(false)))
+            .RequireAuthorization();
+
+        app.MapPost("/api/tenants/{tenantId:guid}/tag-sets",
+            async (Guid tenantId, CreateTagSetRequest req, TenantService tenantSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var ts = await tenantSvc.CreateTagSetAsync(tenantId, req.Name, req.Description, req.SortOrder, ct)
+                        .ConfigureAwait(false);
+                    return Results.Created($"/api/tenants/{tenantId}/tag-sets/{ts.Id}", ts);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequireAuthorization();
+
+        app.MapPut("/api/tag-sets/{id:guid}",
+            async (Guid id, CreateTagSetRequest req, TenantService tenantSvc, CancellationToken ct) =>
+            {
+                var ts = await tenantSvc.UpdateTagSetAsync(id, req.Name, req.Description, req.SortOrder, ct)
+                    .ConfigureAwait(false);
+                return ts is null ? Results.NotFound() : Results.Ok(ts);
+            }).RequireAuthorization();
+
+        app.MapDelete("/api/tag-sets/{id:guid}",
+            async (Guid id, TenantService tenantSvc, CancellationToken ct) =>
+            {
+                var deleted = await tenantSvc.DeleteTagSetAsync(id, ct).ConfigureAwait(false);
+                return deleted ? Results.NoContent() : Results.NotFound();
+            }).RequireAuthorization();
+
+        // Tags
+        app.MapPost("/api/tag-sets/{tagSetId:guid}/tags",
+            async (Guid tagSetId, CreateTenantTagRequest req, TenantService tenantSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var tag = await tenantSvc.CreateTagAsync(tagSetId, req.Name, req.Color, ct)
+                        .ConfigureAwait(false);
+                    return Results.Created($"/api/tag-sets/{tagSetId}/tags/{tag.Id}", tag);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequireAuthorization();
+
+        app.MapPut("/api/tags/{id:guid}",
+            async (Guid id, CreateTenantTagRequest req, TenantService tenantSvc, CancellationToken ct) =>
+            {
+                var tag = await tenantSvc.UpdateTagAsync(id, req.Name, req.Color, ct)
+                    .ConfigureAwait(false);
+                return tag is null ? Results.NotFound() : Results.Ok(tag);
+            }).RequireAuthorization();
+
+        app.MapDelete("/api/tags/{id:guid}",
+            async (Guid id, TenantService tenantSvc, CancellationToken ct) =>
+            {
+                var deleted = await tenantSvc.DeleteTagAsync(id, ct).ConfigureAwait(false);
+                return deleted ? Results.NoContent() : Results.NotFound();
+            }).RequireAuthorization();
+
+        // Target-Tag connections
+        app.MapPost("/api/tags/{tagId:guid}/targets/{targetId:guid}",
+            async (Guid tagId, Guid targetId, TenantService tenantSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    await tenantSvc.AddTagToTargetAsync(tagId, targetId, ct).ConfigureAwait(false);
+                    return Results.NoContent();
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequireAuthorization();
+
+        app.MapDelete("/api/tags/{tagId:guid}/targets/{targetId:guid}",
+            async (Guid tagId, Guid targetId, TenantService tenantSvc, CancellationToken ct) =>
+            {
+                await tenantSvc.RemoveTagFromTargetAsync(tagId, targetId, ct).ConfigureAwait(false);
+                return Results.NoContent();
+            }).RequireAuthorization();
+
+        app.MapGet("/api/targets/{targetId:guid}/tags",
+            async (Guid targetId, TenantService tenantSvc, CancellationToken ct) =>
+                Results.Ok(await tenantSvc.GetTagsForTargetAsync(targetId, ct).ConfigureAwait(false)))
+            .RequireAuthorization();
+
+        // ── Lifecycle API ──────────────────────────────────────────────────────────
+
+        app.MapGet("/api/lifecycles",
+            async (LifecycleService lcSvc, CancellationToken ct) =>
+                Results.Ok(await lcSvc.GetAllAsync(ct).ConfigureAwait(false)))
+            .RequireAuthorization();
+
+        app.MapGet("/api/lifecycles/{id:guid}",
+            async (Guid id, LifecycleService lcSvc, CancellationToken ct) =>
+            {
+                var lc = await lcSvc.GetAsync(id, ct).ConfigureAwait(false);
+                return lc is null ? Results.NotFound() : Results.Ok(lc);
+            }).RequireAuthorization();
+
+        app.MapPost("/api/lifecycles",
+            async (CreateLifecycleRequest req, LifecycleService lcSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var lc = await lcSvc.CreateAsync(req.Name, req.Description, ct).ConfigureAwait(false);
+                    return Results.Created($"/api/lifecycles/{lc.Id}", lc);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequireAuthorization();
+
+        app.MapPut("/api/lifecycles/{id:guid}",
+            async (Guid id, UpdateLifecycleRequest req, LifecycleService lcSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var lc = await lcSvc.UpdateAsync(id, req.Name, req.Description, req.Phases, ct)
+                        .ConfigureAwait(false);
+                    return lc is null ? Results.NotFound() : Results.Ok(lc);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequireAuthorization();
+
+        app.MapDelete("/api/lifecycles/{id:guid}",
+            async (Guid id, LifecycleService lcSvc, CancellationToken ct) =>
+            {
+                var deleted = await lcSvc.DeleteAsync(id, ct).ConfigureAwait(false);
+                return deleted ? Results.NoContent() : Results.NotFound();
+            }).RequireAuthorization();
+
+        // ── Channel API ────────────────────────────────────────────────────────────
+
+        app.MapGet("/api/projects/{projectId:guid}/channels",
+            async (Guid projectId, ChannelService channelSvc, CancellationToken ct) =>
+                Results.Ok(await channelSvc.GetForProjectAsync(projectId, ct).ConfigureAwait(false)))
+            .RequireAuthorization();
+
+        app.MapPost("/api/projects/{projectId:guid}/channels",
+            async (Guid projectId, UpsertChannelRequest req, ChannelService channelSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var ch = await channelSvc.CreateAsync(
+                        projectId, req.Name, req.IsDefault, req.LifecycleId,
+                        req.VersionRange, req.VersionTag, ct).ConfigureAwait(false);
+                    return Results.Created($"/api/projects/{projectId}/channels/{ch.Id}", ch);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequireAuthorization();
+
+        app.MapPut("/api/channels/{id:guid}",
+            async (Guid id, UpsertChannelRequest req, ChannelService channelSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var ch = await channelSvc.UpdateAsync(
+                        id, req.Name, req.IsDefault, req.LifecycleId,
+                        req.VersionRange, req.VersionTag, ct).ConfigureAwait(false);
+                    return ch is null ? Results.NotFound() : Results.Ok(ch);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequireAuthorization();
+
+        app.MapDelete("/api/channels/{id:guid}",
+            async (Guid id, ChannelService channelSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var deleted = await channelSvc.DeleteAsync(id, ct).ConfigureAwait(false);
+                    return deleted ? Results.NoContent() : Results.NotFound();
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequireAuthorization();
+
+        // ── Runbook API ────────────────────────────────────────────────────────────
+
+        app.MapGet("/api/projects/{projectId:guid}/runbooks",
+            async (Guid projectId, RunbookService runbookSvc, CancellationToken ct) =>
+                Results.Ok(await runbookSvc.GetAllAsync(projectId, ct).ConfigureAwait(false)))
+            .RequireAuthorization();
+
+        app.MapGet("/api/runbooks/{id:guid}",
+            async (Guid id, RunbookService runbookSvc, CancellationToken ct) =>
+            {
+                var rb = await runbookSvc.GetAsync(id, ct).ConfigureAwait(false);
+                return rb is null ? Results.NotFound() : Results.Ok(rb);
+            }).RequireAuthorization();
+
+        app.MapPost("/api/projects/{projectId:guid}/runbooks",
+            async (Guid projectId, CreateRunbookRequest req, RunbookService runbookSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var rb = await runbookSvc.CreateAsync(projectId, req.Name, req.Description, ct)
+                        .ConfigureAwait(false);
+                    return Results.Created($"/api/runbooks/{rb.Id}", rb);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequireAuthorization();
+
+        app.MapPut("/api/runbooks/{id:guid}",
+            async (Guid id, CreateRunbookRequest req, RunbookService runbookSvc, CancellationToken ct) =>
+            {
+                var rb = await runbookSvc.UpdateAsync(id, req.Name, req.Description, ct)
+                    .ConfigureAwait(false);
+                return rb is null ? Results.NotFound() : Results.Ok(rb);
+            }).RequireAuthorization();
+
+        app.MapDelete("/api/runbooks/{id:guid}",
+            async (Guid id, RunbookService runbookSvc, CancellationToken ct) =>
+            {
+                var deleted = await runbookSvc.DeleteAsync(id, ct).ConfigureAwait(false);
+                return deleted ? Results.NoContent() : Results.NotFound();
+            }).RequireAuthorization();
+
+        // Runbook steps
+        app.MapPost("/api/runbooks/{runbookId:guid}/steps",
+            async (Guid runbookId, AddStepRequest req, RunbookService runbookSvc, CancellationToken ct) =>
+            {
+                var step = await runbookSvc.AddStepAsync(
+                    runbookId, req.Name, req.StepType, req.PackageId, req.TargetRoles, req.Config, ct)
+                    .ConfigureAwait(false);
+                return Results.Created($"/api/runbooks/{runbookId}/steps/{step.Id}", step);
+            }).RequireAuthorization();
+
+        app.MapPut("/api/runbook-steps/{stepId:guid}",
+            async (Guid stepId, AddStepRequest req, RunbookService runbookSvc, CancellationToken ct) =>
+            {
+                var step = await runbookSvc.UpdateStepAsync(
+                    stepId, req.Name, req.StepType, req.PackageId, req.TargetRoles, req.Config, ct)
+                    .ConfigureAwait(false);
+                return step is null ? Results.NotFound() : Results.Ok(step);
+            }).RequireAuthorization();
+
+        app.MapDelete("/api/runbook-steps/{stepId:guid}",
+            async (Guid stepId, RunbookService runbookSvc, CancellationToken ct) =>
+            {
+                var deleted = await runbookSvc.DeleteStepAsync(stepId, ct).ConfigureAwait(false);
+                return deleted ? Results.NoContent() : Results.NotFound();
+            }).RequireAuthorization();
+
+        // Runbook runs
+        app.MapGet("/api/runbooks/{runbookId:guid}/runs",
+            async (Guid runbookId, RunbookService runbookSvc, CancellationToken ct) =>
+                Results.Ok(await runbookSvc.GetRunsAsync(runbookId, ct).ConfigureAwait(false)))
+            .RequireAuthorization();
+
+        app.MapGet("/api/runbook-runs/{runId:guid}",
+            async (Guid runId, RunbookService runbookSvc, CancellationToken ct) =>
+            {
+                var run = await runbookSvc.GetRunAsync(runId, ct).ConfigureAwait(false);
+                return run is null ? Results.NotFound() : Results.Ok(run);
+            }).RequireAuthorization();
+
+        app.MapPost("/api/runbooks/{runbookId:guid}/runs",
+            async (Guid runbookId, TriggerRunbookRunRequest req, RunbookService runbookSvc,
+                CancellationToken ct) =>
+            {
+                try
+                {
+                    var run = await runbookSvc.TriggerAsync(
+                        runbookId, req.EnvironmentId, req.TargetId, req.TenantId, ct)
+                        .ConfigureAwait(false);
+                    return Results.Created($"/api/runbook-runs/{run.Id}", run);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
                 }
             }).RequireAuthorization();
 

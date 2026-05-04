@@ -1,3 +1,4 @@
+using KrakenDeploy.Server.Core.Domain.Channels;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Data.Conventions;
 using Microsoft.EntityFrameworkCore;
@@ -23,6 +24,11 @@ public class ReleaseConfiguration : IEntityTypeConfiguration<Release>
             .WithMany()
             .HasForeignKey(x => x.ProjectId)
             .OnDelete(DeleteBehavior.Restrict);
+
+        builder.HasOne(x => x.Channel)
+            .WithMany()
+            .HasForeignKey(x => x.ChannelId)
+            .OnDelete(DeleteBehavior.SetNull);
 
         builder.HasIndex(x => new { x.ProjectId, x.Version }).IsUnique();
 

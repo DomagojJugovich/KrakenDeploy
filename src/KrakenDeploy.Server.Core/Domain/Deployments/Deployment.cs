@@ -2,6 +2,7 @@ using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Environments;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Targets;
+using KrakenDeploy.Server.Core.Domain.Tenants;
 
 namespace KrakenDeploy.Server.Core.Domain.Deployments;
 
@@ -13,6 +14,8 @@ public class Deployment : AuditableEntity
     public DeploymentEnvironment Environment { get; set; } = null!;
     public Guid? TargetId { get; set; }
     public DeploymentTarget? Target { get; set; }
+    public Guid? TenantId { get; set; }
+    public Tenant? Tenant { get; set; }
     public DeploymentStatus Status { get; set; } = DeploymentStatus.Queued;
     public DateTimeOffset? StartedUtc { get; set; }
     public DateTimeOffset? CompletedUtc { get; set; }
@@ -28,4 +31,10 @@ public class Deployment : AuditableEntity
     /// Incremented atomically in the hub to guarantee ordering under concurrency.
     /// </summary>
     public int NextLogSequence { get; set; }
+
+    /// <summary>
+    /// Relative path to the drop bundle zip for offline-drop deployments.
+    /// Null for agent-dispatched deployments. Set by <c>DropBundleService</c>.
+    /// </summary>
+    public string? DropBundlePath { get; set; }
 }

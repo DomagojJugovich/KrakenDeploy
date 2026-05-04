@@ -4,5 +4,6 @@ public enum TransportMode
 {
     Reverse = 0,
     Direct = 1,
-    Polling = 2
+    Polling = 2,
+    OfflineDrop = 3,
 }

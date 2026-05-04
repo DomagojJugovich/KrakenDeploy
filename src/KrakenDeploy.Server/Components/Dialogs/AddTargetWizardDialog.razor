@@ -57,13 +57,16 @@
                         <RadzenRadioButtonListItem Text="Polling"
                                                    Description="Agent polls the server for work. Useful in highly restricted networks."
                                                    Value="TransportMode.Polling" />
+                        <RadzenRadioButtonListItem Text="Offline Drop"
+                                                   Description="No agent installed. Server generates a drop bundle for manual execution on the target."
+                                                   Value="TransportMode.OfflineDrop" />
                     </Items>
                 </RadzenRadioButtonList>
             </div>
         </RadzenStack>
     }
 
-    @* ═══════════════ STEP 2 — Token & Install ════════════════════ *@
+    @* ═══════════════ STEP 2 — Token & Install / Offline Confirm ══ *@
     @if (_step == 2)
     {
         @if (_createdTarget is null)
@@ -71,6 +74,24 @@
             <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.75rem">
                 <RadzenProgressBarCircular ShowValue="false" Size="ProgressBarCircularSize.Small" />
                 <span>Creating target…</span>
+            </RadzenStack>
+        }
+        else if (_transportMode == TransportMode.OfflineDrop)
+        {
+            <RadzenStack Gap="1.25rem">
+                <RadzenAlert AlertStyle="AlertStyle.Info" ShowIcon="true" AllowClose="false">
+                    <strong>Offline Drop target created.</strong> No agent is needed — deployments will generate
+                    a drop bundle you download and execute manually on the target machine.
+                </RadzenAlert>
+
+                <div class="rz-text-caption rz-color-secondary-light">
+                    Target ID: <code>@_createdTarget.Id</code>
+                </div>
+
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                    You can configure delivery channels (email, webhook, file share) and HMAC signing
+                    from the target detail page.
+                </RadzenText>
             </RadzenStack>
         }
         else

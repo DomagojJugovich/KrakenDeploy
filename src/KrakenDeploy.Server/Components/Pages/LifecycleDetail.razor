@@ -1,0 +1,258 @@
+@page "/lifecycles/{Id:guid}"
+@attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.Lifecycles
+@using KrakenDeploy.Server.Core.Domain.Environments
+@using KrakenDeploy.Server.Data.Services
+@inject LifecycleService LifecycleSvc
+@inject EnvironmentService EnvSvc
+@inject NavigationManager Nav
+@inject NotificationService Notify
+
+<PageTitle>@(_lifecycle?.Name ?? "Lifecycle") - KrakenDeploy</PageTitle>
+
+@if (_lifecycle is null)
+{
+    <RadzenText>Loading…</RadzenText>
+    return;
+}
+
+<div class="rz-display-flex rz-align-items-center rz-mb-4" style="gap:1rem">
+    <RadzenButton Icon="arrow_back" Variant="Variant.Text" Click="@(() => Nav.NavigateTo("/lifecycles"))" />
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1">@_lifecycle.Name</RadzenText>
+</div>
+
+@if (!string.IsNullOrEmpty(_lifecycle.Description))
+{
+    <RadzenText TextStyle="TextStyle.Body1" class="rz-mb-4 rz-color-secondary">@_lifecycle.Description</RadzenText>
+}
+
+@* ── Phases ───────────────────────────────────────────────────────────────── *@
+<div class="rz-display-flex rz-align-items-center rz-justify-content-between rz-mb-3">
+    <RadzenText TextStyle="TextStyle.H6">Phases</RadzenText>
+    <RadzenButton Text="Add Phase" Icon="add" Size="ButtonSize.Small"
+                  ButtonStyle="ButtonStyle.Secondary"
+                  Click="@AddPhase" />
+</div>
+
+<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-3">
+    Phases are promoted in order. Required environments in earlier phases must succeed before later phases can be entered.
+    Click <strong>Save Lifecycle</strong> to persist all changes.
+</RadzenText>
+
+@for (var i = 0; i < _phases.Count; i++)
+{
+    var idx = i;
+    var phase = _phases[idx];
+    <RadzenCard class="rz-mb-3">
+        <div class="rz-display-flex rz-align-items-center rz-justify-content-between rz-mb-3">
+            <RadzenText TextStyle="TextStyle.Subtitle1">Phase @(idx + 1): @phase.Name</RadzenText>
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" AlignItems="AlignItems.Center">
+                @if (idx > 0)
+                {
+                    <RadzenButton Icon="arrow_upward" Size="ButtonSize.Small" Variant="Variant.Text"
+                                  title="Move up" Click="@(() => MovePhase(idx, -1))" />
+                }
+                @if (idx < _phases.Count - 1)
+                {
+                    <RadzenButton Icon="arrow_downward" Size="ButtonSize.Small" Variant="Variant.Text"
+                                  title="Move down" Click="@(() => MovePhase(idx, 1))" />
+                }
+                <RadzenButton Icon="delete" Size="ButtonSize.Small" Variant="Variant.Text"
+                              ButtonStyle="ButtonStyle.Danger"
+                              title="Remove phase"
+                              Click="@(() => _phases.RemoveAt(idx))" />
+            </RadzenStack>
+        </div>
+
+        <RadzenRow Gap="1rem" class="rz-mb-3">
+            <RadzenColumn Size="4">
+                <RadzenFormField Text="Phase Name" style="width:100%">
+                    <RadzenTextBox Value="@phase.Name"
+                                   ValueChanged="@(v => phase.Name = v)"
+                                   Placeholder="Development" style="width:100%" />
+                </RadzenFormField>
+            </RadzenColumn>
+            <RadzenColumn Size="3">
+                <RadzenFormField Text="Min Environments (0 = all)" style="width:100%">
+                    <RadzenNumeric TValue="int" Value="@phase.MinimumEnvironments"
+                                   ValueChanged="@(v => phase.MinimumEnvironments = v)"
+                                   Min="0" style="width:100%" />
+                </RadzenFormField>
+            </RadzenColumn>
+            <RadzenColumn Size="3">
+                <RadzenFormField Text="Keep Deployments (0 = all)" style="width:100%">
+                    <RadzenNumeric TValue="int" Value="@phase.RetentionKeepDeployments"
+                                   ValueChanged="@(v => phase.RetentionKeepDeployments = v)"
+                                   Min="0" style="width:100%" />
+                </RadzenFormField>
+            </RadzenColumn>
+            <RadzenColumn Size="2" class="rz-display-flex rz-align-items-end rz-pb-2">
+                <div style="display:flex;align-items:center;gap:0.5rem">
+                    <RadzenCheckBox TValue="bool"
+                                    Value="@phase.IsOptional"
+                                    ValueChanged="@(v => phase.IsOptional = v)" />
+                    <RadzenLabel Text="Optional phase" />
+                </div>
+            </RadzenColumn>
+        </RadzenRow>
+
+        @* Environment picker rows *@
+        @if (_environments.Count > 0)
+        {
+            <RadzenRow Gap="1rem">
+                <RadzenColumn Size="6">
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-1">
+                        Required Environments
+                    </RadzenText>
+                    @foreach (var env in _environments)
+                    {
+                        var envLocal = env;
+                        var phaseLocal = phase;
+                        var isChecked = phaseLocal.EnvironmentIds.Contains(envLocal.Id);
+                        <div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:0.2rem">
+                            <RadzenCheckBox TValue="bool" Value="@isChecked"
+                                            ValueChanged="@(v => ToggleEnv(phaseLocal, envLocal.Id, v, required: true))" />
+                            <RadzenLabel Text="@envLocal.Name" />
+                        </div>
+                    }
+                </RadzenColumn>
+                <RadzenColumn Size="6">
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-1">
+                        Optional Environments
+                    </RadzenText>
+                    @foreach (var env in _environments)
+                    {
+                        var envLocal = env;
+                        var phaseLocal = phase;
+                        var isChecked = phaseLocal.OptionalEnvironmentIds.Contains(envLocal.Id);
+                        <div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:0.2rem">
+                            <RadzenCheckBox TValue="bool" Value="@isChecked"
+                                            ValueChanged="@(v => ToggleEnv(phaseLocal, envLocal.Id, v, required: false))" />
+                            <RadzenLabel Text="@envLocal.Name" />
+                        </div>
+                    }
+                </RadzenColumn>
+            </RadzenRow>
+        }
+        else
+        {
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                No environments defined — create environments first.
+            </RadzenText>
+        }
+    </RadzenCard>
+}
+
+@if (_phases.Count == 0)
+{
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+        No phases yet — click <strong>Add Phase</strong> to define promotion steps.
+    </RadzenText>
+}
+
+<RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem" class="rz-mt-4">
+    <RadzenButton Text="Save Lifecycle" Icon="save" ButtonStyle="ButtonStyle.Primary"
+                  Click="@SaveAsync" />
+    <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                  Click="@(() => Nav.NavigateTo("/lifecycles"))" />
+</RadzenStack>
+
+<RadzenNotification />
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private Lifecycle? _lifecycle;
+    private List<LifecyclePhase> _phases = [];
+    private List<DeploymentEnvironment> _environments = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        var lcTask  = LifecycleSvc.GetAsync(Id);
+        var envTask = EnvSvc.GetAllOrderedAsync();
+        await Task.WhenAll(lcTask, envTask);
+        _lifecycle    = lcTask.Result;
+        _environments = envTask.Result;
+        if (_lifecycle is not null)
+        {
+            _phases = [.. _lifecycle.Phases.OrderBy(p => p.SortOrder)];
+        }
+    }
+
+    private void AddPhase()
+    {
+        _phases.Add(new LifecyclePhase
+        {
+            Id       = Guid.CreateVersion7(),
+            Name     = $"Phase {_phases.Count + 1}",
+            SortOrder = _phases.Count,
+        });
+    }
+
+    private void MovePhase(int index, int delta)
+    {
+        var newIndex = index + delta;
+        if (newIndex < 0 || newIndex >= _phases.Count)
+        {
+            return;
+        }
+
+        (_phases[index], _phases[newIndex]) = (_phases[newIndex], _phases[index]);
+    }
+
+    private static void ToggleEnv(LifecyclePhase phase, Guid envId, bool add, bool required)
+    {
+        var list = required ? phase.EnvironmentIds : phase.OptionalEnvironmentIds;
+        if (add)
+        {
+            if (!list.Contains(envId))
+            {
+                list.Add(envId);
+            }
+        }
+        else
+        {
+            list.Remove(envId);
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_lifecycle is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var updated = await LifecycleSvc.UpdateAsync(
+                _lifecycle.Id,
+                _lifecycle.Name,
+                _lifecycle.Description,
+                _phases);
+
+            if (updated is not null)
+            {
+                _lifecycle = updated;
+                _phases    = [.. _lifecycle.Phases.OrderBy(p => p.SortOrder)];
+                Notify.Notify(new NotificationMessage
+                {
+                    Severity = NotificationSeverity.Success,
+                    Summary  = "Lifecycle saved",
+                    Detail   = _lifecycle.Name,
+                    Duration = 3000,
+                });
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary  = "Error",
+                Detail   = ex.Message,
+                Duration = 5000,
+            });
+        }
+    }
+}

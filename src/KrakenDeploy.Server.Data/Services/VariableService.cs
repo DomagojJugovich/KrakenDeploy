@@ -1,4 +1,5 @@
 using System.Text.Json;
+using KrakenDeploy.Server.Core.Domain.Tenants;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using Microsoft.EntityFrameworkCore;
 
@@ -184,28 +185,63 @@ public class VariableService(KrakenDbContext db, IEncryptionService encryption)
         Guid environmentId,
         Guid? targetId,
         IReadOnlyList<string> targetRoles,
+        Guid? tenantId = null,
         CancellationToken ct = default)
     {
-        var set = await db.VariableSets
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        // 1. Resolve tenant common variables first (lowest priority)
+        if (tenantId.HasValue)
+        {
+            var tenant = await db.Tenants
+                .AsNoTracking()
+                .FirstOrDefaultAsync(t => t.Id == tenantId.Value, ct)
+                .ConfigureAwait(false);
+
+            if (tenant?.VariableSetId.HasValue == true)
+            {
+                var tenantSet = await db.VariableSets
+                    .Include(vs => vs.Variables)
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(vs => vs.Id == tenant.VariableSetId!.Value, ct)
+                    .ConfigureAwait(false);
+
+                if (tenantSet is not null)
+                {
+                    ApplyVariables(tenantSet.Variables, result, environmentId, targetId, targetRoles, tenantId);
+                }
+            }
+        }
+
+        // 2. Resolve project variables (higher priority — overwrites tenant vars)
+        var projectSet = await db.VariableSets
             .Include(vs => vs.Variables)
             .AsNoTracking()
             .FirstOrDefaultAsync(vs => vs.ProjectId == projectId, ct)
             .ConfigureAwait(false);
 
-        if (set is null)
+        if (projectSet is not null)
         {
-            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            ApplyVariables(projectSet.Variables, result, environmentId, targetId, targetRoles, tenantId);
         }
 
-        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        return result;
+    }
 
-        var byName = set.Variables
-            .GroupBy(v => v.Name, StringComparer.OrdinalIgnoreCase);
+    private void ApplyVariables(
+        IEnumerable<Variable> variables,
+        Dictionary<string, string> result,
+        Guid environmentId,
+        Guid? targetId,
+        IReadOnlyList<string> targetRoles,
+        Guid? tenantId)
+    {
+        var byName = variables.GroupBy(v => v.Name, StringComparer.OrdinalIgnoreCase);
 
         foreach (var group in byName)
         {
             var winner = group
-                .Where(v => v.Scope.Matches(environmentId, targetId, targetRoles))
+                .Where(v => v.Scope.Matches(environmentId, targetId, targetRoles, tenantId))
                 .OrderByDescending(v => v.Scope.SpecificityScore())
                 .FirstOrDefault();
 
@@ -218,8 +254,6 @@ public class VariableService(KrakenDbContext db, IEncryptionService encryption)
                 ? encryption.Decrypt(winner.Value)
                 : winner.Value;  // String: plain; StringArray: JSON string
         }
-
-        return result;
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────

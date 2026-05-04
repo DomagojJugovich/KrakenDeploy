@@ -11,6 +11,7 @@ namespace KrakenDeploy.Server.Core.Domain.Variables;
 /// <para>
 /// Scope resolution priority (higher score wins for the same variable name):
 /// <list type="table">
+///   <item><term>+8</term><description>TenantId is set and matches</description></item>
 ///   <item><term>+4</term><description>EnvironmentId is set and matches</description></item>
 ///   <item><term>+2</term><description>Roles overlap with the target's roles</description></item>
 ///   <item><term>+1</term><description>TargetId is set and matches</description></item>
@@ -20,6 +21,9 @@ namespace KrakenDeploy.Server.Core.Domain.Variables;
 /// </summary>
 public class VariableScope
 {
+    /// <summary>If set, the variable applies only when deploying for this tenant.</summary>
+    public Guid? TenantId { get; set; }
+
     /// <summary>If set, the variable applies only to this environment.</summary>
     public Guid? EnvironmentId { get; set; }
 
@@ -39,6 +43,7 @@ public class VariableScope
     /// as a project-wide default.
     /// </summary>
     public bool IsUnscoped =>
+        TenantId is null &&
         EnvironmentId is null &&
         TargetId is null &&
         (Roles is null || Roles.Count == 0);
@@ -50,6 +55,11 @@ public class VariableScope
     public int SpecificityScore()
     {
         var score = 0;
+
+        if (TenantId.HasValue)
+        {
+            score += 8;
+        }
 
         if (EnvironmentId.HasValue)
         {
@@ -76,8 +86,14 @@ public class VariableScope
     public bool Matches(
         Guid environmentId,
         Guid? targetId,
-        IReadOnlyList<string> targetRoles)
+        IReadOnlyList<string> targetRoles,
+        Guid? tenantId = null)
     {
+        if (TenantId.HasValue && TenantId.Value != tenantId)
+        {
+            return false;
+        }
+
         if (EnvironmentId.HasValue && EnvironmentId.Value != environmentId)
         {
             return false;

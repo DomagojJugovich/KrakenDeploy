@@ -1,3 +1,4 @@
+using KrakenDeploy.Server.Core.Domain.Lifecycles;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -16,6 +17,11 @@ public class ProjectConfiguration : IEntityTypeConfiguration<Project>
 
         builder.Property(x => x.Name).HasMaxLength(200).IsRequired();
         builder.Property(x => x.Description).HasMaxLength(2000);
+
+        builder.HasOne(x => x.Lifecycle)
+            .WithMany()
+            .HasForeignKey(x => x.LifecycleId)
+            .OnDelete(DeleteBehavior.SetNull);
 
         builder.Property(x => x.CreatedUtc).IsRequired();
     }

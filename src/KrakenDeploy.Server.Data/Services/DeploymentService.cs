@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Core.Domain.Tenants;
 using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data.Services;
@@ -16,11 +17,13 @@ public class DeploymentService(
     /// <summary>
     /// Creates a <see cref="Deployment"/> in the <c>Queued</c> state and hands it
     /// to the <see cref="DeploymentWorker"/> via the in-process channel.
+    /// Enforces the lifecycle gate if the release has a channel with a lifecycle.
     /// </summary>
     public async Task<Deployment> CreateAsync(
         Guid releaseId,
         Guid environmentId,
         Guid targetId,
+        Guid? tenantId = null,
         CancellationToken ct = default)
     {
         // Validate release and environment exist.
@@ -38,11 +41,25 @@ public class DeploymentService(
             throw new InvalidOperationException($"Environment {environmentId} not found.");
         }
 
+        if (tenantId.HasValue)
+        {
+            var tenantExists = await db.Tenants.AnyAsync(t => t.Id == tenantId.Value, ct)
+                .ConfigureAwait(false);
+            if (!tenantExists)
+            {
+                throw new InvalidOperationException($"Tenant {tenantId.Value} not found.");
+            }
+        }
+
+        // Enforce lifecycle phase gate (throws if gate not satisfied).
+        await EnforceLifecycleGateAsync(releaseId, environmentId, tenantId, ct).ConfigureAwait(false);
+
         var deployment = new Deployment
         {
             ReleaseId = releaseId,
             EnvironmentId = environmentId,
             TargetId = targetId,
+            TenantId = tenantId,
             Status = DeploymentStatus.Queued,
         };
 
@@ -81,4 +98,89 @@ public class DeploymentService(
             .Include(d => d.Target)
             .Include(d => d.LogEntries.OrderBy(l => l.Sequence))
             .FirstOrDefaultAsync(d => d.Id == id, ct);
+
+    // ── Lifecycle gate ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Checks whether all earlier non-optional lifecycle phases have been satisfied
+    /// for this release before allowing deployment to <paramref name="environmentId"/>.
+    /// Silently succeeds if no lifecycle is configured.
+    /// </summary>
+    private async Task EnforceLifecycleGateAsync(
+        Guid releaseId, Guid environmentId, Guid? tenantId, CancellationToken ct)
+    {
+        // Load the lifecycle via: release → channel → lifecycle,
+        // OR release → project → lifecycle (fallback).
+        var release = await db.Releases
+            .Include(r => r.Channel)
+                .ThenInclude(c => c!.Lifecycle)
+            .Include(r => r.Project)
+                .ThenInclude(p => p.Lifecycle)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(r => r.Id == releaseId, ct)
+            .ConfigureAwait(false);
+
+        if (release is null)
+        {
+            return;
+        }
+
+        var lifecycle = release.Channel?.Lifecycle ?? release.Project.Lifecycle;
+        if (lifecycle is null || lifecycle.Phases.Count == 0)
+        {
+            return;
+        }
+
+        var phases = lifecycle.Phases.OrderBy(p => p.SortOrder).ToList();
+
+        // Find the index of the target environment's phase.
+        var targetIdx = phases.FindIndex(p =>
+            p.EnvironmentIds.Contains(environmentId) ||
+            p.OptionalEnvironmentIds.Contains(environmentId));
+
+        if (targetIdx <= 0)
+        {
+            return; // first phase, or environment not covered by lifecycle — allow
+        }
+
+        // Check all required phases before the target phase.
+        for (var i = 0; i < targetIdx; i++)
+        {
+            var phase = phases[i];
+            if (phase.IsOptional || phase.EnvironmentIds.Count == 0)
+            {
+                continue;
+            }
+
+            var minRequired = phase.MinimumEnvironments == 0
+                ? phase.EnvironmentIds.Count
+                : phase.MinimumEnvironments;
+
+            // Count distinct environments in this phase that have a successful deployment.
+            var envIds = phase.EnvironmentIds;
+            var successQuery = db.Deployments
+                .Where(d => d.ReleaseId == releaseId &&
+                            envIds.Contains(d.EnvironmentId) &&
+                            d.Status == DeploymentStatus.Succeeded);
+
+            if (tenantId.HasValue)
+            {
+                successQuery = successQuery.Where(d => d.TenantId == tenantId.Value);
+            }
+
+            var successCount = await successQuery
+                .Select(d => d.EnvironmentId)
+                .Distinct()
+                .CountAsync(ct)
+                .ConfigureAwait(false);
+
+            if (successCount < minRequired)
+            {
+                throw new InvalidOperationException(
+                    $"Lifecycle gate: phase '{phase.Name}' requires successful deployment to " +
+                    $"{minRequired} environment(s) but only {successCount} have succeeded for this release. " +
+                    "Deploy to the required earlier environments first.");
+            }
+        }
+    }
 }

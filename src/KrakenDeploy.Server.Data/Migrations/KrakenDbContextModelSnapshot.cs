@@ -23,6 +23,81 @@ namespace KrakenDeploy.Server.Data.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("DeploymentTargetTenantTag", b =>
+                {
+                    b.Property<Guid>("TargetsId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("targets_id");
+
+                    b.Property<Guid>("TenantTagsId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_tags_id");
+
+                    b.HasKey("TargetsId", "TenantTagsId")
+                        .HasName("pk_target_tenant_tags");
+
+                    b.HasIndex("TenantTagsId")
+                        .HasDatabaseName("ix_target_tenant_tags_tenant_tags_id");
+
+                    b.ToTable("target_tenant_tags", (string)null);
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Channels.Channel", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
+
+                    b.Property<bool>("IsDefault")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_default");
+
+                    b.Property<Guid?>("LifecycleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("lifecycle_id");
+
+                    b.Property<DateTimeOffset?>("ModifiedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("modified_utc");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("project_id");
+
+                    b.Property<string>("VersionRange")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("version_range");
+
+                    b.Property<string>("VersionTag")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("version_tag");
+
+                    b.HasKey("Id")
+                        .HasName("pk_channels");
+
+                    b.HasIndex("LifecycleId")
+                        .HasDatabaseName("ix_channels_lifecycle_id");
+
+                    b.HasIndex("ProjectId", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("ix_channels_project_id_name");
+
+                    b.ToTable("channels", (string)null);
+                });
+
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Deployments.Deployment", b =>
                 {
                     b.Property<Guid>("Id")
@@ -37,6 +112,11 @@ namespace KrakenDeploy.Server.Data.Migrations
                     b.Property<DateTimeOffset>("CreatedUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_utc");
+
+                    b.Property<string>("DropBundlePath")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)")
+                        .HasColumnName("drop_bundle_path");
 
                     b.Property<Guid>("EnvironmentId")
                         .HasColumnType("uuid")
@@ -66,6 +146,10 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("target_id");
 
+                    b.Property<Guid?>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
                     b.HasKey("Id")
                         .HasName("pk_deployments");
 
@@ -77,6 +161,9 @@ namespace KrakenDeploy.Server.Data.Migrations
 
                     b.HasIndex("TargetId")
                         .HasDatabaseName("ix_deployments_target_id");
+
+                    b.HasIndex("TenantId")
+                        .HasDatabaseName("ix_deployments_tenant_id");
 
                     b.HasIndex("ReleaseId", "EnvironmentId", "TargetId")
                         .HasDatabaseName("ix_deployments_release_id_environment_id_target_id");
@@ -217,6 +304,43 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasDatabaseName("ix_environments_sort_order");
 
                     b.ToTable("environments", (string)null);
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Lifecycles.Lifecycle", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("description");
+
+                    b.Property<DateTimeOffset?>("ModifiedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("modified_utc");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("Phases")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("phases");
+
+                    b.HasKey("Id")
+                        .HasName("pk_lifecycles");
+
+                    b.ToTable("lifecycles", (string)null);
                 });
 
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Packages.Package", b =>
@@ -360,6 +484,10 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnType("character varying(2000)")
                         .HasColumnName("description");
 
+                    b.Property<Guid?>("LifecycleId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("lifecycle_id");
+
                     b.Property<DateTimeOffset?>("ModifiedUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("modified_utc");
@@ -379,6 +507,9 @@ namespace KrakenDeploy.Server.Data.Migrations
                     b.HasKey("Id")
                         .HasName("pk_projects");
 
+                    b.HasIndex("LifecycleId")
+                        .HasDatabaseName("ix_projects_lifecycle_id");
+
                     b.HasIndex("Slug")
                         .IsUnique()
                         .HasDatabaseName("ix_projects_slug");
@@ -392,6 +523,10 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasColumnName("id");
+
+                    b.Property<Guid?>("ChannelId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("channel_id");
 
                     b.Property<DateTimeOffset>("CreatedUtc")
                         .HasColumnType("timestamp with time zone")
@@ -423,11 +558,240 @@ namespace KrakenDeploy.Server.Data.Migrations
                     b.HasKey("Id")
                         .HasName("pk_releases");
 
+                    b.HasIndex("ChannelId")
+                        .HasDatabaseName("ix_releases_channel_id");
+
                     b.HasIndex("ProjectId", "Version")
                         .IsUnique()
                         .HasDatabaseName("ix_releases_project_id_version");
 
                     b.ToTable("releases", (string)null);
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Runbooks.Runbook", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("description");
+
+                    b.Property<DateTimeOffset?>("ModifiedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("modified_utc");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("project_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_runbooks");
+
+                    b.HasIndex("ProjectId", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("ix_runbooks_project_id_name");
+
+                    b.ToTable("runbooks", (string)null);
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Runbooks.RunbookProcess", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("RunbookId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("runbook_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_runbook_processes");
+
+                    b.HasIndex("RunbookId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_runbook_processes_runbook_id");
+
+                    b.ToTable("runbook_processes", (string)null);
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Runbooks.RunbookRun", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset?>("CompletedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("completed_utc");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
+
+                    b.Property<Guid>("EnvironmentId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("environment_id");
+
+                    b.Property<DateTimeOffset?>("ModifiedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("modified_utc");
+
+                    b.Property<int>("NextLogSequence")
+                        .HasColumnType("integer")
+                        .HasColumnName("next_log_sequence");
+
+                    b.Property<string>("ProcessSnapshot")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("process_snapshot");
+
+                    b.Property<Guid>("RunbookId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("runbook_id");
+
+                    b.Property<DateTimeOffset?>("StartedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_utc");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer")
+                        .HasColumnName("status");
+
+                    b.Property<Guid?>("TargetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("target_id");
+
+                    b.Property<Guid?>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_runbook_runs");
+
+                    b.HasIndex("EnvironmentId")
+                        .HasDatabaseName("ix_runbook_runs_environment_id");
+
+                    b.HasIndex("RunbookId")
+                        .HasDatabaseName("ix_runbook_runs_runbook_id");
+
+                    b.HasIndex("Status")
+                        .HasDatabaseName("ix_runbook_runs_status");
+
+                    b.HasIndex("TargetId")
+                        .HasDatabaseName("ix_runbook_runs_target_id");
+
+                    b.HasIndex("TenantId")
+                        .HasDatabaseName("ix_runbook_runs_tenant_id");
+
+                    b.ToTable("runbook_runs", (string)null);
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Runbooks.RunbookRunLogEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Level")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("level");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("message");
+
+                    b.Property<Guid>("RunbookRunId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("runbook_run_id");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("integer")
+                        .HasColumnName("sequence");
+
+                    b.Property<DateTimeOffset>("Timestamp")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("timestamp");
+
+                    b.HasKey("Id")
+                        .HasName("pk_runbook_run_log_entries");
+
+                    b.HasIndex("RunbookRunId", "Sequence")
+                        .IsUnique()
+                        .HasDatabaseName("ix_runbook_run_log_entries_runbook_run_id_sequence");
+
+                    b.ToTable("runbook_run_log_entries", (string)null);
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Runbooks.RunbookStep", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Config")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("config");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("PackageId")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("package_id");
+
+                    b.Property<Guid>("ProcessId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("process_id");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("sort_order");
+
+                    b.Property<string>("StepType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("step_type");
+
+                    b.Property<string>("TargetRoles")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("target_roles");
+
+                    b.HasKey("Id")
+                        .HasName("pk_runbook_steps");
+
+                    b.HasIndex("ProcessId", "SortOrder")
+                        .HasDatabaseName("ix_runbook_steps_process_id_sort_order");
+
+                    b.ToTable("runbook_steps", (string)null);
                 });
 
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.StepTemplates.StepTemplate", b =>
@@ -536,6 +900,10 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnType("character varying(200)")
                         .HasColumnName("name");
 
+                    b.Property<string>("OfflineDropConfig")
+                        .HasColumnType("jsonb")
+                        .HasColumnName("offline_drop_config");
+
                     b.Property<string>("OperatingSystem")
                         .HasMaxLength(255)
                         .HasColumnType("character varying(255)")
@@ -570,6 +938,136 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasDatabaseName("ix_deployment_targets_status");
 
                     b.ToTable("deployment_targets", (string)null);
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tenants.TagSet", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("description");
+
+                    b.Property<DateTimeOffset?>("ModifiedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("modified_utc");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("sort_order");
+
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenant_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_tag_sets");
+
+                    b.HasIndex("TenantId", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("ix_tag_sets_tenant_id_name");
+
+                    b.ToTable("tag_sets", (string)null);
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tenants.Tenant", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("description");
+
+                    b.Property<DateTimeOffset?>("ModifiedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("modified_utc");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("Slug")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("slug");
+
+                    b.Property<Guid?>("VariableSetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("variable_set_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_tenants");
+
+                    b.HasIndex("Slug")
+                        .IsUnique()
+                        .HasDatabaseName("ix_tenants_slug");
+
+                    b.ToTable("tenants", (string)null);
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tenants.TenantTag", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Color")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)")
+                        .HasColumnName("color");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
+
+                    b.Property<DateTimeOffset?>("ModifiedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("modified_utc");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<Guid>("TagSetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tag_set_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_tenant_tags");
+
+                    b.HasIndex("TagSetId", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("ix_tenant_tags_tag_set_id_name");
+
+                    b.ToTable("tenant_tags", (string)null);
                 });
 
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Variables.Variable", b =>
@@ -878,6 +1376,62 @@ namespace KrakenDeploy.Server.Data.Migrations
                     b.ToTable("user_tokens", (string)null);
                 });
 
+            modelBuilder.Entity("ProjectTenant", b =>
+                {
+                    b.Property<Guid>("ProjectsId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("projects_id");
+
+                    b.Property<Guid>("TenantsId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tenants_id");
+
+                    b.HasKey("ProjectsId", "TenantsId")
+                        .HasName("pk_project_tenants");
+
+                    b.HasIndex("TenantsId")
+                        .HasDatabaseName("ix_project_tenants_tenants_id");
+
+                    b.ToTable("project_tenants", (string)null);
+                });
+
+            modelBuilder.Entity("DeploymentTargetTenantTag", b =>
+                {
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Targets.DeploymentTarget", null)
+                        .WithMany()
+                        .HasForeignKey("TargetsId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_target_tenant_tags_deployment_targets_targets_id");
+
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Tenants.TenantTag", null)
+                        .WithMany()
+                        .HasForeignKey("TenantTagsId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_target_tenant_tags_tenant_tags_tenant_tags_id");
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Channels.Channel", b =>
+                {
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Lifecycles.Lifecycle", "Lifecycle")
+                        .WithMany()
+                        .HasForeignKey("LifecycleId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_channels_lifecycles_lifecycle_id");
+
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Projects.Project", "Project")
+                        .WithMany("Channels")
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_channels_projects_project_id");
+
+                    b.Navigation("Lifecycle");
+
+                    b.Navigation("Project");
+                });
+
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Deployments.Deployment", b =>
                 {
                     b.HasOne("KrakenDeploy.Server.Core.Domain.Environments.DeploymentEnvironment", "Environment")
@@ -900,11 +1454,19 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .OnDelete(DeleteBehavior.SetNull)
                         .HasConstraintName("fk_deployments_deployment_targets_target_id");
 
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Tenants.Tenant", "Tenant")
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_deployments_tenants_tenant_id");
+
                     b.Navigation("Environment");
 
                     b.Navigation("Release");
 
                     b.Navigation("Target");
+
+                    b.Navigation("Tenant");
                 });
 
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Deployments.DeploymentArtifact", b =>
@@ -955,8 +1517,25 @@ namespace KrakenDeploy.Server.Data.Migrations
                     b.Navigation("Process");
                 });
 
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Projects.Project", b =>
+                {
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Lifecycles.Lifecycle", "Lifecycle")
+                        .WithMany()
+                        .HasForeignKey("LifecycleId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_projects_lifecycles_lifecycle_id");
+
+                    b.Navigation("Lifecycle");
+                });
+
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Releases.Release", b =>
                 {
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Channels.Channel", "Channel")
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_releases_channels_channel_id");
+
                     b.HasOne("KrakenDeploy.Server.Core.Domain.Projects.Project", "Project")
                         .WithMany()
                         .HasForeignKey("ProjectId")
@@ -964,7 +1543,118 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .IsRequired()
                         .HasConstraintName("fk_releases_projects_project_id");
 
+                    b.Navigation("Channel");
+
                     b.Navigation("Project");
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Runbooks.Runbook", b =>
+                {
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Projects.Project", "Project")
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_runbooks_projects_project_id");
+
+                    b.Navigation("Project");
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Runbooks.RunbookProcess", b =>
+                {
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Runbooks.Runbook", "Runbook")
+                        .WithOne("Process")
+                        .HasForeignKey("KrakenDeploy.Server.Core.Domain.Runbooks.RunbookProcess", "RunbookId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_runbook_processes_runbooks_runbook_id");
+
+                    b.Navigation("Runbook");
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Runbooks.RunbookRun", b =>
+                {
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Environments.DeploymentEnvironment", "Environment")
+                        .WithMany()
+                        .HasForeignKey("EnvironmentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_runbook_runs_environments_environment_id");
+
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Runbooks.Runbook", "Runbook")
+                        .WithMany()
+                        .HasForeignKey("RunbookId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_runbook_runs_runbooks_runbook_id");
+
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Targets.DeploymentTarget", "Target")
+                        .WithMany()
+                        .HasForeignKey("TargetId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_runbook_runs_deployment_targets_target_id");
+
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Tenants.Tenant", "Tenant")
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_runbook_runs_tenants_tenant_id");
+
+                    b.Navigation("Environment");
+
+                    b.Navigation("Runbook");
+
+                    b.Navigation("Target");
+
+                    b.Navigation("Tenant");
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Runbooks.RunbookRunLogEntry", b =>
+                {
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Runbooks.RunbookRun", "RunbookRun")
+                        .WithMany("LogEntries")
+                        .HasForeignKey("RunbookRunId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_runbook_run_log_entries_runbook_runs_runbook_run_id");
+
+                    b.Navigation("RunbookRun");
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Runbooks.RunbookStep", b =>
+                {
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Runbooks.RunbookProcess", "Process")
+                        .WithMany("Steps")
+                        .HasForeignKey("ProcessId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_runbook_steps_runbook_processes_process_id");
+
+                    b.Navigation("Process");
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tenants.TagSet", b =>
+                {
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Tenants.Tenant", "Tenant")
+                        .WithMany("TagSets")
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_tag_sets_tenants_tenant_id");
+
+                    b.Navigation("Tenant");
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tenants.TenantTag", b =>
+                {
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Tenants.TagSet", "TagSet")
+                        .WithMany("Tags")
+                        .HasForeignKey("TagSetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_tenant_tags_tag_sets_tag_set_id");
+
+                    b.Navigation("TagSet");
                 });
 
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Variables.Variable", b =>
@@ -1048,6 +1738,23 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasConstraintName("fk_user_tokens_users_user_id");
                 });
 
+            modelBuilder.Entity("ProjectTenant", b =>
+                {
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Projects.Project", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectsId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_project_tenants_projects_projects_id");
+
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Tenants.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantsId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_project_tenants_tenants_tenants_id");
+                });
+
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Deployments.Deployment", b =>
                 {
                     b.Navigation("Artifacts");
@@ -1062,9 +1769,36 @@ namespace KrakenDeploy.Server.Data.Migrations
 
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Projects.Project", b =>
                 {
+                    b.Navigation("Channels");
+
                     b.Navigation("Process");
 
                     b.Navigation("VariableSet");
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Runbooks.Runbook", b =>
+                {
+                    b.Navigation("Process");
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Runbooks.RunbookProcess", b =>
+                {
+                    b.Navigation("Steps");
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Runbooks.RunbookRun", b =>
+                {
+                    b.Navigation("LogEntries");
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tenants.TagSet", b =>
+                {
+                    b.Navigation("Tags");
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tenants.Tenant", b =>
+                {
+                    b.Navigation("TagSets");
                 });
 
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Variables.VariableSet", b =>

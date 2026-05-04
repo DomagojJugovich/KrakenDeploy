@@ -1,0 +1,333 @@
+@page "/targets/{Id:guid}"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.Targets
+@using KrakenDeploy.Server.Core.Domain.Variables
+@using KrakenDeploy.Server.Data.Services
+@inject TargetService TargetSvc
+@inject IEncryptionService Encryption
+@inject NotificationService Notify
+@inject NavigationManager Nav
+
+<PageTitle>Target @(Target?.Name ?? "…") - KrakenDeploy</PageTitle>
+
+@if (Target is null)
+{
+    <RadzenText>Loading…</RadzenText>
+}
+else
+{
+    <div class="rz-mb-4 rz-d-flex rz-align-items-center rz-gap-3">
+        <RadzenBreadCrumb>
+            <RadzenBreadCrumbItem Path="/targets" Text="Targets" />
+            <RadzenBreadCrumbItem Text="@Target.Name" />
+        </RadzenBreadCrumb>
+    </div>
+
+    @* ── General info card ──────────────────────────────────────────── *@
+    <RadzenCard class="rz-mb-4">
+        <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">General</RadzenText>
+        <div class="rz-grid-table" style="grid-template-columns: auto 1fr auto 1fr;">
+            <span class="rz-color-secondary">Name</span>
+            <span>@Target.Name</span>
+            <span class="rz-color-secondary">Status</span>
+            <span><RadzenBadge Text="@Target.Status.ToString()" BadgeStyle="@StatusBadge(Target.Status)" /></span>
+
+            <span class="rz-color-secondary">Transport</span>
+            <span>@Target.TransportMode.ToString()</span>
+            <span class="rz-color-secondary">Hostname</span>
+            <span>@(Target.MachineName ?? "—")</span>
+
+            <span class="rz-color-secondary">OS</span>
+            <span>@(Target.OperatingSystem ?? "—")</span>
+            <span class="rz-color-secondary">Agent Version</span>
+            <span>@(Target.AgentVersion ?? "—")</span>
+
+            <span class="rz-color-secondary">Roles</span>
+            <span>@(Target.Roles.Count > 0 ? string.Join(", ", Target.Roles) : "—")</span>
+            <span class="rz-color-secondary">Last Seen</span>
+            <span>@(Target.LastSeenUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "never")</span>
+        </div>
+    </RadzenCard>
+
+    @* ── Offline Drop Config ────────────────────────────────────────── *@
+    @if (Target.TransportMode == TransportMode.OfflineDrop)
+    {
+        <RadzenCard class="rz-mb-4" style="border-left:4px solid var(--rz-info)">
+            <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">Offline Drop Configuration</RadzenText>
+
+            <RadzenStack Gap="1rem">
+                <div>
+                    <RadzenLabel Text="Delivery Channel" />
+                    <RadzenDropDown @bind-Value="_deliveryChannel"
+                                    Data="@_deliveryChannels"
+                                    TextProperty="Text" ValueProperty="Value"
+                                    Style="width:100%;" />
+                </div>
+
+                @* HMAC Signing *@
+                <div>
+                    <RadzenLabel Text="HMAC Signing" />
+                    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" AlignItems="AlignItems.Center">
+                        @if (_hasHmacKey)
+                        {
+                            <RadzenBadge Text="Configured" BadgeStyle="BadgeStyle.Success" />
+                            <RadzenButton Text="Regenerate Key" Icon="refresh"
+                                          Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Light"
+                                          Click="GenerateHmacKey" />
+                            <RadzenButton Text="Remove Key" Icon="delete"
+                                          Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Danger"
+                                          Variant="Variant.Text"
+                                          Click="RemoveHmacKey" />
+                        }
+                        else
+                        {
+                            <RadzenBadge Text="Not configured" BadgeStyle="BadgeStyle.Light" />
+                            <RadzenButton Text="Generate HMAC Key" Icon="vpn_key"
+                                          Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Info"
+                                          Click="GenerateHmacKey" />
+                        }
+                    </RadzenStack>
+                    <div class="rz-text-caption rz-color-secondary-light" style="margin-top:0.25rem;">
+                        When set, drop and result bundles are HMAC-SHA256 signed for tamper detection.
+                    </div>
+                </div>
+
+                @* ── Email settings ────────────────────────────────────── *@
+                @if (_deliveryChannel == OfflineDropDeliveryChannel.Email)
+                {
+                    <RadzenFieldset Text="Email Delivery" class="rz-mt-2">
+                        <RadzenStack Gap="0.75rem">
+                            <div>
+                                <RadzenLabel Text="SMTP Host" />
+                                <RadzenTextBox @bind-Value="_smtpHost" Style="width:100%;" Placeholder="smtp.example.com" />
+                            </div>
+                            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem">
+                                <div style="flex:1">
+                                    <RadzenLabel Text="Port" />
+                                    <RadzenNumeric @bind-Value="_smtpPort" Style="width:100%;" />
+                                </div>
+                                <div style="flex:1">
+                                    <RadzenLabel Text="Use SSL" />
+                                    <RadzenCheckBox @bind-Value="_smtpUseSsl" />
+                                </div>
+                            </RadzenStack>
+                            <div>
+                                <RadzenLabel Text="Username" />
+                                <RadzenTextBox @bind-Value="_smtpUsername" Style="width:100%;" />
+                            </div>
+                            <div>
+                                <RadzenLabel Text="Password" />
+                                <RadzenPassword @bind-Value="_smtpPassword" Style="width:100%;" Placeholder="••••••••" />
+                                @if (!string.IsNullOrEmpty(Target.OfflineDropConfig?.SmtpPasswordEncrypted) && string.IsNullOrEmpty(_smtpPassword))
+                                {
+                                    <div class="rz-text-caption rz-color-secondary-light">Leave blank to keep existing password.</div>
+                                }
+                            </div>
+                            <div>
+                                <RadzenLabel Text="Recipient" />
+                                <RadzenTextBox @bind-Value="_smtpRecipient" Style="width:100%;" Placeholder="ops@example.com" />
+                            </div>
+                            <div>
+                                <RadzenLabel Text="Sender" />
+                                <RadzenTextBox @bind-Value="_smtpSender" Style="width:100%;" Placeholder="krakendeploy@example.com" />
+                            </div>
+                        </RadzenStack>
+                    </RadzenFieldset>
+                }
+
+                @* ── Webhook settings ──────────────────────────────────── *@
+                @if (_deliveryChannel == OfflineDropDeliveryChannel.Webhook)
+                {
+                    <RadzenFieldset Text="Webhook Delivery" class="rz-mt-2">
+                        <RadzenStack Gap="0.75rem">
+                            <div>
+                                <RadzenLabel Text="Webhook URL" />
+                                <RadzenTextBox @bind-Value="_webhookUrl" Style="width:100%;" Placeholder="https://hooks.example.com/deploy" />
+                            </div>
+                            <div>
+                                <RadzenLabel Text="Shared Secret (optional)" />
+                                <RadzenPassword @bind-Value="_webhookSecret" Style="width:100%;" Placeholder="••••••••" />
+                            </div>
+                        </RadzenStack>
+                    </RadzenFieldset>
+                }
+
+                @* ── File-share settings ───────────────────────────────── *@
+                @if (_deliveryChannel == OfflineDropDeliveryChannel.FileShareDrop)
+                {
+                    <RadzenFieldset Text="File Share / SFTP Delivery" class="rz-mt-2">
+                        <RadzenStack Gap="0.75rem">
+                            <div>
+                                <RadzenLabel Text="Path" />
+                                <RadzenTextBox @bind-Value="_fileSharePath" Style="width:100%;" Placeholder="\\server\share\drops or sftp://host/path" />
+                            </div>
+                            <div>
+                                <RadzenLabel Text="Username (optional)" />
+                                <RadzenTextBox @bind-Value="_fileShareUsername" Style="width:100%;" />
+                            </div>
+                            <div>
+                                <RadzenLabel Text="Password (optional)" />
+                                <RadzenPassword @bind-Value="_fileSharePassword" Style="width:100%;" Placeholder="••••••••" />
+                            </div>
+                        </RadzenStack>
+                    </RadzenFieldset>
+                }
+
+                <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End" class="rz-mt-3">
+                    <RadzenButton Text="Save Configuration" Icon="save"
+                                  ButtonStyle="ButtonStyle.Primary"
+                                  IsBusy="_saving"
+                                  Click="SaveConfigAsync" />
+                </RadzenStack>
+            </RadzenStack>
+        </RadzenCard>
+    }
+}
+
+<RadzenNotification />
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private DeploymentTarget? Target { get; set; }
+
+    // Offline config editing state
+    private OfflineDropDeliveryChannel _deliveryChannel;
+    private bool _hasHmacKey;
+    private string _smtpHost = "";
+    private int _smtpPort = 587;
+    private bool _smtpUseSsl = true;
+    private string _smtpUsername = "";
+    private string _smtpPassword = "";
+    private string _smtpRecipient = "";
+    private string _smtpSender = "";
+    private string _webhookUrl = "";
+    private string _webhookSecret = "";
+    private string _fileSharePath = "";
+    private string _fileShareUsername = "";
+    private string _fileSharePassword = "";
+    private bool _saving;
+
+    private readonly List<object> _deliveryChannels =
+    [
+        new { Text = "Manual (download from UI)", Value = OfflineDropDeliveryChannel.Manual },
+        new { Text = "Email", Value = OfflineDropDeliveryChannel.Email },
+        new { Text = "Webhook (HTTP POST)", Value = OfflineDropDeliveryChannel.Webhook },
+        new { Text = "File Share / SFTP", Value = OfflineDropDeliveryChannel.FileShareDrop },
+    ];
+
+    protected override async Task OnInitializedAsync()
+    {
+        Target = await TargetSvc.GetAsync(Id);
+        if (Target?.OfflineDropConfig is not null)
+        {
+            LoadConfigState(Target.OfflineDropConfig);
+        }
+    }
+
+    private void LoadConfigState(OfflineDropConfig cfg)
+    {
+        _deliveryChannel = cfg.DeliveryChannel;
+        _hasHmacKey = !string.IsNullOrEmpty(cfg.HmacKeyEncrypted);
+        _smtpHost = cfg.SmtpHost ?? "";
+        _smtpPort = cfg.SmtpPort;
+        _smtpUseSsl = cfg.SmtpUseSsl;
+        _smtpUsername = cfg.SmtpUsername ?? "";
+        _smtpRecipient = cfg.SmtpRecipient ?? "";
+        _smtpSender = cfg.SmtpSender ?? "";
+        _webhookUrl = cfg.WebhookUrl ?? "";
+        _fileSharePath = cfg.FileSharePath ?? "";
+        _fileShareUsername = cfg.FileShareUsername ?? "";
+        // Passwords are never loaded back — blanks mean "keep existing"
+    }
+
+    private void GenerateHmacKey()
+    {
+        var keyBytes = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+        var base64Key = Convert.ToBase64String(keyBytes);
+        Target!.OfflineDropConfig ??= new OfflineDropConfig();
+        Target.OfflineDropConfig.HmacKeyEncrypted = Encryption.Encrypt(base64Key);
+        _hasHmacKey = true;
+    }
+
+    private void RemoveHmacKey()
+    {
+        if (Target?.OfflineDropConfig is not null)
+        {
+            Target.OfflineDropConfig.HmacKeyEncrypted = null;
+            _hasHmacKey = false;
+        }
+    }
+
+    private async Task SaveConfigAsync()
+    {
+        if (Target is null) return;
+
+        _saving = true;
+        try
+        {
+            var cfg = Target.OfflineDropConfig ??= new OfflineDropConfig();
+            cfg.DeliveryChannel = _deliveryChannel;
+
+            // Email
+            cfg.SmtpHost = string.IsNullOrWhiteSpace(_smtpHost) ? null : _smtpHost.Trim();
+            cfg.SmtpPort = _smtpPort;
+            cfg.SmtpUseSsl = _smtpUseSsl;
+            cfg.SmtpUsername = string.IsNullOrWhiteSpace(_smtpUsername) ? null : _smtpUsername.Trim();
+            cfg.SmtpRecipient = string.IsNullOrWhiteSpace(_smtpRecipient) ? null : _smtpRecipient.Trim();
+            cfg.SmtpSender = string.IsNullOrWhiteSpace(_smtpSender) ? null : _smtpSender.Trim();
+            if (!string.IsNullOrEmpty(_smtpPassword))
+            {
+                cfg.SmtpPasswordEncrypted = Encryption.Encrypt(_smtpPassword);
+            }
+
+            // Webhook
+            cfg.WebhookUrl = string.IsNullOrWhiteSpace(_webhookUrl) ? null : _webhookUrl.Trim();
+            if (!string.IsNullOrEmpty(_webhookSecret))
+            {
+                cfg.WebhookSecretEncrypted = Encryption.Encrypt(_webhookSecret);
+            }
+
+            // File share
+            cfg.FileSharePath = string.IsNullOrWhiteSpace(_fileSharePath) ? null : _fileSharePath.Trim();
+            cfg.FileShareUsername = string.IsNullOrWhiteSpace(_fileShareUsername) ? null : _fileShareUsername.Trim();
+            if (!string.IsNullOrEmpty(_fileSharePassword))
+            {
+                cfg.FileSharePasswordEncrypted = Encryption.Encrypt(_fileSharePassword);
+            }
+
+            await TargetSvc.UpdateAsync(Target);
+
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Success,
+                Summary = "Configuration saved",
+                Duration = 3000,
+            });
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary = "Save failed",
+                Detail = ex.Message,
+                Duration = 5000,
+            });
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private static BadgeStyle StatusBadge(TargetStatus s) => s switch
+    {
+        TargetStatus.Online       => BadgeStyle.Success,
+        TargetStatus.Offline      => BadgeStyle.Danger,
+        TargetStatus.Disabled     => BadgeStyle.Warning,
+        TargetStatus.ShuttingDown => BadgeStyle.Warning,
+        _                         => BadgeStyle.Light,
+    };
+}

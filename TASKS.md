@@ -339,14 +339,76 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 - [x] `DeploymentDetail.razor` (`/deployments/{id}`) — info card, log tab, artifacts tab with image thumbnails and download links
 - [x] EF migration `AddM55Schema`
 
-### M6 — multi-tenancy and tags
-Tenants, Tag Sets, tenant tags, tag-set scoping for variables and deployment targets. Project-tenant connections. Tenant common variables and per-project tenant variables.
+### M6 — multi-tenancy and tags ✅
 
-### M7 — channels, lifecycles, retention, runbooks
-Channels with version rules and per-channel lifecycles. Lifecycle phases with optional/required environments and gates. Release retention per phase. Package retention per feed. Runbooks (no-release automation reusing the step engine).
+- [x] Domain: `Tenant` (Slug, Name, Description, VariableSetId?, TagSets nav, Projects nav)
+- [x] Domain: `TagSet` (TenantId, Name, Description, SortOrder, Tags nav)
+- [x] Domain: `TenantTag` (TagSetId, Name, Color?, Targets nav)
+- [x] `Project.Tenants` many-to-many nav; `DeploymentTarget.TenantTags` many-to-many nav
+- [x] `Deployment.TenantId?` + `Tenant?` navigation
+- [x] `VariableScope.TenantId?` — +8 specificity; `Matches` accepts optional `tenantId`
+- [x] EF configurations: `TenantConfiguration`, `TagSetConfiguration`, `TenantTagConfiguration`; join tables `project_tenants`, `target_tenant_tags`
+- [x] `KrakenDbContext` — DbSets for Tenant, TagSet, TenantTag
+- [x] `TenantService` — full CRUD for tenants, tag sets, tags; project-tenant and target-tag connections
+- [x] `VariableService.ResolveAsync` — `tenantId?` parameter; resolves tenant common variable set first, then project set overlays
+- [x] `DeploymentService.CreateAsync` — accepts `tenantId?`; validates tenant exists
+- [x] `TriggerDeploymentRequest` — `TenantId?` field; `UpsertVariableRequest` — `ScopeTenantId?` field
+- [x] `DeploymentWorker` passes `deployment.TenantId` to `ResolveAsync`
+- [x] REST: tenants CRUD, project-tenant connect/disconnect, tag-set CRUD, tag CRUD, target-tag add/remove, target tags list
+- [x] EF migration `AddM6Schema` (tenants, tag_sets, tenant_tags, project_tenants, target_tenant_tags, deployments.tenant_id)
+- [x] `TenantService` registered in `ServiceCollectionExtensions`
+- [x] `Tenants.razor` — list with create inline form, delete, row-click to detail
+- [x] `TenantDetail.razor` (`/tenants/{id}`) — tag set CRUD + per-set tag CRUD with color dots
 
-### M8 — offline drop targets
+### M7 — channels, lifecycles, retention, runbooks ✅
+
+- [x] Domain: `Lifecycle` (Name, Description, `List<LifecyclePhase>` stored as JSONB)
+- [x] Domain: `LifecyclePhase` value object (Id, Name, SortOrder, EnvironmentIds, OptionalEnvironmentIds, MinimumEnvironments, IsOptional, RetentionKeepDeployments)
+- [x] Domain: `Channel` (ProjectId, Name, IsDefault, LifecycleId?, VersionRange?, VersionTag?)
+- [x] `Release.ChannelId?` + `Channel?` navigation; `Project.LifecycleId?` + `Lifecycle?` + `Channels` nav
+- [x] EF configurations: `LifecycleConfiguration`, `ChannelConfiguration`; updated `ReleaseConfiguration`, `ProjectConfiguration`
+- [x] `LifecycleService` — CRUD; `UpdateAsync` re-assigns SortOrder and ensures phase IDs
+- [x] `ChannelService` — `GetOrCreateDefaultAsync`; `ExecuteUpdateAsync` to clear old default; delete guard
+- [x] Lifecycle gate enforcement in `DeploymentService.CreateAsync` — checks all required earlier phases have `minRequired` successful deployments for the release
+- [x] `CreateReleaseRequest.ChannelId?`; `ReleaseService.CreateAsync` assigns channel
+- [x] Domain: `Runbook`, `RunbookProcess`, `RunbookStep`, `RunbookRun` (reuses `DeploymentStatus`), `RunbookRunLogEntry`
+- [x] `RunbookRun.ProcessSnapshot` — `List<StepSnapshot>` captured at trigger time (JSONB)
+- [x] EF configurations: `RunbookConfiguration`, `RunbookRunConfiguration`
+- [x] `KrakenDbContext` — DbSets for Lifecycles, Channels, Runbooks, RunbookProcesses, RunbookSteps, RunbookRuns, RunbookRunLogEntries
+- [x] `RunbookService` — full CRUD + step management + `TriggerAsync` (snapshot + enqueue)
+- [x] `RunbookRunChannel` singleton wrapper (avoids DI ambiguity with deployment `Channel<Guid>`)
+- [x] `RunbookRunWorker` BackgroundService — dispatches `DeploymentPlan` (run ID as DeploymentId) to target agent
+- [x] `AgentHub.AppendLogAsync` — tries Deployment table, then RunbookRun table (zero protocol change)
+- [x] `AgentHub.CompleteDeploymentAsync` — same dual-table lookup; calls fire-and-forget `RetentionService.PruneAfterDeploymentAsync` on success
+- [x] `RetentionService.PruneAfterDeploymentAsync` — prunes excess successful deployments per lifecycle phase
+- [x] REST: lifecycle CRUD, channel CRUD, runbook CRUD + step CRUD + trigger + runs query
+- [x] EF migration `AddM7Schema` (lifecycles, channels, runbooks, runbook_processes, runbook_steps, runbook_runs, runbook_run_log_entries, releases.channel_id, projects.lifecycle_id)
+- [x] `Lifecycles.razor` — list with create inline form, delete, row-click to detail
+- [x] `LifecycleDetail.razor` (`/lifecycles/{id}`) — phase management (add/reorder/remove, per-phase environment checkboxes, retention, save whole document)
+- [x] `Runbooks.razor` — project-scoped runbook list with create form
+- [x] `RunbookDetail.razor` (`/runbooks/{id}`) — Steps tab (add/edit/delete), Runs tab with inline log viewer, Run Now trigger panel
+- [x] Runbooks nav item added to sidebar
+
+### M8 — offline drop targets ✅
+
 Drop bundle generation. Result bundle ingestion (manual upload, auto-email, HTTP POST webhook, SFTP/file-share polling). `PendingOfflineResult` deployment status. HMAC signing per target. UI for re-cutting drops and previewing inbound results.
+
+**Completed:**
+- [x] `TransportMode.OfflineDrop` enum value
+- [x] `OfflineDropConfig` JSONB model (delivery channel, HMAC key, SMTP, webhook, file-share settings)
+- [x] `OfflineDropDeliveryChannel` enum (Manual, Email, Webhook, FileShareDrop)
+- [x] `DropBundleService` — generates self-contained zip bundles with manifest, variables, packages, orchestrator scripts (PS + Bash), HMAC signature
+- [x] `OfflineResultService` — ingests result bundles: HMAC verification, status parsing, log parsing, artifact extraction
+- [x] `DeploymentWorker` dispatches offline-drop deployments: generates bundle → `PendingOfflineResult`, delivers via webhook/file-share if configured
+- [x] API endpoints: `GET /api/deployments/{id}/drop-bundle`, `POST /api/deployments/{id}/offline-result`
+- [x] `DeploymentDetail.razor` — download bundle, upload result, re-generate, status display
+- [x] `AddTargetWizardDialog` — OfflineDrop transport option with no-agent confirmation
+- [x] `TargetDetail.razor` — offline drop config editor (delivery channel, HMAC key management, SMTP/webhook/file-share settings)
+- [x] `Targets.razor` — name links to detail page, transport mode column
+- [x] `Deployments.razor` — PendingOfflineResult badge style
+- [x] `TargetRegistrationService` — offline-drop targets created without registration token
+- [x] EF migration `AddM8Schema` (drop_bundle_path, offline_drop_config JSONB)
+- [x] DI registration of `DropBundleService` and `OfflineResultService`
 
 ### M9 — Kraken.IIS comprehensive
 Full superset action type covering app pool process model + recycle settings (incl. `loadUserProfile` and recycle event log entry flags), rapid-fail protection, identity, complete site bindings (cert from variable), application init/preload, URL Rewrite, request filtering, response headers, MIME types, default documents, virtual directories, sub-applications, atomic-swap deploy with rollback, drain-mode recycle, post-deploy health probe.

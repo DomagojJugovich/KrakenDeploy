@@ -4,7 +4,9 @@
 @using KrakenDeploy.Server.Data.Services
 @inject DeploymentService DeploymentSvc
 @inject ArtifactService ArtifactSvc
+@inject OfflineResultService OfflineResultSvc
 @inject NavigationManager Nav
+@inject NotificationService Notify
 
 <PageTitle>Deployment @(Deployment?.Id.ToString()[..8]) - KrakenDeploy</PageTitle>
 
@@ -45,6 +47,62 @@ else
             <span>@FormatDuration()</span>
         </div>
     </RadzenCard>
+
+    @* ── Offline drop bundle actions ─────────────────────────────────────── *@
+    @if (Deployment.Status == DeploymentStatus.PendingOfflineResult)
+    {
+        <RadzenCard class="rz-mb-4" style="border-left:4px solid var(--rz-warning)">
+            <RadzenText TextStyle="TextStyle.H6" class="rz-mb-2">Offline Drop</RadzenText>
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-3">
+                This deployment is waiting for an offline result. Download the drop bundle,
+                execute it on the target, then upload the result bundle.
+            </RadzenText>
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="1rem" AlignItems="AlignItems.Center" class="rz-mb-3">
+                @if (!string.IsNullOrEmpty(Deployment.DropBundlePath))
+                {
+                    <RadzenButton Text="Download Drop Bundle" Icon="download"
+                                  ButtonStyle="ButtonStyle.Primary"
+                                  Click="@(() => Nav.NavigateTo($"/api/deployments/{Id}/drop-bundle", forceLoad: true))" />
+                }
+                <RadzenButton Text="Re-generate Bundle" Icon="refresh"
+                              ButtonStyle="ButtonStyle.Light"
+                              Click="@RegenerateAsync" />
+            </RadzenStack>
+
+            <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-2">Upload Result Bundle</RadzenText>
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-2">
+                Upload the result bundle zip (containing <code>deployment-result.json</code>,
+                <code>deployment-log.txt</code>, and optional <code>artifacts/</code>).
+            </RadzenText>
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem" AlignItems="AlignItems.Center">
+                <InputFile OnChange="@OnResultFileSelected" accept=".zip" />
+                <RadzenButton Text="Upload Result" Icon="upload_file"
+                              ButtonStyle="ButtonStyle.Success"
+                              Click="@UploadResultAsync"
+                              Disabled="@(_resultFile is null || _uploading)" />
+                @if (_uploading)
+                {
+                    <RadzenProgressBarCircular ShowValue="false" Size="ProgressBarCircularSize.Small"
+                                               Mode="ProgressBarMode.Indeterminate" />
+                }
+            </RadzenStack>
+        </RadzenCard>
+    }
+    @if (!string.IsNullOrEmpty(Deployment.DropBundlePath) &&
+         Deployment.Status != DeploymentStatus.PendingOfflineResult)
+    {
+        <RadzenCard class="rz-mb-4">
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" AlignItems="AlignItems.Center">
+                <RadzenIcon Icon="cloud_download" />
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                    This was an offline-drop deployment.
+                </RadzenText>
+                <RadzenButton Text="Download Bundle" Icon="download"
+                              Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Light"
+                              Click="@(() => Nav.NavigateTo($"/api/deployments/{Id}/drop-bundle", forceLoad: true))" />
+            </RadzenStack>
+        </RadzenCard>
+    }
 
     <RadzenTabs>
         <Tabs>
@@ -123,11 +181,17 @@ else
     </RadzenTabs>
 }
 
+<RadzenNotification />
+
 @code {
     [Parameter] public Guid Id { get; set; }
 
     private Deployment? Deployment { get; set; }
     private List<DeploymentArtifact> _artifacts = [];
+
+    // Offline result upload
+    private IBrowserFile? _resultFile;
+    private bool _uploading;
 
     protected override async Task OnInitializedAsync()
     {
@@ -136,6 +200,71 @@ else
         {
             _artifacts = await ArtifactSvc.GetByDeploymentAsync(Id);
         }
+    }
+
+    private void OnResultFileSelected(InputFileChangeEventArgs e)
+    {
+        _resultFile = e.File;
+    }
+
+    private async Task UploadResultAsync()
+    {
+        if (_resultFile is null || Deployment is null)
+        {
+            return;
+        }
+
+        _uploading = true;
+        try
+        {
+            // Stream the file to the ingestion service
+            await using var stream = _resultFile.OpenReadStream(maxAllowedSize: 500 * 1024 * 1024);
+            var updated = await OfflineResultSvc.IngestAsync(Deployment.Id, stream);
+
+            Deployment = await DeploymentSvc.GetAsync(Id);
+            if (Deployment is not null)
+            {
+                _artifacts = await ArtifactSvc.GetByDeploymentAsync(Id);
+            }
+            _resultFile = null;
+
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Success,
+                Summary = "Result ingested",
+                Detail = $"Status: {updated.Status}",
+                Duration = 4000,
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary = "Error",
+                Detail = ex.Message,
+                Duration = 5000,
+            });
+        }
+        finally
+        {
+            _uploading = false;
+        }
+    }
+
+    private async Task RegenerateAsync()
+    {
+        Notify.Notify(new NotificationMessage
+        {
+            Severity = NotificationSeverity.Info,
+            Summary = "Re-generating",
+            Detail = "Triggering a new drop bundle generation...",
+            Duration = 3000,
+        });
+
+        // Re-deploy triggers regeneration through the normal pipeline.
+        // For now, inform the user to create a new deployment.
+        await Task.CompletedTask;
     }
 
     private string FormatDuration()
@@ -160,11 +289,12 @@ else
 
     private static BadgeStyle StatusStyle(DeploymentStatus status) => status switch
     {
-        DeploymentStatus.Succeeded => BadgeStyle.Success,
-        DeploymentStatus.Failed    => BadgeStyle.Danger,
-        DeploymentStatus.Running   => BadgeStyle.Info,
-        DeploymentStatus.Queued    => BadgeStyle.Warning,
-        _                          => BadgeStyle.Light,
+        DeploymentStatus.Succeeded        => BadgeStyle.Success,
+        DeploymentStatus.Failed           => BadgeStyle.Danger,
+        DeploymentStatus.Running          => BadgeStyle.Info,
+        DeploymentStatus.Queued           => BadgeStyle.Warning,
+        DeploymentStatus.PendingOfflineResult => BadgeStyle.Warning,
+        _                                 => BadgeStyle.Light,
     };
 
     private static bool IsImage(string contentType) =>

@@ -1,4 +1,5 @@
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Core.Domain.Tenants;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -32,7 +33,15 @@ public class DeploymentConfiguration : IEntityTypeConfiguration<Deployment>
             .HasForeignKey(x => x.TargetId)
             .OnDelete(DeleteBehavior.SetNull);
 
+        builder.HasOne(x => x.Tenant)
+            .WithMany()
+            .HasForeignKey(x => x.TenantId)
+            .OnDelete(DeleteBehavior.SetNull);
+
         builder.HasIndex(x => new { x.ReleaseId, x.EnvironmentId, x.TargetId });
+
+        // Relative path to the drop-bundle zip for offline-drop deployments.
+        builder.Property(x => x.DropBundlePath).HasMaxLength(500);
 
         builder.Property(x => x.CreatedUtc).IsRequired();
     }

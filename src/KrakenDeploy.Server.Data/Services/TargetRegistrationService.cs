@@ -38,9 +38,16 @@ public class TargetRegistrationService(KrakenDbContext db, TimeProvider timeProv
             Name = name,
             Roles = [.. roles],
             TransportMode = transportMode,
-            Status = TargetStatus.Unknown,
-            RegistrationKeyHash = hash,
-            RegistrationTokenExpiresUtc = now.Add(TokenLifetime),
+            Status = transportMode == TransportMode.OfflineDrop
+                ? TargetStatus.Offline
+                : TargetStatus.Unknown,
+            RegistrationKeyHash = transportMode == TransportMode.OfflineDrop ? null : hash,
+            RegistrationTokenExpiresUtc = transportMode == TransportMode.OfflineDrop
+                ? null
+                : now.Add(TokenLifetime),
+            OfflineDropConfig = transportMode == TransportMode.OfflineDrop
+                ? new OfflineDropConfig()
+                : null,
         };
 
         db.DeploymentTargets.Add(target);

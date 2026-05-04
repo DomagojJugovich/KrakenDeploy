@@ -1,9 +1,120 @@
 @page "/lifecycles"
 @attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.Lifecycles
+@using KrakenDeploy.Server.Data.Services
+@inject LifecycleService LifecycleSvc
+@inject NavigationManager Nav
+@inject NotificationService Notify
 
 <PageTitle>Lifecycles - KrakenDeploy</PageTitle>
 
-<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">Lifecycles</RadzenText>
-<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-    Promotion rules and retention policies — M2.
-</RadzenText>
+<div class="rz-display-flex rz-align-items-center rz-justify-content-between rz-mb-4">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1">Lifecycles</RadzenText>
+    <RadzenButton Text="New Lifecycle" Icon="add" ButtonStyle="ButtonStyle.Primary"
+                  Click="@(() => { _createOpen = true; _name = ""; _description = null; })" />
+</div>
+
+@if (_createOpen)
+{
+    <RadzenCard class="rz-mb-4">
+        <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">New Lifecycle</RadzenText>
+        <RadzenFormField Text="Name" class="rz-mb-3" style="width:100%">
+            <RadzenTextBox @bind-Value="_name" Placeholder="Default Lifecycle" style="width:100%" />
+        </RadzenFormField>
+        <RadzenFormField Text="Description (optional)" class="rz-mb-3" style="width:100%">
+            <RadzenTextBox @bind-Value="_description" style="width:100%" />
+        </RadzenFormField>
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+            <RadzenButton Text="Create" ButtonStyle="ButtonStyle.Primary" Click="@CreateAsync" />
+            <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                          Click="@(() => _createOpen = false)" />
+        </RadzenStack>
+    </RadzenCard>
+}
+
+<RadzenDataGrid Data="@_lifecycles" TItem="Lifecycle"
+                AllowPaging="true" PageSize="20"
+                AllowSorting="true"
+                AllowColumnResize="true"
+                RowClick="@(args => Nav.NavigateTo($"/lifecycles/{args.Data.Id}"))"
+                EmptyText="No lifecycles yet — create one to define promotion rules.">
+    <Columns>
+        <RadzenDataGridColumn TItem="Lifecycle" Property="Name" Title="Name" />
+        <RadzenDataGridColumn TItem="Lifecycle" Property="Description" Title="Description" />
+        <RadzenDataGridColumn TItem="Lifecycle" Title="Phases" Width="90px">
+            <Template Context="lc">
+                <RadzenBadge Text="@lc.Phases.Count.ToString()" BadgeStyle="BadgeStyle.Info" />
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="Lifecycle" Property="CreatedUtc" Title="Created"
+                              Width="140px" FormatString="{0:yyyy-MM-dd}" />
+        <RadzenDataGridColumn TItem="Lifecycle" Title="" Width="70px" TextAlign="TextAlign.Center">
+            <Template Context="lc">
+                <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
+                              Variant="Variant.Text"
+                              Click="@(async _ => await DeleteAsync(lc))"
+                              title="Delete" />
+            </Template>
+        </RadzenDataGridColumn>
+    </Columns>
+</RadzenDataGrid>
+
+<RadzenNotification />
+
+@code {
+    private List<Lifecycle> _lifecycles = [];
+    private bool _createOpen;
+    private string _name = "";
+    private string? _description;
+
+    protected override async Task OnInitializedAsync()
+        => _lifecycles = await LifecycleSvc.GetAllAsync();
+
+    private async Task CreateAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            return;
+        }
+
+        try
+        {
+            var lc = await LifecycleSvc.CreateAsync(_name.Trim(), _description?.Trim());
+            _lifecycles = [.. _lifecycles.Append(lc).OrderBy(l => l.Name)];
+            _createOpen = false;
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Success,
+                Summary = "Lifecycle created",
+                Detail = lc.Name,
+                Duration = 3000,
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary = "Error",
+                Detail = ex.Message,
+                Duration = 5000,
+            });
+        }
+    }
+
+    private async Task DeleteAsync(Lifecycle lc)
+    {
+        var deleted = await LifecycleSvc.DeleteAsync(lc.Id);
+        if (deleted)
+        {
+            _lifecycles = _lifecycles.Where(x => x.Id != lc.Id).ToList();
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Info,
+                Summary = "Deleted",
+                Detail = lc.Name,
+                Duration = 3000,
+            });
+        }
+    }
+}

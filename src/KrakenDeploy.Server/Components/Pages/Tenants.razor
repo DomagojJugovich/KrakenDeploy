@@ -1,9 +1,140 @@
 @page "/tenants"
 @attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.Tenants
+@using KrakenDeploy.Server.Data.Services
+@inject TenantService TenantSvc
+@inject NavigationManager Nav
+@inject NotificationService Notify
 
 <PageTitle>Tenants - KrakenDeploy</PageTitle>
 
-<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">Tenants</RadzenText>
-<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-    Multi-tenancy CRUD — M2.
-</RadzenText>
+<div class="rz-display-flex rz-align-items-center rz-justify-content-between rz-mb-4">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1">Tenants</RadzenText>
+    <RadzenButton Text="New Tenant" Icon="add" ButtonStyle="ButtonStyle.Primary"
+                  Click="@(() => { _createOpen = true; _name = _slug = ""; _description = null; })" />
+</div>
+
+@if (_createOpen)
+{
+    <RadzenCard class="rz-mb-4">
+        <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">New Tenant</RadzenText>
+        <RadzenRow Gap="1rem" class="rz-mb-3">
+            <RadzenColumn Size="6">
+                <RadzenFormField Text="Name" style="width:100%">
+                    <RadzenTextBox Value="@_name" ValueChanged="@OnNameChanged"
+                                   Placeholder="Acme Corp" style="width:100%" />
+                </RadzenFormField>
+            </RadzenColumn>
+            <RadzenColumn Size="6">
+                <RadzenFormField Text="Slug" style="width:100%">
+                    <RadzenTextBox @bind-Value="_slug" Placeholder="acme-corp" style="width:100%" />
+                </RadzenFormField>
+            </RadzenColumn>
+        </RadzenRow>
+        <RadzenFormField Text="Description (optional)" class="rz-mb-3" style="width:100%">
+            <RadzenTextBox @bind-Value="_description" style="width:100%" />
+        </RadzenFormField>
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+            <RadzenButton Text="Create" ButtonStyle="ButtonStyle.Primary" Click="@CreateAsync" />
+            <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                          Click="@(() => _createOpen = false)" />
+        </RadzenStack>
+    </RadzenCard>
+}
+
+<RadzenDataGrid Data="@_tenants" TItem="Tenant"
+                AllowPaging="true" PageSize="20"
+                AllowSorting="true"
+                AllowColumnResize="true"
+                RowClick="@(args => Nav.NavigateTo($"/tenants/{args.Data.Id}"))"
+                EmptyText="No tenants yet — create one to enable multi-tenancy.">
+    <Columns>
+        <RadzenDataGridColumn TItem="Tenant" Property="Name" Title="Name" />
+        <RadzenDataGridColumn TItem="Tenant" Property="Slug" Title="Slug" Width="160px" />
+        <RadzenDataGridColumn TItem="Tenant" Property="Description" Title="Description" />
+        <RadzenDataGridColumn TItem="Tenant" Property="CreatedUtc" Title="Created"
+                              Width="140px" FormatString="{0:yyyy-MM-dd}" />
+        <RadzenDataGridColumn TItem="Tenant" Title="" Width="70px" TextAlign="TextAlign.Center">
+            <Template Context="t">
+                <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
+                              Variant="Variant.Text"
+                              Click="@(async _ => await DeleteAsync(t))"
+                              title="Delete" />
+            </Template>
+        </RadzenDataGridColumn>
+    </Columns>
+</RadzenDataGrid>
+
+<RadzenNotification />
+
+@code {
+    private List<Tenant> _tenants = [];
+    private bool _createOpen;
+    private string _name = "";
+    private string _slug = "";
+    private string? _description;
+
+    protected override async Task OnInitializedAsync()
+        => _tenants = await TenantSvc.GetAllAsync();
+
+    private void OnNameChanged(string value)
+    {
+        _name = value;
+        _slug = Slugify(_name);
+    }
+
+    private async Task CreateAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_name) || string.IsNullOrWhiteSpace(_slug))
+        {
+            return;
+        }
+
+        try
+        {
+            var tenant = await TenantSvc.CreateAsync(_name.Trim(), _slug.Trim(), _description?.Trim());
+            _tenants = [.. _tenants.Append(tenant).OrderBy(t => t.Name)];
+            _createOpen = false;
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Success,
+                Summary = "Tenant created",
+                Detail = tenant.Name,
+                Duration = 3000,
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary = "Error",
+                Detail = ex.Message,
+                Duration = 5000,
+            });
+        }
+    }
+
+    private async Task DeleteAsync(Tenant tenant)
+    {
+        var deleted = await TenantSvc.DeleteAsync(tenant.Id);
+        if (deleted)
+        {
+            _tenants = _tenants.Where(t => t.Id != tenant.Id).ToList();
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Info,
+                Summary = "Deleted",
+                Detail = tenant.Name,
+                Duration = 3000,
+            });
+        }
+    }
+
+    private static string Slugify(string name)
+    {
+        var lower = name.ToLowerInvariant().Trim();
+        var slug = System.Text.RegularExpressions.Regex.Replace(lower, @"[^a-z0-9]+", "-");
+        return slug.Trim('-');
+    }
+}

@@ -2,10 +2,12 @@ using System.Text.Json;
 using System.Threading.Channels;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -79,6 +81,14 @@ public sealed class DeploymentWorker(
                 return;
             }
 
+            // ── Offline drop path ───────────────────────────────────────────
+            if (deployment.Target?.TransportMode == TransportMode.OfflineDrop)
+            {
+                await DispatchOfflineDropAsync(scope.ServiceProvider, db, deployment, ct)
+                    .ConfigureAwait(false);
+                return;
+            }
+
             var connectionId = registry.GetConnectionId(deployment.TargetId.Value);
             if (connectionId is null)
             {
@@ -93,6 +103,7 @@ public sealed class DeploymentWorker(
                 deployment.EnvironmentId,
                 deployment.TargetId,
                 targetRoles,
+                deployment.TenantId,
                 ct).ConfigureAwait(false);
 
             // ── 2. Build Octostache dictionary ───────────────────────────────
@@ -192,6 +203,149 @@ public sealed class DeploymentWorker(
                 await FailAsync(errorDb, dep, ex.Message, ct).ConfigureAwait(false);
             }
         }
+    }
+
+    // ── Offline drop ─────────────────────────────────────────────────────
+
+    private async Task DispatchOfflineDropAsync(
+        IServiceProvider sp, KrakenDbContext db, Deployment deployment, CancellationToken ct)
+    {
+        var variableService = sp.GetRequiredService<VariableService>();
+        var dropBundleService = sp.GetRequiredService<DropBundleService>();
+        var config = sp.GetRequiredService<IConfiguration>();
+        var dataPath = config["DataPath"] ?? "data";
+
+        var targetRoles = deployment.Target?.Roles ?? [];
+        var rawVars = await variableService.ResolveAsync(
+            deployment.Release.ProjectId,
+            deployment.EnvironmentId,
+            deployment.TargetId,
+            targetRoles,
+            deployment.TenantId,
+            ct).ConfigureAwait(false);
+
+        // Flatten variables to string dictionary (same as online path).
+        var flatVars = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Octopus.Environment.Name"] = deployment.Environment.Name,
+            ["Octopus.Deployment.Id"] = deployment.Id.ToString(),
+        };
+        foreach (var (name, value) in rawVars)
+        {
+            flatVars[name] = value;
+        }
+
+        var bundlePath = await dropBundleService
+            .GenerateAsync(deployment, flatVars, dataPath, ct)
+            .ConfigureAwait(false);
+
+        deployment.DropBundlePath = bundlePath;
+        deployment.Status = DeploymentStatus.PendingOfflineResult;
+        deployment.StartedUtc = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        logger.LogInformation(
+            "Offline drop bundle generated for deployment {DeploymentId}: {Path}.",
+            deployment.Id, bundlePath);
+
+        // Attempt delivery if configured (non-Manual).
+        await DeliverDropBundleAsync(sp, deployment, dataPath, ct).ConfigureAwait(false);
+    }
+
+    private async Task DeliverDropBundleAsync(
+        IServiceProvider sp, Deployment deployment, string dataPath, CancellationToken ct)
+    {
+        var deliveryChannel = deployment.Target?.OfflineDropConfig?.DeliveryChannel
+            ?? OfflineDropDeliveryChannel.Manual;
+
+        if (deliveryChannel == OfflineDropDeliveryChannel.Manual ||
+            string.IsNullOrEmpty(deployment.DropBundlePath))
+        {
+            return; // User will download manually from the UI
+        }
+
+        try
+        {
+            switch (deliveryChannel)
+            {
+                case OfflineDropDeliveryChannel.Webhook:
+                    await DeliverViaWebhookAsync(deployment, dataPath, ct).ConfigureAwait(false);
+                    break;
+                case OfflineDropDeliveryChannel.FileShareDrop:
+                    await DeliverViaFileShareAsync(deployment, dataPath, ct).ConfigureAwait(false);
+                    break;
+                case OfflineDropDeliveryChannel.Email:
+                    logger.LogWarning(
+                        "Email delivery not yet implemented for deployment {Id}. " +
+                        "Bundle is available for manual download.",
+                        deployment.Id);
+                    break;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Delivery failure is non-fatal — the bundle is still available for download.
+            logger.LogError(ex,
+                "Failed to deliver drop bundle for deployment {Id} via {Channel}. " +
+                "Bundle is available for manual download.",
+                deployment.Id, deliveryChannel);
+        }
+    }
+
+    private async Task DeliverViaWebhookAsync(
+        Deployment deployment, string dataPath, CancellationToken ct)
+    {
+        var webhookUrl = deployment.Target?.OfflineDropConfig?.WebhookUrl;
+        if (string.IsNullOrEmpty(webhookUrl))
+        {
+            return;
+        }
+
+        var bundleFullPath = Path.Combine(
+            dataPath,
+            deployment.DropBundlePath!.Replace('/', Path.DirectorySeparatorChar));
+
+        using var httpClient = new HttpClient();
+        await using var stream = new FileStream(
+            bundleFullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var content = new StreamContent(stream);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/zip");
+        content.Headers.Add("X-Kraken-Deployment-Id", deployment.Id.ToString());
+
+        var response = await httpClient.PostAsync(webhookUrl, content, ct).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+
+        logger.LogInformation(
+            "Drop bundle for deployment {Id} delivered via webhook to {Url}.",
+            deployment.Id, webhookUrl);
+    }
+
+    private async Task DeliverViaFileShareAsync(
+        Deployment deployment, string dataPath, CancellationToken ct)
+    {
+        var targetPath = deployment.Target?.OfflineDropConfig?.FileSharePath;
+        if (string.IsNullOrEmpty(targetPath))
+        {
+            return;
+        }
+
+        var bundleFullPath = Path.Combine(
+            dataPath,
+            deployment.DropBundlePath!.Replace('/', Path.DirectorySeparatorChar));
+
+        var destDir = Path.Combine(targetPath, deployment.Id.ToString());
+        Directory.CreateDirectory(destDir);
+        var destFile = Path.Combine(destDir, Path.GetFileName(bundleFullPath));
+
+        await using var source = new FileStream(
+            bundleFullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        await using var dest = new FileStream(
+            destFile, FileMode.Create, FileAccess.Write, FileShare.None);
+        await source.CopyToAsync(dest, ct).ConfigureAwait(false);
+
+        logger.LogInformation(
+            "Drop bundle for deployment {Id} copied to file share: {Path}.",
+            deployment.Id, destFile);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
