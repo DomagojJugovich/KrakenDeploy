@@ -11,6 +11,7 @@ using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Services;
 using KrakenDeploy.Server.Transport;
 using KrakenDeploy.Server.Core.Domain.Lifecycles;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.StepTemplates;
 using KrakenDeploy.Server.Core.Domain.Targets;
@@ -326,7 +327,7 @@ public static class Program
         {
             await signInManager.SignOutAsync().ConfigureAwait(false);
             return Results.Redirect("/login");
-        }).RequireAuthorization();
+        }).RequireAuthorization(); // any authenticated user can sign out
 
         app.MapHub<AgentHub>("/hubs/agent");
         app.MapHub<UiHub>("/hubs/ui");
@@ -388,7 +389,9 @@ public static class Program
         app.MapGet("/api/spaces",
             async (SpaceService spaceSvc, CancellationToken ct) =>
                 Results.Ok(await spaceSvc.GetAllAsync(ct).ConfigureAwait(false))
-        ).RequireAuthorization();
+        ).RequireAuthorization(); // List of accessible Spaces — any authenticated user
+                                  // can see the Spaces they belong to (filtered server-side
+                                  // when membership lands; for now: all Spaces).
 
         // Switch the active Space — sets the kraken-active-space cookie. Two
         // entry points:
@@ -445,7 +448,8 @@ public static class Program
         app.MapPost("/api/spaces/switch/{spaceId:guid}",
             (Guid spaceId, SpaceService spaceSvc, HttpContext http, CancellationToken ct)
                 => SwitchSpaceAsync(spaceId, returnUrl: null, spaceSvc, http, ct, redirect: false))
-            .RequireAuthorization();
+            .RequireAuthorization(); // Selecting a space is an identity action,
+                                     // not a Permission — gated by membership when that lands.
 
         app.MapGet("/space/switch",
             (Guid id, string? returnUrl, SpaceService spaceSvc, HttpContext http, CancellationToken ct)
@@ -455,33 +459,33 @@ public static class Program
         app.MapGet("/api/projects",
             async (ProjectService projectSvc, CancellationToken ct) =>
                 Results.Ok(await projectSvc.GetAllAsync(ct).ConfigureAwait(false))
-        ).RequireAuthorization();
+        ).RequirePermission(Permission.ProjectView);
 
         app.MapGet("/api/projects/{id:guid}",
             async (Guid id, ProjectService projectSvc, CancellationToken ct) =>
             {
                 var project = await projectSvc.GetAsync(id, ct).ConfigureAwait(false);
                 return project is null ? Results.NotFound() : Results.Ok(project);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.ProjectView);
 
         app.MapGet("/api/projects/by-slug/{slug}",
             async (string slug, ProjectService projectSvc, CancellationToken ct) =>
             {
                 var project = await projectSvc.GetBySlugAsync(slug, ct).ConfigureAwait(false);
                 return project is null ? Results.NotFound() : Results.Ok(project);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.ProjectView);
 
         // ── Environment API (CLI / REST) ─────────────────────────────────────
         app.MapGet("/api/environments",
             async (EnvironmentService envSvc, CancellationToken ct) =>
                 Results.Ok(await envSvc.GetAllOrderedAsync(ct).ConfigureAwait(false))
-        ).RequireAuthorization();
+        ).RequirePermission(Permission.EnvironmentView);
 
         // ── Target API (CLI / REST) ──────────────────────────────────────────
         app.MapGet("/api/targets",
             async (TargetService targetSvc, CancellationToken ct) =>
                 Results.Ok(await targetSvc.GetAllAsync(ct).ConfigureAwait(false))
-        ).RequireAuthorization();
+        ).RequirePermission(Permission.MachineView);
 
         // ── Package API ──────────────────────────────────────────────────────
         // Upload a package: POST /api/packages/upload
@@ -523,24 +527,24 @@ public static class Program
                 {
                     return Results.Conflict(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.PackageEdit);
 
         app.MapGet("/api/packages",
             async (PackageService packageSvc, CancellationToken ct) =>
                 Results.Ok(await packageSvc.GetSummariesAsync(ct).ConfigureAwait(false))
-        ).RequireAuthorization();
+        ).RequirePermission(Permission.PackageView);
 
         app.MapGet("/api/packages/{packageId}/versions",
             async (string packageId, PackageService packageSvc, CancellationToken ct) =>
                 Results.Ok(await packageSvc.GetVersionsAsync(packageId, ct).ConfigureAwait(false))
-        ).RequireAuthorization();
+        ).RequirePermission(Permission.PackageView);
 
         app.MapDelete("/api/packages/{id:guid}",
             async (Guid id, PackageService packageSvc, CancellationToken ct) =>
             {
                 var deleted = await packageSvc.DeleteAsync(id, ct).ConfigureAwait(false);
                 return deleted ? Results.NoContent() : Results.NotFound();
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.PackageDelete);
 
         // ── Process API ──────────────────────────────────────────────────────
         app.MapGet("/api/projects/{projectId:guid}/process",
@@ -548,7 +552,7 @@ public static class Program
             {
                 var process = await processSvc.GetAsync(projectId, ct).ConfigureAwait(false);
                 return process is null ? Results.NotFound() : Results.Ok(process);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.ProcessView);
 
         app.MapPost("/api/projects/{projectId:guid}/process/steps",
             async (Guid projectId, AddStepRequest req, ProcessService processSvc, CancellationToken ct) =>
@@ -557,20 +561,20 @@ public static class Program
                     projectId, req.Name, req.StepType, req.PackageId,
                     req.TargetRoles, req.Config, ct).ConfigureAwait(false);
                 return Results.Created($"/api/projects/{projectId}/process/steps/{step.Id}", step);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.ProcessEdit);
 
         app.MapDelete("/api/projects/{projectId:guid}/process/steps/{stepId:guid}",
             async (Guid projectId, Guid stepId, ProcessService processSvc, CancellationToken ct) =>
             {
                 var removed = await processSvc.RemoveStepAsync(stepId, ct).ConfigureAwait(false);
                 return removed ? Results.NoContent() : Results.NotFound();
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.ProcessEdit);
 
         // ── Release API ──────────────────────────────────────────────────────
         app.MapGet("/api/projects/{projectId:guid}/releases",
             async (Guid projectId, ReleaseService releaseSvc, CancellationToken ct) =>
                 Results.Ok(await releaseSvc.GetAllAsync(projectId, ct).ConfigureAwait(false))
-        ).RequireAuthorization();
+        ).RequirePermission(Permission.ReleaseView);
 
         app.MapPost("/api/projects/{projectId:guid}/releases",
             async (Guid projectId, CreateReleaseRequest req, ReleaseService releaseSvc,
@@ -588,13 +592,13 @@ public static class Program
                 {
                     return Results.Conflict(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.ReleaseCreate);
 
         // ── Variable API ─────────────────────────────────────────────────────
         app.MapGet("/api/projects/{projectId:guid}/variables",
             async (Guid projectId, VariableService variableSvc, CancellationToken ct) =>
                 Results.Ok(await variableSvc.GetVariablesAsync(projectId, ct).ConfigureAwait(false))
-        ).RequireAuthorization();
+        ).RequirePermission(Permission.VariableView);
 
         app.MapPost("/api/projects/{projectId:guid}/variables",
             async (Guid projectId, UpsertVariableRequest req,
@@ -630,7 +634,7 @@ public static class Program
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.VariableEdit);
 
         app.MapPut("/api/projects/{projectId:guid}/variables/{variableId:guid}",
             async (Guid projectId, Guid variableId, UpsertVariableRequest req,
@@ -657,14 +661,14 @@ public static class Program
                     .ConfigureAwait(false);
 
                 return variable is null ? Results.NotFound() : Results.Ok(variable);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.VariableEdit);
 
         app.MapDelete("/api/projects/{projectId:guid}/variables/{variableId:guid}",
             async (Guid projectId, Guid variableId, VariableService variableSvc, CancellationToken ct) =>
             {
                 var deleted = await variableSvc.DeleteVariableAsync(variableId, ct).ConfigureAwait(false);
                 return deleted ? Results.NoContent() : Results.NotFound();
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.VariableEdit);
 
         // ── Step-template API ────────────────────────────────────────────────
         app.MapGet("/api/step-templates",
@@ -675,14 +679,14 @@ public static class Program
                     t.Id, t.Name, t.Description, t.ActionType,
                     t.Parameters.Count, t.Version, t.CreatedUtc));
                 return Results.Ok(summaries);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.StepTemplateView);
 
         app.MapGet("/api/step-templates/{id:guid}",
             async (Guid id, StepTemplateService svc, CancellationToken ct) =>
             {
                 var template = await svc.GetAsync(id, ct).ConfigureAwait(false);
                 return template is null ? Results.NotFound() : Results.Ok(template);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.StepTemplateView);
 
         app.MapPost("/api/step-templates",
             async (CreateStepTemplateRequest req, StepTemplateService svc,
@@ -705,7 +709,7 @@ public static class Program
                     .ConfigureAwait(false);
 
                 return Results.Created($"/api/step-templates/{template.Id}", template);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.StepTemplateCreate);
 
         app.MapPut("/api/step-templates/{id:guid}",
             async (Guid id, UpdateStepTemplateRequest req, StepTemplateService svc,
@@ -727,14 +731,14 @@ public static class Program
                     .ConfigureAwait(false);
 
                 return template is null ? Results.NotFound() : Results.Ok(template);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.StepTemplateEdit);
 
         app.MapDelete("/api/step-templates/{id:guid}",
             async (Guid id, StepTemplateService svc, CancellationToken ct) =>
             {
                 var deleted = await svc.DeleteAsync(id, ct).ConfigureAwait(false);
                 return deleted ? Results.NoContent() : Results.NotFound();
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.StepTemplateDelete);
 
         app.MapPost("/api/step-templates/import",
             async (ImportStepTemplateRequest req, StepTemplateService svc,
@@ -756,20 +760,20 @@ public static class Program
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.StepTemplateCreate);
 
         // ── Deployment API ───────────────────────────────────────────────────
         app.MapGet("/api/deployments",
             async (Guid? projectId, DeploymentService deploymentSvc, CancellationToken ct) =>
                 Results.Ok(await deploymentSvc.GetAllAsync(projectId, ct).ConfigureAwait(false))
-        ).RequireAuthorization();
+        ).RequirePermission(Permission.DeploymentView);
 
         app.MapGet("/api/deployments/{id:guid}",
             async (Guid id, DeploymentService deploymentSvc, CancellationToken ct) =>
             {
                 var d = await deploymentSvc.GetAsync(id, ct).ConfigureAwait(false);
                 return d is null ? Results.NotFound() : Results.Ok(d);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.DeploymentView);
 
         // Returns log entries for a deployment, optionally filtered by sequence number.
         // The CLI --wait flag polls this endpoint and prints new lines incrementally.
@@ -794,7 +798,7 @@ public static class Program
                     });
 
                 return Results.Ok(entries);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.DeploymentView);
 
         app.MapPost("/api/deployments",
             async (TriggerDeploymentRequest req, DeploymentService deploymentSvc,
@@ -811,13 +815,13 @@ public static class Program
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.DeploymentCreate);
 
         // ── Artifact API ─────────────────────────────────────────────────────────
         app.MapGet("/api/deployments/{id:guid}/artifacts",
             async (Guid id, ArtifactService artifactSvc, CancellationToken ct) =>
                 Results.Ok(await artifactSvc.GetByDeploymentAsync(id, ct).ConfigureAwait(false))
-        ).RequireAuthorization();
+        ).RequirePermission(Permission.ArtifactView);
 
         app.MapGet("/api/deployments/{deploymentId:guid}/artifacts/{artifactId:guid}/download",
             async (Guid deploymentId, Guid artifactId,
@@ -834,7 +838,7 @@ public static class Program
                 {
                     return Results.NotFound();
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.ArtifactDownload);
 
         // ── Offline Drop API ────────────────────────────────────────────────────────
 
@@ -864,7 +868,7 @@ public static class Program
                 {
                     return Results.NotFound(new { error = "Drop bundle file not found on disk." });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.DeploymentView);
 
         app.MapPost("/api/deployments/{id:guid}/offline-result",
             async (Guid id, HttpRequest request, OfflineResultService resultSvc,
@@ -892,7 +896,7 @@ public static class Program
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequireAuthorization().DisableAntiforgery();
+            }).RequirePermission(Permission.OfflineResultUpload).DisableAntiforgery();
 
         app.MapPost("/api/targets/{id:guid}/offline-drop-config",
             async (Guid id, SaveOfflineDropConfigRequest req,
@@ -936,7 +940,7 @@ public static class Program
                 target.OfflineDropConfig = cfg;
                 await targetSvc.UpdateAsync(target, ct).ConfigureAwait(false);
                 return Results.Ok(new { saved = true });
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.MachineEdit);
 
         app.MapPost("/api/targets/{id:guid}/generate-hmac-key",
             async (Guid id, TargetService targetSvc,
@@ -955,21 +959,21 @@ public static class Program
                 target.OfflineDropConfig = cfg;
                 await targetSvc.UpdateAsync(target, ct).ConfigureAwait(false);
                 return Results.Ok(new { hmacKeyGenerated = true });
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.MachineEdit);
 
         // ── Tenant API ─────────────────────────────────────────────────────────────
 
         app.MapGet("/api/tenants",
             async (TenantService tenantSvc, CancellationToken ct) =>
                 Results.Ok(await tenantSvc.GetAllAsync(ct).ConfigureAwait(false)))
-            .RequireAuthorization();
+            .RequirePermission(Permission.TenantView);
 
         app.MapGet("/api/tenants/{id:guid}",
             async (Guid id, TenantService tenantSvc, CancellationToken ct) =>
             {
                 var tenant = await tenantSvc.GetWithTagsAsync(id, ct).ConfigureAwait(false);
                 return tenant is null ? Results.NotFound() : Results.Ok(tenant);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.TenantView);
 
         app.MapPost("/api/tenants",
             async (CreateTenantRequest req, TenantService tenantSvc, CancellationToken ct) =>
@@ -984,7 +988,7 @@ public static class Program
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.TenantCreate);
 
         app.MapPut("/api/tenants/{id:guid}",
             async (Guid id, CreateTenantRequest req, TenantService tenantSvc, CancellationToken ct) =>
@@ -999,14 +1003,14 @@ public static class Program
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.TenantEdit);
 
         app.MapDelete("/api/tenants/{id:guid}",
             async (Guid id, TenantService tenantSvc, CancellationToken ct) =>
             {
                 var deleted = await tenantSvc.DeleteAsync(id, ct).ConfigureAwait(false);
                 return deleted ? Results.NoContent() : Results.NotFound();
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.TenantDelete);
 
         // Project-Tenant connections
         app.MapPost("/api/tenants/{tenantId:guid}/projects/{projectId:guid}",
@@ -1021,20 +1025,20 @@ public static class Program
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.TenantEdit);
 
         app.MapDelete("/api/tenants/{tenantId:guid}/projects/{projectId:guid}",
             async (Guid tenantId, Guid projectId, TenantService tenantSvc, CancellationToken ct) =>
             {
                 await tenantSvc.DisconnectProjectAsync(tenantId, projectId, ct).ConfigureAwait(false);
                 return Results.NoContent();
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.TenantEdit);
 
         // Tag Sets
         app.MapGet("/api/tenants/{tenantId:guid}/tag-sets",
             async (Guid tenantId, TenantService tenantSvc, CancellationToken ct) =>
                 Results.Ok(await tenantSvc.GetTagSetsAsync(tenantId, ct).ConfigureAwait(false)))
-            .RequireAuthorization();
+            .RequirePermission(Permission.TagSetView);
 
         app.MapPost("/api/tenants/{tenantId:guid}/tag-sets",
             async (Guid tenantId, CreateTagSetRequest req, TenantService tenantSvc, CancellationToken ct) =>
@@ -1049,7 +1053,7 @@ public static class Program
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.TagSetCreate);
 
         app.MapPut("/api/tag-sets/{id:guid}",
             async (Guid id, CreateTagSetRequest req, TenantService tenantSvc, CancellationToken ct) =>
@@ -1057,14 +1061,14 @@ public static class Program
                 var ts = await tenantSvc.UpdateTagSetAsync(id, req.Name, req.Description, req.SortOrder, ct)
                     .ConfigureAwait(false);
                 return ts is null ? Results.NotFound() : Results.Ok(ts);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.TagSetEdit);
 
         app.MapDelete("/api/tag-sets/{id:guid}",
             async (Guid id, TenantService tenantSvc, CancellationToken ct) =>
             {
                 var deleted = await tenantSvc.DeleteTagSetAsync(id, ct).ConfigureAwait(false);
                 return deleted ? Results.NoContent() : Results.NotFound();
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.TagSetDelete);
 
         // Tags
         app.MapPost("/api/tag-sets/{tagSetId:guid}/tags",
@@ -1080,7 +1084,7 @@ public static class Program
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.TagSetEdit);
 
         app.MapPut("/api/tags/{id:guid}",
             async (Guid id, CreateTenantTagRequest req, TenantService tenantSvc, CancellationToken ct) =>
@@ -1088,14 +1092,14 @@ public static class Program
                 var tag = await tenantSvc.UpdateTagAsync(id, req.Name, req.Color, ct)
                     .ConfigureAwait(false);
                 return tag is null ? Results.NotFound() : Results.Ok(tag);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.TagSetEdit);
 
         app.MapDelete("/api/tags/{id:guid}",
             async (Guid id, TenantService tenantSvc, CancellationToken ct) =>
             {
                 var deleted = await tenantSvc.DeleteTagAsync(id, ct).ConfigureAwait(false);
                 return deleted ? Results.NoContent() : Results.NotFound();
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.TagSetEdit);
 
         // Target-Tag connections
         app.MapPost("/api/tags/{tagId:guid}/targets/{targetId:guid}",
@@ -1110,33 +1114,33 @@ public static class Program
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.MachineEdit);
 
         app.MapDelete("/api/tags/{tagId:guid}/targets/{targetId:guid}",
             async (Guid tagId, Guid targetId, TenantService tenantSvc, CancellationToken ct) =>
             {
                 await tenantSvc.RemoveTagFromTargetAsync(tagId, targetId, ct).ConfigureAwait(false);
                 return Results.NoContent();
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.MachineEdit);
 
         app.MapGet("/api/targets/{targetId:guid}/tags",
             async (Guid targetId, TenantService tenantSvc, CancellationToken ct) =>
                 Results.Ok(await tenantSvc.GetTagsForTargetAsync(targetId, ct).ConfigureAwait(false)))
-            .RequireAuthorization();
+            .RequirePermission(Permission.MachineView);
 
         // ── Lifecycle API ──────────────────────────────────────────────────────────
 
         app.MapGet("/api/lifecycles",
             async (LifecycleService lcSvc, CancellationToken ct) =>
                 Results.Ok(await lcSvc.GetAllAsync(ct).ConfigureAwait(false)))
-            .RequireAuthorization();
+            .RequirePermission(Permission.LifecycleView);
 
         app.MapGet("/api/lifecycles/{id:guid}",
             async (Guid id, LifecycleService lcSvc, CancellationToken ct) =>
             {
                 var lc = await lcSvc.GetAsync(id, ct).ConfigureAwait(false);
                 return lc is null ? Results.NotFound() : Results.Ok(lc);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.LifecycleView);
 
         app.MapPost("/api/lifecycles",
             async (CreateLifecycleRequest req, LifecycleService lcSvc, CancellationToken ct) =>
@@ -1150,7 +1154,7 @@ public static class Program
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.LifecycleCreate);
 
         app.MapPut("/api/lifecycles/{id:guid}",
             async (Guid id, UpdateLifecycleRequest req, LifecycleService lcSvc, CancellationToken ct) =>
@@ -1165,21 +1169,21 @@ public static class Program
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.LifecycleEdit);
 
         app.MapDelete("/api/lifecycles/{id:guid}",
             async (Guid id, LifecycleService lcSvc, CancellationToken ct) =>
             {
                 var deleted = await lcSvc.DeleteAsync(id, ct).ConfigureAwait(false);
                 return deleted ? Results.NoContent() : Results.NotFound();
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.LifecycleDelete);
 
         // ── Channel API ────────────────────────────────────────────────────────────
 
         app.MapGet("/api/projects/{projectId:guid}/channels",
             async (Guid projectId, ChannelService channelSvc, CancellationToken ct) =>
                 Results.Ok(await channelSvc.GetForProjectAsync(projectId, ct).ConfigureAwait(false)))
-            .RequireAuthorization();
+            .RequirePermission(Permission.ChannelView);
 
         app.MapPost("/api/projects/{projectId:guid}/channels",
             async (Guid projectId, UpsertChannelRequest req, ChannelService channelSvc, CancellationToken ct) =>
@@ -1195,7 +1199,7 @@ public static class Program
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.ChannelCreate);
 
         app.MapPut("/api/channels/{id:guid}",
             async (Guid id, UpsertChannelRequest req, ChannelService channelSvc, CancellationToken ct) =>
@@ -1211,7 +1215,7 @@ public static class Program
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.ChannelEdit);
 
         app.MapDelete("/api/channels/{id:guid}",
             async (Guid id, ChannelService channelSvc, CancellationToken ct) =>
@@ -1225,21 +1229,21 @@ public static class Program
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.ChannelDelete);
 
         // ── Runbook API ────────────────────────────────────────────────────────────
 
         app.MapGet("/api/projects/{projectId:guid}/runbooks",
             async (Guid projectId, RunbookService runbookSvc, CancellationToken ct) =>
                 Results.Ok(await runbookSvc.GetAllAsync(projectId, ct).ConfigureAwait(false)))
-            .RequireAuthorization();
+            .RequirePermission(Permission.RunbookView);
 
         app.MapGet("/api/runbooks/{id:guid}",
             async (Guid id, RunbookService runbookSvc, CancellationToken ct) =>
             {
                 var rb = await runbookSvc.GetAsync(id, ct).ConfigureAwait(false);
                 return rb is null ? Results.NotFound() : Results.Ok(rb);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.RunbookView);
 
         app.MapPost("/api/projects/{projectId:guid}/runbooks",
             async (Guid projectId, CreateRunbookRequest req, RunbookService runbookSvc, CancellationToken ct) =>
@@ -1254,7 +1258,7 @@ public static class Program
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.RunbookEdit);
 
         app.MapPut("/api/runbooks/{id:guid}",
             async (Guid id, CreateRunbookRequest req, RunbookService runbookSvc, CancellationToken ct) =>
@@ -1262,14 +1266,14 @@ public static class Program
                 var rb = await runbookSvc.UpdateAsync(id, req.Name, req.Description, ct)
                     .ConfigureAwait(false);
                 return rb is null ? Results.NotFound() : Results.Ok(rb);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.RunbookEdit);
 
         app.MapDelete("/api/runbooks/{id:guid}",
             async (Guid id, RunbookService runbookSvc, CancellationToken ct) =>
             {
                 var deleted = await runbookSvc.DeleteAsync(id, ct).ConfigureAwait(false);
                 return deleted ? Results.NoContent() : Results.NotFound();
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.RunbookEdit);
 
         // Runbook steps
         app.MapPost("/api/runbooks/{runbookId:guid}/steps",
@@ -1279,7 +1283,7 @@ public static class Program
                     runbookId, req.Name, req.StepType, req.PackageId, req.TargetRoles, req.Config, ct)
                     .ConfigureAwait(false);
                 return Results.Created($"/api/runbooks/{runbookId}/steps/{step.Id}", step);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.RunbookEdit);
 
         app.MapPut("/api/runbook-steps/{stepId:guid}",
             async (Guid stepId, AddStepRequest req, RunbookService runbookSvc, CancellationToken ct) =>
@@ -1288,27 +1292,27 @@ public static class Program
                     stepId, req.Name, req.StepType, req.PackageId, req.TargetRoles, req.Config, ct)
                     .ConfigureAwait(false);
                 return step is null ? Results.NotFound() : Results.Ok(step);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.RunbookEdit);
 
         app.MapDelete("/api/runbook-steps/{stepId:guid}",
             async (Guid stepId, RunbookService runbookSvc, CancellationToken ct) =>
             {
                 var deleted = await runbookSvc.DeleteStepAsync(stepId, ct).ConfigureAwait(false);
                 return deleted ? Results.NoContent() : Results.NotFound();
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.RunbookEdit);
 
         // Runbook runs
         app.MapGet("/api/runbooks/{runbookId:guid}/runs",
             async (Guid runbookId, RunbookService runbookSvc, CancellationToken ct) =>
                 Results.Ok(await runbookSvc.GetRunsAsync(runbookId, ct).ConfigureAwait(false)))
-            .RequireAuthorization();
+            .RequirePermission(Permission.RunbookRunView);
 
         app.MapGet("/api/runbook-runs/{runId:guid}",
             async (Guid runId, RunbookService runbookSvc, CancellationToken ct) =>
             {
                 var run = await runbookSvc.GetRunAsync(runId, ct).ConfigureAwait(false);
                 return run is null ? Results.NotFound() : Results.Ok(run);
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.RunbookRunView);
 
         app.MapPost("/api/runbooks/{runbookId:guid}/runs",
             async (Guid runbookId, TriggerRunbookRunRequest req, RunbookService runbookSvc,
@@ -1325,7 +1329,7 @@ public static class Program
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequireAuthorization();
+            }).RequirePermission(Permission.RunbookRunCreate);
 
         // Dev-only: creates a smoke-test target and returns its registration token.
         // Guards behind IsDevelopment so it is never registered in production.
