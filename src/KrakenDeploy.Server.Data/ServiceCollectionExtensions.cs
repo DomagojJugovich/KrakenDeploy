@@ -85,6 +85,9 @@ public static class ServiceCollectionExtensions
 
     public static IdentityBuilder AddKrakenDeployIdentityCore(this IServiceCollection services)
     {
+        // No .AddRoles<>() — KrakenDeploy has its own Role/Team/RoleAssignment
+        // RBAC model in Server.Core.Domain.Security. Identity is used only for
+        // user accounts and password hashing.
         return services.AddIdentityCore<ApplicationUser>(options =>
             {
                 options.SignIn.RequireConfirmedAccount = false;
@@ -97,7 +100,6 @@ public static class ServiceCollectionExtensions
                 options.Lockout.MaxFailedAccessAttempts = 5;
                 options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
             })
-            .AddRoles<IdentityRole<Guid>>()
             .AddEntityFrameworkStores<KrakenDbContext>();
     }
 

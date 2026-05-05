@@ -9,6 +9,7 @@ using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.StepTemplates;
 using KrakenDeploy.Server.Core.Domain.Targets;
@@ -16,7 +17,6 @@ using KrakenDeploy.Server.Core.Domain.Tenants;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data.Configurations;
 using KrakenDeploy.Server.Data.Identity;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 
@@ -25,8 +25,12 @@ namespace KrakenDeploy.Server.Data;
 public class KrakenDbContext(
     DbContextOptions<KrakenDbContext> options,
     ISpaceContext spaceContext)
-    : IdentityDbContext<ApplicationUser, IdentityRole<Guid>, Guid>(options)
+    : IdentityUserContext<ApplicationUser, Guid>(options)
 {
+    // We use IdentityUserContext (not IdentityDbContext) because we have our
+    // own RBAC model (Role + Team + RoleAssignment in Server.Core.Domain.Security)
+    // — Identity-managed roles via IdentityRole<Guid> would clash with our
+    // domain Role and add a parallel permission system we don't use.
     private readonly ISpaceContext _spaceContext = spaceContext;
 
     public DbSet<Space> Spaces => Set<Space>();
@@ -54,6 +58,14 @@ public class KrakenDbContext(
     public DbSet<RunbookStep> RunbookSteps => Set<RunbookStep>();
     public DbSet<RunbookRun> RunbookRuns => Set<RunbookRun>();
     public DbSet<RunbookRunLogEntry> RunbookRunLogEntries => Set<RunbookRunLogEntry>();
+
+    // ── M10 RBAC ────────────────────────────────────────────────────────────
+    public DbSet<Role> Roles => Set<Role>();
+    public DbSet<Team> Teams => Set<Team>();
+    public DbSet<TeamMember> TeamMembers => Set<TeamMember>();
+    public DbSet<TeamExternalGroup> TeamExternalGroups => Set<TeamExternalGroup>();
+    public DbSet<RoleAssignment> RoleAssignments => Set<RoleAssignment>();
+    public DbSet<IdentityProvider> IdentityProviders => Set<IdentityProvider>();
 
     /// <summary>
     /// Read by the EF Core global query filter for every <see cref="ISpaceScoped"/>

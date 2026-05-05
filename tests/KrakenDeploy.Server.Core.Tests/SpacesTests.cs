@@ -75,6 +75,14 @@ public sealed class SpacesTests
             "AuditableEntity",
             // Value objects on Targets
             "OfflineDropConfig",
+            // M10 RBAC — system-level (Role, IdentityProvider) or nullable-
+            // SpaceId pattern (Team, RoleAssignment) so visible across Spaces
+            "Role",
+            "Team",
+            "TeamMember",
+            "TeamExternalGroup",
+            "RoleAssignment",
+            "IdentityProvider",
         };
 
         var assembly = typeof(Project).Assembly;
