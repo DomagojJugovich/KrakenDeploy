@@ -216,6 +216,16 @@ public static class Program
                 .RequireAuthenticatedUser()
                 .Build());
 
+        // Permission policy provider — builds a one-requirement policy on
+        // demand for any policy name "perm:{Permission}". Means we don't have
+        // to register 100+ policies up front; .RequirePermission(p) just works.
+        builder.Services.AddSingleton<
+            Microsoft.AspNetCore.Authorization.IAuthorizationPolicyProvider,
+            PermissionPolicyProvider>();
+        builder.Services.AddScoped<
+            Microsoft.AspNetCore.Authorization.IAuthorizationHandler,
+            PermissionAuthorizationHandler>();
+
         // ── OpenTelemetry ────────────────────────────────────────────────────
         // Tracing and metrics are wired; console exporter is enabled in
         // Development only.  Production exporters (Jaeger, Prometheus, OTLP)

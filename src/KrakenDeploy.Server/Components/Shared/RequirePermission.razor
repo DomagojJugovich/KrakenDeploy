@@ -1,0 +1,45 @@
+@using KrakenDeploy.Server.Core.Domain.Security
+@using KrakenDeploy.Server.Core.Domain.Spaces
+@inject IPermissionEvaluator Evaluator
+@inject ISpaceContext SpaceContext
+@inject AuthenticationStateProvider AuthState
+
+@if (_allowed)
+{
+    @ChildContent
+}
+else if (Fallback is not null)
+{
+    @Fallback
+}
+
+@code {
+    /// <summary>The Permission required to render <see cref="ChildContent"/>.</summary>
+    [Parameter, EditorRequired] public Permission Permission { get; set; }
+
+    /// <summary>
+    /// Optional finer-grained scope. By default the check uses the active
+    /// Space; pass a scope to gate on a specific Project / Environment / Tenant.
+    /// </summary>
+    [Parameter] public PermissionScope? Scope { get; set; }
+
+    /// <summary>UI rendered when the permission check passes.</summary>
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    /// <summary>
+    /// UI rendered when the check fails. Optional — by default the component
+    /// renders nothing on failure (the typical "hide the Edit button" case).
+    /// </summary>
+    [Parameter] public RenderFragment? Fallback { get; set; }
+
+    private bool _allowed;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var state = await AuthState.GetAuthenticationStateAsync();
+        var effectiveScope = Scope ?? new PermissionScope(SpaceId: SpaceContext.CurrentSpaceId);
+
+        _allowed = await Evaluator.HasPermissionAsync(
+            state.User, Permission, effectiveScope);
+    }
+}

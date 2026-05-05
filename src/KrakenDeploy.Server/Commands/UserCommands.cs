@@ -1,5 +1,7 @@
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Identity;
+using KrakenDeploy.Server.Data.Services;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
@@ -65,12 +67,23 @@ internal static class UserCommands
         var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         await db.Database.MigrateAsync().ConfigureAwait(false);
 
+        // Defensive: ensure RBAC seed exists before we add the admin to a team
+        // (the admin CLI may run before the web server has started for the
+        // first time on a fresh DB).
+        var spaceSvc = scope.ServiceProvider.GetRequiredService<SpaceService>();
+        await spaceSvc.EnsureDefaultAsync().ConfigureAwait(false);
+        var rbacSeeder = scope.ServiceProvider.GetRequiredService<BuiltInRbacSeeder>();
+        await rbacSeeder.SeedAsync().ConfigureAwait(false);
+
         var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
 
         var existing = await userManager.FindByEmailAsync(email).ConfigureAwait(false);
         if (existing is not null)
         {
-            Console.WriteLine($"User '{email}' already exists. Nothing to do.");
+            // Idempotent membership check: ensure the existing user IS in
+            // Kraken Administrators (covers re-runs after team data was reset).
+            await EnsureKrakenAdministratorAsync(db, existing.Id).ConfigureAwait(false);
+            Console.WriteLine($"User '{email}' already exists. Membership in Kraken Administrators verified.");
             return 0;
         }
 
@@ -92,8 +105,37 @@ internal static class UserCommands
             return 1;
         }
 
-        Console.WriteLine($"Admin user '{email}' created.");
+        // Add the new user to "Kraken Administrators" so they actually have
+        // permissions to do anything — without this they'd be a logged-in
+        // user with zero authorized actions.
+        await EnsureKrakenAdministratorAsync(db, user.Id).ConfigureAwait(false);
+
+        Console.WriteLine($"Admin user '{email}' created and added to Kraken Administrators.");
         return 0;
+    }
+
+    /// <summary>
+    /// Idempotently adds the user to the Kraken Administrators system team.
+    /// </summary>
+    private static async Task EnsureKrakenAdministratorAsync(KrakenDbContext db, Guid userId)
+    {
+        var alreadyMember = await db.TeamMembers
+            .AnyAsync(m => m.TeamId == BuiltInRbacSeeder.KrakenAdministratorsTeamId
+                        && m.UserId == userId)
+            .ConfigureAwait(false);
+
+        if (alreadyMember)
+        {
+            return;
+        }
+
+        db.TeamMembers.Add(new TeamMember
+        {
+            TeamId   = BuiltInRbacSeeder.KrakenAdministratorsTeamId,
+            UserId   = userId,
+            AddedUtc = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync().ConfigureAwait(false);
     }
 
     private static int PrintTopLevelUsage(bool success = false)
