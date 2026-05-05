@@ -31,6 +31,7 @@ public class KrakenDbContext(
 
     public DbSet<Space> Spaces => Set<Space>();
     public DbSet<Project> Projects => Set<Project>();
+    public DbSet<ProjectGroup> ProjectGroups => Set<ProjectGroup>();
     public DbSet<DeploymentEnvironment> Environments => Set<DeploymentEnvironment>();
     public DbSet<DeploymentTarget> DeploymentTargets => Set<DeploymentTarget>();
     public DbSet<Release> Releases => Set<Release>();

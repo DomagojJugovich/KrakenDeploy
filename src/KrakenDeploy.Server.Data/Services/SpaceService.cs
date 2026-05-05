@@ -1,4 +1,5 @@
 using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using Microsoft.EntityFrameworkCore;
 
@@ -31,24 +32,62 @@ public class SpaceService(KrakenDbContext db)
             .FirstOrDefaultAsync(s => s.Id == WellKnown.DefaultSpaceId, ct)
             .ConfigureAwait(false);
 
+        if (existing is null)
+        {
+            existing = new Space
+            {
+                Id          = WellKnown.DefaultSpaceId,
+                Slug        = WellKnown.DefaultSpaceSlug,
+                Name        = WellKnown.DefaultSpaceName,
+                Description = "Auto-created Default Space.",
+                IsDefault   = true,
+                Status      = SpaceStatus.Active,
+            };
+
+            db.Spaces.Add(existing);
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+
+        // Default Project Group inside the Default Space.
+        await EnsureDefaultProjectGroupAsync(existing.Id, ct).ConfigureAwait(false);
+
+        return existing;
+    }
+
+    /// <summary>
+    /// Returns the Default Project Group for the given Space, creating it if
+    /// missing. Every Space gets one auto-created — new Projects land there
+    /// unless explicitly moved.
+    /// </summary>
+    public async Task<ProjectGroup> EnsureDefaultProjectGroupAsync(
+        Guid spaceId, CancellationToken ct = default)
+    {
+        // IgnoreQueryFilters because the active Space might not match the
+        // Space we're seeding (e.g. when creating a brand-new Space that
+        // isn't yet the active one).
+        var existing = await db.ProjectGroups
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(g => g.SpaceId == spaceId && g.IsDefault, ct)
+            .ConfigureAwait(false);
+
         if (existing is not null)
         {
             return existing;
         }
 
-        var space = new Space
+        var group = new ProjectGroup
         {
-            Id          = WellKnown.DefaultSpaceId,
-            Slug        = WellKnown.DefaultSpaceSlug,
-            Name        = WellKnown.DefaultSpaceName,
-            Description = "Auto-created Default Space.",
+            SpaceId     = spaceId, // explicit so SpaceScopingInterceptor leaves it
+            Slug        = "default",
+            Name        = "Default Project Group",
+            Description = "Auto-created default group for projects in this Space.",
             IsDefault   = true,
-            Status      = SpaceStatus.Active,
+            SortOrder   = 0,
         };
 
-        db.Spaces.Add(space);
+        db.ProjectGroups.Add(group);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return space;
+        return group;
     }
 
     public async Task<Space> CreateAsync(
@@ -73,6 +112,10 @@ public class SpaceService(KrakenDbContext db)
 
         db.Spaces.Add(space);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        // Auto-create the Default Project Group inside the new Space.
+        await EnsureDefaultProjectGroupAsync(space.Id, ct).ConfigureAwait(false);
+
         return space;
     }
 

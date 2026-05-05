@@ -25,6 +25,14 @@ public class ProjectConfiguration : IEntityTypeConfiguration<Project>
             .HasForeignKey(x => x.LifecycleId)
             .OnDelete(DeleteBehavior.SetNull);
 
+        // ProjectGroup FK — nullable during M10 transition, becomes required
+        // after the Default Project Group seeder backfills existing rows.
+        builder.HasOne(x => x.ProjectGroup)
+            .WithMany()
+            .HasForeignKey(x => x.ProjectGroupId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.HasIndex(x => x.ProjectGroupId);
+
         builder.Property(x => x.CreatedUtc).IsRequired();
     }
 }
