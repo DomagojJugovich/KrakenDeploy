@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using KrakenDeploy.Server.Core.Domain.Packages;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Data.ArtifactStorage;
 using KrakenDeploy.Server.Data.Identity;
@@ -75,6 +76,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<DropBundleService>();
         services.AddScoped<OfflineResultService>();
         services.AddScoped<BuiltInStepTemplateSeeder>();
+        services.AddScoped<BuiltInRbacSeeder>();
+        services.AddScoped<IPermissionEvaluator, PermissionEvaluator>();
 
         // Octodiff delta generation — singleton because it has no mutable state;
         // signatures are cached on disk alongside the package files.

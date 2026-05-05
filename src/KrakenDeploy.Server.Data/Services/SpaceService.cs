@@ -116,6 +116,13 @@ public class SpaceService(KrakenDbContext db)
         // Auto-create the Default Project Group inside the new Space.
         await EnsureDefaultProjectGroupAsync(space.Id, ct).ConfigureAwait(false);
 
+        // Auto-seed the per-Space built-in teams (Space Managers, Project
+        // Deployers, Project Contributors, Project Viewers, Everyone) so a
+        // brand-new Space immediately has the standard team inventory.
+        var rbacSeeder = new BuiltInRbacSeeder(db,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<BuiltInRbacSeeder>.Instance);
+        await rbacSeeder.SeedSpaceTeamsAsync(space.Id, ct).ConfigureAwait(false);
+
         return space;
     }
 

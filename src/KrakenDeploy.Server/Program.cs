@@ -273,6 +273,13 @@ public static class Program
             var spaceService = scope.ServiceProvider.GetRequiredService<SpaceService>();
             await spaceService.EnsureDefaultAsync().ConfigureAwait(false);
 
+            // Seed built-in roles + teams (RBAC). Idempotent; re-applies role
+            // permission sets so seeder edits ship with the upgrade. Must run
+            // after EnsureDefaultAsync because per-Space teams need the Default
+            // Space to exist first.
+            var rbacSeeder = scope.ServiceProvider.GetRequiredService<BuiltInRbacSeeder>();
+            await rbacSeeder.SeedAsync().ConfigureAwait(false);
+
             // Seed built-in step templates (Kraken.IIS, etc.). Idempotent.
             var seeder = scope.ServiceProvider.GetRequiredService<BuiltInStepTemplateSeeder>();
             await seeder.SeedAsync().ConfigureAwait(false);
