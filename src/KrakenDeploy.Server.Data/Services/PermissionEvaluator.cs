@@ -8,11 +8,13 @@ namespace KrakenDeploy.Server.Data.Services;
 /// EF Core-backed <see cref="IPermissionEvaluator"/>. Resolves the user's
 /// teams (explicit + external-group + Everyone), pulls their
 /// <see cref="RoleAssignment"/>s, and evaluates the requested permission
-/// against the scope.
+/// against the scope via <see cref="RoleAssignmentScopeMatcher"/>.
 /// <para>
-/// Caches per-request keyed by (UserId, SpaceId): the same scope-Space
-/// permission set is computed once per request even if dozens of UI elements
-/// call <see cref="HasPermissionAsync"/> while rendering.
+/// Caches assignments per request keyed by (UserId, SpaceId): repeated
+/// permission checks during one render hit the DB at most once per unique
+/// SpaceId. The cached value is the raw assignment list — scope filtering
+/// happens per-call so the same cache entry serves many different
+/// per-Project / per-Environment / per-Tenant queries.
 /// </para>
 /// </summary>
 public sealed class PermissionEvaluator(KrakenDbContext db) : IPermissionEvaluator
@@ -20,7 +22,8 @@ public sealed class PermissionEvaluator(KrakenDbContext db) : IPermissionEvaluat
     /// <summary>Standard claim name for the user's KrakenDeploy user id.</summary>
     public const string UserIdClaim = ClaimTypes.NameIdentifier;
 
-    private readonly Dictionary<CacheKey, IReadOnlySet<Permission>> _cache = [];
+    private readonly Dictionary<CacheKey, IReadOnlyList<RoleAssignment>> _assignmentCache = [];
+    private readonly Dictionary<Guid, bool> _systemAdminCache = [];
 
     public async Task<bool> HasPermissionAsync(
         ClaimsPrincipal user,
@@ -29,15 +32,34 @@ public sealed class PermissionEvaluator(KrakenDbContext db) : IPermissionEvaluat
         CancellationToken ct = default)
     {
         // AdministerSystem is god mode — short-circuits every check, regardless
-        // of scope. Granted by being on the "Kraken Administrators" team or
-        // any team with a system-wide RoleAssignment to System Administrator.
+        // of scope. Granted by being on a team whose role assignments include
+        // that permission.
         if (await UserIsSystemAdminAsync(user, ct).ConfigureAwait(false))
         {
             return true;
         }
 
-        var perms = await GetPermissionsAsync(user, scope, ct).ConfigureAwait(false);
-        return perms.Contains(permission);
+        var userId = TryGetUserId(user);
+        if (userId is null)
+        {
+            return false;
+        }
+
+        var assignments = await GetCachedAssignmentsAsync(userId.Value, scope.SpaceId, ct)
+            .ConfigureAwait(false);
+
+        // Short-circuit: stop at the first matching assignment that grants
+        // the requested permission. Avoids walking the full set when one
+        // hit is enough.
+        foreach (var a in assignments)
+        {
+            if (a.Role.GrantedPermissions.Contains(permission)
+                && RoleAssignmentScopeMatcher.Matches(a, scope))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     public async Task<IReadOnlySet<Permission>> GetPermissionsAsync(
@@ -51,33 +73,55 @@ public sealed class PermissionEvaluator(KrakenDbContext db) : IPermissionEvaluat
             return new HashSet<Permission>();
         }
 
-        var key = new CacheKey(userId.Value, scope.SpaceId);
-        if (_cache.TryGetValue(key, out var cached))
+        // System admin: union of every defined permission. Cheap because
+        // Permission is a bounded enum.
+        if (await UserIsSystemAdminAsync(user, ct).ConfigureAwait(false))
         {
-            return FilterToScope(cached, scope);
+            return new HashSet<Permission>(Enum.GetValues<Permission>());
         }
 
-        var allInSpace = await ComputeSpacePermissionsAsync(
-            userId.Value, scope.SpaceId, ct).ConfigureAwait(false);
+        var assignments = await GetCachedAssignmentsAsync(userId.Value, scope.SpaceId, ct)
+            .ConfigureAwait(false);
 
-        _cache[key] = allInSpace;
-        return FilterToScope(allInSpace, scope);
+        var perms = new HashSet<Permission>();
+        foreach (var a in assignments)
+        {
+            if (!RoleAssignmentScopeMatcher.Matches(a, scope))
+            {
+                continue;
+            }
+
+            foreach (var p in a.Role.GrantedPermissions)
+            {
+                perms.Add(p);
+            }
+        }
+        return perms;
     }
 
-    // ── Computation ───────────────────────────────────────────────────────────
+    // ── Cached assignment fetch ───────────────────────────────────────────────
 
-    private async Task<IReadOnlySet<Permission>> ComputeSpacePermissionsAsync(
+    private async Task<IReadOnlyList<RoleAssignment>> GetCachedAssignmentsAsync(
         Guid userId, Guid? spaceId, CancellationToken ct)
     {
-        // 1. Resolve every team the user belongs to (explicit + external + Everyone).
+        var key = new CacheKey(userId, spaceId);
+        if (_assignmentCache.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+
         var teamIds = await GetUserTeamIdsAsync(userId, ct).ConfigureAwait(false);
         if (teamIds.Count == 0)
         {
-            return new HashSet<Permission>();
+            _assignmentCache[key] = [];
+            return [];
         }
 
-        // 2. Pull every role assignment for those teams matching the requested
-        //    Space (or system-wide assignments which apply to all Spaces).
+        // Pull every role assignment for those teams matching the requested
+        // Space (or system-wide assignments which apply to all Spaces).
+        // We deliberately keep the raw assignments — scope-dimension filtering
+        // is per-call, not per-fetch, so the same cache entry serves many
+        // different scoped queries during one render.
         var assignments = await db.RoleAssignments
             .IgnoreQueryFilters() // RoleAssignment isn't ISpaceScoped, but be explicit
             .Include(a => a.Role)
@@ -86,48 +130,8 @@ public sealed class PermissionEvaluator(KrakenDbContext db) : IPermissionEvaluat
             .ToListAsync(ct)
             .ConfigureAwait(false);
 
-        // 3. The "all permissions in this Space" set is every permission from
-        //    every assignment whose dimensions don't exclude the Space-wide
-        //    case. Per-entity scope checks happen later in FilterToScope.
-        var perms = new HashSet<Permission>();
-        foreach (var assignment in assignments)
-        {
-            foreach (var perm in assignment.Role.GrantedPermissions)
-            {
-                perms.Add(perm);
-            }
-        }
-        return perms;
-    }
-
-    /// <summary>
-    /// Filters a Space-wide permission set down to those granted by at least
-    /// one role assignment whose scope dimensions match the requested entity
-    /// scope. The Space-wide cache key already handles SpaceId; this pass
-    /// handles Project / Environment / Tenant restrictions.
-    /// </summary>
-    private static IReadOnlySet<Permission> FilterToScope(
-        IReadOnlySet<Permission> spaceWidePerms,
-        PermissionScope scope)
-    {
-        // When the caller doesn't restrict to a specific Project/Env/Tenant,
-        // any permission granted in the Space is sufficient.
-        if (scope.ProjectGroupId is null &&
-            scope.ProjectId is null &&
-            scope.EnvironmentId is null &&
-            scope.TenantId is null &&
-            scope.TenantTagId is null)
-        {
-            return spaceWidePerms;
-        }
-
-        // TODO(M10/B3): full per-assignment scope evaluation. The current
-        // implementation grants any Space-wide permission to any sub-scope —
-        // adequate for path-1 (most Role Assignments are unscoped within a
-        // Space) but intentionally too permissive for fine-grained scope
-        // restrictions. Tightened in a follow-up commit alongside the
-        // authorization integration tests.
-        return spaceWidePerms;
+        _assignmentCache[key] = assignments;
+        return assignments;
     }
 
     // ── Team membership resolution ────────────────────────────────────────────
@@ -160,7 +164,7 @@ public sealed class PermissionEvaluator(KrakenDbContext db) : IPermissionEvaluat
         // c. External-group matches via TeamExternalGroup. Resolved at sign-in
         //    time and cached on the principal as additional team-id claims —
         //    we read those claims rather than re-querying the IdP. (To be
-        //    wired up in M10/C with the OIDC integration; for now the
+        //    wired up alongside the OIDC integration in M10/F; for now the
         //    explicit + Everyone path covers the common case.)
 
         return teamIds;
@@ -176,14 +180,22 @@ public sealed class PermissionEvaluator(KrakenDbContext db) : IPermissionEvaluat
             return false;
         }
 
+        if (_systemAdminCache.TryGetValue(userId.Value, out var cached))
+        {
+            return cached;
+        }
+
         // Any role assignment that grants AdministerSystem makes the user a
         // system admin. No scope check — AdministerSystem is system-only.
-        return await db.RoleAssignments
+        var isAdmin = await db.RoleAssignments
             .IgnoreQueryFilters()
             .Where(a => db.TeamMembers.Any(m => m.UserId == userId && m.TeamId == a.TeamId)
                         || db.Teams.Any(t => t.Id == a.TeamId && t.IsEveryoneTeam))
             .AnyAsync(a => a.Role.GrantedPermissions.Contains(Permission.AdministerSystem), ct)
             .ConfigureAwait(false);
+
+        _systemAdminCache[userId.Value] = isAdmin;
+        return isAdmin;
     }
 
     private static Guid? TryGetUserId(ClaimsPrincipal user)
