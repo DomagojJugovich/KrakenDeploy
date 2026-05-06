@@ -1,0 +1,82 @@
+@inject TeamService TeamSvc
+@inject DialogService Dialog
+
+<RadzenStack Gap="1rem">
+    <RadzenFormField Text="Name *" style="width:100%">
+        <RadzenTextBox @bind-Value="_name" Placeholder="Web Deployers" style="width:100%" />
+    </RadzenFormField>
+    <RadzenFormField Text="Description (optional)" style="width:100%">
+        <RadzenTextBox @bind-Value="_description"
+                       Placeholder="Members can deploy the web application"
+                       style="width:100%" />
+    </RadzenFormField>
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="false">@_error</RadzenAlert>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                 JustifyContent="JustifyContent.End">
+        <RadzenButton Text="@(Team is null ? "Create" : "Save")"
+                      ButtonStyle="ButtonStyle.Primary"
+                      IsBusy="_busy" Click="SaveAsync" />
+        <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => Dialog.Close(false))" />
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    /// <summary>Existing team for edit mode; null for create.</summary>
+    [Parameter] public Team? Team { get; set; }
+
+    /// <summary>Space the new team will belong to; null = system-level.</summary>
+    [Parameter] public Guid? SpaceId { get; set; }
+
+    private string  _name        = "";
+    private string? _description;
+    private string  _error       = "";
+    private bool    _busy;
+
+    protected override void OnParametersSet()
+    {
+        if (Team is not null)
+        {
+            _name        = Team.Name;
+            _description = Team.Description;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            _error = "Name is required.";
+            return;
+        }
+
+        _busy  = true;
+        _error = "";
+
+        try
+        {
+            if (Team is null)
+            {
+                await TeamSvc.CreateAsync(_name, _description, SpaceId);
+            }
+            else
+            {
+                await TeamSvc.UpdateAsync(Team.Id, _name, _description);
+            }
+            Dialog.Close(true);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

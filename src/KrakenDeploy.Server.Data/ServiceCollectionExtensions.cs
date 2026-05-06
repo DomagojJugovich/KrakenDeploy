@@ -78,6 +78,10 @@ public static class ServiceCollectionExtensions
         services.AddScoped<BuiltInStepTemplateSeeder>();
         services.AddScoped<BuiltInRbacSeeder>();
         services.AddScoped<IPermissionEvaluator, PermissionEvaluator>();
+        services.AddScoped<UserService>();
+        services.AddScoped<TeamService>();
+        services.AddScoped<RoleService>();
+        services.AddScoped<IdentityProviderService>();
 
         // Octodiff delta generation — singleton because it has no mutable state;
         // signatures are cached on disk alongside the package files.

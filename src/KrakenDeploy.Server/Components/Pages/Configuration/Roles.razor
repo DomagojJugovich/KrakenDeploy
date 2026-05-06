@@ -1,0 +1,146 @@
+@page "/configuration/roles"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@inject RoleService RoleSvc
+@inject DialogService Dialog
+@inject NotificationService Notify
+
+<PageTitle>Roles - KrakenDeploy</PageTitle>
+
+<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+             Gap="1rem" class="rz-mb-4">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">Roles</RadzenText>
+    <RequirePermission Permission="Permission.RoleCreate">
+        <RadzenButton Icon="add" Text="New Role"
+                      ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                      Click="OpenCreateDialogAsync" />
+    </RequirePermission>
+</RadzenStack>
+
+<RadzenDataGrid Data="@_roles" TItem="Role"
+                AllowPaging="true" PageSize="25"
+                AllowSorting="true"
+                AllowFiltering="true" FilterMode="FilterMode.Simple"
+                AllowColumnResize="true"
+                EmptyText="No custom roles yet.">
+    <Columns>
+        <RadzenDataGridColumn TItem="Role" Property="Name" Title="Name" Width="220px">
+            <Template Context="r">
+                <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                             Gap="0.5rem">
+                    <span>@r.Name</span>
+                    @if (r.IsBuiltIn)
+                    {
+                        <RadzenBadge Text="Built-in" BadgeStyle="BadgeStyle.Info"
+                                     IsPill="true" />
+                    }
+                    @if (r.IsSystemOnly)
+                    {
+                        <RadzenBadge Text="System-only" BadgeStyle="BadgeStyle.Warning"
+                                     IsPill="true" />
+                    }
+                </RadzenStack>
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="Role" Property="Description" Title="Description" />
+        <RadzenDataGridColumn TItem="Role" Title="Permissions" Width="110px"
+                              Filterable="false" Sortable="false" TextAlign="TextAlign.Center">
+            <Template Context="r">
+                <RadzenBadge Text="@r.GrantedPermissions.Count.ToString()"
+                             BadgeStyle="BadgeStyle.Light" />
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="Role" Title="" Width="88px"
+                              Filterable="false" Sortable="false" TextAlign="TextAlign.Right">
+            <Template Context="r">
+                @if (!r.IsBuiltIn)
+                {
+                    <RequirePermission Permission="Permission.RoleEdit">
+                        <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
+                                      Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                                      Click="@(() => OpenEditDialogAsync(r))"
+                                      title="Edit" />
+                    </RequirePermission>
+                    <RequirePermission Permission="Permission.RoleDelete">
+                        <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                      Size="ButtonSize.ExtraSmall"
+                                      Click="@(() => DeleteAsync(r))"
+                                      title="Delete" />
+                    </RequirePermission>
+                }
+                else
+                {
+                    <RadzenButton Icon="visibility" ButtonStyle="ButtonStyle.Light"
+                                  Size="ButtonSize.ExtraSmall"
+                                  Click="@(() => OpenViewDialogAsync(r))"
+                                  title="View permissions" />
+                }
+            </Template>
+        </RadzenDataGridColumn>
+    </Columns>
+</RadzenDataGrid>
+
+@code {
+    private List<Role> _roles = [];
+
+    protected override async Task OnInitializedAsync()
+        => _roles = await RoleSvc.GetAllAsync();
+
+    private async Task OpenCreateDialogAsync()
+    {
+        var result = await Dialog.OpenAsync<RoleFormDialog>(
+            "New Role",
+            new Dictionary<string, object>(),
+            new DialogOptions { Width = "700px", Height = "80vh" });
+
+        if (result is true)
+        {
+            _roles = await RoleSvc.GetAllAsync();
+            Notify.Notify(NotificationSeverity.Success, "Role created", duration: 3000);
+        }
+    }
+
+    private async Task OpenEditDialogAsync(Role role)
+    {
+        var result = await Dialog.OpenAsync<RoleFormDialog>(
+            $"Edit Role: {role.Name}",
+            new Dictionary<string, object> { [nameof(RoleFormDialog.Role)] = role },
+            new DialogOptions { Width = "700px", Height = "80vh" });
+
+        if (result is true)
+        {
+            _roles = await RoleSvc.GetAllAsync();
+            Notify.Notify(NotificationSeverity.Success, "Role updated", duration: 3000);
+        }
+    }
+
+    private async Task OpenViewDialogAsync(Role role)
+    {
+        await Dialog.OpenAsync<RoleFormDialog>(
+            $"Role: {role.Name}",
+            new Dictionary<string, object>
+            {
+                [nameof(RoleFormDialog.Role)]     = role,
+                [nameof(RoleFormDialog.ReadOnly)] = true,
+            },
+            new DialogOptions { Width = "700px", Height = "80vh" });
+    }
+
+    private async Task DeleteAsync(Role role)
+    {
+        var confirmed = await Dialog.Confirm(
+            $"Delete role '{role.Name}'? Teams with this role assigned will lose those permissions.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+
+        if (confirmed != true)
+        {
+            return;
+        }
+
+        await RoleSvc.DeleteAsync(role.Id);
+        _roles = await RoleSvc.GetAllAsync();
+        Notify.Notify(NotificationSeverity.Info, "Deleted", role.Name, 4000);
+    }
+}

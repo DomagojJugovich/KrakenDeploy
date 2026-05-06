@@ -1,0 +1,127 @@
+@page "/configuration/identity-providers"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@inject IdentityProviderService IdpSvc
+@inject DialogService Dialog
+@inject NotificationService Notify
+
+<PageTitle>Identity Providers - KrakenDeploy</PageTitle>
+
+<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+             Gap="1rem" class="rz-mb-4">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">
+        Identity Providers
+    </RadzenText>
+    <RequirePermission Permission="Permission.IdentityProviderCreate">
+        <RadzenButton Icon="add" Text="Add Provider"
+                      ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                      Click="OpenCreateDialogAsync" />
+    </RequirePermission>
+</RadzenStack>
+
+<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+    Configure external SSO providers (OIDC, Azure AD, Okta, Google…). Local KrakenDeploy
+    accounts always remain available for bootstrap and break-glass admin access.
+</RadzenText>
+
+<RadzenDataGrid Data="@_providers" TItem="IdentityProvider"
+                AllowPaging="true" PageSize="25"
+                AllowSorting="true"
+                AllowColumnResize="true"
+                EmptyText="No external identity providers configured. Add one to enable SSO.">
+    <Columns>
+        <RadzenDataGridColumn TItem="IdentityProvider" Property="Name" Title="Name" Width="180px" />
+        <RadzenDataGridColumn TItem="IdentityProvider" Property="Type" Title="Type" Width="140px">
+            <Template Context="p">
+                <RadzenBadge Text="@p.Type.ToString()" BadgeStyle="BadgeStyle.Light" />
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="IdentityProvider" Property="Authority" Title="Authority / Issuer" />
+        <RadzenDataGridColumn TItem="IdentityProvider" Property="ClientId" Title="Client ID"
+                              Width="160px" />
+        <RadzenDataGridColumn TItem="IdentityProvider" Title="Status" Width="110px"
+                              Filterable="false" Sortable="false" TextAlign="TextAlign.Center">
+            <Template Context="p">
+                @if (p.IsEnabled)
+                {
+                    <RadzenBadge Text="Enabled" BadgeStyle="BadgeStyle.Success" />
+                }
+                else
+                {
+                    <RadzenBadge Text="Disabled" BadgeStyle="BadgeStyle.Danger" />
+                }
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="IdentityProvider" Title="" Width="88px"
+                              Filterable="false" Sortable="false" TextAlign="TextAlign.Right">
+            <Template Context="p">
+                <RequirePermission Permission="Permission.IdentityProviderEdit">
+                    <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
+                                  Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                                  Click="@(() => OpenEditDialogAsync(p))" title="Edit" />
+                </RequirePermission>
+                <RequirePermission Permission="Permission.IdentityProviderDelete">
+                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                  Size="ButtonSize.ExtraSmall"
+                                  Click="@(() => DeleteAsync(p))" title="Delete" />
+                </RequirePermission>
+            </Template>
+        </RadzenDataGridColumn>
+    </Columns>
+</RadzenDataGrid>
+
+@code {
+    private List<IdentityProvider> _providers = [];
+
+    protected override async Task OnInitializedAsync()
+        => _providers = await IdpSvc.GetAllAsync();
+
+    private async Task OpenCreateDialogAsync()
+    {
+        var result = await Dialog.OpenAsync<IdentityProviderFormDialog>(
+            "Add Identity Provider",
+            new Dictionary<string, object>(),
+            new DialogOptions { Width = "600px" });
+
+        if (result is true)
+        {
+            _providers = await IdpSvc.GetAllAsync();
+            Notify.Notify(NotificationSeverity.Success, "Provider added", duration: 3000);
+        }
+    }
+
+    private async Task OpenEditDialogAsync(IdentityProvider provider)
+    {
+        var result = await Dialog.OpenAsync<IdentityProviderFormDialog>(
+            $"Edit: {provider.Name}",
+            new Dictionary<string, object>
+            {
+                [nameof(IdentityProviderFormDialog.Provider)] = provider,
+            },
+            new DialogOptions { Width = "600px" });
+
+        if (result is true)
+        {
+            _providers = await IdpSvc.GetAllAsync();
+            Notify.Notify(NotificationSeverity.Success, "Provider updated", duration: 3000);
+        }
+    }
+
+    private async Task DeleteAsync(IdentityProvider provider)
+    {
+        var confirmed = await Dialog.Confirm(
+            $"Remove identity provider '{provider.Name}'? Users who sign in via this provider will no longer be able to authenticate.",
+            "Confirm Remove",
+            new ConfirmOptions { OkButtonText = "Remove", CancelButtonText = "Cancel" });
+
+        if (confirmed != true)
+        {
+            return;
+        }
+
+        await IdpSvc.DeleteAsync(provider.Id);
+        _providers = await IdpSvc.GetAllAsync();
+        Notify.Notify(NotificationSeverity.Info, "Removed", provider.Name, 4000);
+    }
+}

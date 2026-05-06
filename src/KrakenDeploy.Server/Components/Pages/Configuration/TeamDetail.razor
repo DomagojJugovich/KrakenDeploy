@@ -1,0 +1,493 @@
+@page "/configuration/teams/{Id:guid}"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.Environments
+@using KrakenDeploy.Server.Core.Domain.Tenants
+@using KrakenDeploy.Server.Data.Identity
+
+@inject TeamService TeamSvc
+@inject UserService UserSvc
+@inject RoleService RoleSvc
+@inject ProjectService ProjectSvc
+@inject EnvironmentService EnvironmentSvc
+@inject TenantService TenantSvc
+@inject ISpaceContext SpaceCtx
+@inject NotificationService Notify
+@inject NavigationManager Nav
+
+<PageTitle>@(_team?.Name ?? "Team") - KrakenDeploy</PageTitle>
+
+@if (_team is null)
+{
+    <RadzenText>Loading…</RadzenText>
+}
+else
+{
+    <RadzenBreadCrumb class="rz-mb-3">
+        <RadzenBreadCrumbItem Path="/configuration/teams" Text="Teams" />
+        <RadzenBreadCrumbItem Text="@_team.Name" />
+    </RadzenBreadCrumb>
+
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                 Gap="1rem" class="rz-mb-4">
+        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">
+            @_team.Name
+        </RadzenText>
+        @if (_team.IsBuiltIn)
+        {
+            <RadzenBadge Text="Built-in" BadgeStyle="BadgeStyle.Info" IsPill="true" />
+        }
+        @if (_team.IsEveryoneTeam)
+        {
+            <RadzenBadge Text="Everyone" BadgeStyle="BadgeStyle.Secondary" IsPill="true" />
+        }
+        @if (_team.SpaceId is null)
+        {
+            <RadzenBadge Text="System-level" BadgeStyle="BadgeStyle.Warning" IsPill="true" />
+        }
+    </RadzenStack>
+
+    @if (!string.IsNullOrWhiteSpace(_team.Description))
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+            @_team.Description
+        </RadzenText>
+    }
+
+    <RadzenTabs>
+
+        @* ── Members tab ────────────────────────────────────────────────── *@
+        <Tabs>
+            <RadzenTabsItem Text="Members" Icon="person">
+                @if (_team.IsEveryoneTeam)
+                {
+                    <RadzenAlert AlertStyle="AlertStyle.Info" class="rz-mt-3">
+                        This is the "Everyone" team — every authenticated user is
+                        implicitly a member. No explicit member rows are needed.
+                    </RadzenAlert>
+                }
+                else
+                {
+                    <RadzenStack Orientation="Orientation.Horizontal"
+                                 AlignItems="AlignItems.Center"
+                                 JustifyContent="JustifyContent.SpaceBetween"
+                                 class="rz-mt-3 rz-mb-2">
+                        <RadzenText TextStyle="TextStyle.Subtitle1">Members</RadzenText>
+                        <RequirePermission Permission="Permission.TeamEdit">
+                            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                                         AlignItems="AlignItems.Center">
+                                <RadzenDropDown TValue="Guid?"
+                                                Data="@_availableUsers"
+                                                TextProperty="Email"
+                                                ValueProperty="Id"
+                                                @bind-Value="_addMemberId"
+                                                Placeholder="Select user to add…"
+                                                Style="width:260px;" />
+                                <RadzenButton Icon="person_add" Text="Add"
+                                              ButtonStyle="ButtonStyle.Primary"
+                                              Size="ButtonSize.Small"
+                                              Disabled="@(_addMemberId is null)"
+                                              Click="AddMemberAsync" />
+                            </RadzenStack>
+                        </RequirePermission>
+                    </RadzenStack>
+
+                    <RadzenDataGrid Data="@_memberUsers" TItem="ApplicationUser"
+                                    AllowPaging="true" PageSize="15"
+                                    EmptyText="No explicit members.">
+                        <Columns>
+                            <RadzenDataGridColumn TItem="ApplicationUser"
+                                                  Property="Email" Title="Email" />
+                            <RadzenDataGridColumn TItem="ApplicationUser"
+                                                  Property="UserName" Title="Username"
+                                                  Width="220px" />
+                            <RadzenDataGridColumn TItem="ApplicationUser" Title="" Width="70px"
+                                                  TextAlign="TextAlign.Right">
+                                <Template Context="u">
+                                    <RequirePermission Permission="Permission.TeamEdit">
+                                        <RadzenButton Icon="person_remove"
+                                                      ButtonStyle="ButtonStyle.Danger"
+                                                      Size="ButtonSize.ExtraSmall"
+                                                      Click="@(() => RemoveMemberAsync(u))"
+                                                      title="Remove from team" />
+                                    </RequirePermission>
+                                </Template>
+                            </RadzenDataGridColumn>
+                        </Columns>
+                    </RadzenDataGrid>
+                }
+            </RadzenTabsItem>
+
+            @* ── External Groups tab ─────────────────────────────────────── *@
+            <RadzenTabsItem Text="External Groups" Icon="group_work">
+                <RadzenStack Orientation="Orientation.Horizontal"
+                             AlignItems="AlignItems.Center"
+                             JustifyContent="JustifyContent.SpaceBetween"
+                             class="rz-mt-3 rz-mb-2">
+                    <RadzenText TextStyle="TextStyle.Subtitle1">External Groups</RadzenText>
+                    <RequirePermission Permission="Permission.TeamEdit">
+                        <RadzenButton Icon="add" Text="Add Group"
+                                      ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                                      Click="ShowAddGroupFormAsync" />
+                    </RequirePermission>
+                </RadzenStack>
+
+                @if (_showAddGroupForm)
+                {
+                    <RadzenCard class="rz-mb-3">
+                        <RadzenStack Gap="0.75rem">
+                            <RadzenFormField Text="Group Claim" style="width:100%">
+                                <RadzenTextBox @bind-Value="_newGroupClaim"
+                                               Placeholder="e.g. developers@example.com or S-1-5-21-…"
+                                               style="width:100%" />
+                            </RadzenFormField>
+                            <RadzenFormField Text="Display Name (optional)" style="width:100%">
+                                <RadzenTextBox @bind-Value="_newGroupDisplayName"
+                                               Placeholder="Developers" style="width:100%" />
+                            </RadzenFormField>
+                            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+                                <RadzenButton Text="Add" ButtonStyle="ButtonStyle.Primary"
+                                              Click="AddExternalGroupAsync" />
+                                <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                                              Click="@(() => _showAddGroupForm = false)" />
+                            </RadzenStack>
+                        </RadzenStack>
+                    </RadzenCard>
+                }
+
+                <RadzenDataGrid Data="@_team.ExternalGroups.ToList()"
+                                TItem="TeamExternalGroup"
+                                AllowPaging="true" PageSize="15"
+                                EmptyText="No external groups mapped.">
+                    <Columns>
+                        <RadzenDataGridColumn TItem="TeamExternalGroup"
+                                              Property="GroupClaim" Title="Group Claim" />
+                        <RadzenDataGridColumn TItem="TeamExternalGroup"
+                                              Property="DisplayName" Title="Display Name"
+                                              Width="180px" />
+                        <RadzenDataGridColumn TItem="TeamExternalGroup" Title="Provider"
+                                              Width="160px">
+                            <Template Context="eg">
+                                @(eg.IdentityProvider?.Name ?? "Any provider")
+                            </Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="TeamExternalGroup" Title="" Width="70px"
+                                              TextAlign="TextAlign.Right">
+                            <Template Context="eg">
+                                <RequirePermission Permission="Permission.TeamEdit">
+                                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                                  Size="ButtonSize.ExtraSmall"
+                                                  Click="@(() => RemoveExternalGroupAsync(eg))"
+                                                  title="Remove" />
+                                </RequirePermission>
+                            </Template>
+                        </RadzenDataGridColumn>
+                    </Columns>
+                </RadzenDataGrid>
+            </RadzenTabsItem>
+
+            @* ── Role Assignments tab ────────────────────────────────────── *@
+            <RadzenTabsItem Text="Role Assignments" Icon="badge">
+                <RadzenStack Orientation="Orientation.Horizontal"
+                             AlignItems="AlignItems.Center"
+                             JustifyContent="JustifyContent.SpaceBetween"
+                             class="rz-mt-3 rz-mb-2">
+                    <RadzenText TextStyle="TextStyle.Subtitle1">Role Assignments</RadzenText>
+                    <RequirePermission Permission="Permission.TeamEdit">
+                        <RadzenButton Icon="add" Text="Add Assignment"
+                                      ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                                      Click="@(() => _showAddAssignmentForm = true)" />
+                    </RequirePermission>
+                </RadzenStack>
+
+                @if (_showAddAssignmentForm)
+                {
+                    <RadzenCard class="rz-mb-3">
+                        <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-3">
+                            New Role Assignment
+                        </RadzenText>
+                        <RadzenStack Gap="0.75rem">
+                            <RadzenFormField Text="Role *" style="width:100%">
+                                <RadzenDropDown TValue="Guid?"
+                                                Data="@_allRoles"
+                                                TextProperty="Name"
+                                                ValueProperty="Id"
+                                                @bind-Value="_assignRoleId"
+                                                Placeholder="Select role…"
+                                                style="width:100%" />
+                            </RadzenFormField>
+
+                            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                                Scope (leave all empty for whole-Space assignment):
+                            </RadzenText>
+
+                            <RadzenFormField Text="Projects" style="width:100%">
+                                <RadzenDropDown TValue="IEnumerable<Guid>"
+                                                Data="@_allProjects"
+                                                TextProperty="Name"
+                                                ValueProperty="Id"
+                                                @bind-Value="@_assignProjectIds"
+                                                Multiple="true"
+                                                AllowClear="true"
+                                                Placeholder="All projects"
+                                                style="width:100%" />
+                            </RadzenFormField>
+
+                            <RadzenFormField Text="Environments" style="width:100%">
+                                <RadzenDropDown TValue="IEnumerable<Guid>"
+                                                Data="@_allEnvironments"
+                                                TextProperty="Name"
+                                                ValueProperty="Id"
+                                                @bind-Value="@_assignEnvironmentIds"
+                                                Multiple="true"
+                                                AllowClear="true"
+                                                Placeholder="All environments"
+                                                style="width:100%" />
+                            </RadzenFormField>
+
+                            <RadzenFormField Text="Tenants" style="width:100%">
+                                <RadzenDropDown TValue="IEnumerable<Guid>"
+                                                Data="@_allTenants"
+                                                TextProperty="Name"
+                                                ValueProperty="Id"
+                                                @bind-Value="@_assignTenantIds"
+                                                Multiple="true"
+                                                AllowClear="true"
+                                                Placeholder="All tenants"
+                                                style="width:100%" />
+                            </RadzenFormField>
+
+                            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+                                <RadzenButton Text="Add" ButtonStyle="ButtonStyle.Primary"
+                                              Disabled="@(_assignRoleId is null)"
+                                              Click="AddRoleAssignmentAsync" />
+                                <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                                              Click="@(() => _showAddAssignmentForm = false)" />
+                            </RadzenStack>
+                        </RadzenStack>
+                    </RadzenCard>
+                }
+
+                <RadzenDataGrid Data="@_team.RoleAssignments.ToList()"
+                                TItem="RoleAssignment"
+                                AllowPaging="true" PageSize="15"
+                                EmptyText="No role assignments — this team has no permissions.">
+                    <Columns>
+                        <RadzenDataGridColumn TItem="RoleAssignment" Title="Role" Width="200px">
+                            <Template Context="a">@a.Role.Name</Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="RoleAssignment" Title="Scope">
+                            <Template Context="a">
+                                @if (a.IsUnscoped)
+                                {
+                                    <RadzenBadge Text="Whole Space" BadgeStyle="BadgeStyle.Success" />
+                                }
+                                else
+                                {
+                                    <RadzenStack Orientation="Orientation.Horizontal"
+                                                 Gap="0.25rem" Style="flex-wrap:wrap">
+                                        @foreach (var id in a.ProjectIds)
+                                        {
+                                            <RadzenBadge Text="@($"Project:{id.ToString()[..8]}…")"
+                                                         BadgeStyle="BadgeStyle.Info" IsPill="true" />
+                                        }
+                                        @foreach (var id in a.EnvironmentIds)
+                                        {
+                                            <RadzenBadge Text="@($"Env:{id.ToString()[..8]}…")"
+                                                         BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                                        }
+                                        @foreach (var id in a.TenantIds)
+                                        {
+                                            <RadzenBadge Text="@($"Tenant:{id.ToString()[..8]}…")"
+                                                         BadgeStyle="BadgeStyle.Warning" IsPill="true" />
+                                        }
+                                    </RadzenStack>
+                                }
+                            </Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="RoleAssignment" Title="" Width="70px"
+                                              TextAlign="TextAlign.Right">
+                            <Template Context="a">
+                                <RequirePermission Permission="Permission.TeamEdit">
+                                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                                  Size="ButtonSize.ExtraSmall"
+                                                  Click="@(() => RemoveRoleAssignmentAsync(a))"
+                                                  title="Remove assignment" />
+                                </RequirePermission>
+                            </Template>
+                        </RadzenDataGridColumn>
+                    </Columns>
+                </RadzenDataGrid>
+            </RadzenTabsItem>
+        </Tabs>
+    </RadzenTabs>
+}
+
+<RadzenNotification />
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private Team? _team;
+    private List<ApplicationUser> _allUsers        = [];
+    private List<ApplicationUser> _memberUsers     = [];
+    private List<ApplicationUser> _availableUsers  = [];
+    private List<Role> _allRoles                   = [];
+    private List<Project> _allProjects             = [];
+    private List<DeploymentEnvironment> _allEnvironments = [];
+    private List<Tenant> _allTenants               = [];
+
+    // Add-member state
+    private Guid? _addMemberId;
+
+    // Add-external-group state
+    private bool   _showAddGroupForm;
+    private string _newGroupClaim        = "";
+    private string _newGroupDisplayName  = "";
+
+    // Add-role-assignment state
+    private bool         _showAddAssignmentForm;
+    private Guid?        _assignRoleId;
+    private IEnumerable<Guid> _assignProjectIds     = [];
+    private IEnumerable<Guid> _assignEnvironmentIds = [];
+    private IEnumerable<Guid> _assignTenantIds      = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadTeamAsync();
+        await Task.WhenAll(
+            LoadReferenceDataAsync(),
+            LoadRolesAsync());
+    }
+
+    private async Task LoadTeamAsync()
+    {
+        _team = await TeamSvc.GetAsync(Id);
+        if (_team is null)
+        {
+            Nav.NavigateTo("/configuration/teams");
+            return;
+        }
+
+        RefreshMemberLists();
+    }
+
+    private async Task LoadReferenceDataAsync()
+    {
+        var users = await UserSvc.GetAllAsync();
+        _allUsers = users;
+        RefreshMemberLists();
+
+        _allProjects     = await ProjectSvc.GetAllAsync();
+        _allEnvironments = await EnvironmentSvc.GetAllOrderedAsync();
+        _allTenants      = await TenantSvc.GetAllAsync();
+    }
+
+    private async Task LoadRolesAsync()
+        => _allRoles = await RoleSvc.GetAllAsync();
+
+    private void RefreshMemberLists()
+    {
+        if (_team is null)
+        {
+            return;
+        }
+
+        var memberIds = _team.Members.Select(m => m.UserId).ToHashSet();
+        _memberUsers    = _allUsers.Where(u => memberIds.Contains(u.Id)).ToList();
+        _availableUsers = _allUsers.Where(u => !memberIds.Contains(u.Id)).ToList();
+    }
+
+    // ── Member actions ────────────────────────────────────────────────────────
+
+    private async Task AddMemberAsync()
+    {
+        if (_addMemberId is null || _team is null)
+        {
+            return;
+        }
+
+        await TeamSvc.AddMemberAsync(_team.Id, _addMemberId.Value);
+        _addMemberId = null;
+        await LoadTeamAsync();
+        Notify.Notify(NotificationSeverity.Success, "Member added", duration: 3000);
+    }
+
+    private async Task RemoveMemberAsync(ApplicationUser user)
+    {
+        if (_team is null)
+        {
+            return;
+        }
+
+        await TeamSvc.RemoveMemberAsync(_team.Id, user.Id);
+        await LoadTeamAsync();
+        Notify.Notify(NotificationSeverity.Info, "Removed", user.Email, 3000);
+    }
+
+    // ── External group actions ────────────────────────────────────────────────
+
+    private void ShowAddGroupFormAsync()
+    {
+        _newGroupClaim       = "";
+        _newGroupDisplayName = "";
+        _showAddGroupForm    = true;
+    }
+
+    private async Task AddExternalGroupAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_newGroupClaim) || _team is null)
+        {
+            return;
+        }
+
+        await TeamSvc.AddExternalGroupAsync(
+            _team.Id, _newGroupClaim, _newGroupDisplayName, identityProviderId: null);
+        _showAddGroupForm = false;
+        await LoadTeamAsync();
+        Notify.Notify(NotificationSeverity.Success, "Group mapped", duration: 3000);
+    }
+
+    private async Task RemoveExternalGroupAsync(TeamExternalGroup eg)
+    {
+        await TeamSvc.RemoveExternalGroupAsync(eg.Id);
+        await LoadTeamAsync();
+        Notify.Notify(NotificationSeverity.Info, "Group removed", duration: 3000);
+    }
+
+    // ── Role assignment actions ───────────────────────────────────────────────
+
+    private async Task AddRoleAssignmentAsync()
+    {
+        if (_assignRoleId is null || _team is null)
+        {
+            return;
+        }
+
+        await TeamSvc.AddRoleAssignmentAsync(
+            teamId: _team.Id,
+            roleId: _assignRoleId.Value,
+            spaceId: _team.SpaceId ?? SpaceCtx.CurrentSpaceId,
+            projectGroupIds: null,
+            projectIds: _assignProjectIds.ToList(),
+            environmentIds: _assignEnvironmentIds.ToList(),
+            tenantIds: _assignTenantIds.ToList(),
+            tenantTagIds: null);
+
+        _showAddAssignmentForm = false;
+        _assignRoleId          = null;
+        _assignProjectIds      = [];
+        _assignEnvironmentIds  = [];
+        _assignTenantIds       = [];
+
+        await LoadTeamAsync();
+        Notify.Notify(NotificationSeverity.Success, "Role assignment added", duration: 3000);
+    }
+
+    private async Task RemoveRoleAssignmentAsync(RoleAssignment assignment)
+    {
+        await TeamSvc.RemoveRoleAssignmentAsync(assignment.Id);
+        await LoadTeamAsync();
+        Notify.Notify(NotificationSeverity.Info, "Assignment removed", duration: 3000);
+    }
+}

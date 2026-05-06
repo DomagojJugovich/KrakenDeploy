@@ -1,0 +1,167 @@
+@inject IdentityProviderService IdpSvc
+@inject DialogService Dialog
+
+<RadzenStack Gap="1rem">
+    <RadzenRow Gap="1rem">
+        <RadzenColumn Size="8">
+            <RadzenFormField Text="Name *" style="width:100%">
+                <RadzenTextBox @bind-Value="_name" Placeholder="Azure AD" style="width:100%" />
+            </RadzenFormField>
+        </RadzenColumn>
+        <RadzenColumn Size="4">
+            <RadzenFormField Text="Type" style="width:100%">
+                <RadzenDropDown TValue="IdentityProviderType"
+                                Data="@_types"
+                                TextProperty="Text"
+                                ValueProperty="Value"
+                                @bind-Value="_type"
+                                style="width:100%" />
+            </RadzenFormField>
+        </RadzenColumn>
+    </RadzenRow>
+
+    <RadzenFormField Text="Issuer / Authority URL *" style="width:100%">
+        <RadzenTextBox @bind-Value="_authority"
+                       Placeholder="https://login.microsoftonline.com/{tenant-id}/v2.0"
+                       style="width:100%" />
+    </RadzenFormField>
+
+    <RadzenRow Gap="1rem">
+        <RadzenColumn Size="6">
+            <RadzenFormField Text="Client ID *" style="width:100%">
+                <RadzenTextBox @bind-Value="_clientId" style="width:100%" />
+            </RadzenFormField>
+        </RadzenColumn>
+        <RadzenColumn Size="6">
+            <RadzenFormField Text="@(Provider is null ? "Client Secret" : "Client Secret (blank = keep)")"
+                             style="width:100%">
+                <RadzenPassword @bind-Value="_clientSecret" Placeholder="••••••••"
+                                style="width:100%" />
+            </RadzenFormField>
+        </RadzenColumn>
+    </RadzenRow>
+
+    <RadzenRow Gap="1rem">
+        <RadzenColumn Size="8">
+            <RadzenFormField Text="Scopes" style="width:100%">
+                <RadzenTextBox @bind-Value="_scopes" style="width:100%" />
+            </RadzenFormField>
+        </RadzenColumn>
+        <RadzenColumn Size="4">
+            <RadzenFormField Text="Group Claim" style="width:100%">
+                <RadzenTextBox @bind-Value="_groupClaim" style="width:100%" />
+            </RadzenFormField>
+        </RadzenColumn>
+    </RadzenRow>
+
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="1.5rem" AlignItems="AlignItems.Center">
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                     AlignItems="AlignItems.Center">
+            <RadzenCheckBox @bind-Value="_autoProvision" />
+            <RadzenLabel Text="Auto-provision users on first sign-in" />
+        </RadzenStack>
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                     AlignItems="AlignItems.Center">
+            <RadzenCheckBox @bind-Value="_isEnabled" />
+            <RadzenLabel Text="Enabled" />
+        </RadzenStack>
+    </RadzenStack>
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="false">@_error</RadzenAlert>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                 JustifyContent="JustifyContent.End">
+        <RadzenButton Text="@(Provider is null ? "Add" : "Save")"
+                      ButtonStyle="ButtonStyle.Primary"
+                      IsBusy="_busy" Click="SaveAsync" />
+        <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => Dialog.Close(false))" />
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    [Parameter] public IdentityProvider? Provider { get; set; }
+
+    private string               _name          = "";
+    private IdentityProviderType _type          = IdentityProviderType.GenericOidc;
+    private string?              _authority;
+    private string?              _clientId;
+    private string?              _clientSecret;
+    private string               _scopes        = "openid profile email";
+    private string               _groupClaim    = "groups";
+    private bool                 _autoProvision = true;
+    private bool                 _isEnabled     = true;
+    private string               _error         = "";
+    private bool                 _busy;
+
+    private static readonly IReadOnlyList<object> _types =
+        Enum.GetValues<IdentityProviderType>()
+            .Select(t => new { Text = t.ToString(), Value = t })
+            .ToList<object>();
+
+    protected override void OnParametersSet()
+    {
+        if (Provider is not null)
+        {
+            _name          = Provider.Name;
+            _type          = Provider.Type;
+            _authority     = Provider.Authority;
+            _clientId      = Provider.ClientId;
+            _scopes        = Provider.Scopes;
+            _groupClaim    = Provider.GroupClaimName;
+            _autoProvision = Provider.AutoProvisionUsers;
+            _isEnabled     = Provider.IsEnabled;
+            // Never pre-fill the secret — it's encrypted at rest
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            _error = "Name is required.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_authority))
+        {
+            _error = "Authority / Issuer URL is required.";
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_clientId))
+        {
+            _error = "Client ID is required.";
+            return;
+        }
+
+        _busy  = true;
+        _error = "";
+
+        try
+        {
+            if (Provider is null)
+            {
+                await IdpSvc.CreateAsync(
+                    _name, _type, _authority, _clientId, _clientSecret,
+                    _scopes, _groupClaim, _autoProvision, _isEnabled);
+            }
+            else
+            {
+                await IdpSvc.UpdateAsync(
+                    Provider.Id, _name, _type, _authority, _clientId, _clientSecret,
+                    _scopes, _groupClaim, _autoProvision, _isEnabled);
+            }
+            Dialog.Close(true);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

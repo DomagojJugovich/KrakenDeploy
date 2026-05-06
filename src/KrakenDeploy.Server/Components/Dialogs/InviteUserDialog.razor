@@ -1,0 +1,76 @@
+@inject UserService UserSvc
+@inject DialogService Dialog
+
+<RadzenStack Gap="1rem">
+    <RadzenFormField Text="Email address *" style="width:100%">
+        <RadzenTextBox @bind-Value="_email" Placeholder="user@example.com"
+                       style="width:100%" />
+    </RadzenFormField>
+
+    @if (!string.IsNullOrEmpty(_errorMessage))
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="false">
+            @_errorMessage
+        </RadzenAlert>
+    }
+
+    @if (_tempPassword is not null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Success" ShowIcon="false">
+            <p>User created. Share this temporary password with them:</p>
+            <code style="font-size:1.1em; font-weight:600;">@_tempPassword</code>
+            <p style="margin-top:0.5rem; font-size:0.85em;">
+                The user should change it after first login.
+            </p>
+        </RadzenAlert>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                 JustifyContent="JustifyContent.End">
+        @if (_tempPassword is null)
+        {
+            <RadzenButton Text="Invite" ButtonStyle="ButtonStyle.Primary"
+                          IsBusy="_busy" Click="InviteAsync" />
+            <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                          Click="@(() => Dialog.Close(false))" />
+        }
+        else
+        {
+            <RadzenButton Text="Done" ButtonStyle="ButtonStyle.Primary"
+                          Click="@(() => Dialog.Close(true))" />
+        }
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    private string  _email        = "";
+    private string? _tempPassword;
+    private string  _errorMessage = "";
+    private bool    _busy;
+
+    private async Task InviteAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_email))
+        {
+            _errorMessage = "Email is required.";
+            return;
+        }
+
+        _busy         = true;
+        _errorMessage = "";
+
+        try
+        {
+            var (_, temp) = await UserSvc.InviteAsync(_email.Trim());
+            _tempPassword = temp;
+        }
+        catch (InvalidOperationException ex)
+        {
+            _errorMessage = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

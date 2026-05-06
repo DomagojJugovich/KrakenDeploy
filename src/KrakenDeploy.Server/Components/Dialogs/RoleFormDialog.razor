@@ -1,0 +1,143 @@
+@inject RoleService RoleSvc
+@inject DialogService Dialog
+
+<RadzenStack Gap="1rem" Style="height:100%; overflow:hidden; display:flex; flex-direction:column;">
+    <RadzenFormField Text="Name *" style="width:100%">
+        <RadzenTextBox @bind-Value="_name" Placeholder="My Custom Role" style="width:100%"
+                       Disabled="@ReadOnly" />
+    </RadzenFormField>
+    <RadzenFormField Text="Description (optional)" style="width:100%">
+        <RadzenTextBox @bind-Value="_description" style="width:100%"
+                       Disabled="@ReadOnly" />
+    </RadzenFormField>
+
+    <RadzenText TextStyle="TextStyle.Subtitle2">Permissions</RadzenText>
+
+    <div style="overflow-y:auto; flex:1; border:1px solid var(--rz-base-300); border-radius:4px; padding:0.5rem;">
+        @foreach (var group in _permissionGroups)
+        {
+            <RadzenFieldset Text="@group.Domain" class="rz-mb-2" style="padding:0.5rem">
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                             Style="flex-wrap:wrap">
+                    @foreach (var perm in group.Permissions)
+                    {
+                        <RadzenStack Orientation="Orientation.Horizontal"
+                                     AlignItems="AlignItems.Center" Gap="0.25rem"
+                                     Style="min-width:220px">
+                            <RadzenCheckBox TValue="bool"
+                                            Value="@_selected.Contains(perm)"
+                                            ValueChanged="@(v => TogglePermission(perm, v))"
+                                            Disabled="@ReadOnly" />
+                            <RadzenLabel Text="@perm.ToString()" Style="font-size:0.8em" />
+                        </RadzenStack>
+                    }
+                </RadzenStack>
+            </RadzenFieldset>
+        }
+    </div>
+
+    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+        @_selected.Count permission(s) selected
+    </RadzenText>
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="false">@_error</RadzenAlert>
+    }
+
+    @if (!ReadOnly)
+    {
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                     JustifyContent="JustifyContent.End">
+            <RadzenButton Text="@(Role is null ? "Create" : "Save")"
+                          ButtonStyle="ButtonStyle.Primary"
+                          IsBusy="_busy" Click="SaveAsync" />
+            <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                          Click="@(() => Dialog.Close(false))" />
+        </RadzenStack>
+    }
+    else
+    {
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                     JustifyContent="JustifyContent.End">
+            <RadzenButton Text="Close" ButtonStyle="ButtonStyle.Light"
+                          Click="@(() => Dialog.Close(false))" />
+        </RadzenStack>
+    }
+</RadzenStack>
+
+@code {
+    /// <summary>Existing role for edit/view mode; null for create.</summary>
+    [Parameter] public Role? Role { get; set; }
+
+    /// <summary>When true, all inputs are disabled and only a Close button is shown.</summary>
+    [Parameter] public bool ReadOnly { get; set; }
+
+    private string  _name        = "";
+    private string? _description;
+    private string  _error       = "";
+    private bool    _busy;
+
+    private readonly HashSet<Permission> _selected = [];
+
+    protected override void OnParametersSet()
+    {
+        if (Role is not null)
+        {
+            _name        = Role.Name;
+            _description = Role.Description;
+            _selected.Clear();
+            foreach (var p in Role.GrantedPermissions)
+            {
+                _selected.Add(p);
+            }
+        }
+    }
+
+    private void TogglePermission(Permission perm, bool value)
+    {
+        if (value)
+        {
+            _selected.Add(perm);
+        }
+        else
+        {
+            _selected.Remove(perm);
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            _error = "Name is required.";
+            return;
+        }
+
+        _busy  = true;
+        _error = "";
+
+        try
+        {
+            var perms = _selected.ToList();
+            if (Role is null)
+            {
+                await RoleSvc.CreateAsync(_name, _description, perms);
+            }
+            else
+            {
+                await RoleSvc.UpdateAsync(Role.Id, _name, _description, perms);
+            }
+            Dialog.Close(true);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+}

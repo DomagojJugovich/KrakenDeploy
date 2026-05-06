@@ -1,0 +1,94 @@
+@page "/configuration/users"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using KrakenDeploy.Server.Data.Identity
+
+@inject UserService UserSvc
+@inject DialogService Dialog
+@inject NotificationService Notify
+
+<PageTitle>Users - KrakenDeploy</PageTitle>
+
+<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+             Gap="1rem" class="rz-mb-4">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">Users</RadzenText>
+    <RequirePermission Permission="Permission.UserInvite">
+        <RadzenButton Icon="person_add" Text="Invite User"
+                      ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                      Click="InviteAsync" />
+    </RequirePermission>
+</RadzenStack>
+
+<RadzenDataGrid Data="@_users" TItem="ApplicationUser"
+                AllowPaging="true" PageSize="25"
+                AllowSorting="true"
+                AllowFiltering="true" FilterMode="FilterMode.Simple"
+                AllowColumnResize="true"
+                EmptyText="No users yet. Use 'Invite User' to add the first one.">
+    <Columns>
+        <RadzenDataGridColumn TItem="ApplicationUser" Property="Email" Title="Email" />
+        <RadzenDataGridColumn TItem="ApplicationUser" Property="UserName" Title="Username"
+                              Width="220px" />
+        <RadzenDataGridColumn TItem="ApplicationUser" Title="Email" Width="130px"
+                              Filterable="false" Sortable="false">
+            <Template Context="u">
+                @if (u.EmailConfirmed)
+                {
+                    <RadzenBadge Text="Confirmed" BadgeStyle="BadgeStyle.Success" />
+                }
+                else
+                {
+                    <RadzenBadge Text="Pending" BadgeStyle="BadgeStyle.Warning" />
+                }
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="ApplicationUser" Title="" Width="70px"
+                              Filterable="false" Sortable="false"
+                              TextAlign="TextAlign.Right">
+            <Template Context="u">
+                <RequirePermission Permission="Permission.UserEdit">
+                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                  Size="ButtonSize.ExtraSmall"
+                                  Click="@(() => DeleteAsync(u))" title="Delete user" />
+                </RequirePermission>
+            </Template>
+        </RadzenDataGridColumn>
+    </Columns>
+</RadzenDataGrid>
+
+@code {
+    private List<ApplicationUser> _users = [];
+
+    protected override async Task OnInitializedAsync()
+        => _users = await UserSvc.GetAllAsync();
+
+    private async Task InviteAsync()
+    {
+        var result = await Dialog.OpenAsync<InviteUserDialog>(
+            "Invite User",
+            new Dictionary<string, object>(),
+            new DialogOptions { Width = "460px" });
+
+        if (result is true)
+        {
+            _users = await UserSvc.GetAllAsync();
+        }
+    }
+
+    private async Task DeleteAsync(ApplicationUser user)
+    {
+        var confirmed = await Dialog.Confirm(
+            $"Delete user '{user.Email}'? This removes them from all teams and cannot be undone.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+
+        if (confirmed != true)
+        {
+            return;
+        }
+
+        await UserSvc.DeleteAsync(user.Id);
+        _users = await UserSvc.GetAllAsync();
+        Notify.Notify(NotificationSeverity.Success, "Deleted", user.Email, 4000);
+    }
+}

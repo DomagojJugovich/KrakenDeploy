@@ -1,0 +1,130 @@
+@page "/configuration/teams"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@inject TeamService TeamSvc
+@inject ISpaceContext SpaceCtx
+@inject DialogService Dialog
+@inject NavigationManager Nav
+@inject NotificationService Notify
+
+<PageTitle>Teams - KrakenDeploy</PageTitle>
+
+<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+             Gap="1rem" class="rz-mb-4">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">Teams</RadzenText>
+    <RequirePermission Permission="Permission.TeamCreate">
+        <RadzenButton Icon="add" Text="New Team"
+                      ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                      Click="OpenCreateDialogAsync" />
+    </RequirePermission>
+</RadzenStack>
+
+<RadzenDataGrid Data="@_teams" TItem="Team"
+                AllowPaging="true" PageSize="25"
+                AllowSorting="true"
+                AllowFiltering="true" FilterMode="FilterMode.Simple"
+                AllowColumnResize="true"
+                EmptyText="No teams defined yet.">
+    <Columns>
+        <RadzenDataGridColumn TItem="Team" Property="Name" Title="Name" Width="220px">
+            <Template Context="t">
+                <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                             Gap="0.5rem">
+                    <a href="/configuration/teams/@t.Id">@t.Name</a>
+                    @if (t.IsBuiltIn)
+                    {
+                        <RadzenBadge Text="Built-in" BadgeStyle="BadgeStyle.Info" IsPill="true" />
+                    }
+                    @if (t.IsEveryoneTeam)
+                    {
+                        <RadzenBadge Text="Everyone" BadgeStyle="BadgeStyle.Secondary"
+                                     IsPill="true" />
+                    }
+                    @if (t.SpaceId is null)
+                    {
+                        <RadzenBadge Text="System" BadgeStyle="BadgeStyle.Warning" IsPill="true" />
+                    }
+                </RadzenStack>
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="Team" Property="Description" Title="Description" />
+        <RadzenDataGridColumn TItem="Team" Title="Members" Width="100px"
+                              Filterable="false" Sortable="false" TextAlign="TextAlign.Center">
+            <Template Context="t">
+                @if (t.IsEveryoneTeam)
+                {
+                    <RadzenBadge Text="All" BadgeStyle="BadgeStyle.Secondary" />
+                }
+                else
+                {
+                    <RadzenBadge Text="@t.Members.Count.ToString()" BadgeStyle="BadgeStyle.Light" />
+                }
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="Team" Title="Roles" Width="80px"
+                              Filterable="false" Sortable="false" TextAlign="TextAlign.Center">
+            <Template Context="t">
+                <RadzenBadge Text="@t.RoleAssignments.Count.ToString()" BadgeStyle="BadgeStyle.Light" />
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="Team" Title="" Width="100px"
+                              Filterable="false" Sortable="false" TextAlign="TextAlign.Right">
+            <Template Context="t">
+                <RadzenButton Icon="settings" ButtonStyle="ButtonStyle.Light"
+                              Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                              Click="@(() => Nav.NavigateTo($"/configuration/teams/{t.Id}"))"
+                              title="Manage members and role assignments" />
+                @if (!t.IsBuiltIn)
+                {
+                    <RequirePermission Permission="Permission.TeamDelete">
+                        <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                      Size="ButtonSize.ExtraSmall"
+                                      Click="@(() => DeleteAsync(t))" title="Delete" />
+                    </RequirePermission>
+                }
+            </Template>
+        </RadzenDataGridColumn>
+    </Columns>
+</RadzenDataGrid>
+
+@code {
+    private List<Team> _teams = [];
+
+    protected override async Task OnInitializedAsync()
+        => _teams = await TeamSvc.GetAllAsync(SpaceCtx.CurrentSpaceId);
+
+    private async Task OpenCreateDialogAsync()
+    {
+        var result = await Dialog.OpenAsync<TeamFormDialog>(
+            "New Team",
+            new Dictionary<string, object>
+            {
+                [nameof(TeamFormDialog.SpaceId)] = (Guid?)SpaceCtx.CurrentSpaceId,
+            },
+            new DialogOptions { Width = "480px" });
+
+        if (result is true)
+        {
+            _teams = await TeamSvc.GetAllAsync(SpaceCtx.CurrentSpaceId);
+            Notify.Notify(NotificationSeverity.Success, "Team created", duration: 3000);
+        }
+    }
+
+    private async Task DeleteAsync(Team team)
+    {
+        var confirmed = await Dialog.Confirm(
+            $"Delete team '{team.Name}'? All role assignments on this team will be removed.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+
+        if (confirmed != true)
+        {
+            return;
+        }
+
+        await TeamSvc.DeleteAsync(team.Id);
+        _teams = await TeamSvc.GetAllAsync(SpaceCtx.CurrentSpaceId);
+        Notify.Notify(NotificationSeverity.Info, "Deleted", team.Name, 4000);
+    }
+}
