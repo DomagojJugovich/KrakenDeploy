@@ -161,11 +161,39 @@ public sealed class PermissionEvaluator(KrakenDbContext db) : IPermissionEvaluat
             teamIds.Add(t);
         }
 
-        // c. External-group matches via TeamExternalGroup. Resolved at sign-in
-        //    time and cached on the principal as additional team-id claims —
-        //    we read those claims rather than re-querying the IdP. (To be
-        //    wired up alongside the OIDC integration in M10/F; for now the
-        //    explicit + Everyone path covers the common case.)
+        // c. External-group matches via TeamExternalGroup.
+        //    Group memberships are persisted on ApplicationUser.ExternalGroups
+        //    at OIDC sign-in time so they survive Identity security-stamp
+        //    refreshes.  We query the DB here rather than relying on cookie
+        //    claims so the mapping stays current even if a team's external-
+        //    group list changes between sign-ins.
+        var appUser = await db.Users
+            .AsNoTracking()
+            .Where(u => u.Id == userId)
+            .Select(u => new { u.LastOidcProviderId, u.ExternalGroups })
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false);
+
+        if (!string.IsNullOrWhiteSpace(appUser?.ExternalGroups))
+        {
+            var groups = appUser.ExternalGroups.Split('|',
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+            var externalTeams = await db.TeamExternalGroups
+                .AsNoTracking()
+                .Where(eg => groups.Contains(eg.GroupClaim)
+                          && (eg.IdentityProviderId == null
+                              || eg.IdentityProviderId == appUser.LastOidcProviderId))
+                .Select(eg => eg.TeamId)
+                .Distinct()
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+
+            foreach (var t in externalTeams)
+            {
+                teamIds.Add(t);
+            }
+        }
 
         return teamIds;
     }

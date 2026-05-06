@@ -1,10 +1,14 @@
 @page "/login"
 @layout EmptyLayout
 @using System.ComponentModel.DataAnnotations
+@using KrakenDeploy.Server.Auth
 @using KrakenDeploy.Server.Data.Identity
+@using KrakenDeploy.Server.Data.Services
+@using KrakenDeploy.Server.Core.Domain.Security
 @using Microsoft.AspNetCore.Identity
 @inject SignInManager<ApplicationUser> SignInManager
 @inject UserManager<ApplicationUser> UserManager
+@inject IdentityProviderService IdpSvc
 @inject NavigationManager Navigation
 @inject ILogger<Login> Logger
 @attribute [AllowAnonymous]
@@ -19,43 +23,78 @@
                 <span class="rz-text-secondary">Sign in to continue</span>
             </div>
 
-            <EditForm Model="Input" method="post" OnValidSubmit="LoginAsync" FormName="login">
-                <DataAnnotationsValidator />
-                <RadzenStack Gap="1rem">
-                    <div>
-                        <label for="login-email" class="rz-text-subtitle2">Email</label>
-                        <InputText id="login-email"
-                                   @bind-Value="Input.Email"
-                                   class="rz-textbox"
-                                   autocomplete="username"
-                                   style="width: 100%" />
-                        <ValidationMessage For="() => Input.Email" class="kraken-validation-error" />
-                    </div>
-
-                    <div>
-                        <label for="login-password" class="rz-text-subtitle2">Password</label>
-                        <InputText id="login-password"
-                                   type="password"
-                                   @bind-Value="Input.Password"
-                                   class="rz-textbox"
-                                   autocomplete="current-password"
-                                   style="width: 100%" />
-                        <ValidationMessage For="() => Input.Password" class="kraken-validation-error" />
-                    </div>
-
-                    @if (!string.IsNullOrEmpty(_errorMessage))
+            @* ── External / OIDC providers ────────────────────────────── *@
+            @if (_oidcProviders.Count > 0)
+            {
+                <RadzenStack Gap="0.5rem">
+                    @foreach (var idp in _oidcProviders)
                     {
-                        <div class="kraken-login-error rz-text-body2">@_errorMessage</div>
+                        var challengeUrl = $"/login/external?provider={OidcRegistrar.SchemeName(idp.Id)}&returnUrl={Uri.EscapeDataString(ReturnUrl ?? "/")}";
+                        <a href="@challengeUrl" style="text-decoration:none;">
+                            <RadzenButton Text="@($"Sign in with {idp.Name}")"
+                                          ButtonStyle="ButtonStyle.Secondary"
+                                          Variant="Variant.Outlined"
+                                          Size="ButtonSize.Large"
+                                          Style="width:100%" />
+                        </a>
                     }
-
-                    <RadzenButton ButtonType="ButtonType.Submit"
-                                  ButtonStyle="ButtonStyle.Primary"
-                                  Variant="Variant.Filled"
-                                  Size="ButtonSize.Large"
-                                  Text="Sign in"
-                                  Style="width: 100%" />
                 </RadzenStack>
-            </EditForm>
+
+                @if (_showLocalForm)
+                {
+                    <hr style="border-top:1px solid var(--rz-base-300); margin:0;" />
+                }
+            }
+
+            @* ── Local password form ──────────────────────────────────── *@
+            @if (_showLocalForm)
+            {
+                <EditForm Model="Input" method="post" OnValidSubmit="LoginAsync" FormName="login">
+                    <DataAnnotationsValidator />
+                    <RadzenStack Gap="1rem">
+                        <div>
+                            <label for="login-email" class="rz-text-subtitle2">Email</label>
+                            <InputText id="login-email"
+                                       @bind-Value="Input.Email"
+                                       class="rz-textbox"
+                                       autocomplete="username"
+                                       style="width: 100%" />
+                            <ValidationMessage For="() => Input.Email" class="kraken-validation-error" />
+                        </div>
+
+                        <div>
+                            <label for="login-password" class="rz-text-subtitle2">Password</label>
+                            <InputText id="login-password"
+                                       type="password"
+                                       @bind-Value="Input.Password"
+                                       class="rz-textbox"
+                                       autocomplete="current-password"
+                                       style="width: 100%" />
+                            <ValidationMessage For="() => Input.Password" class="kraken-validation-error" />
+                        </div>
+
+                        @if (!string.IsNullOrEmpty(_errorMessage))
+                        {
+                            <div class="kraken-login-error rz-text-body2">@_errorMessage</div>
+                        }
+
+                        <RadzenButton ButtonType="ButtonType.Submit"
+                                      ButtonStyle="ButtonStyle.Primary"
+                                      Variant="Variant.Filled"
+                                      Size="ButtonSize.Large"
+                                      Text="Sign in"
+                                      Style="width: 100%" />
+                    </RadzenStack>
+                </EditForm>
+            }
+
+            @* Remote failure / provisioning error banner *@
+            @if (Error is { Length: > 0 })
+            {
+                <div class="kraken-login-error rz-text-body2">
+                    @ErrorMessages.GetValueOrDefault(Error, "An error occurred during sign-in.")
+                </div>
+            }
         </RadzenStack>
     </RadzenCard>
 </div>
@@ -67,7 +106,35 @@
     [SupplyParameterFromQuery]
     private string? ReturnUrl { get; set; }
 
+    /// <summary>Error code from an OIDC callback failure (e.g. "no_email").</summary>
+    [SupplyParameterFromQuery]
+    private string? Error { get; set; }
+
     private string? _errorMessage;
+    private List<IdentityProvider> _oidcProviders = [];
+
+    // Show the local form when there are no external providers, or always
+    // (admins need a break-glass local login regardless).
+    private bool _showLocalForm = true;
+
+    private static readonly IReadOnlyDictionary<string, string> ErrorMessages =
+        new Dictionary<string, string>
+        {
+            ["no_email"]         = "The identity provider did not return an email address.",
+            ["not_provisioned"]  = "Your account has not been provisioned. Contact an administrator.",
+            ["provision_failed"] = "Account creation failed. Contact an administrator.",
+            ["remote_failure"]   = "The identity provider returned an error. Please try again.",
+            ["unknown_provider"] = "Unknown identity provider.",
+        };
+
+    protected override async Task OnInitializedAsync()
+    {
+        _oidcProviders = (await IdpSvc.GetAllAsync())
+            .Where(p => p.IsEnabled)
+            .OrderBy(p => p.SortOrder)
+            .ThenBy(p => p.Name)
+            .ToList();
+    }
 
     private async Task LoginAsync()
     {

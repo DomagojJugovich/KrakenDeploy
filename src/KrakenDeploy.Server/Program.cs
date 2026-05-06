@@ -142,6 +142,16 @@ public static class Program
                 options.SlidingExpiration = true;
             });
 
+        // The external-scheme cookie is needed by the OIDC sign-in flow
+        // (used as an interim store between the IdP callback and our
+        // OnTicketReceived handler that converts it to an application cookie).
+        builder.Services.AddAuthentication()
+            .AddCookie(IdentityConstants.ExternalScheme);
+
+        // Register one OIDC scheme per enabled IdentityProvider in the DB.
+        // Silently no-ops if DB isn't ready yet (first-run before migration).
+        OidcRegistrar.RegisterSchemes(builder);
+
         // Agent JWT bearer — separate scheme so it doesn't conflict with the
         // cookie auth used by the Blazor UI.
         var agentJwtKey = builder.Configuration["Agent:JwtSigningKey"];
@@ -328,6 +338,30 @@ public static class Program
             await signInManager.SignOutAsync().ConfigureAwait(false);
             return Results.Redirect("/login");
         }).RequireAuthorization(); // any authenticated user can sign out
+
+        // OIDC challenge entry point — the login page links here with
+        // ?provider=oidc_{guid}&returnUrl={url}.  We validate the scheme exists
+        // before issuing the challenge to block open-redirect abuse.
+        app.MapGet("/login/external", async (
+            string provider,
+            string? returnUrl,
+            HttpContext http,
+            IAuthenticationSchemeProvider schemeProvider) =>
+        {
+            var scheme = await schemeProvider.GetSchemeAsync(provider);
+            if (scheme is null || !provider.StartsWith("oidc_", StringComparison.Ordinal))
+            {
+                return Results.Redirect("/login?error=unknown_provider");
+            }
+
+            var safeReturn = !string.IsNullOrEmpty(returnUrl)
+                && Uri.IsWellFormedUriString(returnUrl, UriKind.Relative)
+                ? returnUrl : "/";
+
+            var props = new AuthenticationProperties { RedirectUri = safeReturn };
+            await http.ChallengeAsync(provider, props).ConfigureAwait(false);
+            return Results.Empty;
+        }).AllowAnonymous();
 
         app.MapHub<AgentHub>("/hubs/agent");
         app.MapHub<UiHub>("/hubs/ui");

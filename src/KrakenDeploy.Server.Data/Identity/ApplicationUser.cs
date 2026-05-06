@@ -13,4 +13,17 @@ public class ApplicationUser : IdentityUser<Guid>
     {
         Id = Guid.CreateVersion7();
     }
+
+    /// <summary>
+    /// The <see cref="KrakenDeploy.Server.Core.Domain.Security.IdentityProvider"/> used
+    /// for the most recent OIDC sign-in.  Null for local (password) accounts.
+    /// </summary>
+    public Guid? LastOidcProviderId { get; set; }
+
+    /// <summary>
+    /// Pipe-separated external group claim values from the most recent OIDC sign-in
+    /// (e.g. "Engineering|Deployers"). Stored here rather than in the cookie so they
+    /// survive Identity security-stamp refreshes.  Null for local accounts.
+    /// </summary>
+    public string? ExternalGroups { get; set; }
 }
