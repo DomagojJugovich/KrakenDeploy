@@ -72,20 +72,26 @@ else
                         @if (_hasHmacKey)
                         {
                             <RadzenBadge Text="Configured" BadgeStyle="BadgeStyle.Success" />
-                            <RadzenButton Text="Regenerate Key" Icon="refresh"
-                                          Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Light"
-                                          Click="GenerateHmacKey" />
-                            <RadzenButton Text="Remove Key" Icon="delete"
-                                          Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Danger"
-                                          Variant="Variant.Text"
-                                          Click="RemoveHmacKey" />
+                            <RequirePermission Permission="Permission.MachineEdit">
+                                <RadzenButton Text="Regenerate Key" Icon="refresh"
+                                              Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Light"
+                                              Click="GenerateHmacKey" />
+                            </RequirePermission>
+                            <RequirePermission Permission="Permission.MachineEdit">
+                                <RadzenButton Text="Remove Key" Icon="delete"
+                                              Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Danger"
+                                              Variant="Variant.Text"
+                                              Click="RemoveHmacKey" />
+                            </RequirePermission>
                         }
                         else
                         {
                             <RadzenBadge Text="Not configured" BadgeStyle="BadgeStyle.Light" />
-                            <RadzenButton Text="Generate HMAC Key" Icon="vpn_key"
-                                          Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Info"
-                                          Click="GenerateHmacKey" />
+                            <RequirePermission Permission="Permission.MachineEdit">
+                                <RadzenButton Text="Generate HMAC Key" Icon="vpn_key"
+                                              Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Info"
+                                              Click="GenerateHmacKey" />
+                            </RequirePermission>
                         }
                     </RadzenStack>
                     <div class="rz-text-caption rz-color-secondary-light" style="margin-top:0.25rem;">
@@ -175,10 +181,12 @@ else
                 }
 
                 <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End" class="rz-mt-3">
-                    <RadzenButton Text="Save Configuration" Icon="save"
-                                  ButtonStyle="ButtonStyle.Primary"
-                                  IsBusy="_saving"
-                                  Click="SaveConfigAsync" />
+                    <RequirePermission Permission="Permission.MachineEdit">
+                        <RadzenButton Text="Save Configuration" Icon="save"
+                                      ButtonStyle="ButtonStyle.Primary"
+                                      IsBusy="_saving"
+                                      Click="SaveConfigAsync" />
+                    </RequirePermission>
                 </RadzenStack>
             </RadzenStack>
         </RadzenCard>

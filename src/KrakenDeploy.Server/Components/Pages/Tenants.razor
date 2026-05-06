@@ -10,8 +10,10 @@
 
 <div class="rz-display-flex rz-align-items-center rz-justify-content-between rz-mb-4">
     <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1">Tenants</RadzenText>
-    <RadzenButton Text="New Tenant" Icon="add" ButtonStyle="ButtonStyle.Primary"
-                  Click="@(() => { _createOpen = true; _name = _slug = ""; _description = null; })" />
+    <RequirePermission Permission="Permission.TenantCreate">
+        <RadzenButton Text="New Tenant" Icon="add" ButtonStyle="ButtonStyle.Primary"
+                      Click="@(() => { _createOpen = true; _name = _slug = ""; _description = null; })" />
+    </RequirePermission>
 </div>
 
 @if (_createOpen)
@@ -56,10 +58,12 @@
                               Width="140px" FormatString="{0:yyyy-MM-dd}" />
         <RadzenDataGridColumn TItem="Tenant" Title="" Width="70px" TextAlign="TextAlign.Center">
             <Template Context="t">
-                <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
-                              Variant="Variant.Text"
-                              Click="@(async _ => await DeleteAsync(t))"
-                              title="Delete" />
+                <RequirePermission Permission="Permission.TenantDelete">
+                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
+                                  Variant="Variant.Text"
+                                  Click="@(async _ => await DeleteAsync(t))"
+                                  title="Delete" />
+                </RequirePermission>
             </Template>
         </RadzenDataGridColumn>
     </Columns>

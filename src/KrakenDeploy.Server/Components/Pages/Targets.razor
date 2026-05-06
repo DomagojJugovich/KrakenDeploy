@@ -17,10 +17,12 @@
     <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" style="margin:0;">
         Deployment Targets
     </RadzenText>
-    <RadzenButton Text="Add Deployment Target"
-                  Icon="add_circle_outline"
-                  ButtonStyle="ButtonStyle.Primary"
-                  Click="OpenAddWizardAsync" />
+    <RequirePermission Permission="Permission.MachineCreate">
+        <RadzenButton Text="Add Deployment Target"
+                      Icon="add_circle_outline"
+                      ButtonStyle="ButtonStyle.Primary"
+                      Click="OpenAddWizardAsync" />
+    </RequirePermission>
 </RadzenStack>
 
 <RadzenDataGrid Data="@_targets" TItem="DeploymentTarget"

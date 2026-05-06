@@ -13,9 +13,11 @@
     <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">
         Environments
     </RadzenText>
-    <RadzenButton Icon="add" Text="New Environment"
-                  ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
-                  Click="OpenCreateDialogAsync" />
+    <RequirePermission Permission="Permission.EnvironmentCreate">
+        <RadzenButton Icon="add" Text="New Environment"
+                      ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                      Click="OpenCreateDialogAsync" />
+    </RequirePermission>
 </RadzenStack>
 
 <RadzenDataGrid Data="@_envs" TItem="DeploymentEnvironment"
@@ -37,24 +39,32 @@
         <RadzenDataGridColumn TItem="DeploymentEnvironment" Title="" Width="140px"
                               TextAlign="TextAlign.Right">
             <Template Context="e">
-                <RadzenButton Icon="arrow_upward" ButtonStyle="ButtonStyle.Light"
-                              Size="ButtonSize.ExtraSmall" class="rz-mr-1"
-                              Disabled="@(_envs.IndexOf(e) == 0)"
-                              Click="@(() => MoveUpAsync(e))"
-                              title="Move up" />
-                <RadzenButton Icon="arrow_downward" ButtonStyle="ButtonStyle.Light"
-                              Size="ButtonSize.ExtraSmall" class="rz-mr-1"
-                              Disabled="@(_envs.IndexOf(e) == _envs.Count - 1)"
-                              Click="@(() => MoveDownAsync(e))"
-                              title="Move down" />
-                <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
-                              Size="ButtonSize.ExtraSmall" class="rz-mr-1"
-                              Click="@(() => OpenEditDialogAsync(e))"
-                              title="Edit" />
-                <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
-                              Size="ButtonSize.ExtraSmall"
-                              Click="@(() => DeleteAsync(e))"
-                              title="Delete" />
+                <RequirePermission Permission="Permission.EnvironmentEdit">
+                    <RadzenButton Icon="arrow_upward" ButtonStyle="ButtonStyle.Light"
+                                  Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                                  Disabled="@(_envs.IndexOf(e) == 0)"
+                                  Click="@(() => MoveUpAsync(e))"
+                                  title="Move up" />
+                </RequirePermission>
+                <RequirePermission Permission="Permission.EnvironmentEdit">
+                    <RadzenButton Icon="arrow_downward" ButtonStyle="ButtonStyle.Light"
+                                  Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                                  Disabled="@(_envs.IndexOf(e) == _envs.Count - 1)"
+                                  Click="@(() => MoveDownAsync(e))"
+                                  title="Move down" />
+                </RequirePermission>
+                <RequirePermission Permission="Permission.EnvironmentEdit">
+                    <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
+                                  Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                                  Click="@(() => OpenEditDialogAsync(e))"
+                                  title="Edit" />
+                </RequirePermission>
+                <RequirePermission Permission="Permission.EnvironmentDelete">
+                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                  Size="ButtonSize.ExtraSmall"
+                                  Click="@(() => DeleteAsync(e))"
+                                  title="Delete" />
+                </RequirePermission>
             </Template>
         </RadzenDataGridColumn>
     </Columns>

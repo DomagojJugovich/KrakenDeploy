@@ -10,8 +10,10 @@
 
 <div class="rz-display-flex rz-align-items-center rz-justify-content-between rz-mb-4">
     <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1">Lifecycles</RadzenText>
-    <RadzenButton Text="New Lifecycle" Icon="add" ButtonStyle="ButtonStyle.Primary"
-                  Click="@(() => { _createOpen = true; _name = ""; _description = null; })" />
+    <RequirePermission Permission="Permission.LifecycleCreate">
+        <RadzenButton Text="New Lifecycle" Icon="add" ButtonStyle="ButtonStyle.Primary"
+                      Click="@(() => { _createOpen = true; _name = ""; _description = null; })" />
+    </RequirePermission>
 </div>
 
 @if (_createOpen)
@@ -50,10 +52,12 @@
                               Width="140px" FormatString="{0:yyyy-MM-dd}" />
         <RadzenDataGridColumn TItem="Lifecycle" Title="" Width="70px" TextAlign="TextAlign.Center">
             <Template Context="lc">
-                <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
-                              Variant="Variant.Text"
-                              Click="@(async _ => await DeleteAsync(lc))"
-                              title="Delete" />
+                <RequirePermission Permission="Permission.LifecycleDelete">
+                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
+                                  Variant="Variant.Text"
+                                  Click="@(async _ => await DeleteAsync(lc))"
+                                  title="Delete" />
+                </RequirePermission>
             </Template>
         </RadzenDataGridColumn>
     </Columns>

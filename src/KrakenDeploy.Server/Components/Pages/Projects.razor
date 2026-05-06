@@ -13,9 +13,11 @@
     <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">
         Projects
     </RadzenText>
-    <RadzenButton Icon="add" Text="New Project"
-                  ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
-                  Click="OpenCreateDialogAsync" />
+    <RequirePermission Permission="Permission.ProjectCreate">
+        <RadzenButton Icon="add" Text="New Project"
+                      ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                      Click="OpenCreateDialogAsync" />
+    </RequirePermission>
 </RadzenStack>
 
 <RadzenDataGrid Data="@_projects" TItem="Project"
@@ -35,14 +37,18 @@
         <RadzenDataGridColumn TItem="Project" Title="" Width="88px"
                               Filterable="false" Sortable="false" TextAlign="TextAlign.Right">
             <Template Context="p">
-                <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
-                              Size="ButtonSize.ExtraSmall" class="rz-mr-1"
-                              Click="@(() => OpenEditDialogAsync(p))"
-                              title="Edit" />
-                <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
-                              Size="ButtonSize.ExtraSmall"
-                              Click="@(() => DeleteAsync(p))"
-                              title="Delete" />
+                <RequirePermission Permission="Permission.ProjectEdit">
+                    <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
+                                  Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                                  Click="@(() => OpenEditDialogAsync(p))"
+                                  title="Edit" />
+                </RequirePermission>
+                <RequirePermission Permission="Permission.ProjectDelete">
+                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                  Size="ButtonSize.ExtraSmall"
+                                  Click="@(() => DeleteAsync(p))"
+                                  title="Delete" />
+                </RequirePermission>
             </Template>
         </RadzenDataGridColumn>
     </Columns>

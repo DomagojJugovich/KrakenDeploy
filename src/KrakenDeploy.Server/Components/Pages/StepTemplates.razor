@@ -16,12 +16,16 @@
         </RadzenText>
     </RadzenColumn>
     <RadzenColumn class="rz-text-align-end">
-        <RadzenButton Icon="upload_file" ButtonStyle="ButtonStyle.Light"
-                      Text="Import JSON" class="rz-mr-2"
-                      Click="@ShowImportDialog" />
-        <RadzenButton Icon="add" ButtonStyle="ButtonStyle.Primary"
-                      Text="New Template"
-                      Click="@ShowCreateDialog" />
+        <RequirePermission Permission="Permission.StepTemplateCreate">
+            <RadzenButton Icon="upload_file" ButtonStyle="ButtonStyle.Light"
+                          Text="Import JSON" class="rz-mr-2"
+                          Click="@ShowImportDialog" />
+        </RequirePermission>
+        <RequirePermission Permission="Permission.StepTemplateCreate">
+            <RadzenButton Icon="add" ButtonStyle="ButtonStyle.Primary"
+                          Text="New Template"
+                          Click="@ShowCreateDialog" />
+        </RequirePermission>
     </RadzenColumn>
 </RadzenRow>
 
@@ -72,10 +76,12 @@
         </RadzenDataGridColumn>
         <RadzenDataGridColumn TItem="StepTemplate" Sortable="false" Filterable="false" Width="100px" TextAlign="TextAlign.End">
             <Template Context="t">
-                <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
-                              Variant="Variant.Flat"
-                              Click="@(() => DeleteTemplateAsync(t))"
-                              title="Delete template" />
+                <RequirePermission Permission="Permission.StepTemplateDelete">
+                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
+                                  Variant="Variant.Flat"
+                                  Click="@(() => DeleteTemplateAsync(t))"
+                                  title="Delete template" />
+                </RequirePermission>
             </Template>
         </RadzenDataGridColumn>
     </Columns>

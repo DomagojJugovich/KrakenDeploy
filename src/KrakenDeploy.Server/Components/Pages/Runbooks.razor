@@ -32,8 +32,10 @@
         @if (_selectedProjectId.HasValue)
         {
             <RadzenColumn Size="8" class="rz-display-flex rz-justify-content-end">
-                <RadzenButton Text="New Runbook" Icon="add" ButtonStyle="ButtonStyle.Primary"
-                              Click="@(() => { _createOpen = true; _name = ""; _description = null; })" />
+                <RequirePermission Permission="Permission.RunbookEdit">
+                    <RadzenButton Text="New Runbook" Icon="add" ButtonStyle="ButtonStyle.Primary"
+                                  Click="@(() => { _createOpen = true; _name = ""; _description = null; })" />
+                </RequirePermission>
             </RadzenColumn>
         }
     </RadzenRow>
@@ -78,10 +80,12 @@ else
                                   Width="140px" FormatString="{0:yyyy-MM-dd}" />
             <RadzenDataGridColumn TItem="Runbook" Title="" Width="70px" TextAlign="TextAlign.Center">
                 <Template Context="rb">
+                    <RequirePermission Permission="Permission.RunbookEdit">
                     <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
                                   Variant="Variant.Text"
                                   Click="@(async _ => await DeleteAsync(rb))"
                                   title="Delete" />
+                </RequirePermission>
                 </Template>
             </RadzenDataGridColumn>
         </Columns>
