@@ -19,6 +19,11 @@ public class DeploymentConfiguration : IEntityTypeConfiguration<Deployment>
 
         builder.Property(x => x.StartedUtc);
         builder.Property(x => x.CompletedUtc);
+        builder.Property(x => x.ScheduledFor);
+        // Partial index — only rows waiting to be dispatched need to be scanned.
+        builder.HasIndex(x => x.ScheduledFor)
+            .HasFilter("scheduled_for IS NOT NULL AND status = 0");
+        // Status 0 = Queued (enum int stored as int column).
 
         builder.HasOne(x => x.Release)
             .WithMany()

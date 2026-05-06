@@ -6,6 +6,7 @@ using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Data.ArtifactStorage;
 using KrakenDeploy.Server.Data.Identity;
 using KrakenDeploy.Server.Data.Interceptors;
+using KrakenDeploy.Server.Data.Jobs;
 using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Data.Spaces;
 using KrakenDeploy.Server.Data.Storage;
@@ -91,6 +92,15 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IdentityProviderService>();
         services.AddScoped<IAuditLog, AuditLogService>();
         services.AddScoped<AuditLogService>(); // also register concrete for PurgeOldEntriesAsync
+
+        // ── Hangfire background jobs ──────────────────────────────────────────
+        // Transient so Hangfire's AspNetCoreJobActivator creates a fresh scope
+        // per execution (scoped dependencies like KrakenDbContext are resolved
+        // within that scope).
+        services.AddTransient<AuditRetentionJob>();
+        services.AddTransient<AgentLastSeenOfflineJob>();
+        services.AddTransient<RegistrationTokenExpiryJob>();
+        services.AddTransient<ScheduledDeploymentDispatchJob>();
 
         // Octodiff delta generation — singleton because it has no mutable state;
         // signatures are cached on disk alongside the package files.

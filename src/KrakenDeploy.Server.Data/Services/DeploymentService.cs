@@ -10,13 +10,17 @@ namespace KrakenDeploy.Server.Data.Services;
 /// </summary>
 public class DeploymentService(
     KrakenDbContext db,
-    Channel<Guid> deploymentQueue)
+    Channel<Guid> deploymentQueue,
+    TimeProvider time)
 {
     // ── Create ─────────────────────────────────────────────────────────────
 
     /// <summary>
     /// Creates a <see cref="Deployment"/> in the <c>Queued</c> state and hands it
     /// to the <see cref="DeploymentWorker"/> via the in-process channel.
+    /// When <paramref name="scheduledFor"/> is a future timestamp the deployment
+    /// is persisted but NOT dispatched — the Hangfire
+    /// <c>ScheduledDeploymentDispatchJob</c> picks it up when the time arrives.
     /// Enforces the lifecycle gate if the release has a channel with a lifecycle.
     /// </summary>
     public async Task<Deployment> CreateAsync(
@@ -24,6 +28,7 @@ public class DeploymentService(
         Guid environmentId,
         Guid targetId,
         Guid? tenantId = null,
+        DateTimeOffset? scheduledFor = null,
         CancellationToken ct = default)
     {
         // Validate release and environment exist.
@@ -61,13 +66,19 @@ public class DeploymentService(
             TargetId = targetId,
             TenantId = tenantId,
             Status = DeploymentStatus.Queued,
+            ScheduledFor = scheduledFor,
         };
 
         db.Deployments.Add(deployment);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
-        // Enqueue for async dispatch — fire and forget inside the process.
-        await deploymentQueue.Writer.WriteAsync(deployment.Id, ct).ConfigureAwait(false);
+        // Dispatch immediately unless the caller requested a future start time.
+        var isScheduledForFuture = scheduledFor.HasValue &&
+            scheduledFor.Value > time.GetUtcNow();
+        if (!isScheduledForFuture)
+        {
+            await deploymentQueue.Writer.WriteAsync(deployment.Id, ct).ConfigureAwait(false);
+        }
 
         return deployment;
     }

@@ -39,4 +39,11 @@ public class Deployment : AuditableEntity, ISpaceScoped
     /// Null for agent-dispatched deployments. Set by <c>DropBundleService</c>.
     /// </summary>
     public string? DropBundlePath { get; set; }
+
+    /// <summary>
+    /// When set, the deployment is held in <c>Queued</c> state until this
+    /// point in time. <c>null</c> means dispatch immediately on creation.
+    /// The Hangfire <c>ScheduledDeploymentDispatchJob</c> polls for due entries.
+    /// </summary>
+    public DateTimeOffset? ScheduledFor { get; set; }
 }

@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.Text;
+using Hangfire;
+using Hangfire.PostgreSql;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Auth;
 using KrakenDeploy.Server.Commands;
@@ -8,6 +10,7 @@ using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Encryption;
 using KrakenDeploy.Server.Data.Identity;
 using KrakenDeploy.Server.Data.Services;
+using KrakenDeploy.Server.Hangfire;
 using KrakenDeploy.Server.Services;
 using KrakenDeploy.Server.Transport;
 using KrakenDeploy.Server.Core.Domain.Lifecycles;
@@ -271,6 +274,25 @@ public static class Program
                 }
             });
 
+        // ── Hangfire ─────────────────────────────────────────────────────────
+        // Storage on Postgres (same database as the app — Hangfire auto-creates
+        // its own schema).  The background server executes recurring jobs in the
+        // same process; split to a dedicated worker in a future scale-out.
+        builder.Services.AddHangfire(config => config
+            .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
+            .UseSimpleAssemblyNameTypeSerializer()
+            .UseRecommendedSerializerSettings()
+            .UsePostgreSqlStorage(opt =>
+                opt.UseNpgsqlConnection(connectionString)));
+
+        builder.Services.AddHangfireServer(options =>
+        {
+            // Keep worker count low — our jobs are lightweight DB operations,
+            // not CPU-bound.  Raise if the queue starts backing up.
+            options.WorkerCount = 4;
+            options.ServerName = $"kraken:{Environment.MachineName}";
+        });
+
         // ── Blazor UI ────────────────────────────────────────────────────────
         builder.Services.AddCascadingAuthenticationState();
         builder.Services.AddHttpContextAccessor();
@@ -328,6 +350,15 @@ public static class Program
         app.UseAuthentication();
         app.UseAuthorization();
         app.UseAntiforgery();
+
+        // Hangfire dashboard — SystemAdmin-only (enforced by HangfireDashboardAuthFilter).
+        // Must be placed after UseAuthentication / UseAuthorization so the auth
+        // middleware has already run and HttpContext.User is populated.
+        app.UseHangfireDashboard("/hangfire", new DashboardOptions
+        {
+            DashboardTitle = "KrakenDeploy — Background Jobs",
+            Authorization = [new HangfireDashboardAuthFilter()],
+        });
 
         app.MapStaticAssets();
         app.MapRazorComponents<App>()
@@ -841,7 +872,9 @@ public static class Program
                 try
                 {
                     var deployment = await deploymentSvc
-                        .CreateAsync(req.ReleaseId, req.EnvironmentId, req.TargetId, req.TenantId, ct)
+                        .CreateAsync(
+                            req.ReleaseId, req.EnvironmentId, req.TargetId,
+                            req.TenantId, req.ScheduledFor, ct)
                         .ConfigureAwait(false);
                     return Results.Created($"/api/deployments/{deployment.Id}", deployment);
                 }
@@ -1380,6 +1413,11 @@ public static class Program
                     return Results.Ok(new { token });
                 }).AllowAnonymous();
         }
+
+        // Register Hangfire recurring jobs after the app is built so the storage
+        // is fully initialised.  Safe to call multiple times (AddOrUpdate is
+        // idempotent) — on each restart the schedule is refreshed.
+        HangfireJobRegistrar.RegisterRecurringJobs();
 
         await app.RunAsync().ConfigureAwait(false);
         return 0;

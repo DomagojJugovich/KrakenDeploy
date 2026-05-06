@@ -26,7 +26,8 @@ public sealed record TriggerDeploymentRequest(
     Guid ReleaseId,
     Guid EnvironmentId,
     Guid TargetId,
-    Guid? TenantId = null);
+    Guid? TenantId = null,
+    DateTimeOffset? ScheduledFor = null);
 
 // ── Step-template API ──────────────────────────────────────────────────────────
 
