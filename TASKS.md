@@ -438,6 +438,32 @@ Full superset action type covering app pool process model + recycle settings (in
 
 **Deployment-model strategy:** path **B** — both on-prem and cloud SaaS, on-prem first. M10 delivers the shared baseline that both scenarios need; M10.1 packages the on-prem product; M10.2 hardens for cloud SaaS. The Spaces entity is added in M10 (cheap now, painful later) so the cloud milestone doesn't have to migrate live tenant data.
 
+#### Implementation slice tracker
+
+The atomic-commit plan for M10. **Resilient to context loss** — if a session is cut mid-flight, this list plus `git log --grep="M10"` is enough to figure out what's done and what's next without re-deriving the plan from conversation memory.
+
+| Slice | Done | Description |
+|---|---|---|
+| Spaces foundation | ✅ `bfc1bd4` | `Space` entity + `ISpaceScoped` marker + EF Core global query filter + `AddSpacesFoundation` migration. |
+| Spaces tests | ✅ `2a791f7` | Reflection sweep that fails the build if any new top-level aggregate forgets `ISpaceScoped`. |
+| `HttpSpaceContext` + `SpaceService` + Switcher | ✅ `de59b44` | `kraken-active-space` cookie, `/space/switch` endpoint, Radzen `<SpaceSwitcher>` (hidden when only Default Space exists). |
+| **A1** — Permission enum + ProjectGroup | ✅ `d199c04` | 105-member `Permission` enum with stable integer values + `PermissionTests` lock-in. `ProjectGroup` entity + Project FK. |
+| **A2** — RBAC entities + migration | ✅ `76d41cb` | `Role`, `Team`, `TeamMember`, `TeamExternalGroup`, `RoleAssignment`, `IdentityProvider`. Switched `IdentityDbContext` → `IdentityUserContext` (no Identity-managed roles). `AddRbacFoundation` migration drops unused Identity role tables. |
+| **B** — Built-in seeder + IPermissionEvaluator | ✅ `b7ea433` | 8 built-in roles (System Administrator, Space Manager, Project Deployer/Contributor/Viewer, Tenant Manager, Runbook Producer/Consumer). `BuiltInRbacSeeder` runs idempotently per Space. `IPermissionEvaluator` first cut. |
+| **B3** — tighten scope matching | ✅ `7ce0b0d` | `RoleAssignmentScopeMatcher` (pure helper) actually enforces per-Project / Environment / Tenant scopes. 12 matcher tests. |
+| **C** — Authorization integration | ✅ `78b03d0` | `PermissionPolicyProvider` (dynamic `"perm:{Permission}"` policies), `PermissionAuthorizationHandler`, `RequirePermission` extension, `<RequirePermission>` Blazor component. `users create-admin` CLI auto-adds new admins to "Kraken Administrators". |
+| **D** — endpoint call-site migration | ✅ `d9fab2a` | 71 endpoints in `Program.cs` swapped from `.RequireAuthorization()` to `.RequirePermission(Permission.X)`. 4 endpoints intentionally retain auth-only (sign-out, list-Spaces, switch-Space). |
+| **E** — Permission-aware UI | ⬜ | Use `<RequirePermission>` to hide Edit/Create/Delete buttons in existing pages (Projects, Targets, Tenants, etc.). |
+| **F** — Users / Teams / Roles / IdPs config UI | ⬜ | New pages under `Configuration` for: list/create/edit Users; list/create/edit Teams (members + external groups + role assignments with scope picker); list/create/edit custom Roles (permission picker grouped by domain); list/create/edit Identity Providers. "Test Permission" tool. |
+| **G** — OIDC integration | ⬜ | Wire `Microsoft.AspNetCore.Authentication.OpenIdConnect` through `IdentityProvider` rows. JIT user provisioning. External-group → Team membership at sign-in (the missing branch in `PermissionEvaluator.GetUserTeamIdsAsync`). |
+| **H** — Audit log | ⬜ | `AuditEntry` entity, `SaveChangesInterceptor` for entity changes, explicit `IAuditLog.RecordAsync` for non-EF events, `/audit` page with filters, retention sweep. |
+| **I** — Hangfire scheduled work | ⬜ | Scheduled deployments, recurring retention sweeps, agent last-seen → Offline transitions, dashboard at `/hangfire` (SystemAdmin only). |
+| **J** — Agent auto-update | ⬜ | Server hosts agent binaries + `version.json`. Agent compares version on heartbeat; swaps during configurable maintenance window. Per-target opt-out flag. |
+| **K** — Direct + Polling transports | ⬜ | `DirectServerLink` (LAN-trusted server-to-agent) and `PollingServerLink` (highly restricted networks) implementations of the existing `IServerLink` abstraction. |
+| **L** — Caddy reference deployment | ⬜ | `deploy/caddy/Caddyfile` + `docker-compose.yml` + README. Auto-HTTPS, SignalR/gRPC long-lived connection tuning. |
+
+After M10 ships, the work continues into M10.1 (on-prem packaging — MSI / deb / rpm / Compose / license) and M10.2 (cloud SaaS hardening — object storage backends, Redis backplane, billing, signup, blue/green).
+
 **Spaces foundation (the load-bearing change for the cloud roadmap):**
 
 - [ ] `Space` entity: `Id`, `Slug` (URL-friendly), `Name`, `Description`, `IsDefault`, `CreatedUtc`, `Status` (Active/Suspended)
@@ -656,14 +682,20 @@ Per-Space teams (auto-created per Space):
 
 **Customer profile:** software sold to a company; their IT installs on their own hardware (Windows or Linux). One install per company. Often air-gapped or behind a corporate proxy. Auth against their AD / Okta / Azure AD.
 
-- [ ] **Windows MSI installer** (Velopack): installs the `KrakenDeploy.Server` service, prompts for Postgres connection string, registers as a Windows Service, opens firewall, drops shortcuts. Uninstaller preserves the database.
-- [ ] **Linux packaging**: `.deb` and `.rpm` packages with systemd unit; `apt install krakendeploy-server` style install. PostgreSQL listed as a dependency or external.
+- [ ] **Database setup flow** (both standalone and Docker paths — mirrors Octopus Deploy's installer UX):
+  - **Recommended path — installer creates the database:** User provides Postgres admin credentials (host, port, superuser name/password) + desired database name. Installer connects, runs `CREATE DATABASE <name>`, then applies EF Core migrations + seeds initial data. No manual DBA work needed.
+  - **Manual path — user pre-creates an empty database:** User creates an empty database themselves (e.g. via `createdb` or their DBA), gives Kraken the connection string. Installer runs migrations + seed. If the database already contains Kraken tables, the installer warns and aborts unless the user confirms it's an in-place upgrade.
+  - **Docker path:** `docker compose up` brings its own Postgres container — no external DB needed. Migrations run automatically on first startup via an init container or startup hook.
+  - EF Core handles all schema creation and ongoing migrations. Kraken owns its schema end-to-end.
+- [ ] **Windows MSI installer** (Velopack): bundles the `KrakenDeploy.Server` binaries, walks through the database setup flow above, registers as a Windows Service, opens firewall port, drops Start Menu shortcuts. Uninstaller preserves the database (must be dropped manually if desired).
+- [ ] **Linux packaging**: `.deb` and `.rpm` packages with systemd unit; `apt install krakendeploy-server` style. PostgreSQL listed as an external dependency (user brings their own or installs separately). Post-install script runs the database setup flow interactively or via debconf.
 - [ ] **Docker Compose stack**: `deploy/onprem/docker-compose.yml` — Postgres + Server + Caddy + named volumes for `data/` and `pg-data/`. One-command bring-up.
 - [ ] **License key enforcement**: signed JWT-style key with claims (`maxTargets`, `maxUsers`, `expiresUtc`, `customerName`); validated on startup and warned in UI when approaching limits or expiring. Air-gapped activation: customer pastes the key, no phone-home required.
 - [ ] **Backup/restore documentation**: `pg_dump` schedule + `data/` folder rsync; documented restore procedure. CLI helper: `KrakenDeploy.Server backup --to <path>` and `restore --from <path>`.
 - [ ] **Update path**: documented in-place upgrade (stop service, run new installer, migrations apply on restart). Rollback procedure (restore DB, downgrade binaries).
 - [ ] **Bundled OIDC config templates** for the common cases: Active Directory (via Microsoft Entra Connect), ADFS, Azure AD, Okta, Google Workspace.
-- [ ] **HA pair** (optional, for larger customers): two `KrakenDeploy.Server` nodes against shared Postgres, with sticky-session reverse proxy (Caddy `lb_policy` or external load balancer). SignalR connection registry moves to a Postgres-backed implementation (no Redis dependency for on-prem).
+- [ ] **HA pair** (optional, for larger customers): two `KrakenDeploy.Server` nodes against shared Postgres, with sticky-session reverse proxy (Caddy `lb_policy` or external load balancer).
+  - **SignalR connection registry via Postgres (no Redis):** `IAgentConnectionRegistry` gets a `PostgresAgentConnectionRegistry` implementation backed by an `UNLOGGED` table — no WAL overhead, fast enough for the 2-node HA case. Table is `(connection_id text PK, target_id uuid, connected_at_utc timestamptz)` with the PK as a covering index (index-only scans). Operations map directly: `INSERT` on connect, `DELETE` on disconnect, `SELECT COUNT(*)` for connected agent count, keyed lookups for routing. On node startup, the table is truncated (all connections are ephemeral — a server restart is a clean slate). This keeps on-prem to a single infrastructure dependency (Postgres) while still enabling HA. Cloud deployments (M10.2) can swap in Redis when scaling beyond 2 nodes.
 - [ ] **Single Space mode**: when only the Default Space exists, the UI hides the Space switcher entirely — feels like a single-tenant product.
 
 ---
