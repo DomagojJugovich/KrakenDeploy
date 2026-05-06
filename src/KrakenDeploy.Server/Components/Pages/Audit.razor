@@ -1,9 +1,299 @@
 @page "/audit"
+@rendermode InteractiveServer
 @attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.Audit
+@using Microsoft.EntityFrameworkCore
+
+@inject KrakenDeploy.Server.Data.KrakenDbContext Db
+@inject NavigationManager Nav
 
 <PageTitle>Audit Log - KrakenDeploy</PageTitle>
 
-<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">Audit Log</RadzenText>
-<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-    Immutable audit trail for all user and system actions — M2.
-</RadzenText>
+<RequirePermission Permission="Permission.EventView" Unauthorized="@_unauthorized">
+
+<RadzenStack Gap="1rem">
+
+    <RadzenStack Orientation="Orientation.Horizontal"
+                 AlignItems="AlignItems.Center"
+                 JustifyContent="JustifyContent.SpaceBetween"
+                 class="rz-mb-2">
+        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">
+            Audit Log
+        </RadzenText>
+    </RadzenStack>
+
+    @* ── Filters ──────────────────────────────────────────────────────── *@
+    <RadzenCard Variant="Variant.Outlined" class="rz-p-4">
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="1rem"
+                     AlignItems="AlignItems.End" Style="flex-wrap:wrap">
+
+            <RadzenFormField Text="From" style="min-width:160px">
+                <RadzenDatePicker @bind-Value="_from" DateFormat="yyyy-MM-dd"
+                                  ShowCalendarWeek="false" />
+            </RadzenFormField>
+
+            <RadzenFormField Text="To" style="min-width:160px">
+                <RadzenDatePicker @bind-Value="_to" DateFormat="yyyy-MM-dd"
+                                  ShowCalendarWeek="false" />
+            </RadzenFormField>
+
+            <RadzenFormField Text="Event type" style="min-width:200px">
+                <RadzenTextBox @bind-Value="_eventTypeFilter"
+                               Placeholder="e.g. Project.Created" />
+            </RadzenFormField>
+
+            <RadzenFormField Text="User" style="min-width:180px">
+                <RadzenTextBox @bind-Value="_userFilter"
+                               Placeholder="email or display name" />
+            </RadzenFormField>
+
+            <RadzenFormField Text="Subject type" style="min-width:150px">
+                <RadzenTextBox @bind-Value="_subjectTypeFilter"
+                               Placeholder="e.g. Project" />
+            </RadzenFormField>
+
+            <RadzenButton Icon="search" Text="Search"
+                          ButtonStyle="ButtonStyle.Primary"
+                          Click="ApplyFiltersAsync" />
+
+            <RadzenButton Icon="clear" Text="Reset"
+                          ButtonStyle="ButtonStyle.Light"
+                          Click="ResetFilters" />
+        </RadzenStack>
+    </RadzenCard>
+
+    @* ── Grid ─────────────────────────────────────────────────────────── *@
+    <RadzenDataGrid @ref="_grid"
+                    Data="@_entries"
+                    TItem="AuditEntry"
+                    Count="@_totalCount"
+                    LoadData="@LoadDataAsync"
+                    AllowPaging="true"
+                    PageSize="50"
+                    AllowSorting="true"
+                    IsLoading="@_loading"
+                    EmptyText="No audit entries match the current filters.">
+        <Columns>
+            <RadzenDataGridColumn TItem="AuditEntry" Property="OccurredUtc"
+                                  Title="Occurred" Width="180px" Sortable="true">
+                <Template Context="e">
+                    <span title="@e.OccurredUtc.ToString("O")">
+                        @e.OccurredUtc.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")
+                    </span>
+                </Template>
+            </RadzenDataGridColumn>
+
+            <RadzenDataGridColumn TItem="AuditEntry" Property="EventType"
+                                  Title="Event" Width="200px" Sortable="true" />
+
+            <RadzenDataGridColumn TItem="AuditEntry" Property="UserDisplay"
+                                  Title="User" Width="220px">
+                <Template Context="e">
+                    <span>@e.UserDisplay</span>
+                    @if (!string.IsNullOrEmpty(e.IpAddress))
+                    {
+                        <span class="rz-text-caption rz-color-secondary"
+                              style="margin-left:0.4rem;">
+                            (@e.IpAddress)
+                        </span>
+                    }
+                </Template>
+            </RadzenDataGridColumn>
+
+            <RadzenDataGridColumn TItem="AuditEntry" Title="Subject">
+                <Template Context="e">
+                    @if (e.SubjectType is not null)
+                    {
+                        <span class="rz-text-caption rz-color-secondary">@e.SubjectType</span>
+                        <span> </span>
+                    }
+                    @if (!string.IsNullOrEmpty(e.SubjectName))
+                    {
+                        <strong>@e.SubjectName</strong>
+                    }
+                    else if (!string.IsNullOrEmpty(e.SubjectId))
+                    {
+                        <span class="rz-text-caption">@e.SubjectId</span>
+                    }
+                </Template>
+            </RadzenDataGridColumn>
+
+            <RadzenDataGridColumn TItem="AuditEntry" Property="Details"
+                                  Title="Details">
+                <Template Context="e">
+                    @if (!string.IsNullOrEmpty(e.Details))
+                    {
+                        <span>@e.Details</span>
+                    }
+                    else if (e.BeforeJson is not null || e.AfterJson is not null)
+                    {
+                        <RadzenButton Icon="data_object" ButtonStyle="ButtonStyle.Light"
+                                      Size="ButtonSize.ExtraSmall"
+                                      Text="View snapshot"
+                                      Click="@(() => ShowSnapshot(e))" />
+                    }
+                </Template>
+            </RadzenDataGridColumn>
+        </Columns>
+    </RadzenDataGrid>
+
+    @* ── Snapshot detail ───────────────────────────────────────────────── *@
+    @if (_snapshotEntry is not null)
+    {
+        <RadzenCard Variant="Variant.Outlined" class="rz-p-4 rz-mt-2">
+            <RadzenStack Gap="0.5rem">
+                <RadzenStack Orientation="Orientation.Horizontal"
+                             JustifyContent="JustifyContent.SpaceBetween"
+                             AlignItems="AlignItems.Center">
+                    <RadzenText TextStyle="TextStyle.Subtitle1">
+                        Snapshot — @_snapshotEntry.EventType
+                    </RadzenText>
+                    <RadzenButton Icon="close" ButtonStyle="ButtonStyle.Light"
+                                  Size="ButtonSize.ExtraSmall"
+                                  Click="@(() => _snapshotEntry = null)" />
+                </RadzenStack>
+                @if (_snapshotEntry.BeforeJson is not null)
+                {
+                    <RadzenText TextStyle="TextStyle.Subtitle2">Before</RadzenText>
+                    <pre class="rz-background rz-p-2"
+                         style="font-size:0.75em;overflow:auto;max-height:300px">@_snapshotEntry.BeforeJson</pre>
+                }
+                @if (_snapshotEntry.AfterJson is not null)
+                {
+                    <RadzenText TextStyle="TextStyle.Subtitle2">After</RadzenText>
+                    <pre class="rz-background rz-p-2"
+                         style="font-size:0.75em;overflow:auto;max-height:300px">@_snapshotEntry.AfterJson</pre>
+                }
+            </RadzenStack>
+        </RadzenCard>
+    }
+
+</RadzenStack>
+
+</RequirePermission>
+
+@code {
+    private RadzenDataGrid<AuditEntry>? _grid;
+    private List<AuditEntry> _entries = [];
+    private int  _totalCount;
+    private bool _loading;
+    private AuditEntry? _snapshotEntry;
+
+    // Filters
+    private DateTime? _from;
+    private DateTime? _to;
+    private string _eventTypeFilter  = "";
+    private string _userFilter       = "";
+    private string _subjectTypeFilter = "";
+
+    private RenderFragment _unauthorized =>
+        @<div class="rz-p-4">
+            <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true">
+                You do not have permission to view the audit log.
+            </RadzenAlert>
+        </div>;
+
+    protected override void OnInitialized()
+    {
+        // Default date range: last 30 days
+        _to   = DateTime.Today;
+        _from = DateTime.Today.AddDays(-30);
+    }
+
+    private async Task LoadDataAsync(LoadDataArgs args)
+    {
+        _loading = true;
+        try
+        {
+            var query = BuildQuery();
+
+            _totalCount = await query.CountAsync();
+
+            // Sorting
+            if (!string.IsNullOrEmpty(args.OrderBy))
+            {
+                query = args.OrderBy switch
+                {
+                    "OccurredUtc"      => args.Sorts?.FirstOrDefault()?.SortOrder == SortOrder.Descending
+                        ? query.OrderByDescending(e => e.OccurredUtc)
+                        : query.OrderBy(e => e.OccurredUtc),
+                    "EventType"        => args.Sorts?.FirstOrDefault()?.SortOrder == SortOrder.Descending
+                        ? query.OrderByDescending(e => e.EventType)
+                        : query.OrderBy(e => e.EventType),
+                    _                  => query.OrderByDescending(e => e.OccurredUtc),
+                };
+            }
+            else
+            {
+                query = query.OrderByDescending(e => e.OccurredUtc);
+            }
+
+            _entries = await query
+                .Skip(args.Skip ?? 0)
+                .Take(args.Top ?? 50)
+                .ToListAsync();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private IQueryable<AuditEntry> BuildQuery()
+    {
+        var q = Db.AuditEntries.IgnoreQueryFilters().AsQueryable();
+
+        if (_from.HasValue)
+        {
+            var fromUtc = new DateTimeOffset(_from.Value, TimeSpan.Zero);
+            q = q.Where(e => e.OccurredUtc >= fromUtc);
+        }
+
+        if (_to.HasValue)
+        {
+            var toUtc = new DateTimeOffset(_to.Value.AddDays(1), TimeSpan.Zero);
+            q = q.Where(e => e.OccurredUtc < toUtc);
+        }
+
+        if (!string.IsNullOrWhiteSpace(_eventTypeFilter))
+        {
+            var f = _eventTypeFilter.Trim();
+            q = q.Where(e => e.EventType.Contains(f));
+        }
+
+        if (!string.IsNullOrWhiteSpace(_userFilter))
+        {
+            var f = _userFilter.Trim();
+            q = q.Where(e => e.UserDisplay.Contains(f));
+        }
+
+        if (!string.IsNullOrWhiteSpace(_subjectTypeFilter))
+        {
+            var f = _subjectTypeFilter.Trim();
+            q = q.Where(e => e.SubjectType != null && e.SubjectType.Contains(f));
+        }
+
+        return q;
+    }
+
+    private async Task ApplyFiltersAsync()
+    {
+        if (_grid is not null)
+        {
+            await _grid.Reload();
+        }
+    }
+
+    private void ResetFilters()
+    {
+        _eventTypeFilter   = "";
+        _userFilter        = "";
+        _subjectTypeFilter = "";
+        _to   = DateTime.Today;
+        _from = DateTime.Today.AddDays(-30);
+        _snapshotEntry = null;
+        _ = ApplyFiltersAsync();
+    }
+
+    private void ShowSnapshot(AuditEntry e) => _snapshotEntry = e;
+}

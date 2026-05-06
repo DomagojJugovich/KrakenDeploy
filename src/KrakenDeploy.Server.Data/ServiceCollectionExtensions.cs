@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Packages;
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Spaces;
@@ -24,6 +25,11 @@ public static class ServiceCollectionExtensions
     {
         services.TryAddTimeProvider();
         services.AddSingleton<AuditableEntityInterceptor>();
+        // AuditLogInterceptor uses IHttpContextAccessor — register it here so
+        // AddHttpContextAccessor() is called before AddDbContext (the interceptor
+        // needs it at singleton resolution time).
+        services.AddHttpContextAccessor();
+        services.AddSingleton<AuditLogInterceptor>();
 
         // ── Space context ─────────────────────────────────────────────────────
         // Default impl always returns the Default Space — used by tests, the
@@ -40,6 +46,7 @@ public static class ServiceCollectionExtensions
             options.UseSnakeCaseNamingConvention();
             options.AddInterceptors(
                 sp.GetRequiredService<AuditableEntityInterceptor>(),
+                sp.GetRequiredService<AuditLogInterceptor>(),
                 sp.GetRequiredService<SpaceScopingInterceptor>());
         });
 
@@ -82,6 +89,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<TeamService>();
         services.AddScoped<RoleService>();
         services.AddScoped<IdentityProviderService>();
+        services.AddScoped<IAuditLog, AuditLogService>();
+        services.AddScoped<AuditLogService>(); // also register concrete for PurgeOldEntriesAsync
 
         // Octodiff delta generation — singleton because it has no mutable state;
         // signatures are cached on disk alongside the package files.

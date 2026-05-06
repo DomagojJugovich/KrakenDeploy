@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Channels;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Deployments;
@@ -58,6 +59,9 @@ public class KrakenDbContext(
     public DbSet<RunbookStep> RunbookSteps => Set<RunbookStep>();
     public DbSet<RunbookRun> RunbookRuns => Set<RunbookRun>();
     public DbSet<RunbookRunLogEntry> RunbookRunLogEntries => Set<RunbookRunLogEntry>();
+
+    // ── Audit log ────────────────────────────────────────────────────────────
+    public DbSet<AuditEntry> AuditEntries => Set<AuditEntry>();
 
     // ── M10 RBAC ────────────────────────────────────────────────────────────
     public DbSet<Role> Roles => Set<Role>();
