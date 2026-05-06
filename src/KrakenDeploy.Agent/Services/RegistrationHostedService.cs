@@ -34,7 +34,7 @@ public sealed class RegistrationHostedService(
         {
             logger.LogInformation(
                 "Agent identity loaded from store. AgentId={AgentId}", identity.AgentId);
-            context.SetIdentity(identity);
+            context.SetIdentity(identity, identity.TransportMode);
             return;
         }
 
@@ -80,7 +80,7 @@ public sealed class RegistrationHostedService(
         logger.LogInformation(
             "Agent registered successfully. AgentId={AgentId}", identity.AgentId);
 
-        context.SetIdentity(identity);
+        context.SetIdentity(identity, identity.TransportMode);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
@@ -129,6 +129,7 @@ public sealed class RegistrationHostedService(
                     AgentId = result.AgentId,
                     AgentToken = result.AgentJwt,
                     ServerUrl = opts.Url,
+                    TransportMode = result.TransportMode,
                 };
             }
             catch (OperationCanceledException)

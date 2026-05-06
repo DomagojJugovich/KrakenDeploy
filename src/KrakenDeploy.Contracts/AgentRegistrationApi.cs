@@ -4,4 +4,4 @@ namespace KrakenDeploy.Contracts;
 public sealed record RegisterAgentRequest(string Token);
 
 /// <summary>Response body for <c>POST /api/agents/register</c>.</summary>
-public sealed record RegisterAgentResponse(Guid AgentId, string AgentJwt);
+public sealed record RegisterAgentResponse(Guid AgentId, string AgentJwt, string TransportMode);

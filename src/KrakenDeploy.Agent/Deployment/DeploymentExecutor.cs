@@ -30,9 +30,19 @@ public sealed class DeploymentExecutor(
 {
     private readonly IReadOnlyList<IStepHandler> _handlers = [.. stepHandlers];
 
+    /// <summary>
+    /// True while a deployment is executing. Read by <see cref="Services.AgentUpdateService"/>
+    /// to avoid swapping the agent binary during an in-flight deployment.
+    /// </summary>
+    public bool IsExecuting { get; private set; }
+
     public async Task ExecuteAsync(DeploymentPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
+
+        IsExecuting = true;
+        try
+        {
 
         logger.LogInformation(
             "Starting deployment {DeploymentId} ({StepCount} step(s)) in environment {Env}.",
@@ -76,6 +86,11 @@ public sealed class DeploymentExecutor(
                 logger.LogError(inner,
                     "Failed to report deployment failure for {DeploymentId}.", plan.DeploymentId);
             }
+        }
+        }
+        finally
+        {
+            IsExecuting = false;
         }
     }
 

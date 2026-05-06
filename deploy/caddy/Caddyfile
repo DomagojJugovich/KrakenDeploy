@@ -1,0 +1,79 @@
+# KrakenDeploy — Caddy reverse-proxy reference deployment
+# -----------------------------------------------------------
+# Caddy provides automatic HTTPS (Let's Encrypt), HTTP/2 for
+# gRPC bidirectional streaming, WebSocket upgrade for SignalR
+# control-plane, and gzip/zstd compression for static assets.
+#
+# PREREQUISITES
+#  1. A public DNS A/AAAA record pointing to this host
+#  2. Ports 80 and 443 reachable from the public internet
+#     (Let's Encrypt HTTP-01 challenge)
+#  3. The KrakenDeploy Server container reachable at
+#     kraken-server:5080 on the internal Docker network
+#
+# USAGE
+#  Replace {$DOMAIN} with your domain, or set the DOMAIN
+#  environment variable before starting Caddy:
+#    export DOMAIN=kraken.example.com
+#    docker compose up -d
+
+{$DOMAIN:localhost} {
+    # ── Compression ─────────────────────────────────────────────────
+    encode gzip zstd
+
+    # ── Logging ─────────────────────────────────────────────────────
+    log {
+        output file /var/log/caddy/kraken.log {
+            roll_size 50mb
+            roll_keep 10
+            roll_keep_for 720h # 30 days
+        }
+        format json
+    }
+
+    # ── SignalR hubs — WebSocket upgrade, long timeouts ─────────────
+    # Caddy defaults to 3-minute read/write timeouts; SignalR
+    # connections are long-lived and must not be terminated.
+    handle /hubs/* {
+        reverse_proxy kraken-server:5080 {
+            flush_interval -1
+            header_up X-Forwarded-Proto {scheme}
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+
+    # ── Blazor Server circuits — SignalR WebSocket ──────────────────
+    handle /_blazor* {
+        reverse_proxy kraken-server:5080 {
+            flush_interval -1
+            header_up X-Forwarded-Proto {scheme}
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+
+    # ── gRPC — HTTP/2 required, bidirectional streaming ──────────────
+    # The gRPC routes are /kraken.PackageDelivery/* and
+    # /kraken.ArtifactUpload/* by convention. Caddy negotiates H2C
+    # to the backend via h2c:// transport so gRPC streaming works.
+    handle /kraken.* {
+        reverse_proxy h2c://kraken-server:5080 {
+            header_up X-Forwarded-Proto {scheme}
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+
+    # ── Everything else — standard HTTP reverse-proxy ────────────────
+    handle {
+        reverse_proxy kraken-server:5080 {
+            header_up X-Forwarded-Proto {scheme}
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+
+    # ── Security headers ────────────────────────────────────────────
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy strict-origin-when-cross-origin
+    }
+}

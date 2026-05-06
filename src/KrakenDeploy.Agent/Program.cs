@@ -40,6 +40,8 @@ static async Task<int> RunAsync(string[] args)
     // ── Options ─────────────────────────────────────────────────────────
     builder.Services.Configure<ServerOptions>(builder.Configuration.GetSection("Server"));
     builder.Services.Configure<AgentConfig>(builder.Configuration.GetSection("Agent"));
+    builder.Services.Configure<AgentUpdateConfig>(
+        builder.Configuration.GetSection("Agent:Update"));
 
     // ── Serilog ─────────────────────────────────────────────────────────
     // Resolve the data path early so the rolling log file goes to the right place.
@@ -73,7 +75,22 @@ static async Task<int> RunAsync(string[] args)
     builder.Services.AddSingleton<AgentContext>();
     builder.Services.AddSingleton<AgentIdentityStore>();
     builder.Services.AddSingleton<MachineInfoCollector>();
-    builder.Services.AddSingleton<IServerLink, SignalRServerLink>();
+    builder.Services.AddSingleton<SignalRServerLink>();
+    builder.Services.AddSingleton<DirectServerLink>();
+    builder.Services.AddSingleton<PollingServerLink>();
+
+    // Select the active IServerLink based on the transport mode returned by the
+    // server during registration.  SignalR is the default (Reverse mode).
+    builder.Services.AddSingleton<IServerLink>(sp =>
+    {
+        var ctx = sp.GetRequiredService<AgentContext>();
+        return ctx.TransportMode switch
+        {
+            "Direct" => sp.GetRequiredService<DirectServerLink>(),
+            "Polling" => sp.GetRequiredService<PollingServerLink>(),
+            _ => sp.GetRequiredService<SignalRServerLink>(),
+        };
+    });
 
     // Package cache — stored under {dataPath}/package-cache/{packageId}/{version}/
     builder.Services.AddSingleton<IPackageCache>(sp =>
@@ -105,6 +122,7 @@ static async Task<int> RunAsync(string[] args)
     builder.Services.AddHostedService<RegistrationHostedService>();
     builder.Services.AddHostedService<ServerLinkHostedService>();
     builder.Services.AddHostedService<HeartbeatHostedService>();
+    builder.Services.AddHostedService<AgentUpdateService>();
 
     var host = builder.Build();
     await host.RunAsync();

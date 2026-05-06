@@ -25,6 +25,12 @@ public class DeploymentTarget : AuditableEntity, ISpaceScoped
     /// </summary>
     public OfflineDropConfig? OfflineDropConfig { get; set; }
 
+    /// <summary>
+    /// When false, the agent will not auto-update even when the server publishes
+    /// a newer version. Defaults to true.
+    /// </summary>
+    public bool AutoUpdateEnabled { get; set; } = true;
+
     /// <summary>Tenant tags assigned to this target.</summary>
     public ICollection<TenantTag> TenantTags { get; set; } = [];
 }

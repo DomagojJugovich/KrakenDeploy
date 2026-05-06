@@ -1,0 +1,100 @@
+# KrakenDeploy — Caddy + Postgres + Server reference stack
+# ----------------------------------------------------------
+# Brings up a full KrakenDeploy deployment behind Caddy
+# with automatic HTTPS, WebSocket/HTTP2 for SignalR and gRPC.
+#
+# PREREQUISITES
+#   docker compose up -d
+#
+# FIRST RUN
+#   1. Create the admin user:
+#      docker compose exec kraken-server dotnet KrakenDeploy.Server.dll users create-admin --email admin@example.com --password <password>
+#   2. Login at https://<your-domain>/
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kraken-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: krakendeploy
+      POSTGRES_USER: kraken
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kraken-dev-password}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kraken -d krakendeploy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kraken-net
+
+  kraken-server:
+    image: ghcr.io/your-org/krakendeploy-server:latest
+    # For local builds:
+    # build:
+    #   context: ../..
+    #   dockerfile: src/KrakenDeploy.Server/Dockerfile
+    container_name: kraken-server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__KrakenDb: >
+        Host=postgres;Port=5432;Database=krakendeploy;
+        Username=kraken;Password=${POSTGRES_PASSWORD:-kraken-dev-password}
+      Server__DataPath: /data
+      Agent__JwtSigningKey: ${AGENT_JWT_KEY:-change-me-at-least-32-characters-long-!!}
+      Encryption__MasterKey: ${ENCRYPTION_KEY}
+      ApiKey__Key: ${API_KEY:-}
+      AgentUpdate__BinariesPath: /data/agents
+      DOTNET_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://0.0.0.0:5080
+    volumes:
+      - kraken-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5080/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - kraken-net
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: kraken-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "caddy version || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - kraken-net
+
+volumes:
+  pg-data:
+    name: kraken-pg-data
+  kraken-data:
+    name: kraken-data
+  caddy-data:
+    name: kraken-caddy-data
+  caddy-config:
+    name: kraken-caddy-config
+
+networks:
+  kraken-net:
+    name: kraken-net
+    driver: bridge

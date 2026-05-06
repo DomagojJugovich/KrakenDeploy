@@ -21,3 +21,20 @@ public sealed record HeartbeatRequest(
     string? OperatingSystem,
     string? AgentVersion,
     long? FreeDiskBytes);
+
+/// <summary>
+/// Returned by GET /api/agents/update-info. Tells the agent whether a newer
+/// version is available and where to download it.
+/// </summary>
+public sealed record AgentUpdateInfo(
+    bool UpdateAvailable,
+    string? LatestVersion,
+    string? DownloadUrl,
+    long? SizeBytes,
+    string? Sha256);
+
+/// <summary>Body for POST /api/deployments/{id}/logs.</summary>
+public sealed record DeploymentLogLineRequest(string Level, string Message);
+
+/// <summary>Body for POST /api/deployments/{id}/complete.</summary>
+public sealed record CompleteDeploymentRequest(bool Success, string? ErrorMessage);

@@ -16,4 +16,10 @@ public sealed class AgentIdentity
     /// Server URL recorded at registration time. Used to detect config drift.
     /// </summary>
     public string ServerUrl { get; set; } = "";
+
+    /// <summary>
+    /// Transport mode assigned by the server at registration time.
+    /// Defaults to <c>Reverse</c> for backward compatibility.
+    /// </summary>
+    public string TransportMode { get; set; } = "Reverse";
 }

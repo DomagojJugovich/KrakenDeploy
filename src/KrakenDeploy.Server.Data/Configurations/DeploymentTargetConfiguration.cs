@@ -32,6 +32,8 @@ public class DeploymentTargetConfiguration : IEntityTypeConfiguration<Deployment
 
         builder.Property(x => x.TransportMode).IsRequired().HasConversion<int>();
 
+        builder.Property(x => x.AutoUpdateEnabled).IsRequired().HasDefaultValue(true);
+
         builder.Property(x => x.RegistrationKeyHash).HasMaxLength(128);
         builder.Property(x => x.RegistrationTokenExpiresUtc);
 

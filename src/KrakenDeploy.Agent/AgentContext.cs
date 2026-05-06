@@ -24,13 +24,20 @@ public sealed class AgentContext
     public AgentIdentity? Identity { get; private set; }
 
     /// <summary>
+    /// Transport mode assigned by the server during registration.
+    /// Defaults to <c>Reverse</c> for existing identities that predate this field.
+    /// </summary>
+    public string TransportMode { get; private set; } = "Reverse";
+
+    /// <summary>
     /// Called by <see cref="RegistrationHostedService"/> after a successful load or register.
     /// Subsequent calls are silently ignored.
     /// </summary>
-    internal void SetIdentity(AgentIdentity identity)
+    internal void SetIdentity(AgentIdentity identity, string transportMode = "Reverse")
     {
         ArgumentNullException.ThrowIfNull(identity);
         Identity = identity;
+        TransportMode = transportMode;
         _identityReady.TrySetResult();
     }
 }

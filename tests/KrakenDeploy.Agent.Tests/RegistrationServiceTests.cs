@@ -122,7 +122,7 @@ public sealed class RegistrationServiceTests : IAsyncDisposable
         // Silence default ASP.NET Core logging during tests.
         app.Lifetime.ApplicationStarted.Register(() => { });
         app.MapPost("/api/agents/register",
-            () => Results.Ok(new RegisterAgentResponse(agentId, jwt)));
+            () => Results.Ok(new RegisterAgentResponse(agentId, jwt, "Reverse")));
         await app.StartAsync();
         return new FakeRegistrationServer(app, $"http://127.0.0.1:{port}");
     }

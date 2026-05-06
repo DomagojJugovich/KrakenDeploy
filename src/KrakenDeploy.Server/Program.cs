@@ -214,8 +214,13 @@ public static class Program
         builder.Services.AddSingleton<AgentJwtService>();
         builder.Services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
         builder.Services.AddSingleton<TargetStatusPublisher>();
+        builder.Services.AddSingleton<ServerAgentUpdateService>();
         builder.Services.AddHostedService<DeploymentWorker>();
         builder.Services.AddHostedService<RunbookRunWorker>();
+
+        // ── Agent auto-update settings ────────────────────────────────────────
+        builder.Services.Configure<AgentUpdateSettings>(
+            builder.Configuration.GetSection("AgentUpdate"));
 
         // ── Authorization ────────────────────────────────────────────────────
         // The fallback policy covers all endpoints that call RequireAuthorization().
@@ -423,8 +428,345 @@ public static class Program
                 }
 
                 var jwt = jwtSvc.Issue(target.Id);
-                return Results.Ok(new RegisterAgentResponse(target.Id, jwt));
+                return Results.Ok(new RegisterAgentResponse(
+                    target.Id, jwt, target.TransportMode.ToString()));
             }).AllowAnonymous();
+
+        // ── Agent REST API (non-SignalR transports: Direct, Polling) ──────────────
+        // Mirrors the SignalR hub methods so DirectServerLink and PollingServerLink
+        // can communicate with the server via plain HTTP.
+        //
+        // Heartbeat: POST /api/agents/heartbeat
+        app.MapPost("/api/agents/heartbeat",
+            async (
+                HeartbeatRequest req,
+                KrakenDbContext db,
+                TargetStatusPublisher statusPub,
+                TimeProvider timeProvider,
+                HttpContext http,
+                CancellationToken ct) =>
+            {
+                var targetIdClaim = http.User.FindFirst(
+                    System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+                if (targetIdClaim is null || !Guid.TryParse(targetIdClaim, out var targetId))
+                {
+                    return Results.Unauthorized();
+                }
+
+                var target = await db.DeploymentTargets
+                    .FindAsync(new object[] { targetId }, ct)
+                    .ConfigureAwait(false);
+                if (target is null)
+                {
+                    return Results.NotFound();
+                }
+
+                var now = timeProvider.GetUtcNow();
+                target.LastSeenUtc = now;
+                if (req.MachineName is not null)
+                {
+                    target.MachineName = req.MachineName;
+                }
+
+                if (req.OperatingSystem is not null)
+                {
+                    target.OperatingSystem = req.OperatingSystem;
+                }
+
+                if (req.AgentVersion is not null)
+                {
+                    target.AgentVersion = req.AgentVersion;
+                }
+                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+                // If the target was offline, transition to Online.
+                if (target.Status != TargetStatus.Online)
+                {
+                    target.Status = TargetStatus.Online;
+                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                    await statusPub.PublishAsync(targetId, TargetStatus.Online, now)
+                        .ConfigureAwait(false);
+                }
+
+                return Results.NoContent();
+            }).RequireAuthorization("AgentJwt");
+
+        // Report status: POST /api/agents/status
+        app.MapPost("/api/agents/status",
+            async (
+                HttpContext http,
+                KrakenDbContext db,
+                CancellationToken ct) =>
+            {
+                var targetIdClaim = http.User.FindFirst(
+                    System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+                if (targetIdClaim is null || !Guid.TryParse(targetIdClaim, out var targetId))
+                {
+                    return Results.Unauthorized();
+                }
+
+                // Read the status string from the request body.
+                string status;
+                using (var reader = new System.IO.StreamReader(http.Request.Body))
+                {
+                    status = await reader.ReadToEndAsync(ct).ConfigureAwait(false);
+                }
+
+                var target = await db.DeploymentTargets
+                    .FindAsync(new object[] { targetId }, ct)
+                    .ConfigureAwait(false);
+                if (target is null)
+                {
+                    return Results.NotFound();
+                }
+
+                if (status.Contains("ShuttingDown", StringComparison.OrdinalIgnoreCase))
+                {
+                    target.Status = TargetStatus.Offline;
+                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                }
+
+                return Results.NoContent();
+            }).RequireAuthorization("AgentJwt");
+
+        // Append a log line: POST /api/deployments/{id:guid}/logs
+        app.MapPost("/api/deployments/{id:guid}/logs",
+            async (
+                Guid id,
+                DeploymentLogLineRequest req,
+                KrakenDbContext db,
+                TimeProvider timeProvider,
+                CancellationToken ct) =>
+            {
+                var deployment = await db.Deployments.FindAsync(new object[] { id }, ct)
+                    .ConfigureAwait(false);
+                if (deployment is null)
+                {
+                    // Try runbook runs.
+                    var run = await db.RunbookRuns.FindAsync(new object[] { id }, ct)
+                        .ConfigureAwait(false);
+                    if (run is null)
+                    {
+                        return Results.NotFound();
+                    }
+
+                    var runEntry = new KrakenDeploy.Server.Core.Domain.Runbooks.RunbookRunLogEntry
+                    {
+                        RunbookRunId = id,
+                        Level = req.Level,
+                        Message = req.Message,
+                        Timestamp = timeProvider.GetUtcNow(),
+                    };
+                    db.RunbookRunLogEntries.Add(runEntry);
+                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                    return Results.NoContent();
+                }
+
+                var entry = new KrakenDeploy.Server.Core.Domain.Deployments.DeploymentLogEntry
+                {
+                    DeploymentId = id,
+                    Level = req.Level,
+                    Message = req.Message,
+                    Timestamp = timeProvider.GetUtcNow(),
+                };
+                db.DeploymentLogEntries.Add(entry);
+                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                return Results.NoContent();
+            }).RequireAuthorization("AgentJwt");
+
+        // Complete a deployment: POST /api/deployments/{id:guid}/complete
+        app.MapPost("/api/deployments/{id:guid}/complete",
+            async (
+                Guid id,
+                CompleteDeploymentRequest req,
+                KrakenDbContext db,
+                TimeProvider timeProvider,
+                TargetStatusPublisher statusPub,
+                CancellationToken ct) =>
+            {
+                var deployment = await db.Deployments.FindAsync(new object[] { id }, ct)
+                    .ConfigureAwait(false);
+                if (deployment is null)
+                {
+                    // Try runbook runs.
+                    var run = await db.RunbookRuns.FindAsync(new object[] { id }, ct)
+                        .ConfigureAwait(false);
+                    if (run is null)
+                    {
+                        return Results.NotFound();
+                    }
+
+                    run.Status = req.Success
+                        ? KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Succeeded
+                        : KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Failed;
+                    run.CompletedUtc = timeProvider.GetUtcNow();
+                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                    return Results.NoContent();
+                }
+
+                deployment.Status = req.Success
+                    ? KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Succeeded
+                    : KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Failed;
+                deployment.CompletedUtc = timeProvider.GetUtcNow();
+                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                return Results.NoContent();
+            }).RequireAuthorization("AgentJwt");
+
+        // Pending work (polling mode): GET /api/agents/pending-work/{targetId:guid}
+        app.MapGet("/api/agents/pending-work/{targetId:guid}",
+            async (
+                Guid targetId,
+                KrakenDbContext db,
+                VariableService variableSvc,
+                CancellationToken ct) =>
+            {
+                // Find the next Queued deployment for this target.
+                var deployment = await db.Deployments
+                    .Where(d => d.TargetId == targetId
+                        && d.Status == KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Queued)
+                    .OrderBy(d => d.CreatedUtc)
+                    .FirstOrDefaultAsync(ct)
+                    .ConfigureAwait(false);
+
+                if (deployment is null)
+                {
+                    return Results.Ok(new { pending = false });
+                }
+
+                var release = await db.Releases
+                    .Include(r => r.ProcessSnapshot)
+                    .FirstOrDefaultAsync(r => r.Id == deployment.ReleaseId, ct)
+                    .ConfigureAwait(false);
+
+                if (release is null)
+                {
+                    return Results.Ok(new { pending = false });
+                }
+
+                // Build the deployment plan (same as DeploymentWorker)
+                var project = await db.Projects
+                    .FindAsync(new object[] { release.ProjectId }, ct)
+                    .ConfigureAwait(false);
+                var env = await db.Environments
+                    .FindAsync(new object[] { deployment.EnvironmentId }, ct)
+                    .ConfigureAwait(false);
+
+                var target = await db.DeploymentTargets
+                    .FindAsync(new object[] { deployment.TargetId!.Value }, ct)
+                    .ConfigureAwait(false);
+
+                var variables = await variableSvc
+                    .ResolveAsync(release.ProjectId, deployment.EnvironmentId,
+                        deployment.TargetId!.Value, target?.Roles ?? [],
+                        deployment.TenantId, ct)
+                    .ConfigureAwait(false);
+
+                // Split resolved variables into scalar and array.
+                // StringArray values from ResolveAsync are JSON arrays like ["a","b"].
+                var flatVars = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var arrayVars = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var (name, value) in variables)
+                {
+                    try
+                    {
+                        var items = System.Text.Json.JsonSerializer.Deserialize<string[]>(value);
+                        if (items is not null)
+                        {
+                            arrayVars[name] = items;
+                            flatVars[name] = string.Join(", ", items);
+                            continue;
+                        }
+                    }
+                    catch (System.Text.Json.JsonException) { }
+
+                    flatVars[name] = value;
+                }
+
+                var steps = release.ProcessSnapshot
+                    .OrderBy(s => s.SortOrder)
+                    .Select(s => new KrakenDeploy.Contracts.DeploymentStepPlan(
+                        Index: s.SortOrder,
+                        Name: s.Name,
+                        StepType: s.StepType,
+                        PackageId: s.PackageId ?? "",
+                        PackageVersion: s.PackageVersion ?? "",
+                        Config: s.Config ?? new Dictionary<string, string>(StringComparer.Ordinal)))
+                    .ToArray();
+
+                var plan = new KrakenDeploy.Contracts.DeploymentPlan(
+                    DeploymentId: deployment.Id,
+                    EnvironmentName: env?.Name ?? "",
+                    Steps: steps,
+                    Variables: flatVars,
+                    ArrayVariables: arrayVars);
+
+                return Results.Ok(new { pending = true, plan });
+            }).RequireAuthorization("AgentJwt");
+
+        // Agent auto-update — returns whether a newer agent version is available
+        // for the given runtime identifier. Called periodically by connected agents.
+        app.MapGet("/api/agents/update-info",
+            async (
+                string rid,
+                string currentVersion,
+                ServerAgentUpdateService updateSvc,
+                HttpContext http,
+                CancellationToken ct) =>
+            {
+                // Resolve the target id from the agent JWT so we can check the
+                // per-target opt-out flag.  If we can't resolve it (e.g. no auth),
+                // don't leak manifest details but still return no-update.
+                var targetIdClaim = http.User.FindFirst(
+                    System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+                if (targetIdClaim is null || !Guid.TryParse(targetIdClaim, out var targetId))
+                {
+                    return Results.Json(new AgentUpdateInfo(false, null, null, null, null));
+                }
+
+                var db = http.RequestServices.GetRequiredService<KrakenDbContext>();
+                var target = await db.DeploymentTargets
+                    .FindAsync(new object[] { targetId }, ct)
+                    .ConfigureAwait(false);
+
+                if (target is null || !target.AutoUpdateEnabled)
+                {
+                    return Results.Json(new AgentUpdateInfo(false, null, null, null, null));
+                }
+
+                var manifest = updateSvc.GetManifest();
+                if (manifest?.Rids is null || !manifest.Rids.TryGetValue(rid, out var ridInfo))
+                {
+                    return Results.Json(new AgentUpdateInfo(false, null, null, null, null));
+                }
+
+                var latest = manifest.LatestVersion;
+                var updateAvailable = !string.Equals(
+                    currentVersion, ridInfo.Version, StringComparison.OrdinalIgnoreCase);
+
+                return Results.Ok(new AgentUpdateInfo(
+                    updateAvailable,
+                    ridInfo.Version,
+                    updateAvailable ? $"/api/agents/download/{rid}" : null,
+                    ridInfo.SizeBytes,
+                    updateAvailable ? ridInfo.Sha256 : null));
+            }).RequireAuthorization(ApiKeyAuthenticationHandler.SchemeName, "AgentJwt");
+
+        // Agent binary download — serves the self-contained agent archive for the
+        // given RID. The caller must already know the RID from the update-info response.
+        app.MapGet("/api/agents/download/{rid}",
+            (string rid, ServerAgentUpdateService updateSvc) =>
+            {
+                var download = updateSvc.OpenDownload(rid);
+                if (download is null)
+                {
+                    return Results.NotFound(new { error = $"No agent binary found for RID '{rid}'." });
+                }
+
+                var (stream, fileName, contentType) = download.Value;
+                return Results.Stream(stream, contentType, fileName,
+                    enableRangeProcessing: true);
+            }).RequireAuthorization(ApiKeyAuthenticationHandler.SchemeName, "AgentJwt");
 
         app.MapGet("/healthz",
             async (
