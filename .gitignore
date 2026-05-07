@@ -65,6 +65,11 @@ coverage*.info
 *.snupkg
 **/[Pp]ackages/*
 !**/[Pp]ackages/build/
+# Domain entity folders must not be excluded by the NuGet/build rules above
+!src/**/Domain/Packages/
+!src/**/Domain/Packages/**
+!src/**/Domain/Releases/
+!src/**/Domain/Releases/**
 *.nuget.props
 *.nuget.targets
 

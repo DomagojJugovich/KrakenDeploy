@@ -126,7 +126,8 @@ public static class ServiceCollectionExtensions
                 options.Lockout.MaxFailedAccessAttempts = 5;
                 options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
             })
-            .AddEntityFrameworkStores<KrakenDbContext>();
+            .AddEntityFrameworkStores<KrakenDbContext>()
+            .AddSignInManager();
     }
 
     private static void TryAddTimeProvider(this IServiceCollection services)

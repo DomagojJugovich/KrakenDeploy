@@ -391,9 +391,10 @@ public static class Program
             Authorization = [new HangfireDashboardAuthFilter()],
         });
 
-        app.MapStaticAssets();
+        app.MapStaticAssets().AllowAnonymous();
         app.MapRazorComponents<App>()
-            .AddInteractiveServerRenderMode();
+            .AddInteractiveServerRenderMode()
+            .AllowAnonymous();
 
         app.MapPost("/logout", async (SignInManager<ApplicationUser> signInManager) =>
         {
