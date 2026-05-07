@@ -3,6 +3,7 @@
 @attribute [Authorize]
 
 @using KrakenDeploy.Server.Core.Domain.Deployments
+@inject ProjectService ProjectSvc
 @inject DeploymentService DeploymentSvc
 
 <ProjectShell Slug="@Slug">
@@ -45,10 +46,23 @@
         </div>
     </RadzenStack>
 
-    @if (_matrix is null)
+    @if (!_loaded)
     {
-        <RadzenProgressBarCircular ShowValue="false" Mode="ProgressBarMode.Indeterminate"
-                                    Size="ProgressBarCircularSize.Medium" />
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            Loading deployments...
+        </RadzenText>
+    }
+    else if (_loadError is not null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false">
+            Failed to load dashboard: @_loadError
+        </RadzenAlert>
+    }
+    else if (_matrix is null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+            Project '@Slug' was not found.
+        </RadzenAlert>
     }
     else if (_matrix.Tenants.Count == 0)
     {
@@ -153,11 +167,12 @@
 
 @code {
     [Parameter] public string Slug { get; set; } = "";
-    [CascadingParameter(Name = "Project")] public Project? Project { get; set; }
 
     private ProjectDashboardMatrix? _matrix;
     private string? _filterReleaseId;
     private string _groupBy = "none";
+    private bool _loaded;
+    private string? _loadError;
 
     private record Option(string Value, string Label);
 
@@ -170,17 +185,38 @@
 
     protected override async Task OnParametersSetAsync()
     {
-        if (Project is null) return;
-        _matrix = await DeploymentSvc.GetProjectMatrixAsync(Project.Id);
+        // Load Project via Slug rather than relying on cascading from
+        // ProjectShell — the cascade can't always cross the rendermode
+        // boundary (ProjectShell is SSR, Dashboard is InteractiveServer).
+        try
+        {
+            var project = await ProjectSvc.GetBySlugAsync(Slug);
+            if (project is null)
+            {
+                _matrix = null;
+                _loaded = true;
+                return;
+            }
 
-        // Distinct release versions present in this project's matrix become
-        // the filter dropdown choices. Most recent first.
-        _releaseOptions = _matrix.Cells.Values
-            .OrderByDescending(c => c.CreatedUtc)
-            .Select(c => c.ReleaseVersion)
-            .Distinct()
-            .Select(v => new Option(v, v))
-            .ToList();
+            _matrix = await DeploymentSvc.GetProjectMatrixAsync(project.Id);
+
+            // Distinct release versions present in this project's matrix become
+            // the filter dropdown choices. Most recent first.
+            _releaseOptions = _matrix.Cells.Values
+                .OrderByDescending(c => c.CreatedUtc)
+                .Select(c => c.ReleaseVersion)
+                .Distinct()
+                .Select(v => new Option(v, v))
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            _loadError = ex.Message;
+        }
+        finally
+        {
+            _loaded = true;
+        }
     }
 
     private string ReleaseLabelById(string? id) => id ?? "";

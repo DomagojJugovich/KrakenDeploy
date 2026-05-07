@@ -4,6 +4,7 @@
 
 @using KrakenDeploy.Server.Core.Domain.Lifecycles
 @using KrakenDeploy.Server.Core.Domain.Processes
+@inject ProjectService ProjectSvc
 @inject ProcessService ProcessSvc
 @inject LifecycleService LifecycleSvc
 @inject DialogService Dialog
@@ -29,10 +30,30 @@
         </RadzenStack>
     </RadzenStack>
 
+    @if (!_loaded)
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            Loading process...
+        </RadzenText>
+    }
+    else if (_loadError is not null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false">
+            Failed to load process: @_loadError
+        </RadzenAlert>
+    }
+    else if (_project is null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+            Project '@Slug' was not found.
+        </RadzenAlert>
+    }
+    else
+    {
     <div class="kraken-process-layout">
         @* ── Left: step list ───────────────────────────────────────────── *@
         <div class="kraken-process-steps">
-            @if (_loaded && _steps.Count == 0)
+            @if (_steps.Count == 0)
             {
                 <RadzenCard class="rz-p-5 rz-text-align-center">
                     <RadzenIcon Icon="extension" Style="font-size: 3rem; opacity: 0.3;" />
@@ -202,45 +223,63 @@
             </RadzenCard>
         </aside>
     </div>
+    }
 </ProjectShell>
 
 @code {
     [Parameter] public string Slug { get; set; } = "";
-    [CascadingParameter(Name = "Project")] public Project? Project { get; set; }
 
+    private Project? _project;
     private List<DeploymentStep> _steps = [];
     private Lifecycle? _lifecycle;
     private bool _loaded;
+    private string? _loadError;
 
     protected override async Task OnParametersSetAsync()
     {
-        if (Project is null) return;
-
-        var process = await ProcessSvc.GetAsync(Project.Id);
-        _steps = process?.Steps.OrderBy(s => s.SortOrder).ToList() ?? [];
-
-        if (Project.LifecycleId is { } lifecycleId)
+        // Load Project via Slug rather than cascading from ProjectShell — the
+        // cascade does not reliably cross the rendermode boundary
+        // (ProjectShell is SSR, Process is InteractiveServer).
+        try
         {
-            _lifecycle = await LifecycleSvc.GetAsync(lifecycleId);
-        }
+            _project = await ProjectSvc.GetBySlugAsync(Slug);
+            if (_project is null)
+            {
+                return;
+            }
 
-        _loaded = true;
+            var process = await ProcessSvc.GetAsync(_project.Id);
+            _steps = process?.Steps.OrderBy(s => s.SortOrder).ToList() ?? [];
+
+            if (_project.LifecycleId is { } lifecycleId)
+            {
+                _lifecycle = await LifecycleSvc.GetAsync(lifecycleId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _loadError = ex.Message;
+        }
+        finally
+        {
+            _loaded = true;
+        }
     }
 
     private async Task ReloadStepsAsync()
     {
-        if (Project is null) return;
-        var process = await ProcessSvc.GetAsync(Project.Id);
+        if (_project is null) return;
+        var process = await ProcessSvc.GetAsync(_project.Id);
         _steps = process?.Steps.OrderBy(s => s.SortOrder).ToList() ?? [];
     }
 
     private async Task OpenAddStepAsync()
     {
-        if (Project is null) return;
+        if (_project is null) return;
 
         var result = await Dialog.OpenAsync<StepFormDialog>(
             "Add Step",
-            new Dictionary<string, object> { [nameof(StepFormDialog.ProjectId)] = Project.Id },
+            new Dictionary<string, object> { [nameof(StepFormDialog.ProjectId)] = _project.Id },
             new DialogOptions { Width = "640px" });
 
         if (result is true)
