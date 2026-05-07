@@ -1,5 +1,7 @@
 using KrakenDeploy.Server.Core.Domain.Security;
+using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data;
+using KrakenDeploy.Server.Data.Encryption;
 using KrakenDeploy.Server.Data.Identity;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.AspNetCore.Identity;
@@ -57,6 +59,9 @@ internal static class UserCommands
 
         builder.Services.AddKrakenDeployData(connectionString);
         builder.Services.AddKrakenDeployIdentityCore();
+        builder.Services.AddSingleton<IEncryptionService>(
+            _ => new AesEncryptionService(
+                Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32))));
 
         using var host = builder.Build();
         await using var scope = host.Services.CreateAsyncScope();

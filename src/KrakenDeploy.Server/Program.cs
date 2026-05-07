@@ -119,7 +119,8 @@ public static class Program
 
         var dataPath = builder.Configuration["Server:DataPath"] ?? "data";
         builder.Services.AddKrakenDeployData(connectionString, dataPath);
-        builder.Services.AddKrakenDeployIdentityCore();
+        builder.Services.AddKrakenDeployIdentityCore()
+            .AddSignInManager();
 
         // ── Space context (HTTP-aware override of DefaultSpaceContext) ───────
         // Reads the active Space from the kraken-active-space cookie set by
