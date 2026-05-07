@@ -157,3 +157,58 @@ html, body {
     color: #721c24;
     border-bottom: 1px solid #dc3545;
 }
+
+/* ── Project shell (per-project sub-page layout) ─────────────────────────── */
+
+.kraken-project-icon {
+    width: 2.75rem;
+    height: 2.75rem;
+    border-radius: 6px;
+    background: var(--rz-primary, #1976d2);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.kraken-project-icon .rzi {
+    font-size: 1.6rem;
+}
+
+.kraken-project-shell {
+    display: flex;
+    gap: 1.5rem;
+    align-items: flex-start;
+}
+
+.kraken-project-submenu {
+    width: 230px;
+    flex-shrink: 0;
+}
+
+.kraken-project-submenu .rz-panel-menu {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+}
+
+.kraken-submenu-section {
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--rz-text-tertiary-color, rgba(0, 0, 0, 0.55));
+    padding: 0.4rem 1rem 0.2rem;
+}
+
+.kraken-submenu-sep {
+    border: none;
+    border-top: 1px solid var(--rz-base-300, #e0e0e0);
+    margin: 0.5rem 0.5rem;
+}
+
+.kraken-project-content {
+    flex: 1;
+    min-width: 0;
+}

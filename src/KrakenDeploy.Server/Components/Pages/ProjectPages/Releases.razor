@@ -1,0 +1,15 @@
+@page "/projects/{Slug}/releases"
+@attribute [Authorize]
+
+<ProjectShell Slug="@Slug">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-3">
+        Releases
+    </RadzenText>
+    <RadzenAlert AlertStyle="AlertStyle.Info" ShowIcon="true" AllowClose="false">
+        Project releases list — pending.
+    </RadzenAlert>
+</ProjectShell>
+
+@code {
+    [Parameter] public string Slug { get; set; } = "";
+}

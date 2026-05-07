@@ -1,0 +1,120 @@
+@using KrakenDeploy.Server.Core.Domain.Projects
+@using KrakenDeploy.Server.Data.Services
+@inject ProjectService ProjectSvc
+@inject NavigationManager Nav
+
+@*
+    Shell wrapper for every project sub-page. Provides:
+    - Breadcrumb (Projects / All Projects)
+    - Project header (icon, name, favorite star)
+    - Left sub-menu (Dashboard, Process, Channels, Releases, ...)
+    - Right content area rendered from ChildContent
+
+    Usage in a sub-page:
+        <ProjectShell Slug="@Slug">
+            <!-- page-specific content -->
+        </ProjectShell>
+*@
+
+@if (_loaded && _project is null)
+{
+    <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+        Project '@Slug' was not found in this Space.
+    </RadzenAlert>
+}
+else if (_project is not null)
+{
+    <PageTitle>@_project.Name - KrakenDeploy</PageTitle>
+
+    @* Breadcrumb *@
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                 Gap="0.4rem" class="rz-mb-3">
+        <RadzenLink Path="/projects" Text="Projects" />
+        <RadzenIcon Icon="chevron_right" Style="font-size: 1rem; opacity: 0.5;" />
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-0">
+            All Projects
+        </RadzenText>
+    </RadzenStack>
+
+    @* Project header *@
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                 Gap="1rem" class="rz-mb-4">
+        <div class="kraken-project-icon">
+            <RadzenIcon Icon="folder_open" />
+        </div>
+        <RadzenText TextStyle="TextStyle.H4" TagName="TagName.H1" class="rz-mb-0">
+            @_project.Name
+        </RadzenText>
+        <RadzenIcon Icon="star_outline"
+                    Style="font-size: 1.5rem; cursor: pointer; opacity: 0.6;" />
+    </RadzenStack>
+
+    @* Two-column layout: sub-menu | content *@
+    <div class="kraken-project-shell">
+        <aside class="kraken-project-submenu">
+            <RadzenPanelMenu>
+                @* Primary section *@
+                <RadzenPanelMenuItem Text="Dashboard" Path="@Sub("dashboard")" />
+                <RadzenPanelMenuItem Text="Process"   Path="@Sub("process")" />
+                <RadzenPanelMenuItem Text="Channels"  Path="@Sub("channels")" />
+                <RadzenPanelMenuItem Text="Releases"  Path="@Sub("releases")" />
+                <RadzenPanelMenuItem Text="Triggers"  Path="@Sub("triggers")" />
+                <RadzenPanelMenuItem Text="Freezes"   Path="@Sub("freezes")" />
+                <RadzenPanelMenuItem Text="Settings"  Path="@Sub("settings")" />
+            </RadzenPanelMenu>
+
+            <hr class="kraken-submenu-sep" />
+
+            <div class="kraken-submenu-section">Operations</div>
+            <RadzenPanelMenu>
+                <RadzenPanelMenuItem Text="Runbooks"         Path="@Sub("runbooks")" />
+                <RadzenPanelMenuItem Text="Runbook Triggers" Path="@Sub("runbook-triggers")" />
+            </RadzenPanelMenu>
+
+            <hr class="kraken-submenu-sep" />
+
+            <RadzenPanelMenu>
+                <RadzenPanelMenuItem Text="Ephemeral Environments"
+                                     Path="@Sub("ephemeral-environments")" />
+            </RadzenPanelMenu>
+
+            <hr class="kraken-submenu-sep" />
+
+            <RadzenPanelMenu>
+                <RadzenPanelMenuItem Text="Project Variables" Path="@Sub("variables")" />
+                <RadzenPanelMenuItem Text="Tenant Variables"  Path="@Sub("tenant-variables")" />
+                <RadzenPanelMenuItem Text="Variable Sets"     Path="@Sub("variable-sets")" />
+                <RadzenPanelMenuItem Text="All Variables"     Path="@Sub("all-variables")" />
+                <RadzenPanelMenuItem Text="Variable Preview"  Path="@Sub("variable-preview")" />
+            </RadzenPanelMenu>
+
+            <hr class="kraken-submenu-sep" />
+
+            <RadzenPanelMenu>
+                <RadzenPanelMenuItem Text="Tenants" Path="@Sub("tenants")" />
+            </RadzenPanelMenu>
+        </aside>
+
+        <main class="kraken-project-content">
+            <CascadingValue Value="_project" Name="Project">
+                @ChildContent
+            </CascadingValue>
+        </main>
+    </div>
+}
+
+@code {
+    [Parameter] public string Slug { get; set; } = "";
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private Project? _project;
+    private bool _loaded;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _project = await ProjectSvc.GetBySlugAsync(Slug);
+        _loaded = true;
+    }
+
+    private string Sub(string segment) => $"/projects/{Slug}/{segment}";
+}

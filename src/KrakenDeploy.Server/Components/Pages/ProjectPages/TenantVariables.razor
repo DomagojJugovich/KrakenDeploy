@@ -1,0 +1,15 @@
+@page "/projects/{Slug}/tenant-variables"
+@attribute [Authorize]
+
+<ProjectShell Slug="@Slug">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-3">
+        Tenant Variables
+    </RadzenText>
+    <RadzenAlert AlertStyle="AlertStyle.Info" ShowIcon="true" AllowClose="false">
+        Tenant-scoped variable values for this project — pending.
+    </RadzenAlert>
+</ProjectShell>
+
+@code {
+    [Parameter] public string Slug { get; set; } = "";
+}

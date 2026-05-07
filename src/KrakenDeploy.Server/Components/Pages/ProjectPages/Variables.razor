@@ -1,0 +1,15 @@
+@page "/projects/{Slug}/variables"
+@attribute [Authorize]
+
+<ProjectShell Slug="@Slug">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-3">
+        Project Variables
+    </RadzenText>
+    <RadzenAlert AlertStyle="AlertStyle.Info" ShowIcon="true" AllowClose="false">
+        Project-scoped variable editor — pending.
+    </RadzenAlert>
+</ProjectShell>
+
+@code {
+    [Parameter] public string Slug { get; set; } = "";
+}

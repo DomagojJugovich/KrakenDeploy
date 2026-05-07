@@ -1,0 +1,25 @@
+@page "/projects/{Slug}/process"
+@attribute [Authorize]
+
+<ProjectShell Slug="@Slug">
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                 JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-4">
+        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
+            Process
+        </RadzenText>
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+            <RadzenButton Text="Create Release" Icon="add"
+                          ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small" />
+            <RadzenButton Text="Add Step" Icon="add"
+                          ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small" />
+        </RadzenStack>
+    </RadzenStack>
+
+    <RadzenAlert AlertStyle="AlertStyle.Info" ShowIcon="true" AllowClose="false">
+        Deployment step editor — Phase 2.
+    </RadzenAlert>
+</ProjectShell>
+
+@code {
+    [Parameter] public string Slug { get; set; } = "";
+}

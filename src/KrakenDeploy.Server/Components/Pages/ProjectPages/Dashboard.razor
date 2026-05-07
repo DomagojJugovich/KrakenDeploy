@@ -1,0 +1,21 @@
+@page "/projects/{Slug}/dashboard"
+@attribute [Authorize]
+
+<ProjectShell Slug="@Slug">
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                 JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-4">
+        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
+            Project Dashboard
+        </RadzenText>
+        <RadzenButton Text="Create Release" Icon="add"
+                      ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small" />
+    </RadzenStack>
+
+    <RadzenAlert AlertStyle="AlertStyle.Info" ShowIcon="true" AllowClose="false">
+        Tenant × Environment deployment matrix — Phase 3.
+    </RadzenAlert>
+</ProjectShell>
+
+@code {
+    [Parameter] public string Slug { get; set; } = "";
+}

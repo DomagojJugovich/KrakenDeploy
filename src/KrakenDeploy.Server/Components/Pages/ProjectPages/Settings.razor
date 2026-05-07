@@ -1,0 +1,15 @@
+@page "/projects/{Slug}/settings"
+@attribute [Authorize]
+
+<ProjectShell Slug="@Slug">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-3">
+        Settings
+    </RadzenText>
+    <RadzenAlert AlertStyle="AlertStyle.Info" ShowIcon="true" AllowClose="false">
+        Project settings (name, slug, description, project group, default lifecycle) — pending.
+    </RadzenAlert>
+</ProjectShell>
+
+@code {
+    [Parameter] public string Slug { get; set; } = "";
+}
