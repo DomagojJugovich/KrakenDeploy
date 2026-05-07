@@ -178,6 +178,19 @@ All scripts live in `scripts/` and run with `pwsh` on Windows, Linux, and macOS.
 | `create-admin.ps1 -Email … -Password …` | Create (or no-op if exists) an admin user |
 | `run-server.ps1 [-Profile http\|https]` | Start the server in dev mode |
 | `run-agent.ps1 [-ServerUrl …] [-RegistrationToken …] [-DataPath …]` | Start an agent |
+| `setup-database.ps1 [-ConnectionString …]` | Interactive database creation + migration + seed |
+| `backup.ps1 -OutputDirectory <path>` | Full backup (pg_dump + data directory) |
+| `restore.ps1 -BackupDirectory <path>` | Restore a backup bundle |
+
+## Deployment
+
+For production deployment, see the [On-Prem Deployment Guide](docs/on-prem-guide.md).
+
+Quick reference:
+- **Docker Compose:** `deploy/onprem/` — one-command bring-up with Postgres + Caddy
+- **Manual:** `database create` → `database setup` → `users create-admin` CLI flow
+- **OIDC templates:** `docs/oidc-templates/` — Entra ID, Okta, Google, ADFS, Azure AD
+- **HA pair:** `docs/ha-pair.md` — 2-node setup with shared Postgres
 
 ## License
 

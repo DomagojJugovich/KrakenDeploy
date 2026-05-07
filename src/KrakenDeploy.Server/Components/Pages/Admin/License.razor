@@ -1,0 +1,122 @@
+@page "/settings/license"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.Licensing
+
+@inject LicenseService LicenseSvc
+@inject NotificationService Notify
+
+<PageTitle>License - KrakenDeploy</PageTitle>
+
+<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">License</RadzenText>
+
+<RequirePermission Permission="Permission.ConfigureServer">
+    <RadzenCard class="rz-mb-4" Style="max-width: 700px;">
+        <RadzenStack Gap="1rem">
+            <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H2" class="rz-mb-0">
+                Enter License Key
+            </RadzenText>
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                Paste the license key you received from KrakenDeploy. The key is
+                validated locally — no internet connection required.
+            </RadzenText>
+            <div>
+                <RadzenTextArea @bind-Value="_licenseText"
+                                Rows="6"
+                                Style="width: 100%; font-family: monospace;"
+                                Placeholder="Paste your license key here..."
+                                aria-label="License key" />
+            </div>
+            <div>
+                <RadzenButton Text="Validate &amp; Activate"
+                              ButtonStyle="ButtonStyle.Primary"
+                              Click="ActivateAsync"
+                              Disabled="@string.IsNullOrWhiteSpace(_licenseText)" />
+            </div>
+        </RadzenStack>
+    </RadzenCard>
+</RequirePermission>
+
+@if (_result is not null)
+{
+    <RadzenCard Style="max-width: 700px;">
+        <RadzenStack Gap="1rem">
+            <RadzenStack Orientation="Orientation.Horizontal"
+                         AlignItems="AlignItems.Center" Gap="0.75rem">
+                <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H2" class="rz-mb-0">
+                    Current License
+                </RadzenText>
+                @if (_result.IsValid)
+                {
+                    <RadzenBadge Text="Active" BadgeStyle="BadgeStyle.Success" />
+                }
+                else
+                {
+                    <RadzenBadge Text="Invalid" BadgeStyle="BadgeStyle.Danger" />
+                }
+            </RadzenStack>
+
+            @if (_result.IsValid && _result.Claims is not null)
+            {
+                var c = _result.Claims;
+                <RadzenStack Gap="0.5rem">
+                    <div>
+                        <strong>Licensed to:</strong> @c.CustomerName
+                    </div>
+                    <div>
+                        <strong>Type:</strong> @c.LicenseType
+                    </div>
+                    <div>
+                        <strong>Expires:</strong> @c.ExpiresUtc.ToString("yyyy-MM-dd")
+                        <span class="rz-color-secondary">
+                            (@((c.ExpiresUtc - DateTimeOffset.UtcNow).Days) days remaining)
+                        </span>
+                    </div>
+                    <div>
+                        <strong>Target limit:</strong> @(c.MaxTargets == 0 ? "Unlimited" : c.MaxTargets.ToString())
+                    </div>
+                    <div>
+                        <strong>User limit:</strong> @(c.MaxUsers == 0 ? "Unlimited" : c.MaxUsers.ToString())
+                    </div>
+                    <div>
+                        <strong>Issued:</strong> @c.IssuedUtc.ToString("yyyy-MM-dd")
+                    </div>
+                </RadzenStack>
+            }
+            else if (_result.ErrorMessage is not null)
+            {
+                <RadzenAlert AlertStyle="AlertStyle.Danger"
+                             Text="@_result.ErrorMessage" />
+            }
+        </RadzenStack>
+    </RadzenCard>
+}
+
+@code {
+    private string _licenseText = "";
+    private LicenseValidationResult? _result;
+
+    protected override void OnInitialized()
+    {
+        _result = LicenseSvc.LoadAndValidate();
+    }
+
+    private void ActivateAsync()
+    {
+        LicenseSvc.ClearCache();
+        _result = LicenseSvc.ValidateLicense(_licenseText);
+
+        if (_result.IsValid)
+        {
+            Notify.Notify(NotificationSeverity.Success, "Activated",
+                $"License for {_result.Claims!.CustomerName} is active.");
+        }
+        else
+        {
+            Notify.Notify(NotificationSeverity.Error, "Invalid",
+                _result.ErrorMessage ?? "Unknown error.");
+        }
+
+        _licenseText = "";
+    }
+}

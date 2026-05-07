@@ -1,0 +1,175 @@
+# KrakenDeploy — On-Premises Deployment Guide
+
+## System Requirements
+
+| Resource | Minimum | Recommended |
+|----------|---------|-------------|
+| OS | Windows Server 2019+, Ubuntu 22.04+, Debian 12+, RHEL 9+ | Same |
+| RAM | 2 GB | 4 GB |
+| Disk | 10 GB + package storage | 50 GB SSD |
+| Database | PostgreSQL 16 | PostgreSQL 16 with SSD storage |
+| .NET | .NET 9 Runtime (bundled with Docker/installer) | Same |
+| Network | Outbound HTTPS (443) for Let's Encrypt; inbound 80/443 | Static IP recommended |
+
+## Installation Paths
+
+### Path A: Docker Compose (recommended)
+
+**Simplest path — one command to bring everything up.**
+
+```bash
+# 1. Clone or download the deploy/onprem directory
+# 2. Configure environment
+cp .env.example .env
+# Fill in POSTGRES_PASSWORD, AGENT_JWT_KEY, ENCRYPTION_KEY, DOMAIN
+
+# 3. Build server image
+docker build -t krakendeploy-server:latest -f ../../Dockerfile.server ../..
+
+# 4. Start
+docker compose up -d
+
+# 5. Create admin user
+docker compose exec kraken-server dotnet KrakenDeploy.Server.dll users create-admin \
+    --email admin@example.com --password <your-password>
+
+# 6. Login at https://<your-domain>/
+```
+
+See `deploy/onprem/README.md` for backup, restore, upgrade, and rollback procedures.
+
+### Path B: Manual (Windows or Linux)
+
+**For users who prefer to run the server directly (no Docker).**
+
+```powershell
+# 1. Install .NET 9 SDK/Runtime
+# 2. Install PostgreSQL 16
+
+# 3. Create the database
+dotnet KrakenDeploy.Server.dll database create \
+    --host localhost --username postgres --password <pwd> --database-name krakendeploy
+
+# 4. Run setup (migrations + seed)
+dotnet KrakenDeploy.Server.dll database setup \
+    --connection-string "Host=localhost;Port=5432;Database=krakendeploy;Username=postgres;Password=<pwd>"
+
+# 5. Create admin user
+dotnet KrakenDeploy.Server.dll users create-admin \
+    --email admin@example.com --password <your-password>
+
+# 6. Start the server
+dotnet KrakenDeploy.Server.dll
+```
+
+Configure secrets via environment variables or `appsettings.Production.json`:
+
+| Variable | Purpose |
+|----------|---------|
+| `ConnectionStrings__KrakenDb` | Postgres connection string |
+| `Agent__JwtSigningKey` | Minimum 32 chars — agent auth signing key |
+| `Encryption__MasterKey` | Base64 32 bytes — AES-256-GCM master key |
+| `KRAKEN_LICENSE_KEY` | License key (or upload via UI) |
+
+### Path C: Windows MSI / Linux package
+
+Installers are in development (M10.1 slices 7-8). For now use Docker Compose
+or manual deployment.
+
+## License Activation
+
+1. Login as the admin user created during setup.
+2. Go to **Settings** → **License**.
+3. Paste your license key and click **Validate & Activate**.
+4. The license is validated locally — no internet connection required.
+
+Alternatively, set the `KRAKEN_LICENSE_KEY` environment variable before starting the server.
+
+## Configuring Authentication
+
+KrakenDeploy supports local accounts (email/password) and OIDC single sign-on.
+
+### Local accounts (default)
+
+The bootstrap admin is created via the CLI. Additional users are invited through
+**Configuration** → **Users** → **Invite User**.
+
+### OIDC (recommended for production)
+
+1. Set up an OIDC application in your identity provider. See `docs/oidc-templates/`
+   for step-by-step guides for Entra ID, Okta, Google Workspace, ADFS, and Azure AD.
+2. Go to **Configuration** → **Identity Providers** → **New Identity Provider**.
+3. Enter the Authority, Client ID, Client Secret, and other fields from the guide.
+4. Users will see a "Sign in with {Provider}" button on the login page.
+5. First-time OIDC sign-in automatically creates the user account.
+
+## Backup and Restore
+
+### Backup
+
+```bash
+dotnet KrakenDeploy.Server.dll backup --to /path/to/backups
+```
+
+This creates a timestamped directory containing:
+- `database.sql` — full PostgreSQL dump
+- `data/` — server data directory (packages, artifacts, agent binaries)
+- `manifest.json` — server version and metadata
+
+### Restore
+
+```bash
+dotnet KrakenDeploy.Server.dll restore --from /path/to/backups/kraken-backup-<timestamp>
+```
+
+**Important:** The server must be stopped during restore. Downgrade the server
+binary to the backup's version if restoring an older backup.
+
+### Automated backups (recommended)
+
+On Linux:
+```bash
+# /etc/cron.d/kraken-backup
+0 3 * * * kraken dotnet /opt/krakendeploy/KrakenDeploy.Server.dll backup --to /opt/krakendeploy/backups
+```
+
+On Windows, use Task Scheduler to run the backup command nightly.
+
+## Upgrade Procedure
+
+1. **Stop the server** (stop the service or `docker compose stop`).
+2. **Install the new version** (new MSI, new Docker image, or new binaries).
+3. **Start the server** — migrations apply automatically on startup. No manual
+   `database setup` needed on upgrades.
+
+## Rollback Procedure
+
+1. **Restore the database** from the most recent backup.
+2. **Restore the data directory** from the same backup.
+3. **Downgrade the server binary** to the version that created the backup.
+4. **Start the server.**
+
+## High Availability
+
+For larger customers, two server nodes can share a single PostgreSQL instance.
+See `docs/ha-pair.md` for the full configuration guide.
+
+## Troubleshooting
+
+### Database connection refused
+- Verify PostgreSQL is running: `pg_isready`
+- Check firewall: port 5432 must be reachable from the server
+
+### License not accepted
+- Ensure the license key is copied exactly (no extra whitespace)
+- Check the server logs for details: `logs/server-*.log`
+
+### OIDC sign-in fails
+- Verify the redirect URI is exactly `https://<your-domain>/signin-oidc`
+- Check that the client secret hasn't expired
+- Look for error messages in the server logs
+
+### Agents can't connect
+- Verify `Agent__JwtSigningKey` is at least 32 characters
+- Check agent logs for the registration token exchange error
+- Ensure the server's public URL is reachable from the agent machine

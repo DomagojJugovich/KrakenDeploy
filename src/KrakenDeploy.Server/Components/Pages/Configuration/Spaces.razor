@@ -1,0 +1,130 @@
+@page "/configuration/spaces"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@inject SpaceService SpaceSvc
+@inject DialogService Dialog
+@inject NotificationService Notify
+
+<PageTitle>Spaces - KrakenDeploy</PageTitle>
+
+<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+             Gap="1rem" class="rz-mb-4">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">Spaces</RadzenText>
+    <RequirePermission Permission="Permission.SpaceCreate">
+        <RadzenButton Icon="add" Text="New Space"
+                      ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                      Click="OpenCreateDialogAsync" />
+    </RequirePermission>
+</RadzenStack>
+
+<RadzenDataGrid Data="@_spaces" TItem="Space"
+                AllowPaging="true" PageSize="25"
+                AllowSorting="true"
+                AllowFiltering="true" FilterMode="FilterMode.Simple"
+                AllowColumnResize="true"
+                EmptyText="No spaces yet.">
+    <Columns>
+        <RadzenDataGridColumn TItem="Space" Property="Name" Title="Name" Width="240px">
+            <Template Context="s">
+                <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                             Gap="0.5rem">
+                    <span>@s.Name</span>
+                    @if (s.IsDefault)
+                    {
+                        <RadzenBadge Text="Default" BadgeStyle="BadgeStyle.Info" IsPill="true" />
+                    }
+                </RadzenStack>
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="Space" Property="Slug" Title="Slug" Width="160px" />
+        <RadzenDataGridColumn TItem="Space" Property="Description" Title="Description" />
+        <RadzenDataGridColumn TItem="Space" Title="Status" Width="100px"
+                              Filterable="false" Sortable="false" TextAlign="TextAlign.Center">
+            <Template Context="s">
+                <RadzenBadge Text="@s.Status.ToString()"
+                             BadgeStyle="@(s.Status == SpaceStatus.Active
+                                 ? BadgeStyle.Success
+                                 : s.Status == SpaceStatus.Suspended
+                                     ? BadgeStyle.Warning
+                                     : BadgeStyle.Secondary)" />
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="Space" Title="" Width="130px"
+                              Filterable="false" Sortable="false" TextAlign="TextAlign.Right">
+            <Template Context="s">
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.25rem"
+                             JustifyContent="JustifyContent.End">
+                    @if (s.Status == SpaceStatus.Active)
+                    {
+                        <RequirePermission Permission="Permission.SpaceEdit">
+                            <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
+                                          Size="ButtonSize.ExtraSmall"
+                                          Click="@(() => OpenEditDialogAsync(s))"
+                                          title="Edit Space" />
+                        </RequirePermission>
+                    }
+                    @if (!s.IsDefault && s.Status == SpaceStatus.Active)
+                    {
+                        <RequirePermission Permission="Permission.SpaceDelete">
+                            <RadzenButton Icon="archive" ButtonStyle="ButtonStyle.Warning"
+                                          Size="ButtonSize.ExtraSmall"
+                                          Click="@(() => ArchiveAsync(s))"
+                                          title="Archive Space" />
+                        </RequirePermission>
+                    }
+                </RadzenStack>
+            </Template>
+        </RadzenDataGridColumn>
+    </Columns>
+</RadzenDataGrid>
+
+@code {
+    private List<Space> _spaces = [];
+
+    protected override async Task OnInitializedAsync()
+        => _spaces = await SpaceSvc.GetAllAsync();
+
+    private async Task OpenCreateDialogAsync()
+    {
+        var result = await Dialog.OpenAsync<SpaceFormDialog>(
+            "New Space",
+            new Dictionary<string, object>(),
+            new DialogOptions { Width = "480px" });
+
+        if (result is true)
+            _spaces = await SpaceSvc.GetAllAsync();
+    }
+
+    private async Task OpenEditDialogAsync(Space space)
+    {
+        var result = await Dialog.OpenAsync<SpaceFormDialog>(
+            $"Edit Space: {space.Name}",
+            new Dictionary<string, object> { { "Space", space } },
+            new DialogOptions { Width = "480px" });
+
+        if (result is true)
+            _spaces = await SpaceSvc.GetAllAsync();
+    }
+
+    private async Task ArchiveAsync(Space space)
+    {
+        var confirmed = await Dialog.Confirm(
+            $"Archive '{space.Name}'?",
+            "Archive Space",
+            new ConfirmOptions { OkButtonText = "Archive", CancelButtonText = "Cancel" });
+
+        if (confirmed != true) return;
+
+        try
+        {
+            await SpaceSvc.ArchiveAsync(space.Id);
+            _spaces = await SpaceSvc.GetAllAsync();
+            Notify.Notify(NotificationSeverity.Success, "Archived", $"{space.Name} has been archived.");
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(NotificationSeverity.Error, "Error", ex.Message);
+        }
+    }
+}

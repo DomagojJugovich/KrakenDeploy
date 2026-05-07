@@ -136,3 +136,24 @@ html, body {
 .blazor-error-boundary::after {
     content: "An error has occurred.";
 }
+
+/* ── License banner ──────────────────────────────────────────────────────── */
+
+.kraken-license-banner {
+    padding: 0.5rem 1rem;
+    text-align: center;
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+
+.kraken-license-warning {
+    background: #fff3cd;
+    color: #664d03;
+    border-bottom: 1px solid #ffc107;
+}
+
+.kraken-license-error {
+    background: #f8d7da;
+    color: #721c24;
+    border-bottom: 1px solid #dc3545;
+}

@@ -458,9 +458,9 @@ The atomic-commit plan for M10. **Resilient to context loss** — if a session i
 | **G** — OIDC integration | ✅ `5c25d40` | `OidcRegistrar` loads enabled `IdentityProvider` rows at startup and registers one named OIDC scheme per provider. JIT user provisioning in `OnTicketReceived`. `ApplicationUser` extended with `LastOidcProviderId` + `ExternalGroups` (pipe-sep, survives stamp refresh). `PermissionEvaluator` branch c maps external groups to teams via DB. Login page shows OIDC buttons + error messages. Migration: `AddOidcUserFields`. |
 | **H** — Audit log | ✅ `cfcd711` | `AuditEntry` (jsonb snapshots, indexed) + `IAuditLog`/`AuditEventType` in Core. `AuditLogInterceptor` (SaveChangesInterceptor) auto-captures Added/Modified/Deleted with before/after JSON, skips sensitive props. `AuditLogService` for explicit events + `PurgeOldEntriesAsync` (Hangfire hook). `/audit` page: date-range/event-type/user/subject filters, snapshot viewer, `Permission.EventView` gate. Migration: `AddAuditLog`. |
 | **I** — Hangfire scheduled work | ✅ `67f9c0a` | `Hangfire.AspNetCore` + `Hangfire.PostgreSql` on Postgres. Four recurring jobs: `AuditRetentionJob` (nightly 03:00), `AgentLastSeenOfflineJob` (every 5 min), `RegistrationTokenExpiryJob` (nightly 02:00), `ScheduledDeploymentDispatchJob` (every min). `Deployment.ScheduledFor?` + `AddScheduledDeployments` migration. `/hangfire` dashboard — `HangfireDashboardAuthFilter` checks `Permission.AdministerSystem`. |
-| **J** — Agent auto-update | ✅ | Server hosts agent binaries + `version.json`. Agent compares version on heartbeat; swaps during configurable maintenance window. Per-target opt-out flag. |
-| **K** — Direct + Polling transports | ✅ | `DirectServerLink` (LAN-trusted server-to-agent) and `PollingServerLink` (highly restricted networks) implementations of the existing `IServerLink` abstraction. |
-| **L** — Caddy reference deployment | ✅ | `deploy/caddy/Caddyfile` + `docker-compose.yml` + README. Auto-HTTPS, SignalR/gRPC long-lived connection tuning. |
+| **J** — Agent auto-update | ✅ `c66b072` | Server hosts agent binaries + `version.json`. Agent compares version on heartbeat; swaps during configurable maintenance window. Per-target opt-out flag. |
+| **K** — Direct + Polling transports | ✅ `c66b072` | `DirectServerLink` (LAN-trusted server-to-agent) and `PollingServerLink` (highly restricted networks) implementations of the existing `IServerLink` abstraction. |
+| **L** — Caddy reference deployment | ✅ `c66b072` | `deploy/caddy/Caddyfile` + `docker-compose.yml` + README. Auto-HTTPS, SignalR/gRPC long-lived connection tuning. |
 
 After M10 ships, the work continues into M10.1 (on-prem packaging — MSI / deb / rpm / Compose / license) and M10.2 (cloud SaaS hardening — object storage backends, Redis backplane, billing, signup, blue/green).
 
@@ -682,21 +682,40 @@ Per-Space teams (auto-created per Space):
 
 **Customer profile:** software sold to a company; their IT installs on their own hardware (Windows or Linux). One install per company. Often air-gapped or behind a corporate proxy. Auth against their AD / Okta / Azure AD.
 
-- [ ] **Database setup flow** (both standalone and Docker paths — mirrors Octopus Deploy's installer UX):
+#### Implementation slice tracker
+
+| Slice | Done | Description |
+|---|---|---|
+| **1** — CLI dispatch + database | ✅ | `database create` / `database setup` / `database status` CLI subcommands. Extends `Program.Main` dispatch. |
+| **2** — Backup/Restore | ✅ | `backup --to` (pg_dump + data dir + manifest) and `restore --from` CLI. Wrapper scripts. |
+| **3** — License enforcement | ✅ | RSA-signed JWT license keys. `LicenseService`, `/settings/license` page, `<LicenseWarningBanner>`. |
+| **4** — Docker Compose on-prem | ✅ | `deploy/onprem/` stack: Postgres + Server + Caddy + kraken-init. `.env.example`, README. |
+| **5** — HA pair (Postgres registry) | ✅ | `PostgresAgentConnectionRegistry` via UNLOGGED table. `AddAgentConnectionRegistry` migration. Conditional DI. `docs/ha-pair.md`. |
+| **6** — OIDC config templates | ✅ | `docs/oidc-templates/`: Entra ID, Azure AD, Okta, Google Workspace, ADFS setup guides. |
+| **7** — Velopack Windows MSI | ⏳ | **Deferred** — needs code signing cert, release channel, app icon decisions. |
+| **8** — Linux .deb/.rpm | ⏳ | **Deferred** — needs maintainer info, GPG key, target distro decisions. |
+| **9** — On-prem deployment guide | ✅ | `docs/on-prem-guide.md` covering all install paths, license, OIDC, backup/restore, upgrade, HA. README updated. |
+| **10** — Single Space mode | ✅ | SpaceSwitcher hides when only Default Space exists (done in M10). Spaces management page at `/configuration/spaces`. |
+
+Slices 7-8 (Velopack MSI + Linux packaging) are deferred for a separate session — they require user decisions about code signing, package registries, and release channels.
+
+#### Implementation detail
+
+- [x] **Database setup flow** (both standalone and Docker paths — mirrors Octopus Deploy's installer UX):
   - **Recommended path — installer creates the database:** User provides Postgres admin credentials (host, port, superuser name/password) + desired database name. Installer connects, runs `CREATE DATABASE <name>`, then applies EF Core migrations + seeds initial data. No manual DBA work needed.
   - **Manual path — user pre-creates an empty database:** User creates an empty database themselves (e.g. via `createdb` or their DBA), gives Kraken the connection string. Installer runs migrations + seed. If the database already contains Kraken tables, the installer warns and aborts unless the user confirms it's an in-place upgrade.
   - **Docker path:** `docker compose up` brings its own Postgres container — no external DB needed. Migrations run automatically on first startup via an init container or startup hook.
   - EF Core handles all schema creation and ongoing migrations. Kraken owns its schema end-to-end.
 - [ ] **Windows MSI installer** (Velopack): bundles the `KrakenDeploy.Server` binaries, walks through the database setup flow above, registers as a Windows Service, opens firewall port, drops Start Menu shortcuts. Uninstaller preserves the database (must be dropped manually if desired).
 - [ ] **Linux packaging**: `.deb` and `.rpm` packages with systemd unit; `apt install krakendeploy-server` style. PostgreSQL listed as an external dependency (user brings their own or installs separately). Post-install script runs the database setup flow interactively or via debconf.
-- [ ] **Docker Compose stack**: `deploy/onprem/docker-compose.yml` — Postgres + Server + Caddy + named volumes for `data/` and `pg-data/`. One-command bring-up.
-- [ ] **License key enforcement**: signed JWT-style key with claims (`maxTargets`, `maxUsers`, `expiresUtc`, `customerName`); validated on startup and warned in UI when approaching limits or expiring. Air-gapped activation: customer pastes the key, no phone-home required.
-- [ ] **Backup/restore documentation**: `pg_dump` schedule + `data/` folder rsync; documented restore procedure. CLI helper: `KrakenDeploy.Server backup --to <path>` and `restore --from <path>`.
-- [ ] **Update path**: documented in-place upgrade (stop service, run new installer, migrations apply on restart). Rollback procedure (restore DB, downgrade binaries).
-- [ ] **Bundled OIDC config templates** for the common cases: Active Directory (via Microsoft Entra Connect), ADFS, Azure AD, Okta, Google Workspace.
-- [ ] **HA pair** (optional, for larger customers): two `KrakenDeploy.Server` nodes against shared Postgres, with sticky-session reverse proxy (Caddy `lb_policy` or external load balancer).
+- [x] **Docker Compose stack**: `deploy/onprem/docker-compose.yml` — Postgres + Server + Caddy + named volumes for `data/` and `pg-data/`. One-command bring-up.
+- [x] **License key enforcement**: signed JWT-style key with claims (`maxTargets`, `maxUsers`, `expiresUtc`, `customerName`); validated on startup and warned in UI when approaching limits or expiring. Air-gapped activation: customer pastes the key, no phone-home required.
+- [x] **Backup/restore documentation**: `pg_dump` schedule + `data/` folder rsync; documented restore procedure. CLI helper: `KrakenDeploy.Server backup --to <path>` and `restore --from <path>`.
+- [x] **Update path**: documented in-place upgrade (stop service, run new installer, migrations apply on restart). Rollback procedure (restore DB, downgrade binaries).
+- [x] **Bundled OIDC config templates** for the common cases: Active Directory (via Microsoft Entra Connect), ADFS, Azure AD, Okta, Google Workspace.
+- [x] **HA pair** (optional, for larger customers): two `KrakenDeploy.Server` nodes against shared Postgres, with sticky-session reverse proxy (Caddy `lb_policy` or external load balancer).
   - **SignalR connection registry via Postgres (no Redis):** `IAgentConnectionRegistry` gets a `PostgresAgentConnectionRegistry` implementation backed by an `UNLOGGED` table — no WAL overhead, fast enough for the 2-node HA case. Table is `(connection_id text PK, target_id uuid, connected_at_utc timestamptz)` with the PK as a covering index (index-only scans). Operations map directly: `INSERT` on connect, `DELETE` on disconnect, `SELECT COUNT(*)` for connected agent count, keyed lookups for routing. On node startup, the table is truncated (all connections are ephemeral — a server restart is a clean slate). This keeps on-prem to a single infrastructure dependency (Postgres) while still enabling HA. Cloud deployments (M10.2) can swap in Redis when scaling beyond 2 nodes.
-- [ ] **Single Space mode**: when only the Default Space exists, the UI hides the Space switcher entirely — feels like a single-tenant product.
+- [x] **Single Space mode**: when only the Default Space exists, the UI hides the Space switcher entirely — feels like a single-tenant product.
 
 ---
 

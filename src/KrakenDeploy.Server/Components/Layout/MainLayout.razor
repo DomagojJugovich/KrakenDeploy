@@ -22,6 +22,8 @@
         </RadzenStack>
     </RadzenHeader>
 
+    <LicenseWarningBanner />
+
     <RadzenSidebar>
         <RadzenPanelMenu>
             <RadzenPanelMenuItem Text="Dashboard" Icon="dashboard" Path="/" />
@@ -47,6 +49,7 @@
             </RadzenPanelMenuItem>
 
             <RadzenPanelMenuItem Text="Configuration" Icon="admin_panel_settings">
+                <RadzenPanelMenuItem Text="Spaces"              Icon="workspaces"  Path="/configuration/spaces" />
                 <RadzenPanelMenuItem Text="Users"               Icon="person"    Path="/configuration/users" />
                 <RadzenPanelMenuItem Text="Teams"               Icon="groups"    Path="/configuration/teams" />
                 <RadzenPanelMenuItem Text="Roles"               Icon="badge"     Path="/configuration/roles" />

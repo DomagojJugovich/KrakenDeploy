@@ -1,5 +1,13 @@
 namespace KrakenDeploy.Server;
 
+// ── Space API ───────────────────────────────────────────────────────────────────
+
+/// <summary>Request body for POST /api/spaces.</summary>
+public sealed record CreateSpaceRequest(string Slug, string Name, string? Description);
+
+/// <summary>Request body for PUT /api/spaces/{id}.</summary>
+public sealed record UpdateSpaceRequest(string Name, string? Description);
+
 // ── Process API ────────────────────────────────────────────────────────────────
 
 /// <summary>Request body for POST /api/projects/{projectId}/process/steps.</summary>

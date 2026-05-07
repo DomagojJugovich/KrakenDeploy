@@ -1,0 +1,123 @@
+# KrakenDeploy — On-Prem Production Stack
+# -----------------------------------------
+# Postgres + KrakenDeploy.Server + Caddy reverse-proxy.
+# One `docker compose up -d` to bring up a full deployment.
+#
+# PREREQUISITES
+#   1. Copy .env.example to .env and fill in the required values.
+#   2. Point your DNS A/AAAA record at this host.
+#   3. docker compose up -d
+#
+# FIRST RUN
+#   1. The kraken-init service runs database setup automatically.
+#   2. Create the admin user:
+#      docker compose exec kraken-server dotnet KrakenDeploy.Server.dll users create-admin --email admin@example.com --password <password>
+#   3. Login at https://<your-domain>/
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kraken-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-krakendeploy}
+      POSTGRES_USER: ${POSTGRES_USER:-kraken}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Required}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kraken} -d ${POSTGRES_DB:-krakendeploy}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - kraken-net
+
+  kraken-init:
+    image: ${SERVER_IMAGE:-krakendeploy-server:latest}
+    container_name: kraken-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__KrakenDb: >
+        Host=postgres;Port=5432;Database=${POSTGRES_DB:-krakendeploy};
+        Username=${POSTGRES_USER:-kraken};Password=${POSTGRES_PASSWORD}
+    entrypoint:
+      - dotnet
+      - KrakenDeploy.Server.dll
+      - database
+      - setup
+      - --connection-string
+      - >
+        Host=postgres;Port=5432;Database=${POSTGRES_DB:-krakendeploy};
+        Username=${POSTGRES_USER:-kraken};Password=${POSTGRES_PASSWORD}
+    networks:
+      - kraken-net
+
+  kraken-server:
+    image: ${SERVER_IMAGE:-krakendeploy-server:latest}
+    container_name: kraken-server
+    restart: unless-stopped
+    depends_on:
+      kraken-init:
+        condition: service_completed_successfully
+    environment:
+      ConnectionStrings__KrakenDb: >
+        Host=postgres;Port=5432;Database=${POSTGRES_DB:-krakendeploy};
+        Username=${POSTGRES_USER:-kraken};Password=${POSTGRES_PASSWORD}
+      Server__DataPath: /data
+      Agent__JwtSigningKey: ${AGENT_JWT_KEY:?Required — minimum 32 characters}
+      Encryption__MasterKey: ${ENCRYPTION_KEY:?Required — base64-encoded 32 bytes}
+      ApiKey__Key: ${API_KEY:-}
+      KRAKEN_LICENSE_KEY: ${KRAKEN_LICENSE_KEY:-}
+      AgentUpdate__BinariesPath: /data/agents
+      Server__HaMode: ${HA_MODE:-}
+      DOTNET_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://0.0.0.0:5080
+    volumes:
+      - kraken-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5080/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - kraken-net
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: kraken-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "caddy version || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - kraken-net
+
+volumes:
+  pg-data:
+    name: kraken-pg-data
+  kraken-data:
+    name: kraken-data
+  caddy-data:
+    name: kraken-caddy-data
+  caddy-config:
+    name: kraken-caddy-config
+
+networks:
+  kraken-net:
+    name: kraken-net
+    driver: bridge

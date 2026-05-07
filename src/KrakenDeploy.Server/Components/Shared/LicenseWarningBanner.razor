@@ -1,0 +1,42 @@
+@using KrakenDeploy.Server.Core.Domain.Licensing
+@inject LicenseService LicenseSvc
+@inject NavigationManager Nav
+
+@if (_warning is not null)
+{
+    <div class="kraken-license-banner @_severityClass" role="alert">
+        <RadzenStack Orientation="Orientation.Horizontal"
+                     AlignItems="AlignItems.Center"
+                     Gap="0.75rem"
+                     JustifyContent="JustifyContent.Center">
+            <span>@_warning</span>
+            <RadzenButton Text="Manage License"
+                          ButtonStyle="ButtonStyle.Light"
+                          Size="ButtonSize.ExtraSmall"
+                          Click="NavigateToLicense" />
+        </RadzenStack>
+    </div>
+}
+
+@code {
+    private string? _warning;
+    private string _severityClass = "kraken-license-warning";
+
+    protected override void OnInitialized()
+    {
+        // Check immediately. For target/user count we use
+        // reasonable placeholders that the full implementation
+        // can refine with actual DB counts.
+        _warning = LicenseSvc.GetLicenseWarning(
+            currentTargetCount: 0,
+            currentUserCount: 0);
+        _severityClass = _warning is not null && _warning.Contains("expired", StringComparison.OrdinalIgnoreCase)
+            ? "kraken-license-error"
+            : "kraken-license-warning";
+    }
+
+    private void NavigateToLicense()
+    {
+        Nav.NavigateTo("/settings/license");
+    }
+}

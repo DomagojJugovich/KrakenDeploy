@@ -41,9 +41,22 @@ public static class Program
     {
         // CLI subcommand dispatch — keeps the same executable usable for one-shot
         // admin operations without bringing up the web server.
-        if (args.Length > 0 && args[0] == "users")
+        if (args.Length > 0)
         {
-            return await UserCommands.RunAsync(args.AsSpan(1).ToArray()).ConfigureAwait(false);
+            // Resolve the content root so CLI commands can find appsettings files
+            // regardless of the working directory (dotnet run from repo root, etc.).
+            var cliContentRoot = ResolveContentRoot();
+            switch (args[0])
+            {
+                case "users":
+                    return await UserCommands.RunAsync(args.AsSpan(1).ToArray(), cliContentRoot).ConfigureAwait(false);
+                case "database":
+                    return await DatabaseCommands.RunAsync(args.AsSpan(1).ToArray(), cliContentRoot).ConfigureAwait(false);
+                case "backup":
+                    return await BackupCommands.RunAsync(args.AsSpan(1).ToArray(), cliContentRoot).ConfigureAwait(false);
+                case "restore":
+                    return await RestoreCommands.RunAsync(args.AsSpan(1).ToArray(), cliContentRoot).ConfigureAwait(false);
+            }
         }
 
         // Bootstrap logger — active until the full Serilog pipeline is configured
@@ -210,11 +223,24 @@ public static class Program
 
         builder.Services.AddGrpc();
 
-        builder.Services.AddSingleton<IAgentConnectionRegistry, InMemoryAgentConnectionRegistry>();
+        // Agent connection registry: InMemory for single-server; Postgres-backed
+        // for HA pair. Set Server:HaMode to "Postgres" in the 2-node configuration.
+        if (string.Equals(builder.Configuration["Server:HaMode"], "Postgres", StringComparison.OrdinalIgnoreCase))
+        {
+            var connStr = builder.Configuration.GetConnectionString("KrakenDb")
+                ?? throw new InvalidOperationException("ConnectionStrings:KrakenDb is required for HA mode.");
+            builder.Services.AddSingleton<IAgentConnectionRegistry>(
+                _ => new PostgresAgentConnectionRegistry(connStr));
+        }
+        else
+        {
+            builder.Services.AddSingleton<IAgentConnectionRegistry, InMemoryAgentConnectionRegistry>();
+        }
         builder.Services.AddSingleton<AgentJwtService>();
         builder.Services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
         builder.Services.AddSingleton<TargetStatusPublisher>();
         builder.Services.AddSingleton<ServerAgentUpdateService>();
+        builder.Services.AddSingleton<LicenseService>();
         builder.Services.AddHostedService<DeploymentWorker>();
         builder.Services.AddHostedService<RunbookRunWorker>();
 
@@ -862,6 +888,43 @@ public static class Program
             (Guid id, string? returnUrl, SpaceService spaceSvc, HttpContext http, CancellationToken ct)
                 => SwitchSpaceAsync(id, returnUrl, spaceSvc, http, ct, redirect: true))
             .RequireAuthorization();
+
+        app.MapPost("/api/spaces",
+            async (CreateSpaceRequest req, SpaceService spaceSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var space = await spaceSvc.CreateAsync(req.Slug, req.Name, req.Description, ct)
+                        .ConfigureAwait(false);
+                    return Results.Created($"/api/spaces/{space.Id}", space);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.Conflict(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.SpaceCreate);
+
+        app.MapPut("/api/spaces/{id:guid}",
+            async (Guid id, UpdateSpaceRequest req, SpaceService spaceSvc, CancellationToken ct) =>
+            {
+                var space = await spaceSvc.UpdateAsync(id, req.Name, req.Description, ct)
+                    .ConfigureAwait(false);
+                return space is null ? Results.NotFound() : Results.Ok(space);
+            }).RequirePermission(Permission.SpaceEdit);
+
+        app.MapPost("/api/spaces/{id:guid}/archive",
+            async (Guid id, SpaceService spaceSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var ok = await spaceSvc.ArchiveAsync(id, ct).ConfigureAwait(false);
+                    return ok ? Results.Ok(new { archived = true }) : Results.NotFound();
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.SpaceDelete);
 
         app.MapGet("/api/projects",
             async (ProjectService projectSvc, CancellationToken ct) =>
@@ -1761,6 +1824,19 @@ public static class Program
         // idempotent) — on each restart the schedule is refreshed.
         HangfireJobRegistrar.RegisterRecurringJobs();
 
+        // Validate license on startup — warn in logs but don't block.
+        // The UI also shows a banner to System Administrators.
+        {
+            var licenseSvc = app.Services.GetRequiredService<LicenseService>();
+            var result = licenseSvc.LoadAndValidate();
+            if (!result.IsValid)
+            {
+                app.Logger.LogWarning(
+                    "License: {Error}. Upload a license key in Settings → License.",
+                    result.ErrorMessage);
+            }
+        }
+
         await app.RunAsync().ConfigureAwait(false);
         return 0;
     }
@@ -1776,5 +1852,40 @@ public static class Program
                 "No users exist yet. Create an admin with: " +
                 "dotnet run --project src/KrakenDeploy.Server -- users create-admin --email <e> --password <p>");
         }
+    }
+
+    /// <summary>
+    /// Walks up from the assembly directory until it finds <c>appsettings.json</c>.
+    /// Handles both development (<c>dotnet run</c>) and production (published binary)
+    /// content-root layouts. Also ensures <c>DOTNET_ENVIRONMENT</c> is set so
+    /// environment-specific appsettings files (Development / Production) are loaded.
+    /// </summary>
+    private static string ResolveContentRoot()
+    {
+        // Default to Development for CLI tools so appsettings.Development.json
+        // (which has the real connection string) is loaded. Users override via
+        // DOTNET_ENVIRONMENT=Production.
+        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT"))
+            && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")))
+        {
+            Environment.SetEnvironmentVariable("DOTNET_ENVIRONMENT", "Development");
+        }
+        var dir = Path.GetDirectoryName(typeof(Program).Assembly.Location)
+            ?? Directory.GetCurrentDirectory();
+
+        while (!File.Exists(Path.Combine(dir, "appsettings.json")))
+        {
+            var parent = Path.GetDirectoryName(dir);
+            if (parent is null || parent == dir)
+            {
+                // Can't find appsettings — fall back to assembly dir.
+                return Path.GetDirectoryName(typeof(Program).Assembly.Location)
+                    ?? Directory.GetCurrentDirectory();
+            }
+
+            dir = parent;
+        }
+
+        return dir;
     }
 }
