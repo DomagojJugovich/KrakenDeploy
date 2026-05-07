@@ -212,3 +212,92 @@ html, body {
     flex: 1;
     min-width: 0;
 }
+
+/* ── Process editor ──────────────────────────────────────────────────────── */
+
+.kraken-process-layout {
+    display: flex;
+    gap: 1.25rem;
+    align-items: flex-start;
+}
+
+.kraken-process-steps {
+    flex: 1;
+    min-width: 0;
+}
+
+.kraken-process-sidebar {
+    width: 300px;
+    flex-shrink: 0;
+}
+
+.kraken-step-card {
+    transition: box-shadow 0.15s ease-in-out;
+}
+
+.kraken-step-card:hover {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.kraken-step-number {
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 50%;
+    background: var(--rz-base-300, #e0e0e0);
+    color: var(--rz-text-color, rgba(0, 0, 0, 0.87));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.85rem;
+    flex-shrink: 0;
+}
+
+.kraken-step-icon {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 6px;
+    background: var(--rz-info-lighter, #e3f2fd);
+    color: var(--rz-info, #1976d2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.kraken-step-icon .rzi {
+    font-size: 1.4rem;
+}
+
+.kraken-step-body {
+    flex: 1;
+    min-width: 0;
+}
+
+.kraken-phase-block {
+    padding: 0.5rem 0;
+    border-top: 1px solid var(--rz-base-200, #f0f0f0);
+}
+
+.kraken-phase-block:first-of-type {
+    border-top: none;
+}
+
+.kraken-phase-header {
+    font-weight: 600;
+    font-size: 0.875rem;
+}
+
+.kraken-phase-flag {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--rz-warning, #f57c00);
+    margin-left: 0.4rem;
+}
+
+.kraken-phase-envs {
+    font-size: 0.78rem;
+    color: var(--rz-text-tertiary-color, rgba(0, 0, 0, 0.55));
+    margin-top: 0.15rem;
+}

@@ -1,5 +1,14 @@
 @page "/projects/{Slug}/process"
+@rendermode InteractiveServer
 @attribute [Authorize]
+
+@using KrakenDeploy.Server.Core.Domain.Lifecycles
+@using KrakenDeploy.Server.Core.Domain.Processes
+@inject ProcessService ProcessSvc
+@inject LifecycleService LifecycleSvc
+@inject DialogService Dialog
+@inject NotificationService Notifications
+@inject NavigationManager Nav
 
 <ProjectShell Slug="@Slug">
     <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
@@ -8,18 +17,270 @@
             Process
         </RadzenText>
         <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
-            <RadzenButton Text="Create Release" Icon="add"
-                          ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small" />
-            <RadzenButton Text="Add Step" Icon="add"
-                          ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small" />
+            <RequirePermission Permission="Permission.ReleaseCreate">
+                <RadzenButton Text="Create Release" Icon="add"
+                              ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small" />
+            </RequirePermission>
+            <RequirePermission Permission="Permission.ProcessEdit">
+                <RadzenButton Text="Add Step" Icon="add"
+                              ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                              Click="OpenAddStepAsync" />
+            </RequirePermission>
         </RadzenStack>
     </RadzenStack>
 
-    <RadzenAlert AlertStyle="AlertStyle.Info" ShowIcon="true" AllowClose="false">
-        Deployment step editor — Phase 2.
-    </RadzenAlert>
+    <div class="kraken-process-layout">
+        @* ── Left: step list ───────────────────────────────────────────── *@
+        <div class="kraken-process-steps">
+            @if (_loaded && _steps.Count == 0)
+            {
+                <RadzenCard class="rz-p-5 rz-text-align-center">
+                    <RadzenIcon Icon="extension" Style="font-size: 3rem; opacity: 0.3;" />
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mt-3">
+                        No steps yet
+                    </RadzenText>
+                    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+                        A deployment process is an ordered list of steps the agent runs
+                        when a release is deployed.
+                    </RadzenText>
+                    <RequirePermission Permission="Permission.ProcessEdit">
+                        <RadzenButton Text="Add the first step" Icon="add"
+                                      ButtonStyle="ButtonStyle.Primary"
+                                      Click="OpenAddStepAsync" />
+                    </RequirePermission>
+                </RadzenCard>
+            }
+            else
+            {
+                @for (var i = 0; i < _steps.Count; i++)
+                {
+                    var step = _steps[i];
+                    var index = i;
+                    <RadzenCard class="kraken-step-card rz-mb-2">
+                        <RadzenStack Orientation="Orientation.Horizontal"
+                                     AlignItems="AlignItems.Start" Gap="1rem">
+                            <div class="kraken-step-number">@(index + 1)</div>
+                            <div class="kraken-step-icon">
+                                <RadzenIcon Icon="inventory_2" />
+                            </div>
+                            <div class="kraken-step-body">
+                                <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H3"
+                                            class="rz-mb-1">
+                                    @step.Name
+                                </RadzenText>
+                                <RadzenText TextStyle="TextStyle.Body2"
+                                            class="rz-color-secondary rz-mb-2">
+                                    Deploy package
+                                    <strong>@step.PackageId</strong>
+                                    to deployment targets
+                                    @if (step.TargetRoles.Count == 0)
+                                    {
+                                        <text>(any role)</text>
+                                    }
+                                    else
+                                    {
+                                        <text>with the tags</text>
+                                    }
+                                </RadzenText>
+                                @if (step.TargetRoles.Count > 0)
+                                {
+                                    <RadzenStack Orientation="Orientation.Horizontal"
+                                                 Wrap="FlexWrap.Wrap" Gap="0.4rem"
+                                                 class="rz-mb-2">
+                                        @foreach (var role in step.TargetRoles)
+                                        {
+                                            <RadzenBadge Text="@role"
+                                                         BadgeStyle="BadgeStyle.Secondary" />
+                                        }
+                                    </RadzenStack>
+                                }
+                                <RadzenText TextStyle="TextStyle.Caption"
+                                            class="rz-color-secondary">
+                                    <RadzenIcon Icon="public"
+                                                Style="font-size: 0.9rem; vertical-align: middle;" />
+                                    Runs for any environment
+                                </RadzenText>
+                            </div>
+                            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.25rem">
+                                <RequirePermission Permission="Permission.ProcessEdit">
+                                    <RadzenButton Icon="arrow_upward"
+                                                  ButtonStyle="ButtonStyle.Light"
+                                                  Size="ButtonSize.ExtraSmall"
+                                                  Disabled="@(index == 0)"
+                                                  Click="@(() => MoveAsync(step.Id, -1))"
+                                                  title="Move up" />
+                                    <RadzenButton Icon="arrow_downward"
+                                                  ButtonStyle="ButtonStyle.Light"
+                                                  Size="ButtonSize.ExtraSmall"
+                                                  Disabled="@(index == _steps.Count - 1)"
+                                                  Click="@(() => MoveAsync(step.Id, 1))"
+                                                  title="Move down" />
+                                    <RadzenButton Icon="edit"
+                                                  ButtonStyle="ButtonStyle.Light"
+                                                  Size="ButtonSize.ExtraSmall"
+                                                  Click="@(() => OpenEditStepAsync(step))"
+                                                  title="Edit" />
+                                    <RadzenButton Icon="delete"
+                                                  ButtonStyle="ButtonStyle.Danger"
+                                                  Size="ButtonSize.ExtraSmall"
+                                                  Click="@(() => DeleteAsync(step))"
+                                                  title="Delete" />
+                                </RequirePermission>
+                            </RadzenStack>
+                        </RadzenStack>
+                    </RadzenCard>
+                }
+            }
+        </div>
+
+        @* ── Right: lifecycle + script modules sidebar ────────────────── *@
+        <aside class="kraken-process-sidebar">
+            <RadzenCard class="rz-mb-3">
+                <RadzenStack Orientation="Orientation.Horizontal"
+                             JustifyContent="JustifyContent.SpaceBetween"
+                             AlignItems="AlignItems.Center" class="rz-mb-2">
+                    <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H3"
+                                class="rz-mb-0">
+                        Lifecycle
+                    </RadzenText>
+                    <RadzenButton Text="Change" ButtonStyle="ButtonStyle.Light"
+                                  Size="ButtonSize.ExtraSmall"
+                                  Click="@(() => Nav.NavigateTo("/lifecycles"))" />
+                </RadzenStack>
+                @if (_lifecycle is not null)
+                {
+                    <RadzenText TextStyle="TextStyle.Body2" class="rz-mb-3">
+                        <strong>@_lifecycle.Name</strong>
+                    </RadzenText>
+                    @foreach (var phase in _lifecycle.Phases.OrderBy(p => p.SortOrder))
+                    {
+                        <div class="kraken-phase-block">
+                            <div class="kraken-phase-header">
+                                @phase.Name
+                                @if (phase.IsOptional)
+                                {
+                                    <span class="kraken-phase-flag">optional</span>
+                                }
+                            </div>
+                            <div class="kraken-phase-envs">
+                                @if (phase.EnvironmentIds.Count > 0)
+                                {
+                                    <text>@phase.EnvironmentIds.Count required env(s)</text>
+                                }
+                                else
+                                {
+                                    <text>(no environments)</text>
+                                }
+                            </div>
+                        </div>
+                    }
+                }
+                else
+                {
+                    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                        No lifecycle configured.
+                    </RadzenText>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                        Lifecycles can be defined
+                        <RadzenLink Path="/lifecycles" Text="here" />.
+                    </RadzenText>
+                }
+            </RadzenCard>
+
+            <RadzenCard>
+                <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H3" class="rz-mb-2">
+                    Script Modules
+                </RadzenText>
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-2">
+                    No script modules have been included.
+                </RadzenText>
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-3">
+                    Script modules are reusable code libraries — pending.
+                </RadzenText>
+                <RadzenButton Text="Include" ButtonStyle="ButtonStyle.Light"
+                              Size="ButtonSize.Small" Disabled="true" />
+            </RadzenCard>
+        </aside>
+    </div>
 </ProjectShell>
 
 @code {
     [Parameter] public string Slug { get; set; } = "";
+    [CascadingParameter(Name = "Project")] public Project? Project { get; set; }
+
+    private List<DeploymentStep> _steps = [];
+    private Lifecycle? _lifecycle;
+    private bool _loaded;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Project is null) return;
+
+        var process = await ProcessSvc.GetAsync(Project.Id);
+        _steps = process?.Steps.OrderBy(s => s.SortOrder).ToList() ?? [];
+
+        if (Project.LifecycleId is { } lifecycleId)
+        {
+            _lifecycle = await LifecycleSvc.GetAsync(lifecycleId);
+        }
+
+        _loaded = true;
+    }
+
+    private async Task ReloadStepsAsync()
+    {
+        if (Project is null) return;
+        var process = await ProcessSvc.GetAsync(Project.Id);
+        _steps = process?.Steps.OrderBy(s => s.SortOrder).ToList() ?? [];
+    }
+
+    private async Task OpenAddStepAsync()
+    {
+        if (Project is null) return;
+
+        var result = await Dialog.OpenAsync<StepFormDialog>(
+            "Add Step",
+            new Dictionary<string, object> { [nameof(StepFormDialog.ProjectId)] = Project.Id },
+            new DialogOptions { Width = "640px" });
+
+        if (result is true)
+        {
+            await ReloadStepsAsync();
+        }
+    }
+
+    private async Task OpenEditStepAsync(DeploymentStep step)
+    {
+        var result = await Dialog.OpenAsync<StepFormDialog>(
+            "Edit Step",
+            new Dictionary<string, object> { [nameof(StepFormDialog.Step)] = step },
+            new DialogOptions { Width = "640px" });
+
+        if (result is true)
+        {
+            await ReloadStepsAsync();
+        }
+    }
+
+    private async Task MoveAsync(Guid stepId, int direction)
+    {
+        await ProcessSvc.MoveStepAsync(stepId, direction);
+        await ReloadStepsAsync();
+    }
+
+    private async Task DeleteAsync(DeploymentStep step)
+    {
+        var confirmed = await Dialog.Confirm(
+            $"Delete step '{step.Name}'? This cannot be undone.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+
+        if (confirmed == true)
+        {
+            await ProcessSvc.RemoveStepAsync(step.Id);
+            await ReloadStepsAsync();
+            Notifications.Notify(NotificationSeverity.Success, "Deleted",
+                $"Step '{step.Name}' was removed.", 4000);
+        }
+    }
 }

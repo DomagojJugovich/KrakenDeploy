@@ -92,6 +92,45 @@ public class ProcessService(IDbContextFactory<KrakenDbContext> dbFactory)
         return step;
     }
 
+    /// <summary>
+    /// Moves the step one position up or down in the process. <paramref name="direction"/>
+    /// is <c>-1</c> for up, <c>+1</c> for down. No-op if the step is already at the edge.
+    /// </summary>
+    public async Task<bool> MoveStepAsync(Guid stepId, int direction, CancellationToken ct = default)
+    {
+        if (direction != -1 && direction != 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(direction), "Must be -1 (up) or +1 (down).");
+        }
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        var step = await db.DeploymentSteps.FindAsync([stepId], ct).ConfigureAwait(false);
+        if (step is null)
+        {
+            return false;
+        }
+
+        var siblings = await db.DeploymentSteps
+            .Where(s => s.ProcessId == step.ProcessId)
+            .OrderBy(s => s.SortOrder)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        var index = siblings.FindIndex(s => s.Id == stepId);
+        var swapWith = index + direction;
+        if (swapWith < 0 || swapWith >= siblings.Count)
+        {
+            return false; // Already at the edge.
+        }
+
+        (siblings[index].SortOrder, siblings[swapWith].SortOrder)
+            = (siblings[swapWith].SortOrder, siblings[index].SortOrder);
+
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return true;
+    }
+
     /// <summary>Removes a step and re-sequences the remaining steps.</summary>
     public async Task<bool> RemoveStepAsync(Guid stepId, CancellationToken ct = default)
     {

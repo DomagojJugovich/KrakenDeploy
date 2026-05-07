@@ -1,0 +1,160 @@
+@using KrakenDeploy.Server.Core.Domain.Processes
+@inject DialogService Dialog
+@inject ProcessService ProcessSvc
+
+@*
+    Add / edit a deployment step. The only step type currently supported is
+    KrakenDeploy.Script — fields here capture: Name, Package ID, Target
+    Roles (comma-separated tags), and the script body + syntax that will
+    run during deployment.
+
+    To add: pass ProjectId; leave Step null.
+    To edit: pass Step; ProjectId is ignored.
+*@
+
+<div style="min-width: 560px; padding: 0.25rem 0;">
+    <EditForm Model="_model" OnValidSubmit="SaveAsync">
+        <DataAnnotationsValidator />
+        <RadzenStack Gap="1rem">
+            <div>
+                <RadzenLabel Text="Name *" />
+                <RadzenTextBox @bind-Value="_model.Name" Style="width:100%"
+                               aria-label="Name" Placeholder="e.g. Deploy WebApp" />
+                <ValidationMessage For="() => _model.Name" class="kraken-validation-error" />
+            </div>
+
+            <div>
+                <RadzenLabel Text="Package ID *" />
+                <RadzenTextBox @bind-Value="_model.PackageId" Style="width:100%"
+                               aria-label="Package ID"
+                               Placeholder="Logical package identifier (e.g. ArgosyBASE)" />
+                <ValidationMessage For="() => _model.PackageId" class="kraken-validation-error" />
+            </div>
+
+            <div>
+                <RadzenLabel Text="Target Roles" />
+                <RadzenTextBox @bind-Value="_model.TargetRolesCsv" Style="width:100%"
+                               aria-label="Target Roles"
+                               Placeholder="Comma-separated, e.g. SERVER, TERMINAL, WORKSTATION" />
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                    Only deployment targets whose roles overlap this list run the step.
+                    Leave empty to run on every target.
+                </RadzenText>
+            </div>
+
+            <div>
+                <RadzenLabel Text="Script Syntax" />
+                <RadzenDropDown @bind-Value="_model.ScriptSyntax"
+                                Data="@_syntaxOptions"
+                                Style="width: 200px" />
+            </div>
+
+            <div>
+                <RadzenLabel Text="Script Body" />
+                <RadzenTextArea @bind-Value="_model.ScriptBody"
+                                Rows="10" Style="width:100%; font-family: var(--rz-mono-font, monospace);"
+                                aria-label="Script Body"
+                                Placeholder="# Script that runs on the target during deployment" />
+            </div>
+
+            @if (_errorMessage is not null)
+            {
+                <div class="kraken-login-error rz-text-body2">@_errorMessage</div>
+            }
+
+            <RadzenStack Orientation="Orientation.Horizontal"
+                         JustifyContent="JustifyContent.End" Gap="0.5rem">
+                <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                              Click="@(_ => Dialog.Close(false))" />
+                <RadzenButton Text="Save" ButtonType="ButtonType.Submit"
+                              ButtonStyle="ButtonStyle.Primary" />
+            </RadzenStack>
+        </RadzenStack>
+    </EditForm>
+</div>
+
+@code {
+    [Parameter] public Guid? ProjectId { get; set; }
+    [Parameter] public DeploymentStep? Step { get; set; }
+
+    private readonly FormModel _model = new();
+    private string? _errorMessage;
+    private bool _isEdit;
+    private readonly string[] _syntaxOptions = ["PowerShell", "Bash"];
+
+    protected override void OnParametersSet()
+    {
+        if (Step is not null)
+        {
+            _isEdit = true;
+            _model.Name = Step.Name;
+            _model.PackageId = Step.PackageId;
+            _model.TargetRolesCsv = string.Join(", ", Step.TargetRoles);
+            _model.ScriptSyntax = Step.Config.GetValueOrDefault("scriptSyntax", "PowerShell");
+            _model.ScriptBody = Step.Config.GetValueOrDefault("scriptBody", "");
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        _errorMessage = null;
+        try
+        {
+            var roles = ParseCsv(_model.TargetRolesCsv);
+            var config = new Dictionary<string, string>
+            {
+                ["scriptSyntax"] = _model.ScriptSyntax,
+                ["scriptBody"]   = _model.ScriptBody ?? "",
+            };
+
+            if (_isEdit)
+            {
+                await ProcessSvc.UpdateStepAsync(
+                    Step!.Id, _model.Name, _model.PackageId, roles, config);
+            }
+            else
+            {
+                if (ProjectId is null)
+                {
+                    _errorMessage = "Missing ProjectId — cannot create a step.";
+                    return;
+                }
+
+                await ProcessSvc.AddStepAsync(
+                    ProjectId.Value, _model.Name, "KrakenDeploy.Script",
+                    _model.PackageId, roles, config);
+            }
+
+            Dialog.Close(true);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _errorMessage = ex.Message;
+        }
+    }
+
+    private static List<string> ParseCsv(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return [];
+        }
+        return raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                  .ToList();
+    }
+
+    private sealed class FormModel
+    {
+        [System.ComponentModel.DataAnnotations.Required]
+        [System.ComponentModel.DataAnnotations.MaxLength(200)]
+        public string Name { get; set; } = "";
+
+        [System.ComponentModel.DataAnnotations.Required]
+        [System.ComponentModel.DataAnnotations.MaxLength(200)]
+        public string PackageId { get; set; } = "";
+
+        public string TargetRolesCsv { get; set; } = "";
+        public string ScriptSyntax { get; set; } = "PowerShell";
+        public string? ScriptBody { get; set; }
+    }
+}
