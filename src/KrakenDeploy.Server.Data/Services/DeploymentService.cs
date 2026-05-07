@@ -117,6 +117,70 @@ public class DeploymentService(
             .FirstOrDefaultAsync(d => d.Id == id, ct);
     }
 
+    /// <summary>
+    /// Builds a Tenant × Environment matrix of the latest deployment per cell
+    /// for the given project. Returns every connected tenant and every space
+    /// environment regardless of whether any deployment exists yet — empty
+    /// cells are signalled by missing dictionary keys, not null values.
+    /// </summary>
+    public async Task<ProjectDashboardMatrix> GetProjectMatrixAsync(
+        Guid projectId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // Tenants connected to this project (many-to-many via the Project.Tenants
+        // navigation), ordered alphabetically for stable display.
+        var tenants = await db.Projects
+            .Where(p => p.Id == projectId)
+            .SelectMany(p => p.Tenants)
+            .OrderBy(t => t.Name)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        // All environments in the current Space (the global query filter scopes
+        // this automatically through ISpaceScoped).
+        var environments = await db.Environments
+            .OrderBy(e => e.SortOrder).ThenBy(e => e.Name)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        // Latest deployment per (tenantId, environmentId) for this project.
+        // GroupBy + First-by-CreatedUtc would force client evaluation, so we
+        // pull every deployment for the project (typically a small set) and
+        // fold in memory.
+        var rows = await db.Deployments
+            .Where(d => d.Release.ProjectId == projectId && d.TenantId != null)
+            .Include(d => d.Release).ThenInclude(r => r.Channel)
+            .OrderByDescending(d => d.CreatedUtc)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        var cells = new Dictionary<(Guid, Guid), DashboardCell>();
+        foreach (var d in rows)
+        {
+            if (d.TenantId is null)
+            {
+                continue;
+            }
+
+            var key = (d.TenantId.Value, d.EnvironmentId);
+            // First wins because the rows are ordered desc — that's the latest.
+            if (cells.ContainsKey(key))
+            {
+                continue;
+            }
+
+            cells[key] = new DashboardCell(
+                d.Id,
+                d.Status,
+                d.Release.Version,
+                d.Release.Channel?.Name,
+                d.CreatedUtc);
+        }
+
+        return new ProjectDashboardMatrix(tenants, environments, cells);
+    }
+
     // ── Lifecycle gate ──────────────────────────────────────────────────────
 
     /// <summary>
