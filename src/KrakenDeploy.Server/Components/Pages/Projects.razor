@@ -27,7 +27,11 @@
                 AllowColumnResize="true"
                 EmptyText="No projects yet. Click 'New Project' to get started.">
     <Columns>
-        <RadzenDataGridColumn TItem="Project" Property="Name" Title="Name" Width="220px" />
+        <RadzenDataGridColumn TItem="Project" Property="Name" Title="Name" Width="220px">
+            <Template Context="p">
+                <RadzenLink Path="@($"/projects/{p.Slug}")" Text="@p.Name" />
+            </Template>
+        </RadzenDataGridColumn>
         <RadzenDataGridColumn TItem="Project" Property="Slug" Title="Slug" Width="180px" />
         <RadzenDataGridColumn TItem="Project" Property="Description" Title="Description"
                               Filterable="false" />
