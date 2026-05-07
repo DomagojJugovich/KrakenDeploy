@@ -3,16 +3,21 @@ using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data.Services;
 
-public class EnvironmentService(KrakenDbContext db)
+public class EnvironmentService(IDbContextFactory<KrakenDbContext> dbFactory)
 {
-    public Task<List<DeploymentEnvironment>> GetAllOrderedAsync(CancellationToken ct = default)
-        => db.Environments.OrderBy(e => e.SortOrder).ThenBy(e => e.Name).ToListAsync(ct);
+    public async Task<List<DeploymentEnvironment>> GetAllOrderedAsync(CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Environments.OrderBy(e => e.SortOrder).ThenBy(e => e.Name).ToListAsync(ct);
+    }
 
     public async Task<DeploymentEnvironment> CreateAsync(
         string name, string slug, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(name);
         ArgumentException.ThrowIfNullOrEmpty(slug);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         if (await db.Environments.AnyAsync(e => e.Slug == slug, ct).ConfigureAwait(false))
         {
@@ -34,6 +39,8 @@ public class EnvironmentService(KrakenDbContext db)
         ArgumentException.ThrowIfNullOrEmpty(name);
         ArgumentException.ThrowIfNullOrEmpty(slug);
 
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         if (await db.Environments.AnyAsync(e => e.Slug == slug && e.Id != id, ct).ConfigureAwait(false))
         {
             throw new InvalidOperationException($"Slug '{slug}' is already taken.");
@@ -53,6 +60,7 @@ public class EnvironmentService(KrakenDbContext db)
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var env = await db.Environments.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
         if (env is null)
         {
@@ -66,6 +74,8 @@ public class EnvironmentService(KrakenDbContext db)
 
     public async Task MoveUpAsync(Guid id, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var all = await db.Environments
             .OrderBy(e => e.SortOrder).ThenBy(e => e.Name)
             .ToListAsync(ct).ConfigureAwait(false);
@@ -82,6 +92,8 @@ public class EnvironmentService(KrakenDbContext db)
 
     public async Task MoveDownAsync(Guid id, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var all = await db.Environments
             .OrderBy(e => e.SortOrder).ThenBy(e => e.Name)
             .ToListAsync(ct).ConfigureAwait(false);

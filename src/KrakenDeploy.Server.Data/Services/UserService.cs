@@ -11,7 +11,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// </summary>
 public class UserService(
     UserManager<ApplicationUser> userManager,
-    KrakenDbContext db)
+    IDbContextFactory<KrakenDbContext> dbFactory)
 {
     public Task<List<ApplicationUser>> GetAllAsync(CancellationToken ct = default)
         => userManager.Users
@@ -71,6 +71,7 @@ public class UserService(
         }
 
         // Remove team memberships first (no cascade set up for Identity rows).
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var memberships = await db.TeamMembers
             .Where(m => m.UserId == id)
             .ToListAsync(ct)
@@ -84,11 +85,14 @@ public class UserService(
     }
 
     /// <summary>Returns the IDs of teams the user explicitly belongs to.</summary>
-    public Task<List<Guid>> GetTeamIdsAsync(Guid userId, CancellationToken ct = default)
-        => db.TeamMembers
+    public async Task<List<Guid>> GetTeamIdsAsync(Guid userId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.TeamMembers
             .Where(m => m.UserId == userId)
             .Select(m => m.TeamId)
             .ToListAsync(ct);
+    }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 

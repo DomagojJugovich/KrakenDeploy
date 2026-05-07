@@ -12,7 +12,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// automatically by <c>AuditLogInterceptor</c>.
 /// </summary>
 public sealed class AuditLogService(
-    KrakenDbContext db,
+    IDbContextFactory<KrakenDbContext> dbFactory,
     IHttpContextAccessor httpAccessor,
     ISpaceContext spaceCtx,
     TimeProvider time) : IAuditLog
@@ -59,6 +59,7 @@ public sealed class AuditLogService(
             Details     = details,
         };
 
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         db.AuditEntries.Add(entry);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
@@ -71,6 +72,7 @@ public sealed class AuditLogService(
         int retentionDays = 365,
         CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var cutoff = time.GetUtcNow().AddDays(-retentionDays);
         return await db.AuditEntries
             .Where(e => e.OccurredUtc < cutoff)

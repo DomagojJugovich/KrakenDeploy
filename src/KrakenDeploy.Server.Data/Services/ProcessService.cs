@@ -6,7 +6,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// <summary>
 /// Manages the deployment process (ordered step list) for a project.
 /// </summary>
-public class ProcessService(KrakenDbContext db)
+public class ProcessService(IDbContextFactory<KrakenDbContext> dbFactory)
 {
     // ── Get / create ───────────────────────────────────────────────────────
 
@@ -17,27 +17,18 @@ public class ProcessService(KrakenDbContext db)
     public async Task<DeploymentProcess> GetOrCreateAsync(
         Guid projectId, CancellationToken ct = default)
     {
-        var process = await db.DeploymentProcesses
-            .Include(p => p.Steps)
-            .FirstOrDefaultAsync(p => p.ProjectId == projectId, ct)
-            .ConfigureAwait(false);
-
-        if (process is not null)
-        {
-            return process;
-        }
-
-        process = new DeploymentProcess { ProjectId = projectId };
-        db.DeploymentProcesses.Add(process);
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return process;
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await GetOrCreateCoreAsync(db, projectId, ct).ConfigureAwait(false);
     }
 
     /// <summary>Returns the process with steps, or null if the project has none.</summary>
-    public Task<DeploymentProcess?> GetAsync(Guid projectId, CancellationToken ct = default)
-        => db.DeploymentProcesses
+    public async Task<DeploymentProcess?> GetAsync(Guid projectId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.DeploymentProcesses
             .Include(p => p.Steps.OrderBy(s => s.SortOrder))
             .FirstOrDefaultAsync(p => p.ProjectId == projectId, ct);
+    }
 
     // ── Steps ──────────────────────────────────────────────────────────────
 
@@ -51,7 +42,8 @@ public class ProcessService(KrakenDbContext db)
         Dictionary<string, string> config,
         CancellationToken ct = default)
     {
-        var process = await GetOrCreateAsync(projectId, ct).ConfigureAwait(false);
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var process = await GetOrCreateCoreAsync(db, projectId, ct).ConfigureAwait(false);
 
         var maxSort = await db.DeploymentSteps
             .Where(s => s.ProcessId == process.Id)
@@ -84,6 +76,7 @@ public class ProcessService(KrakenDbContext db)
         Dictionary<string, string> config,
         CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var step = await db.DeploymentSteps.FindAsync([stepId], ct).ConfigureAwait(false);
         if (step is null)
         {
@@ -102,6 +95,8 @@ public class ProcessService(KrakenDbContext db)
     /// <summary>Removes a step and re-sequences the remaining steps.</summary>
     public async Task<bool> RemoveStepAsync(Guid stepId, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var step = await db.DeploymentSteps
             .Include(s => s.Process)
             .FirstOrDefaultAsync(s => s.Id == stepId, ct)
@@ -130,5 +125,26 @@ public class ProcessService(KrakenDbContext db)
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return true;
+    }
+
+    // ── Private helpers ────────────────────────────────────────────────────
+
+    private static async Task<DeploymentProcess> GetOrCreateCoreAsync(
+        KrakenDbContext db, Guid projectId, CancellationToken ct)
+    {
+        var process = await db.DeploymentProcesses
+            .Include(p => p.Steps)
+            .FirstOrDefaultAsync(p => p.ProjectId == projectId, ct)
+            .ConfigureAwait(false);
+
+        if (process is not null)
+        {
+            return process;
+        }
+
+        process = new DeploymentProcess { ProjectId = projectId };
+        db.DeploymentProcesses.Add(process);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return process;
     }
 }

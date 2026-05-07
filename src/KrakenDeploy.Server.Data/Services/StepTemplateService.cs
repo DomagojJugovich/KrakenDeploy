@@ -8,15 +8,21 @@ namespace KrakenDeploy.Server.Data.Services;
 /// <summary>
 /// CRUD and Octopus Library import for <see cref="StepTemplate"/> entities.
 /// </summary>
-public class StepTemplateService(KrakenDbContext db)
+public class StepTemplateService(IDbContextFactory<KrakenDbContext> dbFactory)
 {
     // ── Queries ────────────────────────────────────────────────────────────────
 
-    public Task<List<StepTemplate>> GetAllAsync(CancellationToken ct = default)
-        => db.StepTemplates.OrderBy(t => t.Name).ToListAsync(ct);
+    public async Task<List<StepTemplate>> GetAllAsync(CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.StepTemplates.OrderBy(t => t.Name).ToListAsync(ct);
+    }
 
-    public Task<StepTemplate?> GetAsync(Guid id, CancellationToken ct = default)
-        => db.StepTemplates.FindAsync([id], ct).AsTask();
+    public async Task<StepTemplate?> GetAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.StepTemplates.FindAsync([id], ct).AsTask();
+    }
 
     // ── Create ─────────────────────────────────────────────────────────────────
 
@@ -30,6 +36,8 @@ public class StepTemplateService(KrakenDbContext db)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentException.ThrowIfNullOrWhiteSpace(actionType);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var template = new StepTemplate
         {
@@ -55,6 +63,7 @@ public class StepTemplateService(KrakenDbContext db)
         List<StepTemplateParameter>? parameters,
         CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var template = await db.StepTemplates.FindAsync([id], ct).ConfigureAwait(false);
         if (template is null)
         {
@@ -75,6 +84,7 @@ public class StepTemplateService(KrakenDbContext db)
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var template = await db.StepTemplates.FindAsync([id], ct).ConfigureAwait(false);
         if (template is null)
         {
@@ -102,6 +112,8 @@ public class StepTemplateService(KrakenDbContext db)
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(json);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var imported = OctopusLibraryImporter.Parse(json, importSource);
 

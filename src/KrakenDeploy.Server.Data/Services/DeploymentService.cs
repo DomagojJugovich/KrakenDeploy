@@ -9,7 +9,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// Creates deployments and enqueues them for dispatch to the target agent.
 /// </summary>
 public class DeploymentService(
-    KrakenDbContext db,
+    IDbContextFactory<KrakenDbContext> dbFactory,
     Channel<Guid> deploymentQueue,
     TimeProvider time)
 {
@@ -31,6 +31,8 @@ public class DeploymentService(
         DateTimeOffset? scheduledFor = null,
         CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         // Validate release and environment exist.
         var releaseExists = await db.Releases.AnyAsync(r => r.Id == releaseId, ct)
             .ConfigureAwait(false);
@@ -57,7 +59,7 @@ public class DeploymentService(
         }
 
         // Enforce lifecycle phase gate (throws if gate not satisfied).
-        await EnforceLifecycleGateAsync(releaseId, environmentId, tenantId, ct).ConfigureAwait(false);
+        await EnforceLifecycleGateAsync(db, releaseId, environmentId, tenantId, ct).ConfigureAwait(false);
 
         var deployment = new Deployment
         {
@@ -88,6 +90,8 @@ public class DeploymentService(
     public async Task<List<Deployment>> GetAllAsync(
         Guid? projectId = null, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var q = db.Deployments
             .Include(d => d.Release).ThenInclude(r => r.Project)
             .Include(d => d.Environment)
@@ -102,13 +106,16 @@ public class DeploymentService(
         return await q.OrderByDescending(d => d.CreatedUtc).ToListAsync(ct).ConfigureAwait(false);
     }
 
-    public Task<Deployment?> GetAsync(Guid id, CancellationToken ct = default)
-        => db.Deployments
+    public async Task<Deployment?> GetAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Deployments
             .Include(d => d.Release).ThenInclude(r => r.Project)
             .Include(d => d.Environment)
             .Include(d => d.Target)
             .Include(d => d.LogEntries.OrderBy(l => l.Sequence))
             .FirstOrDefaultAsync(d => d.Id == id, ct);
+    }
 
     // ── Lifecycle gate ──────────────────────────────────────────────────────
 
@@ -117,8 +124,8 @@ public class DeploymentService(
     /// for this release before allowing deployment to <paramref name="environmentId"/>.
     /// Silently succeeds if no lifecycle is configured.
     /// </summary>
-    private async Task EnforceLifecycleGateAsync(
-        Guid releaseId, Guid environmentId, Guid? tenantId, CancellationToken ct)
+    private static async Task EnforceLifecycleGateAsync(
+        KrakenDbContext db, Guid releaseId, Guid environmentId, Guid? tenantId, CancellationToken ct)
     {
         // Load the lifecycle via: release → channel → lifecycle,
         // OR release → project → lifecycle (fallback).

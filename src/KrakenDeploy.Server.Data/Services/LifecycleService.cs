@@ -6,18 +6,26 @@ namespace KrakenDeploy.Server.Data.Services;
 /// <summary>
 /// CRUD for <see cref="Lifecycle"/>s and their JSONB phase lists.
 /// </summary>
-public class LifecycleService(KrakenDbContext db)
+public class LifecycleService(IDbContextFactory<KrakenDbContext> dbFactory)
 {
-    public Task<List<Lifecycle>> GetAllAsync(CancellationToken ct = default)
-        => db.Lifecycles.OrderBy(l => l.Name).ToListAsync(ct);
+    public async Task<List<Lifecycle>> GetAllAsync(CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Lifecycles.OrderBy(l => l.Name).ToListAsync(ct);
+    }
 
-    public Task<Lifecycle?> GetAsync(Guid id, CancellationToken ct = default)
-        => db.Lifecycles.FirstOrDefaultAsync(l => l.Id == id, ct);
+    public async Task<Lifecycle?> GetAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Lifecycles.FirstOrDefaultAsync(l => l.Id == id, ct);
+    }
 
     public async Task<Lifecycle> CreateAsync(
         string name, string? description, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         if (await db.Lifecycles.AnyAsync(l => l.Name == name, ct).ConfigureAwait(false))
         {
@@ -36,12 +44,14 @@ public class LifecycleService(KrakenDbContext db)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         if (await db.Lifecycles.AnyAsync(l => l.Name == name && l.Id != id, ct).ConfigureAwait(false))
         {
             throw new InvalidOperationException($"A lifecycle named '{name}' already exists.");
         }
 
-        var lifecycle = await GetAsync(id, ct).ConfigureAwait(false);
+        var lifecycle = await db.Lifecycles.FirstOrDefaultAsync(l => l.Id == id, ct).ConfigureAwait(false);
         if (lifecycle is null)
         {
             return null;
@@ -66,7 +76,8 @@ public class LifecycleService(KrakenDbContext db)
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
-        var lifecycle = await GetAsync(id, ct).ConfigureAwait(false);
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var lifecycle = await db.Lifecycles.FirstOrDefaultAsync(l => l.Id == id, ct).ConfigureAwait(false);
         if (lifecycle is null)
         {
             return false;

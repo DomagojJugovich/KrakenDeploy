@@ -7,31 +7,46 @@ namespace KrakenDeploy.Server.Data.Services;
 /// CRUD and relationship management for <see cref="Tenant"/>s, <see cref="TagSet"/>s,
 /// and <see cref="TenantTag"/>s.
 /// </summary>
-public class TenantService(KrakenDbContext db)
+public class TenantService(IDbContextFactory<KrakenDbContext> dbFactory)
 {
     // ── Tenant ─────────────────────────────────────────────────────────────────
 
-    public Task<List<Tenant>> GetAllAsync(CancellationToken ct = default)
-        => db.Tenants.OrderBy(t => t.Name).ToListAsync(ct);
+    public async Task<List<Tenant>> GetAllAsync(CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Tenants.OrderBy(t => t.Name).ToListAsync(ct);
+    }
 
-    public Task<Tenant?> GetAsync(Guid id, CancellationToken ct = default)
-        => db.Tenants.FindAsync(new object?[] { id }, ct).AsTask();
+    public async Task<Tenant?> GetAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Tenants.FindAsync(new object?[] { id }, ct).AsTask();
+    }
 
-    public Task<Tenant?> GetBySlugAsync(string slug, CancellationToken ct = default)
-        => db.Tenants.FirstOrDefaultAsync(t => t.Slug == slug, ct);
+    public async Task<Tenant?> GetBySlugAsync(string slug, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Tenants.FirstOrDefaultAsync(t => t.Slug == slug, ct);
+    }
 
     /// <summary>Returns the tenant with its TagSets and Tags loaded.</summary>
-    public Task<Tenant?> GetWithTagsAsync(Guid id, CancellationToken ct = default)
-        => db.Tenants
+    public async Task<Tenant?> GetWithTagsAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Tenants
             .Include(t => t.TagSets)
                 .ThenInclude(ts => ts.Tags)
             .FirstOrDefaultAsync(t => t.Id == id, ct);
+    }
 
     /// <summary>Returns the tenant with its connected projects loaded.</summary>
-    public Task<Tenant?> GetWithProjectsAsync(Guid id, CancellationToken ct = default)
-        => db.Tenants
+    public async Task<Tenant?> GetWithProjectsAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Tenants
             .Include(t => t.Projects)
             .FirstOrDefaultAsync(t => t.Id == id, ct);
+    }
 
     public async Task<Tenant> CreateAsync(
         string name,
@@ -41,6 +56,8 @@ public class TenantService(KrakenDbContext db)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentException.ThrowIfNullOrWhiteSpace(slug);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         if (await db.Tenants.AnyAsync(t => t.Slug == slug, ct).ConfigureAwait(false))
         {
@@ -63,12 +80,14 @@ public class TenantService(KrakenDbContext db)
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentException.ThrowIfNullOrWhiteSpace(slug);
 
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         if (await db.Tenants.AnyAsync(t => t.Slug == slug && t.Id != id, ct).ConfigureAwait(false))
         {
             throw new InvalidOperationException($"Slug '{slug}' is already taken.");
         }
 
-        var tenant = await GetAsync(id, ct).ConfigureAwait(false);
+        var tenant = await db.Tenants.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
         if (tenant is null)
         {
             return null;
@@ -83,7 +102,8 @@ public class TenantService(KrakenDbContext db)
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
-        var tenant = await GetAsync(id, ct).ConfigureAwait(false);
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var tenant = await db.Tenants.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
         if (tenant is null)
         {
             return false;
@@ -99,6 +119,8 @@ public class TenantService(KrakenDbContext db)
     /// <summary>Connects a project to a tenant (idempotent).</summary>
     public async Task ConnectProjectAsync(Guid tenantId, Guid projectId, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var tenant = await db.Tenants
             .Include(t => t.Projects)
             .FirstOrDefaultAsync(t => t.Id == tenantId, ct)
@@ -120,6 +142,8 @@ public class TenantService(KrakenDbContext db)
     /// <summary>Disconnects a project from a tenant (idempotent).</summary>
     public async Task DisconnectProjectAsync(Guid tenantId, Guid projectId, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var tenant = await db.Tenants
             .Include(t => t.Projects)
             .FirstOrDefaultAsync(t => t.Id == tenantId, ct)
@@ -140,15 +164,21 @@ public class TenantService(KrakenDbContext db)
 
     // ── TagSet ─────────────────────────────────────────────────────────────────
 
-    public Task<List<TagSet>> GetTagSetsAsync(Guid tenantId, CancellationToken ct = default)
-        => db.TagSets
+    public async Task<List<TagSet>> GetTagSetsAsync(Guid tenantId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.TagSets
             .Where(ts => ts.TenantId == tenantId)
             .OrderBy(ts => ts.SortOrder).ThenBy(ts => ts.Name)
             .Include(ts => ts.Tags)
             .ToListAsync(ct);
+    }
 
-    public Task<TagSet?> GetTagSetAsync(Guid id, CancellationToken ct = default)
-        => db.TagSets.Include(ts => ts.Tags).FirstOrDefaultAsync(ts => ts.Id == id, ct);
+    public async Task<TagSet?> GetTagSetAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.TagSets.Include(ts => ts.Tags).FirstOrDefaultAsync(ts => ts.Id == id, ct);
+    }
 
     public async Task<TagSet> CreateTagSetAsync(
         Guid tenantId,
@@ -158,6 +188,8 @@ public class TenantService(KrakenDbContext db)
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var tenantExists = await db.Tenants.AnyAsync(t => t.Id == tenantId, ct).ConfigureAwait(false);
         if (!tenantExists)
@@ -190,6 +222,7 @@ public class TenantService(KrakenDbContext db)
         int sortOrder,
         CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var tagSet = await db.TagSets.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
         if (tagSet is null)
         {
@@ -205,6 +238,7 @@ public class TenantService(KrakenDbContext db)
 
     public async Task<bool> DeleteTagSetAsync(Guid id, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var tagSet = await db.TagSets.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
         if (tagSet is null)
         {
@@ -218,8 +252,11 @@ public class TenantService(KrakenDbContext db)
 
     // ── TenantTag ──────────────────────────────────────────────────────────────
 
-    public Task<TenantTag?> GetTagAsync(Guid id, CancellationToken ct = default)
-        => db.TenantTags.FindAsync(new object?[] { id }, ct).AsTask();
+    public async Task<TenantTag?> GetTagAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.TenantTags.FindAsync(new object?[] { id }, ct).AsTask();
+    }
 
     public async Task<TenantTag> CreateTagAsync(
         Guid tagSetId,
@@ -228,6 +265,8 @@ public class TenantService(KrakenDbContext db)
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var setExists = await db.TagSets.AnyAsync(ts => ts.Id == tagSetId, ct).ConfigureAwait(false);
         if (!setExists)
@@ -252,6 +291,7 @@ public class TenantService(KrakenDbContext db)
         string? color,
         CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var tag = await db.TenantTags.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
         if (tag is null)
         {
@@ -266,6 +306,7 @@ public class TenantService(KrakenDbContext db)
 
     public async Task<bool> DeleteTagAsync(Guid id, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var tag = await db.TenantTags.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
         if (tag is null)
         {
@@ -282,6 +323,8 @@ public class TenantService(KrakenDbContext db)
     /// <summary>Assigns a tag to a target (idempotent).</summary>
     public async Task AddTagToTargetAsync(Guid tagId, Guid targetId, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var tag = await db.TenantTags
             .Include(t => t.Targets)
             .FirstOrDefaultAsync(t => t.Id == tagId, ct)
@@ -303,6 +346,8 @@ public class TenantService(KrakenDbContext db)
     /// <summary>Removes a tag from a target (idempotent).</summary>
     public async Task RemoveTagFromTargetAsync(Guid tagId, Guid targetId, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var tag = await db.TenantTags
             .Include(t => t.Targets)
             .FirstOrDefaultAsync(t => t.Id == tagId, ct)
@@ -324,11 +369,14 @@ public class TenantService(KrakenDbContext db)
     /// <summary>
     /// Returns all tag IDs assigned to a target, grouped by TagSet.
     /// </summary>
-    public Task<List<TenantTag>> GetTagsForTargetAsync(Guid targetId, CancellationToken ct = default)
-        => db.TenantTags
+    public async Task<List<TenantTag>> GetTagsForTargetAsync(Guid targetId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.TenantTags
             .Where(t => t.Targets.Any(tr => tr.Id == targetId))
             .Include(t => t.TagSet)
             .OrderBy(t => t.TagSet.SortOrder)
                 .ThenBy(t => t.Name)
             .ToListAsync(ct);
+    }
 }

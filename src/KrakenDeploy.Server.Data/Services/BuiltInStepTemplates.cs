@@ -18,13 +18,15 @@ namespace KrakenDeploy.Server.Data.Services;
 /// </para>
 /// </summary>
 public class BuiltInStepTemplateSeeder(
-    KrakenDbContext db,
+    IDbContextFactory<KrakenDbContext> dbFactory,
     ILogger<BuiltInStepTemplateSeeder> logger)
 {
     private const string KrakenIisTemplateName = "Kraken.IIS — Deploy Web Site";
 
     public async Task SeedAsync(CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var iisExisting = await db.StepTemplates
             .FirstOrDefaultAsync(t => t.Name == KrakenIisTemplateName, ct)
             .ConfigureAwait(false);

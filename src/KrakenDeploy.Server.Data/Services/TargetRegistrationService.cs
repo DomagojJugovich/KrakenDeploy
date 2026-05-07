@@ -10,7 +10,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// The raw token is returned once (to show in the wizard); only its SHA-256
 /// hash is persisted, giving the same security property as a password hash.
 /// </summary>
-public class TargetRegistrationService(KrakenDbContext db, TimeProvider timeProvider)
+public class TargetRegistrationService(IDbContextFactory<KrakenDbContext> dbFactory, TimeProvider timeProvider)
 {
     private const int TokenByteLength = 32; // 256-bit → 43-char base64url
     private static readonly TimeSpan TokenLifetime = TimeSpan.FromHours(24);
@@ -29,6 +29,8 @@ public class TargetRegistrationService(KrakenDbContext db, TimeProvider timeProv
     {
         ArgumentException.ThrowIfNullOrEmpty(name);
         ArgumentNullException.ThrowIfNull(roles);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var (plainToken, hash) = GenerateToken();
         var now = timeProvider.GetUtcNow();
@@ -66,6 +68,8 @@ public class TargetRegistrationService(KrakenDbContext db, TimeProvider timeProv
         Guid targetId,
         CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var target = await db.DeploymentTargets
             .FindAsync(new object?[] { targetId }, ct)
             .ConfigureAwait(false)
@@ -93,6 +97,8 @@ public class TargetRegistrationService(KrakenDbContext db, TimeProvider timeProv
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(plainToken);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var hash = Hash(plainToken);
         var now = timeProvider.GetUtcNow();

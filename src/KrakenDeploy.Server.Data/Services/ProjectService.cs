@@ -3,22 +3,33 @@ using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data.Services;
 
-public class ProjectService(KrakenDbContext db)
+public class ProjectService(IDbContextFactory<KrakenDbContext> dbFactory)
 {
-    public Task<List<Project>> GetAllAsync(CancellationToken ct = default)
-        => db.Projects.OrderBy(p => p.Name).ToListAsync(ct);
+    public async Task<List<Project>> GetAllAsync(CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Projects.OrderBy(p => p.Name).ToListAsync(ct);
+    }
 
-    public Task<Project?> GetAsync(Guid id, CancellationToken ct = default)
-        => db.Projects.FindAsync(new object?[] { id }, ct).AsTask();
+    public async Task<Project?> GetAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Projects.FindAsync(new object?[] { id }, ct).AsTask();
+    }
 
-    public Task<Project?> GetBySlugAsync(string slug, CancellationToken ct = default)
-        => db.Projects.FirstOrDefaultAsync(p => p.Slug == slug, ct);
+    public async Task<Project?> GetBySlugAsync(string slug, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Projects.FirstOrDefaultAsync(p => p.Slug == slug, ct);
+    }
 
     public async Task<Project> CreateAsync(
         string name, string slug, string? description, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(name);
         ArgumentException.ThrowIfNullOrEmpty(slug);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         if (await db.Projects.AnyAsync(p => p.Slug == slug, ct).ConfigureAwait(false))
         {
@@ -36,6 +47,8 @@ public class ProjectService(KrakenDbContext db)
     {
         ArgumentException.ThrowIfNullOrEmpty(name);
         ArgumentException.ThrowIfNullOrEmpty(slug);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         if (await db.Projects.AnyAsync(p => p.Slug == slug && p.Id != id, ct).ConfigureAwait(false))
         {
@@ -57,6 +70,7 @@ public class ProjectService(KrakenDbContext db)
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var project = await db.Projects.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
         if (project is null)
         {

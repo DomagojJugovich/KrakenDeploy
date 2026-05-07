@@ -7,7 +7,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// Manages package upload, listing, retrieval, and deletion.
 /// Physical storage is delegated to <see cref="IPackageStore"/>.
 /// </summary>
-public class PackageService(KrakenDbContext db, IPackageStore store, TimeProvider timeProvider)
+public class PackageService(IDbContextFactory<KrakenDbContext> dbFactory, IPackageStore store, TimeProvider timeProvider)
 {
     private static readonly char[] InvalidChars = ['/', '\\', ' '];
 
@@ -31,6 +31,8 @@ public class PackageService(KrakenDbContext db, IPackageStore store, TimeProvide
         {
             throw new ArgumentException("PackageId and Version must not contain path separators.");
         }
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var existing = await db.Packages
             .AnyAsync(p => p.PackageId == packageId && p.Version == version, ct)
@@ -67,6 +69,7 @@ public class PackageService(KrakenDbContext db, IPackageStore store, TimeProvide
     /// <summary>Returns distinct package IDs with the count of available versions.</summary>
     public async Task<List<PackageSummary>> GetSummariesAsync(CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         return await db.Packages
             .GroupBy(p => p.PackageId)
             .Select(g => new PackageSummary(g.Key, g.Count(), g.Max(p => p.UploadedUtc)))
@@ -78,6 +81,7 @@ public class PackageService(KrakenDbContext db, IPackageStore store, TimeProvide
     /// <summary>Returns all versions of a specific package, newest first.</summary>
     public async Task<List<Package>> GetVersionsAsync(string packageId, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         return await db.Packages
             .Where(p => p.PackageId == packageId)
             .OrderByDescending(p => p.UploadedUtc)
@@ -85,20 +89,27 @@ public class PackageService(KrakenDbContext db, IPackageStore store, TimeProvide
             .ConfigureAwait(false);
     }
 
-    public Task<Package?> GetAsync(Guid id, CancellationToken ct = default)
-        => db.Packages.FindAsync([id], ct).AsTask();
+    public async Task<Package?> GetAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.Packages.FindAsync([id], ct).AsTask();
+    }
 
     public async Task<Package?> GetAsync(
         string packageId, string version, CancellationToken ct = default)
-        => await db.Packages
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.Packages
             .FirstOrDefaultAsync(p => p.PackageId == packageId && p.Version == version, ct)
             .ConfigureAwait(false);
+    }
 
     // ── Download ───────────────────────────────────────────────────────────
 
     public async Task<(Stream stream, Package package)> OpenStreamAsync(
         Guid id, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var package = await db.Packages.FindAsync([id], ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Package {id} not found.");
         var stream = await store.OpenReadAsync(package.StoredPath, ct).ConfigureAwait(false);
@@ -109,6 +120,7 @@ public class PackageService(KrakenDbContext db, IPackageStore store, TimeProvide
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var package = await db.Packages.FindAsync([id], ct).ConfigureAwait(false);
         if (package is null)
         {

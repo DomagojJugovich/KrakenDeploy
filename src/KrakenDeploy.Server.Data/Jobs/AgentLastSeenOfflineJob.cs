@@ -15,7 +15,7 @@ namespace KrakenDeploy.Server.Data.Jobs;
 /// </para>
 /// </summary>
 public sealed class AgentLastSeenOfflineJob(
-    KrakenDbContext db,
+    IDbContextFactory<KrakenDbContext> dbFactory,
     TimeProvider time,
     ILogger<AgentLastSeenOfflineJob> logger)
 {
@@ -28,6 +28,8 @@ public sealed class AgentLastSeenOfflineJob(
 
     public async Task ExecuteAsync(CancellationToken ct)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var cutoff = time.GetUtcNow() - OfflineThreshold;
 
         // IgnoreQueryFilters so we see targets across ALL spaces — this job

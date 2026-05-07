@@ -28,7 +28,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// </para>
 /// </summary>
 public class DropBundleService(
-    KrakenDbContext db,
+    IDbContextFactory<KrakenDbContext> dbFactory,
     IPackageStore packageStore,
     IEncryptionService encryption,
     ILogger<DropBundleService> logger)
@@ -123,7 +123,8 @@ public class DropBundleService(
             AddTextEntry(archive, "deploy.sh", GenerateOrchestratorSh(manifest));
 
             // Packages
-            await AddPackagesAsync(archive, snapshot, ct).ConfigureAwait(false);
+            await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+            await AddPackagesAsync(db, archive, snapshot, ct).ConfigureAwait(false);
 
             // Empty result template
             var resultTemplate = new DropResultTemplate
@@ -191,6 +192,7 @@ public class DropBundleService(
     }
 
     private async Task AddPackagesAsync(
+        KrakenDbContext db,
         ZipArchive archive,
         IReadOnlyList<Core.Domain.Releases.StepSnapshot> steps,
         CancellationToken ct)

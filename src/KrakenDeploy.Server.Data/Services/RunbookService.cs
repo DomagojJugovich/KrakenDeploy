@@ -10,26 +10,34 @@ namespace KrakenDeploy.Server.Data.Services;
 /// CRUD and dispatch for <see cref="Runbook"/>s, their process steps, and
 /// <see cref="RunbookRun"/> executions.
 /// </summary>
-public class RunbookService(KrakenDbContext db, RunbookRunChannel runbookQueue)
+public class RunbookService(IDbContextFactory<KrakenDbContext> dbFactory, RunbookRunChannel runbookQueue)
 {
     // ── Runbook CRUD ───────────────────────────────────────────────────────────
 
-    public Task<List<Runbook>> GetAllAsync(Guid projectId, CancellationToken ct = default)
-        => db.Runbooks
+    public async Task<List<Runbook>> GetAllAsync(Guid projectId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Runbooks
             .Where(r => r.ProjectId == projectId)
             .OrderBy(r => r.Name)
             .ToListAsync(ct);
+    }
 
-    public Task<Runbook?> GetAsync(Guid id, CancellationToken ct = default)
-        => db.Runbooks
+    public async Task<Runbook?> GetAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Runbooks
             .Include(r => r.Process)
                 .ThenInclude(p => p != null ? p.Steps.OrderBy(s => s.SortOrder) : null!)
             .FirstOrDefaultAsync(r => r.Id == id, ct);
+    }
 
     public async Task<Runbook> CreateAsync(
         Guid projectId, string name, string? description, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var projectExists = await db.Projects.AnyAsync(p => p.Id == projectId, ct).ConfigureAwait(false);
         if (!projectExists)
@@ -52,6 +60,7 @@ public class RunbookService(KrakenDbContext db, RunbookRunChannel runbookQueue)
     public async Task<Runbook?> UpdateAsync(
         Guid id, string name, string? description, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var runbook = await db.Runbooks.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
         if (runbook is null)
         {
@@ -66,6 +75,7 @@ public class RunbookService(KrakenDbContext db, RunbookRunChannel runbookQueue)
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var runbook = await db.Runbooks.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
         if (runbook is null)
         {
@@ -79,24 +89,6 @@ public class RunbookService(KrakenDbContext db, RunbookRunChannel runbookQueue)
 
     // ── Step management ────────────────────────────────────────────────────────
 
-    private async Task<RunbookProcess> GetOrCreateProcessAsync(Guid runbookId, CancellationToken ct)
-    {
-        var process = await db.RunbookProcesses
-            .Include(p => p.Steps)
-            .FirstOrDefaultAsync(p => p.RunbookId == runbookId, ct)
-            .ConfigureAwait(false);
-
-        if (process is not null)
-        {
-            return process;
-        }
-
-        process = new RunbookProcess { RunbookId = runbookId };
-        db.RunbookProcesses.Add(process);
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return process;
-    }
-
     public async Task<RunbookStep> AddStepAsync(
         Guid runbookId,
         string name,
@@ -106,7 +98,8 @@ public class RunbookService(KrakenDbContext db, RunbookRunChannel runbookQueue)
         Dictionary<string, string> config,
         CancellationToken ct = default)
     {
-        var process = await GetOrCreateProcessAsync(runbookId, ct).ConfigureAwait(false);
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var process = await GetOrCreateProcessAsync(db, runbookId, ct).ConfigureAwait(false);
 
         var maxOrder = process.Steps.Count > 0
             ? process.Steps.Max(s => s.SortOrder)
@@ -137,6 +130,7 @@ public class RunbookService(KrakenDbContext db, RunbookRunChannel runbookQueue)
         Dictionary<string, string> config,
         CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var step = await db.RunbookSteps.FindAsync(new object?[] { stepId }, ct).ConfigureAwait(false);
         if (step is null)
         {
@@ -154,6 +148,7 @@ public class RunbookService(KrakenDbContext db, RunbookRunChannel runbookQueue)
 
     public async Task<bool> DeleteStepAsync(Guid stepId, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var step = await db.RunbookSteps.FindAsync(new object?[] { stepId }, ct).ConfigureAwait(false);
         if (step is null)
         {
@@ -178,7 +173,13 @@ public class RunbookService(KrakenDbContext db, RunbookRunChannel runbookQueue)
         Guid? tenantId = null,
         CancellationToken ct = default)
     {
-        var runbook = await GetAsync(runbookId, ct).ConfigureAwait(false)
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        var runbook = await db.Runbooks
+            .Include(r => r.Process)
+                .ThenInclude(p => p != null ? p.Steps.OrderBy(s => s.SortOrder) : null!)
+            .FirstOrDefaultAsync(r => r.Id == runbookId, ct)
+            .ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Runbook {runbookId} not found.");
 
         if (runbook.Process is null || runbook.Process.Steps.Count == 0)
@@ -227,19 +228,46 @@ public class RunbookService(KrakenDbContext db, RunbookRunChannel runbookQueue)
 
     // ── Query runs ─────────────────────────────────────────────────────────────
 
-    public Task<List<RunbookRun>> GetRunsAsync(Guid runbookId, CancellationToken ct = default)
-        => db.RunbookRuns
+    public async Task<List<RunbookRun>> GetRunsAsync(Guid runbookId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.RunbookRuns
             .Where(r => r.RunbookId == runbookId)
             .Include(r => r.Environment)
             .Include(r => r.Target)
             .OrderByDescending(r => r.CreatedUtc)
             .ToListAsync(ct);
+    }
 
-    public Task<RunbookRun?> GetRunAsync(Guid runId, CancellationToken ct = default)
-        => db.RunbookRuns
+    public async Task<RunbookRun?> GetRunAsync(Guid runId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.RunbookRuns
             .Include(r => r.Runbook)
             .Include(r => r.Environment)
             .Include(r => r.Target)
             .Include(r => r.LogEntries.OrderBy(l => l.Sequence))
             .FirstOrDefaultAsync(r => r.Id == runId, ct);
+    }
+
+    // ── Private helpers ────────────────────────────────────────────────────────
+
+    private static async Task<RunbookProcess> GetOrCreateProcessAsync(
+        KrakenDbContext db, Guid runbookId, CancellationToken ct)
+    {
+        var process = await db.RunbookProcesses
+            .Include(p => p.Steps)
+            .FirstOrDefaultAsync(p => p.RunbookId == runbookId, ct)
+            .ConfigureAwait(false);
+
+        if (process is not null)
+        {
+            return process;
+        }
+
+        process = new RunbookProcess { RunbookId = runbookId };
+        db.RunbookProcesses.Add(process);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return process;
+    }
 }

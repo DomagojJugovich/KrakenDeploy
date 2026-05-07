@@ -22,7 +22,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// </para>
 /// </summary>
 public class OfflineResultService(
-    KrakenDbContext db,
+    IDbContextFactory<KrakenDbContext> dbFactory,
     IArtifactStore artifactStore,
     IEncryptionService encryption,
     ILogger<OfflineResultService> logger)
@@ -41,6 +41,8 @@ public class OfflineResultService(
         Stream resultBundle,
         CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var deployment = await db.Deployments
             .Include(d => d.Target)
             .Include(d => d.LogEntries)

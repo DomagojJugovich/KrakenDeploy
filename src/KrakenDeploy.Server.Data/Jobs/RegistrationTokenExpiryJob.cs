@@ -14,12 +14,14 @@ namespace KrakenDeploy.Server.Data.Jobs;
 /// </para>
 /// </summary>
 public sealed class RegistrationTokenExpiryJob(
-    KrakenDbContext db,
+    IDbContextFactory<KrakenDbContext> dbFactory,
     TimeProvider time,
     ILogger<RegistrationTokenExpiryJob> logger)
 {
     public async Task ExecuteAsync(CancellationToken ct)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var now = time.GetUtcNow();
 
         // Use ExecuteUpdateAsync to avoid loading entities into memory.

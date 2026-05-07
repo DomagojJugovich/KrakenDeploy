@@ -8,7 +8,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// Prunes excess deployments after a successful deployment based on the lifecycle
 /// phase retention policy.
 /// </summary>
-public class RetentionService(KrakenDbContext db, ILogger<RetentionService> logger)
+public class RetentionService(IDbContextFactory<KrakenDbContext> dbFactory, ILogger<RetentionService> logger)
 {
     /// <summary>
     /// Called after a deployment succeeds. Finds the lifecycle phase that owns the
@@ -18,6 +18,8 @@ public class RetentionService(KrakenDbContext db, ILogger<RetentionService> logg
     /// </summary>
     public async Task PruneAfterDeploymentAsync(Guid deploymentId, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var deployment = await db.Deployments
             .Include(d => d.Release)
                 .ThenInclude(r => r.Channel)

@@ -8,7 +8,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// <summary>
 /// CRUD and scope-resolution for project <see cref="VariableSet"/>s and <see cref="Variable"/>s.
 /// </summary>
-public class VariableService(KrakenDbContext db, IEncryptionService encryption)
+public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncryptionService encryption)
 {
     // ── Set management ─────────────────────────────────────────────────────
 
@@ -19,29 +19,8 @@ public class VariableService(KrakenDbContext db, IEncryptionService encryption)
     public async Task<VariableSet> GetOrCreateSetAsync(
         Guid projectId, CancellationToken ct = default)
     {
-        var set = await db.VariableSets
-            .Include(vs => vs.Variables)
-            .FirstOrDefaultAsync(vs => vs.ProjectId == projectId, ct)
-            .ConfigureAwait(false);
-
-        if (set is not null)
-        {
-            return set;
-        }
-
-        var projectExists = await db.Projects
-            .AnyAsync(p => p.Id == projectId, ct)
-            .ConfigureAwait(false);
-
-        if (!projectExists)
-        {
-            throw new InvalidOperationException($"Project {projectId} not found.");
-        }
-
-        set = new VariableSet { ProjectId = projectId };
-        db.VariableSets.Add(set);
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return set;
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await GetOrCreateSetCoreAsync(db, projectId, ct).ConfigureAwait(false);
     }
 
     // ── Variable CRUD ──────────────────────────────────────────────────────
@@ -52,6 +31,8 @@ public class VariableService(KrakenDbContext db, IEncryptionService encryption)
     public async Task<List<VariableDto>> GetVariablesAsync(
         Guid projectId, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var set = await db.VariableSets
             .Include(vs => vs.Variables)
             .FirstOrDefaultAsync(vs => vs.ProjectId == projectId, ct)
@@ -87,7 +68,8 @@ public class VariableService(KrakenDbContext db, IEncryptionService encryption)
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(value);
 
-        var set = await GetOrCreateSetAsync(projectId, ct).ConfigureAwait(false);
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var set = await GetOrCreateSetCoreAsync(db, projectId, ct).ConfigureAwait(false);
 
         var storedValue = type switch
         {
@@ -124,6 +106,8 @@ public class VariableService(KrakenDbContext db, IEncryptionService encryption)
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(value);
 
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var variable = await db.Variables
             .FindAsync([id], ct)
             .ConfigureAwait(false);
@@ -152,6 +136,8 @@ public class VariableService(KrakenDbContext db, IEncryptionService encryption)
     /// </summary>
     public async Task<bool> DeleteVariableAsync(Guid id, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var variable = await db.Variables
             .FindAsync([id], ct)
             .ConfigureAwait(false);
@@ -188,6 +174,8 @@ public class VariableService(KrakenDbContext db, IEncryptionService encryption)
         Guid? tenantId = null,
         CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         // 1. Resolve tenant common variables first (lowest priority)
@@ -256,7 +244,35 @@ public class VariableService(KrakenDbContext db, IEncryptionService encryption)
         }
     }
 
-    // ── Helpers ────────────────────────────────────────────────────────────
+    // ── Private helpers ────────────────────────────────────────────────────
+
+    private static async Task<VariableSet> GetOrCreateSetCoreAsync(
+        KrakenDbContext db, Guid projectId, CancellationToken ct)
+    {
+        var set = await db.VariableSets
+            .Include(vs => vs.Variables)
+            .FirstOrDefaultAsync(vs => vs.ProjectId == projectId, ct)
+            .ConfigureAwait(false);
+
+        if (set is not null)
+        {
+            return set;
+        }
+
+        var projectExists = await db.Projects
+            .AnyAsync(p => p.Id == projectId, ct)
+            .ConfigureAwait(false);
+
+        if (!projectExists)
+        {
+            throw new InvalidOperationException($"Project {projectId} not found.");
+        }
+
+        set = new VariableSet { ProjectId = projectId };
+        db.VariableSets.Add(set);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return set;
+    }
 
     /// <summary>
     /// Ensures a StringArray value is stored as a valid JSON array.

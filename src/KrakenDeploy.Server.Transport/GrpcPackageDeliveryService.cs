@@ -25,7 +25,7 @@ namespace KrakenDeploy.Server.Transport;
 /// </summary>
 [Authorize(AuthenticationSchemes = "AgentJwt")]
 public sealed class GrpcPackageDeliveryService(
-    KrakenDbContext db,
+    IDbContextFactory<KrakenDbContext> dbFactory,
     IPackageStore packageStore,
     PackageDeltaService deltaService,
     ILogger<GrpcPackageDeliveryService> logger)
@@ -41,6 +41,8 @@ public sealed class GrpcPackageDeliveryService(
         ArgumentNullException.ThrowIfNull(request);
         var ct = context.CancellationToken;
 
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         // ── Resolve the requested package ─────────────────────────────────────
         var package = await db.Packages
             .FirstOrDefaultAsync(
@@ -53,7 +55,7 @@ public sealed class GrpcPackageDeliveryService(
         // ── Route to delta or full path ───────────────────────────────────────
         if (!string.IsNullOrEmpty(request.BaseVersion))
         {
-            await ServeDeltaAsync(request, package, responseStream, ct).ConfigureAwait(false);
+            await ServeDeltaAsync(db, request, package, responseStream, ct).ConfigureAwait(false);
         }
         else
         {
@@ -64,6 +66,7 @@ public sealed class GrpcPackageDeliveryService(
     // ── Delta path ────────────────────────────────────────────────────────────
 
     private async Task ServeDeltaAsync(
+        KrakenDbContext db,
         DownloadRequest request,
         Package package,
         IServerStreamWriter<DownloadChunk> responseStream,

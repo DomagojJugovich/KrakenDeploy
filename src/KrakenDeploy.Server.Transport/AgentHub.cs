@@ -19,7 +19,7 @@ namespace KrakenDeploy.Server.Transport;
 [Authorize(AuthenticationSchemes = "AgentJwt")]
 public sealed class AgentHub(
     IAgentConnectionRegistry registry,
-    KrakenDbContext db,
+    IDbContextFactory<KrakenDbContext> dbFactory,
     IServiceScopeFactory scopeFactory,
     TargetStatusPublisher statusPublisher,
     TimeProvider timeProvider,
@@ -43,6 +43,7 @@ public sealed class AgentHub(
 
         registry.Add(Context.ConnectionId, targetId.Value);
 
+        await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
         var target = await db.DeploymentTargets
             .FindAsync(new object?[] { targetId.Value })
             .ConfigureAwait(false);
@@ -109,6 +110,7 @@ public sealed class AgentHub(
             return;
         }
 
+        await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
         var target = await db.DeploymentTargets
             .FindAsync(new object?[] { targetId.Value })
             .ConfigureAwait(false);
@@ -152,6 +154,7 @@ public sealed class AgentHub(
             return;
         }
 
+        await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
         var target = await db.DeploymentTargets
             .FindAsync(new object?[] { targetId.Value })
             .ConfigureAwait(false);
@@ -184,6 +187,8 @@ public sealed class AgentHub(
         ArgumentNullException.ThrowIfNull(message);
 
         var timestamp = timeProvider.GetUtcNow();
+
+        await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
 
         // Try Deployment first, then RunbookRun (same ID space, non-overlapping GUIDs).
         var deployment = await db.Deployments
@@ -239,6 +244,8 @@ public sealed class AgentHub(
         Guid deploymentId, bool success, string? errorMessage)
     {
         var completedAt = timeProvider.GetUtcNow();
+
+        await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
 
         // Try Deployment first.
         var deployment = await db.Deployments

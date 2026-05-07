@@ -9,16 +9,22 @@ namespace KrakenDeploy.Server.Data.Services;
 /// at rest via <see cref="IEncryptionService"/>. A null/empty secret on
 /// <see cref="UpdateAsync"/> means "keep the existing secret unchanged".
 /// </summary>
-public class IdentityProviderService(KrakenDbContext db, IEncryptionService encryption)
+public class IdentityProviderService(IDbContextFactory<KrakenDbContext> dbFactory, IEncryptionService encryption)
 {
-    public Task<List<IdentityProvider>> GetAllAsync(CancellationToken ct = default)
-        => db.IdentityProviders
+    public async Task<List<IdentityProvider>> GetAllAsync(CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.IdentityProviders
             .OrderBy(p => p.SortOrder)
             .ThenBy(p => p.Name)
             .ToListAsync(ct);
+    }
 
-    public Task<IdentityProvider?> GetAsync(Guid id, CancellationToken ct = default)
-        => db.IdentityProviders.FirstOrDefaultAsync(p => p.Id == id, ct);
+    public async Task<IdentityProvider?> GetAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.IdentityProviders.FirstOrDefaultAsync(p => p.Id == id, ct);
+    }
 
     public async Task<IdentityProvider> CreateAsync(
         string name, IdentityProviderType type,
@@ -28,6 +34,8 @@ public class IdentityProviderService(KrakenDbContext db, IEncryptionService encr
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var idp = new IdentityProvider
         {
@@ -60,6 +68,8 @@ public class IdentityProviderService(KrakenDbContext db, IEncryptionService encr
         bool autoProvision, bool isEnabled,
         CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var idp = await db.IdentityProviders
             .FindAsync(new object?[] { id }, ct)
             .ConfigureAwait(false);
@@ -88,6 +98,8 @@ public class IdentityProviderService(KrakenDbContext db, IEncryptionService encr
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var idp = await db.IdentityProviders
             .FindAsync(new object?[] { id }, ct)
             .ConfigureAwait(false);

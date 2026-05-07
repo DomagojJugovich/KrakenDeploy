@@ -9,7 +9,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// attributes; callers should check <see cref="Team.IsBuiltIn"/> before
 /// calling mutating methods.
 /// </summary>
-public class TeamService(KrakenDbContext db)
+public class TeamService(IDbContextFactory<KrakenDbContext> dbFactory)
 {
     // ── Queries ───────────────────────────────────────────────────────────────
 
@@ -17,8 +17,10 @@ public class TeamService(KrakenDbContext db)
     /// All teams visible from the given Space: system-level teams (SpaceId null)
     /// plus Space-scoped teams. Built-in teams appear first.
     /// </summary>
-    public Task<List<Team>> GetAllAsync(Guid? spaceId = null, CancellationToken ct = default)
-        => db.Teams
+    public async Task<List<Team>> GetAllAsync(Guid? spaceId = null, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Teams
             .Include(t => t.Members)
             .Include(t => t.ExternalGroups).ThenInclude(eg => eg.IdentityProvider)
             .Include(t => t.RoleAssignments).ThenInclude(a => a.Role)
@@ -27,13 +29,17 @@ public class TeamService(KrakenDbContext db)
             .ThenBy(t => t.SpaceId == null ? 0 : 1)
             .ThenBy(t => t.Name)
             .ToListAsync(ct);
+    }
 
-    public Task<Team?> GetAsync(Guid id, CancellationToken ct = default)
-        => db.Teams
+    public async Task<Team?> GetAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Teams
             .Include(t => t.Members)
             .Include(t => t.ExternalGroups).ThenInclude(eg => eg.IdentityProvider)
             .Include(t => t.RoleAssignments).ThenInclude(a => a.Role)
             .FirstOrDefaultAsync(t => t.Id == id, ct);
+    }
 
     // ── CRUD ──────────────────────────────────────────────────────────────────
 
@@ -42,6 +48,8 @@ public class TeamService(KrakenDbContext db)
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var team = new Team
         {
@@ -61,6 +69,7 @@ public class TeamService(KrakenDbContext db)
         Guid id, string name, string? description,
         CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var team = await db.Teams.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
         if (team is null)
         {
@@ -79,6 +88,8 @@ public class TeamService(KrakenDbContext db)
     /// </summary>
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var team = await db.Teams
             .Include(t => t.Members)
             .Include(t => t.ExternalGroups)
@@ -101,6 +112,8 @@ public class TeamService(KrakenDbContext db)
     public async Task AddMemberAsync(
         Guid teamId, Guid userId, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var already = await db.TeamMembers
             .AnyAsync(m => m.TeamId == teamId && m.UserId == userId, ct)
             .ConfigureAwait(false);
@@ -122,6 +135,8 @@ public class TeamService(KrakenDbContext db)
     public async Task<bool> RemoveMemberAsync(
         Guid teamId, Guid userId, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var member = await db.TeamMembers
             .FirstOrDefaultAsync(m => m.TeamId == teamId && m.UserId == userId, ct)
             .ConfigureAwait(false);
@@ -144,6 +159,8 @@ public class TeamService(KrakenDbContext db)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(groupClaim);
 
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var eg = new TeamExternalGroup
         {
             TeamId             = teamId,
@@ -159,6 +176,8 @@ public class TeamService(KrakenDbContext db)
 
     public async Task<bool> RemoveExternalGroupAsync(Guid id, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var eg = await db.TeamExternalGroups
             .FindAsync(new object?[] { id }, ct)
             .ConfigureAwait(false);
@@ -181,6 +200,8 @@ public class TeamService(KrakenDbContext db)
         List<Guid>? environmentIds, List<Guid>? tenantIds, List<Guid>? tenantTagIds,
         CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var assignment = new RoleAssignment
         {
             TeamId         = teamId,
@@ -201,6 +222,8 @@ public class TeamService(KrakenDbContext db)
     public async Task<bool> RemoveRoleAssignmentAsync(
         Guid assignmentId, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var assignment = await db.RoleAssignments
             .FindAsync(new object?[] { assignmentId }, ct)
             .ConfigureAwait(false);

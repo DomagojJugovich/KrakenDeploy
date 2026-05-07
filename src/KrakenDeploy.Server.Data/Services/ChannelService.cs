@@ -7,23 +7,31 @@ namespace KrakenDeploy.Server.Data.Services;
 /// Manages <see cref="Channel"/>s for projects.
 /// Ensures exactly one default channel exists per project.
 /// </summary>
-public class ChannelService(KrakenDbContext db)
+public class ChannelService(IDbContextFactory<KrakenDbContext> dbFactory)
 {
-    public Task<List<Channel>> GetForProjectAsync(Guid projectId, CancellationToken ct = default)
-        => db.Channels
+    public async Task<List<Channel>> GetForProjectAsync(Guid projectId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Channels
             .Where(c => c.ProjectId == projectId)
             .Include(c => c.Lifecycle)
             .OrderBy(c => c.Name)
             .ToListAsync(ct);
+    }
 
-    public Task<Channel?> GetAsync(Guid id, CancellationToken ct = default)
-        => db.Channels.Include(c => c.Lifecycle).FirstOrDefaultAsync(c => c.Id == id, ct);
+    public async Task<Channel?> GetAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Channels.Include(c => c.Lifecycle).FirstOrDefaultAsync(c => c.Id == id, ct);
+    }
 
     /// <summary>
     /// Returns the default channel for a project, creating one if none exists.
     /// </summary>
     public async Task<Channel> GetOrCreateDefaultAsync(Guid projectId, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var existing = await db.Channels
             .FirstOrDefaultAsync(c => c.ProjectId == projectId && c.IsDefault, ct)
             .ConfigureAwait(false);
@@ -55,6 +63,8 @@ public class ChannelService(KrakenDbContext db)
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         if (await db.Channels.AnyAsync(c => c.ProjectId == projectId && c.Name == name, ct)
             .ConfigureAwait(false))
@@ -107,6 +117,8 @@ public class ChannelService(KrakenDbContext db)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var channel = await db.Channels.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
         if (channel is null)
         {
@@ -139,6 +151,7 @@ public class ChannelService(KrakenDbContext db)
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var channel = await db.Channels.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
         if (channel is null)
         {

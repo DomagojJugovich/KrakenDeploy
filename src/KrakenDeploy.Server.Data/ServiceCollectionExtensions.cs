@@ -41,7 +41,7 @@ public static class ServiceCollectionExtensions
         services.TryAddScoped<ISpaceContext, DefaultSpaceContext>();
         services.AddScoped<SpaceScopingInterceptor>();
 
-        services.AddDbContext<KrakenDbContext>((sp, options) =>
+        services.AddDbContextFactory<KrakenDbContext>((sp, options) =>
         {
             options.UseNpgsql(connectionString);
             options.UseSnakeCaseNamingConvention();
@@ -49,7 +49,7 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<AuditableEntityInterceptor>(),
                 sp.GetRequiredService<AuditLogInterceptor>(),
                 sp.GetRequiredService<SpaceScopingInterceptor>());
-        });
+        }, ServiceLifetime.Scoped);
 
         // Package store — local filesystem for M2.
         services.AddSingleton<IPackageStore>(_ => new LocalPackageStore(dataPath));

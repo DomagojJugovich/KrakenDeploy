@@ -19,13 +19,15 @@ namespace KrakenDeploy.Server.Data.Jobs;
 /// </para>
 /// </summary>
 public sealed class ScheduledDeploymentDispatchJob(
-    KrakenDbContext db,
+    IDbContextFactory<KrakenDbContext> dbFactory,
     Channel<Guid> deploymentQueue,
     TimeProvider time,
     ILogger<ScheduledDeploymentDispatchJob> logger)
 {
     public async Task ExecuteAsync(CancellationToken ct)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var now = time.GetUtcNow();
 
         // Load IDs of deployments whose scheduled time has passed.

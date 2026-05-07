@@ -8,22 +8,30 @@ namespace KrakenDeploy.Server.Data.Services;
 /// = true) are managed by <see cref="BuiltInRbacSeeder"/> and are read-only here —
 /// <see cref="UpdateAsync"/> and <see cref="DeleteAsync"/> silently no-op on them.
 /// </summary>
-public class RoleService(KrakenDbContext db)
+public class RoleService(IDbContextFactory<KrakenDbContext> dbFactory)
 {
-    public Task<List<Role>> GetAllAsync(CancellationToken ct = default)
-        => db.Roles
+    public async Task<List<Role>> GetAllAsync(CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Roles
             .OrderByDescending(r => r.IsBuiltIn)
             .ThenBy(r => r.Name)
             .ToListAsync(ct);
+    }
 
-    public Task<Role?> GetAsync(Guid id, CancellationToken ct = default)
-        => db.Roles.FirstOrDefaultAsync(r => r.Id == id, ct);
+    public async Task<Role?> GetAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Roles.FirstOrDefaultAsync(r => r.Id == id, ct);
+    }
 
     public async Task<Role> CreateAsync(
         string name, string? description, List<Permission> permissions,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         if (await db.Roles.AnyAsync(r => r.Name == name, ct).ConfigureAwait(false))
         {
@@ -52,6 +60,8 @@ public class RoleService(KrakenDbContext db)
         Guid id, string name, string? description, List<Permission> permissions,
         CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
         var role = await db.Roles.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
         if (role is null || role.IsBuiltIn)
         {
@@ -77,6 +87,7 @@ public class RoleService(KrakenDbContext db)
     /// </summary>
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var role = await db.Roles.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
         if (role is null || role.IsBuiltIn)
         {

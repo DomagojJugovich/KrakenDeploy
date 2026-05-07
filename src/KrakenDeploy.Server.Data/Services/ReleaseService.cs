@@ -9,7 +9,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// A release locks in a specific version of the project's deployment process
 /// with pinned package versions.
 /// </summary>
-public class ReleaseService(KrakenDbContext db)
+public class ReleaseService(IDbContextFactory<KrakenDbContext> dbFactory)
 {
     // ── Create ─────────────────────────────────────────────────────────────
 
@@ -33,6 +33,8 @@ public class ReleaseService(KrakenDbContext db)
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(version);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var duplicate = await db.Releases
             .AnyAsync(r => r.ProjectId == projectId && r.Version == version, ct)
@@ -72,7 +74,7 @@ public class ReleaseService(KrakenDbContext db)
             // Explicit version wins; fall back to the latest uploaded version.
             var pinned = (packageVersions is not null && packageVersions.TryGetValue(step.Name, out var v))
                 ? v
-                : await ResolveLatestVersionAsync(step.PackageId, ct).ConfigureAwait(false);
+                : await ResolveLatestVersionAsync(db, step.PackageId, ct).ConfigureAwait(false);
 
             snapshot.Add(new StepSnapshot
             {
@@ -104,20 +106,27 @@ public class ReleaseService(KrakenDbContext db)
 
     public async Task<List<Release>> GetAllAsync(
         Guid projectId, CancellationToken ct = default)
-        => await db.Releases
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.Releases
             .Where(r => r.ProjectId == projectId)
             .OrderByDescending(r => r.CreatedUtc)
             .ToListAsync(ct)
             .ConfigureAwait(false);
+    }
 
-    public Task<Release?> GetAsync(Guid id, CancellationToken ct = default)
-        => db.Releases
+    public async Task<Release?> GetAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Releases
             .Include(r => r.Project)
             .FirstOrDefaultAsync(r => r.Id == id, ct);
+    }
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
-    private async Task<string> ResolveLatestVersionAsync(string packageId, CancellationToken ct)
+    private static async Task<string> ResolveLatestVersionAsync(
+        KrakenDbContext db, string packageId, CancellationToken ct)
     {
         var latest = await db.Packages
             .Where(p => p.PackageId == packageId)

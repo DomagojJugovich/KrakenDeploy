@@ -14,7 +14,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// the upgrade.
 /// </summary>
 public class BuiltInRbacSeeder(
-    KrakenDbContext db,
+    IDbContextFactory<KrakenDbContext> dbFactory,
     ILogger<BuiltInRbacSeeder> logger)
 {
     /// <summary>Stable Guid for the system-level "Kraken Administrators" team.</summary>
@@ -32,8 +32,10 @@ public class BuiltInRbacSeeder(
     /// </summary>
     public async Task SeedAsync(CancellationToken ct = default)
     {
-        await SeedRolesAsync(ct).ConfigureAwait(false);
-        await SeedSystemTeamsAsync(ct).ConfigureAwait(false);
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        await SeedRolesAsync(db, ct).ConfigureAwait(false);
+        await SeedSystemTeamsAsync(db, ct).ConfigureAwait(false);
 
         // For each existing Space, seed its per-Space built-in teams.
         // Cross-Space query: Space itself is platform-level (not ISpaceScoped)
@@ -46,7 +48,7 @@ public class BuiltInRbacSeeder(
 
         foreach (var spaceId in spaceIds)
         {
-            await SeedSpaceTeamsAsync(spaceId, ct).ConfigureAwait(false);
+            await SeedSpaceTeamsAsync(db, spaceId, ct).ConfigureAwait(false);
         }
     }
 
@@ -57,35 +59,41 @@ public class BuiltInRbacSeeder(
     /// </summary>
     public async Task SeedSpaceTeamsAsync(Guid spaceId, CancellationToken ct = default)
     {
-        await UpsertSpaceTeamAsync(spaceId,
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await SeedSpaceTeamsAsync(db, spaceId, ct).ConfigureAwait(false);
+    }
+
+    private static async Task SeedSpaceTeamsAsync(KrakenDbContext db, Guid spaceId, CancellationToken ct)
+    {
+        await UpsertSpaceTeamAsync(db, spaceId,
             id: DeterministicSpaceTeamId(spaceId, "space-managers"),
             name: "Space Managers",
             description: "Full administrative control over this Space.",
             roleId: BuiltInRoles.SpaceManagerId,
             isEveryone: false, ct).ConfigureAwait(false);
 
-        await UpsertSpaceTeamAsync(spaceId,
+        await UpsertSpaceTeamAsync(db, spaceId,
             id: DeterministicSpaceTeamId(spaceId, "project-deployers"),
             name: "Project Deployers",
             description: "Creates releases and runs deployments in this Space.",
             roleId: BuiltInRoles.ProjectDeployerId,
             isEveryone: false, ct).ConfigureAwait(false);
 
-        await UpsertSpaceTeamAsync(spaceId,
+        await UpsertSpaceTeamAsync(db, spaceId,
             id: DeterministicSpaceTeamId(spaceId, "project-contributors"),
             name: "Project Contributors",
             description: "Edits projects, processes, and variables in this Space.",
             roleId: BuiltInRoles.ProjectContributorId,
             isEveryone: false, ct).ConfigureAwait(false);
 
-        await UpsertSpaceTeamAsync(spaceId,
+        await UpsertSpaceTeamAsync(db, spaceId,
             id: DeterministicSpaceTeamId(spaceId, "project-viewers"),
             name: "Project Viewers",
             description: "Read-only access to this Space.",
             roleId: BuiltInRoles.ProjectViewerId,
             isEveryone: false, ct).ConfigureAwait(false);
 
-        await UpsertSpaceTeamAsync(spaceId,
+        await UpsertSpaceTeamAsync(db, spaceId,
             id: DeterministicSpaceTeamId(spaceId, "everyone"),
             name: "Everyone",
             description: "Every user with access to this Space. Auto-membership; " +
@@ -96,7 +104,7 @@ public class BuiltInRbacSeeder(
 
     // ── Roles ──────────────────────────────────────────────────────────────────
 
-    private async Task SeedRolesAsync(CancellationToken ct)
+    private async Task SeedRolesAsync(KrakenDbContext db, CancellationToken ct)
     {
         foreach (var def in BuiltInRoles.All)
         {
@@ -135,9 +143,9 @@ public class BuiltInRbacSeeder(
 
     // ── System teams ──────────────────────────────────────────────────────────
 
-    private async Task SeedSystemTeamsAsync(CancellationToken ct)
+    private async Task SeedSystemTeamsAsync(KrakenDbContext db, CancellationToken ct)
     {
-        await UpsertSystemTeamAsync(
+        await UpsertSystemTeamAsync(db,
             id: KrakenAdministratorsTeamId,
             name: "Kraken Administrators",
             description: "Unrestricted system-wide administration. Members " +
@@ -145,7 +153,7 @@ public class BuiltInRbacSeeder(
             roleId: BuiltInRoles.SystemAdministratorId,
             isEveryone: false, ct).ConfigureAwait(false);
 
-        await UpsertSystemTeamAsync(
+        await UpsertSystemTeamAsync(db,
             id: EveryoneSystemTeamId,
             name: "Everyone",
             description: "Every authenticated user. System-level visibility " +
@@ -157,6 +165,7 @@ public class BuiltInRbacSeeder(
     }
 
     private async Task UpsertSystemTeamAsync(
+        KrakenDbContext db,
         Guid id, string name, string description, Guid? roleId, bool isEveryone,
         CancellationToken ct)
     {
@@ -203,7 +212,8 @@ public class BuiltInRbacSeeder(
 
     // ── Per-Space teams ───────────────────────────────────────────────────────
 
-    private async Task UpsertSpaceTeamAsync(
+    private static async Task UpsertSpaceTeamAsync(
+        KrakenDbContext db,
         Guid spaceId, Guid id, string name, string description,
         Guid roleId, bool isEveryone, CancellationToken ct)
     {

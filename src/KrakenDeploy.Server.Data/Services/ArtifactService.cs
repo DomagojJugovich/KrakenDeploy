@@ -8,7 +8,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// Saves, lists, and retrieves deployment artifacts.
 /// </summary>
 public sealed class ArtifactService(
-    KrakenDbContext db,
+    IDbContextFactory<KrakenDbContext> dbFactory,
     IArtifactStore store)
 {
     // ── Write ──────────────────────────────────────────────────────────────────
@@ -40,6 +40,7 @@ public sealed class ArtifactService(
             CollectedUtc = DateTimeOffset.UtcNow,
         };
 
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         db.DeploymentArtifacts.Add(artifact);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
@@ -48,22 +49,30 @@ public sealed class ArtifactService(
 
     // ── Query ──────────────────────────────────────────────────────────────────
 
-    public Task<List<DeploymentArtifact>> GetByDeploymentAsync(
+    public async Task<List<DeploymentArtifact>> GetByDeploymentAsync(
         Guid deploymentId, CancellationToken ct = default)
-        => db.DeploymentArtifacts
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.DeploymentArtifacts
              .Where(a => a.DeploymentId == deploymentId)
              .OrderBy(a => a.StepName).ThenBy(a => a.FileName)
              .ToListAsync(ct);
+    }
 
-    public Task<DeploymentArtifact?> GetAsync(Guid artifactId, CancellationToken ct = default)
-        => db.DeploymentArtifacts.FirstOrDefaultAsync(a => a.Id == artifactId, ct);
+    public async Task<DeploymentArtifact?> GetAsync(Guid artifactId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.DeploymentArtifacts.FirstOrDefaultAsync(a => a.Id == artifactId, ct);
+    }
 
     // ── Download ───────────────────────────────────────────────────────────────
 
     public async Task<(Stream Stream, DeploymentArtifact Artifact)> OpenReadAsync(
         Guid artifactId, CancellationToken ct = default)
     {
-        var artifact = await GetAsync(artifactId, ct).ConfigureAwait(false)
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var artifact = await db.DeploymentArtifacts
+            .FirstOrDefaultAsync(a => a.Id == artifactId, ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Artifact {artifactId} not found.");
 
         var stream = await store.OpenReadAsync(artifact.StoredPath, ct).ConfigureAwait(false);
@@ -74,7 +83,9 @@ public sealed class ArtifactService(
 
     public async Task DeleteAsync(Guid artifactId, CancellationToken ct = default)
     {
-        var artifact = await GetAsync(artifactId, ct).ConfigureAwait(false);
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var artifact = await db.DeploymentArtifacts
+            .FirstOrDefaultAsync(a => a.Id == artifactId, ct).ConfigureAwait(false);
         if (artifact is null)
         {
             return;
