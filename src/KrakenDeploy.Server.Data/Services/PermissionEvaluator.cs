@@ -17,10 +17,17 @@ namespace KrakenDeploy.Server.Data.Services;
 /// per-Project / per-Environment / per-Tenant queries.
 /// </para>
 /// </summary>
-public sealed class PermissionEvaluator(KrakenDbContext db) : IPermissionEvaluator
+public sealed class PermissionEvaluator(KrakenDbContext db) : IPermissionEvaluator, IDisposable
 {
     /// <summary>Standard claim name for the user's KrakenDeploy user id.</summary>
     public const string UserIdClaim = ClaimTypes.NameIdentifier;
+
+    // Blazor Server renders multiple components concurrently on the same
+    // circuit, all sharing this scoped instance and its KrakenDbContext.
+    // The semaphore serializes DB access so the context is never used by
+    // two concurrent operations simultaneously. Once the caches are warm
+    // (typically after the first render) all calls are lock-free cache hits.
+    private readonly SemaphoreSlim _gate = new(1, 1);
 
     private readonly Dictionary<CacheKey, IReadOnlyList<RoleAssignment>> _assignmentCache = [];
     private readonly Dictionary<Guid, bool> _systemAdminCache = [];
@@ -105,33 +112,50 @@ public sealed class PermissionEvaluator(KrakenDbContext db) : IPermissionEvaluat
         Guid userId, Guid? spaceId, CancellationToken ct)
     {
         var key = new CacheKey(userId, spaceId);
+
+        // Fast path — no DB needed.
         if (_assignmentCache.TryGetValue(key, out var cached))
         {
             return cached;
         }
 
-        var teamIds = await GetUserTeamIdsAsync(userId, ct).ConfigureAwait(false);
-        if (teamIds.Count == 0)
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            _assignmentCache[key] = [];
-            return [];
+            // Double-check: another concurrent caller may have populated the
+            // cache while we were waiting on the gate.
+            if (_assignmentCache.TryGetValue(key, out cached))
+            {
+                return cached;
+            }
+
+            var teamIds = await GetUserTeamIdsAsync(userId, ct).ConfigureAwait(false);
+            if (teamIds.Count == 0)
+            {
+                _assignmentCache[key] = [];
+                return [];
+            }
+
+            // Pull every role assignment for those teams matching the requested
+            // Space (or system-wide assignments which apply to all Spaces).
+            // We deliberately keep the raw assignments — scope-dimension filtering
+            // is per-call, not per-fetch, so the same cache entry serves many
+            // different scoped queries during one render.
+            var assignments = await db.RoleAssignments
+                .IgnoreQueryFilters() // RoleAssignment isn't ISpaceScoped, but be explicit
+                .Include(a => a.Role)
+                .Where(a => teamIds.Contains(a.TeamId))
+                .Where(a => a.SpaceId == null || a.SpaceId == spaceId)
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+
+            _assignmentCache[key] = assignments;
+            return assignments;
         }
-
-        // Pull every role assignment for those teams matching the requested
-        // Space (or system-wide assignments which apply to all Spaces).
-        // We deliberately keep the raw assignments — scope-dimension filtering
-        // is per-call, not per-fetch, so the same cache entry serves many
-        // different scoped queries during one render.
-        var assignments = await db.RoleAssignments
-            .IgnoreQueryFilters() // RoleAssignment isn't ISpaceScoped, but be explicit
-            .Include(a => a.Role)
-            .Where(a => teamIds.Contains(a.TeamId))
-            .Where(a => a.SpaceId == null || a.SpaceId == spaceId)
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
-
-        _assignmentCache[key] = assignments;
-        return assignments;
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     // ── Team membership resolution ────────────────────────────────────────────
@@ -208,35 +232,51 @@ public sealed class PermissionEvaluator(KrakenDbContext db) : IPermissionEvaluat
             return false;
         }
 
+        // Fast path — no DB needed.
         if (_systemAdminCache.TryGetValue(userId.Value, out var cached))
         {
             return cached;
         }
 
-        var teamIds = await GetUserTeamIdsAsync(userId.Value, ct).ConfigureAwait(false);
-
-        bool isAdmin;
-        if (teamIds.Count == 0)
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            isAdmin = false;
+            // Double-check: another concurrent caller may have populated the
+            // cache while we were waiting on the gate.
+            if (_systemAdminCache.TryGetValue(userId.Value, out cached))
+            {
+                return cached;
+            }
+
+            var teamIds = await GetUserTeamIdsAsync(userId.Value, ct).ConfigureAwait(false);
+
+            bool isAdmin;
+            if (teamIds.Count == 0)
+            {
+                isAdmin = false;
+            }
+            else
+            {
+                // GrantedPermissions is a jsonb column — EF Core cannot translate
+                // Enumerable.Contains inside a server-side predicate. Pull only the
+                // permissions lists into memory and evaluate in C#.
+                var permissionLists = await db.RoleAssignments
+                    .IgnoreQueryFilters()
+                    .Where(a => teamIds.Contains(a.TeamId))
+                    .Select(a => a.Role.GrantedPermissions)
+                    .ToListAsync(ct)
+                    .ConfigureAwait(false);
+
+                isAdmin = permissionLists.Any(p => p.Contains(Permission.AdministerSystem));
+            }
+
+            _systemAdminCache[userId.Value] = isAdmin;
+            return isAdmin;
         }
-        else
+        finally
         {
-            // GrantedPermissions is a jsonb column — EF Core cannot translate
-            // Enumerable.Contains inside a server-side predicate. Pull only the
-            // permissions lists into memory and evaluate in C#.
-            var permissionLists = await db.RoleAssignments
-                .IgnoreQueryFilters()
-                .Where(a => teamIds.Contains(a.TeamId))
-                .Select(a => a.Role.GrantedPermissions)
-                .ToListAsync(ct)
-                .ConfigureAwait(false);
-
-            isAdmin = permissionLists.Any(p => p.Contains(Permission.AdministerSystem));
+            _gate.Release();
         }
-
-        _systemAdminCache[userId.Value] = isAdmin;
-        return isAdmin;
     }
 
     private static Guid? TryGetUserId(ClaimsPrincipal user)
@@ -244,6 +284,8 @@ public sealed class PermissionEvaluator(KrakenDbContext db) : IPermissionEvaluat
         var idClaim = user.FindFirst(UserIdClaim)?.Value;
         return Guid.TryParse(idClaim, out var id) ? id : null;
     }
+
+    public void Dispose() => _gate.Dispose();
 
     private readonly record struct CacheKey(Guid UserId, Guid? SpaceId);
 }
