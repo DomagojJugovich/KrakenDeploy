@@ -213,14 +213,27 @@ public sealed class PermissionEvaluator(KrakenDbContext db) : IPermissionEvaluat
             return cached;
         }
 
-        // Any role assignment that grants AdministerSystem makes the user a
-        // system admin. No scope check — AdministerSystem is system-only.
-        var isAdmin = await db.RoleAssignments
-            .IgnoreQueryFilters()
-            .Where(a => db.TeamMembers.Any(m => m.UserId == userId && m.TeamId == a.TeamId)
-                        || db.Teams.Any(t => t.Id == a.TeamId && t.IsEveryoneTeam))
-            .AnyAsync(a => a.Role.GrantedPermissions.Contains(Permission.AdministerSystem), ct)
-            .ConfigureAwait(false);
+        var teamIds = await GetUserTeamIdsAsync(userId.Value, ct).ConfigureAwait(false);
+
+        bool isAdmin;
+        if (teamIds.Count == 0)
+        {
+            isAdmin = false;
+        }
+        else
+        {
+            // GrantedPermissions is a jsonb column — EF Core cannot translate
+            // Enumerable.Contains inside a server-side predicate. Pull only the
+            // permissions lists into memory and evaluate in C#.
+            var permissionLists = await db.RoleAssignments
+                .IgnoreQueryFilters()
+                .Where(a => teamIds.Contains(a.TeamId))
+                .Select(a => a.Role.GrantedPermissions)
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+
+            isAdmin = permissionLists.Any(p => p.Contains(Permission.AdministerSystem));
+        }
 
         _systemAdminCache[userId.Value] = isAdmin;
         return isAdmin;
