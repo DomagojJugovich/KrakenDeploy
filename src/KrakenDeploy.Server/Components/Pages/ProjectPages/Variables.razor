@@ -88,11 +88,10 @@
                                    Style="width: 100%;" />
                 </div>
                 <div class="kraken-vargrid-c-scope">
-                    <a href="#" class="kraken-vargrid-link"
-                       @onclick="@(() => EditScopeAsync(null))"
-                       @onclick:preventDefault="true">
+                    <button type="button" class="kraken-vargrid-link"
+                            @onclick="@(() => EditScopeAsync(null))">
                         @(_newScope.IsUnscoped ? "Define scope" : ScopeSummary(_newScope))
-                    </a>
+                    </button>
                 </div>
                 <div class="kraken-vargrid-c-actions"></div>
             </div>
@@ -304,9 +303,8 @@
     private RenderFragment ScopeChipFragment(Variable v) => @<text>
         @if (v.Scope.IsUnscoped)
         {
-            <a href="#" class="kraken-vargrid-link"
-               @onclick="@(() => EditScopeAsync(v))"
-               @onclick:preventDefault="true">Define scope</a>
+            <button type="button" class="kraken-vargrid-link"
+                    @onclick="@(() => EditScopeAsync(v))">Define scope</button>
         }
         else
         {

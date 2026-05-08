@@ -56,8 +56,15 @@ html, body {
 }
 
 /* ── Page body ────────────────────────────────────────────────── */
+/* Radzen's default .rz-body adds its own padding on top of any
+   wrapper; flatten it so we control spacing entirely via
+   .kraken-page-body. */
+.rz-body {
+    padding: 0 !important;
+}
+
 .kraken-page-body {
-    padding: 1.5rem 2rem;
+    padding: 1rem 1.25rem;
 }
 
 /* ── Dashboard stat cards ─────────────────────────────────────── */
@@ -508,8 +515,18 @@ html, body {
     text-decoration: none;
     font-size: 0.875rem;
     cursor: pointer;
+    background: transparent;
+    border: none;
+    padding: 0;
+    font-family: inherit;
+    text-align: left;
 }
 
 .kraken-vargrid-link:hover {
     text-decoration: underline;
+}
+
+.kraken-vargrid-link:focus {
+    outline: 2px solid var(--rz-info, #1976d2);
+    outline-offset: 2px;
 }
