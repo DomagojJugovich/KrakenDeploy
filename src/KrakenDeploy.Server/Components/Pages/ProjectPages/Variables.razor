@@ -1,15 +1,514 @@
 @page "/projects/{Slug}/variables"
+@rendermode InteractiveServer
 @attribute [Authorize]
 
+@using KrakenDeploy.Server.Core.Domain.Variables
+@using KrakenDeploy.Server.Core.Domain.Environments
+@using KrakenDeploy.Server.Core.Domain.Tenants
+@using KrakenDeploy.Server.Core.Domain.Targets
+@inject ProjectService ProjectSvc
+@inject VariableService VariableSvc
+@inject EnvironmentService EnvironmentSvc
+@inject TenantService TenantSvc
+@inject TargetService TargetSvc
+@inject DialogService Dialog
+@inject ContextMenuService ContextMenu
+@inject NotificationService Notifications
+
 <ProjectShell Slug="@Slug">
-    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-3">
-        Project Variables
-    </RadzenText>
-    <RadzenAlert AlertStyle="AlertStyle.Info" ShowIcon="true" AllowClose="false">
-        Project-scoped variable editor — pending.
-    </RadzenAlert>
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                 JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-4">
+        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
+            Project Variables
+        </RadzenText>
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+            <RequirePermission Permission="Permission.ReleaseCreate">
+                <RadzenButton Text="Create Release" Icon="add"
+                              ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small" />
+            </RequirePermission>
+        </RadzenStack>
+    </RadzenStack>
+
+    @if (!_loaded)
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            Loading variables...
+        </RadzenText>
+    }
+    else if (_loadError is not null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false">
+            Failed to load variables: @_loadError
+        </RadzenAlert>
+    }
+    else if (_project is null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+            Project '@Slug' was not found.
+        </RadzenAlert>
+    }
+    else
+    {
+        @* ── Search bar ──────────────────────────────────────────────────── *@
+        <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                     Gap="1rem" class="rz-mb-3">
+            <div style="position: relative; width: 360px;">
+                <RadzenIcon Icon="search"
+                            Style="position: absolute; left: 0.5rem; top: 50%;
+                                   transform: translateY(-50%); opacity: 0.5;
+                                   font-size: 1.1rem;" />
+                <RadzenTextBox Value="@_search"
+                               Change="@((string v) => _search = v ?? "")"
+                               Placeholder="By variable name"
+                               Style="width: 100%; padding-left: 2rem;" />
+            </div>
+            <RadzenLink Path="javascript:void(0)" Text="Show advanced filters"
+                        class="rz-color-info" />
+        </RadzenStack>
+
+        @* ── Inline grid ─────────────────────────────────────────────────── *@
+        <div class="kraken-vargrid">
+            <div class="kraken-vargrid-header">
+                <div class="kraken-vargrid-c-name">Name</div>
+                <div class="kraken-vargrid-c-value">Value</div>
+                <div class="kraken-vargrid-c-scope">Scope</div>
+                <div class="kraken-vargrid-c-actions"></div>
+            </div>
+
+            @* New variable row *@
+            <div class="kraken-vargrid-row kraken-vargrid-row-new">
+                <div class="kraken-vargrid-c-name">
+                    <RadzenTextBox @bind-Value="_newName"
+                                   Placeholder="Enter new variable"
+                                   Style="width: 100%;" />
+                </div>
+                <div class="kraken-vargrid-c-value">
+                    <RadzenTextBox @bind-Value="_newValue"
+                                   Placeholder="Enter value"
+                                   Style="width: 100%;" />
+                </div>
+                <div class="kraken-vargrid-c-scope">
+                    <a href="#" class="kraken-vargrid-link"
+                       @onclick="@(() => EditScopeAsync(null))"
+                       @onclick:preventDefault="true">
+                        @(_newScope.IsUnscoped ? "Define scope" : ScopeSummary(_newScope))
+                    </a>
+                </div>
+                <div class="kraken-vargrid-c-actions"></div>
+            </div>
+
+            <div class="kraken-vargrid-row-actionbar">
+                <RequirePermission Permission="Permission.VariableEdit">
+                    <RadzenButton Text="Add to list" Icon="add"
+                                  ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                                  Disabled="@(string.IsNullOrWhiteSpace(_newName)
+                                              || string.IsNullOrEmpty(_newValue))"
+                                  Click="AddNewVariableAsync" />
+                </RequirePermission>
+            </div>
+
+            @* Existing variables, grouped by name *@
+            @{
+                var groups = _variables
+                    .Where(v => string.IsNullOrEmpty(_search)
+                             || v.Name.Contains(_search,
+                                 StringComparison.OrdinalIgnoreCase))
+                    .GroupBy(v => v.Name, StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+
+            @if (groups.Count == 0 && !string.IsNullOrEmpty(_search))
+            {
+                <div class="kraken-vargrid-empty">
+                    No variables match '@_search'.
+                </div>
+            }
+            else if (groups.Count == 0)
+            {
+                <div class="kraken-vargrid-empty">
+                    No variables defined yet — use the row above to add the first one.
+                </div>
+            }
+
+            @foreach (var group in groups)
+            {
+                var list = group.ToList();
+                if (list.Count == 1)
+                {
+                    var v = list[0];
+                    <div class="kraken-vargrid-row">
+                        <div class="kraken-vargrid-c-name">
+                            <RadzenTextBox Value="@v.Name"
+                                           Change="@((string newName) =>
+                                               RenameAsync(v, newName))"
+                                           Style="width: 100%;" />
+                        </div>
+                        <div class="kraken-vargrid-c-value">
+                            @if (v.Type == VariableType.Sensitive)
+                            {
+                                <RadzenStack Orientation="Orientation.Horizontal"
+                                             AlignItems="AlignItems.Center" Gap="0.4rem">
+                                    <RadzenBadge Text="*** sensitive ***"
+                                                 BadgeStyle="BadgeStyle.Warning"
+                                                 IsPill="true" />
+                                </RadzenStack>
+                            }
+                            else
+                            {
+                                <RadzenTextBox Value="@v.Value"
+                                               Change="@((string newVal) =>
+                                                   UpdateValueAsync(v, newVal))"
+                                               Style="width: 100%;" />
+                            }
+                        </div>
+                        <div class="kraken-vargrid-c-scope">
+                            @ScopeChipFragment(v)
+                        </div>
+                        <div class="kraken-vargrid-c-actions">
+                            <RequirePermission Permission="Permission.VariableEdit">
+                                <RadzenButton Icon="more_vert"
+                                              ButtonStyle="ButtonStyle.Light"
+                                              Size="ButtonSize.ExtraSmall"
+                                              Click="@(args =>
+                                                  ShowRowMenu(args, v))" />
+                            </RequirePermission>
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    @* Group header row *@
+                    <div class="kraken-vargrid-row kraken-vargrid-row-grouphead">
+                        <div class="kraken-vargrid-c-name">
+                            <strong>@group.Key</strong>
+                        </div>
+                        <div class="kraken-vargrid-c-value">
+                            <span class="rz-color-secondary">Multiple values</span>
+                        </div>
+                        <div class="kraken-vargrid-c-scope">
+                            <span class="rz-color-secondary">Multiple scopes</span>
+                        </div>
+                        <div class="kraken-vargrid-c-actions"></div>
+                    </div>
+                    @foreach (var v in list)
+                    {
+                        <div class="kraken-vargrid-row kraken-vargrid-row-subrow">
+                            <div class="kraken-vargrid-c-name"></div>
+                            <div class="kraken-vargrid-c-value">
+                                @if (v.Type == VariableType.Sensitive)
+                                {
+                                    <RadzenBadge Text="*** sensitive ***"
+                                                 BadgeStyle="BadgeStyle.Warning"
+                                                 IsPill="true" />
+                                }
+                                else
+                                {
+                                    <RadzenTextBox Value="@v.Value"
+                                                   Change="@((string newVal) =>
+                                                       UpdateValueAsync(v, newVal))"
+                                                   Style="width: 100%;" />
+                                }
+                            </div>
+                            <div class="kraken-vargrid-c-scope">
+                                @ScopeChipFragment(v)
+                            </div>
+                            <div class="kraken-vargrid-c-actions">
+                                <RequirePermission Permission="Permission.VariableEdit">
+                                    <RadzenButton Icon="more_vert"
+                                                  ButtonStyle="ButtonStyle.Light"
+                                                  Size="ButtonSize.ExtraSmall"
+                                                  Click="@(args =>
+                                                      ShowRowMenu(args, v))" />
+                                </RequirePermission>
+                            </div>
+                        </div>
+                    }
+                }
+            }
+        </div>
+    }
 </ProjectShell>
 
 @code {
     [Parameter] public string Slug { get; set; } = "";
+
+    private Project? _project;
+    private List<Variable> _variables = [];
+    private Dictionary<Guid, string> _envNames = [];
+    private Dictionary<Guid, string> _tenantNames = [];
+    private Dictionary<Guid, string> _targetNames = [];
+    private bool _loaded;
+    private string? _loadError;
+
+    private string _search = "";
+    private string _newName = "";
+    private string _newValue = "";
+    private VariableScope _newScope = new();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        try
+        {
+            _project = await ProjectSvc.GetBySlugAsync(Slug);
+            if (_project is null)
+            {
+                return;
+            }
+
+            // Cache name lookups so the scope column can resolve names
+            // without an extra round-trip per variable.
+            var envs = await EnvironmentSvc.GetAllOrderedAsync();
+            _envNames = envs.ToDictionary(e => e.Id, e => e.Name);
+
+            var tenants = await TenantSvc.GetAllAsync();
+            _tenantNames = tenants.ToDictionary(t => t.Id, t => t.Name);
+
+            var targets = await TargetSvc.GetAllAsync();
+            _targetNames = targets.ToDictionary(t => t.Id, t => t.Name);
+
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _loadError = ex.Message;
+        }
+        finally
+        {
+            _loaded = true;
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (_project is null) return;
+        var dtos = await VariableSvc.GetVariablesAsync(_project.Id);
+
+        // GetVariablesAsync returns redacted DTOs; for the inline grid we
+        // need the actual entities so each row can update name/value/scope.
+        // Refetch each in parallel — the set per project is typically small.
+        var entities = new List<Variable>(dtos.Count);
+        foreach (var d in dtos)
+        {
+            var entity = await VariableSvc.GetVariableAsync(d.Id);
+            if (entity is not null)
+            {
+                entities.Add(entity);
+            }
+        }
+        _variables = entities;
+    }
+
+    // ── Scope rendering ────────────────────────────────────────────────────
+
+    private RenderFragment ScopeChipFragment(Variable v) => @<text>
+        @if (v.Scope.IsUnscoped)
+        {
+            <a href="#" class="kraken-vargrid-link"
+               @onclick="@(() => EditScopeAsync(v))"
+               @onclick:preventDefault="true">Define scope</a>
+        }
+        else
+        {
+            <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap"
+                         Gap="0.3rem" AlignItems="AlignItems.Center">
+                @if (v.Scope.EnvironmentId is { } envId)
+                {
+                    <RadzenBadge Text="@($"env: {EnvName(envId)}")"
+                                 BadgeStyle="BadgeStyle.Info" IsPill="true" />
+                }
+                @if (v.Scope.TenantId is { } tenantId)
+                {
+                    <RadzenBadge Text="@($"tenant: {TenantName(tenantId)}")"
+                                 BadgeStyle="BadgeStyle.Success" IsPill="true" />
+                }
+                @if (v.Scope.TargetId is { } targetId)
+                {
+                    <RadzenBadge Text="@($"target: {TargetName(targetId)}")"
+                                 BadgeStyle="BadgeStyle.Secondary" IsPill="true" />
+                }
+                @if (v.Scope.Roles is { Count: > 0 })
+                {
+                    @foreach (var r in v.Scope.Roles)
+                    {
+                        <RadzenBadge Text="@($"role: {r}")"
+                                     BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                    }
+                }
+                <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
+                              Size="ButtonSize.ExtraSmall"
+                              Click="@(() => EditScopeAsync(v))" />
+            </RadzenStack>
+        }
+    </text>;
+
+    private string ScopeSummary(VariableScope s)
+    {
+        if (s.IsUnscoped) return "(any)";
+        var parts = new List<string>();
+        if (s.EnvironmentId.HasValue) parts.Add($"env: {EnvName(s.EnvironmentId.Value)}");
+        if (s.TenantId.HasValue) parts.Add($"tenant: {TenantName(s.TenantId.Value)}");
+        if (s.TargetId.HasValue) parts.Add($"target: {TargetName(s.TargetId.Value)}");
+        if (s.Roles is { Count: > 0 }) parts.Add($"roles: {string.Join(",", s.Roles)}");
+        return string.Join(" • ", parts);
+    }
+
+    private string EnvName(Guid id) =>
+        _envNames.TryGetValue(id, out var n) ? n : "?";
+    private string TenantName(Guid id) =>
+        _tenantNames.TryGetValue(id, out var n) ? n : "?";
+    private string TargetName(Guid id) =>
+        _targetNames.TryGetValue(id, out var n) ? n : "?";
+
+    // ── Inline edits ───────────────────────────────────────────────────────
+
+    private async Task RenameAsync(Variable v, string newName)
+    {
+        if (string.IsNullOrWhiteSpace(newName) || newName == v.Name) return;
+        await VariableSvc.UpdateVariableAsync(v.Id, newName, null, v.Type, v.Scope);
+        v.Name = newName;
+    }
+
+    private async Task UpdateValueAsync(Variable v, string newValue)
+    {
+        if (newValue == v.Value) return;
+        await VariableSvc.UpdateVariableAsync(v.Id, v.Name, newValue, v.Type, v.Scope);
+        v.Value = newValue;
+    }
+
+    private async Task AddNewVariableAsync()
+    {
+        if (_project is null) return;
+        if (string.IsNullOrWhiteSpace(_newName)) return;
+
+        await VariableSvc.CreateVariableAsync(
+            _project.Id, _newName, _newValue, VariableType.Text, _newScope);
+
+        _newName = "";
+        _newValue = "";
+        _newScope = new VariableScope();
+        await ReloadAsync();
+        Notifications.Notify(NotificationSeverity.Success, "Added",
+            "Variable was added.", 3000);
+    }
+
+    // ── Scope edit (delegates to the existing dialog for now) ─────────────
+
+    private async Task EditScopeAsync(Variable? v)
+    {
+        // Reuse the existing VariableFormDialog as the "advanced editor".
+        // For an existing variable we pass the entity; for the new row we
+        // build a transient one so the dialog can populate its inputs.
+        if (v is not null)
+        {
+            var result = await Dialog.OpenAsync<VariableFormDialog>(
+                "Edit Variable",
+                new Dictionary<string, object>
+                {
+                    [nameof(VariableFormDialog.Variable)] = v,
+                },
+                new DialogOptions { Width = "640px" });
+
+            if (result is true)
+            {
+                await ReloadAsync();
+            }
+        }
+        else
+        {
+            // New row scope-edit: open dialog seeded with the current new-row
+            // values; on save the dialog creates the variable. Then we just
+            // clear our staged inputs and reload.
+            if (_project is null) return;
+            var seedVar = new Variable
+            {
+                Name = string.IsNullOrWhiteSpace(_newName) ? "" : _newName,
+                Value = _newValue ?? "",
+                Type = VariableType.Text,
+                Scope = _newScope,
+            };
+
+            // We can't pass it as an existing entity (the dialog would try to
+            // update). Instead, open in "create" mode by passing ProjectId.
+            // The user will see an empty scope to start with.
+            var result = await Dialog.OpenAsync<VariableFormDialog>(
+                "Add Variable",
+                new Dictionary<string, object>
+                {
+                    [nameof(VariableFormDialog.ProjectId)] = _project.Id,
+                },
+                new DialogOptions { Width = "640px" });
+
+            if (result is true)
+            {
+                _newName = "";
+                _newValue = "";
+                _newScope = new VariableScope();
+                await ReloadAsync();
+            }
+        }
+    }
+
+    // ── Three-dots menu ────────────────────────────────────────────────────
+
+    private void ShowRowMenu(MouseEventArgs args, Variable v)
+    {
+        ContextMenu.Open(args, new List<ContextMenuItem>
+        {
+            new() { Text = "Add Value",         Value = "add",       Icon = "add" },
+            new() { Text = "Duplicate Variable", Value = "duplicate", Icon = "content_copy" },
+            new() { Text = "Delete Variable",    Value = "delete",    Icon = "delete" },
+        }, async e =>
+        {
+            ContextMenu.Close();
+            switch (e.Value)
+            {
+                case "add":       await AddValueAsync(v);   break;
+                case "duplicate": await DuplicateAsync(v);  break;
+                case "delete":    await DeleteAsync(v);     break;
+            }
+        });
+    }
+
+    private async Task AddValueAsync(Variable v)
+    {
+        if (_project is null) return;
+        // Create a sibling variable with same name but empty value/scope.
+        await VariableSvc.CreateVariableAsync(
+            _project.Id, v.Name, "", VariableType.Text, new VariableScope());
+        await ReloadAsync();
+    }
+
+    private async Task DuplicateAsync(Variable v)
+    {
+        if (_project is null) return;
+        var newName = v.Name + " (copy)";
+        var rawValue = v.Type == VariableType.Sensitive ? "" : v.Value;
+        await VariableSvc.CreateVariableAsync(
+            _project.Id, newName, rawValue, v.Type,
+            new VariableScope
+            {
+                EnvironmentId = v.Scope.EnvironmentId,
+                TenantId = v.Scope.TenantId,
+                TargetId = v.Scope.TargetId,
+                Roles = v.Scope.Roles is { Count: > 0 } r ? [..r] : null,
+            });
+        await ReloadAsync();
+    }
+
+    private async Task DeleteAsync(Variable v)
+    {
+        var confirmed = await Dialog.Confirm(
+            $"Delete variable '{v.Name}'? This cannot be undone.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+
+        if (confirmed == true)
+        {
+            await VariableSvc.DeleteVariableAsync(v.Id);
+            await ReloadAsync();
+            Notifications.Notify(NotificationSeverity.Success, "Deleted",
+                $"Variable '{v.Name}' was removed.", 3000);
+        }
+    }
 }

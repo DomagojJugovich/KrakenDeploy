@@ -54,6 +54,21 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
     }
 
     /// <summary>
+    /// Returns the full <see cref="Variable"/> entity by id (no redaction).
+    /// Used by the edit dialog to populate the scope and metadata fields —
+    /// the encrypted Value is intentionally NOT decrypted here, the form
+    /// asks the user to re-type sensitive values when editing.
+    /// </summary>
+    public async Task<Variable?> GetVariableAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.Variables
+            .AsNoTracking()
+            .FirstOrDefaultAsync(v => v.Id == id, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Creates a new variable in the project's variable set.
     /// Sensitive values are encrypted before storage.
     /// </summary>
@@ -94,17 +109,21 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
 
     /// <summary>
     /// Updates an existing variable. Sensitive values are re-encrypted.
+    /// <para>
+    /// Pass <paramref name="value"/> as <c>null</c> to keep the existing
+    /// stored value untouched — useful when editing a Sensitive variable
+    /// where the form cannot display the current ciphertext.
+    /// </para>
     /// </summary>
     public async Task<Variable?> UpdateVariableAsync(
         Guid id,
         string name,
-        string value,
+        string? value,
         VariableType type,
         VariableScope? scope,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentNullException.ThrowIfNull(value);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
@@ -120,12 +139,16 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
         variable.Name = name;
         variable.Type = type;
         variable.Scope = scope ?? new VariableScope();
-        variable.Value = type switch
+
+        if (value is not null)
         {
-            VariableType.Sensitive => encryption.Encrypt(value),
-            VariableType.StringArray => NormalizeStringArray(value),
-            _ => value,
-        };
+            variable.Value = type switch
+            {
+                VariableType.Sensitive => encryption.Encrypt(value),
+                VariableType.StringArray => NormalizeStringArray(value),
+                _ => value,
+            };
+        }
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return variable;

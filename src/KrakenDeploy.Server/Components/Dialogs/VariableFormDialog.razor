@@ -1,0 +1,259 @@
+@using KrakenDeploy.Server.Core.Domain.Variables
+@using KrakenDeploy.Server.Core.Domain.Environments
+@using KrakenDeploy.Server.Core.Domain.Tenants
+@inject DialogService Dialog
+@inject VariableService VariableSvc
+@inject EnvironmentService EnvironmentSvc
+@inject TenantService TenantSvc
+
+@*
+    Add / edit a variable in a project's VariableSet.
+
+    To add: pass ProjectId; leave Variable null.
+    To edit: pass Variable; ProjectId may also be passed (but isn't used).
+
+    Sensitive values are NEVER decrypted to the form — when editing a
+    Sensitive variable the user must re-type the value or leave it blank
+    to keep the existing one (handled via the "Keep existing value"
+    checkbox shown only in edit mode for Sensitive type).
+*@
+
+<div style="min-width: 580px; padding: 0.25rem 0;">
+    <EditForm Model="_model" OnValidSubmit="SaveAsync">
+        <DataAnnotationsValidator />
+        <RadzenStack Gap="1rem">
+            <div>
+                <RadzenLabel Text="Name *" />
+                <RadzenTextBox @bind-Value="_model.Name" Style="width:100%"
+                               aria-label="Name"
+                               Placeholder="e.g. ConnectionString or Database.Name" />
+                <ValidationMessage For="() => _model.Name" class="kraken-validation-error" />
+            </div>
+
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="1rem"
+                         AlignItems="AlignItems.End">
+                <div style="flex: 1;">
+                    <RadzenLabel Text="Type *" />
+                    <RadzenDropDown TValue="VariableType" @bind-Value="_model.Type"
+                                    Data="@_typeOptions" TextProperty="Label"
+                                    ValueProperty="Value" Style="width:100%" />
+                </div>
+                @if (_isEdit && _model.Type == VariableType.Sensitive)
+                {
+                    <div style="flex: 0 0 auto; padding-bottom: 0.4rem;">
+                        <RadzenCheckBox @bind-Value="_model.KeepSensitiveValue"
+                                        Name="keep-existing" />
+                        <RadzenLabel Text="Keep existing value" Component="keep-existing"
+                                     Style="margin-left: 0.4rem; cursor: pointer;" />
+                    </div>
+                }
+            </RadzenStack>
+
+            @if (!(_isEdit && _model.Type == VariableType.Sensitive
+                   && _model.KeepSensitiveValue))
+            {
+                <div>
+                    <RadzenLabel Text="@(_model.Type == VariableType.Sensitive ? "Value *" : "Value")" />
+                    @if (_model.Type == VariableType.Sensitive)
+                    {
+                        <RadzenPassword @bind-Value="_model.Value" Style="width:100%"
+                                        aria-label="Value" />
+                        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                            Encrypted at rest with AES-256-GCM. Never logged.
+                        </RadzenText>
+                    }
+                    else if (_model.Type == VariableType.StringArray)
+                    {
+                        <RadzenTextArea @bind-Value="_model.Value" Rows="3"
+                                        Style="width:100%" aria-label="Value"
+                                        Placeholder='Comma-separated, or JSON array: ["a","b","c"]' />
+                        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                            Stored as JSON array. Comma-separated input is converted automatically.
+                        </RadzenText>
+                    }
+                    else
+                    {
+                        <RadzenTextArea @bind-Value="_model.Value" Rows="3"
+                                        Style="width:100%" aria-label="Value" />
+                    }
+                </div>
+            }
+
+            @* ── Scope ───────────────────────────────────────────────────── *@
+            <RadzenFieldset Text="Scope" class="rz-mt-2">
+                <RadzenStack Gap="0.85rem">
+                    <RadzenStack Orientation="Orientation.Horizontal" Gap="1rem">
+                        <div style="flex: 1;">
+                            <RadzenLabel Text="Environment" />
+                            <RadzenDropDown TValue="Guid?" @bind-Value="_model.EnvironmentId"
+                                            Data="@_environments" TextProperty="Name"
+                                            ValueProperty="Id" AllowClear="true"
+                                            Placeholder="(any environment)"
+                                            Style="width:100%" />
+                        </div>
+                        <div style="flex: 1;">
+                            <RadzenLabel Text="Tenant" />
+                            <RadzenDropDown TValue="Guid?" @bind-Value="_model.TenantId"
+                                            Data="@_tenants" TextProperty="Name"
+                                            ValueProperty="Id" AllowClear="true"
+                                            Placeholder="(any tenant)"
+                                            Style="width:100%" />
+                        </div>
+                    </RadzenStack>
+                    <div>
+                        <RadzenLabel Text="Target Roles" />
+                        <RadzenTextBox @bind-Value="_model.RolesCsv" Style="width:100%"
+                                       Placeholder="Comma-separated, e.g. SERVER, TERMINAL" />
+                        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                            Variable applies only to targets whose roles overlap this list.
+                            Leave empty to apply to all roles.
+                        </RadzenText>
+                    </div>
+                </RadzenStack>
+            </RadzenFieldset>
+
+            @if (_errorMessage is not null)
+            {
+                <div class="kraken-login-error rz-text-body2">@_errorMessage</div>
+            }
+
+            <RadzenStack Orientation="Orientation.Horizontal"
+                         JustifyContent="JustifyContent.End" Gap="0.5rem">
+                <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                              Click="@(_ => Dialog.Close(false))" />
+                <RadzenButton Text="Save" ButtonType="ButtonType.Submit"
+                              ButtonStyle="ButtonStyle.Primary" />
+            </RadzenStack>
+        </RadzenStack>
+    </EditForm>
+</div>
+
+@code {
+    [Parameter] public Guid? ProjectId { get; set; }
+    [Parameter] public Variable? Variable { get; set; }
+
+    private readonly FormModel _model = new();
+    private string? _errorMessage;
+    private bool _isEdit;
+
+    private List<DeploymentEnvironment> _environments = [];
+    private List<Tenant> _tenants = [];
+
+    private record TypeOption(VariableType Value, string Label);
+    private readonly TypeOption[] _typeOptions =
+    [
+        new(VariableType.Text,        "Text"),
+        new(VariableType.Sensitive,   "Sensitive (encrypted)"),
+        new(VariableType.StringArray, "String array"),
+    ];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _environments = await EnvironmentSvc.GetAllOrderedAsync();
+        _tenants = await TenantSvc.GetAllAsync();
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (Variable is not null)
+        {
+            _isEdit = true;
+            _model.Name = Variable.Name;
+            _model.Type = Variable.Type;
+            // For Sensitive vars we never decrypt to the form. The user gets
+            // a "Keep existing value" checkbox (default true).
+            if (Variable.Type == VariableType.Sensitive)
+            {
+                _model.Value = "";
+                _model.KeepSensitiveValue = true;
+            }
+            else
+            {
+                _model.Value = Variable.Value;
+            }
+            _model.EnvironmentId = Variable.Scope.EnvironmentId;
+            _model.TenantId = Variable.Scope.TenantId;
+            _model.RolesCsv = Variable.Scope.Roles is { Count: > 0 } r
+                ? string.Join(", ", r)
+                : "";
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        _errorMessage = null;
+
+        // Sensitive variable: must have a value unless user is keeping existing.
+        if (_model.Type == VariableType.Sensitive
+            && !(_isEdit && _model.KeepSensitiveValue)
+            && string.IsNullOrEmpty(_model.Value))
+        {
+            _errorMessage = "A sensitive variable requires a value.";
+            return;
+        }
+
+        var roles = ParseCsv(_model.RolesCsv);
+        var scope = new VariableScope
+        {
+            EnvironmentId = _model.EnvironmentId,
+            TenantId = _model.TenantId,
+            Roles = roles.Count > 0 ? roles : null,
+        };
+
+        try
+        {
+            if (_isEdit)
+            {
+                // Sensitive + keep-existing -> pass null so the service
+                // skips the value update and keeps the ciphertext untouched.
+                var valueToSend = (_model.Type == VariableType.Sensitive
+                                   && _model.KeepSensitiveValue)
+                    ? null
+                    : _model.Value ?? "";
+
+                await VariableSvc.UpdateVariableAsync(
+                    Variable!.Id, _model.Name, valueToSend, _model.Type, scope);
+            }
+            else
+            {
+                if (ProjectId is null)
+                {
+                    _errorMessage = "Missing ProjectId — cannot create a variable.";
+                    return;
+                }
+                await VariableSvc.CreateVariableAsync(
+                    ProjectId.Value, _model.Name, _model.Value ?? "", _model.Type, scope);
+            }
+
+            Dialog.Close(true);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _errorMessage = ex.Message;
+        }
+    }
+
+    private static List<string> ParseCsv(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return [];
+        }
+        return raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                  .ToList();
+    }
+
+    private sealed class FormModel
+    {
+        [System.ComponentModel.DataAnnotations.Required]
+        [System.ComponentModel.DataAnnotations.MaxLength(200)]
+        public string Name { get; set; } = "";
+
+        public VariableType Type { get; set; } = VariableType.Text;
+        public string? Value { get; set; }
+        public bool KeepSensitiveValue { get; set; }
+        public Guid? EnvironmentId { get; set; }
+        public Guid? TenantId { get; set; }
+        public string RolesCsv { get; set; } = "";
+    }
+}
