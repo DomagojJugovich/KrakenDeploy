@@ -544,31 +544,49 @@ html, body {
     font-size: 0.78rem;
 }
 
-/* Array-as-list popup is wider and the textarea is user-resizable. */
+/* Array-as-list popup: the POPUP itself is user-resizable (drag the
+   bottom-right corner). The textarea inside auto-fills the available
+   space — no separate resize handle on the textarea. */
 .kraken-array-popup {
     width: 640px;
-}
-
-.kraken-array-popup .kraken-array-textarea {
-    width: 100%;
+    height: 540px;
+    min-width: 420px;
     min-height: 320px;
+    max-width: 95vw;
+    max-height: 90vh;
     resize: both;
-    font-family: var(--rz-mono-font, monospace);
-    font-size: 0.85rem;
-    line-height: 1.45;
+    overflow: hidden;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
 }
 
-/* RadzenTextArea wraps an actual <textarea> in a div; force the inner
-   textarea to inherit the resize / sizing rules so the user-drag works. */
-.kraken-array-popup .kraken-array-textarea textarea,
-.kraken-array-popup textarea.kraken-array-textarea {
-    resize: both !important;
-    min-height: 320px;
-    min-width: 100%;
+/* RadzenStack inside the popup must occupy all remaining height. */
+.kraken-array-popup > .rz-stack {
+    flex: 1;
+    min-height: 0;
+}
+
+/* RadzenTextArea wraps an actual <textarea> — it should grow with the
+   popup. Both the wrapper and the inner element take the remaining
+   vertical space. */
+.kraken-array-popup .kraken-array-textarea {
+    flex: 1;
+    min-height: 0;
     width: 100%;
+    display: flex;
+}
+
+.kraken-array-popup textarea {
+    resize: none !important;
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 0 !important;
+    flex: 1;
     font-family: var(--rz-mono-font, monospace);
     font-size: 0.85rem;
     line-height: 1.45;
+    box-sizing: border-box;
 }
 
 /* Scope-chip button: a click-target wrapping the chip badges */
