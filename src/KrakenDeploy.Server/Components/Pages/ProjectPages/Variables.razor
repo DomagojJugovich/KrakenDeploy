@@ -292,18 +292,19 @@
 @if (_arrayPopupOpen)
 {
     <div class="kraken-scope-popup-backdrop" @onclick="CloseArrayEditor"></div>
-    <div class="kraken-scope-popup"
-         style="@($"top: {_arrayPopupTop}px; left: {_arrayPopupLeft}px; width: 460px;")"
+    <div class="kraken-scope-popup kraken-array-popup"
+         style="@($"top: {_arrayPopupTop}px; left: {_arrayPopupLeft}px;")"
          @onclick:stopPropagation="true">
         <RadzenStack Gap="0.75rem">
             <RadzenText TextStyle="TextStyle.H6" class="rz-mb-0">
                 Edit array — one value per line
             </RadzenText>
-            <RadzenTextArea @bind-Value="_arrayLines" Rows="10"
-                            Style="width: 100%; font-family: var(--rz-mono-font, monospace); font-size: 0.85rem;"
+            <RadzenTextArea @bind-Value="_arrayLines" Rows="14"
+                            class="kraken-array-textarea"
                             Placeholder="line1&#10;line2&#10;line3" />
             <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
                 Stored as a JSON array. Empty lines are kept as empty entries.
+                Drag the bottom-right corner to resize.
             </RadzenText>
             <RadzenStack Orientation="Orientation.Horizontal"
                          JustifyContent="JustifyContent.End" Gap="0.5rem">

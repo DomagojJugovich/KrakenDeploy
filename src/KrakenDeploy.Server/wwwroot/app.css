@@ -544,6 +544,33 @@ html, body {
     font-size: 0.78rem;
 }
 
+/* Array-as-list popup is wider and the textarea is user-resizable. */
+.kraken-array-popup {
+    width: 640px;
+}
+
+.kraken-array-popup .kraken-array-textarea {
+    width: 100%;
+    min-height: 320px;
+    resize: both;
+    font-family: var(--rz-mono-font, monospace);
+    font-size: 0.85rem;
+    line-height: 1.45;
+}
+
+/* RadzenTextArea wraps an actual <textarea> in a div; force the inner
+   textarea to inherit the resize / sizing rules so the user-drag works. */
+.kraken-array-popup .kraken-array-textarea textarea,
+.kraken-array-popup textarea.kraken-array-textarea {
+    resize: both !important;
+    min-height: 320px;
+    min-width: 100%;
+    width: 100%;
+    font-family: var(--rz-mono-font, monospace);
+    font-size: 0.85rem;
+    line-height: 1.45;
+}
+
 /* Scope-chip button: a click-target wrapping the chip badges */
 .kraken-scope-chip-btn,
 .kraken-scope-unbound-btn {
