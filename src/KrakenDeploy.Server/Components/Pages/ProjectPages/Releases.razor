@@ -1,15 +1,181 @@
 @page "/projects/{Slug}/releases"
+@rendermode InteractiveServer
 @attribute [Authorize]
 
+@using KrakenDeploy.Server.Core.Domain.Channels
+@inject ProjectService ProjectSvc
+@inject ReleaseService ReleaseSvc
+@inject ChannelService ChannelSvc
+@inject DialogService Dialog
+@inject NotificationService Notifications
+@inject NavigationManager Nav
+
 <ProjectShell Slug="@Slug">
-    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-3">
-        Releases
-    </RadzenText>
-    <RadzenAlert AlertStyle="AlertStyle.Info" ShowIcon="true" AllowClose="false">
-        Project releases list — pending.
-    </RadzenAlert>
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                 JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-3">
+        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
+            Releases
+        </RadzenText>
+        <RequirePermission Permission="Permission.ReleaseCreate">
+            <RadzenButton Icon="add" Text="Create Release"
+                          ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                          Click="OpenCreateAsync" />
+        </RequirePermission>
+    </RadzenStack>
+
+    @if (!_loaded)
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            Loading releases...
+        </RadzenText>
+    }
+    else if (_loadError is not null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false">
+            Failed to load releases: @_loadError
+        </RadzenAlert>
+    }
+    else if (_project is null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+            Project '@Slug' was not found.
+        </RadzenAlert>
+    }
+    else if (_releases.Count == 0)
+    {
+        <RadzenCard class="rz-p-5 rz-text-align-center">
+            <RadzenIcon Icon="tag" Style="font-size: 3rem; opacity: 0.3;" />
+            <RadzenText TextStyle="TextStyle.H6" class="rz-mt-3">
+                No releases yet
+            </RadzenText>
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+                A release pins a version of the deployment process so that it can
+                be deployed reproducibly to environments.
+            </RadzenText>
+            <RequirePermission Permission="Permission.ReleaseCreate">
+                <RadzenButton Text="Create the first release" Icon="add"
+                              ButtonStyle="ButtonStyle.Primary" Click="OpenCreateAsync" />
+            </RequirePermission>
+        </RadzenCard>
+    }
+    else
+    {
+        <RadzenDataGrid Data="@_releases" TItem="Release"
+                        AllowFiltering="true" FilterMode="FilterMode.Simple"
+                        AllowSorting="true" AllowPaging="true" PageSize="25"
+                        AllowColumnResize="true">
+            <Columns>
+                <RadzenDataGridColumn TItem="Release" Property="Version" Title="Version"
+                                      Width="200px">
+                    <Template Context="r">
+                        <RadzenLink Path="@($"/projects/{Slug}/releases/{r.Id}")"
+                                    Text="@r.Version" />
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="Release" Title="Channel" Width="180px"
+                                      Sortable="false" Filterable="false">
+                    <Template Context="r">
+                        @if (r.ChannelId is { } cid)
+                        {
+                            <RadzenBadge Text="@ChannelName(cid)"
+                                         BadgeStyle="BadgeStyle.Info" IsPill="true" />
+                        }
+                        else
+                        {
+                            <span class="rz-color-secondary">(default)</span>
+                        }
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="Release" Property="CreatedUtc"
+                                      Title="Created" Width="180px"
+                                      FormatString="{0:yyyy-MM-dd HH:mm}" />
+                <RadzenDataGridColumn TItem="Release" Property="ReleaseNotes"
+                                      Title="Notes" Sortable="false">
+                    <Template Context="r">
+                        @if (string.IsNullOrWhiteSpace(r.ReleaseNotes))
+                        {
+                            <span class="rz-color-secondary">—</span>
+                        }
+                        else
+                        {
+                            <span class="kraken-release-notes-preview"
+                                  title="@r.ReleaseNotes">
+                                @TruncateNotes(r.ReleaseNotes)
+                            </span>
+                        }
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="Release" Title="Steps" Width="80px"
+                                      Sortable="false" Filterable="false"
+                                      TextAlign="TextAlign.Right">
+                    <Template Context="r">
+                        @r.ProcessSnapshot.Count
+                    </Template>
+                </RadzenDataGridColumn>
+            </Columns>
+        </RadzenDataGrid>
+    }
 </ProjectShell>
 
 @code {
     [Parameter] public string Slug { get; set; } = "";
+
+    private Project? _project;
+    private List<Release> _releases = [];
+    private Dictionary<Guid, string> _channelNames = [];
+    private bool _loaded;
+    private string? _loadError;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        try
+        {
+            _project = await ProjectSvc.GetBySlugAsync(Slug);
+            if (_project is null) return;
+
+            var channels = await ChannelSvc.GetForProjectAsync(_project.Id);
+            _channelNames = channels.ToDictionary(c => c.Id, c => c.Name);
+
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _loadError = ex.Message;
+        }
+        finally
+        {
+            _loaded = true;
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (_project is null) return;
+        _releases = await ReleaseSvc.GetAllAsync(_project.Id);
+    }
+
+    private string ChannelName(Guid id) =>
+        _channelNames.TryGetValue(id, out var n) ? n : "?";
+
+    private static string TruncateNotes(string notes) =>
+        notes.Length > 100 ? notes[..100] + "…" : notes;
+
+    private async Task OpenCreateAsync()
+    {
+        if (_project is null) return;
+        var result = await Dialog.OpenAsync<CreateReleaseDialog>(
+            "Create release",
+            new Dictionary<string, object?>
+            {
+                [nameof(CreateReleaseDialog.ProjectId)] = _project.Id,
+            },
+            new DialogOptions { Width = "560px" });
+
+        if (result is true)
+        {
+            await ReloadAsync();
+            Notifications.Notify(NotificationSeverity.Success, "Created",
+                "Release was created.", 3000);
+        }
+    }
 }

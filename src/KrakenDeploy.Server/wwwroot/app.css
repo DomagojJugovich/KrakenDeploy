@@ -441,6 +441,93 @@ html, body {
     word-break: break-all;
 }
 
+/* ── Package repository ──────────────────────────────────────────────────── */
+
+.kraken-pkg-page {
+    display: flex;
+    gap: 1.25rem;
+    align-items: flex-start;
+}
+
+.kraken-pkg-main {
+    flex: 1;
+    min-width: 0;
+}
+
+.kraken-pkg-side {
+    width: 340px;
+    flex-shrink: 0;
+    position: sticky;
+    top: 1rem;
+}
+
+.kraken-pkg-version {
+    border-top: 1px solid var(--rz-base-200, #f0f0f0);
+    padding: 0.6rem 0;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.kraken-pkg-version:first-of-type {
+    border-top: none;
+}
+
+.kraken-pkg-version-head {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+}
+
+.kraken-pkg-version-date,
+.kraken-pkg-version-meta {
+    font-size: 0.75rem;
+}
+
+.kraken-pkg-version-meta {
+    grid-column: 1 / 2;
+}
+
+/* Upload dialog dropzone */
+.kraken-pkg-dropzone {
+    position: relative;
+    border: 2px dashed var(--rz-base-300, #e0e0e0);
+    border-radius: 8px;
+    padding: 1.5rem;
+    background: var(--rz-base-50, #fafafa);
+    transition: border-color 0.15s, background 0.15s;
+    cursor: pointer;
+}
+
+.kraken-pkg-dropzone--hover,
+.kraken-pkg-dropzone:hover {
+    border-color: var(--rz-info, #1976d2);
+    background: rgba(30, 136, 229, 0.04);
+}
+
+.kraken-pkg-fileinput {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    cursor: pointer;
+}
+
+.kraken-pkg-dropzone-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.4rem;
+    pointer-events: none;
+}
+
+/* ── Project Settings danger zone card ──────────────────────────────────── */
+.kraken-danger-card {
+    border-color: var(--rz-danger, #e53935) !important;
+}
+
 /* Variable grid auxiliary styles (RadzenDataGrid handles the table chrome). */
 
 /* Always-visible "new variable" bar above the grid */

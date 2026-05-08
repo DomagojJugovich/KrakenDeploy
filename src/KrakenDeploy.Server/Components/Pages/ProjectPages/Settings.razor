@@ -1,15 +1,253 @@
 @page "/projects/{Slug}/settings"
+@rendermode InteractiveServer
 @attribute [Authorize]
 
+@using KrakenDeploy.Server.Core.Domain.Lifecycles
+@inject ProjectService ProjectSvc
+@inject LifecycleService LifecycleSvc
+@inject DialogService Dialog
+@inject NotificationService Notifications
+@inject NavigationManager Nav
+
 <ProjectShell Slug="@Slug">
-    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-3">
-        Settings
-    </RadzenText>
-    <RadzenAlert AlertStyle="AlertStyle.Info" ShowIcon="true" AllowClose="false">
-        Project settings (name, slug, description, project group, default lifecycle) — pending.
-    </RadzenAlert>
+    @if (!_loaded)
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            Loading settings...
+        </RadzenText>
+    }
+    else if (_loadError is not null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false">
+            Failed to load: @_loadError
+        </RadzenAlert>
+    }
+    else if (_project is null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+            Project '@Slug' was not found.
+        </RadzenAlert>
+    }
+    else
+    {
+        <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                     class="rz-mb-4">
+            <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
+                Settings
+            </RadzenText>
+        </RadzenStack>
+
+        <EditForm Model="_form" OnValidSubmit="SaveAsync">
+            <DataAnnotationsValidator />
+            <RadzenStack Gap="1.25rem" Style="max-width: 720px;">
+
+                <RadzenCard>
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">
+                        General
+                    </RadzenText>
+                    <RadzenStack Gap="1rem">
+                        <div>
+                            <RadzenLabel Text="Name *" />
+                            <RadzenTextBox @bind-Value="_form.Name"
+                                           Style="width: 100%;" />
+                            <ValidationMessage For="() => _form.Name"
+                                               class="kraken-validation-error" />
+                        </div>
+                        <div>
+                            <RadzenLabel Text="Slug *" />
+                            <RadzenTextBox @bind-Value="_form.Slug"
+                                           Style="width: 100%;" />
+                            <RadzenText TextStyle="TextStyle.Caption"
+                                        class="rz-color-secondary">
+                                URL-friendly identifier. Changing the slug breaks
+                                bookmarks and external links to the project.
+                            </RadzenText>
+                            <ValidationMessage For="() => _form.Slug"
+                                               class="kraken-validation-error" />
+                        </div>
+                        <div>
+                            <RadzenLabel Text="Description" />
+                            <RadzenTextArea @bind-Value="_form.Description" Rows="3"
+                                            Style="width: 100%;" />
+                        </div>
+                    </RadzenStack>
+                </RadzenCard>
+
+                <RadzenCard>
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">
+                        Grouping &amp; lifecycle
+                    </RadzenText>
+                    <RadzenStack Gap="1rem">
+                        <div>
+                            <RadzenLabel Text="Project Group" />
+                            <RadzenDropDown TValue="Guid?" @bind-Value="_form.ProjectGroupId"
+                                            Data="@_projectGroups"
+                                            TextProperty="Name" ValueProperty="Id"
+                                            AllowClear="true" Placeholder="(default group)"
+                                            Style="width: 100%;" />
+                            <RadzenText TextStyle="TextStyle.Caption"
+                                        class="rz-color-secondary">
+                                Folders projects together. Used as a scope dimension on
+                                role assignments.
+                            </RadzenText>
+                        </div>
+                        <div>
+                            <RadzenLabel Text="Default Lifecycle" />
+                            <RadzenDropDown TValue="Guid?" @bind-Value="_form.LifecycleId"
+                                            Data="@_lifecycles"
+                                            TextProperty="Name" ValueProperty="Id"
+                                            AllowClear="true" Placeholder="(no lifecycle)"
+                                            Style="width: 100%;" />
+                            <RadzenText TextStyle="TextStyle.Caption"
+                                        class="rz-color-secondary">
+                                Phase rules enforced before a release can be deployed
+                                to a given environment.
+                            </RadzenText>
+                        </div>
+                    </RadzenStack>
+                </RadzenCard>
+
+                @if (_errorMessage is not null)
+                {
+                    <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true"
+                                 AllowClose="false">@_errorMessage</RadzenAlert>
+                }
+
+                <RadzenStack Orientation="Orientation.Horizontal"
+                             JustifyContent="JustifyContent.End" Gap="0.5rem">
+                    <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                                  Click="@ResetForm" />
+                    <RequirePermission Permission="Permission.ProjectEdit">
+                        <RadzenButton Text="Save" ButtonType="ButtonType.Submit"
+                                      ButtonStyle="ButtonStyle.Primary" />
+                    </RequirePermission>
+                </RadzenStack>
+
+                <RadzenCard class="rz-mt-4 kraken-danger-card">
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-1">
+                        Danger zone
+                    </RadzenText>
+                    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-3">
+                        Deleting a project removes all of its releases, deployments,
+                        variables, channels and runbooks. There is no undo.
+                    </RadzenText>
+                    <RequirePermission Permission="Permission.ProjectEdit">
+                        <RadzenButton Text="Delete project" Icon="delete"
+                                      ButtonStyle="ButtonStyle.Danger"
+                                      Click="DeleteAsync" />
+                    </RequirePermission>
+                </RadzenCard>
+            </RadzenStack>
+        </EditForm>
+    }
 </ProjectShell>
 
 @code {
     [Parameter] public string Slug { get; set; } = "";
+
+    private Project? _project;
+    private List<ProjectGroup> _projectGroups = [];
+    private List<Lifecycle> _lifecycles = [];
+    private bool _loaded;
+    private string? _loadError;
+    private string? _errorMessage;
+    private readonly FormModel _form = new();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        try
+        {
+            _project = await ProjectSvc.GetBySlugAsync(Slug);
+            if (_project is null) return;
+
+            _projectGroups = await ProjectSvc.GetProjectGroupsAsync();
+            _lifecycles = await LifecycleSvc.GetAllAsync();
+            ResetForm();
+        }
+        catch (Exception ex)
+        {
+            _loadError = ex.Message;
+        }
+        finally
+        {
+            _loaded = true;
+        }
+    }
+
+    private void ResetForm()
+    {
+        if (_project is null) return;
+        _form.Name = _project.Name;
+        _form.Slug = _project.Slug;
+        _form.Description = _project.Description;
+        _form.LifecycleId = _project.LifecycleId;
+        _form.ProjectGroupId = _project.ProjectGroupId;
+        _errorMessage = null;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (_project is null) return;
+        _errorMessage = null;
+        try
+        {
+            await ProjectSvc.UpdateAsync(_project.Id, _form.Name, _form.Slug, _form.Description);
+            await ProjectSvc.SetLifecycleAndGroupAsync(
+                _project.Id, _form.LifecycleId, _form.ProjectGroupId);
+
+            Notifications.Notify(NotificationSeverity.Success, "Saved",
+                "Project settings updated.", 3000);
+
+            // If the slug changed, the URL is now stale — redirect.
+            if (_form.Slug != _project.Slug)
+            {
+                Nav.NavigateTo($"/projects/{_form.Slug}/settings");
+            }
+            else
+            {
+                _project = await ProjectSvc.GetBySlugAsync(_form.Slug);
+                ResetForm();
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            _errorMessage = ex.Message;
+        }
+    }
+
+    private async Task DeleteAsync()
+    {
+        if (_project is null) return;
+        var confirmed = await Dialog.Confirm(
+            $"Delete project '{_project.Name}'? This cannot be undone.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+
+        if (confirmed != true) return;
+
+        await ProjectSvc.DeleteAsync(_project.Id);
+        Notifications.Notify(NotificationSeverity.Success, "Deleted",
+            "Project was removed.", 3000);
+        Nav.NavigateTo("/projects");
+    }
+
+    private sealed class FormModel
+    {
+        [System.ComponentModel.DataAnnotations.Required]
+        [System.ComponentModel.DataAnnotations.MaxLength(200)]
+        public string Name { get; set; } = "";
+
+        [System.ComponentModel.DataAnnotations.Required]
+        [System.ComponentModel.DataAnnotations.MaxLength(64)]
+        [System.ComponentModel.DataAnnotations.RegularExpression(
+            @"^[a-z0-9][a-z0-9\-]*[a-z0-9]$|^[a-z0-9]$",
+            ErrorMessage = "Slug must be lowercase letters, digits, and hyphens.")]
+        public string Slug { get; set; } = "";
+
+        [System.ComponentModel.DataAnnotations.MaxLength(2000)]
+        public string? Description { get; set; }
+
+        public Guid? LifecycleId { get; set; }
+        public Guid? ProjectGroupId { get; set; }
+    }
 }

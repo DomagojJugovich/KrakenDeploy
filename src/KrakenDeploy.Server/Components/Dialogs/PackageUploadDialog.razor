@@ -1,0 +1,175 @@
+@using System.IO
+@using System.Text.RegularExpressions
+@using Microsoft.AspNetCore.Components.Forms
+@inject DialogService Dialog
+@inject PackageService PackageSvc
+
+@*
+    Upload a deployment package to the built-in repository.
+
+    The package ID and version can be inferred from the filename in
+    common conventions:
+        MyApp.1.2.3.zip          -> id="MyApp", version="1.2.3"
+        MyApp.1.2.3-beta.nupkg   -> id="MyApp", version="1.2.3-beta"
+    The user can override either field before clicking Upload.
+
+    Max upload size is 100 MB by default; raise the InputFile
+    MaxAllowedSize parameter if the deployment artifacts are bigger.
+*@
+
+<div style="min-width: 540px; padding: 0.25rem 0;">
+    <RadzenStack Gap="1rem">
+
+        <div class="kraken-pkg-dropzone @(_dropHover ? "kraken-pkg-dropzone--hover" : "")"
+             @ondragover="@(_ => _dropHover = true)"
+             @ondragover:preventDefault="true"
+             @ondragleave="@(_ => _dropHover = false)">
+            <InputFile OnChange="@OnFileChanged" class="kraken-pkg-fileinput"
+                       accept=".zip,.nupkg,.tar,.tar.gz,.tgz" />
+            <div class="kraken-pkg-dropzone-inner">
+                <RadzenIcon Icon="cloud_upload"
+                            Style="font-size: 2.5rem; opacity: 0.5;" />
+                @if (_file is null)
+                {
+                    <RadzenText TextStyle="TextStyle.Body1">
+                        Drag a package file here or click to browse
+                    </RadzenText>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                        Accepts .zip, .nupkg, .tar, .tar.gz, .tgz
+                    </RadzenText>
+                }
+                else
+                {
+                    <RadzenText TextStyle="TextStyle.Body1">
+                        <strong>@_file.Name</strong>
+                    </RadzenText>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                        @FormatBytes(_file.Size) — click to choose a different file
+                    </RadzenText>
+                }
+            </div>
+        </div>
+
+        <div>
+            <RadzenLabel Text="Package ID *" />
+            <RadzenTextBox @bind-Value="_packageId" Style="width: 100%;"
+                           Placeholder="e.g. MyApp" />
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                Logical identifier used by deployment steps to refer to this package.
+            </RadzenText>
+        </div>
+
+        <div>
+            <RadzenLabel Text="Version *" />
+            <RadzenTextBox @bind-Value="_version" Style="width: 100%;"
+                           Placeholder="e.g. 1.2.3 or 2026.05.08" />
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                Must be unique for this package ID. SemVer or date-stamp.
+            </RadzenText>
+        </div>
+
+        @if (_errorMessage is not null)
+        {
+            <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true"
+                         AllowClose="false">@_errorMessage</RadzenAlert>
+        }
+
+        @if (_uploading)
+        {
+            <RadzenProgressBarCircular Mode="ProgressBarMode.Indeterminate"
+                                       ShowValue="false"
+                                       Size="ProgressBarCircularSize.Small" />
+            <RadzenText TextStyle="TextStyle.Caption">
+                Uploading and indexing — this can take a moment for large files...
+            </RadzenText>
+        }
+
+        <RadzenStack Orientation="Orientation.Horizontal"
+                     JustifyContent="JustifyContent.End" Gap="0.5rem">
+            <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                          Disabled="@_uploading"
+                          Click="@(_ => Dialog.Close(false))" />
+            <RadzenButton Text="Upload" Icon="cloud_upload"
+                          ButtonStyle="ButtonStyle.Primary"
+                          Disabled="@(_file is null
+                                     || string.IsNullOrWhiteSpace(_packageId)
+                                     || string.IsNullOrWhiteSpace(_version)
+                                     || _uploading)"
+                          Click="UploadAsync" />
+        </RadzenStack>
+    </RadzenStack>
+</div>
+
+@code {
+    private IBrowserFile? _file;
+    private string _packageId = "";
+    private string _version = "";
+    private string? _errorMessage;
+    private bool _uploading;
+    private bool _dropHover;
+
+    private const long MaxBytes = 500L * 1024 * 1024; // 500 MB
+
+    private static readonly Regex FilenameRegex = new(
+        @"^(?<id>.+?)\.(?<version>\d[\w\.\-+]*)\.(?:zip|nupkg|tar\.gz|tgz|tar)$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private void OnFileChanged(InputFileChangeEventArgs args)
+    {
+        _file = args.File;
+        _dropHover = false;
+        _errorMessage = null;
+        TryInferFromFilename();
+    }
+
+    private void TryInferFromFilename()
+    {
+        if (_file is null) return;
+
+        // Only auto-fill empty fields — don't overwrite user-typed input.
+        var match = FilenameRegex.Match(_file.Name);
+        if (!match.Success) return;
+
+        if (string.IsNullOrWhiteSpace(_packageId))
+        {
+            _packageId = match.Groups["id"].Value;
+        }
+        if (string.IsNullOrWhiteSpace(_version))
+        {
+            _version = match.Groups["version"].Value;
+        }
+    }
+
+    private async Task UploadAsync()
+    {
+        if (_file is null) return;
+        _errorMessage = null;
+        _uploading = true;
+
+        try
+        {
+            await using var stream = _file.OpenReadStream(MaxBytes);
+            await PackageSvc.UploadAsync(_packageId, _version, _file.Name, stream);
+            Dialog.Close(true);
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = ex.Message;
+        }
+        finally
+        {
+            _uploading = false;
+        }
+    }
+
+    private static string FormatBytes(long b)
+    {
+        const long kb = 1024L;
+        const long mb = kb * 1024;
+        const long gb = mb * 1024;
+        if (b < kb) return $"{b} B";
+        if (b < mb) return $"{b / (double)kb:F1} KB";
+        if (b < gb) return $"{b / (double)mb:F1} MB";
+        return $"{b / (double)gb:F2} GB";
+    }
+}

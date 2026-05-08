@@ -1,15 +1,212 @@
 @page "/projects/{Slug}/tenants"
+@rendermode InteractiveServer
 @attribute [Authorize]
 
+@using KrakenDeploy.Server.Core.Domain.Tenants
+@inject ProjectService ProjectSvc
+@inject TenantService TenantSvc
+@inject DialogService Dialog
+@inject NotificationService Notifications
+
 <ProjectShell Slug="@Slug">
-    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-3">
-        Tenants
-    </RadzenText>
-    <RadzenAlert AlertStyle="AlertStyle.Info" ShowIcon="true" AllowClose="false">
-        Tenants connected to this project — pending.
-    </RadzenAlert>
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                 JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-3">
+        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
+            Tenants
+        </RadzenText>
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+            <RequirePermission Permission="Permission.ProjectEdit">
+                <RadzenDropDown TValue="Guid?" @bind-Value="_addTenantId"
+                                Data="@AvailableTenants" TextProperty="Name" ValueProperty="Id"
+                                AllowClear="true" AllowFiltering="true"
+                                Placeholder="Pick a tenant to connect..."
+                                Style="width: 280px;" />
+                <RadzenButton Icon="add" Text="Connect"
+                              ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                              Disabled="@(_addTenantId is null)"
+                              Click="ConnectAsync" />
+            </RequirePermission>
+        </RadzenStack>
+    </RadzenStack>
+
+    @if (!_loaded)
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            Loading tenants...
+        </RadzenText>
+    }
+    else if (_loadError is not null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false">
+            Failed to load tenants: @_loadError
+        </RadzenAlert>
+    }
+    else if (_project is null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+            Project '@Slug' was not found.
+        </RadzenAlert>
+    }
+    else if (_allTenants.Count == 0)
+    {
+        <RadzenCard class="rz-p-5 rz-text-align-center">
+            <RadzenIcon Icon="people_outline" Style="font-size: 3rem; opacity: 0.3;" />
+            <RadzenText TextStyle="TextStyle.H6" class="rz-mt-3">
+                No tenants in this Space yet
+            </RadzenText>
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                Define tenants from the
+                <RadzenLink Path="/tenants" Text="top-level Tenants page" />
+                first, then connect them to the project here.
+            </RadzenText>
+        </RadzenCard>
+    }
+    else if (_connectedIds.Count == 0)
+    {
+        <RadzenCard class="rz-p-5 rz-text-align-center">
+            <RadzenIcon Icon="link_off" Style="font-size: 3rem; opacity: 0.3;" />
+            <RadzenText TextStyle="TextStyle.H6" class="rz-mt-3">
+                No tenants connected yet
+            </RadzenText>
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                Pick a tenant from the dropdown above and click Connect to enable
+                tenanted deployments for this project.
+            </RadzenText>
+        </RadzenCard>
+    }
+    else
+    {
+        <RadzenDataGrid Data="@ConnectedTenants" TItem="Tenant"
+                        AllowFiltering="true" FilterMode="FilterMode.Simple"
+                        AllowSorting="true" AllowColumnResize="true">
+            <Columns>
+                <RadzenDataGridColumn TItem="Tenant" Property="Name" Title="Name"
+                                      Width="280px">
+                    <Template Context="t">
+                        <RadzenStack Orientation="Orientation.Horizontal"
+                                     AlignItems="AlignItems.Center" Gap="0.5rem">
+                            <div class="kraken-tenant-avatar">@TenantInitials(t.Name)</div>
+                            <strong>@t.Name</strong>
+                        </RadzenStack>
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="Tenant" Property="Slug" Title="Slug" Width="180px" />
+                <RadzenDataGridColumn TItem="Tenant" Property="Description" Title="Description" />
+                <RadzenDataGridColumn TItem="Tenant" Title="" Width="140px"
+                                      Sortable="false" Filterable="false"
+                                      TextAlign="TextAlign.Right">
+                    <Template Context="t">
+                        <RequirePermission Permission="Permission.ProjectEdit">
+                            <RadzenButton Icon="link_off" Text="Disconnect"
+                                          ButtonStyle="ButtonStyle.Danger"
+                                          Size="ButtonSize.ExtraSmall"
+                                          Click="@(() => DisconnectAsync(t))" />
+                        </RequirePermission>
+                    </Template>
+                </RadzenDataGridColumn>
+            </Columns>
+        </RadzenDataGrid>
+    }
 </ProjectShell>
 
 @code {
     [Parameter] public string Slug { get; set; } = "";
+
+    private Project? _project;
+    private List<Tenant> _allTenants = [];
+    private HashSet<Guid> _connectedIds = [];
+    private bool _loaded;
+    private string? _loadError;
+    private Guid? _addTenantId;
+
+    private IEnumerable<Tenant> ConnectedTenants =>
+        _allTenants.Where(t => _connectedIds.Contains(t.Id));
+
+    private IEnumerable<Tenant> AvailableTenants =>
+        _allTenants.Where(t => !_connectedIds.Contains(t.Id));
+
+    protected override async Task OnParametersSetAsync()
+    {
+        try
+        {
+            _project = await ProjectSvc.GetBySlugAsync(Slug);
+            if (_project is null) return;
+
+            _allTenants = await TenantSvc.GetAllAsync();
+
+            await ReloadConnectedAsync();
+        }
+        catch (Exception ex)
+        {
+            _loadError = ex.Message;
+        }
+        finally
+        {
+            _loaded = true;
+        }
+    }
+
+    private async Task ReloadConnectedAsync()
+    {
+        if (_project is null) return;
+        // Each tenant carries its Projects collection; filter to those linked
+        // to this project and collect their IDs. We refetch tenants WithProjects
+        // one by one because GetAllAsync does not eager-load Projects.
+        // For projects with many tenants this could be batched server-side later.
+        _connectedIds = [];
+        foreach (var t in _allTenants)
+        {
+            var withProjects = await TenantSvc.GetWithProjectsAsync(t.Id);
+            if (withProjects?.Projects.Any(p => p.Id == _project.Id) == true)
+            {
+                _connectedIds.Add(t.Id);
+            }
+        }
+    }
+
+    private async Task ConnectAsync()
+    {
+        if (_project is null || _addTenantId is null) return;
+        try
+        {
+            await TenantSvc.ConnectProjectAsync(_addTenantId.Value, _project.Id);
+            _connectedIds.Add(_addTenantId.Value);
+            var name = _allTenants.FirstOrDefault(t => t.Id == _addTenantId)?.Name ?? "tenant";
+            _addTenantId = null;
+            Notifications.Notify(NotificationSeverity.Success, "Connected",
+                $"'{name}' was connected to this project.", 3000);
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Connect failed",
+                ex.Message, 5000);
+        }
+    }
+
+    private async Task DisconnectAsync(Tenant t)
+    {
+        if (_project is null) return;
+        var confirmed = await Dialog.Confirm(
+            $"Disconnect tenant '{t.Name}' from this project? Tenant-scoped variables "
+            + "and the project's tenanted deployment history are kept, but new "
+            + "tenanted deployments for this tenant will not be allowed.",
+            "Confirm Disconnect",
+            new ConfirmOptions { OkButtonText = "Disconnect", CancelButtonText = "Cancel" });
+
+        if (confirmed != true) return;
+
+        await TenantSvc.DisconnectProjectAsync(t.Id, _project.Id);
+        _connectedIds.Remove(t.Id);
+        Notifications.Notify(NotificationSeverity.Success, "Disconnected",
+            $"'{t.Name}' was disconnected.", 3000);
+    }
+
+    private static string TenantInitials(string name)
+    {
+        var parts = name.Split([' ', '-', '_'],
+            StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return "?";
+        if (parts.Length == 1) return parts[0][..Math.Min(2, parts[0].Length)].ToUpperInvariant();
+        return $"{parts[0][0]}{parts[1][0]}".ToUpperInvariant();
+    }
 }

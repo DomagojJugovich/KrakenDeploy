@@ -68,6 +68,36 @@ public class ProjectService(IDbContextFactory<KrakenDbContext> dbFactory)
         return project;
     }
 
+    /// <summary>Returns all project groups in the current Space, ordered by SortOrder/Name.</summary>
+    public async Task<List<ProjectGroup>> GetProjectGroupsAsync(CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.ProjectGroups
+            .OrderBy(g => g.SortOrder).ThenBy(g => g.Name)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Updates a project's lifecycle and project-group references. Pass
+    /// <c>null</c> for either parameter to clear that reference.
+    /// </summary>
+    public async Task<Project?> SetLifecycleAndGroupAsync(
+        Guid id, Guid? lifecycleId, Guid? projectGroupId,
+        CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var project = await db.Projects.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
+        if (project is null)
+        {
+            return null;
+        }
+        project.LifecycleId = lifecycleId;
+        project.ProjectGroupId = projectGroupId;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return project;
+    }
+
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);

@@ -1,0 +1,153 @@
+@using KrakenDeploy.Server.Core.Domain.Channels
+@using KrakenDeploy.Server.Core.Domain.Lifecycles
+@inject DialogService Dialog
+@inject ChannelService ChannelSvc
+@inject LifecycleService LifecycleSvc
+
+@*
+    Add / edit a release channel for a project.
+    To add: pass ProjectId; leave Channel null.
+    To edit: pass Channel; ProjectId is ignored.
+*@
+
+<div style="min-width: 520px; padding: 0.25rem 0;">
+    <EditForm Model="_form" OnValidSubmit="SaveAsync">
+        <DataAnnotationsValidator />
+        <RadzenStack Gap="1rem">
+            <div>
+                <RadzenLabel Text="Name *" />
+                <RadzenTextBox @bind-Value="_form.Name" Style="width: 100%;"
+                               Placeholder="e.g. Default, Beta, Hotfix" />
+                <ValidationMessage For="() => _form.Name" class="kraken-validation-error" />
+            </div>
+
+            <div>
+                <RadzenCheckBox @bind-Value="_form.IsDefault" Name="isDefault" />
+                <RadzenLabel Text="Default channel for this project"
+                             Component="isDefault"
+                             Style="margin-left: 0.4rem; cursor: pointer;" />
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                    Releases created without an explicit channel land here.
+                    Marking another channel default un-marks the current one.
+                </RadzenText>
+            </div>
+
+            <div>
+                <RadzenLabel Text="Lifecycle" />
+                <RadzenDropDown TValue="Guid?" @bind-Value="_form.LifecycleId"
+                                Data="@_lifecycles" TextProperty="Name" ValueProperty="Id"
+                                AllowClear="true" Placeholder="(use project default)"
+                                Style="width: 100%;" />
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                    When set, deployments of releases on this channel must satisfy
+                    this lifecycle's phase rules.
+                </RadzenText>
+            </div>
+
+            <div>
+                <RadzenLabel Text="Version range" />
+                <RadzenTextBox @bind-Value="_form.VersionRange" Style="width: 100%;"
+                               Placeholder='e.g. "&gt;=1.0.0 &lt;2.0.0"' />
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                    SemVer range — only matching release versions can be created on this channel.
+                </RadzenText>
+            </div>
+
+            <div>
+                <RadzenLabel Text="Pre-release tag" />
+                <RadzenTextBox @bind-Value="_form.VersionTag" Style="width: 100%;"
+                               Placeholder="e.g. beta, rc, alpha" />
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                    When set, only versions whose pre-release label matches are accepted.
+                </RadzenText>
+            </div>
+
+            @if (_errorMessage is not null)
+            {
+                <div class="kraken-login-error rz-text-body2">@_errorMessage</div>
+            }
+
+            <RadzenStack Orientation="Orientation.Horizontal"
+                         JustifyContent="JustifyContent.End" Gap="0.5rem">
+                <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                              Click="@(_ => Dialog.Close(false))" />
+                <RadzenButton Text="Save" ButtonType="ButtonType.Submit"
+                              ButtonStyle="ButtonStyle.Primary" />
+            </RadzenStack>
+        </RadzenStack>
+    </EditForm>
+</div>
+
+@code {
+    [Parameter] public Guid? ProjectId { get; set; }
+    [Parameter] public Channel? Channel { get; set; }
+
+    private readonly FormModel _form = new();
+    private List<Lifecycle> _lifecycles = [];
+    private string? _errorMessage;
+    private bool _isEdit;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _lifecycles = await LifecycleSvc.GetAllAsync();
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (Channel is not null)
+        {
+            _isEdit = true;
+            _form.Name = Channel.Name;
+            _form.IsDefault = Channel.IsDefault;
+            _form.LifecycleId = Channel.LifecycleId;
+            _form.VersionRange = Channel.VersionRange;
+            _form.VersionTag = Channel.VersionTag;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        _errorMessage = null;
+        try
+        {
+            if (_isEdit)
+            {
+                await ChannelSvc.UpdateAsync(
+                    Channel!.Id, _form.Name, _form.IsDefault, _form.LifecycleId,
+                    _form.VersionRange, _form.VersionTag);
+            }
+            else
+            {
+                if (ProjectId is null)
+                {
+                    _errorMessage = "Missing ProjectId.";
+                    return;
+                }
+                await ChannelSvc.CreateAsync(
+                    ProjectId.Value, _form.Name, _form.IsDefault, _form.LifecycleId,
+                    _form.VersionRange, _form.VersionTag);
+            }
+            Dialog.Close(true);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _errorMessage = ex.Message;
+        }
+    }
+
+    private sealed class FormModel
+    {
+        [System.ComponentModel.DataAnnotations.Required]
+        [System.ComponentModel.DataAnnotations.MaxLength(100)]
+        public string Name { get; set; } = "";
+
+        public bool IsDefault { get; set; }
+        public Guid? LifecycleId { get; set; }
+
+        [System.ComponentModel.DataAnnotations.MaxLength(100)]
+        public string? VersionRange { get; set; }
+
+        [System.ComponentModel.DataAnnotations.MaxLength(50)]
+        public string? VersionTag { get; set; }
+    }
+}

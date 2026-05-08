@@ -1,0 +1,252 @@
+@page "/packages"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using KrakenDeploy.Server.Core.Domain.Packages
+@inject PackageService PackageSvc
+@inject DialogService Dialog
+@inject NotificationService Notifications
+@inject NavigationManager Nav
+
+<PageTitle>Packages - KrakenDeploy</PageTitle>
+
+<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+             JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-4">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">
+        Built-in Package Repository
+    </RadzenText>
+    <RequirePermission Permission="Permission.PackageEdit">
+        <RadzenButton Icon="cloud_upload" Text="Upload package"
+                      ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                      Click="OpenUploadAsync" />
+    </RequirePermission>
+</RadzenStack>
+
+@if (!_loaded)
+{
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+        Loading packages...
+    </RadzenText>
+}
+else if (_loadError is not null)
+{
+    <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false">
+        Failed to load packages: @_loadError
+    </RadzenAlert>
+}
+else
+{
+    <div class="kraken-pkg-page">
+        <div class="kraken-pkg-main">
+            @if (_summaries.Count == 0)
+            {
+                <RadzenCard class="rz-p-5 rz-text-align-center">
+                    <RadzenIcon Icon="inventory_2" Style="font-size: 3rem; opacity: 0.3;" />
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mt-3">
+                        No packages uploaded yet
+                    </RadzenText>
+                    <RadzenText TextStyle="TextStyle.Body2"
+                                class="rz-color-secondary rz-mb-4">
+                        Upload your first deployment artifact (zip / nupkg / tar.gz)
+                        so steps in your deployment process can reference it.
+                    </RadzenText>
+                    <RequirePermission Permission="Permission.PackageEdit">
+                        <RadzenButton Icon="cloud_upload" Text="Upload your first package"
+                                      ButtonStyle="ButtonStyle.Primary"
+                                      Click="OpenUploadAsync" />
+                    </RequirePermission>
+                </RadzenCard>
+            }
+            else
+            {
+                <RadzenDataGrid Data="@_summaries" TItem="PackageSummary"
+                                AllowFiltering="true" FilterMode="FilterMode.Simple"
+                                AllowSorting="true" AllowPaging="true" PageSize="30"
+                                AllowColumnResize="true">
+                    <Columns>
+                        <RadzenDataGridColumn TItem="PackageSummary" Property="PackageId"
+                                              Title="ID" Width="320px">
+                            <Template Context="p">
+                                <button type="button" class="kraken-vargrid-link"
+                                        @onclick="@(() => SelectAsync(p.PackageId))">
+                                    @p.PackageId
+                                </button>
+                            </Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="PackageSummary" Title="Highest version"
+                                              Width="220px" Sortable="false">
+                            <Template Context="p">
+                                @if (_highestByPackage.TryGetValue(p.PackageId, out var hi))
+                                {
+                                    <RadzenStack Orientation="Orientation.Horizontal"
+                                                 AlignItems="AlignItems.Center" Gap="0.4rem">
+                                        <RadzenIcon Icon="download"
+                                                    Style="font-size: 1rem; opacity: 0.55;" />
+                                        <span>@hi</span>
+                                    </RadzenStack>
+                                }
+                            </Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="PackageSummary" Property="VersionCount"
+                                              Title="Versions" Width="100px"
+                                              TextAlign="TextAlign.Right" />
+                        <RadzenDataGridColumn TItem="PackageSummary" Property="LastUploaded"
+                                              Title="Last uploaded" Width="200px"
+                                              FormatString="{0:yyyy-MM-dd HH:mm}" />
+                    </Columns>
+                </RadzenDataGrid>
+            }
+        </div>
+
+        @* ── Right side panel: versions list for the selected package ─── *@
+        @if (_selectedId is not null)
+        {
+            <aside class="kraken-pkg-side">
+                <RadzenCard>
+                    <RadzenStack Orientation="Orientation.Horizontal"
+                                 JustifyContent="JustifyContent.SpaceBetween"
+                                 AlignItems="AlignItems.Center" class="rz-mb-3">
+                        <RadzenText TextStyle="TextStyle.H6" class="rz-mb-0">
+                            @_selectedId
+                        </RadzenText>
+                        <RadzenButton Icon="close" ButtonStyle="ButtonStyle.Light"
+                                      Size="ButtonSize.ExtraSmall"
+                                      Click="@(() => _selectedId = null)" />
+                    </RadzenStack>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-2">
+                        @_selectedVersions.Count version@(_selectedVersions.Count == 1 ? "" : "s")
+                        on disk
+                    </RadzenText>
+
+                    @foreach (var p in _selectedVersions)
+                    {
+                        <div class="kraken-pkg-version">
+                            <div class="kraken-pkg-version-head">
+                                <strong>@p.Version</strong>
+                                <span class="rz-color-secondary kraken-pkg-version-date">
+                                    @p.UploadedUtc.LocalDateTime.ToString("yyyy-MM-dd HH:mm")
+                                </span>
+                            </div>
+                            <div class="kraken-pkg-version-meta rz-color-secondary">
+                                @p.FileName • @FormatBytes(p.SizeBytes)
+                            </div>
+                            <RequirePermission Permission="Permission.PackageDelete">
+                                <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                              Size="ButtonSize.ExtraSmall"
+                                              Click="@(() => DeleteAsync(p))" />
+                            </RequirePermission>
+                        </div>
+                    }
+                </RadzenCard>
+            </aside>
+        }
+    </div>
+}
+
+@code {
+    private List<PackageSummary> _summaries = [];
+    private Dictionary<string, string> _highestByPackage = new();
+    private bool _loaded;
+    private string? _loadError;
+
+    private string? _selectedId;
+    private List<Package> _selectedVersions = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _loadError = ex.Message;
+        }
+        finally
+        {
+            _loaded = true;
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        _summaries = await PackageSvc.GetSummariesAsync();
+
+        // For the "Highest version" column we need each package's latest
+        // version. Fetch them all in parallel — the summary list is small
+        // (one entry per distinct PackageId).
+        _highestByPackage = new();
+        foreach (var s in _summaries)
+        {
+            var versions = await PackageSvc.GetVersionsAsync(s.PackageId);
+            // GetVersionsAsync orders desc by UploadedUtc — first is latest
+            // by upload time. Could also sort lexically; uploaded-time is
+            // closer to user expectation.
+            if (versions.Count > 0)
+            {
+                _highestByPackage[s.PackageId] = versions[0].Version;
+            }
+        }
+
+        if (_selectedId is not null)
+        {
+            await SelectAsync(_selectedId);
+        }
+    }
+
+    private async Task SelectAsync(string packageId)
+    {
+        _selectedId = packageId;
+        _selectedVersions = await PackageSvc.GetVersionsAsync(packageId);
+    }
+
+    private async Task OpenUploadAsync()
+    {
+        var result = await Dialog.OpenAsync<PackageUploadDialog>(
+            "Upload package", null,
+            new DialogOptions { Width = "620px" });
+
+        if (result is true)
+        {
+            await ReloadAsync();
+            Notifications.Notify(NotificationSeverity.Success, "Uploaded",
+                "Package was added to the repository.", 3000);
+        }
+    }
+
+    private async Task DeleteAsync(Package p)
+    {
+        var confirmed = await Dialog.Confirm(
+            $"Delete package '{p.PackageId}' version '{p.Version}'? The file is "
+            + "removed from the repository. Releases that pinned this version "
+            + "may fail to deploy.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+
+        if (confirmed != true) return;
+
+        try
+        {
+            await PackageSvc.DeleteAsync(p.Id);
+            await ReloadAsync();
+            Notifications.Notify(NotificationSeverity.Success, "Deleted",
+                $"{p.PackageId} {p.Version} was removed.", 3000);
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Delete failed",
+                ex.Message, 5000);
+        }
+    }
+
+    private static string FormatBytes(long b)
+    {
+        const long kb = 1024L;
+        const long mb = kb * 1024;
+        const long gb = mb * 1024;
+        if (b < kb) return $"{b} B";
+        if (b < mb) return $"{b / (double)kb:F1} KB";
+        if (b < gb) return $"{b / (double)mb:F1} MB";
+        return $"{b / (double)gb:F2} GB";
+    }
+}

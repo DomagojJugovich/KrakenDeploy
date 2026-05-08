@@ -1,15 +1,230 @@
 @page "/projects/{Slug}/channels"
+@rendermode InteractiveServer
 @attribute [Authorize]
 
+@using KrakenDeploy.Server.Core.Domain.Channels
+@using KrakenDeploy.Server.Core.Domain.Lifecycles
+@inject ProjectService ProjectSvc
+@inject ChannelService ChannelSvc
+@inject LifecycleService LifecycleSvc
+@inject DialogService Dialog
+@inject NotificationService Notifications
+
 <ProjectShell Slug="@Slug">
-    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-3">
-        Channels
-    </RadzenText>
-    <RadzenAlert AlertStyle="AlertStyle.Info" ShowIcon="true" AllowClose="false">
-        Project channels &amp; version rules — pending.
-    </RadzenAlert>
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                 JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-3">
+        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
+            Channels
+        </RadzenText>
+        <RequirePermission Permission="Permission.ProjectEdit">
+            <RadzenButton Icon="add" Text="Add Channel"
+                          ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                          Click="OpenAddAsync" />
+        </RequirePermission>
+    </RadzenStack>
+
+    @if (!_loaded)
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            Loading channels...
+        </RadzenText>
+    }
+    else if (_loadError is not null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false">
+            Failed to load channels: @_loadError
+        </RadzenAlert>
+    }
+    else if (_project is null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+            Project '@Slug' was not found.
+        </RadzenAlert>
+    }
+    else if (_channels.Count == 0)
+    {
+        <RadzenCard class="rz-p-5 rz-text-align-center">
+            <RadzenIcon Icon="alt_route" Style="font-size: 3rem; opacity: 0.3;" />
+            <RadzenText TextStyle="TextStyle.H6" class="rz-mt-3">
+                No channels yet
+            </RadzenText>
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+                Channels group releases by lifecycle and version rules — useful for
+                separating beta builds from production releases.
+            </RadzenText>
+            <RequirePermission Permission="Permission.ProjectEdit">
+                <RadzenButton Text="Add the first channel" Icon="add"
+                              ButtonStyle="ButtonStyle.Primary" Click="OpenAddAsync" />
+            </RequirePermission>
+        </RadzenCard>
+    }
+    else
+    {
+        <RadzenDataGrid Data="@_channels" TItem="Channel"
+                        AllowFiltering="true" FilterMode="FilterMode.Simple"
+                        AllowSorting="true" AllowColumnResize="true">
+            <Columns>
+                <RadzenDataGridColumn TItem="Channel" Property="Name" Title="Name"
+                                      Width="220px">
+                    <Template Context="c">
+                        <RadzenStack Orientation="Orientation.Horizontal"
+                                     AlignItems="AlignItems.Center" Gap="0.5rem">
+                            <strong>@c.Name</strong>
+                            @if (c.IsDefault)
+                            {
+                                <RadzenBadge Text="default" BadgeStyle="BadgeStyle.Info"
+                                             IsPill="true" />
+                            }
+                        </RadzenStack>
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="Channel" Title="Lifecycle" Width="200px"
+                                      Sortable="false" Filterable="false">
+                    <Template Context="c">
+                        @if (c.LifecycleId is { } lid)
+                        {
+                            @LifecycleName(lid)
+                        }
+                        else
+                        {
+                            <span class="rz-color-secondary">(project default)</span>
+                        }
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="Channel" Property="VersionRange"
+                                      Title="Version range" Width="200px">
+                    <Template Context="c">
+                        @if (string.IsNullOrEmpty(c.VersionRange))
+                        {
+                            <span class="rz-color-secondary">(any)</span>
+                        }
+                        else
+                        {
+                            <code class="kraken-var-value">@c.VersionRange</code>
+                        }
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="Channel" Property="VersionTag"
+                                      Title="Pre-release tag" Width="160px">
+                    <Template Context="c">
+                        @if (string.IsNullOrEmpty(c.VersionTag))
+                        {
+                            <span class="rz-color-secondary">—</span>
+                        }
+                        else
+                        {
+                            <RadzenBadge Text="@c.VersionTag"
+                                         BadgeStyle="BadgeStyle.Secondary" IsPill="true" />
+                        }
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="Channel" Title="" Width="100px"
+                                      Sortable="false" Filterable="false"
+                                      TextAlign="TextAlign.Right">
+                    <Template Context="c">
+                        <RequirePermission Permission="Permission.ProjectEdit">
+                            <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
+                                          Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                                          Click="@(() => OpenEditAsync(c))" />
+                            <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                          Size="ButtonSize.ExtraSmall"
+                                          Disabled="@c.IsDefault"
+                                          Click="@(() => DeleteAsync(c))" />
+                        </RequirePermission>
+                    </Template>
+                </RadzenDataGridColumn>
+            </Columns>
+        </RadzenDataGrid>
+    }
 </ProjectShell>
 
 @code {
     [Parameter] public string Slug { get; set; } = "";
+
+    private Project? _project;
+    private List<Channel> _channels = [];
+    private Dictionary<Guid, string> _lifecycleNames = [];
+    private bool _loaded;
+    private string? _loadError;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        try
+        {
+            _project = await ProjectSvc.GetBySlugAsync(Slug);
+            if (_project is null) return;
+
+            var lifecycles = await LifecycleSvc.GetAllAsync();
+            _lifecycleNames = lifecycles.ToDictionary(l => l.Id, l => l.Name);
+
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _loadError = ex.Message;
+        }
+        finally
+        {
+            _loaded = true;
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (_project is null) return;
+        _channels = await ChannelSvc.GetForProjectAsync(_project.Id);
+    }
+
+    private string LifecycleName(Guid id) =>
+        _lifecycleNames.TryGetValue(id, out var n) ? n : "?";
+
+    private async Task OpenAddAsync()
+    {
+        if (_project is null) return;
+        var result = await Dialog.OpenAsync<ChannelFormDialog>(
+            "Add Channel",
+            new Dictionary<string, object?>
+            {
+                [nameof(ChannelFormDialog.ProjectId)] = _project.Id,
+            },
+            new DialogOptions { Width = "600px" });
+
+        if (result is true) await ReloadAsync();
+    }
+
+    private async Task OpenEditAsync(Channel c)
+    {
+        var result = await Dialog.OpenAsync<ChannelFormDialog>(
+            $"Edit channel '{c.Name}'",
+            new Dictionary<string, object?>
+            {
+                [nameof(ChannelFormDialog.Channel)] = c,
+            },
+            new DialogOptions { Width = "600px" });
+
+        if (result is true) await ReloadAsync();
+    }
+
+    private async Task DeleteAsync(Channel c)
+    {
+        var confirmed = await Dialog.Confirm(
+            $"Delete channel '{c.Name}'? This cannot be undone.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+
+        if (confirmed != true) return;
+
+        try
+        {
+            await ChannelSvc.DeleteAsync(c.Id);
+            await ReloadAsync();
+            Notifications.Notify(NotificationSeverity.Success, "Deleted",
+                $"Channel '{c.Name}' was removed.", 3000);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Cannot delete",
+                ex.Message, 5000);
+        }
+    }
 }
