@@ -13,7 +13,7 @@
                 AllowPaging="true" PageSize="25"
                 AllowSorting="true"
                 AllowColumnResize="true"
-                RowClick="@(args => Nav.NavigateTo($"/deployments/{args.Data.Id}"))"
+                RowClick="@(args => { if (args.Data is { } d) Nav.NavigateTo($"/deployments/{d.Id}"); })"
                 EmptyText="No deployments yet.">
     <Columns>
         <RadzenDataGridColumn TItem="Deployment" Property="Status" Title="Status" Width="120px">

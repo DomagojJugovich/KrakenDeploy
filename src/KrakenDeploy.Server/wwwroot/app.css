@@ -441,89 +441,51 @@ html, body {
     word-break: break-all;
 }
 
-/* Inline variable grid (Octopus-style) */
+/* Variable grid auxiliary styles (RadzenDataGrid handles the table chrome). */
 
-.kraken-vargrid {
+/* Always-visible "new variable" bar above the grid */
+.kraken-newvar-bar {
+    display: grid;
+    grid-template-columns: 1fr 1.4fr 140px 1.6fr auto;
+    gap: 0.75rem;
+    align-items: end;
+    padding: 0.85rem 1rem;
+    margin-bottom: 0.75rem;
+    background: var(--rz-base-50, #fafafa);
     border: 1px solid var(--rz-base-300, #e0e0e0);
     border-radius: 6px;
-    background: var(--rz-base-100, #fff);
-    overflow: hidden;
 }
 
-.kraken-vargrid-header,
-.kraken-vargrid-row {
-    display: grid;
-    grid-template-columns: 1fr 1.2fr 1.4fr 60px;
-    gap: 0;
-    align-items: center;
-}
-
-.kraken-vargrid-header {
-    background: var(--rz-base-50, #fafafa);
-    border-bottom: 1px solid var(--rz-base-300, #e0e0e0);
-}
-
-.kraken-vargrid-header > div {
-    padding: 0.55rem 0.85rem;
-    font-size: 0.72rem;
+.kraken-newvar-bar > div > .rz-label {
+    display: block;
+    font-size: 0.7rem;
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--rz-text-tertiary-color, rgba(0, 0, 0, 0.55));
+    margin-bottom: 0.25rem;
 }
 
-.kraken-vargrid-row {
-    border-bottom: 1px solid var(--rz-base-200, #f0f0f0);
-}
-
-.kraken-vargrid-row:last-child {
-    border-bottom: none;
-}
-
-.kraken-vargrid-row:hover:not(.kraken-vargrid-row-grouphead) {
-    background: var(--rz-base-50, #fafafa);
-}
-
-.kraken-vargrid-row > div {
-    padding: 0.5rem 0.85rem;
-}
-
-.kraken-vargrid-row-new {
-    background: var(--rz-info-lighter, #e3f2fd);
-    background: rgba(30, 136, 229, 0.04);
-}
-
-.kraken-vargrid-row-grouphead {
-    background: var(--rz-base-50, #fafafa);
-    font-weight: 600;
-}
-
-.kraken-vargrid-row-subrow .kraken-vargrid-c-name::before {
-    content: "";
-    display: inline-block;
-    border-left: 2px solid var(--rz-base-300, #e0e0e0);
-    height: 1.4rem;
-    margin-left: 0.5rem;
-}
-
-.kraken-vargrid-row-actionbar {
-    padding: 0.5rem 0.85rem;
-    background: var(--rz-base-50, #fafafa);
-    border-bottom: 1px solid var(--rz-base-200, #f0f0f0);
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.5rem;
-}
-
-.kraken-vargrid-empty {
-    padding: 1.5rem 0.85rem;
-    text-align: center;
-    color: var(--rz-text-tertiary-color, rgba(0, 0, 0, 0.55));
+.kraken-newvar-scope-btn {
+    width: 100%;
+    text-align: left;
+    background: var(--rz-base-100, #fff);
+    border: 1px solid var(--rz-base-300, #e0e0e0);
+    border-radius: 4px;
+    padding: 0.45rem 0.75rem;
+    font-family: inherit;
     font-size: 0.875rem;
+    color: var(--rz-info, #1976d2);
+    cursor: pointer;
+    height: 38px;
 }
 
-.kraken-vargrid-c-actions {
-    text-align: right;
+.kraken-newvar-scope-btn:hover {
+    border-color: var(--rz-info, #1976d2);
+}
+
+.kraken-newvar-actions {
+    align-self: end;
 }
 
 .kraken-vargrid-link {
@@ -545,4 +507,56 @@ html, body {
 .kraken-vargrid-link:focus {
     outline: 2px solid var(--rz-info, #1976d2);
     outline-offset: 2px;
+}
+
+/* Inline scope popup (custom div positioned at click site) */
+
+.kraken-scope-popup-backdrop {
+    position: fixed;
+    inset: 0;
+    background: transparent;
+    z-index: 1090;
+}
+
+.kraken-scope-popup {
+    position: fixed;
+    z-index: 1091;
+    width: 420px;
+    padding: 1rem 1.1rem;
+    background: var(--rz-base-100, #fff);
+    border-radius: 6px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+    border: 1px solid var(--rz-base-300, #e0e0e0);
+    animation: kraken-scope-popup-in 0.12s ease-out;
+}
+
+@keyframes kraken-scope-popup-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.kraken-scope-popup-warning {
+    background: #fff3cd;
+    color: #664d03;
+    border: 1px solid #ffc107;
+    border-radius: 4px;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.78rem;
+}
+
+/* Scope-chip button: a click-target wrapping the chip badges */
+.kraken-scope-chip-btn,
+.kraken-scope-unbound-btn {
+    background: transparent;
+    border: none;
+    padding: 0.2rem 0.3rem;
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+    border-radius: 4px;
+}
+
+.kraken-scope-chip-btn:hover,
+.kraken-scope-unbound-btn:hover {
+    background: var(--rz-base-200, #f0f0f0);
 }

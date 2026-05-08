@@ -81,7 +81,7 @@
     {
         var result = await Dialog.OpenAsync<IdentityProviderFormDialog>(
             "Add Identity Provider",
-            new Dictionary<string, object>(),
+            new Dictionary<string, object?>(),
             new DialogOptions { Width = "600px" });
 
         if (result is true)
@@ -95,7 +95,7 @@
     {
         var result = await Dialog.OpenAsync<IdentityProviderFormDialog>(
             $"Edit: {provider.Name}",
-            new Dictionary<string, object>
+            new Dictionary<string, object?>
             {
                 [nameof(IdentityProviderFormDialog.Provider)] = provider,
             },

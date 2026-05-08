@@ -68,7 +68,7 @@
     {
         var result = await Dialog.OpenAsync<ProjectFormDialog>(
             "New Project",
-            new Dictionary<string, object>(),
+            new Dictionary<string, object?>(),
             new DialogOptions { Width = "520px" });
 
         if (result is true)
@@ -81,7 +81,7 @@
     {
         var result = await Dialog.OpenAsync<ProjectFormDialog>(
             "Edit Project",
-            new Dictionary<string, object> { [nameof(ProjectFormDialog.Project)] = project },
+            new Dictionary<string, object?> { [nameof(ProjectFormDialog.Project)] = project },
             new DialogOptions { Width = "520px" });
 
         if (result is true)

@@ -89,7 +89,7 @@
     {
         var result = await Dialog.OpenAsync<SpaceFormDialog>(
             "New Space",
-            new Dictionary<string, object>(),
+            new Dictionary<string, object?>(),
             new DialogOptions { Width = "480px" });
 
         if (result is true)
@@ -100,7 +100,7 @@
     {
         var result = await Dialog.OpenAsync<SpaceFormDialog>(
             $"Edit Space: {space.Name}",
-            new Dictionary<string, object> { { "Space", space } },
+            new Dictionary<string, object?> { { "Space", space } },
             new DialogOptions { Width = "480px" });
 
         if (result is true)

@@ -66,7 +66,7 @@
     {
         var result = await Dialog.OpenAsync<InviteUserDialog>(
             "Invite User",
-            new Dictionary<string, object>(),
+            new Dictionary<string, object?>(),
             new DialogOptions { Width = "460px" });
 
         if (result is true)
@@ -89,6 +89,6 @@
 
         await UserSvc.DeleteAsync(user.Id);
         _users = await UserSvc.GetAllAsync();
-        Notify.Notify(NotificationSeverity.Success, "Deleted", user.Email, 4000);
+        Notify.Notify(NotificationSeverity.Success, "Deleted", user.Email ?? "", 4000);
     }
 }

@@ -91,7 +91,7 @@
     {
         var result = await Dialog.OpenAsync<RoleFormDialog>(
             "New Role",
-            new Dictionary<string, object>(),
+            new Dictionary<string, object?>(),
             new DialogOptions { Width = "700px", Height = "80vh" });
 
         if (result is true)
@@ -105,7 +105,7 @@
     {
         var result = await Dialog.OpenAsync<RoleFormDialog>(
             $"Edit Role: {role.Name}",
-            new Dictionary<string, object> { [nameof(RoleFormDialog.Role)] = role },
+            new Dictionary<string, object?> { [nameof(RoleFormDialog.Role)] = role },
             new DialogOptions { Width = "700px", Height = "80vh" });
 
         if (result is true)
@@ -119,7 +119,7 @@
     {
         await Dialog.OpenAsync<RoleFormDialog>(
             $"Role: {role.Name}",
-            new Dictionary<string, object>
+            new Dictionary<string, object?>
             {
                 [nameof(RoleFormDialog.Role)]     = role,
                 [nameof(RoleFormDialog.ReadOnly)] = true,

@@ -98,7 +98,7 @@
     {
         var result = await Dialog.OpenAsync<TeamFormDialog>(
             "New Team",
-            new Dictionary<string, object>
+            new Dictionary<string, object?>
             {
                 [nameof(TeamFormDialog.SpaceId)] = (Guid?)SpaceCtx.CurrentSpaceId,
             },

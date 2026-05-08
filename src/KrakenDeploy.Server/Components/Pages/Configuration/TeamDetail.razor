@@ -422,7 +422,7 @@ else
 
         await TeamSvc.RemoveMemberAsync(_team.Id, user.Id);
         await LoadTeamAsync();
-        Notify.Notify(NotificationSeverity.Info, "Removed", user.Email, 3000);
+        Notify.Notify(NotificationSeverity.Info, "Removed", user.Email ?? "", 3000);
     }
 
     // ── External group actions ────────────────────────────────────────────────

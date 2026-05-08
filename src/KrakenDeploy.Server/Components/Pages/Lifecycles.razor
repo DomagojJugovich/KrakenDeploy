@@ -38,7 +38,7 @@
                 AllowPaging="true" PageSize="20"
                 AllowSorting="true"
                 AllowColumnResize="true"
-                RowClick="@(args => Nav.NavigateTo($"/lifecycles/{args.Data.Id}"))"
+                RowClick="@(args => { if (args.Data is { } l) Nav.NavigateTo($"/lifecycles/{l.Id}"); })"
                 EmptyText="No lifecycles yet — create one to define promotion rules.">
     <Columns>
         <RadzenDataGridColumn TItem="Lifecycle" Property="Name" Title="Name" />

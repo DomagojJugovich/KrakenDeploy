@@ -80,7 +80,7 @@
     {
         var result = await Dialog.OpenAsync<EnvironmentFormDialog>(
             "New Environment",
-            new Dictionary<string, object>(),
+            new Dictionary<string, object?>(),
             new DialogOptions { Width = "480px" });
 
         if (result is true)
@@ -93,7 +93,7 @@
     {
         var result = await Dialog.OpenAsync<EnvironmentFormDialog>(
             "Edit Environment",
-            new Dictionary<string, object> { [nameof(EnvironmentFormDialog.Environment)] = env },
+            new Dictionary<string, object?> { [nameof(EnvironmentFormDialog.Environment)] = env },
             new DialogOptions { Width = "480px" });
 
         if (result is true)

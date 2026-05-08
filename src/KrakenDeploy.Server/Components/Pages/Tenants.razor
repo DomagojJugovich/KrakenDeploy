@@ -48,7 +48,7 @@
                 AllowPaging="true" PageSize="20"
                 AllowSorting="true"
                 AllowColumnResize="true"
-                RowClick="@(args => Nav.NavigateTo($"/tenants/{args.Data.Id}"))"
+                RowClick="@(args => { if (args.Data is { } t) Nav.NavigateTo($"/tenants/{t.Id}"); })"
                 EmptyText="No tenants yet — create one to enable multi-tenancy.">
     <Columns>
         <RadzenDataGridColumn TItem="Tenant" Property="Name" Title="Name" />

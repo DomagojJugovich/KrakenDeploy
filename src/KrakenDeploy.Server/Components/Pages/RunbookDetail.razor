@@ -178,7 +178,7 @@
             <RadzenDataGrid Data="@_runs" TItem="RunbookRun"
                             AllowPaging="true" PageSize="10"
                             AllowSorting="true"
-                            RowClick="@(args => ToggleRunLog(args.Data))"
+                            RowClick="@(async args => { if (args.Data is { } r) await ToggleRunLog(r); })"
                             EmptyText="No runs yet — click 'Run Now' to trigger the runbook.">
                 <Columns>
                     <RadzenDataGridColumn TItem="RunbookRun" Property="Status" Title="Status" Width="120px">

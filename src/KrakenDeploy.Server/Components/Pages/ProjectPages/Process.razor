@@ -279,7 +279,7 @@
 
         var result = await Dialog.OpenAsync<StepFormDialog>(
             "Add Step",
-            new Dictionary<string, object> { [nameof(StepFormDialog.ProjectId)] = _project.Id },
+            new Dictionary<string, object?> { [nameof(StepFormDialog.ProjectId)] = _project.Id },
             new DialogOptions { Width = "640px" });
 
         if (result is true)
@@ -292,7 +292,7 @@
     {
         var result = await Dialog.OpenAsync<StepFormDialog>(
             "Edit Step",
-            new Dictionary<string, object> { [nameof(StepFormDialog.Step)] = step },
+            new Dictionary<string, object?> { [nameof(StepFormDialog.Step)] = step },
             new DialogOptions { Width = "640px" });
 
         if (result is true)
