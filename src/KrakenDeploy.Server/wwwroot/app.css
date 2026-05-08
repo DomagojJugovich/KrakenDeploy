@@ -67,6 +67,22 @@ html, body {
     padding: 1rem 1.25rem;
 }
 
+/* Force the layout grid back to a clean two-column setup. Radzen v8's
+   :has() selectors only kick in when the sidebar carries an
+   rz-sidebar-start / rz-sidebar-left class; without it the default
+   2-col template applies but Radzen's responsive classes can produce
+   unexpected wide gaps. Pin the columns explicitly. */
+.rz-layout {
+    grid-template-columns: var(--rz-sidebar-width, 300px) 1fr !important;
+}
+
+/* The license banner is a direct child of .rz-layout without a
+   grid-area, which auto-places it into an implicit cell that can
+   distort column tracks. Force it to span the full row. */
+.rz-layout > .kraken-license-banner {
+    grid-column: 1 / -1;
+}
+
 /* ── Dashboard stat cards ─────────────────────────────────────── */
 .kraken-stat-icon {
     font-size: 2rem !important;
