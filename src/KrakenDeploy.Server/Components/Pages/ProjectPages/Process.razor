@@ -19,11 +19,11 @@
         </RadzenText>
         <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
             <RequirePermission Permission="Permission.ReleaseCreate">
-                <RadzenButton Text="Create Release" Icon="add"
+                <RadzenButton Text="Create Release" Icon="add_circle_outline"
                               ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small" />
             </RequirePermission>
             <RequirePermission Permission="Permission.ProcessEdit">
-                <RadzenButton Text="Add Step" Icon="add"
+                <RadzenButton Text="Add Step" Icon="add_circle_outline"
                               ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
                               Click="OpenAddStepAsync" />
             </RequirePermission>
@@ -65,7 +65,7 @@
                         when a release is deployed.
                     </RadzenText>
                     <RequirePermission Permission="Permission.ProcessEdit">
-                        <RadzenButton Text="Add the first step" Icon="add"
+                        <RadzenButton Text="Add the first step" Icon="add_circle_outline"
                                       ButtonStyle="ButtonStyle.Primary"
                                       Click="OpenAddStepAsync" />
                     </RequirePermission>

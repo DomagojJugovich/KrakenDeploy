@@ -8,13 +8,14 @@
 
 <PageTitle>Lifecycles - KrakenDeploy</PageTitle>
 
-<div class="rz-display-flex rz-align-items-center rz-justify-content-between rz-mb-4">
-    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1">Lifecycles</RadzenText>
+<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+             JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-4">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">Lifecycles</RadzenText>
     <RequirePermission Permission="Permission.LifecycleCreate">
-        <RadzenButton Text="New Lifecycle" Icon="add" ButtonStyle="ButtonStyle.Primary"
+        <RadzenButton Text="New Lifecycle" Icon="add_circle_outline" ButtonStyle="ButtonStyle.Primary"
                       Click="@(() => { _createOpen = true; _name = ""; _description = null; })" />
     </RequirePermission>
-</div>
+</RadzenStack>
 
 @if (_createOpen)
 {
@@ -62,8 +63,6 @@
         </RadzenDataGridColumn>
     </Columns>
 </RadzenDataGrid>
-
-<RadzenNotification />
 
 @code {
     private List<Lifecycle> _lifecycles = [];

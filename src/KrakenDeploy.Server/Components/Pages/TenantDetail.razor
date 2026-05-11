@@ -1,4 +1,5 @@
 @page "/tenants/{Id:guid}"
+@rendermode InteractiveServer
 @attribute [Authorize]
 @using KrakenDeploy.Server.Core.Domain.Tenants
 @using KrakenDeploy.Server.Data.Services
@@ -28,7 +29,7 @@
 @* ── Tag Sets ─────────────────────────────────────────────────────────────── *@
 <div class="rz-display-flex rz-align-items-center rz-justify-content-between rz-mb-3">
     <RadzenText TextStyle="TextStyle.H6">Tag Sets</RadzenText>
-    <RadzenButton Text="Add Tag Set" Icon="add" Size="ButtonSize.Small"
+    <RadzenButton Text="Add Tag Set" Icon="add_circle_outline" Size="ButtonSize.Small"
                   ButtonStyle="ButtonStyle.Secondary"
                   Click="@(() => { _newTagSetName = ""; _newTagSetDesc = null; _newTagSetSortOrder = _tenant.TagSets.Count; _addTagSetOpen = true; })" />
 </div>
@@ -78,7 +79,7 @@
                 }
                 else
                 {
-                    <RadzenButton Icon="add" Size="ButtonSize.Small" Variant="Variant.Text"
+                    <RadzenButton Icon="add_circle_outline" Size="ButtonSize.Small" Variant="Variant.Text"
                                   title="Add tag"
                                   Click="@(() => { _addTagOpen = ts.Id; _newTagName = ""; _newTagColor = null; })" />
                 }
@@ -119,8 +120,6 @@
         No tag sets yet. Tag sets group related tags (e.g. "Region", "Tier").
     </RadzenText>
 }
-
-<RadzenNotification />
 
 @code {
     [Parameter] public Guid Id { get; set; }

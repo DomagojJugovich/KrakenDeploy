@@ -29,7 +29,7 @@
 @* ── Phases ───────────────────────────────────────────────────────────────── *@
 <div class="rz-display-flex rz-align-items-center rz-justify-content-between rz-mb-3">
     <RadzenText TextStyle="TextStyle.H6">Phases</RadzenText>
-    <RadzenButton Text="Add Phase" Icon="add" Size="ButtonSize.Small"
+    <RadzenButton Text="Add Phase" Icon="add_circle_outline" Size="ButtonSize.Small"
                   ButtonStyle="ButtonStyle.Secondary"
                   Click="@AddPhase" />
 </div>
@@ -156,8 +156,6 @@
     <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
                   Click="@(() => Nav.NavigateTo("/lifecycles"))" />
 </RadzenStack>
-
-<RadzenNotification />
 
 @code {
     [Parameter] public Guid Id { get; set; }

@@ -1,0 +1,63 @@
+@implements IDisposable
+@using KrakenDeploy.Server.Data.Services
+@using Microsoft.AspNetCore.Components.Authorization
+@using System.Security.Claims
+
+@inject ThemeService ThemeSvc
+@inject UserService UserSvc
+@inject AuthenticationStateProvider AuthState
+
+<RadzenAppearanceToggle LightTheme="material" DarkTheme="material-dark" />
+
+@code {
+    private Guid? _userId;
+    private string? _lastSavedTheme;
+
+    protected override async Task OnInitializedAsync()
+    {
+        ThemeSvc.ThemeChanged += OnThemeChanged;
+
+        var state = await AuthState.GetAuthenticationStateAsync();
+        var claim = state.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (claim is null || !Guid.TryParse(claim, out var id))
+        {
+            return;
+        }
+        _userId = id;
+
+        var user = await UserSvc.GetAsync(id);
+        if (!string.IsNullOrEmpty(user?.Theme) && user.Theme != ThemeSvc.Theme)
+        {
+            _lastSavedTheme = user.Theme;
+            ThemeSvc.SetTheme(user.Theme, triggerChange: true);
+        }
+        else
+        {
+            _lastSavedTheme = ThemeSvc.Theme;
+        }
+    }
+
+    private async void OnThemeChanged()
+    {
+        if (_userId is not { } id)
+        {
+            return;
+        }
+        var current = ThemeSvc.Theme;
+        if (current == _lastSavedTheme)
+        {
+            return;
+        }
+        _lastSavedTheme = current;
+        try
+        {
+            await UserSvc.UpdateThemeAsync(id, current);
+        }
+        catch
+        {
+            // Persistence failure shouldn't break the UI.
+        }
+    }
+
+    public void Dispose() => ThemeSvc.ThemeChanged -= OnThemeChanged;
+}

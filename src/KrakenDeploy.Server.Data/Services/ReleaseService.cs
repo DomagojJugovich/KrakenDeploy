@@ -115,6 +115,16 @@ public class ReleaseService(IDbContextFactory<KrakenDbContext> dbFactory)
             .ConfigureAwait(false);
     }
 
+    public async Task<List<Release>> GetAllAsync(CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.Releases
+            .Include(r => r.Project)
+            .OrderByDescending(r => r.CreatedUtc)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+    }
+
     public async Task<Release?> GetAsync(Guid id, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);

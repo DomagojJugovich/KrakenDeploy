@@ -126,7 +126,7 @@ else
                              class="rz-mt-3 rz-mb-2">
                     <RadzenText TextStyle="TextStyle.Subtitle1">External Groups</RadzenText>
                     <RequirePermission Permission="Permission.TeamEdit">
-                        <RadzenButton Icon="add" Text="Add Group"
+                        <RadzenButton Icon="add_circle_outline" Text="Add Group"
                                       ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
                                       Click="ShowAddGroupFormAsync" />
                     </RequirePermission>
@@ -194,7 +194,7 @@ else
                              class="rz-mt-3 rz-mb-2">
                     <RadzenText TextStyle="TextStyle.Subtitle1">Role Assignments</RadzenText>
                     <RequirePermission Permission="Permission.TeamEdit">
-                        <RadzenButton Icon="add" Text="Add Assignment"
+                        <RadzenButton Icon="add_circle_outline" Text="Add Assignment"
                                       ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
                                       Click="@(() => _showAddAssignmentForm = true)" />
                     </RequirePermission>
@@ -322,8 +322,6 @@ else
         </Tabs>
     </RadzenTabs>
 }
-
-<RadzenNotification />
 
 @code {
     [Parameter] public Guid Id { get; set; }

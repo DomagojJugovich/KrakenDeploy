@@ -9,10 +9,10 @@
 <PageTitle>Roles - KrakenDeploy</PageTitle>
 
 <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
-             Gap="1rem" class="rz-mb-4">
+             JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-4">
     <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">Roles</RadzenText>
     <RequirePermission Permission="Permission.RoleCreate">
-        <RadzenButton Icon="add" Text="New Role"
+        <RadzenButton Icon="add_circle_outline" Text="New Role"
                       ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
                       Click="OpenCreateDialogAsync" />
     </RequirePermission>

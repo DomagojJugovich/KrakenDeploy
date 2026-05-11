@@ -11,6 +11,7 @@
                 <Authorized>
                     <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.75rem" Style="margin-left: auto;">
                         <SpaceSwitcher />
+                        <ThemeToggle @rendermode="InteractiveServer" />
                         <span class="kraken-user-email">@context.User.Identity?.Name</span>
                         <form method="post" action="/logout" style="display:inline;">
                             <AntiforgeryToken />
