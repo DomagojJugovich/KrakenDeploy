@@ -489,6 +489,22 @@ html, body {
     grid-column: 1 / 2;
 }
 
+.kraken-pkg-download-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.6rem;
+    height: 1.6rem;
+    border-radius: 4px;
+    color: var(--rz-info, #1976d2);
+    text-decoration: none;
+    transition: background 0.12s;
+}
+
+.kraken-pkg-download-link:hover {
+    background: var(--rz-base-200, #f0f0f0);
+}
+
 /* Upload dialog dropzone */
 .kraken-pkg-dropzone {
     position: relative;

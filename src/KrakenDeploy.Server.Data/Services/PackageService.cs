@@ -70,12 +70,26 @@ public class PackageService(IDbContextFactory<KrakenDbContext> dbFactory, IPacka
     public async Task<List<PackageSummary>> GetSummariesAsync(CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        return await db.Packages
+
+        // EF Core / Npgsql cannot translate a `new PackageSummary(...)`
+        // positional-record projection inside a GroupBy. Project to an
+        // anonymous type first (translates fine) and map to the record
+        // after materialization.
+        var rows = await db.Packages
             .GroupBy(p => p.PackageId)
-            .Select(g => new PackageSummary(g.Key, g.Count(), g.Max(p => p.UploadedUtc)))
+            .Select(g => new
+            {
+                PackageId = g.Key,
+                VersionCount = g.Count(),
+                LastUploaded = g.Max(p => p.UploadedUtc),
+            })
             .OrderBy(s => s.PackageId)
             .ToListAsync(ct)
             .ConfigureAwait(false);
+
+        return rows
+            .Select(r => new PackageSummary(r.PackageId, r.VersionCount, r.LastUploaded))
+            .ToList();
     }
 
     /// <summary>Returns all versions of a specific package, newest first.</summary>

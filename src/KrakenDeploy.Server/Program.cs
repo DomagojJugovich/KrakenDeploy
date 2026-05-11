@@ -1018,6 +1018,31 @@ public static class Program
                 return deleted ? Results.NoContent() : Results.NotFound();
             }).RequirePermission(Permission.PackageDelete);
 
+        // Download a package by id (browser triggers Save As via the
+        // Content-Disposition attachment header).
+        app.MapGet("/api/packages/{id:guid}/download",
+            async (Guid id, PackageService packageSvc, CancellationToken ct) =>
+            {
+                var (stream, package) = await packageSvc.OpenStreamAsync(id, ct).ConfigureAwait(false);
+                return Results.File(stream, "application/octet-stream", package.FileName);
+            }).RequirePermission(Permission.PackageView);
+
+        // Download by package-id + version — convenience for "highest version"
+        // links and external integrations that don't know the row id.
+        app.MapGet("/api/packages/{packageId}/{version}/download",
+            async (string packageId, string version, PackageService packageSvc,
+                   CancellationToken ct) =>
+            {
+                var pkg = await packageSvc.GetAsync(packageId, version, ct).ConfigureAwait(false);
+                if (pkg is null)
+                {
+                    return Results.NotFound();
+                }
+
+                var (stream, package) = await packageSvc.OpenStreamAsync(pkg.Id, ct).ConfigureAwait(false);
+                return Results.File(stream, "application/octet-stream", package.FileName);
+            }).RequirePermission(Permission.PackageView);
+
         // ── Process API ──────────────────────────────────────────────────────
         app.MapGet("/api/projects/{projectId:guid}/process",
             async (Guid projectId, ProcessService processSvc, CancellationToken ct) =>

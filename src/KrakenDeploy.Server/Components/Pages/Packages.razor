@@ -74,14 +74,19 @@ else
                             </Template>
                         </RadzenDataGridColumn>
                         <RadzenDataGridColumn TItem="PackageSummary" Title="Highest version"
-                                              Width="220px" Sortable="false">
+                                              Width="240px" Sortable="false">
                             <Template Context="p">
                                 @if (_highestByPackage.TryGetValue(p.PackageId, out var hi))
                                 {
                                     <RadzenStack Orientation="Orientation.Horizontal"
                                                  AlignItems="AlignItems.Center" Gap="0.4rem">
-                                        <RadzenIcon Icon="download"
-                                                    Style="font-size: 1rem; opacity: 0.55;" />
+                                        <a href="@($"/api/packages/{Uri.EscapeDataString(p.PackageId)}/{Uri.EscapeDataString(hi)}/download")"
+                                           class="kraken-pkg-download-link"
+                                           download
+                                           title="Download highest version">
+                                            <RadzenIcon Icon="download"
+                                                        Style="font-size: 1rem;" />
+                                        </a>
                                         <span>@hi</span>
                                     </RadzenStack>
                                 }
@@ -130,11 +135,20 @@ else
                             <div class="kraken-pkg-version-meta rz-color-secondary">
                                 @p.FileName • @FormatBytes(p.SizeBytes)
                             </div>
-                            <RequirePermission Permission="Permission.PackageDelete">
-                                <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
-                                              Size="ButtonSize.ExtraSmall"
-                                              Click="@(() => DeleteAsync(p))" />
-                            </RequirePermission>
+                            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.25rem">
+                                <a href="@($"/api/packages/{p.Id}/download")"
+                                   class="kraken-pkg-download-link"
+                                   download
+                                   title="Download">
+                                    <RadzenIcon Icon="download"
+                                                Style="font-size: 1.1rem;" />
+                                </a>
+                                <RequirePermission Permission="Permission.PackageDelete">
+                                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                                  Size="ButtonSize.ExtraSmall"
+                                                  Click="@(() => DeleteAsync(p))" />
+                                </RequirePermission>
+                            </RadzenStack>
                         </div>
                     }
                 </RadzenCard>
