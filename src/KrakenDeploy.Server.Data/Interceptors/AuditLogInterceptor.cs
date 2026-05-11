@@ -31,6 +31,16 @@ public sealed class AuditLogInterceptor(
         "HmacKeyEncrypted",
     ];
 
+    // Audit-bookkeeping columns. Excluded from snapshots so they don't
+    // (a) clutter the diff UI and (b) cause Before != After on otherwise
+    // no-op updates (ModifiedUtc is bumped on every save by
+    // AuditableEntityInterceptor before this one runs).
+    private static readonly HashSet<string> AuditMetadataProperties =
+    [
+        "CreatedUtc",
+        "ModifiedUtc",
+    ];
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented          = false,
@@ -107,6 +117,15 @@ public sealed class AuditLogInterceptor(
                 ? SerializeValues(entry.CurrentValues)
                 : null;
 
+            // Modified entries can produce identical Before/After when a collection
+            // property is reassigned with content-equal values but no ValueComparer
+            // is configured — EF Core flags it as Modified anyway. Skip such no-ops
+            // so the audit log only records real changes.
+            if (entry.State is EntityState.Modified && beforeJson == afterJson)
+            {
+                continue;
+            }
+
             context.Set<AuditEntry>().Add(new AuditEntry
             {
                 OccurredUtc = now,
@@ -163,7 +182,8 @@ public sealed class AuditLogInterceptor(
         var dict = new Dictionary<string, object?>();
         foreach (var prop in values.Properties)
         {
-            if (SensitiveProperties.Contains(prop.Name))
+            if (SensitiveProperties.Contains(prop.Name) ||
+                AuditMetadataProperties.Contains(prop.Name))
             {
                 continue;
             }

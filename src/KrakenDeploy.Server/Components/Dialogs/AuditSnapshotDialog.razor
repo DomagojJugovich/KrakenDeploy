@@ -1,0 +1,239 @@
+@using System.Text.Json
+@inject DialogService DialogService
+
+<div class="audit-diff">
+    <div class="audit-diff-toolbar">
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="1rem" AlignItems="AlignItems.Center">
+            @switch (_mode)
+            {
+                case DiffMode.Created:
+                    <RadzenBadge BadgeStyle="BadgeStyle.Success" Shade="Shade.Lighter"
+                                 Text="Created — initial snapshot" />
+                    break;
+                case DiffMode.Deleted:
+                    <RadzenBadge BadgeStyle="BadgeStyle.Danger" Shade="Shade.Lighter"
+                                 Text="Deleted — final snapshot" />
+                    break;
+                case DiffMode.NoChange:
+                    <RadzenBadge BadgeStyle="BadgeStyle.Warning" Shade="Shade.Lighter"
+                                 Text="No effective change (Before == After)" />
+                    break;
+                case DiffMode.Diff:
+                    <RadzenBadge BadgeStyle="BadgeStyle.Danger"  Shade="Shade.Lighter"
+                                 Text="@($"− {_removed} removed")" />
+                    <RadzenBadge BadgeStyle="BadgeStyle.Success" Shade="Shade.Lighter"
+                                 Text="@($"+ {_added} added")" />
+                    break;
+            }
+            <span style="flex:1"></span>
+            <RadzenButton Text="Close" Icon="close" ButtonStyle="ButtonStyle.Light"
+                          Click="@(() => DialogService.Close())" />
+        </RadzenStack>
+    </div>
+
+    @if (_mode is DiffMode.Created)
+    {
+        <div class="audit-diff-panes">
+            <div class="audit-diff-pane">
+                <div class="audit-diff-header">After (initial state)</div>
+                <div class="audit-diff-content">
+                    @foreach (var line in _afterLines)
+                    {
+                        <div class="audit-diff-line added">@(line.Text.Length == 0 ? " " : line.Text)</div>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+    else if (_mode is DiffMode.Deleted)
+    {
+        <div class="audit-diff-panes">
+            <div class="audit-diff-pane">
+                <div class="audit-diff-header">Before (final state)</div>
+                <div class="audit-diff-content">
+                    @foreach (var line in _beforeLines)
+                    {
+                        <div class="audit-diff-line removed">@(line.Text.Length == 0 ? " " : line.Text)</div>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="audit-diff-panes">
+            <div class="audit-diff-pane">
+                <div class="audit-diff-header">Before</div>
+                <div class="audit-diff-content">
+                    @foreach (var line in _beforeLines)
+                    {
+                        <div class="audit-diff-line @line.CssClass">@(line.Text.Length == 0 ? " " : line.Text)</div>
+                    }
+                </div>
+            </div>
+            <div class="audit-diff-pane">
+                <div class="audit-diff-header">After</div>
+                <div class="audit-diff-content">
+                    @foreach (var line in _afterLines)
+                    {
+                        <div class="audit-diff-line @line.CssClass">@(line.Text.Length == 0 ? " " : line.Text)</div>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+<style>
+    .audit-diff { display:flex; flex-direction:column; height:100%; gap:0.5rem; }
+    .audit-diff-toolbar { flex:0 0 auto; }
+    .audit-diff-panes { flex:1 1 auto; display:flex; gap:0.5rem; min-height:0; }
+    .audit-diff-pane { flex:1 1 0; display:flex; flex-direction:column; min-width:0;
+                       border:1px solid var(--rz-border-color); border-radius:4px; overflow:hidden; }
+    .audit-diff-header { padding:0.4rem 0.75rem; font-weight:600;
+                         background:var(--rz-base-200); border-bottom:1px solid var(--rz-border-color); }
+    .audit-diff-content { flex:1 1 auto; overflow:auto;
+                          font-family:ui-monospace,Consolas,monospace; font-size:0.78rem;
+                          background:var(--rz-base-100); padding:0.25rem 0; }
+    .audit-diff-line { padding:0 0.75rem; white-space:pre; line-height:1.4; }
+    .audit-diff-line.added   { background:rgba(46,160,67,0.22); }
+    .audit-diff-line.removed { background:rgba(220,53,69,0.22); }
+    .audit-diff-line.empty   { background:repeating-linear-gradient(45deg,
+                                  transparent,transparent 6px,
+                                  rgba(128,128,128,0.08) 6px,rgba(128,128,128,0.08) 12px); }
+</style>
+
+@code {
+    [Parameter] public string? BeforeJson { get; set; }
+    [Parameter] public string? AfterJson  { get; set; }
+
+    private List<DiffLine> _beforeLines = [];
+    private List<DiffLine> _afterLines  = [];
+    private int _added;
+    private int _removed;
+    private DiffMode _mode = DiffMode.Diff;
+
+    protected override void OnParametersSet()
+    {
+        var hasBefore = !string.IsNullOrWhiteSpace(BeforeJson);
+        var hasAfter  = !string.IsNullOrWhiteSpace(AfterJson);
+
+        var beforePretty = Pretty(BeforeJson);
+        var afterPretty  = Pretty(AfterJson);
+
+        if (!hasBefore && hasAfter)
+        {
+            _mode = DiffMode.Created;
+            _afterLines = SplitToLines(afterPretty);
+            _beforeLines = [];
+            return;
+        }
+
+        if (hasBefore && !hasAfter)
+        {
+            _mode = DiffMode.Deleted;
+            _beforeLines = SplitToLines(beforePretty);
+            _afterLines = [];
+            return;
+        }
+
+        if (beforePretty == afterPretty)
+        {
+            _mode = DiffMode.NoChange;
+            var lines = SplitToLines(afterPretty);
+            _beforeLines = lines;
+            _afterLines  = lines;
+            return;
+        }
+
+        _mode = DiffMode.Diff;
+        ComputeDiff(beforePretty, afterPretty);
+    }
+
+    private static string Pretty(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return string.Empty;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return JsonSerializer.Serialize(doc.RootElement,
+                new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch
+        {
+            return json;
+        }
+    }
+
+    private static List<DiffLine> SplitToLines(string text) =>
+        text.Length == 0
+            ? []
+            : text.Replace("\r", "").Split('\n').Select(l => new DiffLine(l, "")).ToList();
+
+    private void ComputeDiff(string before, string after)
+    {
+        var b = before.Length == 0 ? Array.Empty<string>() : before.Replace("\r", "").Split('\n');
+        var a = after.Length  == 0 ? Array.Empty<string>() : after.Replace("\r", "").Split('\n');
+
+        int n = b.Length, m = a.Length;
+        var lcs = new int[n + 1, m + 1];
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < m; j++)
+                lcs[i + 1, j + 1] = b[i] == a[j]
+                    ? lcs[i, j] + 1
+                    : Math.Max(lcs[i + 1, j], lcs[i, j + 1]);
+
+        var ops = new List<(char Op, string? B, string? A)>();
+        int x = n, y = m;
+        while (x > 0 && y > 0)
+        {
+            if (b[x - 1] == a[y - 1])      { ops.Add(('=', b[x - 1], a[y - 1])); x--; y--; }
+            else if (lcs[x, y - 1] >= lcs[x - 1, y]) { ops.Add(('+', null, a[y - 1])); y--; }
+            else                            { ops.Add(('-', b[x - 1], null)); x--; }
+        }
+        while (x > 0) { ops.Add(('-', b[x - 1], null)); x--; }
+        while (y > 0) { ops.Add(('+', null, a[y - 1])); y--; }
+        ops.Reverse();
+
+        var beforeOut = new List<DiffLine>(ops.Count);
+        var afterOut  = new List<DiffLine>(ops.Count);
+        int added = 0, removed = 0;
+
+        for (int i = 0; i < ops.Count; i++)
+        {
+            var op = ops[i];
+            if (op.Op == '=')
+            {
+                beforeOut.Add(new DiffLine(op.B!, ""));
+                afterOut .Add(new DiffLine(op.A!, ""));
+            }
+            else if (op.Op == '-' && i + 1 < ops.Count && ops[i + 1].Op == '+')
+            {
+                beforeOut.Add(new DiffLine(op.B!, "removed"));
+                afterOut .Add(new DiffLine(ops[i + 1].A!, "added"));
+                removed++; added++;
+                i++;
+            }
+            else if (op.Op == '-')
+            {
+                beforeOut.Add(new DiffLine(op.B!, "removed"));
+                afterOut .Add(new DiffLine("", "empty"));
+                removed++;
+            }
+            else
+            {
+                beforeOut.Add(new DiffLine("", "empty"));
+                afterOut .Add(new DiffLine(op.A!, "added"));
+                added++;
+            }
+        }
+
+        _beforeLines = beforeOut;
+        _afterLines  = afterOut;
+        _added       = added;
+        _removed     = removed;
+    }
+
+    private enum DiffMode { Diff, Created, Deleted, NoChange }
+    private record DiffLine(string Text, string CssClass);
+}
