@@ -81,7 +81,7 @@
         <RadzenTabsItem Text="Steps" Icon="list">
             <div class="rz-mt-3">
                 <div class="rz-display-flex rz-justify-content-end rz-mb-3">
-                    <RadzenButton Text="Add Step" Icon="add" Size="ButtonSize.Small"
+                    <RadzenButton Text="Add Step" Icon="add_circle_outline" Size="ButtonSize.Small"
                                   ButtonStyle="ButtonStyle.Secondary"
                                   Click="@(() => { _addStepOpen = true; ResetStepForm(); })" />
                 </div>
@@ -235,8 +235,6 @@
 
     </Tabs>
 </RadzenTabs>
-
-<RadzenNotification />
 
 @code {
     [Parameter] public Guid Id { get; set; }

@@ -5,6 +5,8 @@
 @using KrakenDeploy.Server.Core.Domain.Deployments
 @inject ProjectService ProjectSvc
 @inject DeploymentService DeploymentSvc
+@inject DialogService Dialog
+@inject NotificationService Notifications
 
 <ProjectShell Slug="@Slug">
     <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
@@ -13,8 +15,9 @@
             Project Dashboard
         </RadzenText>
         <RequirePermission Permission="Permission.ReleaseCreate">
-            <RadzenButton Text="Create Release" Icon="add"
-                          ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small" />
+            <RadzenButton Text="Create Release" Icon="add_circle_outline"
+                          ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                          Click="OpenCreateAsync" />
         </RequirePermission>
     </RadzenStack>
 
@@ -168,6 +171,7 @@
 @code {
     [Parameter] public string Slug { get; set; } = "";
 
+    private Project? _project;
     private ProjectDashboardMatrix? _matrix;
     private string? _filterReleaseId;
     private string _groupBy = "none";
@@ -190,15 +194,15 @@
         // boundary (ProjectShell is SSR, Dashboard is InteractiveServer).
         try
         {
-            var project = await ProjectSvc.GetBySlugAsync(Slug);
-            if (project is null)
+            _project = await ProjectSvc.GetBySlugAsync(Slug);
+            if (_project is null)
             {
                 _matrix = null;
                 _loaded = true;
                 return;
             }
 
-            _matrix = await DeploymentSvc.GetProjectMatrixAsync(project.Id);
+            _matrix = await DeploymentSvc.GetProjectMatrixAsync(_project.Id);
 
             // Distinct release versions present in this project's matrix become
             // the filter dropdown choices. Most recent first.
@@ -216,6 +220,24 @@
         finally
         {
             _loaded = true;
+        }
+    }
+
+    private async Task OpenCreateAsync()
+    {
+        if (_project is null) return;
+        var result = await Dialog.OpenAsync<CreateReleaseDialog>(
+            "Create release",
+            new Dictionary<string, object?>
+            {
+                [nameof(CreateReleaseDialog.ProjectId)] = _project.Id,
+            },
+            new DialogOptions { Width = "560px" });
+
+        if (result is true)
+        {
+            await OnParametersSetAsync();
+            Notifications.Notify(NotificationSeverity.Success, "Created", "Release was created.", 3000);
         }
     }
 

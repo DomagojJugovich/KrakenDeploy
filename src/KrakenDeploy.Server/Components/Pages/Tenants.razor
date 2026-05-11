@@ -1,20 +1,21 @@
 @page "/tenants"
+@rendermode InteractiveServer
 @attribute [Authorize]
 @using KrakenDeploy.Server.Core.Domain.Tenants
 @using KrakenDeploy.Server.Data.Services
 @inject TenantService TenantSvc
-@inject NavigationManager Nav
 @inject NotificationService Notify
 
 <PageTitle>Tenants - KrakenDeploy</PageTitle>
 
-<div class="rz-display-flex rz-align-items-center rz-justify-content-between rz-mb-4">
-    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1">Tenants</RadzenText>
+<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+             JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-4">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">Tenants</RadzenText>
     <RequirePermission Permission="Permission.TenantCreate">
-        <RadzenButton Text="New Tenant" Icon="add" ButtonStyle="ButtonStyle.Primary"
+        <RadzenButton Text="New Tenant" Icon="add_circle_outline" ButtonStyle="ButtonStyle.Primary"
                       Click="@(() => { _createOpen = true; _name = _slug = ""; _description = null; })" />
     </RequirePermission>
-</div>
+</RadzenStack>
 
 @if (_createOpen)
 {
@@ -48,15 +49,19 @@
                 AllowPaging="true" PageSize="20"
                 AllowSorting="true"
                 AllowColumnResize="true"
-                RowClick="@(args => { if (args.Data is { } t) Nav.NavigateTo($"/tenants/{t.Id}"); })"
                 EmptyText="No tenants yet — create one to enable multi-tenancy.">
     <Columns>
-        <RadzenDataGridColumn TItem="Tenant" Property="Name" Title="Name" />
+        <RadzenDataGridColumn TItem="Tenant" Property="Name" Title="Name">
+            <Template Context="t">
+                <RadzenLink Path="@($"/tenants/{t.Id}")" Text="@t.Name" />
+            </Template>
+        </RadzenDataGridColumn>
         <RadzenDataGridColumn TItem="Tenant" Property="Slug" Title="Slug" Width="160px" />
         <RadzenDataGridColumn TItem="Tenant" Property="Description" Title="Description" />
         <RadzenDataGridColumn TItem="Tenant" Property="CreatedUtc" Title="Created"
                               Width="140px" FormatString="{0:yyyy-MM-dd}" />
-        <RadzenDataGridColumn TItem="Tenant" Title="" Width="70px" TextAlign="TextAlign.Center">
+        <RadzenDataGridColumn TItem="Tenant" Title="" Width="70px" TextAlign="TextAlign.Center"
+                              Sortable="false" Filterable="false">
             <Template Context="t">
                 <RequirePermission Permission="Permission.TenantDelete">
                     <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
@@ -68,8 +73,6 @@
         </RadzenDataGridColumn>
     </Columns>
 </RadzenDataGrid>
-
-<RadzenNotification />
 
 @code {
     private List<Tenant> _tenants = [];

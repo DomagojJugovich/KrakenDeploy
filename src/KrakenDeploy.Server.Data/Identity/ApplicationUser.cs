@@ -26,4 +26,10 @@ public class ApplicationUser : IdentityUser<Guid>
     /// survive Identity security-stamp refreshes.  Null for local accounts.
     /// </summary>
     public string? ExternalGroups { get; set; }
+
+    /// <summary>
+    /// Radzen theme name persisted across sessions (e.g. "material", "material-dark").
+    /// Null = use the application default.
+    /// </summary>
+    public string? Theme { get; set; }
 }

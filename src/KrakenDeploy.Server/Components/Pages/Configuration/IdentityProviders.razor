@@ -9,12 +9,12 @@
 <PageTitle>Identity Providers - KrakenDeploy</PageTitle>
 
 <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
-             Gap="1rem" class="rz-mb-4">
+             JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-4">
     <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">
         Identity Providers
     </RadzenText>
     <RequirePermission Permission="Permission.IdentityProviderCreate">
-        <RadzenButton Icon="add" Text="Add Provider"
+        <RadzenButton Icon="add_circle_outline" Text="Add Provider"
                       ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
                       Click="OpenCreateDialogAsync" />
     </RequirePermission>

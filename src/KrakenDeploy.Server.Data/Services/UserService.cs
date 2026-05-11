@@ -84,6 +84,19 @@ public class UserService(
         return result.Succeeded;
     }
 
+    /// <summary>Persist the user's Radzen theme choice. No-op if user not found.</summary>
+    public async Task UpdateThemeAsync(Guid userId, string? theme, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var user = await db.Users.FirstOrDefaultAsync(u => u.Id == userId, ct).ConfigureAwait(false);
+        if (user is null)
+        {
+            return;
+        }
+        user.Theme = theme;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
     /// <summary>Returns the IDs of teams the user explicitly belongs to.</summary>
     public async Task<List<Guid>> GetTeamIdsAsync(Guid userId, CancellationToken ct = default)
     {

@@ -33,7 +33,7 @@
         {
             <RadzenColumn Size="8" class="rz-display-flex rz-justify-content-end">
                 <RequirePermission Permission="Permission.RunbookEdit">
-                    <RadzenButton Text="New Runbook" Icon="add" ButtonStyle="ButtonStyle.Primary"
+                    <RadzenButton Text="New Runbook" Icon="add_circle_outline" ButtonStyle="ButtonStyle.Primary"
                                   Click="@(() => { _createOpen = true; _name = ""; _description = null; })" />
                 </RequirePermission>
             </RadzenColumn>
@@ -91,8 +91,6 @@ else
         </Columns>
     </RadzenDataGrid>
 }
-
-<RadzenNotification />
 
 @code {
     private List<Project> _projects = [];

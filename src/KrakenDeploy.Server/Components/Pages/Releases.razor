@@ -1,5 +1,8 @@
 @page "/releases"
+@rendermode InteractiveServer
 @attribute [Authorize]
+
+@inject ReleaseService ReleaseSvc
 
 <PageTitle>Releases - KrakenDeploy</PageTitle>
 
@@ -12,12 +15,22 @@
                 EmptyText="No releases yet. Create a project and define a release process in M2.">
     <Columns>
         <RadzenDataGridColumn TItem="Release" Property="Version" Title="Version" Width="160px" />
-        <RadzenDataGridColumn TItem="Release" Property="ProjectId" Title="Project" Width="220px" />
+        <RadzenDataGridColumn TItem="Release" Title="Project" Width="220px"
+                              Sortable="false" Filterable="false">
+            <Template Context="r">
+                @(r.Project?.Name ?? r.ProjectId.ToString())
+            </Template>
+        </RadzenDataGridColumn>
         <RadzenDataGridColumn TItem="Release" Property="CreatedUtc" Title="Created"
                               FormatString="{0:yyyy-MM-dd HH:mm}" />
     </Columns>
 </RadzenDataGrid>
 
 @code {
-    private readonly IReadOnlyList<Release> _releases = [];
+    private List<Release> _releases = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _releases = await ReleaseSvc.GetAllAsync();
+    }
 }
