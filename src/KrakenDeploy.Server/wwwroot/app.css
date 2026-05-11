@@ -71,9 +71,12 @@ html, body {
    :has() selectors only kick in when the sidebar carries an
    rz-sidebar-start / rz-sidebar-left class; without it the default
    2-col template applies but Radzen's responsive classes can produce
-   unexpected wide gaps. Pin the columns explicitly. */
+   unexpected wide gaps. Use auto for the sidebar track so it follows
+   the sidebar element's actual rendered width — 300px when expanded,
+   0 when Radzen collapses it on narrow viewports — and content fills
+   whatever space remains. */
 .rz-layout {
-    grid-template-columns: var(--rz-sidebar-width, 300px) 1fr !important;
+    grid-template-columns: auto 1fr !important;
 }
 
 /* The license banner is a direct child of .rz-layout without a
@@ -707,4 +710,29 @@ html, body {
 .kraken-scope-chip-btn:hover,
 .kraken-scope-unbound-btn:hover {
     background: var(--rz-base-200, #f0f0f0);
+}
+
+/* ── Radzen DataGrid column resize handles ───────────────────────────────
+   Default handles are essentially invisible. Make them discoverable: a
+   subtle always-visible vertical line, plus a prominent highlight on
+   hover/active so the user can see exactly where to grab. */
+.rz-grid-table .rz-column-resizer {
+    width: 6px !important;
+    background: var(--rz-base-300, #e0e0e0);
+    opacity: 0.55;
+    transition: background 0.12s, opacity 0.12s;
+    border-left: 1px solid var(--rz-base-200, #f0f0f0);
+    border-right: 1px solid var(--rz-base-200, #f0f0f0);
+}
+
+.rz-grid-table .rz-column-resizer:hover,
+.rz-grid-table .rz-column-resizer:active {
+    background: var(--rz-primary, #1976d2);
+    opacity: 1;
+}
+
+/* Make the column header give the resizer breathing room so the grip is
+   easy to grab even when titles are wide. */
+.rz-grid-table th.rz-unselectable-text {
+    padding-right: 12px;
 }

@@ -6,10 +6,11 @@
 
 @inject KrakenDeploy.Server.Data.KrakenDbContext Db
 @inject NavigationManager Nav
+@inject DialogService DialogService
 
 <PageTitle>Audit Log - KrakenDeploy</PageTitle>
 
-<RequirePermission Permission="Permission.EventView" Unauthorized="@_unauthorized">
+<RequirePermission Permission="Permission.EventView" Fallback="@_unauthorized">
 
 <RadzenStack Gap="1rem">
 
@@ -71,6 +72,7 @@
                     AllowPaging="true"
                     PageSize="50"
                     AllowSorting="true"
+                    AllowColumnResize="true"
                     IsLoading="@_loading"
                     EmptyText="No audit entries match the current filters.">
         <Columns>
@@ -137,37 +139,6 @@
         </Columns>
     </RadzenDataGrid>
 
-    @* ── Snapshot detail ───────────────────────────────────────────────── *@
-    @if (_snapshotEntry is not null)
-    {
-        <RadzenCard Variant="Variant.Outlined" class="rz-p-4 rz-mt-2">
-            <RadzenStack Gap="0.5rem">
-                <RadzenStack Orientation="Orientation.Horizontal"
-                             JustifyContent="JustifyContent.SpaceBetween"
-                             AlignItems="AlignItems.Center">
-                    <RadzenText TextStyle="TextStyle.Subtitle1">
-                        Snapshot — @_snapshotEntry.EventType
-                    </RadzenText>
-                    <RadzenButton Icon="close" ButtonStyle="ButtonStyle.Light"
-                                  Size="ButtonSize.ExtraSmall"
-                                  Click="@(() => _snapshotEntry = null)" />
-                </RadzenStack>
-                @if (_snapshotEntry.BeforeJson is not null)
-                {
-                    <RadzenText TextStyle="TextStyle.Subtitle2">Before</RadzenText>
-                    <pre class="rz-background rz-p-2"
-                         style="font-size:0.75em;overflow:auto;max-height:300px">@_snapshotEntry.BeforeJson</pre>
-                }
-                @if (_snapshotEntry.AfterJson is not null)
-                {
-                    <RadzenText TextStyle="TextStyle.Subtitle2">After</RadzenText>
-                    <pre class="rz-background rz-p-2"
-                         style="font-size:0.75em;overflow:auto;max-height:300px">@_snapshotEntry.AfterJson</pre>
-                }
-            </RadzenStack>
-        </RadzenCard>
-    }
-
 </RadzenStack>
 
 </RequirePermission>
@@ -177,7 +148,6 @@
     private List<AuditEntry> _entries = [];
     private int  _totalCount;
     private bool _loading;
-    private AuditEntry? _snapshotEntry;
 
     // Filters
     private DateTime? _from;
@@ -245,13 +215,13 @@
 
         if (_from.HasValue)
         {
-            var fromUtc = new DateTimeOffset(_from.Value, TimeSpan.Zero);
+            var fromUtc = new DateTimeOffset(DateTime.SpecifyKind(_from.Value.Date, DateTimeKind.Utc));
             q = q.Where(e => e.OccurredUtc >= fromUtc);
         }
 
         if (_to.HasValue)
         {
-            var toUtc = new DateTimeOffset(_to.Value.AddDays(1), TimeSpan.Zero);
+            var toUtc = new DateTimeOffset(DateTime.SpecifyKind(_to.Value.Date.AddDays(1), DateTimeKind.Utc));
             q = q.Where(e => e.OccurredUtc < toUtc);
         }
 
@@ -291,9 +261,25 @@
         _subjectTypeFilter = "";
         _to   = DateTime.Today;
         _from = DateTime.Today.AddDays(-30);
-        _snapshotEntry = null;
         _ = ApplyFiltersAsync();
     }
 
-    private void ShowSnapshot(AuditEntry e) => _snapshotEntry = e;
+    private async Task ShowSnapshot(AuditEntry e)
+    {
+        await DialogService.OpenAsync<AuditSnapshotDialog>(
+            $"Snapshot — {e.EventType}",
+            new Dictionary<string, object?>
+            {
+                [nameof(AuditSnapshotDialog.BeforeJson)] = e.BeforeJson,
+                [nameof(AuditSnapshotDialog.AfterJson)]  = e.AfterJson,
+            },
+            new DialogOptions
+            {
+                Width    = "95vw",
+                Height   = "90vh",
+                Resizable = true,
+                Draggable = false,
+                CloseDialogOnOverlayClick = true,
+            });
+    }
 }

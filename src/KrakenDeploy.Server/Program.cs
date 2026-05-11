@@ -331,7 +331,10 @@ public static class Program
         builder.Services.AddRadzenComponents();
 
         builder.Services.AddRazorComponents()
-            .AddInteractiveServerComponents();
+            .AddInteractiveServerComponents(options =>
+            {
+                options.DetailedErrors = builder.Environment.IsDevelopment();
+            });
 
         // ── Build & configure pipeline ────────────────────────────────────────
         var app = builder.Build();

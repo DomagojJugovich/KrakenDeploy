@@ -14,7 +14,7 @@ namespace KrakenDeploy.Server.Core.Domain.Variables;
 /// a JSON array of strings, e.g. <c>["a","b","c"]</c>.
 /// </para>
 /// </summary>
-public class Variable : Entity
+public class Variable : AuditableEntity
 {
     public Guid SetId { get; set; }
     public VariableSet Set { get; set; } = null!;
