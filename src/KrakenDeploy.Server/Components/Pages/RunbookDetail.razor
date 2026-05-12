@@ -1,5 +1,6 @@
 @page "/runbooks/{Id:guid}"
 @attribute [Authorize]
+@using KrakenDeploy.Contracts.Steps
 @using KrakenDeploy.Server.Core.Domain.Deployments
 @using KrakenDeploy.Server.Core.Domain.Environments
 @using KrakenDeploy.Server.Core.Domain.Runbooks
@@ -257,7 +258,7 @@
     private bool _addStepOpen;
     private Guid? _editingStepId;
     private string _stepName = "";
-    private string _stepType = "KrakenDeploy.Script";
+    private string _stepType = "Kraken.Script";
     private string _stepPackageId = "";
     private string _stepScript = "";
 
@@ -267,7 +268,7 @@
 
     private static readonly string[] _stepTypes =
     [
-        "KrakenDeploy.Script",
+        "Kraken.Script",
         "Octopus.Script",
         "KrakenDeploy.SubstituteVariables",
         "KrakenDeploy.FileTransform",
@@ -297,7 +298,7 @@
     private void ResetStepForm()
     {
         _stepName      = "";
-        _stepType      = "KrakenDeploy.Script";
+        _stepType      = "Kraken.Script";
         _stepPackageId = "";
         _stepScript    = "";
         _editingStepId = null;
@@ -309,7 +310,7 @@
         _stepName      = step.Name;
         _stepType      = step.StepType;
         _stepPackageId = step.PackageId;
-        _stepScript    = step.Config.TryGetValue("ScriptBody", out var sb) ? sb : "";
+        _stepScript    = step.Config.TryGetValue(KrakenScriptConfigKeys.ScriptBody, out var sb) ? sb : "";
         _addStepOpen   = false;
     }
 
@@ -429,7 +430,7 @@
         var cfg = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (!string.IsNullOrWhiteSpace(_stepScript))
         {
-            cfg["ScriptBody"] = _stepScript;
+            cfg[KrakenScriptConfigKeys.ScriptBody] = _stepScript;
         }
 
         return cfg;

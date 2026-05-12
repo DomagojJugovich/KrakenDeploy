@@ -3,6 +3,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Packages;
 using KrakenDeploy.Server.Core.Domain.Variables;
@@ -110,7 +111,7 @@ public class DropBundleService(
             for (var i = 0; i < snapshot.Count; i++)
             {
                 var step = snapshot[i];
-                if (step.Config.TryGetValue("ScriptBody", out var scriptBody) &&
+                if (step.Config.TryGetValue(KrakenScriptConfigKeys.ScriptBody, out var scriptBody) &&
                     !string.IsNullOrWhiteSpace(scriptBody))
                 {
                     var safeName = SanitizeFileName(step.Name);
@@ -300,7 +301,7 @@ public class DropBundleService(
             sb.AppendLine(CultureInfo.InvariantCulture, $"# ── Step {step.Index}: {step.Name} ──");
             sb.AppendLine(CultureInfo.InvariantCulture, $"Write-Log 'Starting step {step.Index}: {step.Name}'");
 
-            if (step.Config.TryGetValue("ScriptBody", out _))
+            if (step.Config.TryGetValue(KrakenScriptConfigKeys.ScriptBody, out _))
             {
                 sb.AppendLine(CultureInfo.InvariantCulture, $"$stepScript = Join-Path $DropRoot 'scripts' 'step-{step.Index}-{safeName}.ps1'");
                 sb.AppendLine("if (Test-Path $stepScript) {");
@@ -372,7 +373,7 @@ public class DropBundleService(
             sb.AppendLine(CultureInfo.InvariantCulture, $"# ── Step {step.Index}: {step.Name} ──");
             sb.AppendLine(CultureInfo.InvariantCulture, $"log_msg 'Starting step {step.Index}: {step.Name}'");
 
-            if (step.Config.TryGetValue("ScriptBody", out _))
+            if (step.Config.TryGetValue(KrakenScriptConfigKeys.ScriptBody, out _))
             {
                 sb.AppendLine(CultureInfo.InvariantCulture, $"STEP_SCRIPT=\"$DROP_ROOT/scripts/step-{step.Index}-{safeName}.ps1\"");
                 sb.AppendLine("if [ -f \"$STEP_SCRIPT\" ]; then");

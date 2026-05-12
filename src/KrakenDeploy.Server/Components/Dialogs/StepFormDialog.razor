@@ -4,9 +4,10 @@
 
 @*
     Add / edit a deployment step. The only step type currently supported is
-    KrakenDeploy.Script — fields here capture: Name, Package ID, Target
-    Roles (comma-separated tags), and the script body + syntax that will
-    run during deployment.
+    Kraken.Script — fields here capture: Name, Package ID, Target Roles
+    (comma-separated tags), and the script body + syntax that will run
+    during deployment. Config keys are Octopus-compatible
+    (Octopus.Action.Script.*) so processes import unchanged.
 
     To add: pass ProjectId; leave Step null.
     To edit: pass Step; ProjectId is ignored.
@@ -90,8 +91,8 @@
             _model.Name = Step.Name;
             _model.PackageId = Step.PackageId;
             _model.TargetRolesCsv = string.Join(", ", Step.TargetRoles);
-            _model.ScriptSyntax = Step.Config.GetValueOrDefault("scriptSyntax", "PowerShell");
-            _model.ScriptBody = Step.Config.GetValueOrDefault("scriptBody", "");
+            _model.ScriptSyntax = Step.Config.GetValueOrDefault("Octopus.Action.Script.Syntax", "PowerShell");
+            _model.ScriptBody = Step.Config.GetValueOrDefault("Octopus.Action.Script.ScriptBody", "");
         }
     }
 
@@ -103,8 +104,8 @@
             var roles = ParseCsv(_model.TargetRolesCsv);
             var config = new Dictionary<string, string>
             {
-                ["scriptSyntax"] = _model.ScriptSyntax,
-                ["scriptBody"]   = _model.ScriptBody ?? "",
+                ["Octopus.Action.Script.Syntax"]     = _model.ScriptSyntax,
+                ["Octopus.Action.Script.ScriptBody"] = _model.ScriptBody ?? "",
             };
 
             if (_isEdit)
@@ -121,7 +122,7 @@
                 }
 
                 await ProcessSvc.AddStepAsync(
-                    ProjectId.Value, _model.Name, "KrakenDeploy.Script",
+                    ProjectId.Value, _model.Name, "Kraken.Script",
                     _model.PackageId, roles, config);
             }
 

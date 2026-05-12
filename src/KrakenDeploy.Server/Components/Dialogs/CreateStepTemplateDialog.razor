@@ -8,7 +8,7 @@
     </RadzenFormField>
 
     <RadzenFormField Text="Action Type" Variant="Variant.Outlined" style="width:100%">
-        <RadzenTextBox @bind-Value="_actionType" Placeholder="e.g. KrakenDeploy.Script" style="width:100%" />
+        <RadzenTextBox @bind-Value="_actionType" Placeholder="e.g. Kraken.Script" style="width:100%" />
     </RadzenFormField>
 
     <RadzenFormField Text="Description" Variant="Variant.Outlined" style="width:100%">
@@ -31,7 +31,7 @@
 
 @code {
     private string _name = string.Empty;
-    private string _actionType = "KrakenDeploy.Script";
+    private string _actionType = "Kraken.Script";
     private string _description = string.Empty;
     private string _error = string.Empty;
     private bool _busy;

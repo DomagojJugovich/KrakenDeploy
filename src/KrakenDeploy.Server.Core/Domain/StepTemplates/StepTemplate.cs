@@ -19,7 +19,7 @@ public class StepTemplate : AuditableEntity, ISpaceScoped
     public string? Description { get; set; }
 
     /// <summary>
-    /// Step type identifier, e.g. <c>Octopus.Script</c> or <c>KrakenDeploy.Script</c>.
+    /// Step type identifier, e.g. <c>Octopus.Script</c> or <c>Kraken.Script</c>.
     /// Stored verbatim on <c>DeploymentStep.StepType</c> when the template is applied.
     /// </summary>
     public required string ActionType { get; set; }

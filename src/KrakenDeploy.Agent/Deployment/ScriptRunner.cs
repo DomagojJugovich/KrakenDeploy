@@ -1,11 +1,14 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Microsoft.Extensions.Logging;
 
 namespace KrakenDeploy.Agent.Deployment;
 
 /// <summary>
-/// Runs a PowerShell or Bash script in a child process, capturing stdout and
-/// stderr line-by-line and forwarding them to the caller via a callback.
+/// Runs a script in a child process, capturing stdout and stderr line-by-line
+/// and forwarding them to the caller via a callback. Supported syntaxes:
+/// PowerShell (Desktop or Core), Bash, CSharp (dotnet-script), FSharp (dotnet fsi),
+/// Python.
 /// </summary>
 public sealed class ScriptRunner(ILogger<ScriptRunner> logger)
 {
@@ -13,23 +16,28 @@ public sealed class ScriptRunner(ILogger<ScriptRunner> logger)
     /// Executes the script and returns <c>true</c> if the process exited with code 0.
     /// </summary>
     /// <param name="scriptBody">Script text to execute.</param>
-    /// <param name="syntax">"PowerShell" or "Bash".</param>
+    /// <param name="syntax">"PowerShell", "Bash", "CSharp", "FSharp", or "Python".</param>
     /// <param name="workingDirectory">Working directory for the process.</param>
     /// <param name="environmentVariables">Extra env vars to inject.</param>
     /// <param name="onOutput">Callback invoked for each output line (level, message).</param>
     /// <param name="ct">Cancellation token; kills the process on cancellation.</param>
+    /// <param name="powerShellEdition">
+    /// "Desktop" (Windows PowerShell 5.x via <c>powershell.exe</c>) or "Core" (pwsh 7+).
+    /// Ignored for non-PowerShell syntaxes. Null defaults to Core.
+    /// </param>
     public async Task<bool> RunAsync(
         string scriptBody,
         string syntax,
         string workingDirectory,
         IReadOnlyDictionary<string, string> environmentVariables,
         Func<string, string, Task> onOutput,   // (level, message)
-        CancellationToken ct)
+        CancellationToken ct,
+        string? powerShellEdition = null)
     {
         var scriptFile = WriteScriptFile(scriptBody, syntax);
         try
         {
-            return await ExecuteAsync(scriptFile, syntax, workingDirectory,
+            return await ExecuteAsync(scriptFile, syntax, powerShellEdition, workingDirectory,
                 environmentVariables, onOutput, ct).ConfigureAwait(false);
         }
         finally
@@ -42,7 +50,14 @@ public sealed class ScriptRunner(ILogger<ScriptRunner> logger)
 
     private static string WriteScriptFile(string body, string syntax)
     {
-        var ext = syntax.Equals("Bash", StringComparison.OrdinalIgnoreCase) ? ".sh" : ".ps1";
+        var ext = syntax.ToLowerInvariant() switch
+        {
+            "bash"   => ".sh",
+            "csharp" => ".csx",
+            "fsharp" => ".fsx",
+            "python" => ".py",
+            _        => ".ps1",
+        };
         var path = Path.Combine(Path.GetTempPath(), $"kraken-{Guid.NewGuid():N}{ext}");
         File.WriteAllText(path, body);
         return path;
@@ -53,12 +68,13 @@ public sealed class ScriptRunner(ILogger<ScriptRunner> logger)
     private async Task<bool> ExecuteAsync(
         string scriptFile,
         string syntax,
+        string? powerShellEdition,
         string workingDirectory,
         IReadOnlyDictionary<string, string> envVars,
         Func<string, string, Task> onOutput,
         CancellationToken ct)
     {
-        var (exe, args) = BuildCommand(scriptFile, syntax);
+        var (exe, args) = BuildCommand(scriptFile, syntax, powerShellEdition);
 
         var psi = new ProcessStartInfo
         {
@@ -113,15 +129,40 @@ public sealed class ScriptRunner(ILogger<ScriptRunner> logger)
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
-    private static (string exe, string args) BuildCommand(string scriptFile, string syntax)
+    private static (string exe, string args) BuildCommand(
+        string scriptFile, string syntax, string? powerShellEdition)
     {
-        if (syntax.Equals("Bash", StringComparison.OrdinalIgnoreCase))
+        switch (syntax.ToLowerInvariant())
         {
-            return ("bash", $"\"{scriptFile}\"");
-        }
+            case "bash":
+                return ("bash", $"\"{scriptFile}\"");
 
-        // PowerShell — use `pwsh` (cross-platform PS 7+).
-        return ("pwsh", $"-NonInteractive -NoProfile -File \"{scriptFile}\"");
+            case "csharp":
+                // dotnet-script must be installed as a global tool:
+                //   dotnet tool install -g dotnet-script
+                return ("dotnet", $"script \"{scriptFile}\"");
+
+            case "fsharp":
+                return ("dotnet", $"fsi \"{scriptFile}\"");
+
+            case "python":
+                return ("python", $"\"{scriptFile}\"");
+
+            default:
+                // PowerShell — pick the executable by edition.
+                var wantDesktop = "Desktop".Equals(
+                    powerShellEdition, StringComparison.OrdinalIgnoreCase);
+
+                if (wantDesktop && RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    // Windows PowerShell 5.x — Windows-only.
+                    return ("powershell.exe",
+                        $"-NonInteractive -NoProfile -ExecutionPolicy Bypass -File \"{scriptFile}\"");
+                }
+
+                // Cross-platform pwsh 7+ (also fallback when Desktop requested off-Windows).
+                return ("pwsh", $"-NonInteractive -NoProfile -File \"{scriptFile}\"");
+        }
     }
 
     private static void TryDelete(string path)

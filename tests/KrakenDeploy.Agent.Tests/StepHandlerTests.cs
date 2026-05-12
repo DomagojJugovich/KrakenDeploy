@@ -28,8 +28,8 @@ public sealed class StepHandlerTests : IDisposable
     // ── CanHandle / RequiresPackage ───────────────────────────────────────────
 
     [Theory]
-    [InlineData("KrakenDeploy.Script")]
-    [InlineData("krakendeploy.script")]
+    [InlineData("Kraken.Script")]
+    [InlineData("kraken.script")]
     [InlineData("Octopus.Script")]
     [InlineData("OCTOPUS.SCRIPT")]
     public void ScriptStepHandler_CanHandle_is_case_insensitive(string stepType)

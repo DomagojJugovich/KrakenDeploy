@@ -3,18 +3,20 @@ using System.Text;
 namespace KrakenDeploy.Agent.Deployment.StepHandlers;
 
 /// <summary>
-/// Handles <c>KrakenDeploy.Script</c> and <c>Octopus.Script</c> step types.
+/// Handles <c>Kraken.Script</c> (Kraken-native) and <c>Octopus.Script</c>
+/// (imported from Octopus). Both use the same Octopus-compatible config keys:
+/// <c>Octopus.Action.Script.ScriptBody</c>, <c>Octopus.Action.Script.Syntax</c>,
+/// and <c>Octopus.Action.PowerShell.Edition</c>.
 /// <para>
-/// KrakenDeploy.Script config keys: <c>scriptBody</c>, <c>scriptSyntax</c>.
-/// Octopus.Script config keys: <c>Octopus.Action.Script.ScriptBody</c>,
-/// <c>Octopus.Action.Script.Syntax</c>.
+/// Supported syntaxes: PowerShell (Desktop/Core), Bash, CSharp (dotnet-script),
+/// FSharp (dotnet fsi), Python.
 /// </para>
 /// </summary>
 public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
 {
     private static readonly HashSet<string> SupportedTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        "KrakenDeploy.Script",
+        "Kraken.Script",
         "Octopus.Script",
     };
 
@@ -24,7 +26,8 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
 
     public async Task<bool> HandleAsync(StepHandlerContext context, CancellationToken ct)
     {
-        var (scriptBody, scriptSyntax) = ResolveScript(context.Step.Config, context.Step.StepType);
+        var (scriptBody, scriptSyntax, psEdition) =
+            ResolveScript(context.Step.Config, context.Step.StepType);
 
         if (string.IsNullOrWhiteSpace(scriptBody))
         {
@@ -45,17 +48,19 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
             ["KRAKEN_ARTIFACTS_PATH"]       = context.ArtifactsDir,
         };
 
-        var isBash = scriptSyntax.Equals("Bash", StringComparison.OrdinalIgnoreCase);
+        // The PowerShell preamble injects $OctopusParameters and Kraken helpers.
+        // It only makes sense for PowerShell; other languages get variables via env.
+        var isPowerShell = scriptSyntax.Equals("PowerShell", StringComparison.OrdinalIgnoreCase);
 
-        var fullScript = isBash
-            ? scriptBody
-            : BuildPowerShellPreamble(
+        var fullScript = isPowerShell
+            ? BuildPowerShellPreamble(
                 context.Plan.Variables,
                 context.Plan.ArrayVariables,
                 context.Plan.EnvironmentName,
                 context.Plan.DeploymentId)
               + Environment.NewLine + Environment.NewLine
-              + scriptBody;
+              + scriptBody
+            : scriptBody;
 
         return await scriptRunner.RunAsync(
             fullScript,
@@ -63,25 +68,20 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
             context.ExtractDir,
             envVars,
             context.LogAsync,
-            ct).ConfigureAwait(false);
+            ct,
+            psEdition).ConfigureAwait(false);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 
-    private static (string body, string syntax) ResolveScript(
+    private static (string body, string syntax, string? psEdition) ResolveScript(
         IReadOnlyDictionary<string, string> config, string stepType)
     {
-        if (stepType.Equals("Octopus.Script", StringComparison.OrdinalIgnoreCase))
-        {
-            config.TryGetValue("Octopus.Action.Script.ScriptBody", out var octBody);
-            config.TryGetValue("Octopus.Action.Script.Syntax", out var octSyntax);
-            return (octBody ?? string.Empty, octSyntax ?? "PowerShell");
-        }
-
-        // KrakenDeploy.Script — legacy keys.
-        config.TryGetValue("scriptBody", out var body);
-        config.TryGetValue("scriptSyntax", out var syntax);
-        return (body ?? string.Empty, syntax ?? "PowerShell");
+        _ = stepType; // Kraken.Script and Octopus.Script share the same key contract.
+        config.TryGetValue("Octopus.Action.Script.ScriptBody", out var body);
+        config.TryGetValue("Octopus.Action.Script.Syntax", out var syntax);
+        config.TryGetValue("Octopus.Action.PowerShell.Edition", out var edition);
+        return (body ?? string.Empty, syntax ?? "PowerShell", edition);
     }
 
     // ── PowerShell preamble ────────────────────────────────────────────────────

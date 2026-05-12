@@ -14,6 +14,9 @@ namespace KrakenDeploy.Server.Data.Services;
 /// <list type="bullet">
 ///   <item><c>Kraken.IIS</c> — comprehensive IIS deployment with app-pool, bindings,
 ///         atomic-swap, and health probe (M9).</item>
+///   <item><c>Kraken.Script</c> — Octopus.Script-compatible inline script step
+///         with selectable syntax (PowerShell / Bash / CSharp / FSharp / Python)
+///         and PowerShell edition (Desktop / Core).</item>
 /// </list>
 /// </para>
 /// </summary>
@@ -22,6 +25,7 @@ public class BuiltInStepTemplateSeeder(
     ILogger<BuiltInStepTemplateSeeder> logger)
 {
     private const string KrakenIisTemplateName = "Kraken.IIS — Deploy Web Site";
+    private const string KrakenScriptTemplateName = "Kraken.Script — Run a Script";
 
     public async Task SeedAsync(CancellationToken ct = default)
     {
@@ -38,6 +42,19 @@ public class BuiltInStepTemplateSeeder(
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
             logger.LogInformation(
                 "Seeded built-in step template '{Name}'.", KrakenIisTemplateName);
+        }
+
+        var scriptExisting = await db.StepTemplates
+            .FirstOrDefaultAsync(t => t.Name == KrakenScriptTemplateName, ct)
+            .ConfigureAwait(false);
+
+        if (scriptExisting is null)
+        {
+            var template = BuildKrakenScriptTemplate();
+            db.StepTemplates.Add(template);
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            logger.LogInformation(
+                "Seeded built-in step template '{Name}'.", KrakenScriptTemplateName);
         }
     }
 
@@ -191,6 +208,45 @@ public class BuiltInStepTemplateSeeder(
                     defaultValue: "3"),
                 Param(KrakenIisConfigKeys.HealthCheckExpectedBodyContains, "Expected body fragment",
                     "Optional substring that must appear in the response body."),
+            ],
+        };
+    }
+
+    // ── Kraken.Script template definition ──────────────────────────────────────
+
+    private static StepTemplate BuildKrakenScriptTemplate()
+    {
+        return new StepTemplate
+        {
+            Name        = KrakenScriptTemplateName,
+            ActionType  = "Kraken.Script",
+            Description =
+                "Runs an inline script on the deployment target. Drop-in compatible " +
+                "with the Octopus.Script parameter contract: " +
+                "`Octopus.Action.Script.Syntax`, `Octopus.Action.Script.ScriptBody`, " +
+                "and `Octopus.Action.PowerShell.Edition`. Variable expressions are " +
+                "substituted before the script runs.",
+            Properties  = [],
+            Parameters  =
+            [
+                Select(KrakenScriptConfigKeys.Syntax, "Script syntax",
+                    "PowerShell",
+                    [
+                        "PowerShell|PowerShell",
+                        "Bash|Bash",
+                        "CSharp|C# (dotnet-script)",
+                        "FSharp|F# (dotnet fsi)",
+                        "Python|Python",
+                    ]),
+                Select(KrakenScriptConfigKeys.PowerShellEdition, "PowerShell edition",
+                    "Desktop",
+                    [
+                        "Desktop|Desktop (Windows PowerShell 5.x)",
+                        "Core|Core (pwsh 7+)",
+                    ]),
+                MultiLine(KrakenScriptConfigKeys.ScriptBody, "Script body",
+                    "Inline script source. Variable expressions like #{MyVar} are " +
+                    "substituted server-side before execution."),
             ],
         };
     }

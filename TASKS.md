@@ -317,7 +317,7 @@ A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This 
 - [x] `OctopusLibraryImporter.Parse` — accepts Library JSON (`"Id"` key) and Octopus API JSON (`"CommunityActionTemplateId"` key); trailing commas; all 5 control types; full `"value|Label"` SelectOptions preserved
 - [x] `StepTemplateService` — CRUD + `ImportFromJsonAsync` (upsert by community id)
 - [x] `IStepHandler` dispatch pattern in `DeploymentExecutor` (replaces hard-coded script runner)
-- [x] Handlers: `ScriptStepHandler` (`KrakenDeploy.Script` + `Octopus.Script`), `SubstituteVariablesStepHandler`, `FileTransformStepHandler`, `ManualInterventionStepHandler`
+- [x] Handlers: `ScriptStepHandler` (`Kraken.Script` + `Octopus.Script`), `SubstituteVariablesStepHandler`, `FileTransformStepHandler`, `ManualInterventionStepHandler`
 - [x] PowerShell preamble: `$OctopusParameters`, `$OctopusArrays`, `Write-KrakenInfo/Warning/Error`, `Get-KrakenVariable`, `Register-KrakenArtifact` (stub — completed in M5.5), Octopus-compat `Set-Alias`
 - [x] Step Templates UI page (import JSON, create, delete); `ImportStepTemplateDialog`, `CreateStepTemplateDialog`
 - [x] REST API for step templates; EF migration `AddM5Schema`
