@@ -131,6 +131,19 @@ public sealed class DirectServerLink : IServerLink
         await _http.PostAsJsonAsync(url, body, ct).ConfigureAwait(false);
     }
 
+    public Task ReportStepOutputVariablesAsync(
+        Guid deploymentId, string stepName,
+        IReadOnlyDictionary<string, string> outputVariables, CancellationToken ct)
+    {
+        // TODO(direct-transport): expose a REST endpoint so this transport can
+        // forward Set-OctopusVariable captures. SignalR is the primary path
+        // today and already handles this. Until then, output variables are not
+        // reported to the server when an agent runs over the Direct transport,
+        // but they are still merged into subsequent steps within the same run.
+        _ = deploymentId; _ = stepName; _ = outputVariables; _ = ct;
+        return Task.CompletedTask;
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_listener is not null)

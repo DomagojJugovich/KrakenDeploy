@@ -34,6 +34,16 @@ public interface IServerLink : IAsyncDisposable
     Task CompleteDeploymentAsync(
         Guid deploymentId, bool success, string? errorMessage, CancellationToken ct);
 
+    /// <summary>
+    /// Reports the output variables captured for a step via Octopus-compatible
+    /// <c>Set-OctopusVariable</c> / <c>##octopus[setVariable]</c> markers.
+    /// Server persists them and surfaces them as
+    /// <c>Octopus.Action[StepName].Output.X</c> on the deployment detail page.
+    /// </summary>
+    Task ReportStepOutputVariablesAsync(
+        Guid deploymentId, string stepName,
+        IReadOnlyDictionary<string, string> outputVariables, CancellationToken ct);
+
     // ── Server → Agent (subscriptions) ────────────────────────────────────
 
     /// <summary>

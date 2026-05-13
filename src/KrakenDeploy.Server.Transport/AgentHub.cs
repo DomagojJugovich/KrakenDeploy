@@ -307,6 +307,71 @@ public sealed class AgentHub(
         logger.LogWarning("CompleteDeployment for unknown run {Id}; ignored.", deploymentId);
     }
 
+    /// <summary>
+    /// Persists output variables captured during a step via Set-OctopusVariable
+    /// stdout markers. Upsert by (DeploymentId, StepName, Name) so a step that
+    /// reassigns the same variable wins. Output variables are surfaced on the
+    /// deployment detail page and are merged into subsequent steps' variables
+    /// agent-side as <c>Octopus.Action[StepName].Output.X</c>.
+    /// </summary>
+    public async Task ReportStepOutputVariablesAsync(
+        Guid deploymentId, string stepName, Dictionary<string, string> outputVariables)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(stepName);
+        ArgumentNullException.ThrowIfNull(outputVariables);
+        if (outputVariables.Count == 0)
+        {
+            return;
+        }
+
+        var capturedAt = timeProvider.GetUtcNow();
+
+        await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
+
+        var deploymentExists = await db.Deployments
+            .AnyAsync(d => d.Id == deploymentId).ConfigureAwait(false);
+        if (!deploymentExists)
+        {
+            // Runbook runs don't currently capture output variables — when they
+            // do, route here using a parallel table. Until then, ignore.
+            logger.LogDebug(
+                "ReportStepOutputVariables for unknown deployment {Id}; ignored.", deploymentId);
+            return;
+        }
+
+        var existing = await db.DeploymentOutputVariables
+            .Where(o => o.DeploymentId == deploymentId && o.StepName == stepName)
+            .ToDictionaryAsync(o => o.Name, StringComparer.OrdinalIgnoreCase)
+            .ConfigureAwait(false);
+
+        foreach (var (name, value) in outputVariables)
+        {
+            if (existing.TryGetValue(name, out var row))
+            {
+                row.Value = value;
+                row.CapturedUtc = capturedAt;
+            }
+            else
+            {
+                db.DeploymentOutputVariables.Add(
+                    new KrakenDeploy.Server.Core.Domain.Deployments.DeploymentOutputVariable
+                    {
+                        DeploymentId = deploymentId,
+                        StepName     = stepName,
+                        Name         = name,
+                        Value        = value,
+                        CapturedUtc  = capturedAt,
+                    });
+            }
+        }
+
+        await db.SaveChangesAsync().ConfigureAwait(false);
+
+        logger.LogInformation(
+            "Captured {Count} output variable(s) for step '{Step}' of deployment {Id}.",
+            outputVariables.Count, stepName, deploymentId);
+    }
+
     private static async Task PruneRetentionAsync(
         Guid deploymentId,
         IServiceScopeFactory scopeFactory,

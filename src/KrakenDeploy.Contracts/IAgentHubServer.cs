@@ -28,4 +28,14 @@ public interface IAgentHubServer
     /// The server transitions the deployment to <c>Succeeded</c> or <c>Failed</c>.
     /// </summary>
     Task CompleteDeploymentAsync(Guid deploymentId, bool success, string? errorMessage);
+
+    /// <summary>
+    /// Called after each step that emitted at least one
+    /// <c>Set-OctopusVariable</c> / <c>##octopus[setVariable]</c> marker on stdout.
+    /// The server persists the captured key/value pairs against the deployment
+    /// and step so they appear on the deployment detail page and (later) can be
+    /// referenced from other deployments / runbooks.
+    /// </summary>
+    Task ReportStepOutputVariablesAsync(
+        Guid deploymentId, string stepName, Dictionary<string, string> outputVariables);
 }

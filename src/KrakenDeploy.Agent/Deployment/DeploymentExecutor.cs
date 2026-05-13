@@ -51,11 +51,37 @@ public sealed class DeploymentExecutor(
         using var cts = new CancellationTokenSource();
         var ct = cts.Token;
 
+        // Accumulates Set-OctopusVariable captures per step name across the run.
+        // Made available to subsequent steps as Octopus.Action[StepName].Output.X.
+        var outputsByStep = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+
         try
         {
             foreach (var step in plan.Steps.OrderBy(s => s.Index))
             {
-                var success = await ExecuteStepAsync(plan, step, ct).ConfigureAwait(false);
+                // Build a per-step plan whose Variables include the output vars
+                // captured from prior steps.
+                var stepPlan = AugmentPlanWithPriorOutputs(plan, outputsByStep);
+
+                var (success, capturedOutputs) =
+                    await ExecuteStepAsync(stepPlan, step, ct).ConfigureAwait(false);
+
+                if (capturedOutputs.Count > 0)
+                {
+                    outputsByStep[step.Name] = capturedOutputs;
+                    try
+                    {
+                        await serverLink.ReportStepOutputVariablesAsync(
+                            plan.DeploymentId, step.Name, capturedOutputs, ct).ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex,
+                            "Failed to report output variables for step '{Step}' of deployment {Id}.",
+                            step.Name, plan.DeploymentId);
+                    }
+                }
+
                 if (!success)
                 {
                     await serverLink
@@ -96,11 +122,16 @@ public sealed class DeploymentExecutor(
 
     // ── Step execution ─────────────────────────────────────────────────────────
 
-    private async Task<bool> ExecuteStepAsync(
+    private async Task<(bool Success, Dictionary<string, string> CapturedOutputs)> ExecuteStepAsync(
         DeploymentPlan plan, DeploymentStepPlan step, CancellationToken ct)
     {
         await LogAsync(plan.DeploymentId, "info",
             $"--- Step {step.Index + 1}: {step.Name} ---", ct).ConfigureAwait(false);
+
+        // Per-step bucket for Set-OctopusVariable captures. The wrapped LogAsync
+        // intercepts ##octopus[...] markers and writes here instead of sending them
+        // through as visible log lines.
+        var capturedOutputs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         // Resolve a handler for this step type.
         var handler = _handlers.FirstOrDefault(h => h.CanHandle(step.StepType));
@@ -109,7 +140,7 @@ public sealed class DeploymentExecutor(
             await LogAsync(plan.DeploymentId, "error",
                 $"Unknown step type '{step.StepType}'. No handler is registered for it.", ct)
                 .ConfigureAwait(false);
-            return false;
+            return (false, capturedOutputs);
         }
 
         var tempRoot = Path.Combine(
@@ -146,7 +177,7 @@ public sealed class DeploymentExecutor(
             {
                 await LogAsync(plan.DeploymentId, "error",
                     $"Package download failed: {ex.Message}", ct).ConfigureAwait(false);
-                return false;
+                return (false, capturedOutputs);
             }
 
             extractDir = Path.Combine(tempRoot, "extracted");
@@ -160,7 +191,7 @@ public sealed class DeploymentExecutor(
             {
                 await LogAsync(plan.DeploymentId, "error",
                     $"Package extraction failed: {ex.Message}", ct).ConfigureAwait(false);
-                return false;
+                return (false, capturedOutputs);
             }
         }
         else if (handler.RequiresPackage)
@@ -170,6 +201,45 @@ public sealed class DeploymentExecutor(
         }
 
         // ── Delegate to the handler ────────────────────────────────────────────
+        // ##octopus[...] marker interceptor: a "sticky" log level set by
+        // ##octopus[stdout-warning|error|default] persists until overridden.
+        var stickyLevel = "info";
+
+        async Task InterceptingLogAsync(string level, string message)
+        {
+            var msg = OctopusMessageParser.TryParse(message);
+            switch (msg)
+            {
+                case SetVariableMessage v:
+                    capturedOutputs[v.Name] = v.Value;
+                    return; // marker is not user-visible log output
+                case SetLogLevelMessage l:
+                    stickyLevel = l.Level;
+                    return;
+                case CreateArtifactMessage a:
+                    // Artifact files are collected from the artifacts dir after the
+                    // step; the marker itself is informational.
+                    await LogAsync(plan.DeploymentId, "info",
+                        $"[Artifact] {a.Name} ({a.Path})", ct).ConfigureAwait(false);
+                    return;
+                case ProgressMessage p:
+                    await LogAsync(plan.DeploymentId, "info",
+                        $"[Progress {p.Percentage}%] {p.Message}", ct).ConfigureAwait(false);
+                    return;
+                case UnknownMessage u:
+                    logger.LogDebug(
+                        "Unknown ##octopus[{Cmd}] directive in step '{Step}'; passing through as a log line.",
+                        u.Command, step.Name);
+                    break;
+            }
+
+            // Plain log line — apply sticky level if it overrides "info".
+            var effectiveLevel = level.Equals("info", StringComparison.OrdinalIgnoreCase)
+                ? stickyLevel
+                : level;
+            await LogAsync(plan.DeploymentId, effectiveLevel, message, ct).ConfigureAwait(false);
+        }
+
         bool success;
         try
         {
@@ -179,7 +249,7 @@ public sealed class DeploymentExecutor(
                 Step         = step,
                 ExtractDir   = extractDir,
                 ArtifactsDir = artifactsDir,
-                LogAsync     = (level, msg) => LogAsync(plan.DeploymentId, level, msg, ct),
+                LogAsync     = InterceptingLogAsync,
             };
 
             success = await handler.HandleAsync(handlerCtx, ct).ConfigureAwait(false);
@@ -203,7 +273,35 @@ public sealed class DeploymentExecutor(
         try { Directory.Delete(tempRoot, recursive: true); }
         catch { /* non-fatal */ }
 
-        return success;
+        return (success, capturedOutputs);
+    }
+
+    // ── Output-variable plumbing ───────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns a copy of the plan with <c>Octopus.Action[StepName].Output.X</c>
+    /// keys merged into <see cref="DeploymentPlan.Variables"/> for every
+    /// previously-completed step's captured output variables.
+    /// </summary>
+    private static DeploymentPlan AugmentPlanWithPriorOutputs(
+        DeploymentPlan basePlan,
+        Dictionary<string, Dictionary<string, string>> outputsByStep)
+    {
+        if (outputsByStep.Count == 0)
+        {
+            return basePlan;
+        }
+
+        var merged = new Dictionary<string, string>(basePlan.Variables, StringComparer.OrdinalIgnoreCase);
+        foreach (var (stepName, outputs) in outputsByStep)
+        {
+            foreach (var (name, value) in outputs)
+            {
+                merged[$"Octopus.Action[{stepName}].Output.{name}"] = value;
+            }
+        }
+
+        return basePlan with { Variables = merged };
     }
 
     // ── Artifact collection ────────────────────────────────────────────────────

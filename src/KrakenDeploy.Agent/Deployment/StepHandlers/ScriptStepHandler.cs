@@ -182,6 +182,30 @@ function Register-KrakenArtifact {
     Write-Host "[Artifact] Registered '$Name'"
 }
 """);
+        // Set-OctopusVariable: emits a ##octopus[setVariable ...] marker on stdout
+        // with base64-encoded name + value. The agent's DeploymentExecutor parses
+        // these and accumulates output variables for the step. Subsequent steps in
+        // the same deployment can read them via $OctopusParameters["Octopus.Action[StepName].Output.X"].
+        // New-OctopusArtifact: Octopus-compatible alias that calls Register-KrakenArtifact.
+        sb.AppendLine("""
+function Set-OctopusVariable {
+    param(
+        [Parameter(Mandatory=$true)][string]$name,
+        [Parameter(Mandatory=$true)][AllowEmptyString()][string]$value
+    )
+    $b64Name  = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($name))
+    $b64Value = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($value))
+    Write-Host "##octopus[setVariable name='$b64Name' value='$b64Value']"
+}
+
+function New-OctopusArtifact {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [string]$Name = [System.IO.Path]::GetFileName($Path)
+    )
+    Register-KrakenArtifact -Path $Path -Name $Name
+}
+""");
         sb.AppendLine("# Octopus-compat aliases");
         sb.AppendLine("Set-Alias -Name 'Write-Verbose' -Value 'Write-KrakenInfo' -Force -ErrorAction SilentlyContinue");
         sb.AppendLine("# ────────────────────────────────────────────────────────────────────");

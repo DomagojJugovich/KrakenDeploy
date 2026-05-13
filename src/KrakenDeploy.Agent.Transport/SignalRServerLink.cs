@@ -127,6 +127,28 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
             : Task.CompletedTask;
     }
 
+    public Task ReportStepOutputVariablesAsync(
+        Guid deploymentId, string stepName,
+        IReadOnlyDictionary<string, string> outputVariables, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(stepName);
+        ArgumentNullException.ThrowIfNull(outputVariables);
+        if (outputVariables.Count == 0 || _connection is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        // SignalR JSON serialiser handles IReadOnlyDictionary fine, but the hub
+        // signature uses Dictionary<string,string> for symmetry with the typed
+        // interface. Materialise once at the boundary.
+        var payload = outputVariables as Dictionary<string, string>
+                      ?? new Dictionary<string, string>(outputVariables, StringComparer.OrdinalIgnoreCase);
+
+        return _connection.InvokeAsync(
+            "ReportStepOutputVariablesAsync",
+            deploymentId, stepName, payload, ct);
+    }
+
     // ── Server → Agent ─────────────────────────────────────────────────────
 
     public void OnRunDeployment(Func<DeploymentPlan, Task> handler)

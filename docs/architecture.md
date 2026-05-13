@@ -109,8 +109,23 @@ The fully-substituted plan ships to the agent. The agent layers in one more set:
 
 Script-visible surface ends up:
 
-- **PowerShell**: `$OctopusParameters["Octopus.Project.Name"]`, `#{Octopus.Project.Name}` (resolved server-side), plus `Write-KrakenInfo`/`Write-KrakenWarning`/`Write-KrakenError` helpers + `Register-KrakenArtifact` (alias for `New-OctopusArtifact` once Phase 6b lands).
+- **PowerShell**: `$OctopusParameters["Octopus.Project.Name"]`, `#{Octopus.Project.Name}` (resolved server-side), plus `Write-KrakenInfo`/`Write-KrakenWarning`/`Write-KrakenError` helpers, `Register-KrakenArtifact`, and Octopus-compatible aliases `Set-OctopusVariable` (emits `##octopus[setVariable …]`) and `New-OctopusArtifact`.
 - **Bash / dotnet-script / Python**: same values via environment variables (`OctopusEnvironmentName`, `KrakenDeploymentId`, plus every `Octopus.*` key flattened into the env). Phase 6d adds per-language preambles for parity with `$OctopusParameters`.
+
+### Output variables
+
+Scripts use `Set-OctopusVariable -name X -value Y` (or emit a raw `##octopus[setVariable name='base64' value='base64']` stdout marker from any language). The agent's `DeploymentExecutor` wraps each step's log callback with `OctopusMessageParser.TryParse(line)` and:
+
+1. **`SetVariableMessage`** — captured value is routed into a per-step `Dictionary<string,string>`. The marker line itself is suppressed from the user-visible log.
+2. After the step completes, captured outputs are reported to the server via `IServerLink.ReportStepOutputVariablesAsync` → `AgentHub.ReportStepOutputVariablesAsync` → upsert into `deployment_output_variables` (PK by `(DeploymentId, StepName, Name)`).
+3. The executor merges every prior step's outputs into the *next* step's `Plan.Variables` as `Octopus.Action[StepName].Output.X`, using `DeploymentPlan with { Variables = merged }`. Subsequent scripts read them via `$OctopusParameters["Octopus.Action[StepFoo].Output.Bar"]` or `#{Octopus.Action[StepFoo].Output.Bar}` (server-side resolution kicks in when a release runs a process containing variable expressions that bind to these keys).
+
+Other markers handled by the parser:
+
+- `##octopus[stdout-warning|error|default]` — sticky log level for subsequent lines.
+- `##octopus[createArtifact …]` — surfaced as an info-level log line (the actual artifact upload still flows through the existing artifacts-dir scan).
+- `##octopus[progress percentage='X' message='…']` — surfaced as `[Progress X%] …` info line.
+- Unknown commands log a debug message and pass the original line through as a normal log line.
 
 ## Step templates
 
