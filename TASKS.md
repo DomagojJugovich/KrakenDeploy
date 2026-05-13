@@ -737,6 +737,56 @@ Slices 7-8 (Velopack MSI + Linux packaging) are deferred for a separate session 
 - [ ] **Customer-side agent registration UX**: registration token encodes the target Space; agents bind to a Space they can never leave.
 - [ ] **Caddy / Cloudflare in production**: Cloudflare in front for WAF + DDoS, Caddy on each replica for TLS to origin + gRPC fan-in.
 
+### M10.3 — Octopus compatibility deepening + UX polish
+
+Mid-M10 thread that didn't fit M5 (initial Octopus compat) or M9 (Kraken.IIS). Splits into Octopus-compat depth (system variables, output variables, step-execution surface) and UI polish (theme picker, dead buttons, layout consistency).
+
+#### Done
+
+- [x] **Theme picker** — `RadzenAppearanceToggle` (Material light/dark) in the header via a new `ThemeToggle` Razor component (own `@rendermode InteractiveServer` so it works inside SSR layouts). Persisted to `ApplicationUser.Theme` (new column + `AddUserTheme` migration); `UserService.UpdateThemeAsync`. `App.razor` switched from a static `<link>` tag to `<RadzenTheme>` so the choice drives the stylesheet at runtime.
+- [x] **Dead-button + UX fixes** — Project Dashboard "Create Release" was inert (no Click handler), now opens `CreateReleaseDialog` and reloads on success. Global `/releases` page now actually loads data (new `ReleaseService.GetAllAsync()` overload) and shows the project name instead of the raw ProjectId guid. Tenants page was rendered SSR (button did nothing); added `@rendermode InteractiveServer`, made the Name column a `<RadzenLink>`, dropped the `RowClick` so clicking Delete no longer also navigates to the just-deleted tenant. Same render-mode fix on `TenantDetail`. Removed duplicate `<RadzenNotification />` from nine pages (the global `<RadzenComponents>` in `App.razor` already provides it; each local instance was rendering every toast twice).
+- [x] **Layout consistency** — Right-aligned the create button via `JustifyContent.SpaceBetween` on Projects, Tenants, Environments, Lifecycles, Teams, Roles, Spaces, IdentityProviders, Dashboard. Swept all `Icon="add"` → `Icon="add_circle_outline"`.
+- [x] **`Kraken.Script` step type + multi-language dispatcher** — new built-in step template `Kraken.Script — Run a Script` seeded by `BuiltInStepTemplateSeeder`. New `KrakenScriptConfigKeys` constants exposing the Octopus-compatible config-key names (`Octopus.Action.Script.ScriptBody`, `…Syntax`, `Octopus.Action.PowerShell.Edition`, `Octopus.Action.RunOnServer`). `ScriptRunner` now dispatches by syntax: PowerShell Core (`pwsh`) / PowerShell Desktop (`powershell.exe`, Windows-only with pwsh fallback) / Bash / CSharp (`dotnet script`) / FSharp (`dotnet fsi`) / Python. Script files get the right extension per syntax. `ScriptStepHandler` claims `Kraken.Script` alongside `Octopus.Script`, reads `Octopus.Action.PowerShell.Edition`, and only injects the PowerShell preamble when the syntax is PowerShell.
+- [x] **Step-type unification** — retired legacy `KrakenDeploy.Script` step type and its lowercase `scriptBody` / `scriptSyntax` config keys. All UIs (`StepFormDialog`, `RunbookDetail`, `CreateStepTemplateDialog`) and the handler now use Octopus-compatible keys. Runbook scripts and offline-drop bundle generators (`DropBundleService`, `RunbookDetail`) previously used an ad-hoc `"ScriptBody"` key that didn't match what the handler reads — both now use `KrakenScriptConfigKeys.ScriptBody`, so runbook scripts and offline-drop orchestrators correctly pick up the script body.
+- [x] **Octopus system variables (full list, server-side)** — new `OctopusSystemVariablesBuilder` emits ~70 `Octopus.*` system variables in 10 grouped sections (Deployment, Project, Release, Environment, Tenant, Machine/Tentacle, indexed per-step Action/Step, Web URLs, Time, deferred placeholders). Two entry points: `BuildForDeployment(...)` (wired into `DeploymentWorker` online + offline-drop paths) and `BuildForRunbookRun(...)` (wired into `RunbookRunWorker`). Variables without a Kraken-equivalent (Azure.\*, AWS.\*, Kubernetes.\*, created-by user fields, previous-successful queries, channel name lookups) are emitted as empty strings and flagged with `// TODO(kraken-equivalent)` comments for grep-audit. Agent-side: `ScriptStepHandler` injects the un-indexed current-step keys (`Octopus.Action.Name/Id/Number`, `Octopus.Step.Name/Number`, `Octopus.Action.Package.PackageId/PackageVersion/OriginalInstalledPath`) into both env vars and the PowerShell `$OctopusParameters` preamble.
+
+#### Phase 6 — Octopus script-execution surface (remaining)
+
+- [ ] **6b: Artifact + output-variable stdout markers** — Octopus community scripts use `Write-Host "##octopus[createArtifact path='...' name='...']"` and `##octopus[setVariable name='X' value='base64-Y']` to signal back to the runner. Agent: a stdout interceptor in `ScriptRunner` (or a parser wrapped around the existing `onOutput` callback) recognises these markers and dispatches: artifacts get copied to `KRAKEN_ARTIFACTS_PATH` (already wired) and output variables get accumulated. PS preamble adds `New-OctopusArtifact` alias on `Register-KrakenArtifact` and a `Set-OctopusVariable` function that emits the base64 marker.
+- [ ] **6c: Output variable persistence + cross-step resolution** — new `deployment_output_variables` table (`DeploymentId`, `StepName`, `Name`, `Value`). Agent reports captured output variables back to server after each step (extend the existing post-step signalling). Server-side variable resolver gains a pre-substitution pass that expands `#{Octopus.Action[StepFoo].Output.Bar}` from the table for subsequent steps in the same deployment. Variables made available to next step's plan via the existing `Plan.Variables` channel.
+- [ ] **6d: Non-PowerShell variable injection** — Bash and `dotnet-script` and Python already get plan variables via env, but a small `KrakenOctopus` helper preamble per language gives parity with `$OctopusParameters` (e.g. `var Octopus = Environment.GetEnvironmentVariables().Cast<DictionaryEntry>()...` for `.csx`, `import os; Octopus = os.environ` for `.py`).
+- [ ] **6e: `Server:BaseUrl` config** — Octopus.Web.\* variables currently resolve to empty string because no server base URL is configured. Add a `Server:BaseUrl` setting + read it in `DeploymentWorker` / `RunbookRunWorker`. For multi-host setups (Caddy in front, etc.) prefer the configured value; fall back to the inbound request host.
+
+#### Phase 1–5 — Step-template library evolution
+
+- [ ] **1: Library data model extension** — extend `StepTemplate` with `Category` (from JSON), `Author`, `Website`, `LogoUrl`, and a `Source` enum (`BuiltIn`, `CommunityLibrary`, `LocalImport`, `UserAuthored`). EF migration `ExtendStepTemplate`. Update `OctopusLibraryImporter.Parse` to thread these through.
+- [ ] **1b: Category taxonomy** — `category-mapping.json` in `KrakenDeploy.Contracts/Steps/` mapping JSON `Category` strings (e.g. `aws`, `iis`, `windows-iis`) → big buckets shown in the UI ("Development and Scripting", "Containers and Orchestration", "Cloud Native Services", "Infrastructure as Code", etc.). Unmapped → "Other". Seed with ~25 entries covering the buckets in the Octopus Choose-Step-Template screen.
+- [ ] **2: Single-template import/export** — `GET /api/step-templates/{id}/export` round-trips Octopus Community Library JSON. Single-file picker alongside the paste-JSON dialog.
+- [ ] **3: Bulk import from folder** — `StepTemplateService.ImportFromDirectoryAsync(string folderPath)` recursively scans `*.json`, calls existing `ImportFromJsonAsync` per file, returns an added/updated/skipped/errored summary. UI: "Import from folder" button on `/step-templates`. Useful for pointing at a cloned `OctopusDeploy/Library/step-templates/` directory.
+- [ ] **4: Community catalog browser** — Hangfire job hourly-polls `https://api.github.com/repos/OctopusDeploy/Library/contents/step-templates`, caches each JSON's metadata into a new `step_template_catalog` table. Manual "Refresh" button forces a re-fetch. `/step-templates/community` page mirrors the Octopus Choose-Step-Template screen: left-pane Filter Categories, right-pane cards with Install + More Info.
+- [ ] **5: Unified Add-Step dialog** — replace the current step-type dropdown with a Choose-Step-Template-style dialog. Left = category filter (Featured + Installed + each big-bucket category). Right = card list mixing installed templates ("Add Step") and community catalog entries ("Install and Add Step"). One-click install-then-add.
+
+#### Phase 7 — Execution location
+
+- [ ] **7a: `Octopus.Action.RunOn` enum** — promote the existing `Octopus.Action.RunOnServer` boolean to a tri-state: `Server`, `ServerOnBehalfOfTarget`, `Target`. UI: radio group in `StepFormDialog`.
+- [ ] **7b: Server-side script runner** — new in-process `ServerScriptRunner` (mirror of agent's `ScriptRunner`). For `Server`, runs once per deployment in the server process. For `ServerOnBehalfOfTarget`, runs once per target with that target's variables in scope. Wire into `DeploymentExecutor` so the dispatch is transparent — `IStepHandler` calls go to either the in-process runner or are streamed to the agent depending on the step's RunOn setting.
+
+#### Phase 8 — Referenced packages
+
+- [ ] **8a: Step config schema** — `Octopus.Action.Package.PackageReferences` (JSON array of `{Name, PackageId, FeedId, Extract}`). Server resolves to specific versions at release-creation time.
+- [ ] **8b: Agent extraction** — additional packages extract alongside the primary to `extract/refs/<Name>/`. Expose `Octopus.Action.Package[<Name>].ExtractedPath` (server-side system variable) and `OCTOPUS_REFERENCED_PACKAGE_<Name>_PATH` (agent env var).
+- [ ] **8c: UI** — "Referenced Packages" section in the script-step form.
+
+#### Built-in step pack (Octopus parity)
+
+To be sourced from the user's own Octopus instance via `GET /api/actiontemplates?builtIn=true` (authenticated API key), transcribed into Kraken-native templates with PowerShell-based handlers. **Not** decompiled from Calamari — see [docs/architecture.md](docs/architecture.md#step-execution-model) on the clean-room policy.
+
+- [ ] **`Octopus.IIS` parity** — extend the existing `Kraken.IIS` template's parameter set to match Octopus's `Octopus.Action.IISWebSite.*` keys 1:1 so an Octopus IIS step imports without renaming.
+- [ ] **`Octopus.TentaclePackage`** — package-deploy with optional pre/post scripts, config transforms, structured config-variable replacement, custom install dir.
+- [ ] **`Octopus.DeployRelease`** — server-side orchestrator step: "deploy release of project X to environment Y". Requires Phase 7b (server-side runner).
+- [ ] **`Octopus.Manual`** — already exists in M9. Verify parameter shape matches.
+- [ ] **`Octopus.FtpUpload`, `Octopus.AzureFunction`** etc. — long tail; transcribe as Argosy/WebArgosy processes need them. Azure / AWS / Kubernetes packs deferred.
+
 ### M11 — AI integration (MCP server, autonomous diagnosis, process assistant)
 Three features sharing a common `IAiProvider` abstraction (pluggable: Anthropic, OpenAI, Azure OpenAI — user supplies API key) and a shared MCP tool layer.
 

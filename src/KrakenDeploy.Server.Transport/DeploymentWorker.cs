@@ -65,6 +65,7 @@ public sealed class DeploymentWorker(
                     .ThenInclude(r => r.Project)
                 .Include(d => d.Environment)
                 .Include(d => d.Target)
+                .Include(d => d.Tenant)
                 .FirstOrDefaultAsync(d => d.Id == deploymentId, ct)
                 .ConfigureAwait(false);
 
@@ -112,15 +113,21 @@ public sealed class DeploymentWorker(
             // and VarName[0], VarName[1], … for indexed / #{each} access.
             var varDict = new VariableDictionary();
 
-            // Standard Octopus variables always available in scripts.
-            varDict["Octopus.Environment.Name"] = deployment.Environment.Name;
-            varDict["Octopus.Deployment.Id"] = deploymentId.ToString();
+            // Octopus-compatible system variables (Octopus.Project.Name, Octopus.Release.Number, …).
+            var systemVars = OctopusSystemVariablesBuilder.BuildForDeployment(
+                deployment,
+                deployment.Release,
+                deployment.Release.Project,
+                deployment.Environment,
+                deployment.Target,
+                deployment.Tenant,
+                deployment.Release.ProcessSnapshot);
 
-            var flatVars = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            var flatVars = new Dictionary<string, string>(systemVars, StringComparer.OrdinalIgnoreCase);
+            foreach (var (k, val) in systemVars)
             {
-                ["Octopus.Environment.Name"] = deployment.Environment.Name,
-                ["Octopus.Deployment.Id"] = deploymentId.ToString(),
-            };
+                varDict[k] = val;
+            }
 
             var arrayVars = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
 
@@ -225,11 +232,16 @@ public sealed class DeploymentWorker(
             ct).ConfigureAwait(false);
 
         // Flatten variables to string dictionary (same as online path).
-        var flatVars = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["Octopus.Environment.Name"] = deployment.Environment.Name,
-            ["Octopus.Deployment.Id"] = deployment.Id.ToString(),
-        };
+        var systemVars = OctopusSystemVariablesBuilder.BuildForDeployment(
+            deployment,
+            deployment.Release,
+            deployment.Release.Project,
+            deployment.Environment,
+            deployment.Target,
+            deployment.Tenant,
+            deployment.Release.ProcessSnapshot);
+
+        var flatVars = new Dictionary<string, string>(systemVars, StringComparer.OrdinalIgnoreCase);
         foreach (var (name, value) in rawVars)
         {
             flatVars[name] = value;

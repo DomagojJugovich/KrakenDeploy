@@ -3,7 +3,7 @@
 A self-hosted, .NET-native deployment platform for Windows and Linux targets. Inspired by Octopus Deploy: projects, environments, releases, deployments, channels, lifecycles, tenants with tag-based scoping, and a pluggable step engine compatible with Octopus step templates.
 
 > **Status:** early development — M1 walking skeleton in progress. Not yet usable in production.
-> See [TASKS.md](TASKS.md) for the milestone plan and current progress.
+> See [docs/architecture.md](docs/architecture.md) for the system shape and [TASKS.md](TASKS.md) for the milestone plan.
 
 ## Highlights
 

@@ -36,6 +36,11 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
         }
 
         // Build env vars for the child process.
+        // Un-indexed Octopus.Action.* / Octopus.Step.* keys reference the
+        // currently-executing step. The server emits indexed forms
+        // (Octopus.Action[StepName].*) in plan.Variables — here we add the
+        // un-indexed ones so scripts using the shorthand also resolve.
+        var stepNumber = (context.Step.Index + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
         var envVars = new Dictionary<string, string>(context.Plan.Variables)
         {
             ["OctopusEnvironmentName"]      = context.Plan.EnvironmentName,
@@ -44,6 +49,14 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
             ["KrakenStepName"]              = context.Step.Name,
             ["KrakenPackageId"]             = context.Step.PackageId,
             ["KrakenPackageVersion"]        = context.Step.PackageVersion,
+            ["Octopus.Action.Name"]         = context.Step.Name,
+            ["Octopus.Action.Id"]           = context.Step.Name,
+            ["Octopus.Action.Number"]       = stepNumber,
+            ["Octopus.Step.Name"]           = context.Step.Name,
+            ["Octopus.Step.Number"]         = stepNumber,
+            ["Octopus.Action.Package.PackageId"]      = context.Step.PackageId,
+            ["Octopus.Action.Package.PackageVersion"] = context.Step.PackageVersion,
+            ["Octopus.Action.Package.OriginalInstalledPath"] = context.ExtractDir,
             // Scripts write artifact files here; the executor uploads them after the step.
             ["KRAKEN_ARTIFACTS_PATH"]       = context.ArtifactsDir,
         };
@@ -52,9 +65,23 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
         // It only makes sense for PowerShell; other languages get variables via env.
         var isPowerShell = scriptSyntax.Equals("PowerShell", StringComparison.OrdinalIgnoreCase);
 
+        // Merge plan variables with the un-indexed action/step keys for this step
+        // so $OctopusParameters["Octopus.Action.Name"] resolves inside the script.
+        var preambleVars = new Dictionary<string, string>(context.Plan.Variables, StringComparer.OrdinalIgnoreCase)
+        {
+            ["Octopus.Action.Name"]                          = context.Step.Name,
+            ["Octopus.Action.Id"]                            = context.Step.Name,
+            ["Octopus.Action.Number"]                        = stepNumber,
+            ["Octopus.Step.Name"]                            = context.Step.Name,
+            ["Octopus.Step.Number"]                          = stepNumber,
+            ["Octopus.Action.Package.PackageId"]             = context.Step.PackageId,
+            ["Octopus.Action.Package.PackageVersion"]        = context.Step.PackageVersion,
+            ["Octopus.Action.Package.OriginalInstalledPath"] = context.ExtractDir,
+        };
+
         var fullScript = isPowerShell
             ? BuildPowerShellPreamble(
-                context.Plan.Variables,
+                preambleVars,
                 context.Plan.ArrayVariables,
                 context.Plan.EnvironmentName,
                 context.Plan.DeploymentId)

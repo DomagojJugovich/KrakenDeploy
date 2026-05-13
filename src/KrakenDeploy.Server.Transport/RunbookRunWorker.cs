@@ -48,6 +48,7 @@ public sealed class RunbookRunWorker(
                     .ThenInclude(rb => rb.Project)
                 .Include(r => r.Environment)
                 .Include(r => r.Target)
+                .Include(r => r.Tenant)
                 .FirstOrDefaultAsync(r => r.Id == runId, ct)
                 .ConfigureAwait(false);
 
@@ -88,14 +89,21 @@ public sealed class RunbookRunWorker(
 
             // ── Build Octostache dictionary ───────────────────────────────────
             var varDict = new VariableDictionary();
-            varDict["Octopus.Environment.Name"] = run.Environment.Name;
-            varDict["Octopus.Deployment.Id"] = runId.ToString();
 
-            var flatVars = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            var systemVars = OctopusSystemVariablesBuilder.BuildForRunbookRun(
+                run,
+                run.Runbook,
+                run.Runbook.Project,
+                run.Environment,
+                run.Target,
+                run.Tenant,
+                run.ProcessSnapshot);
+
+            var flatVars = new Dictionary<string, string>(systemVars, StringComparer.OrdinalIgnoreCase);
+            foreach (var (k, val) in systemVars)
             {
-                ["Octopus.Environment.Name"] = run.Environment.Name,
-                ["Octopus.Deployment.Id"] = runId.ToString(),
-            };
+                varDict[k] = val;
+            }
             var arrayVars = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var (name, value) in rawVars)
