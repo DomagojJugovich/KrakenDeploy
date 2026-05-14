@@ -177,6 +177,79 @@ else
                     </RadzenDataGrid>
                 }
             </RadzenTabsItem>
+
+            <RadzenTabsItem Text=@($"Output variables ({_outputVariables.Count})") Icon="data_object">
+                @if (_outputVariables.Count == 0)
+                {
+                    <RadzenText class="rz-color-secondary rz-mt-4">
+                        No output variables captured.
+                        Steps emit them with <code>Set-OctopusVariable -name X -value Y</code> in
+                        PowerShell or <code>##octopus[setVariable name='base64' value='base64']</code>
+                        on stdout from any language. They're then available to later steps as
+                        <code>#{Octopus.Action[StepName].Output.X}</code> or
+                        <code>$OctopusParameters["Octopus.Action[StepName].Output.X"]</code>.
+                    </RadzenText>
+                }
+                else
+                {
+                    @foreach (var group in _outputVariables.GroupBy(o => o.StepName)
+                                                            .OrderBy(g => g.Min(o => o.CapturedUtc)))
+                    {
+                        <RadzenCard class="rz-mt-3">
+                            <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-2">
+                                <RadzenIcon Icon="play_arrow" Style="vertical-align:middle;margin-right:4px;" />
+                                @group.Key
+                                <span class="rz-color-secondary rz-text-body2 rz-ml-2">
+                                    (@group.Count() variable@(group.Count() == 1 ? "" : "s"))
+                                </span>
+                            </RadzenText>
+                            <RadzenDataGrid Data="@group.OrderBy(o => o.Name)"
+                                            TItem="DeploymentOutputVariable"
+                                            AllowSorting="false" AllowColumnResize="true">
+                                <Columns>
+                                    <RadzenDataGridColumn TItem="DeploymentOutputVariable"
+                                                          Property="Name" Title="Name" Width="280px">
+                                        <Template Context="o">
+                                            <code>@o.Name</code>
+                                        </Template>
+                                    </RadzenDataGridColumn>
+                                    <RadzenDataGridColumn TItem="DeploymentOutputVariable"
+                                                          Property="Value" Title="Value">
+                                        <Template Context="o">
+                                            @if (o.Value.Contains('\n'))
+                                            {
+                                                <pre style="margin:0; white-space: pre-wrap; word-break: break-word;
+                                                            font-family: var(--rz-mono-font, monospace);
+                                                            font-size: 0.85rem;">@o.Value</pre>
+                                            }
+                                            else
+                                            {
+                                                <span style="font-family: var(--rz-mono-font, monospace);
+                                                             font-size: 0.85rem;
+                                                             word-break: break-word;">@o.Value</span>
+                                            }
+                                        </Template>
+                                    </RadzenDataGridColumn>
+                                    <RadzenDataGridColumn TItem="DeploymentOutputVariable"
+                                                          Title="Reference"
+                                                          Width="320px" Sortable="false">
+                                        <Template Context="o">
+                                            <code>#{Octopus.Action[@(group.Key)].Output.@(o.Name)}</code>
+                                        </Template>
+                                    </RadzenDataGridColumn>
+                                    <RadzenDataGridColumn TItem="DeploymentOutputVariable"
+                                                          Property="CapturedUtc" Title="Captured"
+                                                          Width="160px">
+                                        <Template Context="o">
+                                            @o.CapturedUtc.ToString("yyyy-MM-dd HH:mm:ss")
+                                        </Template>
+                                    </RadzenDataGridColumn>
+                                </Columns>
+                            </RadzenDataGrid>
+                        </RadzenCard>
+                    }
+                }
+            </RadzenTabsItem>
         </Tabs>
     </RadzenTabs>
 }
@@ -186,6 +259,7 @@ else
 
     private Deployment? Deployment { get; set; }
     private List<DeploymentArtifact> _artifacts = [];
+    private List<DeploymentOutputVariable> _outputVariables = [];
 
     // Offline result upload
     private IBrowserFile? _resultFile;
@@ -197,6 +271,7 @@ else
         if (Deployment is not null)
         {
             _artifacts = await ArtifactSvc.GetByDeploymentAsync(Id);
+            _outputVariables = await DeploymentSvc.GetOutputVariablesAsync(Id);
         }
     }
 
@@ -223,6 +298,7 @@ else
             if (Deployment is not null)
             {
                 _artifacts = await ArtifactSvc.GetByDeploymentAsync(Id);
+                _outputVariables = await DeploymentSvc.GetOutputVariablesAsync(Id);
             }
             _resultFile = null;
 

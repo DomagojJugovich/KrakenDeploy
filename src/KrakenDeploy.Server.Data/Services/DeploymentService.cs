@@ -118,6 +118,22 @@ public class DeploymentService(
     }
 
     /// <summary>
+    /// Returns all output variables captured during a deployment via
+    /// <c>Set-OctopusVariable</c> / <c>##octopus[setVariable]</c> markers,
+    /// ordered by step capture order and then variable name.
+    /// </summary>
+    public async Task<List<DeploymentOutputVariable>> GetOutputVariablesAsync(
+        Guid deploymentId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.DeploymentOutputVariables
+            .Where(o => o.DeploymentId == deploymentId)
+            .OrderBy(o => o.CapturedUtc)
+            .ThenBy(o => o.Name)
+            .ToListAsync(ct);
+    }
+
+    /// <summary>
     /// Builds a Tenant × Environment matrix of the latest deployment per cell
     /// for the given project. Returns every connected tenant and every space
     /// environment regardless of whether any deployment exists yet — empty
