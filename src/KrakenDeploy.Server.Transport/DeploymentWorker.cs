@@ -165,18 +165,33 @@ public sealed class DeploymentWorker(
                 varDict[name] = value;
             }
 
-            // ── 3. Build steps with Octostache substitution applied ──────────
-            var steps = deployment.Release.ProcessSnapshot
+            // ── 3. Build steps with Octostache substitution applied + resolve
+            //       referenced packages (Octopus.Action.Package.PackageReferences).
+            var dbFactory = scope.ServiceProvider
+                .GetRequiredService<IDbContextFactory<KrakenDbContext>>();
+
+            var snapshotSteps = deployment.Release.ProcessSnapshot
                 .OrderBy(s => s.SortOrder)
-                .Select((s, i) => new DeploymentStepPlan(
+                .ToArray();
+
+            var steps = new DeploymentStepPlan[snapshotSteps.Length];
+            for (var i = 0; i < snapshotSteps.Length; i++)
+            {
+                var s = snapshotSteps[i];
+                var substitutedConfig = SubstituteConfig(s.Config, varDict);
+                var referenced = await PackageReferenceResolver
+                    .ResolveAsync(substitutedConfig, dbFactory, logger, ct)
+                    .ConfigureAwait(false);
+                steps[i] = new DeploymentStepPlan(
                     Index: i,
                     Name: s.Name,
                     StepType: s.StepType,
                     PackageId: s.PackageId,
                     PackageVersion: s.PackageVersion,
-                    Config: SubstituteConfig(s.Config, varDict),
-                    TargetRoles: s.TargetRoles))
-                .ToArray();
+                    Config: substitutedConfig,
+                    TargetRoles: s.TargetRoles,
+                    ReferencedPackages: referenced.Count > 0 ? referenced : null);
+            }
 
             var plan = new DeploymentPlan(
                 DeploymentId: deployment.Id,

@@ -1,3 +1,5 @@
+@using System.Text.Json
+@using KrakenDeploy.Contracts.Steps
 @using KrakenDeploy.Server.Core.Domain.Processes
 @inject DialogService Dialog
 @inject ProcessService ProcessSvc
@@ -77,6 +79,62 @@
                                 Placeholder="# Script that runs on the target during deployment" />
             </div>
 
+            <div>
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                             AlignItems="AlignItems.Center" class="rz-mb-1">
+                    <RadzenLabel Text="Referenced Packages" />
+                    <RadzenButton Icon="add_circle_outline" Size="ButtonSize.ExtraSmall"
+                                  Variant="Variant.Text" ButtonStyle="ButtonStyle.Light"
+                                  Text="Add" Click="@AddReferencedPackage" />
+                </RadzenStack>
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-1">
+                    Extra packages this step depends on. Each is extracted to
+                    <code>refs/&lt;Name&gt;/</code> and surfaced as
+                    <code>$OctopusParameters["Octopus.Action.Package[Name].ExtractedPath"]</code>
+                    + <code>OCTOPUS_REFERENCED_PACKAGE_&lt;NAME&gt;_PATH</code>.
+                    Version blank = latest at dispatch time.
+                </RadzenText>
+                @if (_model.ReferencedPackages.Count > 0)
+                {
+                    <table style="width:100%; border-collapse: collapse;">
+                        <thead>
+                            <tr>
+                                <th style="text-align:left; font-weight:500; padding:4px 8px;">Name</th>
+                                <th style="text-align:left; font-weight:500; padding:4px 8px;">Package ID</th>
+                                <th style="text-align:left; font-weight:500; padding:4px 8px;">Version</th>
+                                <th style="width:40px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @for (var i = 0; i < _model.ReferencedPackages.Count; i++)
+                            {
+                                var idx = i;
+                                <tr>
+                                    <td style="padding:2px 8px;">
+                                        <RadzenTextBox @bind-Value="_model.ReferencedPackages[idx].Name"
+                                                       Placeholder="helper" Style="width:100%;" />
+                                    </td>
+                                    <td style="padding:2px 8px;">
+                                        <RadzenTextBox @bind-Value="_model.ReferencedPackages[idx].PackageId"
+                                                       Placeholder="MyHelperLib" Style="width:100%;" />
+                                    </td>
+                                    <td style="padding:2px 8px;">
+                                        <RadzenTextBox @bind-Value="_model.ReferencedPackages[idx].Version"
+                                                       Placeholder="(latest)" Style="width:100%;" />
+                                    </td>
+                                    <td style="padding:2px 8px;">
+                                        <RadzenButton Icon="delete" Size="ButtonSize.ExtraSmall"
+                                                      Variant="Variant.Text"
+                                                      ButtonStyle="ButtonStyle.Danger"
+                                                      Click="@(() => _model.ReferencedPackages.RemoveAt(idx))" />
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+            </div>
+
             @if (_errorMessage is not null)
             {
                 <div class="kraken-login-error rz-text-body2">@_errorMessage</div>
@@ -115,6 +173,31 @@
             _model.RunOnServer = string.Equals(
                 Step.Config.GetValueOrDefault("Octopus.Action.RunOnServer"),
                 "true", StringComparison.OrdinalIgnoreCase);
+
+            // Parse the referenced-packages JSON back into form rows.
+            if (Step.Config.TryGetValue(KrakenScriptConfigKeys.PackageReferences, out var refsJson)
+                && !string.IsNullOrWhiteSpace(refsJson))
+            {
+                try
+                {
+                    var parsed = JsonSerializer.Deserialize<List<PackageReference>>(refsJson,
+                        new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                    if (parsed is not null)
+                    {
+                        _model.ReferencedPackages = [..
+                            parsed.Select(r => new PackageRefRow
+                            {
+                                Name      = r.Name ?? "",
+                                PackageId = r.PackageId ?? "",
+                                Version   = r.Version ?? "",
+                            })];
+                    }
+                }
+                catch (JsonException)
+                {
+                    // Tolerate malformed JSON — surface as an empty list.
+                }
+            }
         }
     }
 
@@ -130,6 +213,25 @@
                 ["Octopus.Action.Script.ScriptBody"] = _model.ScriptBody ?? "",
                 ["Octopus.Action.RunOnServer"]       = _model.RunOnServer ? "true" : "false",
             };
+
+            // Serialise the referenced-packages grid back to JSON, dropping empty rows.
+            var refs = _model.ReferencedPackages
+                .Where(r => !string.IsNullOrWhiteSpace(r.Name)
+                         && !string.IsNullOrWhiteSpace(r.PackageId))
+                .Select(r => new PackageReference
+                {
+                    Name      = r.Name.Trim(),
+                    PackageId = r.PackageId.Trim(),
+                    Version   = string.IsNullOrWhiteSpace(r.Version) ? null : r.Version.Trim(),
+                    Extract   = true,
+                })
+                .ToList();
+
+            if (refs.Count > 0)
+            {
+                config[KrakenScriptConfigKeys.PackageReferences] = JsonSerializer.Serialize(refs,
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            }
 
             if (_isEdit)
             {
@@ -181,5 +283,16 @@
         public string ScriptSyntax { get; set; } = "PowerShell";
         public string? ScriptBody { get; set; }
         public bool RunOnServer { get; set; }
+        public List<PackageRefRow> ReferencedPackages { get; set; } = [];
     }
+
+    private sealed class PackageRefRow
+    {
+        public string Name { get; set; } = "";
+        public string PackageId { get; set; } = "";
+        public string Version { get; set; } = "";
+    }
+
+    private void AddReferencedPackage()
+        => _model.ReferencedPackages.Add(new PackageRefRow());
 }

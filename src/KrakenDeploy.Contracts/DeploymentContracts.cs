@@ -33,7 +33,8 @@ public sealed record DeploymentStepPlan(
     string PackageId,
     string PackageVersion,
     IReadOnlyDictionary<string, string> Config,
-    IReadOnlyList<string>? TargetRoles = null);
+    IReadOnlyList<string>? TargetRoles = null,
+    IReadOnlyList<KrakenDeploy.Contracts.Steps.PackageReference>? ReferencedPackages = null);
 
 /// <summary>
 /// Sent by the agent to the server when a deployment is triggered.

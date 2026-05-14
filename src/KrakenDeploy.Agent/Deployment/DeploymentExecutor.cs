@@ -200,6 +200,61 @@ public sealed class DeploymentExecutor(
             extractDir = tempRoot;
         }
 
+        // ── Referenced package download + extract ─────────────────────────────
+        // For steps that declare Octopus.Action.Package.PackageReferences,
+        // extract each one to extract/refs/<Name>/ and expose its path as an
+        // env var / system variable (handled by the step handler).
+        var refExtractRoot = string.Empty;
+        var referencedExtractedPaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        if (step.ReferencedPackages is { Count: > 0 } refs)
+        {
+            refExtractRoot = Path.Combine(string.IsNullOrEmpty(extractDir) ? tempRoot : extractDir, "refs");
+            Directory.CreateDirectory(refExtractRoot);
+
+            var identity = context.Identity!;
+            foreach (var r in refs)
+            {
+                if (string.IsNullOrWhiteSpace(r.Version))
+                {
+                    await LogAsync(plan.DeploymentId, "warning",
+                        $"Referenced package '{r.Name}' ({r.PackageId}) has no resolved version; skipping.", ct)
+                        .ConfigureAwait(false);
+                    continue;
+                }
+
+                try
+                {
+                    await LogAsync(plan.DeploymentId, "info",
+                        $"Downloading referenced package '{r.Name}': {r.PackageId} v{r.Version}…", ct)
+                        .ConfigureAwait(false);
+
+                    var refZipPath = await packageDownloader
+                        .DownloadAsync(identity.ServerUrl, identity.AgentToken,
+                            r.PackageId, r.Version, refExtractRoot, ct)
+                        .ConfigureAwait(false);
+
+                    if (r.Extract)
+                    {
+                        var refDir = Path.Combine(refExtractRoot, SanitisePathSegment(r.Name));
+                        await PackageExtractor.ExtractAsync(refZipPath, refDir, ct).ConfigureAwait(false);
+                        referencedExtractedPaths[r.Name] = refDir;
+                    }
+                    else
+                    {
+                        referencedExtractedPaths[r.Name] = refZipPath;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    await LogAsync(plan.DeploymentId, "error",
+                        $"Failed to fetch referenced package '{r.Name}': {ex.Message}", ct)
+                        .ConfigureAwait(false);
+                    return (false, capturedOutputs);
+                }
+            }
+        }
+
         // ── Delegate to the handler ────────────────────────────────────────────
         // ##octopus[...] marker interceptor: a "sticky" log level set by
         // ##octopus[stdout-warning|error|default] persists until overridden.
@@ -245,11 +300,12 @@ public sealed class DeploymentExecutor(
         {
             var handlerCtx = new StepHandlerContext
             {
-                Plan         = plan,
-                Step         = step,
-                ExtractDir   = extractDir,
-                ArtifactsDir = artifactsDir,
-                LogAsync     = InterceptingLogAsync,
+                Plan                   = plan,
+                Step                   = step,
+                ExtractDir             = extractDir,
+                ArtifactsDir           = artifactsDir,
+                LogAsync               = InterceptingLogAsync,
+                ReferencedPackagePaths = referencedExtractedPaths,
             };
 
             success = await handler.HandleAsync(handlerCtx, ct).ConfigureAwait(false);
@@ -274,6 +330,24 @@ public sealed class DeploymentExecutor(
         catch { /* non-fatal */ }
 
         return (success, capturedOutputs);
+    }
+
+    /// <summary>
+    /// Replaces filesystem-unfriendly characters in a reference name so it can
+    /// be used as a directory segment. The original name is still surfaced as
+    /// <c>Octopus.Action.Package[Name].ExtractedPath</c>; this is only the
+    /// on-disk path. Mirrors Octopus's behaviour: dots, dashes, alphanumerics
+    /// kept; everything else collapsed to underscore.
+    /// </summary>
+    private static string SanitisePathSegment(string name)
+    {
+        var sb = new System.Text.StringBuilder(name.Length);
+        foreach (var c in name)
+        {
+            sb.Append(char.IsLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '_');
+        }
+        var safe = sb.ToString();
+        return string.IsNullOrEmpty(safe) ? "pkg" : safe;
     }
 
     // ── Output-variable plumbing ───────────────────────────────────────────────

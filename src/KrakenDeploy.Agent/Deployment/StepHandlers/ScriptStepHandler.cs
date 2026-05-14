@@ -61,6 +61,14 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
             ["KRAKEN_ARTIFACTS_PATH"]       = context.ArtifactsDir,
         };
 
+        // Referenced packages — one env var per package + an indexed system
+        // variable in $OctopusParameters (see preambleVars above).
+        foreach (var (name, path) in context.ReferencedPackagePaths)
+        {
+            envVars[$"OCTOPUS_REFERENCED_PACKAGE_{name.ToUpperInvariant()}_PATH"] = path;
+            envVars[$"Octopus.Action.Package[{name}].ExtractedPath"] = path;
+        }
+
         // Merge plan variables with the un-indexed action/step keys for this step
         // so $OctopusParameters["Octopus.Action.Name"] resolves inside the script.
         var preambleVars = new Dictionary<string, string>(context.Plan.Variables, StringComparer.OrdinalIgnoreCase)
@@ -74,6 +82,13 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
             ["Octopus.Action.Package.PackageVersion"]        = context.Step.PackageVersion,
             ["Octopus.Action.Package.OriginalInstalledPath"] = context.ExtractDir,
         };
+
+        // Referenced packages: each one gets an Octopus.Action.Package[Name].*
+        // family of indexed system variables and a matching env var.
+        foreach (var (name, path) in context.ReferencedPackagePaths)
+        {
+            preambleVars[$"Octopus.Action.Package[{name}].ExtractedPath"] = path;
+        }
 
         // Each supported language gets a small preamble that exposes the same
         // surface as $OctopusParameters / Set-OctopusVariable / New-OctopusArtifact.

@@ -780,9 +780,11 @@ Mid-M10 thread that didn't fit M5 (initial Octopus compat) or M9 (Kraken.IIS). S
 
 #### Phase 8 — Referenced packages
 
-- [ ] **8a: Step config schema** — `Octopus.Action.Package.PackageReferences` (JSON array of `{Name, PackageId, FeedId, Extract}`). Server resolves to specific versions at release-creation time.
-- [ ] **8b: Agent extraction** — additional packages extract alongside the primary to `extract/refs/<Name>/`. Expose `Octopus.Action.Package[<Name>].ExtractedPath` (server-side system variable) and `OCTOPUS_REFERENCED_PACKAGE_<Name>_PATH` (agent env var).
-- [ ] **8c: UI** — "Referenced Packages" section in the script-step form.
+- [x] **8a: Step config schema** — new `PackageReference` record in `KrakenDeploy.Contracts/Steps/` (Name / PackageId / Version / Extract / FeedId). Stored on the step as a JSON-encoded array under `Octopus.Action.Package.PackageReferences` (the Octopus-compatible key, exported as a constant on `KrakenScriptConfigKeys`). Resolved at plan-build time by the new `PackageReferenceResolver`: entries without an explicit `Version` get the latest uploaded version of the named `PackageId`. Pinning at release-creation time (channel rules etc.) is carved out as 8e.
+- [x] **8b: Agent extraction** — `DeploymentStepPlan` gains a nullable `ReferencedPackages` list (backward-compatible append). `DeploymentExecutor.ExecuteStepAsync` downloads each via `GrpcPackageDownloader`; if `Extract = true` (default) the zip is unpacked to `{tempRoot}/extracted/refs/<sanitised-name>/` (or `{tempRoot}/refs/...` for steps without a primary package). Paths are collected into `StepHandlerContext.ReferencedPackagePaths`. Failure to fetch or extract any referenced package fails the step.
+- [x] **8c: Variable + env injection** — `ScriptStepHandler` exposes each referenced package via `Octopus.Action.Package[<Name>].ExtractedPath` (set in `$OctopusParameters` via the preamble AND as an env var) plus `OCTOPUS_REFERENCED_PACKAGE_<NAME>_PATH` (Octopus naming convention). Scripts can use either accessor.
+- [x] **8d: UI** — `StepFormDialog` (script form) gains a "Referenced Packages" section with an inline grid (Name / Package ID / Version — blank = latest) plus per-row delete and a top-level "Add" button. Persists/loads the JSON; empty rows are dropped at save.
+- [ ] **8e: Release-time version pinning** — currently referenced packages resolve to the latest version at dispatch; pinning at release-creation alongside the primary `PackageVersion` snapshot would lock the full dependency set for reproducibility. Lives in `ReleaseService.CreateAsync` next to `Release.ProcessSnapshot`.
 
 #### Built-in step pack (Octopus parity)
 

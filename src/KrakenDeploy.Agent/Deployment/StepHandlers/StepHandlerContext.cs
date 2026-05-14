@@ -33,4 +33,16 @@ public sealed class StepHandlerContext
     /// Second argument is the message text.
     /// </summary>
     public required Func<string, string, Task> LogAsync { get; init; }
+
+    /// <summary>
+    /// On-disk paths for each <see cref="DeploymentStepPlan.ReferencedPackages"/>
+    /// entry, keyed by the package's <c>Name</c>. Populated by
+    /// <c>DeploymentExecutor</c> after extraction. Handlers should expose
+    /// these as <c>OCTOPUS_REFERENCED_PACKAGE_&lt;Name&gt;_PATH</c> env vars
+    /// and <c>Octopus.Action.Package[Name].ExtractedPath</c> variables for
+    /// scripts that depend on bundled tooling. Empty when the step has no
+    /// referenced packages.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> ReferencedPackagePaths { get; init; } =
+        new Dictionary<string, string>();
 }

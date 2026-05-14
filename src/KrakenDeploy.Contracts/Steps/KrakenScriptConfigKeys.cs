@@ -39,4 +39,12 @@ public static class KrakenScriptConfigKeys
     /// for Octopus-import compatibility; agent execution is the Kraken default.
     /// </summary>
     public const string RunOnServer = "Octopus.Action.RunOnServer";
+
+    /// <summary>
+    /// JSON-encoded array of <see cref="PackageReference"/> records — extra
+    /// packages a step depends on. Resolved versions are pinned at release-
+    /// creation time. Empty / missing means the step only uses its primary
+    /// package (if any).
+    /// </summary>
+    public const string PackageReferences = "Octopus.Action.Package.PackageReferences";
 }

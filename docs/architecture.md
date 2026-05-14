@@ -198,6 +198,22 @@ Fully-server-side deployments complete without ever sending a plan to the agent 
 
 The PowerShell preamble used server-side mirrors the agent's: `$OctopusParameters` is pre-populated, plus `Set-OctopusVariable` / `Write-KrakenInfo` / `Get-KrakenVariable` helpers. Output-variable capture via the `##octopus[setVariable]` stdout marker is _not yet_ wired through on the server side (the agent path handles it via `OctopusMessageParser` in `DeploymentExecutor`); follow-up work would extract that into a shared utility and apply it here too.
 
+### Referenced packages
+
+A step can declare extra packages alongside its primary one — useful for steps that need bundled tooling (a helper module, `jq`, a Terraform binary, etc.). Each declared `PackageReference` (defined in `KrakenDeploy.Contracts.Steps`) carries a friendly `Name`, the feed's `PackageId`, an optional `Version` (blank = latest at dispatch time), and an `Extract` bool. The list is stored as a JSON-encoded array in step config under `Octopus.Action.Package.PackageReferences` (the Octopus-compatible key, exposed as `KrakenScriptConfigKeys.PackageReferences`).
+
+Flow:
+
+1. **Server (plan build)** — `PackageReferenceResolver.ResolveAsync` parses the JSON, looks up the latest version for any entry missing one (via `db.Packages.Where(p => p.PackageId == id).OrderByDescending(p => p.UploadedUtc)`), and writes the resolved list onto the `DeploymentStepPlan.ReferencedPackages` field (a new nullable, backward-compatible record member). Used by both `DeploymentWorker` and `RunbookRunWorker`.
+2. **Agent (execution)** — `DeploymentExecutor.ExecuteStepAsync` downloads each referenced package via the existing `GrpcPackageDownloader`. With `Extract = true` (the default) the zip is unpacked to `{tempRoot}/extracted/refs/<sanitised-name>/`; otherwise the zip path itself is exposed. Resolved paths land in `StepHandlerContext.ReferencedPackagePaths` keyed by friendly name.
+3. **Script surface** — `ScriptStepHandler` exposes two accessors per reference:
+   - `$OctopusParameters["Octopus.Action.Package[<Name>].ExtractedPath"]` / `#{Octopus.Action.Package[<Name>].ExtractedPath}` (also an env var of the same name)
+   - `OCTOPUS_REFERENCED_PACKAGE_<NAME>_PATH` env var (Octopus's flat-name convention)
+
+UI: `StepFormDialog` (script form) has a "Referenced Packages" inline grid. Other step forms inherit the underlying machinery — they simply persist a `Octopus.Action.Package.PackageReferences` JSON value through their existing Config dict.
+
+Reproducibility note: version resolution is currently at dispatch time. Phase 8e (deferred) will pin the resolved set into `Release.ProcessSnapshot` at release-creation time, matching what `Release.PackageVersion` does for the primary package.
+
 ## Extension points
 
 | To add | Where |
