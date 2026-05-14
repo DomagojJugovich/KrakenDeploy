@@ -1,0 +1,296 @@
+@using KrakenDeploy.Server.Core.Domain.Processes
+@using KrakenDeploy.Server.Core.Domain.StepTemplates
+@using KrakenDeploy.Server.Data.Services
+
+@inject ProcessService ProcessSvc
+@inject DialogService Dialog
+
+@*
+    Generic step-template form. Renders one input per StepTemplateParameter
+    based on its ControlType. Used by Process.razor for any non-script step:
+      - Add: pass Template + ProjectId; leave Step null
+      - Edit: pass Template + Step; ProjectId ignored
+
+    Script-flavoured templates (Kraken.Script / Octopus.Script) still go
+    through StepFormDialog which has its own dedicated script-body editor.
+*@
+
+<div style="min-width:640px; padding:0.25rem 0;">
+    <EditForm Model="_model" OnValidSubmit="SaveAsync">
+        <DataAnnotationsValidator />
+        <RadzenStack Gap="1rem">
+
+            @* ── Common fields ─────────────────────────────────────────── *@
+            <div>
+                <RadzenLabel Text="Name *" />
+                <RadzenTextBox @bind-Value="_model.Name" Style="width:100%" />
+                <ValidationMessage For="() => _model.Name" class="kraken-validation-error" />
+            </div>
+
+            <div>
+                <RadzenLabel Text="Package ID" />
+                <RadzenTextBox @bind-Value="_model.PackageId" Style="width:100%"
+                               Placeholder="Logical package id (optional for non-package steps)" />
+            </div>
+
+            <div>
+                <RadzenLabel Text="Target Roles" />
+                <RadzenTextBox @bind-Value="_model.TargetRolesCsv" Style="width:100%"
+                               Placeholder="Comma-separated; leave empty to run on every target." />
+            </div>
+
+            @if (Template?.Parameters.Count > 0)
+            {
+                <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mt-2 rz-mb-0">
+                    Template parameters
+                </RadzenText>
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-1">
+                    Defined by <code>@Template.ActionType</code> (@Template.Name).
+                </RadzenText>
+
+                @foreach (var param in Template.Parameters)
+                {
+                    <div>
+                        <RadzenLabel Text="@param.Label" />
+                        @RenderParameterEditor(param)
+                        @if (!string.IsNullOrWhiteSpace(param.HelpText))
+                        {
+                            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                                @param.HelpText
+                            </RadzenText>
+                        }
+                    </div>
+                }
+            }
+            else if (Template is not null)
+            {
+                <RadzenAlert AlertStyle="AlertStyle.Info" Shade="Shade.Lighter" AllowClose="false">
+                    This template has no user-editable parameters. The step will be created with
+                    the template's default Properties.
+                </RadzenAlert>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(_errorMessage))
+            {
+                <div class="kraken-login-error rz-text-body2">@_errorMessage</div>
+            }
+
+            <RadzenStack Orientation="Orientation.Horizontal"
+                         JustifyContent="JustifyContent.End" Gap="0.5rem">
+                <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                              Click="@(_ => Dialog.Close(false))" />
+                <RadzenButton Text="@(_isEdit ? "Save" : "Add Step")"
+                              ButtonType="ButtonType.Submit"
+                              ButtonStyle="ButtonStyle.Primary" />
+            </RadzenStack>
+        </RadzenStack>
+    </EditForm>
+</div>
+
+@code {
+    [Parameter] public Guid? ProjectId { get; set; }
+    [Parameter] public DeploymentStep? Step { get; set; }
+    [Parameter, EditorRequired] public StepTemplate? Template { get; set; }
+
+    private readonly FormModel _model = new();
+    private readonly Dictionary<string, string> _paramValues =
+        new(StringComparer.OrdinalIgnoreCase);
+    private string? _errorMessage;
+    private bool _isEdit;
+
+    protected override void OnParametersSet()
+    {
+        if (Template is null) { return; }
+
+        if (Step is null)
+        {
+            _isEdit         = false;
+            _model.Name     = Template.Name;
+            _model.PackageId = "";
+            _model.TargetRolesCsv = "";
+            foreach (var p in Template.Parameters)
+            {
+                _paramValues[p.Name] = p.DefaultValue ?? "";
+            }
+        }
+        else
+        {
+            _isEdit         = true;
+            _model.Name     = Step.Name;
+            _model.PackageId = Step.PackageId;
+            _model.TargetRolesCsv = string.Join(", ", Step.TargetRoles);
+            foreach (var p in Template.Parameters)
+            {
+                _paramValues[p.Name] = Step.Config.TryGetValue(p.Name, out var v)
+                    ? v
+                    : (p.DefaultValue ?? "");
+            }
+        }
+    }
+
+    // ── Per-parameter editor ─────────────────────────────────────────────
+
+    private RenderFragment RenderParameterEditor(StepTemplateParameter param) => builder =>
+    {
+        var current = _paramValues.TryGetValue(param.Name, out var v) ? v : "";
+
+        switch (param.ControlType)
+        {
+            case "MultiLineText":
+                builder.OpenComponent<RadzenTextArea>(0);
+                builder.AddAttribute(1, "Value", current);
+                builder.AddAttribute(2, "ValueChanged",
+                    EventCallback.Factory.Create<string>(this, (string s) => _paramValues[param.Name] = s ?? ""));
+                builder.AddAttribute(3, "Rows", 6);
+                builder.AddAttribute(4, "Style", "width:100%; font-family: var(--rz-mono-font, monospace);");
+                builder.CloseComponent();
+                break;
+
+            case "Sensitive":
+                builder.OpenComponent<RadzenPassword>(0);
+                builder.AddAttribute(1, "Value", current);
+                builder.AddAttribute(2, "ValueChanged",
+                    EventCallback.Factory.Create<string>(this, (string s) => _paramValues[param.Name] = s ?? ""));
+                builder.AddAttribute(3, "Style", "width:100%;");
+                builder.CloseComponent();
+                break;
+
+            case "Checkbox":
+                {
+                    var asBool = current.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                                 current == "1";
+                    builder.OpenComponent<RadzenCheckBox<bool>>(0);
+                    builder.AddAttribute(1, "Value", asBool);
+                    builder.AddAttribute(2, "ValueChanged",
+                        EventCallback.Factory.Create<bool>(this,
+                            (bool b) => _paramValues[param.Name] = b ? "true" : "false"));
+                    builder.CloseComponent();
+                }
+                break;
+
+            case "Select":
+                {
+                    var options = ParseSelectOptions(param.SelectOptions);
+                    builder.OpenComponent<RadzenDropDown<string>>(0);
+                    builder.AddAttribute(1, "Value", current);
+                    builder.AddAttribute(2, "ValueChanged",
+                        EventCallback.Factory.Create<string>(this,
+                            (string s) => _paramValues[param.Name] = s ?? ""));
+                    builder.AddAttribute(3, "Data", options);
+                    builder.AddAttribute(4, "TextProperty", nameof(SelectOption.Label));
+                    builder.AddAttribute(5, "ValueProperty", nameof(SelectOption.Value));
+                    builder.AddAttribute(6, "Style", "width:100%;");
+                    builder.AddAttribute(7, "AllowClear", true);
+                    builder.CloseComponent();
+                }
+                break;
+
+            // SingleLineText, Package, and anything unrecognised fall back to a text box.
+            default:
+                builder.OpenComponent<RadzenTextBox>(0);
+                builder.AddAttribute(1, "Value", current);
+                builder.AddAttribute(2, "ValueChanged",
+                    EventCallback.Factory.Create<string>(this, (string s) => _paramValues[param.Name] = s ?? ""));
+                builder.AddAttribute(3, "Style", "width:100%;");
+                builder.CloseComponent();
+                break;
+        }
+    };
+
+    private static List<SelectOption> ParseSelectOptions(IEnumerable<string> raw)
+    {
+        var list = new List<SelectOption>();
+        foreach (var line in raw)
+        {
+            if (string.IsNullOrWhiteSpace(line)) { continue; }
+            var idx = line.IndexOf('|');
+            if (idx >= 0)
+            {
+                list.Add(new SelectOption(line[..idx], line[(idx + 1)..]));
+            }
+            else
+            {
+                list.Add(new SelectOption(line, line));
+            }
+        }
+        return list;
+    }
+
+    private sealed record SelectOption(string Value, string Label);
+
+    // ── Save ─────────────────────────────────────────────────────────────
+
+    private async Task SaveAsync()
+    {
+        _errorMessage = null;
+        if (Template is null)
+        {
+            _errorMessage = "Internal error — no template supplied.";
+            return;
+        }
+
+        try
+        {
+            var roles = ParseCsv(_model.TargetRolesCsv);
+
+            // Start from the template's Properties (template-author defaults),
+            // then overlay user-provided parameter values. Parameter keys win.
+            var config = new Dictionary<string, string>(Template.Properties, StringComparer.OrdinalIgnoreCase);
+            foreach (var (name, value) in _paramValues)
+            {
+                config[name] = value;
+            }
+
+            if (_isEdit && Step is not null)
+            {
+                // Edit path: preserve any pre-existing Config keys that the
+                // template doesn't know about (e.g. legacy data, manual edits).
+                var merged = new Dictionary<string, string>(Step.Config, StringComparer.OrdinalIgnoreCase);
+                foreach (var (k, v) in config)
+                {
+                    merged[k] = v;
+                }
+
+                await ProcessSvc.UpdateStepAsync(
+                    Step.Id, _model.Name, _model.PackageId, roles, merged);
+            }
+            else
+            {
+                if (ProjectId is null)
+                {
+                    _errorMessage = "Missing ProjectId — cannot create a step.";
+                    return;
+                }
+
+                await ProcessSvc.AddStepAsync(
+                    ProjectId.Value,
+                    _model.Name,
+                    Template.ActionType,
+                    _model.PackageId,
+                    roles,
+                    config);
+            }
+
+            Dialog.Close(true);
+        }
+        catch (Exception ex)
+        {
+            _errorMessage = ex.Message;
+        }
+    }
+
+    private static List<string> ParseCsv(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) { return []; }
+        return [.. raw.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                       .Select(s => s.Trim())
+                       .Where(s => s.Length > 0)];
+    }
+
+    private sealed class FormModel
+    {
+        public string Name { get; set; } = "";
+        public string PackageId { get; set; } = "";
+        public string TargetRolesCsv { get; set; } = "";
+    }
+}

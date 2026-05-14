@@ -7,6 +7,7 @@
 @inject ProjectService ProjectSvc
 @inject ProcessService ProcessSvc
 @inject LifecycleService LifecycleSvc
+@inject StepTemplateService TemplateSvc
 @inject DialogService Dialog
 @inject NotificationService Notifications
 @inject NavigationManager Nav
@@ -322,39 +323,68 @@
             return;
         }
 
-        // Non-script template — create the step directly using the template's
-        // ActionType + Properties. User can rename via edit; a full parameter-
-        // driven form for non-script templates is a follow-up (Phase 5b).
-        try
-        {
-            await ProcessSvc.AddStepAsync(
-                _project.Id,
-                name: template.Name,
-                stepType: template.ActionType,
-                packageId: "",
-                targetRoles: [],
-                config: new Dictionary<string, string>(template.Properties));
+        // Non-script template — render the generic parameter form.
+        var templatedResult = await Dialog.OpenAsync<TemplatedStepFormDialog>(
+            $"Add Step — {template.Name}",
+            new Dictionary<string, object?>
+            {
+                [nameof(TemplatedStepFormDialog.ProjectId)] = _project.Id,
+                [nameof(TemplatedStepFormDialog.Template)]  = template,
+            },
+            new DialogOptions { Width = "720px", CloseDialogOnOverlayClick = false });
 
+        if (templatedResult is true)
+        {
             await ReloadStepsAsync();
-
-            Notifications.Notify(NotificationSeverity.Success,
-                "Step added",
-                $"'{template.Name}' added using template defaults. " +
-                "Per-parameter UI is coming in a follow-up; edit via the API for now.",
-                6000);
-        }
-        catch (Exception ex)
-        {
-            Notifications.Notify(NotificationSeverity.Error, "Add failed", ex.Message, 5000);
         }
     }
 
     private async Task OpenEditStepAsync(DeploymentStep step)
     {
-        var result = await Dialog.OpenAsync<StepFormDialog>(
-            "Edit Step",
-            new Dictionary<string, object?> { [nameof(StepFormDialog.Step)] = step },
-            new DialogOptions { Width = "640px" });
+        // Script-flavoured steps → existing dedicated form.
+        var isScript = step.StepType.Equals("Kraken.Script", StringComparison.OrdinalIgnoreCase)
+                    || step.StepType.Equals("Octopus.Script", StringComparison.OrdinalIgnoreCase);
+
+        if (isScript)
+        {
+            var scriptResult = await Dialog.OpenAsync<StepFormDialog>(
+                "Edit Step",
+                new Dictionary<string, object?> { [nameof(StepFormDialog.Step)] = step },
+                new DialogOptions { Width = "640px" });
+
+            if (scriptResult is true)
+            {
+                await ReloadStepsAsync();
+            }
+            return;
+        }
+
+        // Non-script step → render the generic parameter form, resolving the
+        // template by ActionType (most ActionTypes have exactly one template).
+        // If no template matches, fall back to a notice — there's nothing
+        // sensible to render without knowing the parameter list.
+        var allTemplates = await TemplateSvc.GetAllAsync();
+        var template = allTemplates.FirstOrDefault(t =>
+            t.ActionType.Equals(step.StepType, StringComparison.OrdinalIgnoreCase));
+
+        if (template is null)
+        {
+            Notifications.Notify(NotificationSeverity.Warning,
+                "Cannot edit step",
+                $"No installed template matches step type '{step.StepType}'. " +
+                "Install a matching template (or edit Config via the API).",
+                5000);
+            return;
+        }
+
+        var result = await Dialog.OpenAsync<TemplatedStepFormDialog>(
+            $"Edit Step — {template.Name}",
+            new Dictionary<string, object?>
+            {
+                [nameof(TemplatedStepFormDialog.Step)]     = step,
+                [nameof(TemplatedStepFormDialog.Template)] = template,
+            },
+            new DialogOptions { Width = "720px", CloseDialogOnOverlayClick = false });
 
         if (result is true)
         {

@@ -164,7 +164,23 @@ Installing a catalog row → `StepTemplateCatalogService.InstallAsync(id)` fetch
 
 ### Add-Step picker
 
-When a user clicks "Add Step" on a project's Process page, `ChooseStepTemplateDialog` shows the unified Octopus-style "Choose Step Template" screen. Left pane = Featured / Installed / each big-bucket category from `StepTemplateCategoryMap`, plus search. Right grid = a permanent "Run a Script" sentinel + every installed `StepTemplate` + every uninstalled community catalog entry. Clicking "Install and Add" on a community card installs the template via the catalog service first, then proceeds as if it had been installed all along. The dialog returns a `ChooseStepTemplateResult` so `Process.razor` can route Script-flavoured templates through the existing script form and other ActionTypes through a direct `ProcessService.AddStepAsync` call (a parameter-driven form for non-script templates is Phase 5b).
+When a user clicks "Add Step" on a project's Process page, `ChooseStepTemplateDialog` shows the unified Octopus-style "Choose Step Template" screen. Left pane = Featured / Installed / each big-bucket category from `StepTemplateCategoryMap`, plus search. Right grid = a permanent "Run a Script" sentinel + every installed `StepTemplate` + every uninstalled community catalog entry. Clicking "Install and Add" on a community card installs the template via the catalog service first, then proceeds as if it had been installed all along. The dialog returns a `ChooseStepTemplateResult` so `Process.razor` can route to the right follow-up form:
+
+- **Script sentinel + Script-flavoured templates** (`Kraken.Script` / `Octopus.Script`) → `StepFormDialog` (script-body editor).
+- **Other ActionTypes** → `TemplatedStepFormDialog`, a generic form that renders one input per `StepTemplateParameter` based on its `ControlType`:
+
+  | ControlType | Editor |
+  |---|---|
+  | `SingleLineText` (default) | `RadzenTextBox` |
+  | `MultiLineText` | `RadzenTextArea` (6 rows, monospace) |
+  | `Sensitive` | `RadzenPassword` |
+  | `Checkbox` | `RadzenCheckBox<bool>` with `"true"` / `"false"` round-trip |
+  | `Select` | `RadzenDropDown` over `"value\|Label"` options parsed from `SelectOptions` |
+  | `Package` | `RadzenTextBox` (full package picker is Phase 8) |
+
+  On Save the form merges template `Properties` (template-author defaults) with the user's parameter values (user values win), and calls `ProcessService.AddStepAsync` with `template.ActionType` or `UpdateStepAsync` for edits. Edit mode also preserves any pre-existing Config keys the template doesn't know about.
+
+Editing an existing step routes the same way — `Process.razor.OpenEditStepAsync` switches on `step.StepType` (script → `StepFormDialog`, otherwise look up a `StepTemplate` whose `ActionType` matches the step and open `TemplatedStepFormDialog`; surface a warning notification if no template matches).
 
 ## Extension points
 
