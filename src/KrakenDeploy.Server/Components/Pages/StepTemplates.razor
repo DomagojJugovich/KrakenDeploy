@@ -5,6 +5,7 @@
 @inject StepTemplateService TemplateSvc
 @inject DialogService DialogService
 @inject NotificationService NotificationService
+@inject NavigationManager Nav
 
 <PageTitle>Step Templates - KrakenDeploy</PageTitle>
 
@@ -16,6 +17,14 @@
         </RadzenText>
     </RadzenColumn>
     <RadzenColumn class="rz-text-align-end">
+        <RadzenButton Icon="travel_explore" ButtonStyle="ButtonStyle.Light"
+                      Text="Browse Community" class="rz-mr-2"
+                      Click="@(() => Nav.NavigateTo("/step-templates/community"))" />
+        <RequirePermission Permission="Permission.StepTemplateCreate">
+            <RadzenButton Icon="folder_open" ButtonStyle="ButtonStyle.Light"
+                          Text="Import folder" class="rz-mr-2"
+                          Click="@ShowImportFolderDialog" />
+        </RequirePermission>
         <RequirePermission Permission="Permission.StepTemplateCreate">
             <RadzenButton Icon="upload_file" ButtonStyle="ButtonStyle.Light"
                           Text="Import JSON" class="rz-mr-2"
@@ -74,8 +83,12 @@
                 }
             </Template>
         </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="StepTemplate" Sortable="false" Filterable="false" Width="100px" TextAlign="TextAlign.End">
+        <RadzenDataGridColumn TItem="StepTemplate" Sortable="false" Filterable="false" Width="140px" TextAlign="TextAlign.End">
             <Template Context="t">
+                <RadzenButton Icon="download" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                              Variant="Variant.Flat" class="rz-mr-1"
+                              Click="@(() => Nav.NavigateTo($"/api/step-templates/{t.Id}/export", forceLoad: true))"
+                              title="Export as Octopus Library JSON" />
                 <RequirePermission Permission="Permission.StepTemplateDelete">
                     <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
                                   Variant="Variant.Flat"
@@ -121,6 +134,26 @@
             await LoadAsync();
             NotificationService.Notify(NotificationSeverity.Success,
                 "Template imported", "The step template was imported successfully.");
+        }
+    }
+
+    // ── Import-from-folder dialog ────────────────────────────────────────────
+
+    private async Task ShowImportFolderDialog()
+    {
+        var result = await DialogService.OpenAsync<Dialogs.ImportFolderDialog>(
+            "Import templates from folder",
+            options: new DialogOptions
+            {
+                Width = "780px",
+                CloseDialogOnOverlayClick = false,
+            });
+
+        if (result is true)
+        {
+            await LoadAsync();
+            NotificationService.Notify(NotificationSeverity.Success,
+                "Bulk import complete", "Templates were imported from the folder.");
         }
     }
 

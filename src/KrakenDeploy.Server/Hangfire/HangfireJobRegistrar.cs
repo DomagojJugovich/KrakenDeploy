@@ -43,5 +43,16 @@ public static class HangfireJobRegistrar
             job => job.ExecuteAsync(CancellationToken.None),
             Cron.Minutely(),
             new RecurringJobOptions { TimeZone = utc });
+
+        // Refresh the community step-template catalog from the
+        // OctopusDeploy/Library GitHub repo — hourly.
+        // Uses the Git Trees API (single request) + raw URLs (off-limit), so
+        // hourly polling stays comfortably within GitHub's 60-req/hour
+        // unauthenticated rate budget.
+        RecurringJob.AddOrUpdate<StepTemplateCatalogPollJob>(
+            "kraken.step-template-catalog-poll",
+            job => job.ExecuteAsync(CancellationToken.None),
+            Cron.Hourly(),
+            new RecurringJobOptions { TimeZone = utc });
     }
 }

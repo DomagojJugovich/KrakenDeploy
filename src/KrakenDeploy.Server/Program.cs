@@ -325,6 +325,25 @@ public static class Program
             options.ServerName = $"kraken:{Environment.MachineName}";
         });
 
+        // ── HttpClient for outbound calls ────────────────────────────────────
+        // Named client used by StepTemplateCatalogService to talk to the
+        // GitHub API + raw.githubusercontent.com. The User-Agent header is
+        // mandatory for the GitHub API; the optional token raises the
+        // unauthenticated 60-req/hr limit to 5000-req/hr when configured.
+        builder.Services.AddHttpClient(StepTemplateCatalogService.HttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(60);
+            client.DefaultRequestHeaders.Add("User-Agent", "KrakenDeploy/1.0 (+catalog-poll)");
+            client.DefaultRequestHeaders.Add("Accept", "application/vnd.github+json");
+
+            var token = builder.Configuration["GitHub:Token"];
+            if (!string.IsNullOrWhiteSpace(token))
+            {
+                client.DefaultRequestHeaders.Authorization =
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            }
+        });
+
         // ── Blazor UI ────────────────────────────────────────────────────────
         builder.Services.AddCascadingAuthenticationState();
         builder.Services.AddHttpContextAccessor();
@@ -1257,6 +1276,89 @@ public static class Program
                     return Results.Ok(template);
                 }
                 catch (Exception ex) when (ex is InvalidOperationException or System.Text.Json.JsonException)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.StepTemplateCreate);
+
+        app.MapGet("/api/step-templates/{id:guid}/export",
+            async (Guid id, StepTemplateService svc, CancellationToken ct) =>
+            {
+                var template = await svc.GetAsync(id, ct).ConfigureAwait(false);
+                if (template is null)
+                {
+                    return Results.NotFound();
+                }
+                var json = OctopusLibraryExporter.Serialize(template);
+                var safeName = string.Concat(template.Name
+                    .Where(c => char.IsLetterOrDigit(c) || c is '-' or '_' or '.' or ' '))
+                    .Replace(' ', '_');
+                if (string.IsNullOrWhiteSpace(safeName))
+                {
+                    safeName = id.ToString("N");
+                }
+                return Results.File(System.Text.Encoding.UTF8.GetBytes(json),
+                    contentType: "application/json",
+                    fileDownloadName: $"{safeName}.json");
+            }).RequirePermission(Permission.StepTemplateView);
+
+        app.MapPost("/api/step-templates/import-folder",
+            async (ImportFolderRequest req, StepTemplateService svc,
+                CancellationToken ct) =>
+            {
+                if (string.IsNullOrWhiteSpace(req.FolderPath))
+                {
+                    return Results.BadRequest(new { error = "FolderPath is required." });
+                }
+
+                try
+                {
+                    var summary = await svc.ImportFromDirectoryAsync(req.FolderPath, ct)
+                        .ConfigureAwait(false);
+                    return Results.Ok(summary);
+                }
+                catch (DirectoryNotFoundException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.StepTemplateCreate);
+
+        // ── Community catalog API ────────────────────────────────────────────
+        app.MapGet("/api/step-template-catalog",
+            async (string? category, StepTemplateCatalogService svc, CancellationToken ct) =>
+            {
+                var entries = await svc.GetAllAsync(category, ct).ConfigureAwait(false);
+                var lastSync = await svc.GetLastSyncAsync(ct).ConfigureAwait(false);
+                return Results.Ok(new { entries, lastSync });
+            }).RequirePermission(Permission.StepTemplateView);
+
+        app.MapPost("/api/step-template-catalog/refresh",
+            async (StepTemplateCatalogService svc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var summary = await svc.RefreshAsync(ct).ConfigureAwait(false);
+                    return Results.Ok(summary);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.StepTemplateCreate);
+
+        app.MapPost("/api/step-template-catalog/{id:guid}/install",
+            async (Guid id, StepTemplateCatalogService svc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var template = await svc.InstallAsync(id, ct).ConfigureAwait(false);
+                    return Results.Ok(template);
+                }
+                catch (InvalidOperationException ex)
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }

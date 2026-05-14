@@ -157,7 +157,114 @@ public class StepTemplateService(IDbContextFactory<KrakenDbContext> dbFactory)
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return imported;
     }
+
+    // ── Bulk import ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Recursively scans <paramref name="folderPath"/> for <c>*.json</c> files
+    /// and calls <see cref="ImportFromJsonAsync"/> on each. Tracks added /
+    /// updated / skipped (not-a-template) / errored counts and returns a
+    /// summary. Intended for bulk-loading a clone of the
+    /// <c>OctopusDeploy/Library</c> repo's <c>step-templates/</c> directory.
+    /// Sets <see cref="StepTemplateSource.LocalImport"/> on every row.
+    /// </summary>
+    /// <exception cref="DirectoryNotFoundException">
+    /// The folder does not exist.
+    /// </exception>
+    public async Task<ImportFromDirectoryResult> ImportFromDirectoryAsync(
+        string folderPath, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(folderPath);
+
+        if (!Directory.Exists(folderPath))
+        {
+            throw new DirectoryNotFoundException(
+                $"Folder '{folderPath}' not found on the server.");
+        }
+
+        var files = Directory.GetFiles(folderPath, "*.json", SearchOption.AllDirectories);
+        var added   = new List<string>();
+        var updated = new List<string>();
+        var skipped = new List<string>();
+        var errors  = new List<ImportFromDirectoryError>();
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var existingCommunityIds = await db.StepTemplates
+            .Where(t => t.CommunityTemplateId != null)
+            .Select(t => t.CommunityTemplateId!)
+            .ToHashSetAsync(StringComparer.OrdinalIgnoreCase, ct)
+            .ConfigureAwait(false);
+
+        foreach (var file in files)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            string json;
+            try
+            {
+                json = await File.ReadAllTextAsync(file, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                errors.Add(new ImportFromDirectoryError(file, $"Read failed: {ex.Message}"));
+                continue;
+            }
+
+            try
+            {
+                var parsed = OctopusLibraryImporter.Parse(json, importSource: Path.GetFileName(file));
+                var isUpdate = !string.IsNullOrWhiteSpace(parsed.CommunityTemplateId)
+                    && existingCommunityIds.Contains(parsed.CommunityTemplateId!);
+
+                await ImportFromJsonAsync(
+                    json,
+                    importSource: Path.GetFileName(file),
+                    source: StepTemplateSource.LocalImport,
+                    ct: ct).ConfigureAwait(false);
+
+                if (isUpdate)
+                {
+                    updated.Add(file);
+                }
+                else
+                {
+                    added.Add(file);
+                }
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or JsonException)
+            {
+                // Treat "Name/ActionType required" failures as "not a step template" —
+                // common when scanning a Library clone that also contains README.json etc.
+                skipped.Add(file);
+                _ = ex;
+            }
+            catch (Exception ex)
+            {
+                errors.Add(new ImportFromDirectoryError(file, ex.Message));
+            }
+        }
+
+        return new ImportFromDirectoryResult(
+            ScannedFiles: files.Length,
+            Added:        added.Count,
+            Updated:      updated.Count,
+            Skipped:      skipped.Count,
+            Errored:      errors.Count,
+            Errors:       errors);
+    }
 }
+
+/// <summary>Result of <see cref="StepTemplateService.ImportFromDirectoryAsync"/>.</summary>
+public sealed record ImportFromDirectoryResult(
+    int ScannedFiles,
+    int Added,
+    int Updated,
+    int Skipped,
+    int Errored,
+    IReadOnlyList<ImportFromDirectoryError> Errors);
+
+/// <summary>A per-file error during a bulk directory import.</summary>
+public sealed record ImportFromDirectoryError(string File, string Message);
 
 // ── DTOs ───────────────────────────────────────────────────────────────────────
 
@@ -170,6 +277,106 @@ public sealed record StepTemplateSummaryDto(
     int ParameterCount,
     int Version,
     DateTimeOffset CreatedUtc);
+
+// ── Octopus Library exporter ───────────────────────────────────────────────────
+
+/// <summary>
+/// Serialises a <see cref="StepTemplate"/> back to the JSON format used by the
+/// <c>OctopusDeploy/Library</c> repository. Round-trips with
+/// <see cref="OctopusLibraryImporter.Parse(string, string?)"/>.
+/// </summary>
+public static class OctopusLibraryExporter
+{
+    private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web)
+    {
+        WriteIndented = true,
+    };
+
+    /// <summary>Returns the template as pretty-printed Library JSON.</summary>
+    public static string Serialize(StepTemplate template)
+    {
+        ArgumentNullException.ThrowIfNull(template);
+
+        var root = new JsonObject
+        {
+            ["Id"]                        = template.CommunityTemplateId ?? template.Id.ToString(),
+            ["Name"]                      = template.Name,
+            ["Description"]               = template.Description ?? "",
+            ["ActionType"]                = template.ActionType,
+            ["Version"]                   = template.Version,
+            ["CommunityActionTemplateId"] = template.CommunityTemplateId,
+            ["Properties"]                = BuildPropertiesNode(template.Properties),
+            ["Parameters"]                = BuildParametersNode(template.Parameters),
+            ["Category"]                  = template.Category,
+            ["Author"]                    = template.Author,
+            ["Website"]                   = template.Website,
+            ["LogoUrl"]                   = template.LogoUrl,
+            ["$Meta"] = new JsonObject
+            {
+                ["ExportedAt"] = DateTimeOffset.UtcNow.ToString("O"),
+                ["ExportedBy"] = "KrakenDeploy",
+            },
+        };
+
+        return root.ToJsonString(JsonOpts);
+    }
+
+    private static JsonObject BuildPropertiesNode(Dictionary<string, string> properties)
+    {
+        var obj = new JsonObject();
+        foreach (var (k, v) in properties)
+        {
+            obj[k] = v;
+        }
+        return obj;
+    }
+
+    private static JsonArray BuildParametersNode(List<StepTemplateParameter> parameters)
+    {
+        var arr = new JsonArray();
+        foreach (var p in parameters)
+        {
+            var entry = new JsonObject
+            {
+                ["Name"]         = p.Name,
+                ["Label"]        = p.Label,
+                ["HelpText"]     = p.HelpText,
+                ["DefaultValue"] = p.DefaultValue,
+                ["DisplaySettings"] = BuildDisplaySettings(p),
+            };
+            arr.Add(entry);
+        }
+        return arr;
+    }
+
+    private static JsonObject BuildDisplaySettings(StepTemplateParameter p)
+    {
+        var ds = new JsonObject
+        {
+            ["Octopus.ControlType"] = MapKrakenControlTypeToOctopus(p.ControlType),
+        };
+
+        if (p.SelectOptions.Count > 0)
+        {
+            // Octopus stores them newline-joined as "value|Label" lines.
+            ds["Octopus.SelectOptions"] = string.Join('\n', p.SelectOptions);
+        }
+
+        return ds;
+    }
+
+    private static string MapKrakenControlTypeToOctopus(string krakenControlType) =>
+        krakenControlType switch
+        {
+            "SingleLineText" => "SingleLineText",
+            "MultiLineText"  => "MultiLineText",
+            "Sensitive"      => "Sensitive",
+            "Checkbox"       => "Checkbox",
+            "Package"        => "Package",
+            "Select"         => "Select",
+            _                => "SingleLineText",
+        };
+}
 
 // ── Octopus Library importer ───────────────────────────────────────────────────
 

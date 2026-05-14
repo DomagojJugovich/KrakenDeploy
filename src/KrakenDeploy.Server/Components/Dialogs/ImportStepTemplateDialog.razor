@@ -1,13 +1,24 @@
 @using KrakenDeploy.Server.Data.Services
+@using Microsoft.AspNetCore.Components.Forms
 @inject StepTemplateService TemplateSvc
 @inject DialogService DialogService
 
 <RadzenStack Gap="1rem">
     <RadzenText TextStyle="TextStyle.Body1">
-        Paste a step-template JSON from the
+        Paste a step-template JSON or pick a <code>.json</code> file from the
         <RadzenLink Path="https://github.com/OctopusDeploy/Library/tree/master/step-templates"
-                    Target="_blank" Text="Octopus Community Library" /> or any compatible source.
+                    Target="_blank" Text="Octopus Community Library" /> (or any compatible source).
     </RadzenText>
+
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" AlignItems="AlignItems.Center">
+        <InputFile OnChange="@OnFileSelectedAsync" accept=".json" />
+        @if (!string.IsNullOrEmpty(_selectedFileName))
+        {
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                Loaded <code>@_selectedFileName</code> into the editor below.
+            </RadzenText>
+        }
+    </RadzenStack>
 
     <RadzenFormField Text="JSON" Variant="Variant.Outlined" style="width:100%">
         <RadzenTextArea @bind-Value="_json" Rows="16" style="width:100%; font-family:monospace"
@@ -30,21 +41,45 @@
 @code {
     private string _json = string.Empty;
     private string _error = string.Empty;
+    private string _selectedFileName = string.Empty;
     private bool _busy;
+    private const long MaxFileSize = 5 * 1024 * 1024; // 5 MB plenty for a step template
+
+    private async Task OnFileSelectedAsync(InputFileChangeEventArgs e)
+    {
+        _error = string.Empty;
+        if (e.File is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await using var stream = e.File.OpenReadStream(maxAllowedSize: MaxFileSize);
+            using var reader = new StreamReader(stream);
+            _json = await reader.ReadToEndAsync();
+            _selectedFileName = e.File.Name;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to read file: {ex.Message}";
+        }
+    }
 
     private async Task ImportAsync()
     {
         _error = string.Empty;
         if (string.IsNullOrWhiteSpace(_json))
         {
-            _error = "Please paste the template JSON.";
+            _error = "Please paste the template JSON or pick a file.";
             return;
         }
 
         _busy = true;
         try
         {
-            await TemplateSvc.ImportFromJsonAsync(_json, "Manual import");
+            var source = string.IsNullOrEmpty(_selectedFileName) ? "Manual import" : _selectedFileName;
+            await TemplateSvc.ImportFromJsonAsync(_json, source);
             DialogService.Close(true);
         }
         catch (Exception ex)

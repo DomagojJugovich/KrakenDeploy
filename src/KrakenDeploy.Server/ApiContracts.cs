@@ -59,6 +59,9 @@ public sealed record ImportStepTemplateRequest(
     string Json,
     string? ImportSource);
 
+/// <summary>Request body for POST /api/step-templates/import-folder.</summary>
+public sealed record ImportFolderRequest(string FolderPath);
+
 /// <summary>Parameter definition within a step-template create/update request.</summary>
 public sealed record StepTemplateParameterRequest(
     string Name,

@@ -50,6 +50,7 @@ public class KrakenDbContext(
     public DbSet<VariableSet> VariableSets => Set<VariableSet>();
     public DbSet<Variable> Variables => Set<Variable>();
     public DbSet<StepTemplate> StepTemplates => Set<StepTemplate>();
+    public DbSet<StepTemplateCatalogEntry> StepTemplateCatalog => Set<StepTemplateCatalogEntry>();
     public DbSet<Tenant> Tenants => Set<Tenant>();
     public DbSet<TagSet> TagSets => Set<TagSet>();
     public DbSet<TenantTag> TenantTags => Set<TenantTag>();

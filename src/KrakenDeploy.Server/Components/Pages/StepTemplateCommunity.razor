@@ -1,0 +1,302 @@
+@page "/step-templates/community"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using KrakenDeploy.Contracts.Steps
+@using KrakenDeploy.Server.Core.Domain.StepTemplates
+@using KrakenDeploy.Server.Data.Services
+
+@inject StepTemplateCatalogService Catalog
+@inject NotificationService Notify
+@inject NavigationManager Nav
+
+<PageTitle>Community Step Templates - KrakenDeploy</PageTitle>
+
+<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+             JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-4">
+    <div>
+        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">
+            Choose Step Template
+        </RadzenText>
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            Browse the
+            <RadzenLink Path="https://github.com/OctopusDeploy/Library/tree/master/step-templates"
+                        Target="_blank" Text="Octopus Community Library" />
+            and install any template into KrakenDeploy in one click.
+            @if (_lastSync is not null)
+            {
+                <span> Last synced @_lastSync.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm").</span>
+            }
+        </RadzenText>
+    </div>
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" AlignItems="AlignItems.Center">
+        <RequirePermission Permission="Permission.StepTemplateCreate">
+            <RadzenButton Icon="refresh" Text="Refresh" ButtonStyle="ButtonStyle.Light"
+                          IsBusy="@_refreshing" Click="@RefreshAsync" />
+        </RequirePermission>
+        <RadzenButton Icon="arrow_back" Text="Back to library" ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => Nav.NavigateTo("/step-templates"))" />
+    </RadzenStack>
+</RadzenStack>
+
+@if (_loading)
+{
+    <RadzenText class="rz-color-secondary">Loading catalog…</RadzenText>
+}
+else if (_entries.Count == 0)
+{
+    <RadzenAlert AlertStyle="AlertStyle.Info" Shade="Shade.Lighter" AllowClose="false">
+        The catalog is empty. Click <strong>Refresh</strong> to sync from GitHub.
+        @if (_lastError is not null)
+        {
+            <div class="rz-mt-2">
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-danger">
+                    @_lastError
+                </RadzenText>
+            </div>
+        }
+    </RadzenAlert>
+}
+else
+{
+    <RadzenRow Gap="1rem">
+        @* ── Left: filter pane ─────────────────────────────────────────── *@
+        <RadzenColumn Size="3">
+            <RadzenCard>
+                <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-2">Filter</RadzenText>
+
+                <RadzenTextBox @bind-Value="_search" Placeholder="Search name or action…"
+                               style="width:100%;" Change="@(() => StateHasChanged())" />
+
+                <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mt-3 rz-mb-1">Categories</RadzenText>
+                <div>
+                    <RadzenButton Text=@($"All ({_entries.Count})")
+                                  ButtonStyle="@(SelectedBucket is null ? ButtonStyle.Primary : ButtonStyle.Light)"
+                                  Variant="Variant.Flat" Size="ButtonSize.Small"
+                                  class="rz-mb-1" style="width:100%; justify-content:flex-start;"
+                                  Click="@(() => SetBucket(null))" />
+                    @foreach (var bucket in _bigBuckets)
+                    {
+                        <RadzenButton Text=@($"{bucket} ({_bucketCounts[bucket]})")
+                                      ButtonStyle="@(SelectedBucket == bucket ? ButtonStyle.Primary : ButtonStyle.Light)"
+                                      Variant="Variant.Flat" Size="ButtonSize.Small"
+                                      class="rz-mb-1" style="width:100%; justify-content:flex-start; text-align:left;"
+                                      Click="@(() => SetBucket(bucket))" />
+                    }
+                </div>
+            </RadzenCard>
+        </RadzenColumn>
+
+        @* ── Right: cards ──────────────────────────────────────────────── *@
+        <RadzenColumn Size="9">
+            @{
+                var visible = FilteredEntries().ToList();
+            }
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-2">
+                Showing @visible.Count of @_entries.Count templates.
+            </RadzenText>
+
+            @if (visible.Count == 0)
+            {
+                <RadzenAlert AlertStyle="AlertStyle.Info" Shade="Shade.Lighter" AllowClose="false">
+                    No templates match the current filter.
+                </RadzenAlert>
+            }
+            else
+            {
+                <RadzenRow Gap="1rem">
+                    @foreach (var entry in visible)
+                    {
+                        <RadzenColumn Size="12" SizeMD="6" SizeLG="4">
+                            <RadzenCard Style="height: 100%; display:flex; flex-direction:column;">
+                                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem"
+                                             AlignItems="AlignItems.Start" class="rz-mb-2">
+                                    @if (!string.IsNullOrWhiteSpace(entry.LogoUrl))
+                                    {
+                                        <img src="@entry.LogoUrl" alt="" loading="lazy"
+                                             style="width:36px;height:36px;object-fit:contain;flex:0 0 auto;" />
+                                    }
+                                    else
+                                    {
+                                        <RadzenIcon Icon="extension" Style="font-size:32px; flex:0 0 auto;" />
+                                    }
+                                    <div style="min-width:0;">
+                                        <RadzenText TextStyle="TextStyle.Subtitle1"
+                                                    class="rz-mb-0" Style="word-break:break-word;">
+                                            @entry.Name
+                                        </RadzenText>
+                                        @if (!string.IsNullOrWhiteSpace(entry.Author))
+                                        {
+                                            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                                                By @entry.Author
+                                            </RadzenText>
+                                        }
+                                    </div>
+                                </RadzenStack>
+
+                                <div style="flex:1 1 auto;">
+                                    @if (!string.IsNullOrWhiteSpace(entry.Description))
+                                    {
+                                        <RadzenText TextStyle="TextStyle.Body2"
+                                                    class="rz-color-secondary"
+                                                    Style="display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden;">
+                                            @entry.Description
+                                        </RadzenText>
+                                    }
+                                </div>
+
+                                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.4rem"
+                                             AlignItems="AlignItems.Center" class="rz-mt-2">
+                                    @if (!string.IsNullOrWhiteSpace(entry.Category))
+                                    {
+                                        <RadzenBadge Text="@entry.Category" BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                                    }
+                                    <RadzenBadge Text=@($"v{entry.Version}") BadgeStyle="BadgeStyle.Info" IsPill="true" />
+                                </RadzenStack>
+
+                                <RadzenStack Orientation="Orientation.Horizontal"
+                                             JustifyContent="JustifyContent.End" Gap="0.5rem"
+                                             class="rz-mt-2">
+                                    @if (!string.IsNullOrWhiteSpace(entry.Website))
+                                    {
+                                        <RadzenButton Text="More info" Icon="open_in_new"
+                                                      ButtonStyle="ButtonStyle.Light"
+                                                      Size="ButtonSize.Small"
+                                                      Click="@(() => Nav.NavigateTo(entry.Website!, forceLoad: true))" />
+                                    }
+                                    <RequirePermission Permission="Permission.StepTemplateCreate">
+                                        <RadzenButton Text="Install" Icon="download"
+                                                      ButtonStyle="ButtonStyle.Primary"
+                                                      Size="ButtonSize.Small"
+                                                      IsBusy="@(_installing == entry.Id)"
+                                                      Disabled="@(_installing is not null)"
+                                                      Click="@(() => InstallAsync(entry))" />
+                                    </RequirePermission>
+                                </RadzenStack>
+                            </RadzenCard>
+                        </RadzenColumn>
+                    }
+                </RadzenRow>
+            }
+        </RadzenColumn>
+    </RadzenRow>
+}
+
+@code {
+    private List<StepTemplateCatalogEntry> _entries = [];
+    private DateTimeOffset? _lastSync;
+    private bool _loading = true;
+    private bool _refreshing;
+    private Guid? _installing;
+    private string? _lastError;
+    private string _search = "";
+    private string? SelectedBucket { get; set; }
+
+    private IReadOnlyList<string> _bigBuckets = [];
+    private Dictionary<string, int> _bucketCounts = new(StringComparer.OrdinalIgnoreCase);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        try
+        {
+            _entries  = await Catalog.GetAllAsync();
+            _lastSync = await Catalog.GetLastSyncAsync();
+            RecomputeBuckets();
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void RecomputeBuckets()
+    {
+        _bucketCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in _entries)
+        {
+            var bucket = StepTemplateCategoryMap.GetBigBucket(entry.Category);
+            _bucketCounts.TryGetValue(bucket, out var count);
+            _bucketCounts[bucket] = count + 1;
+        }
+        // Show only buckets that actually contain templates, in canonical order.
+        _bigBuckets = [.. StepTemplateCategoryMap.BigBuckets.Where(b => _bucketCounts.ContainsKey(b))];
+    }
+
+    private void SetBucket(string? bucket)
+    {
+        SelectedBucket = bucket;
+    }
+
+    private IEnumerable<StepTemplateCatalogEntry> FilteredEntries()
+    {
+        IEnumerable<StepTemplateCatalogEntry> q = _entries;
+
+        if (SelectedBucket is not null)
+        {
+            q = q.Where(e =>
+                StepTemplateCategoryMap.GetBigBucket(e.Category)
+                    .Equals(SelectedBucket, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (!string.IsNullOrWhiteSpace(_search))
+        {
+            var s = _search.Trim();
+            q = q.Where(e =>
+                e.Name.Contains(s, StringComparison.OrdinalIgnoreCase) ||
+                e.ActionType.Contains(s, StringComparison.OrdinalIgnoreCase) ||
+                (e.Description?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (e.Author?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false));
+        }
+
+        return q.OrderBy(e => e.Name);
+    }
+
+    private async Task RefreshAsync()
+    {
+        _refreshing = true;
+        _lastError = null;
+        try
+        {
+            var result = await Catalog.RefreshAsync();
+            await LoadAsync();
+            Notify.Notify(NotificationSeverity.Success, "Catalog refreshed",
+                $"Upstream: {result.UpstreamCount}, +{result.Added} added, " +
+                $"{result.Updated} updated, {result.Removed} removed, " +
+                $"{result.Failed} failed.", 5000);
+        }
+        catch (Exception ex)
+        {
+            _lastError = ex.Message;
+            Notify.Notify(NotificationSeverity.Error, "Refresh failed", ex.Message, 5000);
+        }
+        finally
+        {
+            _refreshing = false;
+        }
+    }
+
+    private async Task InstallAsync(StepTemplateCatalogEntry entry)
+    {
+        _installing = entry.Id;
+        try
+        {
+            var installed = await Catalog.InstallAsync(entry.Id);
+            Notify.Notify(NotificationSeverity.Success, "Installed",
+                $"'{installed.Name}' added to your step templates.", 3000);
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error, "Install failed", ex.Message, 5000);
+        }
+        finally
+        {
+            _installing = null;
+        }
+    }
+}

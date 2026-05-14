@@ -146,7 +146,23 @@ Four sources tracked by the `StepTemplateSource` enum:
 
 Each template carries the small-bucket `Category` from the source JSON (e.g. `aws`, `iis`, `windows-iis`). The UI groups templates by the **big-bucket** display category derived via `KrakenDeploy.Contracts.Steps.StepTemplateCategoryMap.GetBigBucket(small)`. The mapping table is embedded as `category-mapping.json` inside `KrakenDeploy.Contracts.dll`; it covers ~80 small buckets across 11 big buckets ("Development and Scripting", "Containers and Orchestration", "Cloud Native Services", "Infrastructure as Code", "Server Environments", "Configuration Management", "Source Control", "Notifications", "Reporting and Telemetry", "Security and Compliance", "Workflow"). Anything unmapped falls into `Other`.
 
-Phase 4 (community catalog browser — hourly poll of GitHub) and Phase 5 (unified Add-Step dialog) layer on top — see [TASKS.md M10.3](../TASKS.md#m103--octopus-compatibility-deepening--ux-polish).
+### Community catalog
+
+`StepTemplateCatalogEntry` rows in `step_template_catalog` mirror metadata for every step-template JSON in `https://github.com/OctopusDeploy/Library/tree/master/step-templates`. `StepTemplateCatalogService.RefreshAsync(ct)` keeps them in sync:
+
+1. One GitHub **Git Trees API** call (`GET /repos/OctopusDeploy/Library/git/trees/master?recursive=1`) returns every blob's path + SHA in one shot — cheap on the 60-req/hr unauthenticated limit.
+2. For each `step-templates/*.json` whose **per-file SHA has changed** since the last sync, fetch the raw file via `raw.githubusercontent.com/...` (no API limit) and re-parse metadata.
+3. Upsert by `CommunityActionTemplateId`. Orphans (paths removed upstream) are deleted.
+
+Refresh strategy:
+- **Hangfire recurring job** `kraken.step-template-catalog-poll` runs `Cron.Hourly()`. Network failures log a warning and roll over to the next tick rather than retrying (Hangfire would otherwise retry on a tight backoff).
+- **Manual** refresh from the `/step-templates/community` page via `POST /api/step-template-catalog/refresh` (permission `StepTemplateCreate`).
+
+The named `HttpClient` `kraken.github` is registered in `Program.cs` with the mandatory GitHub `User-Agent`. Set `GitHub:Token` in configuration to bump the rate limit from 60 to 5000 req/hour (the per-file fetches go via `raw.githubusercontent.com` which doesn't count regardless).
+
+Installing a catalog row → `StepTemplateCatalogService.InstallAsync(id)` fetches the full JSON via `DownloadUrl` and routes through `StepTemplateService.ImportFromJsonAsync(json, source: CommunityLibrary)`.
+
+Phase 5 (unified Add-Step dialog that lets users install + add in one click while authoring a process) layers on top — see [TASKS.md M10.3](../TASKS.md#m103--octopus-compatibility-deepening--ux-polish).
 
 ## Extension points
 

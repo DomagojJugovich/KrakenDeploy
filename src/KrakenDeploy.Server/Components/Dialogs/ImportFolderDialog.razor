@@ -1,0 +1,106 @@
+@using KrakenDeploy.Server.Data.Services
+@inject StepTemplateService TemplateSvc
+@inject DialogService DialogService
+
+<RadzenStack Gap="1rem">
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+        Scans the folder (recursively) for <code>*.json</code> files and imports every
+        valid Octopus Community Library step-template it finds. Files that aren't a
+        step-template (READMEs, indexes, etc.) are silently skipped. Existing templates
+        with a matching <code>CommunityActionTemplateId</code> are updated in place.
+        <br /><br />
+        Path is interpreted on the <strong>server</strong>. Point it at a local clone of
+        <code>https://github.com/OctopusDeploy/Library</code> — typically the
+        <code>step-templates/</code> subdirectory.
+    </RadzenText>
+
+    <RadzenFormField Text="Server-side folder path" Variant="Variant.Outlined" style="width:100%">
+        <RadzenTextBox @bind-Value="_folderPath"
+                       Placeholder="e.g. C:\src\OctopusDeploy-Library\step-templates"
+                       Disabled="@_busy"
+                       style="width:100%; font-family: var(--rz-mono-font, monospace);" />
+    </RadzenFormField>
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" Shade="Shade.Lighter">@_error</RadzenAlert>
+    }
+
+    @if (_result is not null)
+    {
+        <RadzenCard>
+            <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-2">Import summary</RadzenText>
+            <div class="rz-grid-table" style="grid-template-columns: auto 1fr;">
+                <span class="rz-color-secondary">Scanned</span><span>@_result.ScannedFiles file(s)</span>
+                <span class="rz-color-secondary">Added</span><span>@_result.Added</span>
+                <span class="rz-color-secondary">Updated</span><span>@_result.Updated</span>
+                <span class="rz-color-secondary">Skipped (not a template)</span><span>@_result.Skipped</span>
+                <span class="rz-color-secondary">Errored</span><span>@_result.Errored</span>
+            </div>
+            @if (_result.Errors.Count > 0)
+            {
+                <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mt-3 rz-mb-1">Errors</RadzenText>
+                <RadzenDataGrid Data="@_result.Errors" TItem="ImportFromDirectoryError"
+                                AllowPaging="false" AllowSorting="false"
+                                Density="Density.Compact">
+                    <Columns>
+                        <RadzenDataGridColumn TItem="ImportFromDirectoryError" Property="File" Title="File">
+                            <Template Context="e"><code>@e.File</code></Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="ImportFromDirectoryError" Property="Message" Title="Message" />
+                    </Columns>
+                </RadzenDataGrid>
+            }
+        </RadzenCard>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End" Gap="0.5rem">
+        <RadzenButton Text="@(_result is null ? "Cancel" : "Close")"
+                      ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => DialogService.Close(_result is not null))" />
+        @if (_result is null)
+        {
+            <RadzenButton Text="Scan and import" ButtonStyle="ButtonStyle.Primary"
+                          Icon="folder_open" IsBusy="@_busy" Click="@RunAsync" />
+        }
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    private string _folderPath = string.Empty;
+    private string _error = string.Empty;
+    private bool _busy;
+    private ImportFromDirectoryResult? _result;
+
+    private async Task RunAsync()
+    {
+        _error = string.Empty;
+        if (string.IsNullOrWhiteSpace(_folderPath))
+        {
+            _error = "Folder path is required.";
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            _result = await TemplateSvc.ImportFromDirectoryAsync(_folderPath.Trim());
+        }
+        catch (DirectoryNotFoundException ex)
+        {
+            _error = ex.Message;
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            _error = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}
