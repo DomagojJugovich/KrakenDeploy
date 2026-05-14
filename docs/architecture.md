@@ -162,7 +162,9 @@ The named `HttpClient` `kraken.github` is registered in `Program.cs` with the ma
 
 Installing a catalog row → `StepTemplateCatalogService.InstallAsync(id)` fetches the full JSON via `DownloadUrl` and routes through `StepTemplateService.ImportFromJsonAsync(json, source: CommunityLibrary)`.
 
-Phase 5 (unified Add-Step dialog that lets users install + add in one click while authoring a process) layers on top — see [TASKS.md M10.3](../TASKS.md#m103--octopus-compatibility-deepening--ux-polish).
+### Add-Step picker
+
+When a user clicks "Add Step" on a project's Process page, `ChooseStepTemplateDialog` shows the unified Octopus-style "Choose Step Template" screen. Left pane = Featured / Installed / each big-bucket category from `StepTemplateCategoryMap`, plus search. Right grid = a permanent "Run a Script" sentinel + every installed `StepTemplate` + every uninstalled community catalog entry. Clicking "Install and Add" on a community card installs the template via the catalog service first, then proceeds as if it had been installed all along. The dialog returns a `ChooseStepTemplateResult` so `Process.razor` can route Script-flavoured templates through the existing script form and other ActionTypes through a direct `ProcessService.AddStepAsync` call (a parameter-driven form for non-script templates is Phase 5b).
 
 ## Extension points
 

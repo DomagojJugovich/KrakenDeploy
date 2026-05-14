@@ -277,14 +277,75 @@
     {
         if (_project is null) return;
 
-        var result = await Dialog.OpenAsync<StepFormDialog>(
-            "Add Step",
-            new Dictionary<string, object?> { [nameof(StepFormDialog.ProjectId)] = _project.Id },
-            new DialogOptions { Width = "640px" });
+        // ── Phase 5 picker — Choose Step Template ────────────────────────────
+        var choice = await Dialog.OpenAsync<ChooseStepTemplateDialog>(
+            "Choose Step Template",
+            new Dictionary<string, object?>(),
+            new DialogOptions { Width = "1000px", CloseDialogOnOverlayClick = false });
 
-        if (result is true)
+        if (choice is not ChooseStepTemplateResult result)
         {
+            return; // user cancelled
+        }
+
+        // Blank script step → existing form.
+        if (result.IsBlankScriptStep)
+        {
+            var formResult = await Dialog.OpenAsync<StepFormDialog>(
+                "Add Step",
+                new Dictionary<string, object?> { [nameof(StepFormDialog.ProjectId)] = _project.Id },
+                new DialogOptions { Width = "640px" });
+
+            if (formResult is true)
+            {
+                await ReloadStepsAsync();
+            }
+            return;
+        }
+
+        var template = result.Template;
+        if (template is null) return;
+
+        // Script-flavoured template → existing form (TODO 5b: prefill body/syntax).
+        if (template.ActionType.Equals("Kraken.Script", StringComparison.OrdinalIgnoreCase) ||
+            template.ActionType.Equals("Octopus.Script", StringComparison.OrdinalIgnoreCase))
+        {
+            var formResult = await Dialog.OpenAsync<StepFormDialog>(
+                "Add Step",
+                new Dictionary<string, object?> { [nameof(StepFormDialog.ProjectId)] = _project.Id },
+                new DialogOptions { Width = "640px" });
+
+            if (formResult is true)
+            {
+                await ReloadStepsAsync();
+            }
+            return;
+        }
+
+        // Non-script template — create the step directly using the template's
+        // ActionType + Properties. User can rename via edit; a full parameter-
+        // driven form for non-script templates is a follow-up (Phase 5b).
+        try
+        {
+            await ProcessSvc.AddStepAsync(
+                _project.Id,
+                name: template.Name,
+                stepType: template.ActionType,
+                packageId: "",
+                targetRoles: [],
+                config: new Dictionary<string, string>(template.Properties));
+
             await ReloadStepsAsync();
+
+            Notifications.Notify(NotificationSeverity.Success,
+                "Step added",
+                $"'{template.Name}' added using template defaults. " +
+                "Per-parameter UI is coming in a follow-up; edit via the API for now.",
+                6000);
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Add failed", ex.Message, 5000);
         }
     }
 

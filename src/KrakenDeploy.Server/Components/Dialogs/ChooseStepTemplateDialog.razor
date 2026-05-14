@@ -1,0 +1,343 @@
+@using KrakenDeploy.Contracts.Steps
+@using KrakenDeploy.Server.Core.Domain.StepTemplates
+@using KrakenDeploy.Server.Data.Services
+
+@inject StepTemplateService TemplateSvc
+@inject StepTemplateCatalogService CatalogSvc
+@inject NotificationService Notify
+@inject DialogService Dialog
+
+<RadzenStack Gap="0.75rem" Style="min-width:900px; max-height:75vh; overflow:auto;">
+    <RadzenTextBox @bind-Value="_search"
+                   Placeholder="Filter by name, action type, category or description…"
+                   Style="width:100%;"
+                   Change="@(() => InvokeAsync(StateHasChanged))" />
+
+    @if (_loading)
+    {
+        <RadzenText class="rz-color-secondary">Loading templates…</RadzenText>
+    }
+    else
+    {
+        <RadzenRow Gap="1rem">
+            @* ── Left filter pane ─────────────────────────────────────── *@
+            <RadzenColumn Size="3">
+                @{
+                    RenderFragment FilterButton(string? bucket, string label) => @<RadzenButton
+                        Text="@label"
+                        ButtonStyle="@(bucket == _currentBucket ? ButtonStyle.Primary : ButtonStyle.Light)"
+                        Variant="Variant.Flat" Size="ButtonSize.Small"
+                        class="rz-mb-1"
+                        style="width:100%; justify-content:flex-start; text-align:left;"
+                        Click="@(() => SetBucket(bucket))" />;
+                }
+
+                @FilterButton("Featured", $"Featured ({_featuredCount})")
+                @FilterButton("Installed", $"Installed ({_installedCount})")
+                @FilterButton(null, $"All ({_installedCount + _communityCount})")
+
+                <RadzenText TextStyle="TextStyle.Caption"
+                            class="rz-color-secondary rz-mt-3 rz-mb-1">
+                    By category
+                </RadzenText>
+                @foreach (var bucket in _bigBuckets)
+                {
+                    @FilterButton(bucket, $"{bucket} ({_bucketCounts[bucket]})")
+                }
+            </RadzenColumn>
+
+            @* ── Right card list ──────────────────────────────────────── *@
+            <RadzenColumn Size="9">
+                @{
+                    var visible = FilterCards().ToList();
+                }
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-2">
+                    @visible.Count card(s) shown.
+                </RadzenText>
+
+                @if (visible.Count == 0)
+                {
+                    <RadzenAlert AlertStyle="AlertStyle.Info" Shade="Shade.Lighter" AllowClose="false">
+                        No templates match the filter.
+                    </RadzenAlert>
+                }
+                else
+                {
+                    <RadzenRow Gap="0.75rem">
+                        @foreach (var card in visible)
+                        {
+                            <RadzenColumn Size="12" SizeMD="6">
+                                <RadzenCard Style="height:100%; display:flex; flex-direction:column;">
+                                    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                                                 AlignItems="AlignItems.Start" class="rz-mb-2">
+                                        @if (!string.IsNullOrWhiteSpace(card.LogoUrl))
+                                        {
+                                            <img src="@card.LogoUrl" alt="" loading="lazy"
+                                                 style="width:28px;height:28px;object-fit:contain;flex:0 0 auto;" />
+                                        }
+                                        else
+                                        {
+                                            <RadzenIcon Icon="@card.Icon"
+                                                        Style="font-size:24px;flex:0 0 auto;" />
+                                        }
+                                        <div style="min-width:0;">
+                                            <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-0"
+                                                        Style="word-break:break-word;">@card.Title</RadzenText>
+                                            @if (!string.IsNullOrWhiteSpace(card.Subtitle))
+                                            {
+                                                <RadzenText TextStyle="TextStyle.Caption"
+                                                            class="rz-color-secondary">@card.Subtitle</RadzenText>
+                                            }
+                                        </div>
+                                    </RadzenStack>
+
+                                    <div style="flex:1 1 auto;">
+                                        @if (!string.IsNullOrWhiteSpace(card.Description))
+                                        {
+                                            <RadzenText TextStyle="TextStyle.Body2"
+                                                        class="rz-color-secondary"
+                                                        Style="display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;">
+                                                @card.Description
+                                            </RadzenText>
+                                        }
+                                    </div>
+
+                                    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.35rem"
+                                                 AlignItems="AlignItems.Center" class="rz-mt-2">
+                                        @if (card.IsInstalled)
+                                        {
+                                            <RadzenBadge Text="Installed" BadgeStyle="BadgeStyle.Success" IsPill="true" />
+                                        }
+                                        @if (card.IsBuiltIn)
+                                        {
+                                            <RadzenBadge Text="Built-in" BadgeStyle="BadgeStyle.Info" IsPill="true" />
+                                        }
+                                        @if (!card.IsInstalled && !card.IsBuiltIn && !card.IsBlank)
+                                        {
+                                            <RadzenBadge Text="Community" BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                                        }
+                                        @if (!string.IsNullOrWhiteSpace(card.Category))
+                                        {
+                                            <RadzenBadge Text="@card.Category" BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                                        }
+                                    </RadzenStack>
+
+                                    <RadzenStack Orientation="Orientation.Horizontal"
+                                                 JustifyContent="JustifyContent.End" Gap="0.4rem"
+                                                 class="rz-mt-2">
+                                        <RadzenButton Text="@card.ButtonLabel"
+                                                      Icon="@card.ButtonIcon"
+                                                      ButtonStyle="ButtonStyle.Primary"
+                                                      Size="ButtonSize.Small"
+                                                      IsBusy="@(_busyCardKey == card.Key)"
+                                                      Disabled="@(_busyCardKey is not null)"
+                                                      Click="@(() => ChooseAsync(card))" />
+                                    </RadzenStack>
+                                </RadzenCard>
+                            </RadzenColumn>
+                        }
+                    </RadzenRow>
+                }
+            </RadzenColumn>
+        </RadzenRow>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End" Gap="0.5rem">
+        <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => Dialog.Close(null))" />
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    private bool _loading = true;
+    private string _search = "";
+    private string? _currentBucket;
+    private string? _busyCardKey;
+
+    private List<StepTemplate> _installed = [];
+    private List<StepTemplateCatalogEntry> _community = [];
+    private List<Card> _cards = [];
+
+    private int _featuredCount;
+    private int _installedCount;
+    private int _communityCount;
+    private IReadOnlyList<string> _bigBuckets = [];
+    private Dictionary<string, int> _bucketCounts = new(StringComparer.OrdinalIgnoreCase);
+
+    protected override async Task OnInitializedAsync()
+    {
+        _installed = await TemplateSvc.GetAllAsync();
+        _community = await CatalogSvc.GetAllAsync();
+        BuildCards();
+        _loading = false;
+    }
+
+    private void BuildCards()
+    {
+        _cards = [];
+
+        // Sentinel: blank script step — always at the top of Featured.
+        _cards.Add(new Card
+        {
+            Key            = "blank:script",
+            Title          = "Run a Script",
+            Subtitle       = "Kraken / Octopus.Script",
+            Description    = "Write an inline PowerShell, Bash, C#, F#, or Python script.",
+            Icon           = "code",
+            ButtonLabel    = "Add Step",
+            ButtonIcon     = "add",
+            Category       = "script",
+            IsFeatured     = true,
+            IsBlank        = true,
+        });
+
+        // Installed templates — Featured = those tagged BuiltIn.
+        foreach (var t in _installed)
+        {
+            _cards.Add(new Card
+            {
+                Key         = $"installed:{t.Id}",
+                Title       = t.Name,
+                Subtitle    = t.ActionType,
+                Description = t.Description,
+                Icon        = "extension",
+                LogoUrl     = t.LogoUrl,
+                Category    = t.Category,
+                ButtonLabel = "Add Step",
+                ButtonIcon  = "add",
+                IsInstalled = true,
+                IsBuiltIn   = t.Source == StepTemplateSource.BuiltIn,
+                IsFeatured  = t.Source == StepTemplateSource.BuiltIn,
+                InstalledTemplate = t,
+            });
+        }
+
+        // Community catalog — exclude entries already installed (matched by CommunityTemplateId).
+        var installedIds = _installed
+            .Where(t => !string.IsNullOrWhiteSpace(t.CommunityTemplateId))
+            .Select(t => t.CommunityTemplateId!)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var c in _community)
+        {
+            if (installedIds.Contains(c.CommunityTemplateId)) { continue; }
+            _cards.Add(new Card
+            {
+                Key         = $"community:{c.Id}",
+                Title       = c.Name,
+                Subtitle    = string.IsNullOrWhiteSpace(c.Author) ? c.ActionType : $"By {c.Author}",
+                Description = c.Description,
+                Icon        = "cloud_download",
+                LogoUrl     = c.LogoUrl,
+                Category    = c.Category,
+                ButtonLabel = "Install and Add",
+                ButtonIcon  = "download",
+                CommunityEntry = c,
+            });
+        }
+
+        _featuredCount  = _cards.Count(c => c.IsFeatured);
+        _installedCount = _cards.Count(c => c.IsInstalled || c.IsBlank);
+        _communityCount = _cards.Count(c => c.CommunityEntry is not null);
+
+        // Build big-bucket counts across the whole card set.
+        _bucketCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var c in _cards)
+        {
+            var bucket = StepTemplateCategoryMap.GetBigBucket(c.Category);
+            _bucketCounts.TryGetValue(bucket, out var n);
+            _bucketCounts[bucket] = n + 1;
+        }
+        _bigBuckets = [.. StepTemplateCategoryMap.BigBuckets.Where(b => _bucketCounts.ContainsKey(b))];
+
+        // Default selection: Featured if anything featured exists, else All.
+        _currentBucket = _featuredCount > 0 ? "Featured" : null;
+    }
+
+    private void SetBucket(string? bucket) => _currentBucket = bucket;
+
+    private IEnumerable<Card> FilterCards()
+    {
+        IEnumerable<Card> q = _cards;
+
+        q = _currentBucket switch
+        {
+            "Featured"  => q.Where(c => c.IsFeatured),
+            "Installed" => q.Where(c => c.IsInstalled || c.IsBlank),
+            null        => q,
+            _           => q.Where(c =>
+                StepTemplateCategoryMap.GetBigBucket(c.Category)
+                    .Equals(_currentBucket, StringComparison.OrdinalIgnoreCase)),
+        };
+
+        if (!string.IsNullOrWhiteSpace(_search))
+        {
+            var s = _search.Trim();
+            q = q.Where(c =>
+                c.Title.Contains(s, StringComparison.OrdinalIgnoreCase) ||
+                (c.Subtitle?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (c.Description?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (c.Category?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false));
+        }
+
+        return q.OrderByDescending(c => c.IsFeatured)
+                .ThenByDescending(c => c.IsBlank)
+                .ThenBy(c => c.Title);
+    }
+
+    private async Task ChooseAsync(Card card)
+    {
+        _busyCardKey = card.Key;
+        try
+        {
+            if (card.IsBlank)
+            {
+                Dialog.Close(ChooseStepTemplateResult.Blank);
+                return;
+            }
+
+            if (card.CommunityEntry is not null)
+            {
+                try
+                {
+                    var installed = await CatalogSvc.InstallAsync(card.CommunityEntry.Id);
+                    Dialog.Close(ChooseStepTemplateResult.FromTemplate(installed));
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    Notify.Notify(NotificationSeverity.Error, "Install failed", ex.Message, 5000);
+                    return;
+                }
+            }
+
+            if (card.InstalledTemplate is not null)
+            {
+                Dialog.Close(ChooseStepTemplateResult.FromTemplate(card.InstalledTemplate));
+            }
+        }
+        finally
+        {
+            _busyCardKey = null;
+        }
+    }
+
+    private sealed class Card
+    {
+        public string Key { get; init; } = "";
+        public string Title { get; init; } = "";
+        public string? Subtitle { get; init; }
+        public string? Description { get; init; }
+        public string Icon { get; init; } = "extension";
+        public string? LogoUrl { get; init; }
+        public string? Category { get; init; }
+        public string ButtonLabel { get; init; } = "Add Step";
+        public string ButtonIcon { get; init; } = "add";
+        public bool IsFeatured { get; init; }
+        public bool IsInstalled { get; init; }
+        public bool IsBuiltIn { get; init; }
+        public bool IsBlank { get; init; }
+        public StepTemplate? InstalledTemplate { get; init; }
+        public StepTemplateCatalogEntry? CommunityEntry { get; init; }
+    }
+}
