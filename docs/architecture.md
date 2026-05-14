@@ -212,7 +212,7 @@ Flow:
 
 UI: `StepFormDialog` (script form) has a "Referenced Packages" inline grid. Other step forms inherit the underlying machinery — they simply persist a `Octopus.Action.Package.PackageReferences` JSON value through their existing Config dict.
 
-Reproducibility note: version resolution is currently at dispatch time. Phase 8e (deferred) will pin the resolved set into `Release.ProcessSnapshot` at release-creation time, matching what `Release.PackageVersion` does for the primary package.
+Reproducibility: `ReleaseService.CreateAsync` calls `PinReferencedPackagesAsync` per step when building the `ProcessSnapshot`, pinning any unpinned referenced packages to the latest uploaded version (strict — throws if no version exists, same as the primary `PackageVersion`). The deploy-time `PackageReferenceResolver` then sees pre-pinned entries and passes them through unchanged. Every deploy of a release runs with the exact same set of referenced packages.
 
 ## Extension points
 

@@ -1,3 +1,4 @@
+using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Server.Core.Domain.Channels;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using Microsoft.EntityFrameworkCore;
@@ -67,14 +68,26 @@ public class ReleaseService(IDbContextFactory<KrakenDbContext> dbFactory)
                 "The project has no deployment process steps. Add at least one step before creating a release.");
         }
 
-        // Build the process snapshot, resolving package versions.
+        // Build the process snapshot, resolving package versions (primary +
+        // referenced packages). Pinning the referenced-package versions here
+        // matches what we do for the primary PackageVersion — every deploy of
+        // this release will then use the exact same set of helper packages.
         var snapshot = new List<StepSnapshot>(process.Steps.Count);
         foreach (var step in process.Steps)
         {
-            // Explicit version wins; fall back to the latest uploaded version.
-            var pinned = (packageVersions is not null && packageVersions.TryGetValue(step.Name, out var v))
-                ? v
-                : await ResolveLatestVersionAsync(db, step.PackageId, ct).ConfigureAwait(false);
+            // Explicit version wins; fall back to the latest uploaded version
+            // (only required when the step actually has a primary package).
+            string pinned = "";
+            if (!string.IsNullOrWhiteSpace(step.PackageId))
+            {
+                pinned = (packageVersions is not null && packageVersions.TryGetValue(step.Name, out var v))
+                    ? v
+                    : await ResolveLatestVersionAsync(db, step.PackageId, ct).ConfigureAwait(false);
+            }
+
+            // Copy the source Config, then pin any referenced packages in it.
+            var snapshotConfig = new Dictionary<string, string>(step.Config);
+            await PinReferencedPackagesAsync(snapshotConfig, db, ct).ConfigureAwait(false);
 
             snapshot.Add(new StepSnapshot
             {
@@ -83,7 +96,7 @@ public class ReleaseService(IDbContextFactory<KrakenDbContext> dbFactory)
                 PackageId = step.PackageId,
                 PackageVersion = pinned,
                 TargetRoles = [.. step.TargetRoles],
-                Config = new Dictionary<string, string>(step.Config),
+                Config = snapshotConfig,
                 SortOrder = step.SortOrder,
             });
         }
@@ -149,5 +162,66 @@ public class ReleaseService(IDbContextFactory<KrakenDbContext> dbFactory)
             ?? throw new InvalidOperationException(
                 $"No package with ID '{packageId}' has been uploaded. " +
                 "Upload it first or provide an explicit version.");
+    }
+
+    private static readonly System.Text.Json.JsonSerializerOptions PackageRefJsonOpts =
+        new(System.Text.Json.JsonSerializerDefaults.Web);
+
+    /// <summary>
+    /// Pins any <see cref="PackageReference"/> entries in
+    /// <c>config[Octopus.Action.Package.PackageReferences]</c> that don't
+    /// have an explicit <c>Version</c>. Mirrors the strict semantics of
+    /// <see cref="ResolveLatestVersionAsync"/>: refs to packages with zero
+    /// uploaded versions throw rather than silently fall through.
+    /// No-op when the key is missing or empty.
+    /// </summary>
+    private static async Task PinReferencedPackagesAsync(
+        Dictionary<string, string> config,
+        KrakenDbContext db,
+        CancellationToken ct)
+    {
+        if (!config.TryGetValue(KrakenScriptConfigKeys.PackageReferences, out var raw)
+            || string.IsNullOrWhiteSpace(raw))
+        {
+            return;
+        }
+
+        List<PackageReference>? parsed;
+        try
+        {
+            parsed = System.Text.Json.JsonSerializer.Deserialize<List<PackageReference>>(
+                raw, PackageRefJsonOpts);
+        }
+        catch (System.Text.Json.JsonException ex)
+        {
+            throw new InvalidOperationException(
+                $"Step has malformed {KrakenScriptConfigKeys.PackageReferences} JSON: {ex.Message}", ex);
+        }
+
+        if (parsed is null || parsed.Count == 0)
+        {
+            return;
+        }
+
+        var pinned = new List<PackageReference>(parsed.Count);
+        foreach (var r in parsed)
+        {
+            if (string.IsNullOrWhiteSpace(r.Name) || string.IsNullOrWhiteSpace(r.PackageId))
+            {
+                continue; // skip malformed rows
+            }
+
+            if (!string.IsNullOrWhiteSpace(r.Version))
+            {
+                pinned.Add(r);
+                continue;
+            }
+
+            var latest = await ResolveLatestVersionAsync(db, r.PackageId, ct).ConfigureAwait(false);
+            pinned.Add(r with { Version = latest });
+        }
+
+        config[KrakenScriptConfigKeys.PackageReferences] =
+            System.Text.Json.JsonSerializer.Serialize(pinned, PackageRefJsonOpts);
     }
 }
