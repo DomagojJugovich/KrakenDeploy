@@ -32,7 +32,8 @@ public sealed record DeploymentStepPlan(
     string StepType,
     string PackageId,
     string PackageVersion,
-    IReadOnlyDictionary<string, string> Config);
+    IReadOnlyDictionary<string, string> Config,
+    IReadOnlyList<string>? TargetRoles = null);
 
 /// <summary>
 /// Sent by the agent to the server when a deployment is triggered.

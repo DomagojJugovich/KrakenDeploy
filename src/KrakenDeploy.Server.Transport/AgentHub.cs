@@ -24,6 +24,7 @@ public sealed class AgentHub(
     TargetStatusPublisher statusPublisher,
     TimeProvider timeProvider,
     IHubContext<UiHub, IUiHubClient> uiHub,
+    IPendingSubPlanRegistry subPlans,
     ILogger<AgentHub> logger)
     : Hub<IAgentHubClient>, IAgentHubServer
 {
@@ -243,6 +244,18 @@ public sealed class AgentHub(
     public async Task CompleteDeploymentAsync(
         Guid deploymentId, bool success, string? errorMessage)
     {
+        // If this is a sub-plan completion (the worker is mid-orchestration
+        // for a mixed-side process), resolve the pending TCS and stop here —
+        // DeploymentWorker will finalize the deployment status once every
+        // group has completed.
+        if (subPlans.TryResolve(deploymentId, new SubPlanResult(success, errorMessage)))
+        {
+            logger.LogDebug(
+                "Sub-plan complete for deployment {Id} (success={Success}); orchestrator will continue.",
+                deploymentId, success);
+            return;
+        }
+
         var completedAt = timeProvider.GetUtcNow();
 
         await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
