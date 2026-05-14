@@ -182,6 +182,17 @@ When a user clicks "Add Step" on a project's Process page, `ChooseStepTemplateDi
 
 Editing an existing step routes the same way — `Process.razor.OpenEditStepAsync` switches on `step.StepType` (script → `StepFormDialog`, otherwise look up a `StepTemplate` whose `ActionType` matches the step and open `TemplatedStepFormDialog`; surface a warning notification if no template matches).
 
+### Server-side execution
+
+A step's `Config["Octopus.Action.RunOnServer"]` flag (set via the radio group in both step forms) determines whether the step runs on the agent or in the server process:
+
+- **`false` (default)** — step is included in the plan dispatched to the agent over SignalR and runs via the agent's `IStepHandler` chain (see [Step execution model](#step-execution-model)).
+- **`true`** — step is held back at the server and executed in-process by `ServerScriptStepRunner` (in `KrakenDeploy.Server.Transport`). The runner mirrors the agent's `ScriptRunner` for syntax dispatch (PowerShell Desktop/Core, Bash, CSharp via `dotnet script`, FSharp via `dotnet fsi`, Python) and writes log entries directly to `deployment_log_entries`, broadcasting over `UiHub` so the live-log UI surface is identical to the agent path.
+
+`DeploymentWorker` runs server steps as a **synchronous pre-phase** before dispatching the agent plan. Fully-server-side deployments complete without ever sending a plan to the agent (and so don't require an online agent). Server steps must precede target steps in declared order — interleaved orderings fail the deployment with a clear message, since piecewise agent dispatch isn't wired up yet (see Phase 7d in `TASKS.md`).
+
+The PowerShell preamble used server-side mirrors the agent's: `$OctopusParameters` is pre-populated, plus `Set-OctopusVariable` / `Write-KrakenInfo` / `Get-KrakenVariable` helpers. Output-variable capture via the `##octopus[setVariable]` stdout marker is _not yet_ wired through on the server side (the agent path handles it via `OctopusMessageParser` in `DeploymentExecutor`); follow-up work would extract that into a shared utility and apply it here too.
+
 ## Extension points
 
 | To add | Where |

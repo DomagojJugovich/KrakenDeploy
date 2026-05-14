@@ -44,6 +44,23 @@
             </div>
 
             <div>
+                <RadzenLabel Text="Execution Location" />
+                <RadzenRadioButtonList @bind-Value="_model.RunOnServer" TValue="bool"
+                                       Orientation="Orientation.Vertical">
+                    <Items>
+                        <RadzenRadioButtonListItem Text="Run on each deployment target" Value="false" />
+                        <RadzenRadioButtonListItem Text="Run on the KrakenDeploy Server" Value="true" />
+                    </Items>
+                </RadzenRadioButtonList>
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                    Server execution runs the script in the server process —
+                    useful for steps that talk to external APIs (Slack, JIRA, …)
+                    or perform pre/post deployment work without needing a target.
+                    "On behalf of each target" is coming in a follow-up.
+                </RadzenText>
+            </div>
+
+            <div>
                 <RadzenLabel Text="Script Syntax" />
                 <RadzenDropDown @bind-Value="_model.ScriptSyntax"
                                 Data="@_syntaxOptions"
@@ -93,6 +110,9 @@
             _model.TargetRolesCsv = string.Join(", ", Step.TargetRoles);
             _model.ScriptSyntax = Step.Config.GetValueOrDefault("Octopus.Action.Script.Syntax", "PowerShell");
             _model.ScriptBody = Step.Config.GetValueOrDefault("Octopus.Action.Script.ScriptBody", "");
+            _model.RunOnServer = string.Equals(
+                Step.Config.GetValueOrDefault("Octopus.Action.RunOnServer"),
+                "true", StringComparison.OrdinalIgnoreCase);
         }
     }
 
@@ -106,6 +126,7 @@
             {
                 ["Octopus.Action.Script.Syntax"]     = _model.ScriptSyntax,
                 ["Octopus.Action.Script.ScriptBody"] = _model.ScriptBody ?? "",
+                ["Octopus.Action.RunOnServer"]       = _model.RunOnServer ? "true" : "false",
             };
 
             if (_isEdit)
@@ -157,5 +178,6 @@
         public string TargetRolesCsv { get; set; } = "";
         public string ScriptSyntax { get; set; } = "PowerShell";
         public string? ScriptBody { get; set; }
+        public bool RunOnServer { get; set; }
     }
 }

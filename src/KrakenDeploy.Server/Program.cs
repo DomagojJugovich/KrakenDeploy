@@ -244,6 +244,7 @@ public static class Program
         builder.Services.AddSingleton<LicenseService>();
         builder.Services.AddHostedService<DeploymentWorker>();
         builder.Services.AddHostedService<RunbookRunWorker>();
+        builder.Services.AddSingleton<ServerScriptStepRunner>();
 
         // ── Agent auto-update settings ────────────────────────────────────────
         builder.Services.Configure<AgentUpdateSettings>(

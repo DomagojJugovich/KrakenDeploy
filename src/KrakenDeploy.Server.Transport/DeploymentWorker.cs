@@ -39,6 +39,7 @@ public sealed class DeploymentWorker(
     Channel<Guid> queue,
     IAgentConnectionRegistry registry,
     IHubContext<AgentHub, IAgentHubClient> agentHub,
+    ServerScriptStepRunner serverRunner,
     IServiceScopeFactory scopeFactory,
     ILogger<DeploymentWorker> logger)
     : BackgroundService
@@ -92,14 +93,10 @@ public sealed class DeploymentWorker(
                 return;
             }
 
-            var connectionId = registry.GetConnectionId(deployment.TargetId.Value);
-            if (connectionId is null)
-            {
-                await FailAsync(db, deployment, "Target is offline.", ct).ConfigureAwait(false);
-                return;
-            }
-
             // ── 1. Resolve project variables ─────────────────────────────────
+            // (Agent-connection check is deferred until after we know whether
+            // any target-side steps need dispatching — fully-server-side
+            // deployments don't require an online agent.)
             var targetRoles = deployment.Target?.Roles ?? [];
             var rawVars = await variableService.ResolveAsync(
                 deployment.Release.ProjectId,
@@ -186,18 +183,81 @@ public sealed class DeploymentWorker(
                 Variables: flatVars,
                 ArrayVariables: arrayVars);
 
+            // ── 4. Partition steps: server-side vs target-side ───────────────
+            // Octopus.Action.RunOnServer=true → run in-process here as a
+            // pre-phase. Currently we require all server-side steps to
+            // precede target-side steps in declared order (no interleaving);
+            // mixed-order interleaving needs piecewise agent dispatch and is
+            // a separate piece of work.
+            var serverSteps = steps.Where(IsServerStep).ToArray();
+            var targetSteps = steps.Where(s => !IsServerStep(s)).ToArray();
+
+            if (serverSteps.Length > 0 && targetSteps.Length > 0)
+            {
+                var firstTargetIdx  = targetSteps.Min(s => s.Index);
+                var lastServerIdx   = serverSteps.Max(s => s.Index);
+                if (firstTargetIdx < lastServerIdx)
+                {
+                    var msg =
+                        "Server-side steps must precede target-side steps in this " +
+                        "release. Interleaved ordering is not yet supported. Reorder " +
+                        "the process and try again.";
+                    await FailAsync(db, deployment, msg, ct).ConfigureAwait(false);
+                    return;
+                }
+            }
+
             // Transition to Running before sending so the UI updates immediately.
-            deployment.Status = DeploymentStatus.Running;
+            deployment.Status     = DeploymentStatus.Running;
             deployment.StartedUtc = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
+            // ── 5a. Run server-side steps as a synchronous pre-phase ─────────
+            foreach (var s in serverSteps)
+            {
+                var ok = await serverRunner.ExecuteAsync(
+                    deployment.Id, s, flatVars, ct).ConfigureAwait(false);
+                if (!ok)
+                {
+                    await FailAsync(db, deployment,
+                        $"Server-side step '{s.Name}' failed.", ct).ConfigureAwait(false);
+                    return;
+                }
+            }
+
+            // ── 5b. Dispatch the remaining target steps to the agent ─────────
+            if (targetSteps.Length == 0)
+            {
+                // All steps ran server-side — mark the deployment succeeded
+                // without involving the agent.
+                deployment.Status      = DeploymentStatus.Succeeded;
+                deployment.CompletedUtc = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                logger.LogInformation(
+                    "Deployment {Id} completed server-side ({Steps} step(s)).",
+                    deployment.Id, serverSteps.Length);
+                return;
+            }
+
+            var connectionId = registry.GetConnectionId(deployment.TargetId.Value);
+            if (connectionId is null)
+            {
+                await FailAsync(db, deployment, "Target is offline.", ct).ConfigureAwait(false);
+                return;
+            }
+
+            var agentPlan = plan with { Steps = targetSteps };
+
             logger.LogInformation(
                 "Dispatching deployment {DeploymentId} to connection {ConnectionId} " +
-                "({VarCount} variables, {ArrayCount} array variables).",
-                deploymentId, connectionId, flatVars.Count, arrayVars.Count);
+                "({VarCount} variables, {ArrayCount} array variables, " +
+                "{ServerSteps} server step(s), {TargetSteps} target step(s)).",
+                deploymentId, connectionId,
+                flatVars.Count, arrayVars.Count,
+                serverSteps.Length, targetSteps.Length);
 
             await agentHub.Clients.Client(connectionId)
-                .RunDeploymentAsync(plan)
+                .RunDeploymentAsync(agentPlan)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -365,6 +425,14 @@ public sealed class DeploymentWorker(
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// True if the step's config marks it for server-side execution.
+    /// Honours <c>Octopus.Action.RunOnServer = "true"</c> (case-insensitive).
+    /// </summary>
+    private static bool IsServerStep(DeploymentStepPlan step) =>
+        step.Config.TryGetValue("Octopus.Action.RunOnServer", out var v)
+        && string.Equals(v, "true", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Applies Octostache variable substitution to all values in a step's Config dictionary.

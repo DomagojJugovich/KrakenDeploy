@@ -39,6 +39,17 @@
                                Placeholder="Comma-separated; leave empty to run on every target." />
             </div>
 
+            <div>
+                <RadzenLabel Text="Execution Location" />
+                <RadzenRadioButtonList @bind-Value="_model.RunOnServer" TValue="bool"
+                                       Orientation="Orientation.Vertical">
+                    <Items>
+                        <RadzenRadioButtonListItem Text="Run on each deployment target" Value="false" />
+                        <RadzenRadioButtonListItem Text="Run on the KrakenDeploy Server" Value="true" />
+                    </Items>
+                </RadzenRadioButtonList>
+            </div>
+
             @if (Template?.Parameters.Count > 0)
             {
                 <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mt-2 rz-mb-0">
@@ -108,6 +119,9 @@
             _model.Name     = Template.Name;
             _model.PackageId = "";
             _model.TargetRolesCsv = "";
+            _model.RunOnServer = string.Equals(
+                Template.Properties.GetValueOrDefault("Octopus.Action.RunOnServer"),
+                "true", StringComparison.OrdinalIgnoreCase);
             foreach (var p in Template.Parameters)
             {
                 _paramValues[p.Name] = p.DefaultValue ?? "";
@@ -119,6 +133,9 @@
             _model.Name     = Step.Name;
             _model.PackageId = Step.PackageId;
             _model.TargetRolesCsv = string.Join(", ", Step.TargetRoles);
+            _model.RunOnServer = string.Equals(
+                Step.Config.GetValueOrDefault("Octopus.Action.RunOnServer"),
+                "true", StringComparison.OrdinalIgnoreCase);
             foreach (var p in Template.Parameters)
             {
                 _paramValues[p.Name] = Step.Config.TryGetValue(p.Name, out var v)
@@ -240,6 +257,7 @@
             {
                 config[name] = value;
             }
+            config["Octopus.Action.RunOnServer"] = _model.RunOnServer ? "true" : "false";
 
             if (_isEdit && Step is not null)
             {
@@ -292,5 +310,6 @@
         public string Name { get; set; } = "";
         public string PackageId { get; set; } = "";
         public string TargetRolesCsv { get; set; } = "";
+        public bool RunOnServer { get; set; }
     }
 }
