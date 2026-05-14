@@ -5,6 +5,7 @@ using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -40,6 +41,8 @@ public sealed class RunbookRunWorker(
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var variableService = scope.ServiceProvider.GetRequiredService<VariableService>();
+        var serverBaseUrl = scope.ServiceProvider
+            .GetRequiredService<IConfiguration>()["Server:BaseUrl"];
 
         try
         {
@@ -97,7 +100,8 @@ public sealed class RunbookRunWorker(
                 run.Environment,
                 run.Target,
                 run.Tenant,
-                run.ProcessSnapshot);
+                run.ProcessSnapshot,
+                serverBaseUrl);
 
             var flatVars = new Dictionary<string, string>(systemVars, StringComparer.OrdinalIgnoreCase);
             foreach (var (k, val) in systemVars)

@@ -57,6 +57,8 @@ public sealed class DeploymentWorker(
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var variableService = scope.ServiceProvider.GetRequiredService<VariableService>();
+        var serverBaseUrl = scope.ServiceProvider
+            .GetRequiredService<IConfiguration>()["Server:BaseUrl"];
 
         try
         {
@@ -121,7 +123,8 @@ public sealed class DeploymentWorker(
                 deployment.Environment,
                 deployment.Target,
                 deployment.Tenant,
-                deployment.Release.ProcessSnapshot);
+                deployment.Release.ProcessSnapshot,
+                serverBaseUrl);
 
             var flatVars = new Dictionary<string, string>(systemVars, StringComparer.OrdinalIgnoreCase);
             foreach (var (k, val) in systemVars)
@@ -239,7 +242,8 @@ public sealed class DeploymentWorker(
             deployment.Environment,
             deployment.Target,
             deployment.Tenant,
-            deployment.Release.ProcessSnapshot);
+            deployment.Release.ProcessSnapshot,
+            config["Server:BaseUrl"]);
 
         var flatVars = new Dictionary<string, string>(systemVars, StringComparer.OrdinalIgnoreCase);
         foreach (var (name, value) in rawVars)

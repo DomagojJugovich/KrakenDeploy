@@ -107,10 +107,14 @@ The fully-substituted plan ships to the agent. The agent layers in one more set:
 
 4. **Current-step un-indexed keys** — `ScriptStepHandler` adds `Octopus.Action.Name`, `Octopus.Action.Id`, `Octopus.Action.Number`, `Octopus.Step.Name`, `Octopus.Step.Number`, and the `Octopus.Action.Package.*` trio for the step currently running, merged into both env vars and (for PowerShell) the `$OctopusParameters` preamble.
 
-Script-visible surface ends up:
+Script-visible surface ends up (per language):
 
-- **PowerShell**: `$OctopusParameters["Octopus.Project.Name"]`, `#{Octopus.Project.Name}` (resolved server-side), plus `Write-KrakenInfo`/`Write-KrakenWarning`/`Write-KrakenError` helpers, `Register-KrakenArtifact`, and Octopus-compatible aliases `Set-OctopusVariable` (emits `##octopus[setVariable …]`) and `New-OctopusArtifact`.
-- **Bash / dotnet-script / Python**: same values via environment variables (`OctopusEnvironmentName`, `KrakenDeploymentId`, plus every `Octopus.*` key flattened into the env). Phase 6d adds per-language preambles for parity with `$OctopusParameters`.
+- **PowerShell**: `$OctopusParameters["Octopus.Project.Name"]`, `#{Octopus.Project.Name}` (resolved server-side), plus `Write-KrakenInfo`/`Write-KrakenWarning`/`Write-KrakenError`, `Register-KrakenArtifact`, and Octopus-compatible aliases `Set-OctopusVariable` (emits `##octopus[setVariable …]`) and `New-OctopusArtifact`.
+- **Bash**: env vars are flattened (`Octopus.Project.Name` is set as-is — dots are fine in env names but not in bash identifiers, so the preamble exposes `get_octopusvariable`, `set_octopusvariable`, `new_octopusartifact` helpers).
+- **C# / F# (dotnet-script / dotnet fsi)**: `OctopusParameters` dict (filtered to keys starting with `Octopus.`), `GetOctopusVariable`, `SetOctopusVariable`, `NewOctopusArtifact` (camelCase in F#: `getOctopusVariable`, `setOctopusVariable`, `newOctopusArtifact`).
+- **Python**: `octopusvariables` (and `OctopusParameters` alias) dict, `get_octopusvariable`, `set_octopusvariable`, `new_octopusartifact`.
+
+All language helpers ultimately call the same back-end: env-var reads for inputs, base64-encoded `##octopus[setVariable]` stdout markers for output-variable capture (parsed agent-side by `OctopusMessageParser`), and the `KRAKEN_ARTIFACTS_PATH` directory for artifact registration (picked up by the post-step `Directory.GetFiles` scan).
 
 ### Output variables
 
