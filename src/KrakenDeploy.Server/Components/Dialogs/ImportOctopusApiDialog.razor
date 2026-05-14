@@ -1,0 +1,128 @@
+@using KrakenDeploy.Server.Data.Services
+@using Microsoft.AspNetCore.Components.Forms
+@inject StepTemplateService TemplateSvc
+@inject DialogService DialogService
+
+<RadzenStack Gap="1rem">
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+        Paste or upload an <strong>Octopus actiontemplates API</strong> JSON dump —
+        the paginated <code>{"ItemType":"ActionTemplate","Items":[…]}</code> response
+        you get from
+        <code>GET /api/actiontemplates</code> on an existing Octopus instance, or the
+        equivalent file an admin exports. Each item in <code>Items</code> goes through
+        the standard step-template import pipeline (upsert by <code>CommunityActionTemplateId</code>).
+        <br /><br />
+        For a single template, use <strong>Import JSON</strong> instead.
+    </RadzenText>
+
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" AlignItems="AlignItems.Center">
+        <InputFile OnChange="@OnFileSelectedAsync" accept=".json,.txt" />
+        @if (!string.IsNullOrEmpty(_fileName))
+        {
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                Loaded <code>@_fileName</code>.
+            </RadzenText>
+        }
+    </RadzenStack>
+
+    <RadzenFormField Text="JSON" Variant="Variant.Outlined" style="width:100%">
+        <RadzenTextArea @bind-Value="_json" Rows="14"
+                        Style="width:100%; font-family: var(--rz-mono-font, monospace);"
+                        Placeholder='{ "ItemType": "ActionTemplate", "Items": [ ... ] }' />
+    </RadzenFormField>
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" Shade="Shade.Lighter">@_error</RadzenAlert>
+    }
+
+    @if (_result is not null)
+    {
+        <RadzenCard>
+            <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-2">Import summary</RadzenText>
+            <div class="rz-grid-table" style="grid-template-columns: auto 1fr;">
+                <span class="rz-color-secondary">Scanned</span><span>@_result.ScannedFiles item(s)</span>
+                <span class="rz-color-secondary">Added</span><span>@_result.Added</span>
+                <span class="rz-color-secondary">Updated</span><span>@_result.Updated</span>
+                <span class="rz-color-secondary">Skipped (not a template)</span><span>@_result.Skipped</span>
+                <span class="rz-color-secondary">Errored</span><span>@_result.Errored</span>
+            </div>
+            @if (_result.Errors.Count > 0)
+            {
+                <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mt-3 rz-mb-1">Errors</RadzenText>
+                <RadzenDataGrid Data="@_result.Errors" TItem="ImportFromDirectoryError"
+                                AllowPaging="false" AllowSorting="false"
+                                Density="Density.Compact">
+                    <Columns>
+                        <RadzenDataGridColumn TItem="ImportFromDirectoryError" Property="File" Title="Item">
+                            <Template Context="e"><code>@e.File</code></Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="ImportFromDirectoryError" Property="Message" Title="Message" />
+                    </Columns>
+                </RadzenDataGrid>
+            }
+        </RadzenCard>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End" Gap="0.5rem">
+        <RadzenButton Text="@(_result is null ? "Cancel" : "Close")"
+                      ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => DialogService.Close(_result is not null))" />
+        @if (_result is null)
+        {
+            <RadzenButton Text="Import" ButtonStyle="ButtonStyle.Primary"
+                          Icon="cloud_download" IsBusy="@_busy" Click="@RunAsync" />
+        }
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    private string _json = string.Empty;
+    private string _fileName = string.Empty;
+    private string _error = string.Empty;
+    private bool _busy;
+    private ImportFromDirectoryResult? _result;
+
+    private const long MaxFileSize = 20 * 1024 * 1024; // 20 MB
+
+    private async Task OnFileSelectedAsync(InputFileChangeEventArgs e)
+    {
+        _error = string.Empty;
+        if (e.File is null) return;
+        try
+        {
+            await using var stream = e.File.OpenReadStream(maxAllowedSize: MaxFileSize);
+            using var reader = new StreamReader(stream);
+            _json = await reader.ReadToEndAsync();
+            _fileName = e.File.Name;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to read file: {ex.Message}";
+        }
+    }
+
+    private async Task RunAsync()
+    {
+        _error = string.Empty;
+        if (string.IsNullOrWhiteSpace(_json))
+        {
+            _error = "Paste the JSON or pick a file.";
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            _result = await TemplateSvc.ImportFromOctopusApiResponseAsync(_json);
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

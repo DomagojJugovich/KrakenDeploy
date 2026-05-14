@@ -158,6 +158,102 @@ public class StepTemplateService(IDbContextFactory<KrakenDbContext> dbFactory)
         return imported;
     }
 
+    /// <summary>
+    /// Imports every template in an Octopus <c>/api/actiontemplates</c>
+    /// paginated response (the JSON dump produced by hitting that endpoint or
+    /// exported via the Octopus admin UI). The wrapper has shape
+    /// <c>{ "ItemType": "ActionTemplate", "Items": [...] }</c>; each item is
+    /// fed through <see cref="ImportFromJsonAsync"/> with
+    /// <see cref="StepTemplateSource.LocalImport"/>. Returns the same
+    /// added/updated/skipped/errored summary as
+    /// <see cref="ImportFromDirectoryAsync"/>.
+    /// </summary>
+    public async Task<ImportFromDirectoryResult> ImportFromOctopusApiResponseAsync(
+        string json, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(json);
+
+        JsonNode? root;
+        try
+        {
+            root = JsonNode.Parse(json,
+                documentOptions: new JsonDocumentOptions
+                {
+                    AllowTrailingCommas = true,
+                    CommentHandling     = JsonCommentHandling.Skip,
+                });
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException($"Invalid JSON: {ex.Message}", ex);
+        }
+
+        if (root?.AsObject() is not JsonObject obj
+            || obj["Items"] is not JsonArray items)
+        {
+            throw new InvalidOperationException(
+                "Expected an Octopus /api/actiontemplates response — a JSON object with an 'Items' array. " +
+                "For a single step template, use 'Import JSON' instead.");
+        }
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var existingCommunityIds = await db.StepTemplates
+            .Where(t => t.CommunityTemplateId != null)
+            .Select(t => t.CommunityTemplateId!)
+            .ToHashSetAsync(StringComparer.OrdinalIgnoreCase, ct)
+            .ConfigureAwait(false);
+
+        var added   = new List<string>();
+        var updated = new List<string>();
+        var skipped = new List<string>();
+        var errors  = new List<ImportFromDirectoryError>();
+
+        for (var i = 0; i < items.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var item = items[i];
+            if (item is null)
+            {
+                continue;
+            }
+
+            var name = item["Name"]?.GetValue<string>() ?? $"#{i}";
+            var itemJson = item.ToJsonString();
+
+            try
+            {
+                var parsed = OctopusLibraryImporter.Parse(itemJson, importSource: name);
+                var isUpdate = !string.IsNullOrWhiteSpace(parsed.CommunityTemplateId)
+                    && existingCommunityIds.Contains(parsed.CommunityTemplateId!);
+
+                await ImportFromJsonAsync(
+                    itemJson,
+                    importSource: $"octopus-api: {name}",
+                    source: StepTemplateSource.LocalImport,
+                    ct: ct).ConfigureAwait(false);
+
+                (isUpdate ? updated : added).Add(name);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or JsonException)
+            {
+                skipped.Add(name);
+                _ = ex;
+            }
+            catch (Exception ex)
+            {
+                errors.Add(new ImportFromDirectoryError(name, ex.Message));
+            }
+        }
+
+        return new ImportFromDirectoryResult(
+            ScannedFiles: items.Count,
+            Added:        added.Count,
+            Updated:      updated.Count,
+            Skipped:      skipped.Count,
+            Errored:      errors.Count,
+            Errors:       errors);
+    }
+
     // ── Bulk import ────────────────────────────────────────────────────────────
 
     /// <summary>

@@ -62,6 +62,9 @@ public sealed record ImportStepTemplateRequest(
 /// <summary>Request body for POST /api/step-templates/import-folder.</summary>
 public sealed record ImportFolderRequest(string FolderPath);
 
+/// <summary>Request body for POST /api/step-templates/import-octopus-api.</summary>
+public sealed record ImportOctopusApiRequest(string Json);
+
 /// <summary>Parameter definition within a step-template create/update request.</summary>
 public sealed record StepTemplateParameterRequest(
     string Name,

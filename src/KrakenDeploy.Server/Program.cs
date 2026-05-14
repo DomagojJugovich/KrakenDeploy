@@ -1329,6 +1329,27 @@ public static class Program
                 }
             }).RequirePermission(Permission.StepTemplateCreate);
 
+        app.MapPost("/api/step-templates/import-octopus-api",
+            async (ImportOctopusApiRequest req, StepTemplateService svc,
+                CancellationToken ct) =>
+            {
+                if (string.IsNullOrWhiteSpace(req.Json))
+                {
+                    return Results.BadRequest(new { error = "Json is required." });
+                }
+
+                try
+                {
+                    var summary = await svc.ImportFromOctopusApiResponseAsync(req.Json, ct)
+                        .ConfigureAwait(false);
+                    return Results.Ok(summary);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.StepTemplateCreate);
+
         // ── Community catalog API ────────────────────────────────────────────
         app.MapGet("/api/step-template-catalog",
             async (string? category, StepTemplateCatalogService svc, CancellationToken ct) =>

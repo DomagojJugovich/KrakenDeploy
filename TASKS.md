@@ -788,13 +788,19 @@ Mid-M10 thread that didn't fit M5 (initial Octopus compat) or M9 (Kraken.IIS). S
 
 #### Built-in step pack (Octopus parity)
 
-To be sourced from the user's own Octopus instance via `GET /api/actiontemplates?builtIn=true` (authenticated API key), transcribed into Kraken-native templates with PowerShell-based handlers. **Not** decompiled from Calamari — see [docs/architecture.md](docs/architecture.md#step-execution-model) on the clean-room policy.
+The Octopus "built-in" step pack splits into two distinct classes that need different work:
+
+**(A) `Octopus.*Script`-based ActionTemplates exposed by `/api/actiontemplates`.** These are templates the Octopus installer / admin can install on top of `Octopus.Script` — File System, IIS AppPool helpers, Windows Service - Check status, Upload files by FTP, etc. They have a `CommunityActionTemplateId` and their `Properties` carry a script body + parameters. Importing them is purely metadata work — no new handlers needed, because they all run on the existing `Kraken.Script` / `Octopus.Script` handler.
+
+- [x] **Octopus API dump importer** — `StepTemplateService.ImportFromOctopusApiResponseAsync(json)` unwraps the paginated `{ItemType:"ActionTemplate",Items:[…]}` shape returned by `GET /api/actiontemplates` and routes each item through the existing `ImportFromJsonAsync(..., source: LocalImport)`. Endpoint `POST /api/step-templates/import-octopus-api`. UI: "Import Octopus dump" button + dialog on `/step-templates` accepts paste or file picker.
+
+**(B) True built-in ActionTypes baked into `Octopus.Server`'s binaries** (do NOT appear in `/api/actiontemplates`). Each needs its own Kraken-native handler. Sourced from public Octopus docs + observable behaviour — **not** decompiled from Calamari (see [docs/architecture.md](docs/architecture.md#step-execution-model) on the clean-room policy).
 
 - [ ] **`Octopus.IIS` parity** — extend the existing `Kraken.IIS` template's parameter set to match Octopus's `Octopus.Action.IISWebSite.*` keys 1:1 so an Octopus IIS step imports without renaming.
 - [ ] **`Octopus.TentaclePackage`** — package-deploy with optional pre/post scripts, config transforms, structured config-variable replacement, custom install dir.
-- [ ] **`Octopus.DeployRelease`** — server-side orchestrator step: "deploy release of project X to environment Y". Requires Phase 7b (server-side runner).
-- [ ] **`Octopus.Manual`** — already exists in M9. Verify parameter shape matches.
-- [ ] **`Octopus.FtpUpload`, `Octopus.AzureFunction`** etc. — long tail; transcribe as Argosy/WebArgosy processes need them. Azure / AWS / Kubernetes packs deferred.
+- [ ] **`Octopus.DeployRelease`** — server-side orchestrator step: "deploy release of project X to environment Y". Builds on Phase 7b/7d server-side execution.
+- [ ] **`Octopus.Manual`** — `ManualInterventionStepHandler` already exists; verify parameter shape (Instructions / ResponsibleTeamIds) matches Octopus's exports.
+- [ ] **`Octopus.AwsRunCloudFormation`, `Octopus.AzureFunction`** etc. — long tail; transcribe as Argosy/WebArgosy processes need them. Azure / AWS / Kubernetes packs deferred.
 
 ### M11 — AI integration (MCP server, autonomous diagnosis, process assistant)
 Three features sharing a common `IAiProvider` abstraction (pluggable: Anthropic, OpenAI, Azure OpenAI — user supplies API key) and a shared MCP tool layer.

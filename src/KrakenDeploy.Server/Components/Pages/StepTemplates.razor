@@ -21,6 +21,11 @@
                       Text="Browse Community" class="rz-mr-2"
                       Click="@(() => Nav.NavigateTo("/step-templates/community"))" />
         <RequirePermission Permission="Permission.StepTemplateCreate">
+            <RadzenButton Icon="cloud_download" ButtonStyle="ButtonStyle.Light"
+                          Text="Import Octopus dump" class="rz-mr-2"
+                          Click="@ShowImportOctopusApiDialog" />
+        </RequirePermission>
+        <RequirePermission Permission="Permission.StepTemplateCreate">
             <RadzenButton Icon="folder_open" ButtonStyle="ButtonStyle.Light"
                           Text="Import folder" class="rz-mr-2"
                           Click="@ShowImportFolderDialog" />
@@ -134,6 +139,26 @@
             await LoadAsync();
             NotificationService.Notify(NotificationSeverity.Success,
                 "Template imported", "The step template was imported successfully.");
+        }
+    }
+
+    // ── Import-from-Octopus-API dialog ───────────────────────────────────────
+
+    private async Task ShowImportOctopusApiDialog()
+    {
+        var result = await DialogService.OpenAsync<Dialogs.ImportOctopusApiDialog>(
+            "Import from Octopus actiontemplates dump",
+            options: new DialogOptions
+            {
+                Width = "780px",
+                CloseDialogOnOverlayClick = false,
+            });
+
+        if (result is true)
+        {
+            await LoadAsync();
+            NotificationService.Notify(NotificationSeverity.Success,
+                "Imported", "Templates were imported from the Octopus API dump.");
         }
     }
 
