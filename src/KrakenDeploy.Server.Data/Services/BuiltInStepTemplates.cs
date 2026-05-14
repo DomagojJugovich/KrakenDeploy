@@ -66,6 +66,9 @@ public class BuiltInStepTemplateSeeder(
         {
             Name        = KrakenIisTemplateName,
             ActionType  = "Kraken.IIS",
+            Source      = StepTemplateSource.BuiltIn,
+            Category    = "iis",
+            Author      = "KrakenDeploy",
             Description =
                 "Comprehensive IIS deployment: ensures the app pool with full process-model, " +
                 "recycling, and rapid-fail settings; ensures the site and replaces bindings " +
@@ -220,6 +223,9 @@ public class BuiltInStepTemplateSeeder(
         {
             Name        = KrakenScriptTemplateName,
             ActionType  = "Kraken.Script",
+            Source      = StepTemplateSource.BuiltIn,
+            Category    = "script",
+            Author      = "KrakenDeploy",
             Description =
                 "Runs an inline script on the deployment target. Drop-in compatible " +
                 "with the Octopus.Script parameter contract: " +

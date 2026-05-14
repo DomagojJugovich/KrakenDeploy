@@ -133,15 +133,20 @@ Other markers handled by the parser:
 
 ## Step templates
 
-`StepTemplate` is a reusable definition of a step: an `ActionType` (e.g. `Kraken.Script`), a `Properties` dict that's copied onto a `DeploymentStep.Config` when applied, and a list of `Parameters` that drive the UI form.
+`StepTemplate` is a reusable definition of a step: an `ActionType` (e.g. `Kraken.Script`), a `Properties` dict that's copied onto a `DeploymentStep.Config` when applied, and a list of `Parameters` that drive the UI form. Extra metadata fields (`Category`, `Author`, `Website`, `LogoUrl`, `Source`) drive the picker / filter UI.
 
-Three sources:
+Four sources tracked by the `StepTemplateSource` enum:
 
-- **Built-in** — seeded at startup by `BuiltInStepTemplateSeeder` (idempotent by name). Currently: `Kraken.IIS — Deploy Web Site`, `Kraken.Script — Run a Script`.
-- **Community Library** — JSON files from `https://github.com/OctopusDeploy/Library/tree/master/step-templates`. Parsed by `OctopusLibraryImporter.Parse`; imported via `StepTemplateService.ImportFromJsonAsync`. Upserted by Octopus `CommunityActionTemplateId` so re-import updates in place.
-- **User-authored** — created via `CreateStepTemplateDialog`.
+- **`BuiltIn`** — seeded at startup by `BuiltInStepTemplateSeeder` (idempotent by name). Currently: `Kraken.IIS — Deploy Web Site`, `Kraken.Script — Run a Script`. These rows are auto-managed; the seeder updates them on every startup if their definition has drifted.
+- **`CommunityLibrary`** — JSON files from `https://github.com/OctopusDeploy/Library/tree/master/step-templates`. Parsed by `OctopusLibraryImporter.Parse`; imported via `StepTemplateService.ImportFromJsonAsync(..., source: StepTemplateSource.CommunityLibrary)`. Upserted by Octopus `CommunityActionTemplateId` so re-import updates in place.
+- **`LocalImport`** — same parser path but the entry point is a single-file paste, single-file picker, or the bulk "Import from folder" feature pointed at a clone of the Library repo.
+- **`UserAuthored`** — created via `CreateStepTemplateDialog`.
 
-Phase 4 (community catalog browser) and Phase 3 (bulk-import from folder) layer on top — see [TASKS.md M10.3](../TASKS.md#m103--octopus-compatibility-deepening--ux-polish).
+### Categories
+
+Each template carries the small-bucket `Category` from the source JSON (e.g. `aws`, `iis`, `windows-iis`). The UI groups templates by the **big-bucket** display category derived via `KrakenDeploy.Contracts.Steps.StepTemplateCategoryMap.GetBigBucket(small)`. The mapping table is embedded as `category-mapping.json` inside `KrakenDeploy.Contracts.dll`; it covers ~80 small buckets across 11 big buckets ("Development and Scripting", "Containers and Orchestration", "Cloud Native Services", "Infrastructure as Code", "Server Environments", "Configuration Management", "Source Control", "Notifications", "Reporting and Telemetry", "Security and Compliance", "Workflow"). Anything unmapped falls into `Other`.
+
+Phase 4 (community catalog browser — hourly poll of GitHub) and Phase 5 (unified Add-Step dialog) layer on top — see [TASKS.md M10.3](../TASKS.md#m103--octopus-compatibility-deepening--ux-polish).
 
 ## Extension points
 

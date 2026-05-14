@@ -106,9 +106,14 @@ public class StepTemplateService(IDbContextFactory<KrakenDbContext> dbFactory)
     /// </summary>
     /// <param name="json">Raw JSON from the Library repo (single template object).</param>
     /// <param name="importSource">Human-readable source description (URL, filename, etc.).</param>
+    /// <param name="source">
+    /// Provenance of the import. Defaults to <see cref="StepTemplateSource.LocalImport"/>;
+    /// the community-catalog browser passes <see cref="StepTemplateSource.CommunityLibrary"/>.
+    /// </param>
     public async Task<StepTemplate> ImportFromJsonAsync(
         string json,
         string? importSource = null,
+        StepTemplateSource source = StepTemplateSource.LocalImport,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(json);
@@ -116,6 +121,7 @@ public class StepTemplateService(IDbContextFactory<KrakenDbContext> dbFactory)
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var imported = OctopusLibraryImporter.Parse(json, importSource);
+        imported.Source = source;
 
         // Upsert by CommunityTemplateId when present.
         StepTemplate? existing = null;
@@ -139,6 +145,11 @@ public class StepTemplateService(IDbContextFactory<KrakenDbContext> dbFactory)
             existing.Properties         = imported.Properties;
             existing.Parameters         = imported.Parameters;
             existing.ImportedFrom       = imported.ImportedFrom;
+            existing.Category           = imported.Category;
+            existing.Author             = imported.Author;
+            existing.Website            = imported.Website;
+            existing.LogoUrl            = imported.LogoUrl;
+            existing.Source             = source;
             existing.Version++;
             imported = existing;
         }
@@ -195,6 +206,12 @@ public static class OctopusLibraryImporter
         // Accept both so imports work from either source.
         var communityId      = (root["CommunityActionTemplateId"] ?? root["Id"])
                                ?.GetValue<string>()?.Trim();
+        var category         = root["Category"]?.GetValue<string>()?.Trim();
+        var author           = root["Author"]?.GetValue<string>()?.Trim();
+        var website          = (root["Website"] ?? root["WebsiteUrl"])
+                               ?.GetValue<string>()?.Trim();
+        var logoUrl          = (root["LogoUrl"] ?? root["Logo"])
+                               ?.GetValue<string>()?.Trim();
 
         // ── Properties ────────────────────────────────────────────────────────
         var properties = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -249,13 +266,20 @@ public static class OctopusLibraryImporter
 
         return new StepTemplate
         {
-            Name               = name,
-            Description        = description,
-            ActionType         = actionType,
-            Properties         = properties,
-            Parameters         = parameters,
+            Name                = name,
+            Description         = description,
+            ActionType          = actionType,
+            Properties          = properties,
+            Parameters          = parameters,
             CommunityTemplateId = communityId,
-            ImportedFrom       = importSource,
+            ImportedFrom        = importSource,
+            Category            = category,
+            Author              = author,
+            Website             = website,
+            LogoUrl             = logoUrl,
+            // Caller (StepTemplateService.ImportFromJsonAsync) overrides this
+            // to CommunityLibrary / LocalImport based on the actual entry point.
+            Source              = StepTemplateSource.LocalImport,
         };
     }
 

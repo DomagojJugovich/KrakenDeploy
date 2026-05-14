@@ -21,6 +21,12 @@ public class StepTemplateConfiguration : IEntityTypeConfiguration<StepTemplate>
         builder.Property(x => x.CommunityTemplateId).HasMaxLength(256);
         builder.Property(x => x.ImportedFrom).HasMaxLength(1024);
 
+        builder.Property(x => x.Source).HasConversion<int>().IsRequired();
+        builder.Property(x => x.Category).HasMaxLength(128);
+        builder.Property(x => x.Author).HasMaxLength(256);
+        builder.Property(x => x.Website).HasMaxLength(1024);
+        builder.Property(x => x.LogoUrl).HasMaxLength(1024);
+
         builder.Property(x => x.Properties)
             .HasJsonbColumn<Dictionary<string, string>>();
 
@@ -30,5 +36,7 @@ public class StepTemplateConfiguration : IEntityTypeConfiguration<StepTemplate>
         builder.HasIndex(x => x.ActionType);
         builder.HasIndex(x => x.Name);
         builder.HasIndex(x => x.CommunityTemplateId);
+        builder.HasIndex(x => x.Category);
+        builder.HasIndex(x => x.Source);
     }
 }

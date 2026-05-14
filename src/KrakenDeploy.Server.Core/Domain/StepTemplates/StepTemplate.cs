@@ -55,4 +55,26 @@ public class StepTemplate : AuditableEntity, ISpaceScoped
     /// was imported rather than authored in KrakenDeploy directly.
     /// </summary>
     public string? ImportedFrom { get; set; }
+
+    /// <summary>
+    /// Origin of this template. Drives badge / filter UI and whether the row
+    /// is auto-managed (Built-in reseeds on startup) vs user-owned.
+    /// </summary>
+    public StepTemplateSource Source { get; set; } = StepTemplateSource.UserAuthored;
+
+    /// <summary>
+    /// Small-bucket category from the Octopus Library JSON (e.g. <c>"aws"</c>,
+    /// <c>"iis"</c>, <c>"windows-iis"</c>). UI displays grouped by the
+    /// big-bucket category derived via <c>StepTemplateCategoryMap</c>.
+    /// </summary>
+    public string? Category { get; set; }
+
+    /// <summary>Author name as it appears in the Octopus Library JSON.</summary>
+    public string? Author { get; set; }
+
+    /// <summary>Author or template homepage URL.</summary>
+    public string? Website { get; set; }
+
+    /// <summary>URL of an icon to show next to the template in the picker.</summary>
+    public string? LogoUrl { get; set; }
 }

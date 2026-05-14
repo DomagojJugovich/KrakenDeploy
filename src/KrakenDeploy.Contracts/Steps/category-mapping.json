@@ -1,0 +1,65 @@
+{
+  "_comment": "Maps the small-bucket Category string from Octopus Library JSON (e.g. 'aws', 'iis') to the big-bucket category surfaced in the KrakenDeploy step picker. Mirrors the bucket structure of the Octopus 'Choose Step Template' screen. Anything not listed falls into 'Other'. Source of truth: this file is embedded into KrakenDeploy.Contracts.dll and loaded once at startup by StepTemplateCategoryMap.",
+
+  "Development and Scripting": [
+    "script", "scripting", "powershell", "bash", "shell",
+    "python", "fsharp", "csharp", "dotnet-script",
+    "file-system", "files", "variables"
+  ],
+
+  "Containers and Orchestration": [
+    "docker", "kubernetes", "k8s", "helm",
+    "openshift", "rancher", "containers"
+  ],
+
+  "Cloud Native Services": [
+    "aws", "amazon", "azure", "azure-service-fabric",
+    "google-cloud", "gcp", "alibaba", "digitalocean"
+  ],
+
+  "Infrastructure as Code": [
+    "terraform", "arm-templates", "arm", "bicep",
+    "pulumi", "cloudformation"
+  ],
+
+  "Server Environments": [
+    "iis", "windows", "windows-iis", "windows-service",
+    "linux", "ssh",
+    "apache", "nginx", "tomcat", "wildfly", "jboss",
+    "java", "node", "nodejs", "php",
+    "service-fabric", "wcf",
+    "database", "sql-server", "mysql", "postgresql", "mongodb", "redis"
+  ],
+
+  "Configuration Management": [
+    "ansible", "chef", "puppet", "saltstack",
+    "octopus-config", "configuration"
+  ],
+
+  "Source Control": [
+    "github", "gitlab", "bitbucket", "azure-devops", "git",
+    "jira", "youtrack"
+  ],
+
+  "Notifications": [
+    "slack", "teams", "microsoft-teams", "email", "smtp",
+    "webhook", "pagerduty", "opsgenie", "discord", "sms"
+  ],
+
+  "Reporting and Telemetry": [
+    "newrelic", "datadog", "prometheus", "appdynamics",
+    "splunk", "elasticsearch", "grafana",
+    "octopus-api", "build-information"
+  ],
+
+  "Security and Compliance": [
+    "sonarqube", "snyk", "veracode", "checkmarx",
+    "1password", "hashicorp-vault", "vault",
+    "certificate", "ssl", "secrets", "compliance"
+  ],
+
+  "Workflow": [
+    "octopus", "octopus-deploy", "approvals", "manual-intervention",
+    "schedule", "delay", "wait", "loop"
+  ]
+}

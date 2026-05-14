@@ -23,4 +23,11 @@
     <Protobuf Include="Protos\kraken.proto" GrpcServices="Both" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Embed the small→big category mapping. Loaded once by
+         StepTemplateCategoryMap at startup; bundled into the assembly
+         so it ships with every distribution. -->
+    <EmbeddedResource Include="Steps\category-mapping.json" />
+  </ItemGroup>
+
 </Project>

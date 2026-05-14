@@ -1252,7 +1252,7 @@ public static class Program
                 try
                 {
                     var template = await svc.ImportFromJsonAsync(
-                        req.Json, req.ImportSource, ct)
+                        req.Json, req.ImportSource, ct: ct)
                         .ConfigureAwait(false);
                     return Results.Ok(template);
                 }
