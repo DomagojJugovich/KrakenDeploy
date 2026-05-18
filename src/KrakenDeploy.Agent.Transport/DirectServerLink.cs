@@ -17,7 +17,7 @@ public sealed class DirectServerLink : IServerLink
 {
     private readonly List<Func<DeploymentPlan, Task>> _onRunDeployment = [];
 
-    private IWebHost? _listener;
+    private WebApplication? _listener;
     private HttpClient? _http;
     private string _serverUrl = "";
 
@@ -41,20 +41,17 @@ public sealed class DirectServerLink : IServerLink
         // (configurable in a later pass).
         var handler = new PipelineHandler(_onRunDeployment);
 
-        var host = new WebHostBuilder()
-            .UseKestrel(options =>
-            {
-                options.Listen(IPAddress.Any, 10933);
-            })
-            .Configure(app =>
-            {
-                app.Run(handler.HandleAsync);
-            })
-            .Build();
+        var builder = WebApplication.CreateSlimBuilder();
+        builder.WebHost.UseKestrel(options =>
+        {
+            options.Listen(IPAddress.Any, 10933);
+        });
+        var app = builder.Build();
+        app.Run(handler.HandleAsync);
 
-        _listener = host;
+        _listener = app;
         IsConnected = true;
-        await host.StartAsync(ct).ConfigureAwait(false);
+        await app.StartAsync(ct).ConfigureAwait(false);
     }
 
     public async Task StopAsync(CancellationToken ct)
@@ -64,7 +61,7 @@ public sealed class DirectServerLink : IServerLink
         if (_listener is not null)
         {
             await _listener.StopAsync(ct).ConfigureAwait(false);
-            _listener.Dispose();
+            await _listener.DisposeAsync().ConfigureAwait(false);
             _listener = null;
         }
     }
@@ -149,7 +146,7 @@ public sealed class DirectServerLink : IServerLink
         if (_listener is not null)
         {
             await _listener.StopAsync(CancellationToken.None).ConfigureAwait(false);
-            _listener.Dispose();
+            await _listener.DisposeAsync().ConfigureAwait(false);
         }
 
         _http?.Dispose();

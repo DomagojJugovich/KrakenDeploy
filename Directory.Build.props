@@ -14,11 +14,12 @@
   <PropertyGroup Label="Build">
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
-    <NoWarn>$(NoWarn);1591;1668;CA1014;CA1848</NoWarn>
+    <NoWarn>$(NoWarn);1591;1668;CA1014;CA1848;CA1873</NoWarn>
     <!-- 1591: missing XML doc comment (disabled — we don't generate docs) -->
     <!-- 1668: invalid LIB env var search path (machine-level noise, e.g. stale IBM WebSphere MQ paths) -->
     <!-- CA1014: assembly should be marked CLSCompliant (not relevant for an internal product) -->
     <!-- CA1848: use LoggerMessage delegates (too aggressive for app-level code) -->
+    <!-- CA1873: evaluation of log args may be expensive when disabled (same rationale as CA1848 — too aggressive for app-level code) -->
   </PropertyGroup>
 
   <PropertyGroup Label="Assembly metadata">

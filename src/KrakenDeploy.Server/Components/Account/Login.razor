@@ -101,7 +101,7 @@
 
 @code {
     [SupplyParameterFromForm]
-    private LoginModel Input { get; set; } = new();
+    private LoginModel Input { get; set; } = null!;
 
     [SupplyParameterFromQuery]
     private string? ReturnUrl { get; set; }
@@ -129,6 +129,7 @@
 
     protected override async Task OnInitializedAsync()
     {
+        Input ??= new();
         _oidcProviders = (await IdpSvc.GetAllAsync())
             .Where(p => p.IsEnabled)
             .OrderBy(p => p.SortOrder)
