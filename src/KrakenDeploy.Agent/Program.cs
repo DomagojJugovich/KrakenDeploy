@@ -3,6 +3,7 @@ using KrakenDeploy.Agent;
 using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.Deployment;
 using KrakenDeploy.Agent.Deployment.Iis;
+using KrakenDeploy.Agent.Deployment.Package;
 using KrakenDeploy.Agent.Deployment.StepHandlers;
 using KrakenDeploy.Agent.Identity;
 using KrakenDeploy.Agent.Machine;
@@ -110,6 +111,7 @@ static async Task<int> RunAsync(string[] args)
     builder.Services.AddTransient<IStepHandler, FileTransformStepHandler>();
     builder.Services.AddTransient<IStepHandler, ManualInterventionStepHandler>();
     builder.Services.AddTransient<IStepHandler, KrakenIisStepHandler>();
+    builder.Services.AddTransient<IStepHandler, OctopusTentaclePackageStepHandler>();
 
     // ── Scoped/Transient services ────────────────────────────────────────
     builder.Services.AddTransient<ScriptRunner>();

@@ -796,9 +796,48 @@ The Octopus "built-in" step pack splits into two distinct classes that need diff
 
 **(B) True built-in ActionTypes baked into `Octopus.Server`'s binaries** (do NOT appear in `/api/actiontemplates`). Each needs its own Kraken-native handler. Sourced from public Octopus docs + observable behaviour — **not** decompiled from Calamari (see [docs/architecture.md](docs/architecture.md#step-execution-model) on the clean-room policy).
 
-- [ ] **`Octopus.IIS` parity** — extend the existing `Kraken.IIS` template's parameter set to match Octopus's `Octopus.Action.IISWebSite.*` keys 1:1 so an Octopus IIS step imports without renaming.
-- [ ] **`Octopus.TentaclePackage`** — package-deploy with optional pre/post scripts, config transforms, structured config-variable replacement, custom install dir.
-- [ ] **`Octopus.DeployRelease`** — server-side orchestrator step: "deploy release of project X to environment Y". Builds on Phase 7b/7d server-side execution.
+Real Argosy + WebArgosy `deploymentprocess` exports drive the priority order: 49 × `Octopus.TentaclePackage` (all three of `CustomDirectory` / `ConfigurationVariables` / `ConfigurationTransforms` features in use), 2 × `Octopus.IIS` (full website + bindings + app pool + `CustomDirectory` + `CustomScripts`), 1 × `Octopus.DeployRelease`.
+
+Strategy is **dual-shape**: the importer preserves the Octopus property bag verbatim in `DeploymentStep.Config` (the jsonb `Dictionary<string,string>` already exists — no schema change); handlers add an `Octopus.*` parser alongside the existing `Kraken.*` parser, detect shape by key prefix, and dispatch internally. Feeds aren't modelled — `Octopus.Action.Package.FeedId` is preserved as an opaque string until a `Feed` aggregate is justified. `EnabledFeatures` stays as a verbatim comma-separated string in `Config["Octopus.Action.EnabledFeatures"]`; handlers split-parse at runtime.
+
+##### Phase B-1 — `Octopus.TentaclePackage` handler
+
+- [ ] **B-1: `OctopusTentaclePackageStepHandler`** — new handler in `KrakenDeploy.Agent/Deployment/Package/`. Claims `Octopus.TentaclePackage`. `RequiresPackage = true`. Reads `Octopus.Action.Package.*` keys + parses `Octopus.Action.EnabledFeatures`. Orchestrates the per-feature passes against `context.ExtractDir`:
+  - `Octopus.Features.CustomDirectory` — copy contents of `ExtractDir` to `Octopus.Action.Package.CustomInstallationDirectory` (Octostache-substituted). When `…ShouldBePurgedBeforeDeployment="True"`, purge the destination first, honoring `…CustomInstallationDirectoryPurgeExclusions` (newline- or comma-separated glob list, e.g. `App_Data`).
+  - `Octopus.Features.ConfigurationVariables` + `…AutomaticallyUpdateAppSettingsAndConnectionStrings="True"` — XML `appSettings` and `connectionStrings` substitution against deployment variables: for each `*.config` file, replace `<add key="X" value="…" />` and `<add name="X" connectionString="…" />` whose key/name matches a deployment variable. **Not** raw Octostache placeholder substitution (that's the separate `Octopus.Features.SubstituteVariablesInFiles` feature handled by the existing `SubstituteVariablesStepHandler`).
+  - `Octopus.Features.ConfigurationTransforms` + `…AutomaticallyRunConfigurationTransformationFiles="True"` — apply XDT transforms (`*.<env>.config` over `*.config`, `*.Release.config` over `*.config`, with the existing transform-pairing rules).
+  - DI registration in `Agent/Program.cs`.
+  - Unit tests in `KrakenDeploy.Agent.Tests`: each feature in isolation, all three combined, purge-with-exclusions edge cases, ConfigurationVariables matching `appSettings` and `connectionStrings`, XDT transform applied for `Octopus.Environment.Name`.
+
+##### Phase B-2 — Octopus `deploymentprocess` JSON importer
+
+- [ ] **B-2: `DeploymentProcessImportService`** — accepts an Octopus `GET /api/{spaceId}/deploymentprocesses/{processId}` JSON. Maps each `Steps[].Actions[0]` → Kraken `DeploymentStep`. Field mapping (no key translation in `Config`):
+  - `Action.ActionType` → `StepType` (verbatim, e.g. `Octopus.TentaclePackage`).
+  - `Action.Properties` → `Config` (verbatim, all `Octopus.Action.*` keys preserved).
+  - `Step.Properties["Octopus.Action.TargetRoles"]` (comma-separated) → `TargetRoles: List<string>`.
+  - `Action.Packages[0].PackageId` → `DeploymentStep.PackageId` (when present and not the `"dummy"` placeholder).
+  - `Step.Name`, `Step.Slug`, `Action.IsDisabled`, `Action.Notes` mapped to existing Kraken columns.
+  - `Action.TenantTags[]` mapped to Kraken tenant tags by tag-set/tag-name lookup (skip with a warning when the tag doesn't exist locally).
+  - `WorkerPoolId`, `Container`, `Channels`, `Environments`/`ExcludedEnvironments` — out of LAUS scope; logged as ignored.
+  - REST endpoint: `POST /api/projects/{id}/deployment-process/import-octopus`.
+  - UI: dialog on the project Process page modelled on `ImportOctopusApiDialog` (paste-textarea + file picker, summary card, per-step error grid).
+  - Tests: import both supplied real exports (`argosy-process.json` 55 steps, `webargosys2s-2-process.json` 22 steps), assert step counts, types, and that `Octopus.Action.IISWebSite.Bindings` round-trips byte-for-byte.
+
+##### Phase B-3 — `Octopus.IIS` dual-shape support
+
+- [ ] **B-3a: `OctopusIisConfig.Parse`** — new parser alongside the existing `KrakenIisConfig.Parse` in the IIS handler. Shape detection: presence of `Octopus.Action.IISWebSite.WebSiteName` or `…VirtualDirectory.CreateOrUpdate` or `…WebApplication.CreateOrUpdate` → Octopus shape; otherwise → Kraken shape. Reads:
+  - `Octopus.Action.IISWebSite.DeploymentType` ∈ `{webSite, webApplication, virtualDirectory}` (discriminator).
+  - **webSite branch:** `WebSiteName`, `Bindings` (JSON-in-string — Octostache-substitute the string first, then `JsonSerializer.Deserialize`, then walk each `{protocol, ipAddress, port, host, thumbprint, certificateVariable, requireSni, enabled}`; `requireSni` and `enabled` can each be raw `true`/`false` OR Octostache-evaluated strings), `ApplicationPoolName`, `ApplicationPoolFrameworkVersion` (`v2.0`/`v4.0`/`No Managed Code`), `ApplicationPoolIdentityType` (`ApplicationPoolIdentity`/`LocalSystem`/`LocalService`/`NetworkService`/`SpecificUser`), `ApplicationPoolUsername`/`ApplicationPoolPassword` (only when identity is `SpecificUser`), `EnableAnonymousAuthentication`/`EnableBasicAuthentication`/`EnableWindowsAuthentication`, `WebRootType` (`packageRoot`/`packageDirectory`), `StartWebSite`/`StartApplicationPool`, `CreateOrUpdateWebSite`.
+  - **webApplication branch:** `WebApplication.WebSiteName`, `WebApplication.VirtualPath`, `WebApplication.ApplicationPoolName`, `WebApplication.ApplicationPoolFrameworkVersion`, `WebApplication.ApplicationPoolIdentityType`, `WebApplication.CreateOrUpdate`.
+  - **virtualDirectory branch:** `VirtualDirectory.CreateOrUpdate` + shared keys.
+  - Shared: `Octopus.Action.Package.*` payload keys (delegated to the B-1 package machinery).
+- [ ] **B-3b: Map → `KrakenIisConfig`** — translate parsed Octopus shape into the existing `KrakenIisConfig` so `IisScriptGenerator.Generate` stays the single code path. This keeps the script-emit + artifact-write + run flow identical for both shapes.
+- [ ] **B-3c: Dummy-package quirk** — when `Action.Packages[0].PackageId == "dummy"` and `Octopus.Action.IISWebSite.WebRootType == "packageRoot"`, no extraction is attempted (the step only configures IIS). The B-2 importer flags this case during mapping; the handler is told via a config sentinel rather than inferring it.
+- [ ] **B-3d: Tests** — fixtures for each `DeploymentType` branch, the WebArgosy `webSite` real export, bindings with Octostache-conditional `enabled`, SpecificUser app-pool identity, dummy-package round-trip.
+
+##### Already covered / deferred
+
+- [ ] **`Octopus.DeployRelease`** — server-side orchestrator step: "deploy release of project X to environment Y". Builds on Phase 7b/7d server-side execution. Out of B-1/B-2/B-3 scope; lands separately once B is stable.
 - [ ] **`Octopus.Manual`** — `ManualInterventionStepHandler` already exists; verify parameter shape (Instructions / ResponsibleTeamIds) matches Octopus's exports.
 - [ ] **`Octopus.AwsRunCloudFormation`, `Octopus.AzureFunction`** etc. — long tail; transcribe as Argosy/WebArgosy processes need them. Azure / AWS / Kubernetes packs deferred.
 
