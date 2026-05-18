@@ -58,6 +58,7 @@ public sealed class SpacesTests
             "Variable",
             "DeploymentLogEntry",
             "DeploymentArtifact",
+            "DeploymentOutputVariable",
             "LifecyclePhase",
             "DeploymentProcess",
             "DeploymentStep",
@@ -83,6 +84,9 @@ public sealed class SpacesTests
             "TeamExternalGroup",
             "RoleAssignment",
             "IdentityProvider",
+            // System-wide GitHub community-template cache — refreshed by a
+            // server-side poller; not partitioned per Space.
+            "StepTemplateCatalogEntry",
         };
 
         var assembly = typeof(Project).Assembly;

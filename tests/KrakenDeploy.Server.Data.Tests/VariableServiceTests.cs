@@ -5,6 +5,7 @@ using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data.Encryption;
 using KrakenDeploy.Server.Data.Services;
+using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data.Tests;
 
@@ -18,8 +19,8 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     // 32-byte dev key: base64 of "KrakenDeployDevMasterKey32Bytes!"
     private const string DevMasterKey = "S3Jha2VuRGVwbG95RGV2TWFzdGVyS2V5MzJCeXRlcyE=";
 
-    private static VariableService CreateService(KrakenDbContext db)
-        => new(db, new AesEncryptionService(DevMasterKey));
+    private static VariableService CreateService(IDbContextFactory<KrakenDbContext> factory)
+        => new(factory, new AesEncryptionService(DevMasterKey));
 
     // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -65,7 +66,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task CreateVariable_persists_plain_text_value()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var project = await SeedProjectAsync(db);
 
         var variable = await svc.CreateVariableAsync(
@@ -81,7 +82,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task CreateVariable_encrypts_sensitive_value_at_rest()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var project = await SeedProjectAsync(db);
 
         var variable = await svc.CreateVariableAsync(
@@ -99,7 +100,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task GetVariables_redacts_sensitive_values()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var project = await SeedProjectAsync(db);
 
         await svc.CreateVariableAsync(project.Id, "PlainVar", "visible", VariableType.Text, null);
@@ -117,7 +118,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task DeleteVariable_removes_variable()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var project = await SeedProjectAsync(db);
 
         var variable = await svc.CreateVariableAsync(
@@ -136,7 +137,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task CreateVariable_normalises_comma_separated_string_array()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var project = await SeedProjectAsync(db);
 
         var variable = await svc.CreateVariableAsync(
@@ -152,7 +153,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task Resolve_returns_unscoped_variable_as_fallback()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var (project, env, target) = await SeedContextAsync(db, ["web"]);
 
         await svc.CreateVariableAsync(project.Id, "Greeting", "hello", VariableType.Text, null);
@@ -166,7 +167,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task Resolve_env_scoped_wins_over_unscoped()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var (project, env, target) = await SeedContextAsync(db, ["web"]);
 
         // Unscoped fallback.
@@ -186,7 +187,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task Resolve_env_and_role_scoped_beats_env_only()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var (project, env, target) = await SeedContextAsync(db, ["web"]);
 
         // Env-scoped only (score +4).
@@ -207,7 +208,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task Resolve_env_scoped_var_excluded_for_different_env()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var (project, env, _) = await SeedContextAsync(db, ["web"]);
 
         var otherEnvId = Guid.NewGuid();  // Non-existent env — just a different ID
@@ -225,7 +226,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task Resolve_decrypts_sensitive_variable()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var (project, env, target) = await SeedContextAsync(db, ["web"]);
 
         await svc.CreateVariableAsync(project.Id, "ApiKey", "topsecret", VariableType.Sensitive, null);
@@ -240,7 +241,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task Resolve_returns_empty_dict_when_no_variable_set_exists()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var project = await SeedProjectAsync(db);
 
         // Don't create any variables — there's no variable set yet.
@@ -255,7 +256,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task UpdateVariable_changes_name_and_value()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var project = await SeedProjectAsync(db);
 
         var variable = await svc.CreateVariableAsync(
@@ -273,7 +274,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task UpdateVariable_re_encrypts_sensitive_value()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var project = await SeedProjectAsync(db);
 
         var variable = await svc.CreateVariableAsync(
@@ -294,7 +295,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task UpdateVariable_returns_null_for_nonexistent_id()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
 
         var result = await svc.UpdateVariableAsync(
             Guid.NewGuid(), "Ghost", "value", VariableType.Text, null);
@@ -308,7 +309,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task DeleteVariable_returns_false_for_nonexistent_id()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
 
         var deleted = await svc.DeleteVariableAsync(Guid.NewGuid());
 
@@ -321,7 +322,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task GetVariables_returns_empty_list_for_project_without_variables()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var project = await SeedProjectAsync(db);
 
         // No variables created — set may not even exist yet.
@@ -336,7 +337,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task Resolve_target_scoped_wins_over_unscoped()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var (project, env, target) = await SeedContextAsync(db, ["api"]);
 
         // Unscoped fallback.
@@ -356,7 +357,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task Resolve_target_scoped_var_excluded_for_different_target()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var (project, env, _) = await SeedContextAsync(db, []);
 
         var otherTargetId = Guid.NewGuid();
@@ -375,7 +376,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task Resolve_role_scoped_excluded_when_target_has_no_matching_role()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var (project, env, target) = await SeedContextAsync(db, ["worker"]);
 
         // Variable scoped to role "web" — target only has "worker".
@@ -392,7 +393,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task Resolve_env_target_and_role_scoped_beats_all_lower_priority_combinations()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var (project, env, target) = await SeedContextAsync(db, ["web"]);
 
         // Unscoped (score 0).
@@ -420,7 +421,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     public async Task Resolve_string_array_variable_is_returned_as_json_array()
     {
         await using var db = postgres.CreateContext();
-        var svc = CreateService(db);
+        var svc = CreateService(postgres);
         var (project, env, target) = await SeedContextAsync(db, []);
 
         await svc.CreateVariableAsync(

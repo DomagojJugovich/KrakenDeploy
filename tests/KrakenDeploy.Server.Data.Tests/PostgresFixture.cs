@@ -10,9 +10,11 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// <summary>
 /// Spins up a PostgreSQL container once per test class (xUnit IClassFixture)
 /// and applies KrakenDeploy migrations during initialization. Tests obtain
-/// a fresh <see cref="KrakenDbContext"/> via <see cref="CreateContext"/>.
+/// a fresh <see cref="KrakenDbContext"/> via <see cref="CreateContext"/>, and
+/// the fixture itself can be passed wherever an
+/// <see cref="IDbContextFactory{TContext}"/> is required.
 /// </summary>
-public sealed class PostgresFixture : IAsyncLifetime
+public sealed class PostgresFixture : IAsyncLifetime, IDbContextFactory<KrakenDbContext>
 {
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder()
         .WithImage("postgres:16-alpine")
@@ -52,4 +54,6 @@ public sealed class PostgresFixture : IAsyncLifetime
     }
 
     public Task DisposeAsync() => _container.DisposeAsync().AsTask();
+
+    KrakenDbContext IDbContextFactory<KrakenDbContext>.CreateDbContext() => CreateContext();
 }

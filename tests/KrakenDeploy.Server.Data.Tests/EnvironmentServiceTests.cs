@@ -10,7 +10,7 @@ public class EnvironmentServiceTests(PostgresFixture postgres) : IClassFixture<P
     public async Task Create_assigns_ascending_sort_orders()
     {
         await using var db = postgres.CreateContext();
-        var svc = new EnvironmentService(db);
+        var svc = new EnvironmentService(postgres);
         var s = Guid.NewGuid().ToString("N");
 
         var dev  = await svc.CreateAsync($"Dev-{s}",  $"dev-{s}");
@@ -25,7 +25,7 @@ public class EnvironmentServiceTests(PostgresFixture postgres) : IClassFixture<P
     public async Task GetAllOrdered_returns_environments_sorted_by_sort_order()
     {
         await using var db = postgres.CreateContext();
-        var svc = new EnvironmentService(db);
+        var svc = new EnvironmentService(postgres);
         var s = Guid.NewGuid().ToString("N");
 
         var dev  = await svc.CreateAsync($"Dev-{s}",  $"dev-{s}");
@@ -43,7 +43,7 @@ public class EnvironmentServiceTests(PostgresFixture postgres) : IClassFixture<P
     public async Task MoveUp_places_environment_before_its_predecessor()
     {
         await using var db = postgres.CreateContext();
-        var svc = new EnvironmentService(db);
+        var svc = new EnvironmentService(postgres);
         var s = Guid.NewGuid().ToString("N");
 
         var first  = await svc.CreateAsync($"First-{s}",  $"first-{s}");
@@ -62,7 +62,7 @@ public class EnvironmentServiceTests(PostgresFixture postgres) : IClassFixture<P
     public async Task MoveDown_places_environment_after_its_successor()
     {
         await using var db = postgres.CreateContext();
-        var svc = new EnvironmentService(db);
+        var svc = new EnvironmentService(postgres);
         var s = Guid.NewGuid().ToString("N");
 
         var first  = await svc.CreateAsync($"First-{s}",  $"first-{s}");
@@ -81,7 +81,7 @@ public class EnvironmentServiceTests(PostgresFixture postgres) : IClassFixture<P
     public async Task Create_throws_on_duplicate_slug()
     {
         await using var db = postgres.CreateContext();
-        var svc = new EnvironmentService(db);
+        var svc = new EnvironmentService(postgres);
         var slug = $"dup-{Guid.NewGuid():N}";
 
         await svc.CreateAsync("Env", slug);

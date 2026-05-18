@@ -40,7 +40,7 @@ public class ProjectServiceTests(PostgresFixture postgres) : IClassFixture<Postg
     public async Task Create_persists_project_with_generated_id()
     {
         await using var db = postgres.CreateContext();
-        var svc = new ProjectService(db);
+        var svc = new ProjectService(postgres);
 
         var project = await svc.CreateAsync("Smoke Project", $"smoke-{Guid.NewGuid():N}", "desc");
 
@@ -53,7 +53,7 @@ public class ProjectServiceTests(PostgresFixture postgres) : IClassFixture<Postg
     public async Task Create_throws_on_duplicate_slug()
     {
         await using var db = postgres.CreateContext();
-        var svc = new ProjectService(db);
+        var svc = new ProjectService(postgres);
         var slug = $"dup-{Guid.NewGuid():N}";
 
         await svc.CreateAsync("First", slug, null);
@@ -67,7 +67,7 @@ public class ProjectServiceTests(PostgresFixture postgres) : IClassFixture<Postg
     public async Task GetAllAsync_returns_projects_ordered_by_name()
     {
         await using var db = postgres.CreateContext();
-        var svc = new ProjectService(db);
+        var svc = new ProjectService(postgres);
         var suffix = Guid.NewGuid().ToString("N");
 
         await svc.CreateAsync($"Zzz-{suffix}", $"zzz-{suffix}", null);
@@ -84,7 +84,7 @@ public class ProjectServiceTests(PostgresFixture postgres) : IClassFixture<Postg
     public async Task Update_modifies_name_and_description()
     {
         await using var db = postgres.CreateContext();
-        var svc = new ProjectService(db);
+        var svc = new ProjectService(postgres);
         var slug = $"upd-{Guid.NewGuid():N}";
 
         var created = await svc.CreateAsync("Original", slug, null);
@@ -99,7 +99,7 @@ public class ProjectServiceTests(PostgresFixture postgres) : IClassFixture<Postg
     public async Task Delete_removes_project_and_returns_true()
     {
         await using var db = postgres.CreateContext();
-        var svc = new ProjectService(db);
+        var svc = new ProjectService(postgres);
         var slug = $"del-{Guid.NewGuid():N}";
 
         var created = await svc.CreateAsync("ToDelete", slug, null);
@@ -114,7 +114,7 @@ public class ProjectServiceTests(PostgresFixture postgres) : IClassFixture<Postg
     public async Task Delete_returns_false_for_nonexistent_id()
     {
         await using var db = postgres.CreateContext();
-        var svc = new ProjectService(db);
+        var svc = new ProjectService(postgres);
 
         var result = await svc.DeleteAsync(Guid.NewGuid());
 

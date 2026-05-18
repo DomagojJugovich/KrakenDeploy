@@ -33,7 +33,7 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
         db.DeploymentTargets.Add(target);
         await db.SaveChangesAsync();
 
-        var hub = BuildHub(db, target.Id);
+        var hub = BuildHub(postgres, target.Id);
         // Roles = [] — server-side roles should be preserved when agent sends empty list.
         await hub.RegisterAsync(new AgentRegistrationRequest(
             target.Id, "test-machine", "Linux 6.0", "1.0.0", [], 0L, 0L));
@@ -59,7 +59,7 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
         db.DeploymentTargets.Add(target);
         await db.SaveChangesAsync();
 
-        await BuildHub(db, target.Id).RegisterAsync(
+        await BuildHub(postgres, target.Id).RegisterAsync(
             new AgentRegistrationRequest(target.Id, "m", "o", "v", [], 0L, 0L));
 
         await db.Entry(target).ReloadAsync();
@@ -82,7 +82,7 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
         db.DeploymentTargets.Add(target);
         await db.SaveChangesAsync();
 
-        await BuildHub(db, target.Id).RegisterAsync(
+        await BuildHub(postgres, target.Id).RegisterAsync(
             new AgentRegistrationRequest(target.Id, "m", "o", "v",
                 ["role-a", "role-b"], 0L, 0L));
 
@@ -92,7 +92,7 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
-    private static AgentHub BuildHub(KrakenDeploy.Server.Data.KrakenDbContext db, Guid targetId)
+    private static AgentHub BuildHub(PostgresFixture postgres, Guid targetId)
     {
         var publisher = new TargetStatusPublisher(
             new InMemoryTargetStatusNotifier(),
@@ -101,11 +101,12 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
 
         var hub = new AgentHub(
             new InMemoryAgentConnectionRegistry(),
-            db,
+            postgres,
             new NeverUsedScopeFactory(),
             publisher,
             TimeProvider.System,
             new NullUiHubContext(),
+            new NeverUsedPendingSubPlanRegistry(),
             NullLogger<AgentHub>.Instance);
 
         hub.Context = new FakeHubCallerContext(targetId);
@@ -133,6 +134,18 @@ file sealed class NeverUsedScopeFactory : IServiceScopeFactory
 {
     public IServiceScope CreateScope()
         => throw new NotSupportedException("IServiceScopeFactory is not used by RegisterAsync.");
+}
+
+file sealed class NeverUsedPendingSubPlanRegistry : IPendingSubPlanRegistry
+{
+    public void Register(Guid deploymentId, TaskCompletionSource<SubPlanResult> tcs)
+        => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
+
+    public bool TryResolve(Guid deploymentId, SubPlanResult result)
+        => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
+
+    public void Cancel(Guid deploymentId, string reason)
+        => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
 }
 
 file sealed class NullUiHubContext : IHubContext<UiHub, IUiHubClient>

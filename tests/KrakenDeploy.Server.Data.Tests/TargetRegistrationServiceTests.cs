@@ -11,7 +11,7 @@ public class TargetRegistrationServiceTests(PostgresFixture postgres) : IClassFi
     public async Task Create_returns_plain_token_and_stores_only_hash()
     {
         await using var db = postgres.CreateContext();
-        var svc = new TargetRegistrationService(db, TimeProvider.System);
+        var svc = new TargetRegistrationService(postgres, TimeProvider.System);
 
         var (target, token) = await svc.CreateAsync("smoke", ["web"], TransportMode.Reverse);
 
@@ -26,7 +26,7 @@ public class TargetRegistrationServiceTests(PostgresFixture postgres) : IClassFi
     public async Task ValidateAndConsume_returns_target_and_nulls_out_hash_on_first_use()
     {
         await using var db = postgres.CreateContext();
-        var svc = new TargetRegistrationService(db, TimeProvider.System);
+        var svc = new TargetRegistrationService(postgres, TimeProvider.System);
 
         var (_, token) = await svc.CreateAsync("smoke-validate", ["web"], TransportMode.Reverse);
         var result = await svc.ValidateAndConsumeTokenAsync(token);
@@ -40,7 +40,7 @@ public class TargetRegistrationServiceTests(PostgresFixture postgres) : IClassFi
     public async Task ValidateAndConsume_returns_null_for_unknown_token()
     {
         await using var db = postgres.CreateContext();
-        var svc = new TargetRegistrationService(db, TimeProvider.System);
+        var svc = new TargetRegistrationService(postgres, TimeProvider.System);
 
         var result = await svc.ValidateAndConsumeTokenAsync("totally-made-up-token");
 
@@ -51,7 +51,7 @@ public class TargetRegistrationServiceTests(PostgresFixture postgres) : IClassFi
     public async Task ValidateAndConsume_returns_null_on_second_use()
     {
         await using var db = postgres.CreateContext();
-        var svc = new TargetRegistrationService(db, TimeProvider.System);
+        var svc = new TargetRegistrationService(postgres, TimeProvider.System);
 
         var (_, token) = await svc.CreateAsync("smoke-double", ["web"], TransportMode.Reverse);
 
@@ -65,16 +65,11 @@ public class TargetRegistrationServiceTests(PostgresFixture postgres) : IClassFi
     public async Task ValidateAndConsume_returns_null_for_expired_token()
     {
         // Create with real clock so expiry is ~24 h from now.
-        string token;
-        await using (var db = postgres.CreateContext())
-        {
-            var createSvc = new TargetRegistrationService(db, TimeProvider.System);
-            (_, token) = await createSvc.CreateAsync("smoke-expired", ["web"], TransportMode.Reverse);
-        }
+        var createSvc = new TargetRegistrationService(postgres, TimeProvider.System);
+        var (_, token) = await createSvc.CreateAsync("smoke-expired", ["web"], TransportMode.Reverse);
 
         // Validate 25 hours later — must be rejected (lifetime is 24 h).
-        await using var db2 = postgres.CreateContext();
-        var futureSvc = new TargetRegistrationService(db2,
+        var futureSvc = new TargetRegistrationService(postgres,
             new FixedTimeProvider(DateTimeOffset.UtcNow.AddHours(25)));
 
         var result = await futureSvc.ValidateAndConsumeTokenAsync(token);
@@ -86,7 +81,7 @@ public class TargetRegistrationServiceTests(PostgresFixture postgres) : IClassFi
     public async Task RotateToken_replaces_existing_token()
     {
         await using var db = postgres.CreateContext();
-        var svc = new TargetRegistrationService(db, TimeProvider.System);
+        var svc = new TargetRegistrationService(postgres, TimeProvider.System);
 
         var (target, originalToken) = await svc.CreateAsync("smoke-rotate", ["web"], TransportMode.Reverse);
 
