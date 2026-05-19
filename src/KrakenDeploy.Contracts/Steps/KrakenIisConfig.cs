@@ -15,6 +15,7 @@ public sealed record KrakenIisConfig
     public KrakenIisAppPool AppPool { get; init; } = new();
     public KrakenIisRecycle Recycle { get; init; } = new();
     public KrakenIisRapidFail RapidFail { get; init; } = new();
+    public KrakenIisAuthentication Authentication { get; init; } = new();
     public IReadOnlyList<KrakenIisBinding> Bindings { get; init; } = [];
     public bool PreloadEnabled { get; init; }
     public bool AlwaysRunning { get; init; }
@@ -74,6 +75,13 @@ public sealed record KrakenIisConfig
                 Enabled              = GetBool(config, KrakenIisConfigKeys.RapidFailEnabled, true),
                 MaxCrashesPerInterval = GetInt(config, KrakenIisConfigKeys.RapidFailMaxCrashes, 5),
                 IntervalMinutes      = GetInt(config, KrakenIisConfigKeys.RapidFailIntervalMinutes, 5),
+            },
+
+            Authentication = new KrakenIisAuthentication
+            {
+                AnonymousEnabled = GetBool(config, KrakenIisConfigKeys.AuthenticationAnonymousEnabled, true),
+                BasicEnabled     = GetBool(config, KrakenIisConfigKeys.AuthenticationBasicEnabled, false),
+                WindowsEnabled   = GetBool(config, KrakenIisConfigKeys.AuthenticationWindowsEnabled, false),
             },
 
             Bindings = KrakenIisBinding.ParseAll(GetOrNull(config, KrakenIisConfigKeys.Bindings)),
@@ -184,6 +192,20 @@ public sealed record KrakenIisRapidFail
     public bool Enabled { get; init; } = true;
     public int MaxCrashesPerInterval { get; init; } = 5;
     public int IntervalMinutes { get; init; } = 5;
+}
+
+/// <summary>
+/// Site-level authentication module toggles. Each flag corresponds to an IIS
+/// module: <c>anonymousAuthentication</c>, <c>basicAuthentication</c>, and
+/// <c>windowsAuthentication</c>. Multiple modules may be enabled simultaneously —
+/// IIS will accept any matching credential. Defaults mirror a freshly-created
+/// IIS site (anonymous on, basic + windows off).
+/// </summary>
+public sealed record KrakenIisAuthentication
+{
+    public bool AnonymousEnabled { get; init; } = true;
+    public bool BasicEnabled { get; init; }
+    public bool WindowsEnabled { get; init; }
 }
 
 /// <summary>Deploy strategy: in-place vs versioned atomic-swap.</summary>

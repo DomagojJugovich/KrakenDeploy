@@ -129,13 +129,12 @@ public static class OctopusIisConfig
             password = string.Empty;
         }
 
-        if (IsOn(config, OctopusIisConfigKeys.EnableAnonymousAuth) ||
-            IsOn(config, OctopusIisConfigKeys.EnableBasicAuth) ||
-            IsOn(config, OctopusIisConfigKeys.EnableWindowsAuth))
-        {
-            warnings.Add(
-                "Authentication toggles (Anonymous/Basic/Windows) are present but Kraken.IIS does not yet honour them — IIS defaults will apply.");
-        }
+        // Octopus emits the auth toggles even when the user didn't touch them, so we
+        // only forward them when explicitly present in the bag. Anything absent means
+        // "use Kraken's default for that module" (anonymous on, basic + windows off).
+        var hasAnon    = config.ContainsKey(OctopusIisConfigKeys.EnableAnonymousAuth);
+        var hasBasic   = config.ContainsKey(OctopusIisConfigKeys.EnableBasicAuth);
+        var hasWindows = config.ContainsKey(OctopusIisConfigKeys.EnableWindowsAuth);
 
         var bindingsJson = SubstituteOrEmpty(config, OctopusIisConfigKeys.Bindings, octostache);
         var bindingLines = TranslateBindings(bindingsJson, warnings);
@@ -151,6 +150,22 @@ public static class OctopusIisConfig
             // and would require a versioned-subdir layout that Octopus doesn't model.
             [KrakenIisConfigKeys.DeployMode]            = "InPlace",
         };
+
+        if (hasAnon)
+        {
+            krakenConfig[KrakenIisConfigKeys.AuthenticationAnonymousEnabled] =
+                IsOn(config, OctopusIisConfigKeys.EnableAnonymousAuth) ? "true" : "false";
+        }
+        if (hasBasic)
+        {
+            krakenConfig[KrakenIisConfigKeys.AuthenticationBasicEnabled] =
+                IsOn(config, OctopusIisConfigKeys.EnableBasicAuth) ? "true" : "false";
+        }
+        if (hasWindows)
+        {
+            krakenConfig[KrakenIisConfigKeys.AuthenticationWindowsEnabled] =
+                IsOn(config, OctopusIisConfigKeys.EnableWindowsAuth) ? "true" : "false";
+        }
         if (!string.IsNullOrEmpty(username))
         {
             krakenConfig[KrakenIisConfigKeys.AppPoolUsername] = username;

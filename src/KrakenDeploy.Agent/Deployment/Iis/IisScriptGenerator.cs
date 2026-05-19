@@ -42,6 +42,7 @@ internal static class IisScriptGenerator
         WriteAppPoolBlock(sb, cfg.AppPool, cfg.Recycle, cfg.RapidFail, cfg.AlwaysRunning);
         WriteSiteBlock(sb, cfg);
         WriteBindingsBlock(sb, cfg);
+        WriteAuthenticationBlock(sb, cfg.Authentication);
         WriteDeployBlock(sb, cfg);
         WriteRecycleBlock(sb, cfg);
 
@@ -228,6 +229,29 @@ internal static class IisScriptGenerator
         }
 
         sb.AppendLine();
+    }
+
+    // ── Authentication (site-level module toggles) ────────────────────────────
+
+    private static void WriteAuthenticationBlock(StringBuilder sb, KrakenIisAuthentication auth)
+    {
+        sb.AppendLine("# ── Authentication modules (site-level) ──");
+        // Each module is configured under the site's IIS:\Sites path. Set-WebConfigurationProperty
+        // mutates web.config; the modules themselves must be installed in IIS (the standard
+        // WebServer role enables AnonymousAuthentication out of the box; Basic and Windows
+        // are optional sub-features the operator may need to install separately on the host).
+        SetAuthModule(sb, "anonymousAuthentication", auth.AnonymousEnabled);
+        SetAuthModule(sb, "basicAuthentication",     auth.BasicEnabled);
+        SetAuthModule(sb, "windowsAuthentication",   auth.WindowsEnabled);
+        sb.AppendLine();
+    }
+
+    private static void SetAuthModule(StringBuilder sb, string moduleName, bool enabled)
+    {
+        // PSPath must point at IIS:\ (not literal path), filter selects the auth module section.
+        sb.AppendLine(CultureInfo.InvariantCulture,
+            $"Set-WebConfigurationProperty -Filter '/system.WebServer/security/authentication/{moduleName}' " +
+            $"-Name 'enabled' -Value {PsBool(enabled)} -PSPath 'IIS:\\' -Location $siteName");
     }
 
     // ── Deploy (atomic-swap or in-place) ───────────────────────────────────────

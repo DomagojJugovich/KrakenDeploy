@@ -79,6 +79,17 @@ public static class KrakenIisConfigKeys
     /// </summary>
     public const string Bindings = Prefix + "Bindings";
 
+    // ── Authentication ─────────────────────────────────────────────────────────
+    //
+    // Site-level authentication toggles. When a flag is set to true the site's
+    // corresponding IIS auth module is enabled (and the others can independently
+    // stay on or off — this is additive, not mutually exclusive). Defaults match
+    // a fresh IIS site (anonymous only).
+
+    public const string AuthenticationAnonymousEnabled = Prefix + "Authentication.AnonymousEnabled";
+    public const string AuthenticationBasicEnabled     = Prefix + "Authentication.BasicEnabled";
+    public const string AuthenticationWindowsEnabled   = Prefix + "Authentication.WindowsEnabled";
+
     // ── Application Init / Preload ─────────────────────────────────────────────
 
     public const string PreloadEnabled = Prefix + "PreloadEnabled";

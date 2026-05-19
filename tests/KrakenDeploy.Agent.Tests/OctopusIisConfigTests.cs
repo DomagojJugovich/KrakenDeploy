@@ -148,18 +148,42 @@ public sealed class OctopusIisConfigTests
     }
 
     [Fact]
-    public void MapToKrakenIisConfig_warns_about_unsupported_auth_toggles()
+    public void MapToKrakenIisConfig_propagates_auth_toggles_into_KrakenIisAuthentication()
     {
+        // Octopus exports the three toggles as "True"/"False" strings. The mapper
+        // forwards them so Kraken.IIS authentic Set-WebConfigurationProperty
+        // emit covers all three modules.
         var config = new Dictionary<string, string>
         {
-            [OctopusIisConfigKeys.WebSiteName] = "Site",
-            [OctopusIisConfigKeys.EnableWindowsAuth] = "True",
+            [OctopusIisConfigKeys.WebSiteName]            = "Site",
+            [OctopusIisConfigKeys.EnableAnonymousAuth]    = "False",
+            [OctopusIisConfigKeys.EnableBasicAuth]        = "True",
+            [OctopusIisConfigKeys.EnableWindowsAuth]      = "True",
         };
 
         var result = OctopusIisConfig.MapToKrakenIisConfig(config,
             octostache: PassThrough, fallbackWebRoot: @"C:\fallback");
 
-        result.Warnings.Should().Contain(w => w.Contains("Authentication"));
+        result.Config.Authentication.AnonymousEnabled.Should().BeFalse();
+        result.Config.Authentication.BasicEnabled.Should().BeTrue();
+        result.Config.Authentication.WindowsEnabled.Should().BeTrue();
+    }
+
+    [Fact]
+    public void MapToKrakenIisConfig_auth_toggles_absent_means_kraken_defaults()
+    {
+        var config = new Dictionary<string, string>
+        {
+            [OctopusIisConfigKeys.WebSiteName] = "Site",
+            // No auth keys set.
+        };
+
+        var result = OctopusIisConfig.MapToKrakenIisConfig(config,
+            octostache: PassThrough, fallbackWebRoot: @"C:\fallback");
+
+        result.Config.Authentication.AnonymousEnabled.Should().BeTrue("Kraken default");
+        result.Config.Authentication.BasicEnabled.Should().BeFalse("Kraken default");
+        result.Config.Authentication.WindowsEnabled.Should().BeFalse("Kraken default");
     }
 
     // ── Bindings ──────────────────────────────────────────────────────────

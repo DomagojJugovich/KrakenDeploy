@@ -78,6 +78,30 @@ public sealed class KrakenIisConfigTests
         cfg.HealthCheck.Should().BeNull();
 
         cfg.Bindings.Should().BeEmpty();
+
+        // Authentication defaults: anonymous on, others off (matches a fresh IIS site)
+        cfg.Authentication.AnonymousEnabled.Should().BeTrue();
+        cfg.Authentication.BasicEnabled.Should().BeFalse();
+        cfg.Authentication.WindowsEnabled.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Parse_reads_authentication_toggles()
+    {
+        var config = new Dictionary<string, string>
+        {
+            [KrakenIisConfigKeys.SiteName]                          = "Web",
+            [KrakenIisConfigKeys.WebRoot]                           = @"C:\inetpub\web",
+            [KrakenIisConfigKeys.AuthenticationAnonymousEnabled]    = "false",
+            [KrakenIisConfigKeys.AuthenticationBasicEnabled]        = "true",
+            [KrakenIisConfigKeys.AuthenticationWindowsEnabled]      = "true",
+        };
+
+        var cfg = KrakenIisConfig.Parse(config);
+
+        cfg.Authentication.AnonymousEnabled.Should().BeFalse();
+        cfg.Authentication.BasicEnabled.Should().BeTrue();
+        cfg.Authentication.WindowsEnabled.Should().BeTrue();
     }
 
     // ── Comprehensive parse ─────────────────────────────────────────────────────
