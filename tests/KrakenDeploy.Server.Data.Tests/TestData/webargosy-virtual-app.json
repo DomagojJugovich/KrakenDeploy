@@ -1,0 +1,1175 @@
+{
+  "Id": "deploymentprocess-Projects-264",
+  "SpaceId": "Spaces-25",
+  "ProjectId": "Projects-264",
+  "Version": 45,
+  "Steps": [
+    {
+      "Id": "0c823a48-0e43-473f-b6f2-be7472409dd1",
+      "Name": "DetermineNextSide",
+      "Slug": "determinenextside",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "aab517e6-3d78-4333-80a8-85e71252ceef",
+          "Name": "DetermineNextSide",
+          "Slug": "determinenextside",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": true,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.RunOnServer": "false",
+            "Octopus.Action.Script.ScriptSource": "Inline",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Script.ScriptBody": "$sitePath = $CustomInstallDir+\"\\WebArgosy_\"+$OctopusParameters[\"Octopus.Environment.Name\"]+\"_ARR\"\n\nif (Test-Path $CustomInstallDir) {\n} else {\nwrite-host \"$CustomInstallDir ne postoji, kreiram\"\n$custBaseParent = Split-Path -Path $CustomInstallDir -Parent\n$custBaseLeaf = Split-Path -Path $CustomInstallDir -Leaf\nNew-Item -Path $custBaseParent -Name $custBaseLeaf -ItemType \"directory\"\n}\n\nif (Test-Path $sitePath) {\n} else {\nwrite-host \"$sitePath ne postoji, kreiram\"\n$siteParent = Split-Path -Path $sitePath -Parent\n$siteLeaf = Split-Path -Path $sitePath -Leaf\nNew-Item -Path $siteParent -Name $siteLeaf -ItemType \"directory\"\n\n}\n\n$filePath = $sitePath+\"\\WebArgosySide.txt\"\nif (Test-Path $filePath) {\n    \t$CurrentSideX = Get-Content $filePath\n} else {\n    \twrite-host \"$filePath ne postoji, kreiram\"\n        $fileParent = Split-Path -Path $filePath -Parent\n\t\t$fileLeaf = Split-Path -Path $filePath -Leaf\n        New-Item -Path $fileParent -Name $fileLeaf -ItemType \"file\"\n        \n        Set-Content $filePath \"1\"\n        $CurrentSideX = Get-Content $filePath\n}\n\nif ([string]::IsNullOrEmpty($CurrentSideX)) {\n\twrite-host \"ERROR:CurrentSideX is EMPTY or NULL. \"\n    exit 1\n    }\n\nif ($CurrentSideX -eq \"1\") { $NextSideX = \"2\"}\nif ($CurrentSideX -eq \"2\") { $NextSideX = \"3\"}\nif ($CurrentSideX -eq \"3\") { $NextSideX = \"1\"}\n\nwrite-host \"Last side was : $CurrentSideX\"\nwrite-host \"Next side is  : $NextSideX\"\n\nSet-OctopusVariable -name \"SideX\" -value $NextSideX"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "3c6000ef-3b86-44b1-a207-cc24792e0fd5",
+      "Name": "WebArgosy install ARR SITE",
+      "Slug": "webargosy-install-arr-site",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "6399b077-0d56-40e5-9c6b-4475e4eff95d",
+          "Name": "WebArgosy install ARR SITE",
+          "Slug": "webargosy-install-arr-site",
+          "ActionType": "Octopus.IIS",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [
+            {
+              "Id": "5b14a1d1-331a-46e9-9235-b962b30a88de",
+              "Name": "",
+              "PackageId": "dummy",
+              "FeedId": "Feeds-1027",
+              "AcquisitionLocation": "Server",
+              "Properties": {
+                "SelectionMode": "immediate"
+              }
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.IISWebSite.ApplicationPoolPassword": "#{AppPoolPass}",
+            "Octopus.Action.IISWebSite.DeploymentType": "webSite",
+            "Octopus.Action.IISWebSite.CreateOrUpdateWebSite": "True",
+            "Octopus.Action.IISWebSite.Bindings": "[{\"protocol\":\"http\",\"ipAddress\":\"*\",\"port\":\"80\",\"host\":\"#{VirtualHost}\",\"thumbprint\":null,\"certificateVariable\":null,\"requireSni\":\"False\",\"enabled\":\"True\"},{\"protocol\":\"https\",\"ipAddress\":\"*\",\"port\":\"443\",\"host\":\"#{VirtualHost}\",\"thumbprint\":\"#{SSLThumbprint}\",\"certificateVariable\":null,\"requireSni\":\"True\",\"enabled\":\"True\"}]",
+            "Octopus.Action.IISWebSite.ApplicationPoolFrameworkVersion": "v4.0",
+            "Octopus.Action.IISWebSite.ApplicationPoolIdentityType": "SpecificUser",
+            "Octopus.Action.IISWebSite.EnableAnonymousAuthentication": "True",
+            "Octopus.Action.IISWebSite.EnableBasicAuthentication": "False",
+            "Octopus.Action.IISWebSite.EnableWindowsAuthentication": "False",
+            "Octopus.Action.IISWebSite.WebApplication.ApplicationPoolFrameworkVersion": "v4.0",
+            "Octopus.Action.IISWebSite.WebApplication.ApplicationPoolIdentityType": "ApplicationPoolIdentity",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.IISWebSite,Octopus.Features.CustomDirectory",
+            "Octopus.Action.IISWebSite.WebRootType": "packageRoot",
+            "Octopus.Action.IISWebSite.StartApplicationPool": "True",
+            "Octopus.Action.IISWebSite.StartWebSite": "True",
+            "Octopus.Action.IISWebSite.WebSiteName": "WebArgosyOD_#{Octopus.Environment.Name}_ARR",
+            "Octopus.Action.IISWebSite.VirtualDirectory.CreateOrUpdate": "False",
+            "Octopus.Action.IISWebSite.WebApplication.CreateOrUpdate": "False",
+            "Octopus.Action.IISWebSite.VirtualDirectory.WebSiteName": "#{CustomInstallDir}\\WebArgosy_#{Octopus.Environment.Name}_ARR",
+            "Octopus.Action.IISWebSite.ApplicationPoolName": "WebArgosyOD#{Octopus.Environment.Name}_ARR",
+            "Octopus.Action.IISWebSite.ApplicationPoolUsername": "#{AppPoolUser}",
+            "Octopus.Action.Package.PackageId": "dummy",
+            "Octopus.Action.Package.FeedId": "Feeds-1027",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomInstallDir}\\WebArgosy_#{Octopus.Environment.Name}_ARR",
+            "Octopus.Action.Package.CustomInstallationDirectoryShouldBePurgedBeforeDeployment": "False",
+            "Octopus.Action.IISWebSite.ExistingBindings": "Replace"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "6f1ca38e-a561-46b8-982a-fb1c099fb5cf",
+      "Name": "ARR SITE Virtual Folder APP",
+      "Slug": "arr-site-virtual-folder-app",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "1326f322-795c-43f9-a179-fd4de390e743",
+          "Name": "ARR SITE Virtual Folder APP",
+          "Slug": "arr-site-virtual-folder-app",
+          "ActionType": "Octopus.IIS",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": true,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [
+            {
+              "Id": "eb540c69-4d8d-4abd-b5e0-710e86ce3ca7",
+              "Name": "",
+              "PackageId": "dummy",
+              "FeedId": "Feeds-1027",
+              "AcquisitionLocation": "Server",
+              "Properties": {
+                "SelectionMode": "immediate"
+              }
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.IISWebSite.DeploymentType": "webApplication",
+            "Octopus.Action.IISWebSite.CreateOrUpdateWebSite": "False",
+            "Octopus.Action.IISWebSite.Bindings": "[{\"protocol\":\"http\",\"port\":\"80\",\"host\":\"\",\"thumbprint\":null,\"certificateVariable\":null,\"requireSni\":\"False\",\"enabled\":\"True\"}]",
+            "Octopus.Action.IISWebSite.ApplicationPoolFrameworkVersion": "v4.0",
+            "Octopus.Action.IISWebSite.ApplicationPoolIdentityType": "ApplicationPoolIdentity",
+            "Octopus.Action.IISWebSite.EnableAnonymousAuthentication": "False",
+            "Octopus.Action.IISWebSite.EnableBasicAuthentication": "False",
+            "Octopus.Action.IISWebSite.EnableWindowsAuthentication": "True",
+            "Octopus.Action.IISWebSite.WebApplication.ApplicationPoolFrameworkVersion": "v4.0",
+            "Octopus.Action.IISWebSite.WebApplication.ApplicationPoolIdentityType": "ApplicationPoolIdentity",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.IISWebSite,Octopus.Features.CustomDirectory",
+            "Octopus.Action.IISWebSite.WebRootType": "packageRoot",
+            "Octopus.Action.IISWebSite.StartApplicationPool": "True",
+            "Octopus.Action.IISWebSite.StartWebSite": "True",
+            "Octopus.Action.IISWebSite.VirtualDirectory.CreateOrUpdate": "False",
+            "Octopus.Action.IISWebSite.WebApplication.CreateOrUpdate": "True",
+            "Octopus.Action.IISWebSite.VirtualDirectory.WebSiteName": "WebArgosyOD_#{Octopus.Environment.Name}_ARR",
+            "Octopus.Action.IISWebSite.VirtualDirectory.VirtualPath": "#{ArrVirtualPath}",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomInstallDir}\\WebArgosy_#{Octopus.Environment.Name}_ARR\\#{ArrVirtualPath}",
+            "Octopus.Action.Package.PackageId": "dummy",
+            "Octopus.Action.Package.FeedId": "Feeds-1027",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.IISWebSite.WebApplication.WebSiteName": "WebArgosyOD_#{Octopus.Environment.Name}_ARR",
+            "Octopus.Action.IISWebSite.WebApplication.VirtualPath": "#{ArrVirtualPath}",
+            "Octopus.Action.WebApplication.WebRootType": "packageRoot",
+            "Octopus.Action.IISWebSite.WebApplication.ApplicationPoolName": "WebArgosyOD#{Octopus.Environment.Name}_ARR"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "56445651-56e9-473a-8611-b49532cc09a6",
+      "Name": "IIS AppPool - Stop",
+      "Slug": "iis-apppool-stop",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "4792fc06-3e0a-4071-b8ec-be3c1a527855",
+          "Name": "IIS AppPool - Stop",
+          "Slug": "iis-apppool-stop",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Script.ScriptBody": "# Load IIS module:\nImport-Module WebAdministration\n\n# Get AppPool Name\n$appPoolName = $OctopusParameters['appPoolName']\n# Get the number of retries\n$retries = $OctopusParameters['appPoolCheckRetries']\n# Get the number of attempts\n$delay = $OctopusParameters['appPoolCheckDelay']\n\n# Check if exists\nif(Test-Path IIS:\\AppPools\\$appPoolName) {\n\n    # Stop App Pool if not already stopped\n    if ((Get-WebAppPoolState $appPoolName).Value -ne \"Stopped\") {\n        Write-Output \"Stopping IIS app pool $appPoolName\"\n        Stop-WebAppPool $appPoolName\n\n        $state = (Get-WebAppPoolState $appPoolName).Value\n        $counter = 1\n\n        # Wait for the app pool to the \"Stopped\" before proceeding\n        do{\n            $state = (Get-WebAppPoolState $appPoolName).Value\n            Write-Output \"$counter/$retries Waiting for IIS app pool $appPoolName to shut down completely. Current status: $state\"\n            $counter++\n            Start-Sleep -Milliseconds $delay\n        }\n        while($state -ne \"Stopped\" -and $counter -le $retries)\n\n        # Throw an error if the app pool is not stopped\n        if($counter -gt $retries) {\n            throw \"Could not shut down IIS app pool $appPoolName. `nTry to increase the number of retries ($retries) or delay between attempts ($delay milliseconds).\" }\n    }\n    else {\n        Write-Output \"$appPoolName already Stopped\"\n    }\n}\nelse {\n    Write-Output \"IIS app pool $appPoolName doesn't exist\"\n}",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Template.Id": "ActionTemplates-101",
+            "Octopus.Action.Template.Version": "6",
+            "AppPoolCheckDelay": "500",
+            "AppPoolCheckRetries": "20",
+            "Octopus.Action.RunOnServer": "false",
+            "AppPoolName": "WebArgosyOD#{Octopus.Environment.Name}_#{Octopus.Action[DetermineNextSide].Output.SideX}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "5b7edb68-2efe-4b5f-a09f-f1a50ec8db46",
+      "Name": "WebArgosy SITE with APP Side",
+      "Slug": "webargosy-site-with-app-side",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "3eddbbbf-7b16-4445-9107-51aa45f90177",
+          "Name": "WebArgosy SITE with APP Side",
+          "Slug": "webargosy-site-with-app-side",
+          "ActionType": "Octopus.IIS",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [
+            {
+              "Id": "daf5a147-aa15-48dc-a082-f520bcc46661",
+              "Name": "",
+              "PackageId": "HP_WebArgosy",
+              "FeedId": "Feeds-1027",
+              "AcquisitionLocation": "Server",
+              "Properties": {
+                "SelectionMode": "immediate"
+              }
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.IISWebSite.ApplicationPoolPassword": {
+              "HasValue": true,
+              "NewValue": null,
+              "Hint": null
+            },
+            "Octopus.Action.IISWebSite.DeploymentType": "webSite",
+            "Octopus.Action.IISWebSite.CreateOrUpdateWebSite": "True",
+            "Octopus.Action.IISWebSite.Bindings": "[{\"protocol\":\"http\",\"ipAddress\":\"*\",\"port\":\"#{BasePort}#{Octopus.Action[DetermineNextSide].Output.SideX}\",\"host\":\"\",\"thumbprint\":null,\"certificateVariable\":null,\"requireSni\":\"False\",\"enabled\":\"True\"}]",
+            "Octopus.Action.IISWebSite.ApplicationPoolFrameworkVersion": "v4.0",
+            "Octopus.Action.IISWebSite.ApplicationPoolIdentityType": "SpecificUser",
+            "Octopus.Action.IISWebSite.EnableAnonymousAuthentication": "True",
+            "Octopus.Action.IISWebSite.EnableBasicAuthentication": "False",
+            "Octopus.Action.IISWebSite.EnableWindowsAuthentication": "False",
+            "Octopus.Action.IISWebSite.WebApplication.ApplicationPoolFrameworkVersion": "v4.0",
+            "Octopus.Action.IISWebSite.WebApplication.ApplicationPoolIdentityType": "ApplicationPoolIdentity",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.IISWebSite,Octopus.Features.CustomDirectory",
+            "Octopus.Action.IISWebSite.WebRootType": "packageRoot",
+            "Octopus.Action.IISWebSite.StartApplicationPool": "False",
+            "Octopus.Action.IISWebSite.StartWebSite": "False",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomInstallDir}\\WebArgosy_#{Octopus.Environment.Name}_#{Octopus.Action[DetermineNextSide].Output.SideX}",
+            "Octopus.Action.Package.CustomInstallationDirectoryShouldBePurgedBeforeDeployment": "True",
+            "Octopus.Action.Package.CustomInstallationDirectoryPurgeExclusions": "bin\\runtimes",
+            "Octopus.Action.IISWebSite.WebSiteName": "WebArgosyOD_#{Octopus.Environment.Name}_#{Octopus.Action[DetermineNextSide].Output.SideX}",
+            "Octopus.Action.IISWebSite.ApplicationPoolName": "WebArgosyOD#{Octopus.Environment.Name}_#{Octopus.Action[DetermineNextSide].Output.SideX}",
+            "Octopus.Action.IISWebSite.ApplicationPoolUsername": "#{AppPoolUser}",
+            "Octopus.Action.Package.PackageId": "HP_WebArgosy",
+            "Octopus.Action.Package.FeedId": "Feeds-1027",
+            "Octopus.Action.Package.DownloadOnTentacle": "False"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "567dfe72-cbdd-4fd9-802b-6fb0053aa5fa",
+      "Name": "CONIFG EXTRACT",
+      "Slug": "conifg-extract",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "3663d98d-0240-4d63-b4ae-6377bb4b23eb",
+          "Name": "CONIFG EXTRACT",
+          "Slug": "conifg-extract",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [
+            {
+              "Id": "88ffc888-254c-44cc-9299-a5d77a8b1fcd",
+              "Name": "",
+              "PackageId": "HP_WebArgosyCONFIGS",
+              "FeedId": "Feeds-1027",
+              "AcquisitionLocation": "Server",
+              "Properties": {
+                "SelectionMode": "immediate"
+              }
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomInstallDir}\\_CONFIGS",
+            "Octopus.Action.Package.CustomInstallationDirectoryShouldBePurgedBeforeDeployment": "True",
+            "Octopus.Action.Package.PackageId": "HP_WebArgosyCONFIGS",
+            "Octopus.Action.Package.FeedId": "Feeds-1027",
+            "Octopus.Action.Package.DownloadOnTentacle": "False"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "27c2725d-19f8-45aa-bdab-3c54e70e8b6a",
+      "Name": "Config setup APP",
+      "Slug": "config-setup-app",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "45957d94-c52d-49d3-aaca-ee1d8508d445",
+          "Name": "Config setup APP",
+          "Slug": "config-setup-app",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.RunOnServer": "false",
+            "Octopus.Action.Script.ScriptSource": "Inline",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Script.ScriptBody": "$DirEnv = \"WebArgosy_\" + $OctopusParameters[\"Octopus.Environment.Name\"]\n$PathX = $DirEnv + \"_\" + $OctopusParameters[\"Octopus.Action[DetermineNextSide].Output.SideX\"]\n$Path = Join-Path $CustomInstallDir $PathX\n\n$ConfigPath = $ConfigFile\n\n# check params\nif ([string]::IsNullOrEmpty($Path)) {\nWrite-Error \"Path parameter is not set\"\nthrow \"Path parameter is not set\"\n}\n\nif ([string]::IsNullOrEmpty($ConfigPath)) {\nWrite-Error \"ConfigPath parameter is not set\"\nthrow \"ConfigPath parameter is not set\"\n}\n\nWrite-Host \"CONFIG SETUP SCRIPT\"\n\nWrite-Host \"ROOT of APP = $Path\"\nWrite-Host \"CONFIG_PATH = $ConfigPath\"\nWrite-Host \"\"\n\ncd $Path\n\n$BaseCustomDir = Split-Path $Path -Parent\n$SubDir = Split-Path $Path -Leaf\n\nWrite-Host \"BASE_DIR : $BaseCustomDir, SUBDIR: $SubDir\"\n\n\nif (!(Test-Path $Path)) {\n\n\tWrite-Host \"ROOT off SITE does not exist : $Path\"\n\texit 1\n}\n\n\n## CONFIG\n$ConfigFullPath = Join-Path $BaseCustomDir $ConfigPath\n\nWrite-Host \"USING CONFIG : $ConfigFullPath\"\nWrite-Host \"COPY $ConfigFullPath\\*.* $Path\"\nWrite-Host \"-------------------\"\n#prebaci sve confige za WebArgosy\nCopy-Item $ConfigFullPath\\*.* $Path -Recurse -Force -container\n\n#prebaci config za MIBIS ako je ovo MIBIS instalacija\nif (Test-Path -Path $ConfigFullPath\\APPMAN\\) { \n\tWrite-Host \"COPY $ConfigFullPath\\APPMAN\\*.* $Path\\AppManager\"\n\tCopy-Item $ConfigFullPath\\APPMAN\\*.* $Path\\AppManager -Recurse -Force -container\n    #uguraj config u zip za instalaciju\n    Write-Host \"UPDATE ZIP $Path\\AppManager\\AppsManager.zip with $Path\\AppManager\\localAppSettings.config\"\n    Compress-Archive -update $Path\\AppManager\\localAppSettings.config $Path\\AppManager\\AppsManager.zip\n    }\n    \nif (Test-Path -Path $ConfigFullPath\\ARGOSYNC\\) {\n\tWrite-Host \"COPY $ConfigFullPath\\ARGOSYNC\\*.* $Path\\App_Data\"\n\tCopy-Item $ConfigFullPath\\ARGOSYNC\\*.* $Path\\App_Data -Recurse -Force -container\n    }\n"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "55acc129-db32-4722-a1e6-d889d1457fa5",
+      "Name": "Config setup ARR",
+      "Slug": "config-setup-arr",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "68969fcb-c733-48d7-856d-7ca68ffa4b8b",
+          "Name": "Config setup ARR",
+          "Slug": "config-setup-arr",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.RunOnServer": "false",
+            "Octopus.Action.Script.ScriptSource": "Inline",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Script.ScriptBody": "$DirEnv = \"WebArgosy_\" + $OctopusParameters[\"Octopus.Environment.Name\"]\n$PathX = $DirEnv + \"_ARR\"\n$Path = Join-Path $CustomInstallDir $PathX\n$PathVirtualFolder = Join-Path $Path $ArrVirtualPath\n\n$ConfigPath = $ConfigFile\n\n# check params\nif ([string]::IsNullOrEmpty($Path)) {\nWrite-Error \"Path parameter is not set\"\nthrow \"Path parameter is not set\"\n}\n\nif ([string]::IsNullOrEmpty($ConfigPath)) {\nWrite-Error \"ConfigPath parameter is not set\"\nthrow \"ConfigPath parameter is not set\"\n}\n\nWrite-Host \"CONFIG SETUP SCRIPT\"\n\nWrite-Host \"ROOT of APP = $Path\"\nWrite-Host \"CONFIG_PATH = $ConfigPath\"\nWrite-Host \"\"\n\ncd $Path\n\n$BaseCustomDir = Split-Path $Path -Parent\n$SubDir = Split-Path $Path -Leaf\n\nWrite-Host \"BASE_DIR : $BaseCustomDir, SUBDIR: $SubDir\"\n\n\nif (!(Test-Path $Path)) {\n\n\tWrite-Host \"ROOT off SITE does not exist : $Path\"\n\texit 1\n}\n\n\n## CONFIG\n$ConfigFullPath = Join-Path $BaseCustomDir $ConfigPath\n\nWrite-Host \"USING CONFIG : $ConfigFullPath\"\nWrite-Host \"COPY $ConfigFullPath\\ARR\\*.* $PathVirtualFolder\"\nWrite-Host \"-------------------\"\n#prebaci sve confige za WebArgosy\nCopy-Item $ConfigFullPath\\ARR\\*.* $PathVirtualFolder -Recurse -Force -container\n\n\n    \n\n"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "a22d1a91-5140-49d4-8e09-1916d5546fd5",
+      "Name": "IIS AppPool - Update Recycle Settings ARR",
+      "Slug": "iis-apppool-update-recycle-settings-arr",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "e444cb92-8c83-4d70-9c21-8b20d2d1405a",
+          "Name": "IIS AppPool - Update Recycle Settings ARR",
+          "Slug": "iis-apppool-update-recycle-settings-arr",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Script.ScriptBody": "Import-Module WebAdministration\n\nfunction Update-IISAppPool-PeriodicRestart($appPool, $periodicRestart) {\n    Write-Output \"Setting worker process periodic restart time to $periodicRestart for AppPool $appPoolName.\"\n    $appPool.Recycling.PeriodicRestart.Time = [TimeSpan]::FromMinutes($periodicRestart)\n    $appPool | Set-Item\n}\n\nfunction Update-IISAppPool-IdleTimeout($appPool, $appPoolName, $idleTimeout) {\n    Write-Output \"Setting worker process idle timeout to $idleTimeout for AppPool $appPoolName.\"\n    $appPool.ProcessModel.IdleTimeout = [TimeSpan]::FromMinutes($idleTimeout)\n    $appPool | Set-Item\n}\n\nfunction Update-IISAppPool-ScheduledTimes($appPool, $appPoolName, $schedule) {\n    $minutes = $periodicRecycleTimes.Split(\",\")\n    $minuteArrayList = New-Object System.Collections.ArrayList\n\n    foreach ($minute in $minutes) {\n        $minute = $minute.trim()\n\n        if ($minute -eq \"-1\") {\n            break\n        }\n        if ($minute -lt 0) {\n            continue\n        }\n\n        $temp = $minuteArrayList.Add([TimeSpan]::FromMinutes($minute))\n    }\n\n    Write-Output \"Setting worker process scheduled restart times to $minuteArrayList for AppPool $appPoolName.\"\n\n    $settingName = \"recycling.periodicRestart.schedule\"\n    Clear-ItemProperty $appPool.PSPath -Name $settingName\n        \n    $doneOne = $false\n    foreach ($minute in $minuteArrayList) {\n        if ($doneOne -eq $false) {\n            Set-ItemProperty $appPool.PSPath -Name $settingName -Value @{value=$minute}\n            $doneOne = $true\n        }\n        else {\n            New-ItemProperty $appPool.PSPath -Name $settingName -Value @{value=$minute}\n        }\n    }\n}\n\nfunction Update-IISAppPool-RecycleEventsToLog($appPool, $appPoolName, $events) {\n    $settingName = \"Recycling.logEventOnRecycle\"\n    Write-Output \"Setting $settingName for AppPool $appPoolName to $events.\"\n\n    Clear-ItemProperty $appPool.PSPath -Name $settingName\n    if ($events -ne \"-\") {\n        Set-ItemProperty $appPool.PSPath -Name $settingName -Value $events\n    }\n}\n\nfunction Run {\n    $OctopusParameters = $OctopusParameters\n    if ($OctopusParameters -eq $null) {\n        write-host \"Using test values\"\n        $OctopusParameters = New-Object \"System.Collections.Hashtable\"\n        $OctopusParameters[\"ApplicationPoolName\"]=\"DefaultAppPool\"\n        $OctopusParameters[\"IdleTimeoutMinutes\"]=\"\"\n        $OctopusParameters[\"RegularTimeIntervalMinutes\"]=\"10\"\n        $OctopusParameters[\"PeriodicRecycleTime\"]=\"14,15,16\"\n        $OctopusParameters[\"RecycleEventsToLog\"]=\"Time, Requests, Schedule, Memory, IsapiUnhealthy, OnDemand, ConfigChange, PrivateMemory\"\n        $OctopusParameters[\"EmptyClearsValue\"]=$true\n    }\n\n    $applicationPoolName = $OctopusParameters[\"ApplicationPoolName\"]\n    $idleTimeout = $OctopusParameters[\"IdleTimeoutMinutes\"]\n    $periodicRestart = $OctopusParameters[\"RegularTimeIntervalMinutes\"]\n    $periodicRecycleTimes = $OctopusParameters[\"PeriodicRecycleTime\"]\n    $recycleEventsToLog = $OctopusParameters[\"RecycleEventsToLog\"]\n    $emptyClearsValue = $OctopusParameters[\"EmptyClearsValue\"]\n\n    if ([string]::IsNullOrEmpty($applicationPoolName)) {\n        throw \"Application pool name is required.\"\n    }\n\n    $appPool = Get-Item IIS:\\AppPools\\$applicationPoolName\n\n    if ($emptyClearsValue -eq $true) {\n        Write-Output \"Empty values will reset to default\"\n        if ([string]::IsNullOrEmpty($idleTimeout)) {\n            $idleTimeout = \"0\"\n        }\n        if ([string]::IsNullOrEmpty($periodicRestart)) {\n            $periodicRestart = \"0\"\n        }\n        if ([string]::IsNullOrEmpty($periodicRecycleTimes)) {\n            $periodicRecycleTimes = \"-1\"\n        }\n        if ([string]::IsNullOrEmpty($recycleEventsToLog)) {\n            $recycleEventsToLog = \"-\"\n        }\n    }\n\n    if (![string]::IsNullOrEmpty($periodicRestart)) {\n        Update-IISAppPool-PeriodicRestart              -appPool $appPool -appPoolName $appPool.Name -PeriodicRestart $periodicRestart\n    }\n    if (![string]::IsNullOrEmpty($idleTimeout)) {\n        Update-IISAppPool-IdleTimeout                  -appPool $appPool -appPoolName $appPool.Name -idleTimeout $idleTimeout\n    }\n    if (![string]::IsNullOrEmpty($periodicRecycleTimes)) {\n        Update-IISAppPool-ScheduledTimes               -appPool $appPool -appPoolName $appPool.Name -Schedule $periodicRecycleTimes\n    }\n    if(![string]::IsNullOrEmpty($recycleEventsToLog)){\n        Update-IISAppPool-RecycleEventsToLog           -appPool $appPool -appPoolName $appPool.Name -Events $recycleEventsToLog    \n    }\n}\n\nRun\n",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Script.ScriptSource": "Inline",
+            "Octopus.Action.RunOnServer": "false",
+            "Octopus.Action.Template.Id": "ActionTemplates-102",
+            "Octopus.Action.Template.Version": "7",
+            "EmptyClearsValue": "false",
+            "ApplicationPoolName": "WebArgosyOD#{Octopus.Environment.Name}_ARR",
+            "IdleTimeoutMinutes": "0",
+            "RegularTimeIntervalMinutes": "0",
+            "PeriodicRecycleTime": "90"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "2840f794-8b64-4763-9f28-38f11629eb66",
+      "Name": "IIS AppPool - Update Recycle Settings APP",
+      "Slug": "iis-apppool-update-recycle-settings-app",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "079897a6-ddb4-467f-8626-f767417c7b9b",
+          "Name": "IIS AppPool - Update Recycle Settings APP",
+          "Slug": "iis-apppool-update-recycle-settings-app",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Script.ScriptBody": "Import-Module WebAdministration\n\nfunction Update-IISAppPool-PeriodicRestart($appPool, $periodicRestart) {\n    Write-Output \"Setting worker process periodic restart time to $periodicRestart for AppPool $appPoolName.\"\n    $appPool.Recycling.PeriodicRestart.Time = [TimeSpan]::FromMinutes($periodicRestart)\n    $appPool | Set-Item\n}\n\nfunction Update-IISAppPool-IdleTimeout($appPool, $appPoolName, $idleTimeout) {\n    Write-Output \"Setting worker process idle timeout to $idleTimeout for AppPool $appPoolName.\"\n    $appPool.ProcessModel.IdleTimeout = [TimeSpan]::FromMinutes($idleTimeout)\n    $appPool | Set-Item\n}\n\nfunction Update-IISAppPool-ScheduledTimes($appPool, $appPoolName, $schedule) {\n    $minutes = $periodicRecycleTimes.Split(\",\")\n    $minuteArrayList = New-Object System.Collections.ArrayList\n\n    foreach ($minute in $minutes) {\n        $minute = $minute.trim()\n\n        if ($minute -eq \"-1\") {\n            break\n        }\n        if ($minute -lt 0) {\n            continue\n        }\n\n        $temp = $minuteArrayList.Add([TimeSpan]::FromMinutes($minute))\n    }\n\n    Write-Output \"Setting worker process scheduled restart times to $minuteArrayList for AppPool $appPoolName.\"\n\n    $settingName = \"recycling.periodicRestart.schedule\"\n    Clear-ItemProperty $appPool.PSPath -Name $settingName\n        \n    $doneOne = $false\n    foreach ($minute in $minuteArrayList) {\n        if ($doneOne -eq $false) {\n            Set-ItemProperty $appPool.PSPath -Name $settingName -Value @{value=$minute}\n            $doneOne = $true\n        }\n        else {\n            New-ItemProperty $appPool.PSPath -Name $settingName -Value @{value=$minute}\n        }\n    }\n}\n\nfunction Update-IISAppPool-RecycleEventsToLog($appPool, $appPoolName, $events) {\n    $settingName = \"Recycling.logEventOnRecycle\"\n    Write-Output \"Setting $settingName for AppPool $appPoolName to $events.\"\n\n    Clear-ItemProperty $appPool.PSPath -Name $settingName\n    if ($events -ne \"-\") {\n        Set-ItemProperty $appPool.PSPath -Name $settingName -Value $events\n    }\n}\n\nfunction Run {\n    $OctopusParameters = $OctopusParameters\n    if ($OctopusParameters -eq $null) {\n        write-host \"Using test values\"\n        $OctopusParameters = New-Object \"System.Collections.Hashtable\"\n        $OctopusParameters[\"ApplicationPoolName\"]=\"DefaultAppPool\"\n        $OctopusParameters[\"IdleTimeoutMinutes\"]=\"\"\n        $OctopusParameters[\"RegularTimeIntervalMinutes\"]=\"10\"\n        $OctopusParameters[\"PeriodicRecycleTime\"]=\"14,15,16\"\n        $OctopusParameters[\"RecycleEventsToLog\"]=\"Time, Requests, Schedule, Memory, IsapiUnhealthy, OnDemand, ConfigChange, PrivateMemory\"\n        $OctopusParameters[\"EmptyClearsValue\"]=$true\n    }\n\n    $applicationPoolName = $OctopusParameters[\"ApplicationPoolName\"]\n    $idleTimeout = $OctopusParameters[\"IdleTimeoutMinutes\"]\n    $periodicRestart = $OctopusParameters[\"RegularTimeIntervalMinutes\"]\n    $periodicRecycleTimes = $OctopusParameters[\"PeriodicRecycleTime\"]\n    $recycleEventsToLog = $OctopusParameters[\"RecycleEventsToLog\"]\n    $emptyClearsValue = $OctopusParameters[\"EmptyClearsValue\"]\n\n    if ([string]::IsNullOrEmpty($applicationPoolName)) {\n        throw \"Application pool name is required.\"\n    }\n\n    $appPool = Get-Item IIS:\\AppPools\\$applicationPoolName\n\n    if ($emptyClearsValue -eq $true) {\n        Write-Output \"Empty values will reset to default\"\n        if ([string]::IsNullOrEmpty($idleTimeout)) {\n            $idleTimeout = \"0\"\n        }\n        if ([string]::IsNullOrEmpty($periodicRestart)) {\n            $periodicRestart = \"0\"\n        }\n        if ([string]::IsNullOrEmpty($periodicRecycleTimes)) {\n            $periodicRecycleTimes = \"-1\"\n        }\n        if ([string]::IsNullOrEmpty($recycleEventsToLog)) {\n            $recycleEventsToLog = \"-\"\n        }\n    }\n\n    if (![string]::IsNullOrEmpty($periodicRestart)) {\n        Update-IISAppPool-PeriodicRestart              -appPool $appPool -appPoolName $appPool.Name -PeriodicRestart $periodicRestart\n    }\n    if (![string]::IsNullOrEmpty($idleTimeout)) {\n        Update-IISAppPool-IdleTimeout                  -appPool $appPool -appPoolName $appPool.Name -idleTimeout $idleTimeout\n    }\n    if (![string]::IsNullOrEmpty($periodicRecycleTimes)) {\n        Update-IISAppPool-ScheduledTimes               -appPool $appPool -appPoolName $appPool.Name -Schedule $periodicRecycleTimes\n    }\n    if(![string]::IsNullOrEmpty($recycleEventsToLog)){\n        Update-IISAppPool-RecycleEventsToLog           -appPool $appPool -appPoolName $appPool.Name -Events $recycleEventsToLog    \n    }\n}\n\nRun\n",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Script.ScriptSource": "Inline",
+            "Octopus.Action.RunOnServer": "false",
+            "Octopus.Action.Template.Id": "ActionTemplates-102",
+            "Octopus.Action.Template.Version": "7",
+            "EmptyClearsValue": "false",
+            "ApplicationPoolName": "WebArgosyOD#{Octopus.Environment.Name}_#{Octopus.Action[DetermineNextSide].Output.SideX}",
+            "IdleTimeoutMinutes": "0",
+            "RegularTimeIntervalMinutes": "0",
+            "PeriodicRecycleTime": "90"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "a4643428-ff5a-4d19-bf20-c2e98a19f2b6",
+      "Name": "IIS AppPool - Set Load User Profile",
+      "Slug": "iis-apppool-set-load-user-profile",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "3a12aa94-c7b3-45d4-ac12-e0e76c9bbbad",
+          "Name": "IIS AppPool - Set Load User Profile",
+          "Slug": "iis-apppool-set-load-user-profile",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Script.ScriptBody": "# Running outside octopus\nparam(\n    [string]$appPoolName,\n    [string]$propertyName,\n    [object]$propertyValue,\n    [switch]$whatIf\n)\n\n$ErrorActionPreference = \"Stop\"\n\nfunction Get-Param($Name, [switch]$Required, $Default) {\n    $result = $null\n\n    if ($OctopusParameters -ne $null) {\n        $result = $OctopusParameters[$Name]\n    }\n\n    if ($result -eq $null) {\n        $variable = Get-Variable $Name -EA SilentlyContinue\n        if ($variable -ne $null) {\n            $result = $variable.Value\n        }\n    }\n\n    if ($result -eq $null -or $result -eq \"\") {\n        if ($Required) {\n            throw \"Missing parameter value $Name\"\n        } else {\n            $result = $Default\n        }\n    }\n\n    return $result\n}\n\n& {\n    param(\n        [string]$appPoolName,\n        [string]$propertyName,\n        [object]$propertyValue\n    )\n\n    Write-Host \"Setting $appPoolName property $propertyName to $propertyValue\"\n\n    try {\n         Add-PSSnapin WebAdministration -ErrorAction SilentlyContinue\n         Import-Module WebAdministration -ErrorAction SilentlyContinue\n\n         $oldValue = Get-ItemProperty \"IIS:\\AppPools\\$appPoolName\" -Name $propertyName\n         $oldValueString = \"\"\n\n         if ($oldValue.GetType() -eq [Microsoft.IIs.PowerShell.Framework.ConfigurationAttribute])\n         {\n             $oldValueString = ($oldValue | Select-Object -ExpandProperty \"Value\");\n             $convertedValue = $propertyValue -as $oldValueString.GetType();\n         }\n         else\n         {\n             $oldValueString = $oldValue;\n             $convertedValue = $propertyValue -as $oldValue.GetType();\n         }\n\n         Write-Host \"Old value $oldValueString\"\n         Set-ItemProperty \"IIS:\\AppPools\\$appPoolName\" -Name $propertyName -Value $convertedValue\n         Write-Host \"New value $propertyValue\"\n         Write-Host \"Done\"\n    } catch {\n        Write-Host $_.Exception|format-list -force\n        Write-Host \"There was a problem setting property\"\n    }\n\n } `\n (Get-Param 'appPoolName' -Required) (Get-Param 'propertyName' -Required) (Get-Param 'propertyValue' -Required)\n",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Template.Id": "ActionTemplates-103",
+            "Octopus.Action.Template.Version": "5",
+            "Octopus.Action.RunOnServer": "false",
+            "appPoolName": "WebArgosyOD#{Octopus.Environment.Name}_#{Octopus.Action[DetermineNextSide].Output.SideX}",
+            "propertyName": "processModel.loadUserProfile",
+            "propertyValue": "true"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "7bfdb0cb-d854-469a-81aa-c03798c557fb",
+      "Name": "IIS Website - Start",
+      "Slug": "iis-website-start",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "dd9fd48a-0d5b-41e7-988c-c14f7bb2dcb0",
+          "Name": "IIS Website - Start",
+          "Slug": "iis-website-start",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Script.ScriptBody": "# Load IIS module:\nImport-Module WebAdministration\n\n# Set a name of the site we want to start\n$webSiteName = $OctopusParameters['webSiteName']\n\n# Get web site object\ntry {\n$webSite = Get-Item \"IIS:\\Sites\\$webSiteName\"\n}\nCatch [System.IO.FileNotFoundException]{\n\t# Some OS bug out if Default Web Site is deleted.\n# So we need to call this 2 times.\n$webSite = Get-Item \"IIS:\\Sites\\$webSiteName\"\n}\n\nWrite-Output \"Starting IIS web site $webSiteName\"\n$webSite.Start()\n",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Template.Id": "ActionTemplates-104",
+            "Octopus.Action.Template.Version": "8",
+            "Octopus.Action.RunOnServer": "false",
+            "WebsiteName": "WebArgosyOD_#{Octopus.Environment.Name}_#{Octopus.Action[DetermineNextSide].Output.SideX}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "0bd32e41-2de8-4002-858c-b4775e68ed51",
+      "Name": "IIS AppPool - Start",
+      "Slug": "iis-apppool-start",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "d9ab6e8d-2fd3-47b9-b967-9d27cb5ac2a4",
+          "Name": "IIS AppPool - Start",
+          "Slug": "iis-apppool-start",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Script.ScriptBody": "# Load IIS module:\nImport-Module WebAdministration\n\n# Get AppPool Name\n$appPoolName = $OctopusParameters['appPoolName']\n\nWrite-Output \"Starting IIS app pool $appPoolName\"\nStart-WebAppPool $appPoolName\n\n\n",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Template.Id": "ActionTemplates-105",
+            "Octopus.Action.Template.Version": "4",
+            "Octopus.Action.RunOnServer": "false",
+            "AppPoolName": "WebArgosyOD#{Octopus.Environment.Name}_#{Octopus.Action[DetermineNextSide].Output.SideX}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "dccf5b1d-a240-4487-9324-10d76a711cce",
+      "Name": "Write new side",
+      "Slug": "write-new-side",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "596c95e1-4c0b-4a11-a671-84559c509d71",
+          "Name": "Write new side",
+          "Slug": "write-new-side",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.RunOnServer": "false",
+            "Octopus.Action.Script.ScriptSource": "Inline",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Script.ScriptBody": "$sideXparm = $OctopusParameters[\"Octopus.Action[DetermineNextSide].Output.SideX\"]\n$sitePath = $CustomInstallDir+\"\\WebArgosy_\"+$OctopusParameters[\"Octopus.Environment.Name\"]+\"_ARR\"\n\nif (Test-Path $sitePath) {\n} else {\nwrite-host \"NO SITE - $sitePath !!!!\"\n}\n$filePath = $sitePath+\"\\WebArgosySide.txt\"\n\nwrite-host \"Setting value of $filePath to $sideXparm\"\nSet-Content $filePath $sideXparm"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "0d51048f-adbd-449d-9c7a-11f3bbfa1a07",
+      "Name": "IIS AppPool - Restart ARR site to load new current version",
+      "Slug": "iis-apppool-restart-arr-site-to-load-new-current-version",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "1ed23876-3f78-45dd-adb6-a7f5ce6594ec",
+          "Name": "IIS AppPool - Restart ARR site to load new current version",
+          "Slug": "iis-apppool-restart-arr-site-to-load-new-current-version",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Script.ScriptBody": "# Load IIS module:\nImport-Module WebAdministration\n\n# Get AppPool Name\n$appPoolName = $OctopusParameters['appPoolName']\n\n# Check if exists\nif (Test-Path IIS:\\AppPools\\$appPoolName){\n    # Start App Pool if stopped else restart\nif ((Get-WebAppPoolState($appPoolName)).Value -eq \"Stopped\"){\n    Write-Output \"Starting IIS app pool $appPoolName\"\n    Start-WebAppPool $appPoolName\n}\nelse {\n    Write-Output \"Restarting IIS app pool $appPoolName\"\n    Restart-WebAppPool $appPoolName\n}\n}\n",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Template.Id": "ActionTemplates-106",
+            "Octopus.Action.Template.Version": "9",
+            "Octopus.Action.RunOnServer": "false",
+            "AppPoolName": "WebArgosyOD#{Octopus.Environment.Name}_ARR"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "53dafa33-35d6-4470-bee3-9d842d52155d",
+      "Name": "Proxy settings enabled - timeout - includePortInHeader",
+      "Slug": "proxy-settings-enabled-timeout-includeportinheader",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "b2b08c71-d415-4ef9-b1ff-1800a506e309",
+          "Name": "Proxy settings enabled - timeout - includePortInHeader",
+          "Slug": "proxy-settings-enabled-timeout-includeportinheader",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.RunOnServer": "false",
+            "Octopus.Action.Script.ScriptSource": "Inline",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Script.ScriptBody": "$ErrorActionPreference = \"Stop\" #stop uzrokuje da se catch uopce poziva\n\ntry {\n\ncd C:\\windows\\system32\\inetsrv\\\n\n.\\appcmd.exe set config -section:system.webServer/proxy -enabled:true\nWrite-Host \"EXIT CODE:\" $LASTEXITCODE\n.\\appcmd.exe set config  -section:system.webServer/proxy /timeout:\"00:20:00\"  /commit:apphost\nWrite-Host \"EXIT CODE:\" $LASTEXITCODE\n.\\appcmd.exe set config -section:system.webServer/proxy /includePortInXForwardedFor:\"False\" /commit:apphost\nWrite-Host \"EXIT CODE:\" $LASTEXITCODE\n\nExit 0\n\n}\ncatch {\n  Write-Warning $Error[0].Exception.GetType().FullName \n  Write-Warning $Error[0]\n  Write-Host $_.ScriptStackTrace\n  \n  Exit 0\n}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "5d4f7b56-dded-47ce-bee7-a05aad029461",
+      "Name": "PUPPETEER Kill stale chrome",
+      "Slug": "puppeteer-kill-stale-chrome",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "4ae93a31-4e25-4bf6-bf33-0d752e85b728",
+          "Name": "PUPPETEER Kill stale chrome",
+          "Slug": "puppeteer-kill-stale-chrome",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.RunOnServer": "false",
+            "Octopus.Action.Script.ScriptSource": "Inline",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Script.ScriptBody": "$proc = Get-Process chrome -ErrorAction SilentlyContinue\n\nif ($proc -ne $null) {\n\tforeach ($p in $proc) {\n    \tWrite-host \"Killing Chrome pid: \" $p.Id\n\t    Stop-Process -Id $p.Id -Force\n    }\n}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "5692b23c-4ec0-4262-8120-9b21e4987548",
+      "Name": "Deploy PlaywrightTest",
+      "Slug": "deploy-playwrighttest",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "5e181681-bde3-41df-beda-69717a83b6af",
+          "Name": "Deploy PlaywrightTest",
+          "Slug": "deploy-playwrighttest",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [
+            {
+              "Id": "3c8c280c-6c5d-46f7-a68c-36d02ef01075",
+              "Name": "",
+              "PackageId": "PlaywrightTest",
+              "FeedId": "Feeds-1027",
+              "AcquisitionLocation": "Server",
+              "Properties": {
+                "SelectionMode": "immediate"
+              }
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory",
+            "Octopus.Action.Package.CustomInstallationDirectory": "C:\\_admin\\PW\\PLAYWRIGHT_TESTS",
+            "Octopus.Action.Package.CustomInstallationDirectoryShouldBePurgedBeforeDeployment": "True",
+            "Octopus.Action.Package.PackageId": "PlaywrightTest",
+            "Octopus.Action.Package.FeedId": "Feeds-1027",
+            "Octopus.Action.Package.DownloadOnTentacle": "False"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "0acea742-c83b-420f-8a40-327818319c58",
+      "Name": "Deploy Playwright Browsers",
+      "Slug": "deploy-playwright-browsers",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "386548bc-55f1-4b7f-8c68-70c55e07ede3",
+          "Name": "Deploy Playwright Browsers",
+          "Slug": "deploy-playwright-browsers",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [
+            {
+              "Id": "123a3ec6-8777-4b78-abb3-2a062e6c5147",
+              "Name": "",
+              "PackageId": "PlaywrightBrowsers",
+              "FeedId": "Feeds-1027",
+              "AcquisitionLocation": "Server",
+              "Properties": {
+                "SelectionMode": "immediate"
+              }
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory",
+            "Octopus.Action.Package.CustomInstallationDirectory": "C:\\_admin\\PW\\PLAYWRIGHT_BROWSERS",
+            "Octopus.Action.Package.CustomInstallationDirectoryShouldBePurgedBeforeDeployment": "True",
+            "Octopus.Action.Package.PackageId": "PlaywrightBrowsers",
+            "Octopus.Action.Package.FeedId": "Feeds-1027",
+            "Octopus.Action.Package.DownloadOnTentacle": "False"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "04ff3efd-9673-4082-90ae-24856f60dff7",
+      "Name": "PlayWright Run tests",
+      "Slug": "playwright-run-tests",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "3f2465ae-843f-4a9d-ab63-6f47eb990fed",
+          "Name": "PlayWright Run tests",
+          "Slug": "playwright-run-tests",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.RunOnServer": "false",
+            "Octopus.Action.Script.ScriptSource": "Inline",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Script.ScriptBody": "write-host \"Win version: \" $([System.Environment]::OSVersion.Version.Major)\n \ncd C:\\_admin\\PW\\PLAYWRIGHT_TESTS\n\n#check and install if missing , only chromium\n$Env:PLAYWRIGHT_BROWSERS_PATH=\"C:\\_admin\\PW\\PLAYWRIGHT_BROWSERS\"\n.\\playwright.ps1 install chromium\n\n#del old png\nremove-item *.png\n\n$exit_code = (Start-Process -FilePath .\\PlaywrightTest.exe -WorkingDirectory \"C:\\_admin\\PW\\PLAYWRIGHT_TESTS\" -ArgumentList @(\"$VirtualHost\", \"$PlaywrightUser\", \"$PlaywrightPass\") -Wait -Passthru -RedirectStandardOutput stdout.txt -RedirectStandardError stderr.txt).ExitCode\nwrite-host \"Exit CODE : \" $exit_code\n\n$stdout = Get-Content -Path .\\stdout.txt\n$stderr = Get-Content -Path .\\stderr.txt\n\nwrite-host \"Stdout : \"\nwrite-host $stdout\n\nwrite-host \"Errors : \"\nwrite-host $stderr\n\nGet-ChildItem . -Filter *.png | New-OctopusArtifact\n\n$LastExitCode = $exit_code"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "1b2751ac-fcb2-4dff-9e59-a139004efc09",
+      "Name": "AddOfflineRunner",
+      "Slug": "addofflinerunner",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WEBSERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "40ccb138-567b-4bc5-a80d-3a5662135b60",
+          "Name": "AddOfflineRunner",
+          "Slug": "addofflinerunner",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.RunOnServer": "false",
+            "Octopus.Action.Script.ScriptSource": "Inline",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Script.ScriptBody": "#{{YourConfiguredDropFolderPath}}\\{{Environment}}\\{{ProjectName}}\\{{Release}}\n#C:\\_OFFLINE_DROP\\MORH\\TEST\\Argosy\\2023.3.15.2-REL-2\n\n$offlineDrop = \"C:\\_OFFLINE_DROP\"\n$templateDir = \"C:\\_OFFLINE_DROP\\_OFFLINERUNNER\"\n$zipFolder = \"C:\\_OFFLINE_DROP\\_ZIPEDOFFLINEDROP\"\n$batFile = \"INSTALL.bat\"\n\nwrite-host $OctopusParameters[\"Octopus.Deployment.Tenant.Name\"]\nwrite-host $OctopusParameters[\"Octopus.Environment.Name\"]\nwrite-host $OctopusParameters[\"Octopus.Project.Name\"]\nwrite-host $OctopusParameters[\"Octopus.Release.Number\"]\n\n\n$relDir = Join-Path -Path $offlineDrop -ChildPath $OctopusParameters[\"Octopus.Deployment.Tenant.Name\"]\n$relDir = Join-Path -Path $relDir -ChildPath $OctopusParameters[\"Octopus.Environment.Name\"]\n$relDir = Join-Path -Path $relDir -ChildPath $OctopusParameters[\"Octopus.Project.Name\"]\n$relDir = Join-Path -Path $relDir -ChildPath $OctopusParameters[\"Octopus.Release.Number\"]\n\nwrite-host \"Release DIR : \" $relDir\n\n\ncd $relDir\n$offRunDir = Join-Path -Path $relDir -ChildPath OfflineRunner\n\nwrite-host \"Copy OfflineRunner\"\ncd $templateDir\nCopy-Item -Path $templateDir -Recurse -Destination $offRunDir\n\nwrite-host \"Copy INSTALL.bat\"\nCopy-Item -Path $batFile -Destination $relDir\n\n#out vars\nSet-OctopusVariable -name \"RelDir\" -value $relDir\n\n$zipName = $OctopusParameters[\"Octopus.Deployment.Tenant.Name\"]\n$zipName = $zipName + \"-\" + $OctopusParameters[\"Octopus.Environment.Name\"]\n$zipName = $zipName + \"-\" + $OctopusParameters[\"Octopus.Project.Name\"]\n$zipName = $zipName + \"-\" + $OctopusParameters[\"Octopus.Release.Number\"]\n$zipName = $zipName + \".zip\"\n\nSet-OctopusVariable -name \"ZipNameFileOnly\" -value $zipName\n\n$zipName = Join-Path -Path $zipFolder -ChildPath $zipName\n\nSet-OctopusVariable -name \"ZipName\" -value $zipName\n"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "07aa0f9f-eb26-41cb-9789-567d48f7b145",
+      "Name": "ZIP Offline Drop",
+      "Slug": "zip-offline-drop",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {},
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "8493c75b-5efa-4545-b827-1cfefe538897",
+          "Name": "ZIP Offline Drop",
+          "Slug": "zip-offline-drop",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Script.ScriptBody": "$SourceDirectoryName = $OctopusParameters['SourceDirectoryName']\n$DestinationArchiveFileName = $OctopusParameters['DestinationArchiveFileName']\n$CompressionLevel = $OctopusParameters['CompressionLevel']\n$IncludeBaseDirectory = $OctopusParameters['IncludeBaseDirectory']\n$OverwriteDestination = $OctopusParameters['OverwriteDestination']\n\nif (!$SourceDirectoryName)\n{\n    Write-Error \"No Source Directory name was specified. Please specify the name of the directory to that will be zipped.\"\n    exit -2\n}\n\nif (!$DestinationArchiveFileName)\n{\n    Write-Error \"No Destination Archive File name was specified. Please specify the name of the zip file to be created.\"\n    exit -2\n}\n\nif (($OverwriteDestination) -and (Test-Path $DestinationArchiveFileName))\n{\n    Write-Host \"$DestinationArchiveFileName already exists. Will delete it before we create a new zip file with the same name.\"\n    Remove-Item $DestinationArchiveFileName\n}\n\nWrite-Host \"Creating Zip file $DestinationArchiveFileName with the contents of directory $SourceDirectoryName using compression level $CompressionLevel\"\n\n$assembly = [Reflection.Assembly]::LoadWithPartialName(\"System.IO.Compression.FileSystem\")\n[System.IO.Compression.ZipFile]::CreateFromDirectory($SourceDirectoryName, $DestinationArchiveFileName, $CompressionLevel, $IncludeBaseDirectory)\n",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Template.Id": "ActionTemplates-107",
+            "Octopus.Action.Template.Version": "12",
+            "CompressionLevel": "Optimal",
+            "Octopus.Action.RunOnServer": "true",
+            "SourceDirectoryName": "#{Octopus.Action[AddOfflineRunner].Output.RelDir}",
+            "DestinationArchiveFileName": "#{Octopus.Action[AddOfflineRunner].Output.ZipName}",
+            "IncludeBaseDirectory": "True",
+            "OverwriteDestination": "True"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "21391f6a-ba00-487a-bac1-d92cdc34e560",
+      "Name": "FTP octopus offline drop zip",
+      "Slug": "ftp-octopus-offline-drop-zip",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {},
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "f3a172ca-9971-439b-a51a-269675b3d47b",
+          "Name": "FTP octopus offline drop zip",
+          "Slug": "ftp-octopus-offline-drop-zip",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.RunOnServer": "true",
+            "Octopus.Action.Script.ScriptSource": "Inline",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Script.ScriptBody": "$zipNameFile  = $OctopusParameters[\"Octopus.Action[AddOfflineRunner].Output.ZipNameFileOnly\"]\n$zipPathFile  = $OctopusParameters[\"Octopus.Action[AddOfflineRunner].Output.ZipName\"]\n\n$ftpUplFile = \"ftp://support.laus.hr/octopus/wwwroot/packages/\" + $zipNameFile\n\nwrite-host \"FTP UPLOAD file: \" $zipPathFile\nwrite-host \"FTP UPLOAD TO: \" $ftpUplFile\n\n$client = New-Object System.Net.WebClient\n$client.Credentials = New-Object System.Net.NetworkCredential(\"support.laus.hr|ftp_support\", \"q47Q!3R2sLAhQWQDbXXh\")\n$client.UploadFile($ftpUplFile, $zipPathFile)\n\nwrite-host \"FTP DONE.\""
+          },
+          "Links": {}
+        }
+      ]
+    }
+  ],
+  "LastSnapshotId": null,
+  "Links": {
+    "Self": "/api/Spaces-25/projects/Projects-264/deploymentprocesses",
+    "Project": "/api/Spaces-25/projects/Projects-264",
+    "Template": "/api/Spaces-25/projects/Projects-264/deploymentprocesses/template{?channel,releaseId}",
+    "Validation": "/api/Spaces-25/projects/Projects-264/deploymentprocesses/validate"
+  }
+}

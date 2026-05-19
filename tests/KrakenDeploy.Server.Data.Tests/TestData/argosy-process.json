@@ -1,0 +1,3169 @@
+{
+  "Id": "deploymentprocess-Projects-2",
+  "SpaceId": "Spaces-1",
+  "ProjectId": "Projects-2",
+  "Version": 273,
+  "Steps": [
+    {
+      "Id": "e81fd08f-02a1-4084-a9b4-36842d46e093",
+      "Name": "ArgosyBASE",
+      "Slug": "argosybase",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "635dfd8a-f3e7-4352-98e4-de0084898ce8",
+          "Name": "ArgosyBASE",
+          "Slug": "argosybase",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/ArgosyBASE"
+          ],
+          "Packages": [
+            {
+              "Id": "0308f65d-ac30-49dd-8fc2-609be28aeafc",
+              "Name": "",
+              "PackageId": "ArgosyBase",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {
+                "SelectionMode": "immediate"
+              }
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "ArgosyBase",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "2da85a22-a775-4ae7-8085-4ae690f20f1a",
+      "Name": "ArgosyBASE - x86",
+      "Slug": "argosybase-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "f102e87c-9830-4740-a753-7ec037576030",
+          "Name": "ArgosyBASE - x86",
+          "Slug": "argosybase-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/ArgosyBASE"
+          ],
+          "Packages": [
+            {
+              "Id": "02081ea8-ac58-4523-a72b-6a3d0b001894",
+              "Name": "",
+              "PackageId": "ArgosyBasex86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {
+                "SelectionMode": "immediate"
+              }
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "ArgosyBasex86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "f2aac912-9767-442d-833c-2ecbeeb9bd42",
+      "Name": "DISP",
+      "Slug": "disp",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "f2207b76-265f-47ef-acf3-561b7ea854b5",
+          "Name": "DISP",
+          "Slug": "disp",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/DISP"
+          ],
+          "Packages": [
+            {
+              "Id": "4f590287-227d-4405-80f7-b8722f5affa2",
+              "Name": "",
+              "PackageId": "DISP",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "DISP",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "efa5c311-4f09-486e-987e-bda241ff61e6",
+      "Name": "DISP - x86",
+      "Slug": "disp-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "d877fb27-9c51-4bf4-b4b8-e38a6780a866",
+          "Name": "DISP - x86",
+          "Slug": "disp-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/DISP"
+          ],
+          "Packages": [
+            {
+              "Id": "1d29ae67-948b-4b75-acf2-4f667a422ace",
+              "Name": "",
+              "PackageId": "DISPx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "DISPx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "33dc78ea-a4bc-46c3-b36e-157d68e9e21f",
+      "Name": "DORA",
+      "Slug": "dora",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "4c344e9c-3fec-48b3-8a90-3455529113d3",
+          "Name": "DORA",
+          "Slug": "dora",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/DORA"
+          ],
+          "Packages": [
+            {
+              "Id": "f06b7818-0900-4fb3-aa58-d15434355459",
+              "Name": "",
+              "PackageId": "DORA",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "DORA",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "d0c4af4e-70f2-4cb9-85d8-87eea0ec479b",
+      "Name": "DORA - x86",
+      "Slug": "dora-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "ce9f00ee-f11d-4bfd-a536-f8a255893ea8",
+          "Name": "DORA - x86",
+          "Slug": "dora-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/DORA"
+          ],
+          "Packages": [
+            {
+              "Id": "df70c370-5b87-4daf-8452-d84dbad4469d",
+              "Name": "",
+              "PackageId": "DORAx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "DORAx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "e8c090df-f412-4399-b173-04457c5a3e1b",
+      "Name": "FAUS",
+      "Slug": "faus",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "f8665ed1-ef7f-4b87-9653-461f1a4a310d",
+          "Name": "FAUS",
+          "Slug": "faus",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/FAUS"
+          ],
+          "Packages": [
+            {
+              "Id": "00c8b8ea-55b5-4250-be19-d1edb14dcad4",
+              "Name": "",
+              "PackageId": "FAUS",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "FAUS",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "a3a35772-89cd-4308-a75d-b8be4fdf873c",
+      "Name": "FAUS - x86",
+      "Slug": "faus-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "c6aa89cd-f971-4528-a823-87deb61b0aad",
+          "Name": "FAUS - x86",
+          "Slug": "faus-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/FAUS"
+          ],
+          "Packages": [
+            {
+              "Id": "76817419-55bd-4817-a08b-7f54296c7472",
+              "Name": "",
+              "PackageId": "FAUSx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "FAUSx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "7111ec93-9f65-4ca2-8964-7e221cc807b5",
+      "Name": "FINK",
+      "Slug": "fink",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "496b9206-78b8-4c28-8189-5329df506e30",
+          "Name": "FINK",
+          "Slug": "fink",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/FINK"
+          ],
+          "Packages": [
+            {
+              "Id": "30d0bbb1-cf16-46cd-a626-8d06b4fca4b5",
+              "Name": "",
+              "PackageId": "FINK",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "FINK",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "b8965c18-abc7-451f-b97f-668c77594709",
+      "Name": "FINK - x86",
+      "Slug": "fink-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "9256fca6-7312-4200-ab41-32e5441f9d73",
+          "Name": "FINK - x86",
+          "Slug": "fink-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/FINK"
+          ],
+          "Packages": [
+            {
+              "Id": "7e8dd4a9-d58d-425b-9be0-44c268d688e2",
+              "Name": "",
+              "PackageId": "FINKx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "FINKx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "865d1304-b707-44c3-9296-ff36121a5e7e",
+      "Name": "HELPDESK",
+      "Slug": "helpdesk",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "a7a697fd-8c4d-4404-8205-bfbb0ba7ce50",
+          "Name": "HELPDESK",
+          "Slug": "helpdesk",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/HELPDESK"
+          ],
+          "Packages": [
+            {
+              "Id": "18783536-1525-4ad6-8d61-860c89b4329b",
+              "Name": "",
+              "PackageId": "HELPDESK",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "HELPDESK",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "226cac48-4685-46a9-8daf-df2a7c433d70",
+      "Name": "HELPDESK - x86",
+      "Slug": "helpdesk-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "9f5a0de8-0de4-4cd2-9828-29642c6e46e7",
+          "Name": "HELPDESK - x86",
+          "Slug": "helpdesk-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/HELPDESK"
+          ],
+          "Packages": [
+            {
+              "Id": "3dd04a67-aa10-42d6-806d-67f8689b79c1",
+              "Name": "",
+              "PackageId": "HELPDESKx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "HELPDESKx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "302c14b0-6392-4f15-99bc-b2f21b450bd2",
+      "Name": "KADR",
+      "Slug": "kadr",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "a3a849d5-e056-40eb-892a-c29a397c95ae",
+          "Name": "KADR",
+          "Slug": "kadr",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/KADR"
+          ],
+          "Packages": [
+            {
+              "Id": "c18eee78-ec60-4b7d-a8d4-63c4592bc616",
+              "Name": "",
+              "PackageId": "KADR",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "KADR",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "2d85916e-dfe0-4a4d-a9c1-3ab45017fcb5",
+      "Name": "KADR - x86",
+      "Slug": "kadr-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "9c0f10f5-f2dd-4368-aac4-a21146c25b55",
+          "Name": "KADR - x86",
+          "Slug": "kadr-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/KADR"
+          ],
+          "Packages": [
+            {
+              "Id": "69ad7b02-f174-44e2-a5bf-6b26980b4a72",
+              "Name": "",
+              "PackageId": "KADRx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "KADRx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "6b820702-5840-4e88-bafd-36bd9970f856",
+      "Name": "KOME",
+      "Slug": "kome",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "27d65a6d-43fa-416b-bbbe-6a7a27184a57",
+          "Name": "KOME",
+          "Slug": "kome",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/KOME"
+          ],
+          "Packages": [
+            {
+              "Id": "e24cb582-77c4-4ddf-813f-0d74ce8abb81",
+              "Name": "",
+              "PackageId": "KOME",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "KOME",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "73796d5a-977d-4d61-8eae-d2572f6861ee",
+      "Name": "KOME - x86",
+      "Slug": "kome-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "5a2d2a53-cce9-4ae9-b6bc-5c0ec52eaa6c",
+          "Name": "KOME - x86",
+          "Slug": "kome-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/KOME"
+          ],
+          "Packages": [
+            {
+              "Id": "fa044476-8de1-4723-ac9b-3725a0ea2d52",
+              "Name": "",
+              "PackageId": "KOMEx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "KOMEx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "464b006e-c006-4512-bfd4-98b0dbe0403d",
+      "Name": "MATE",
+      "Slug": "mate",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "53307e0a-99a0-4e6b-bb21-47a83d4ae853",
+          "Name": "MATE",
+          "Slug": "mate",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/MATE"
+          ],
+          "Packages": [
+            {
+              "Id": "a59436fb-fae4-4386-b94e-8f0881234515",
+              "Name": "",
+              "PackageId": "MATE",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "MATE",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "678994df-18c3-4f9d-8d64-1670b2d10596",
+      "Name": "MATE - x86",
+      "Slug": "mate-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "85372f57-063b-4061-9876-89650da631a0",
+          "Name": "MATE - x86",
+          "Slug": "mate-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/MATE"
+          ],
+          "Packages": [
+            {
+              "Id": "afce6262-40ed-468b-af8f-126f56ccc82f",
+              "Name": "",
+              "PackageId": "MATEx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "MATEx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "5bd0f23f-c88c-4869-a638-2a4a81024d96",
+      "Name": "MEDS",
+      "Slug": "meds",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "5f70d8e9-cf58-489e-b1a0-eeb7132a6058",
+          "Name": "MEDS",
+          "Slug": "meds",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/MEDS"
+          ],
+          "Packages": [
+            {
+              "Id": "856c051a-bae9-456a-ba60-bc06ce17c25c",
+              "Name": "",
+              "PackageId": "MEDS",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "MEDS",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "e359a9d7-ea26-4d03-a798-58ccc75760da",
+      "Name": "MEDS - x86",
+      "Slug": "meds-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "2ef8c864-bec3-44d9-b93d-b7dd3cd853df",
+          "Name": "MEDS - x86",
+          "Slug": "meds-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/MEDS"
+          ],
+          "Packages": [
+            {
+              "Id": "c5afeea7-22c3-4761-9d89-2e9d07978894",
+              "Name": "",
+              "PackageId": "MEDSx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "MEDSx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "75487ba3-7fc0-4bcc-bcc3-ee8953ebc93d",
+      "Name": "NABA",
+      "Slug": "naba",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "8f941997-0947-4854-bbf8-561bc6699249",
+          "Name": "NABA",
+          "Slug": "naba",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/NABA"
+          ],
+          "Packages": [
+            {
+              "Id": "4129da42-a150-495f-bcda-cc7c221bdef2",
+              "Name": "",
+              "PackageId": "NABA",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "NABA",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "ef7f9085-842b-4531-a84b-ecab328118f9",
+      "Name": "NABA - x86",
+      "Slug": "naba-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "064c4947-59a5-4789-8460-f944f94009be",
+          "Name": "NABA - x86",
+          "Slug": "naba-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/NABA"
+          ],
+          "Packages": [
+            {
+              "Id": "70eb07ad-8dff-45e8-b000-d9fc0428318f",
+              "Name": "",
+              "PackageId": "NABAx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "NABAx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "de0d2af8-90b5-4b1d-b2a4-5110fb35e5a2",
+      "Name": "OSSA",
+      "Slug": "ossa",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "1ae547f0-abed-4b2b-bd91-0314aa809cc4",
+          "Name": "OSSA",
+          "Slug": "ossa",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/OSSA"
+          ],
+          "Packages": [
+            {
+              "Id": "4c7e30bb-eae7-4776-86b1-c3df5a58ec65",
+              "Name": "",
+              "PackageId": "OSSA",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "OSSA",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "63a46e65-609e-4dd7-8fb4-a1bde154dfff",
+      "Name": "OSSA - x86",
+      "Slug": "ossa-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "32d00d62-ffbe-453f-843c-d0bbc24db261",
+          "Name": "OSSA - x86",
+          "Slug": "ossa-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/OSSA"
+          ],
+          "Packages": [
+            {
+              "Id": "9b290ddb-5677-4d38-ab0f-be0dd2f5e61a",
+              "Name": "",
+              "PackageId": "OSSAx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "OSSAx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "e66b0bdb-2c6a-4d86-98f8-aee6cad5a06a",
+      "Name": "PLAC",
+      "Slug": "plac",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "20e7b662-863e-4469-bffa-6bf4f2e4d159",
+          "Name": "PLAC",
+          "Slug": "plac",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/PLAC"
+          ],
+          "Packages": [
+            {
+              "Id": "62bd2036-54ab-441b-ba2f-f71b65f89a7b",
+              "Name": "",
+              "PackageId": "PLAC",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "PLAC",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "2567c6b7-690f-45af-94d6-28e0786a2045",
+      "Name": "PLAC - x86",
+      "Slug": "plac-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "746d5fef-f960-45e1-af3b-f9401729d094",
+          "Name": "PLAC - x86",
+          "Slug": "plac-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/PLAC"
+          ],
+          "Packages": [
+            {
+              "Id": "52fec87d-670a-46df-8139-bf5a76912e36",
+              "Name": "",
+              "PackageId": "PLACx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "PLACx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "fb7ab182-004b-4ded-98c9-39640681d55b",
+      "Name": "PLAN",
+      "Slug": "plan",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "494d7117-d533-4899-aad4-10abaf29e04d",
+          "Name": "PLAN",
+          "Slug": "plan",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/PLAN"
+          ],
+          "Packages": [
+            {
+              "Id": "c6fb68aa-0a1b-4437-930f-69806adbad3a",
+              "Name": "",
+              "PackageId": "PLAN",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "PLAN",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "af4457fa-8e30-46a4-9a7a-5e0a475f974a",
+      "Name": "PLAN - x86",
+      "Slug": "plan-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "8b8f0b2a-753c-4be1-9b19-440e983dda5b",
+          "Name": "PLAN - x86",
+          "Slug": "plan-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/PLAN"
+          ],
+          "Packages": [
+            {
+              "Id": "790f69e1-5730-41d7-8665-1025d5879765",
+              "Name": "",
+              "PackageId": "PLANx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "PLANx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "7a6db4a5-5058-4e6e-a08f-9e9205e0d54b",
+      "Name": "PLIZ",
+      "Slug": "pliz",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "cf776823-79f4-4abf-a7ca-34977fd13ec1",
+          "Name": "PLIZ",
+          "Slug": "pliz",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/PLIZ"
+          ],
+          "Packages": [
+            {
+              "Id": "5eb8afc5-6c9f-43b0-ba7e-f45000ea77d0",
+              "Name": "",
+              "PackageId": "PLIZ",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "PLIZ",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "6d8bc677-99a5-439b-8e2b-cd99233881c4",
+      "Name": "PLIZ - x86",
+      "Slug": "pliz-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "c6b457ee-a203-4b13-b683-3593a68528f7",
+          "Name": "PLIZ - x86",
+          "Slug": "pliz-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/PLIZ"
+          ],
+          "Packages": [
+            {
+              "Id": "9724367b-efbd-4b18-aef0-b2a1ac91a53e",
+              "Name": "",
+              "PackageId": "PLIZx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "PLIZx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "d48fe5ab-00eb-45ef-a84e-9b0b3c0526c5",
+      "Name": "PROD",
+      "Slug": "prod",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "f9d9615b-a5ed-4f5b-87d2-62aee1ac1c62",
+          "Name": "PROD",
+          "Slug": "prod",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/PROD"
+          ],
+          "Packages": [
+            {
+              "Id": "6432d2d0-d63d-4718-9c1e-4adadf42b96f",
+              "Name": "",
+              "PackageId": "PROD",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "PROD",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "734a606e-9264-43b9-bc8b-33145c3a07c4",
+      "Name": "PROD - x86",
+      "Slug": "prod-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "633ae42b-a849-4621-a79f-a972605c8a93",
+          "Name": "PROD - x86",
+          "Slug": "prod-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/PROD"
+          ],
+          "Packages": [
+            {
+              "Id": "f9e76d63-f6ec-4589-a2aa-651804feca36",
+              "Name": "",
+              "PackageId": "PRODx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "PRODx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "495d5a07-d183-4da9-8e2d-dc65d43f08e4",
+      "Name": "PSAR",
+      "Slug": "psar",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "881d8191-fa59-4fc8-9b9e-8b99733a2f43",
+          "Name": "PSAR",
+          "Slug": "psar",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/PSAR"
+          ],
+          "Packages": [
+            {
+              "Id": "594ca8b2-33d9-408e-949a-aa05794348f0",
+              "Name": "",
+              "PackageId": "PSAR",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "PSAR",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "54e46734-c124-499e-a4a4-67c2864d3625",
+      "Name": "PSAR - x86",
+      "Slug": "psar-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "f0ff5e8b-82f5-44ee-8e2c-224c3d56fd48",
+          "Name": "PSAR - x86",
+          "Slug": "psar-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/PSAR"
+          ],
+          "Packages": [
+            {
+              "Id": "35861f88-4f82-4398-b84d-9cd65eb73e7c",
+              "Name": "",
+              "PackageId": "PSARx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "PSARx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "4c9792fe-ff2f-49b8-ac50-c7ffb422f736",
+      "Name": "SAMP",
+      "Slug": "samp",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "1caccf1e-f33d-46ea-893f-78b1449e961f",
+          "Name": "SAMP",
+          "Slug": "samp",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/SAMP"
+          ],
+          "Packages": [
+            {
+              "Id": "f732ba8a-7ede-4a16-aa1d-97ca31bba707",
+              "Name": "",
+              "PackageId": "SAMP",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "SAMP",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "b2e6c4b4-0976-4fcc-859b-509c75a98c82",
+      "Name": "SAMP - x86",
+      "Slug": "samp-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "8370a053-f5fc-4695-afed-8487cffa537c",
+          "Name": "SAMP - x86",
+          "Slug": "samp-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/SAMP"
+          ],
+          "Packages": [
+            {
+              "Id": "823ac7f4-50fc-4b98-9367-7dcea562788d",
+              "Name": "",
+              "PackageId": "SAMPx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "SAMPx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "5eacac1a-d137-401e-a004-018ec578e81f",
+      "Name": "STAN",
+      "Slug": "stan",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "722f6bbf-43b7-478d-bbbf-b0d3e4eef41e",
+          "Name": "STAN",
+          "Slug": "stan",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/STAN"
+          ],
+          "Packages": [
+            {
+              "Id": "93f79443-574c-4808-bfad-0e5ba63e5709",
+              "Name": "",
+              "PackageId": "STAN",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "STAN",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "2c61a0d3-9330-4e6f-a30f-283c5e417a06",
+      "Name": "STAN - x86",
+      "Slug": "stan-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "79123852-b33a-48ea-8aaf-5095bb9a3ec7",
+          "Name": "STAN - x86",
+          "Slug": "stan-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/STAN"
+          ],
+          "Packages": [
+            {
+              "Id": "5fb1fd56-30f0-4130-b7b1-2fee44db0b45",
+              "Name": "",
+              "PackageId": "STANx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "STANx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "13fcfab7-f5bf-44ac-8335-8a4c6960f3d6",
+      "Name": "TRAN",
+      "Slug": "tran",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "d7ee347d-5763-4016-a312-354be96b6722",
+          "Name": "TRAN",
+          "Slug": "tran",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/TRAN"
+          ],
+          "Packages": [
+            {
+              "Id": "4be56f4f-ad9b-438b-9749-a9bb554a862b",
+              "Name": "",
+              "PackageId": "TRAN",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "TRAN",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "b087070d-f569-4203-b66d-418bdb74bca9",
+      "Name": "TRAN - x86",
+      "Slug": "tran-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "fae1627e-77fe-421a-bd87-c01eaf259cb5",
+          "Name": "TRAN - x86",
+          "Slug": "tran-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/TRAN"
+          ],
+          "Packages": [
+            {
+              "Id": "9f7b73af-92ec-412c-ae29-eee4a265ac48",
+              "Name": "",
+              "PackageId": "TRANx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "TRANx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "9c0a0881-1660-4ba2-b5ff-3451c85d5ba9",
+      "Name": "ZEKK",
+      "Slug": "zekk",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "9b23ce98-76f7-4479-a039-1e6ae07c07c2",
+          "Name": "ZEKK",
+          "Slug": "zekk",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/ZEKK"
+          ],
+          "Packages": [
+            {
+              "Id": "723c7839-da26-4602-86bc-a8fba4dc9008",
+              "Name": "",
+              "PackageId": "ZEKK",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "ZEKK",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "6c41d17c-08dc-4809-a044-286ced3938d6",
+      "Name": "ZEKK - x86",
+      "Slug": "zekk-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "905b0c1b-74aa-4066-aa81-f7a76f2ab1a0",
+          "Name": "ZEKK - x86",
+          "Slug": "zekk-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/ZEKK"
+          ],
+          "Packages": [
+            {
+              "Id": "78914728-7753-40b6-93bf-1587333117e2",
+              "Name": "",
+              "PackageId": "ZEKKx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "ZEKKx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "435b9aac-930f-4608-800f-2cb4c3c4d85d",
+      "Name": "ZUBR",
+      "Slug": "zubr",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "454d2e89-c7e3-4a69-b2b0-3b32fb9aed3d",
+          "Name": "ZUBR",
+          "Slug": "zubr",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/ZUBR"
+          ],
+          "Packages": [
+            {
+              "Id": "bc786685-4c7b-4979-bcf0-9155121f3203",
+              "Name": "",
+              "PackageId": "ZUBR",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "ZUBR",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "d7be6398-c1ec-4593-94a2-0dfa1da28812",
+      "Name": "ZUBR - x86",
+      "Slug": "zubr-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "ab651c78-9e84-4d36-8f2f-abf583e35451",
+          "Name": "ZUBR - x86",
+          "Slug": "zubr-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/ZUBR"
+          ],
+          "Packages": [
+            {
+              "Id": "a3bb9709-058e-43c2-8275-7b0524a3b2d2",
+              "Name": "",
+              "PackageId": "ZUBRx86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "ZUBRx86",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "21157806-b6d2-485d-84a4-f3c3b89b209a",
+      "Name": "Clean configs",
+      "Slug": "clean-configs",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "6630eb6c-200e-436b-ae4b-d09634d2c4f8",
+          "Name": "Clean configs",
+          "Slug": "clean-configs",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.RunOnServer": "false",
+            "Octopus.Action.Script.ScriptSource": "Inline",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Script.ScriptBody": "# clean old configs befre config package\n\n[string]$Path = \"#{CustomArgosyDirectory}\"\n\n[string]$ConfigPath = Join-Path $Path \"_CONFIGS\"\n\nWrite-Host \"CLEAN CONFIGS ::::\"\n\nif ([string]::IsNullOrEmpty($Path)) {\nWrite-Host \"Path is empty !!!\"\nexit\n}\n\nWrite-Host \"DELETE : \" $ConfigPath\\*\n\nRemove-Item -Path $ConfigPath\\* -Recurse -Force -ErrorAction SilentlyContinue\n\n#SilentlyContinue will write error to $Error var, so show the error\n$Error\n"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "9a217ca1-2681-4436-a11b-a0ad0ee20032",
+      "Name": "ArgosyCONFIGS",
+      "Slug": "argosyconfigs",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "SERVER,TERMINAL,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "989a676f-97d3-4407-bff9-34f1be954651",
+          "Name": "ArgosyCONFIGS",
+          "Slug": "argosyconfigs",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/ArgosyCONFIGS"
+          ],
+          "Packages": [
+            {
+              "Id": "a1da8259-170f-45e3-8b44-ab12926d5cd9",
+              "Name": "",
+              "PackageId": "ArgosyCONFIGS",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {
+                "SelectionMode": "immediate"
+              }
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "ArgosyCONFIGS",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}",
+            "Octopus.Action.Package.CustomInstallationDirectoryShouldBePurgedBeforeDeployment": "False"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "fd88d06e-1456-46f6-af88-0d45d0ec6a58",
+      "Name": "ArgosyCONFIGS - x86",
+      "Slug": "argosyconfigs-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "53358a6f-848a-4c87-a698-01fdc6ddbd63",
+          "Name": "ArgosyCONFIGS - x86",
+          "Slug": "argosyconfigs-x86",
+          "ActionType": "Octopus.TentaclePackage",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/ArgosyCONFIGS"
+          ],
+          "Packages": [
+            {
+              "Id": "e503d81f-ceeb-456a-a002-55accd069b5c",
+              "Name": "",
+              "PackageId": "ArgosyCONFIGS",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles": "False",
+            "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings": "False",
+            "Octopus.Action.EnabledFeatures": "Octopus.Features.CustomDirectory,Octopus.Features.ConfigurationVariables,Octopus.Features.ConfigurationTransforms",
+            "Octopus.Action.Package.DownloadOnTentacle": "False",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "ArgosyCONFIGS",
+            "Octopus.Action.Package.CustomInstallationDirectory": "#{CustomArgosyDirectory}_x86"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "6febab7a-7e8f-488b-a4fd-2c0edca3f64e",
+      "Name": "SideBySideInstall",
+      "Slug": "sidebysideinstall",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "TERMINAL,SERVER,WORKSTATION"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "098f5ec8-0fa6-4390-a291-a052c82ca32f",
+          "Name": "SideBySideInstall",
+          "Slug": "sidebysideinstall",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/ArgosyBASE"
+          ],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.RunOnServer": "false",
+            "Octopus.Action.Script.ScriptSource": "Inline",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Script.ScriptBody": "# side by side mehanizam za octopusdeploy\n# ARGOSY_CUSTOM_DIR/$Path = C:\\ARGOSY_OC_TEST\\APP\n# EXEDIR = C:\\ARGOSY_OC_TEST\\EXEDIR\n# CONFGIPATH = _CONFIGS\\LAUSCC\\SRV-THOR_Argosy.exe.config\n\n\n[string]$Path = \"#{CustomArgosyDirectory}\"\n\n[string]$ConfigPath = \"#{ConfigFile}\"\n\n[string]$ConfigFolders = \"#{ConfigFolder}\"\n\n[string]$ExedirName = \"EXEDIR\"\n\n[string]$OctoEnviroment = \"#{Octopus.Environment.Name}\"\n\n\nfunction Decrypt-Files\n{ \nparam (\n        [string]$Key,\n        [string]$Folder\n    )\n\n    \n    $files = Get-ChildItem -Path $Folder -Recurse -File | where {$_.extension -in \".enc\"}\n\n    foreach ( $f in $files) {\n        Write-Host \"DECRIPTING : \" $f.FullName\n        [Byte[]]$toDecript = [System.IO.File]::ReadAllBytes($f.FullName)\n        [Byte[]]$decripted = Decrypt-Bytes -Key $kkey -InputBytes $toDecript\n        [string]$newFilePath = $f.FullName.Substring(0, $f.FullName.Length - 4)\n        [System.IO.File]::WriteAllBytes($newFilePath, $decripted)\n\n        Remove-Item $f.FullName\n    }\n}\n\n\nfunction Decrypt-Bytes  ([ValidateLength(32,32)] [string]$Key, [Byte[]]$InputBytes) \n{\n$ByteKey              = [Byte[]][Char[]]$Key\n$bytes                = $InputBytes\n$aesManaged           = [System.Security.Cryptography.AesManaged]::new()\n$aesManaged.Mode      = [System.Security.Cryptography.CipherMode]::CBC\n$aesManaged.Padding   = [System.Security.Cryptography.PaddingMode]::PKCS7\n$aesManaged.BlockSize = 128\n$aesManaged.KeySize   = 256\n$aesManaged.Key       = $ByteKey\n$aesManaged.IV        = [System.Text.Encoding]::ASCII.GetBytes(\"!FAfrgaregQsg4w5\")\n$decryptor            = $aesManaged.CreateDecryptor()\n$unencryptedData      = $decryptor.TransformFinalBlock($bytes, 0, $bytes.Length)\n$aesManaged.Dispose()\n\nreturn $unencryptedData\n}\n\n\nWrite-Host \"SIDE BY SIDE INSTALL ::::\"\n\nif ([string]::IsNullOrEmpty($Path)) {\nWrite-Host \"Path is empty !!!\"\nexit\n}\n\nif ([string]::IsNullOrEmpty($ConfigPath)) {\nWrite-Host \"ConfigPath is empty !!!\"\nexit\n}\n\n\nWrite-Host \"ROOT = $Path\"\nWrite-Host \"CONFIG_PATH = $ConfigPath\"\nWrite-Host \"\"\n\ncd $Path\n\n$BaseDir = Split-Path $Path -Parent\n$SubDir = Split-Path $Path -Leaf\n$exeDir = Join-Path $BaseDir $exedirName\n\nif (!(Test-Path $Path)) {\n\n\t#New-Item -Path \"c:\\xxxxx\\zzzzz\\\" -Name \"yyyyyy\" -ItemType \"directory\" --THIS WORKS if none of dirs/paths exists !!!!\n\tWrite-Host \"ROOT does not exist, CREATING now.\"\n\tNew-Item -Path $BaseDir -Name $SubDir -ItemType \"directory\" -Force\n}\n\nif (!(Test-Path $exeDir)) {\n\n\tWrite-Host \"EXEDIR does not exist, CREATING now.\"\n\tNew-Item $exeDir -ItemType Directory -Force\n}\n\n$OctoEnviroment = $OctoEnviroment.Trim();\n\n#NEW INSTALL\n\n$newDir = \"Argosy_\" + (Get-Date -format yyyy_MM_dd__HH_mm_ss)\n\nWrite-Host \"EXEDIR = $exeDir, NEWDIR = $newDir\"\n\nWrite-Host \"CREATING $exeDir\\$newDir\"\n\nNew-Item $exeDir\\$newDir -ItemType Directory\n\nWrite-Host \"COPY $Path\\*.* $exeDir\\$newDir\"\n\nCopy-Item $Path\\* $exeDir\\$newDir -Force -Recurse\n\n## CONFIG\n[string]$kkey = \"1T42hdrftghdrfthdrYgfhdg12fdhgG1\"\n$ConfigFullPath = Join-Path $Path $ConfigPath\n\n$ConfigParentFolder = Split-Path $ConfigFullPath -Parent\n\nDecrypt-Files -Key $kkey -Folder $ConfigParentFolder\n\n\nWrite-Host \"USING CONFIG : $ConfigFullPath\"\nWrite-Host \"COPY $ConfigFullPath $exeDir\\$newDir\\Argosy.exe.config\"\nWrite-Host \"-------------------\"\n\nCopy-Item $ConfigFullPath $exeDir\\$newDir\\Argosy.exe.config -Force -Recurse\n\n\tif ($ConfigFolders -ne \"\") {\n\t\tif ($ConfigFolders -ne \"DEFAULT\") {\n        \n            $Folders = $ConfigFolders.Split(\",\")\n            foreach ($ConfigFolder in $Folders) {\n\t\t\t  $ConfigFolderFullPath = Join-Path $Path $ConfigFolder\n            \n              Write-Host \"USING CONFIG FOLDER: $ConfigFolderFullPath\"\n            \n              Decrypt-Files -Key $kkey -Folder $ConfigFolderFullPath\n\n\t\t\t  Write-Host \"COPY $ConfigFolderFullPath $exeDir\\$newDir\"\n\t\t\t  Write-Host \"-------------------\"\n\n\t\t\t  Copy-Item $ConfigFolderFullPath $exeDir\\$newDir -Force -Recurse\n            }\n            \n\t\t} else {\n\t\t\tWrite-Host \"CONFIG FOLDER PARAM DEFAULT , nothing to do !\"\n\t\t}\n\t} else {\n\t\tWrite-Host \"CONFIG FOLDER PARAM EMPTY , nothing to do !\"\n\t}\n\n\n\n#BOOT scripts updater\n\n$ScriptsPath = Join-Path $Path \"PS_Scripts\"\n\nWrite-Host \"COPY BOOT SCRIPTS $ScriptsPath\\ArgosyBoot*.* $BaseDir\"\nWrite-Host \"-------------------\"\n\n#!!!!!!!!!!! ove skripte moraju počimati sa \"ArgosyBoot*\" da znamo da su to te skripte\nCopy-Item $ScriptsPath\\ArgosyBoot*.* $BaseDir -Force\n\n\n#SHORTCUT GENERATOR\n#samo ako shortcut ne postoji\n\n#TODO ODKOMENTORAJ IF !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n#if (Test-Path \"$env:Public\\Desktop\\Argosy.lnk\" -ne $true) {\n\n\tWrite-Host \"CREATING SHORTCUT :: $env:Public\\Desktop\\Argosy_$OctoEnviroment.lnk\"\n\n\t$WshShell = New-Object -comObject WScript.Shell\n\t$Shortcut = $WshShell.CreateShortcut(\"$env:Public\\Desktop\\Argosy_$OctoEnviroment.lnk\")\n\t$Shortcut.TargetPath = \"$BaseDir\\ArgosyBoot.bat\"\n\t$Shortcut.WorkingDirectory = \"$BaseDir\"\n    $Shortcut.IconLocation = \"$Path\\ARGOSY_$OctoEnviroment.ico\"\n\t$Shortcut.Save()\n#}\n\n\n##CLEAN EXEDIR old versions\n\n#install APP folder necemo brisati zasada\n#$dirToClean = Get-ChildItem $Path | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-30) }\n#Write-Host \"CLEAN $dirToClean\"\n\n#Write-Host \"CLEAN ::::\"\n\n#$ConfigFullPathFolder = Join-Path $Path \"_CONFIGS\"\n#Write-Host \"CLEAN CONFIGS : \" $ConfigFullPathFolder\n#Remove-Item -Path $ConfigFullPathFolder -Recurse -Force\n\n#clean old installs\n$old_installs = Get-ChildItem $exeDir | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-7) }\n$installs = Get-ChildItem $exeDir\n\n## minimalno 2 verzije, osim toga 7 dana\nif ($installs.Length -gt 2) {\n\t\n\tWrite-Host \"MORE THAN 2 version in EXEDIR exist, try clean older than 7 days, but preserve at least 2 versions to avoid problems !\"\n\n\t$diffInst = $installs.Length - $old_installs.Length\n\n\tif ($diffInst -gt 2) {\n\n\t\tSet-Location -Path $exeDir\n\n\t\tWrite-Host \"DEBUG DIR LIST :\"\t\n\n\t\tforeach ($exeinstDebug in $installs) {\n\t\t\tWrite-Host $exeinstDebug\n\t\t}\n\n\t\tWrite-Host \"-------------------------------------\"\n\n\t\tforeach ($exeinst in $old_installs) {\n\t\t\tWrite-Host \"DELETING : $exeinst\"\n\t\t\t#Remove-Item $exeinst -ErrorAction SilentlyContinue -Force -Recurse\n\t\t\ttry {\n\t\t\t\t\n\t\t\t\t#ako je lista prazna ponaša se kao lista s jednim blank elementom pa mora ići if, you gota love powershell\n\t\t\t\tif ($exeinst) {Remove-Item $exeinst -Force -Recurse}\n\t\t\t\n\t\t\t} catch {\n\t\t\t\tWrite-Host \"***************  ERROR DELETING : $exeinst ********************************\"\t\n\t\t\t\t$msg = \"MSG : \" + $_.Exception.Message\n\t\t\t\tWrite-Host $msg\n\t\t\t\t$msg = \"ITEM : \" + $_.Exception.ItemName\n\t\t\t\tWrite-Host $msg\n\t\t\t}\n\n\t\t}\n\t} else {\n\t\tWrite-Host \"There is no versions in EXEDIR older than 7 days !\"\n\t}\n\n} else {\n\tWrite-Host \"NO MORE THAN 2 VERSIONS, NO CLEAN !\"\n}\n\n\n"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "f6ca7d22-5e00-4b37-99a6-6d33011ae3f4",
+      "Name": "SideBySideInstall - x86",
+      "Slug": "sidebysideinstall-x86",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "WORKSTATION_X86"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "7fc63475-dffc-4a55-b1de-afc979930657",
+          "Name": "SideBySideInstall - x86",
+          "Slug": "sidebysideinstall-x86",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "PackagesForTenants/ArgosyBASE"
+          ],
+          "Packages": [
+            {
+              "Id": "1304bead-f7d7-40cc-aa97-5b8bf4a58c60",
+              "Name": "",
+              "PackageId": "ArgosyBasex86",
+              "FeedId": "feeds-builtin",
+              "AcquisitionLocation": "Server",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.RunOnServer": "false",
+            "Octopus.Action.Script.ScriptSource": "Package",
+            "Octopus.Action.Script.ScriptFileName": "PS_Scripts\\SideBySideInstall.ps1",
+            "Octopus.Action.Package.FeedId": "feeds-builtin",
+            "Octopus.Action.Package.PackageId": "ArgosyBasex86",
+            "Octopus.Action.Script.ScriptParameters": "-Path #{CustomArgosyDirectory}_x86 -ConfigPath #{ConfigFile} -ExedirName \"EXEDIR_X86\"  -OctoEnviroment #{Octopus.Environment.Name}",
+            "Octopus.Action.Package.DownloadOnTentacle": "False"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "6358b6b3-a48b-4b09-979f-69b624eed641",
+      "Name": "Mirror",
+      "Slug": "mirror",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "MIRROR_MAIN_NODE",
+        "Octopus.Step.ConditionVariableExpression": "#{if MirrorConfig != \"\"}...#{/if}"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "49fbb159-3be7-406d-bde4-64dc82003464",
+          "Name": "Mirror",
+          "Slug": "mirror",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.RunOnServer": "false",
+            "Octopus.Action.Script.ScriptSource": "Inline",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Script.ScriptBody": "[string]$Path = \"#{CustomArgosyDirectory}\"\n[string]$ConfigPath = \"#{MirrorConfig}\"\n#da li pustamo mirror ili ne, dodano jer moramo npr za produkciju radit mirror a za test ne a sve to na isom tenantu i istom targetu pa se nemere preko tagova\n[string]$RunMirror = \"#{MirrorRun}\"\n\nif ([string]::IsNullOrEmpty($Path)) {\nWrite-Host \"Path is empty !!!\"\nexit\n}\nif ([string]::IsNullOrEmpty($ConfigPath)) {\nWrite-Host \"ConfigPath is empty !!!\"\nexit\n}\nif ([string]::IsNullOrEmpty($RunMirror)) {\nWrite-Host \"RunMirror is empty !!!\"\nexit\n}\n\nWrite-Host \"MIRROR :::::::\"\n\nWrite-Host \"ROOT = $Path\"\nWrite-Host \"CONFIG_PATH = $ConfigPath\"\nWrite-Host \"\"\n\nif ($RunMirror -ne \"true\")  {\n\n\tWrite-Host \"NE RADIMO MIRROR OVDJE , po postavci iz OctopusDeploya *************************\"\n\t# prekini izvođenje\n\texit\n}\n\ncd $Path\n\n$BaseDir = Split-Path $Path -Parent\n$SubDir = Split-Path $Path -Leaf\n\n$ConfigFull = Join-Path $Path $ConfigPath\n\n$loadedconf = Get-Content $ConfigFull \n\nForeach ($mir in $loadedconf) {\n    \n\tWrite-Host \"**** TRYING PATH : $mir \"\n\n\tif (Test-Path $mir)  {\n\t\tWrite-Host \"**** PATH EXISTS, CALLING ROBOCOPY \"\n\n\t\trobocopy.exe $BaseDir $mir *.* /MIR /r:2 /w:10 /NP\n\n\t\tWrite-Host \"ROBOCOPY EXIT CODE: $LastExitCode \" \n\n\t\tif ($LastExitCode -lt 4) {\n\n\t\t\t$LastExitCode = 0\n\t\t}\n\t\n\t} else {\n\t\n\t\tWrite-Error \"**** PATH $mir DOES NOT EXIST !!!\"\n\t}\n}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "6db230a5-f289-4510-b186-49c1ed56c32f",
+      "Name": "Deploy IntegracijskiServis",
+      "Slug": "deploy-integracijskiservis",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {},
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "02a05fb2-25c4-407f-b6bf-9876fec805b2",
+          "Name": "Deploy IntegracijskiServis",
+          "Slug": "deploy-integracijskiservis",
+          "ActionType": "Octopus.DeployRelease",
+          "Notes": null,
+          "IsDisabled": true,
+          "CanBeUsedForProjectVersioning": true,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [
+            {
+              "Id": "08400e0c-d046-4cc3-b991-64cfb3b507f0",
+              "Name": "",
+              "PackageId": "Projects-21",
+              "FeedId": "feeds-builtin-releases",
+              "AcquisitionLocation": "NotAcquired",
+              "Properties": {}
+            }
+          ],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.DeployRelease.DeploymentCondition": "IfNewer",
+            "Octopus.Action.DeployRelease.ProjectId": "Projects-21"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "10936ea5-dc6e-4dd2-8017-3af6715d47fe",
+      "Name": "AddOfflineRunner",
+      "Slug": "add-offlinerunner-to-offline-drop",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {},
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "a832faec-9c31-4c1f-852d-86d004d7e554",
+          "Name": "AddOfflineRunner",
+          "Slug": "add-offlinerunner-to-offline-drop",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "TargetType/OFFLINE"
+          ],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.RunOnServer": "true",
+            "Octopus.Action.Script.ScriptSource": "Inline",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Script.ScriptBody": "#{{YourConfiguredDropFolderPath}}\\{{Environment}}\\{{ProjectName}}\\{{Release}}\n#C:\\_OFFLINE_DROP\\MORH\\TEST\\Argosy\\2023.3.15.2-REL-2\n\n$offlineDrop = \"C:\\_OFFLINE_DROP\"\n$templateDir = \"C:\\_OFFLINE_DROP\\_OFFLINERUNNER\"\n$zipFolder = \"C:\\_OFFLINE_DROP\\_ZIPEDOFFLINEDROP\"\n$batFile = \"INSTALL.bat\"\n\nwrite-host $OctopusParameters[\"Octopus.Deployment.Tenant.Name\"]\nwrite-host $OctopusParameters[\"Octopus.Environment.Name\"]\nwrite-host $OctopusParameters[\"Octopus.Project.Name\"]\nwrite-host $OctopusParameters[\"Octopus.Release.Number\"]\n\n\n$relDir = Join-Path -Path $offlineDrop -ChildPath $OctopusParameters[\"Octopus.Deployment.Tenant.Name\"]\n$relDir = Join-Path -Path $relDir -ChildPath $OctopusParameters[\"Octopus.Environment.Name\"]\n$relDir = Join-Path -Path $relDir -ChildPath $OctopusParameters[\"Octopus.Project.Name\"]\n$relDir = Join-Path -Path $relDir -ChildPath $OctopusParameters[\"Octopus.Release.Number\"]\n\nwrite-host \"Release DIR : \" $relDir\n\n\ncd $relDir\n$offRunDir = Join-Path -Path $relDir -ChildPath OfflineRunner\n\nwrite-host \"Copy OfflineRunner\"\ncd $templateDir\nCopy-Item -Path $templateDir -Recurse -Destination $offRunDir\n\nwrite-host \"Copy INSTALL.bat\"\nCopy-Item -Path $batFile -Destination $relDir\n\n#out vars\nSet-OctopusVariable -name \"RelDir\" -value $relDir\n\n$zipName = $OctopusParameters[\"Octopus.Deployment.Tenant.Name\"]\n$zipName = $zipName + \"-\" + $OctopusParameters[\"Octopus.Environment.Name\"]\n$zipName = $zipName + \"-\" + $OctopusParameters[\"Octopus.Project.Name\"]\n$zipName = $zipName + \"-\" + $OctopusParameters[\"Octopus.Release.Number\"]\n$zipName = $zipName + \".zip\"\n\nSet-OctopusVariable -name \"ZipNameFileOnly\" -value $zipName\n\n$zipName = Join-Path -Path $zipFolder -ChildPath $zipName\n\nSet-OctopusVariable -name \"ZipName\" -value $zipName\n\n#write vars to text file for Offline Runner\n#del first\n$octovarsfile = Join-Path -Path $offRunDir -ChildPath \"OctoVars.txt\"\nwrite-host \"Write vars to \" $octovarsfile\nif (Test-Path $octovarsfile) {Remove-Item $octovarsfile}\n\nNew-Item -Path $offRunDir -Name \"OctoVars.txt\" -ItemType \"file\"\nAdd-Content -Path $octovarsfile -Value \"`n\",$OctopusParameters[\"Octopus.Deployment.Tenant.Name\"]\nAdd-Content -Path $octovarsfile -Value \"`n\",$OctopusParameters[\"Octopus.Environment.Name\"]\nAdd-Content -Path $octovarsfile -Value \"`n\",$OctopusParameters[\"Octopus.Project.Name\"]\nAdd-Content -Path $octovarsfile -Value \"`n\",$OctopusParameters[\"Octopus.Release.Number\"]\n\n\n"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "614c8238-c664-4ded-825c-58e8af3b68d0",
+      "Name": "ZIP Offline Drop",
+      "Slug": "zip-offline-drop",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {},
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "2181e7d3-f3fc-4eaa-b3ba-d5db0066dad0",
+          "Name": "ZIP Offline Drop",
+          "Slug": "zip-offline-drop",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "TargetType/OFFLINE"
+          ],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.Script.ScriptBody": "$SourceDirectoryName = $OctopusParameters['SourceDirectoryName']\n$DestinationArchiveFileName = $OctopusParameters['DestinationArchiveFileName']\n$CompressionLevel = $OctopusParameters['CompressionLevel']\n$IncludeBaseDirectory = $OctopusParameters['IncludeBaseDirectory']\n$OverwriteDestination = $OctopusParameters['OverwriteDestination']\n\nif (!$SourceDirectoryName)\n{\n    Write-Error \"No Source Directory name was specified. Please specify the name of the directory to that will be zipped.\"\n    exit -2\n}\n\nif (!$DestinationArchiveFileName)\n{\n    Write-Error \"No Destination Archive File name was specified. Please specify the name of the zip file to be created.\"\n    exit -2\n}\n\nif (($OverwriteDestination) -and (Test-Path $DestinationArchiveFileName))\n{\n    Write-Host \"$DestinationArchiveFileName already exists. Will delete it before we create a new zip file with the same name.\"\n    Remove-Item $DestinationArchiveFileName\n}\n\nWrite-Host \"Creating Zip file $DestinationArchiveFileName with the contents of directory $SourceDirectoryName using compression level $CompressionLevel\"\n\n$assembly = [Reflection.Assembly]::LoadWithPartialName(\"System.IO.Compression.FileSystem\")\n[System.IO.Compression.ZipFile]::CreateFromDirectory($SourceDirectoryName, $DestinationArchiveFileName, $CompressionLevel, $IncludeBaseDirectory)\n",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Template.Id": "ActionTemplates-42",
+            "Octopus.Action.Template.Version": "12",
+            "CompressionLevel": "Optimal",
+            "Octopus.Action.RunOnServer": "true",
+            "IncludeBaseDirectory": "True",
+            "OverwriteDestination": "True",
+            "SourceDirectoryName": "#{Octopus.Action[AddOfflineRunner].Output.RelDir}",
+            "DestinationArchiveFileName": "#{Octopus.Action[AddOfflineRunner].Output.ZipName}"
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "4b567c02-214b-40f5-9baa-e55014110750",
+      "Name": "FTP octopus offline drop zip",
+      "Slug": "ftp-octopus-offline-drop-zip",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {},
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "9d1b0082-8b20-452c-ac72-1b58dda11386",
+          "Name": "FTP octopus offline drop zip",
+          "Slug": "ftp-octopus-offline-drop-zip",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": null,
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [
+            "TargetType/OFFLINE"
+          ],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.RunOnServer": "true",
+            "Octopus.Action.Script.ScriptSource": "Inline",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Script.ScriptBody": "$zipNameFile  = $OctopusParameters[\"Octopus.Action[AddOfflineRunner].Output.ZipNameFileOnly\"]\n$zipPathFile  = $OctopusParameters[\"Octopus.Action[AddOfflineRunner].Output.ZipName\"]\n\n$ftpUplFile = \"ftp://support.laus.hr/octopus/wwwroot/packages/\" + $zipNameFile\n\nwrite-host \"FTP UPLOAD file: \" $zipPathFile\nwrite-host \"FTP UPLOAD TO: \" $ftpUplFile\n\n$client = New-Object System.Net.WebClient\n$client.Credentials = New-Object System.Net.NetworkCredential(\"support.laus.hr|ftp_support\", \"q47Q!3R2sLAhQWQDbXXh\")\n$client.UploadFile($ftpUplFile, $zipPathFile)\n\nwrite-host \"FTP DONE.\""
+          },
+          "Links": {}
+        }
+      ]
+    },
+    {
+      "Id": "29477ead-26df-4eb9-abaf-c96d58c0b335",
+      "Name": "Run SQL-s",
+      "Slug": "run-sql-s",
+      "PackageRequirement": "LetOctopusDecide",
+      "Properties": {
+        "Octopus.Action.TargetRoles": "TERMINAL,SERVER"
+      },
+      "Condition": "Success",
+      "StartTrigger": "StartAfterPrevious",
+      "Actions": [
+        {
+          "Id": "6bf4652c-d0f1-41be-83e3-ef3f70196a50",
+          "Name": "Run SQL-s",
+          "Slug": "run-sql-s",
+          "ActionType": "Octopus.Script",
+          "Notes": null,
+          "IsDisabled": false,
+          "CanBeUsedForProjectVersioning": false,
+          "IsRequired": false,
+          "WorkerPoolId": null,
+          "Container": {
+            "Image": null,
+            "FeedId": null,
+            "GitUrl": null,
+            "Dockerfile": null
+          },
+          "WorkerPoolVariable": "",
+          "Environments": [],
+          "ExcludedEnvironments": [],
+          "Channels": [],
+          "TenantTags": [],
+          "Packages": [],
+          "GitDependencies": [],
+          "Condition": "Success",
+          "Properties": {
+            "Octopus.Action.RunOnServer": "false",
+            "Octopus.Action.Script.ScriptSource": "Inline",
+            "Octopus.Action.Script.Syntax": "PowerShell",
+            "Octopus.Action.Script.ScriptBody": "If ($AutomatskoIzvodenjeSQLZadatak -ne \"true\") { Exit 0 }\n\n$exedirName = \"EXEDIR\"\n\ncd $CustomArgosyDirectory\ncd ..\n\n$LastVer = Get-ChildItem .\\$exedirName\\ | Where-Object -FilterScript {$_.Name -like \"Argosy*\"} | Sort-Object Name -Descending | Select-Object -First 1\n\nwrite-host \"Doing SQL with version : \" $LastVer\n\ncd .\\$exedirName\\$($LastVer.Name)\n\n$html = Join-Path $LastVer.FullName \"AutomatskoIzvodenjeSQLZadatakSqlLOG.html\"\n$log = Join-Path $LastVer.FullName \"AutomatskoIzvodenjeSQLZadatakErrorLOG.txt\"\n\n#Ok, I finally got it. It seems that for security reason the System account can not initiate impersonation.\n#$securePassword = ConvertTo-SecureString $AutomatskoIzvodenjeSQLZadatak_PASS -AsPlainText -Force\n#$credential = New-Object System.Management.Automation.PSCredential $AutomatskoIzvodenjeSQLZadatak_USER, $securePassword\n#$myproc = Start-Process \"Argosy.exe\" -Credential $credential -ArgumentList \"/zadatak:Sistem.AutomatskoIzvodenjeSQLZadatak 120 $html\" -PassThru\n\nwrite-host \"Start Argosy\"\n$myproc = Start-Process \"Argosy.exe\" -ArgumentList \"/zadatak:Sistem.AutomatskoIzvodenjeSQLZadatak 120 $html\" -PassThru\nwrite-host \"Wait Argosy : $myproc\"\n$myproc.WaitForExit()\n\n$noLog = $false;\n$noReport = $false;\n\n\nwrite-host $log\nIf ( [System.IO.File]::Exists($log) ) { \n\tNew-OctopusArtifact $log \n    write-host \"Uploadan artifact !\"\n} \nelse {\n\twrite-host \"Nema ErrorLOG datoteke !\"\n    $noLog = $true;\n}\n\nwrite-host $html\nIf ( [System.IO.File]::Exists($html) ) { \n\tNew-OctopusArtifact $html\n    write-host \"Uploadan artifact !\"\n    } \nelse {\n\twrite-host \"Nema SQLreport datoteke !\"\n    $noReport = $true;\n}\n\n\n#provjere\n#1. ako nema log fajle niti report fajle nesto nevalja\nif ($noLog -and $noReport) {\n\twrite-error \"Nema ni log fajle ni report fajle , nešto nevalja !\"\n}\n\n#2. ako log fajla sadrzi : \"SQL-ERR-CNT\" bilo je gresaka u SQlovima\nIf ($noLog -eq $false)  {\n\t$search = (Get-Content $log | Select-String -Pattern \"SQL-ERR-CNT\").Matches.Success\n    if($search){\n        write-error \"Postoje greske u izvodjenju SQLova, pogledaj HTML report i log datotreku !\"\n    } else {\n        write-host \"Nema gresaka u izvodjenju SQLova.\"\n    }\n}\n\n\n"
+          },
+          "Links": {}
+        }
+      ]
+    }
+  ],
+  "LastSnapshotId": null,
+  "Links": {
+    "Self": "/api/Spaces-1/projects/Projects-2/deploymentprocesses",
+    "Project": "/api/Spaces-1/projects/Projects-2",
+    "Template": "/api/Spaces-1/projects/Projects-2/deploymentprocesses/template{?channel,releaseId}",
+    "Validation": "/api/Spaces-1/projects/Projects-2/deploymentprocesses/validate"
+  }
+}

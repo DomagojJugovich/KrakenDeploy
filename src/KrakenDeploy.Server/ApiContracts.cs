@@ -65,6 +65,13 @@ public sealed record ImportFolderRequest(string FolderPath);
 /// <summary>Request body for POST /api/step-templates/import-octopus-api.</summary>
 public sealed record ImportOctopusApiRequest(string Json);
 
+/// <summary>
+/// Request body for POST /api/projects/{projectId}/process/import-octopus.
+/// When <see cref="Replace"/> is <c>true</c>, existing steps on the project's
+/// process are deleted before the imported steps are appended.
+/// </summary>
+public sealed record ImportDeploymentProcessRequest(string Json, bool Replace);
+
 /// <summary>Parameter definition within a step-template create/update request.</summary>
 public sealed record StepTemplateParameterRequest(
     string Name,

@@ -1091,6 +1091,27 @@ public static class Program
                 return removed ? Results.NoContent() : Results.NotFound();
             }).RequirePermission(Permission.ProcessEdit);
 
+        app.MapPost("/api/projects/{projectId:guid}/process/import-octopus",
+            async (Guid projectId, ImportDeploymentProcessRequest req,
+                ProcessService processSvc, CancellationToken ct) =>
+            {
+                if (string.IsNullOrWhiteSpace(req.Json))
+                {
+                    return Results.BadRequest(new { error = "Json is required." });
+                }
+                try
+                {
+                    var summary = await processSvc
+                        .ImportDeploymentProcessAsync(projectId, req.Json, req.Replace, ct)
+                        .ConfigureAwait(false);
+                    return Results.Ok(summary);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.ProcessEdit);
+
         // ── Release API ──────────────────────────────────────────────────────
         app.MapGet("/api/projects/{projectId:guid}/releases",
             async (Guid projectId, ReleaseService releaseSvc, CancellationToken ct) =>

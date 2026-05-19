@@ -166,6 +166,76 @@ public class ProcessService(IDbContextFactory<KrakenDbContext> dbFactory)
         return true;
     }
 
+    // ── Import ─────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Imports steps from an Octopus <c>deploymentprocess</c> JSON document into
+    /// the project's process. The JSON's <c>Properties</c> bag is preserved
+    /// verbatim on each created <see cref="DeploymentStep.Config"/> — no Octopus
+    /// → Kraken key translation. The runtime step handler decides which shape to
+    /// read (dual-shape strategy).
+    /// </summary>
+    /// <param name="projectId">Target project.</param>
+    /// <param name="json">Raw deploymentprocess JSON.</param>
+    /// <param name="replace">
+    /// When <c>true</c>, existing steps on the project's process are deleted
+    /// before the imported steps are appended. When <c>false</c>, imported steps
+    /// are appended after existing ones (sort orders shifted accordingly).
+    /// </param>
+    public async Task<ImportDeploymentProcessResult> ImportDeploymentProcessAsync(
+        Guid projectId,
+        string json,
+        bool replace,
+        CancellationToken ct = default)
+    {
+        var parsed = OctopusDeploymentProcessImporter.Parse(json);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var process = await GetOrCreateCoreAsync(db, projectId, ct).ConfigureAwait(false);
+
+        int replaced = 0;
+        if (replace)
+        {
+            var existing = await db.DeploymentSteps
+                .Where(s => s.ProcessId == process.Id)
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+            replaced = existing.Count;
+            db.DeploymentSteps.RemoveRange(existing);
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+
+        var startSort = replace
+            ? 0
+            : (await db.DeploymentSteps
+                .Where(s => s.ProcessId == process.Id)
+                .Select(s => (int?)s.SortOrder)
+                .MaxAsync(ct)
+                .ConfigureAwait(false) ?? -1) + 1;
+
+        for (var i = 0; i < parsed.Steps.Count; i++)
+        {
+            var p = parsed.Steps[i];
+            db.DeploymentSteps.Add(new DeploymentStep
+            {
+                ProcessId   = process.Id,
+                Name        = p.Name,
+                StepType    = p.StepType,
+                PackageId   = p.PackageId,
+                TargetRoles = p.TargetRoles,
+                Config      = p.Config,
+                SortOrder   = startSort + i,
+            });
+        }
+
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        return new ImportDeploymentProcessResult(
+            Imported: parsed.Steps.Count,
+            ReplacedExisting: replaced,
+            Warnings: parsed.Warnings);
+    }
+
     // ── Private helpers ────────────────────────────────────────────────────
 
     private static async Task<DeploymentProcess> GetOrCreateCoreAsync(
@@ -187,3 +257,9 @@ public class ProcessService(IDbContextFactory<KrakenDbContext> dbFactory)
         return process;
     }
 }
+
+/// <summary>Summary returned by <see cref="ProcessService.ImportDeploymentProcessAsync"/>.</summary>
+public sealed record ImportDeploymentProcessResult(
+    int Imported,
+    int ReplacedExisting,
+    IReadOnlyList<ImportDeploymentProcessWarning> Warnings);

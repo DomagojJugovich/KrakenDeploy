@@ -24,6 +24,11 @@
                               ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small" />
             </RequirePermission>
             <RequirePermission Permission="Permission.ProcessEdit">
+                <RadzenButton Text="Import from Octopus" Icon="cloud_download"
+                              ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                              Click="OpenImportDeploymentProcessAsync" />
+            </RequirePermission>
+            <RequirePermission Permission="Permission.ProcessEdit">
                 <RadzenButton Text="Add Step" Icon="add_circle_outline"
                               ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
                               Click="OpenAddStepAsync" />
@@ -272,6 +277,31 @@
         if (_project is null) return;
         var process = await ProcessSvc.GetAsync(_project.Id);
         _steps = process?.Steps.OrderBy(s => s.SortOrder).ToList() ?? [];
+    }
+
+    private async Task OpenImportDeploymentProcessAsync()
+    {
+        if (_project is null) return;
+
+        var result = await Dialog.OpenAsync<ImportDeploymentProcessDialog>(
+            "Import Octopus deployment process",
+            new Dictionary<string, object?>
+            {
+                [nameof(ImportDeploymentProcessDialog.ProjectId)] = _project.Id,
+            },
+            new DialogOptions { Width = "780px", CloseDialogOnOverlayClick = false });
+
+        if (result is true)
+        {
+            await ReloadStepsAsync();
+            Notifications.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Success,
+                Summary = "Imported",
+                Detail = "Deployment process imported successfully.",
+                Duration = 4000,
+            });
+        }
     }
 
     private async Task OpenAddStepAsync()

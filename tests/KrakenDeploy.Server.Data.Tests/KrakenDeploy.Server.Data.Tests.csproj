@@ -35,4 +35,10 @@
     <ProjectReference Include="..\..\src\KrakenDeploy.Server.Transport\KrakenDeploy.Server.Transport.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="TestData\*.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>
