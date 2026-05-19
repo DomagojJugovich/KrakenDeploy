@@ -1,6 +1,7 @@
 using System.Xml;
 using System.Xml.Linq;
 using KrakenDeploy.Agent.Deployment.StepHandlers;
+using Microsoft.Web.XmlTransform;
 using Octostache;
 
 namespace KrakenDeploy.Agent.Deployment.Package;
@@ -90,15 +91,13 @@ public sealed class OctopusTentaclePackageStepHandler : IStepHandler
                 workingDir, context.Plan.Variables, context.LogAsync, ct).ConfigureAwait(false);
         }
 
-        // 3. ConfigurationTransforms (XDT) — not yet implemented
+        // 3. ConfigurationTransforms (XDT)
         if (features.Contains("Octopus.Features.ConfigurationTransforms") &&
             ParseBool(context.Step.Config.GetValueOrDefault(
                 "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles")))
         {
-            await context.LogAsync("warning",
-                "Octopus.Features.ConfigurationTransforms is enabled but XDT support has not been implemented yet — " +
-                "transformation files are NOT being applied. Track via Phase B-1 follow-up.")
-                .ConfigureAwait(false);
+            await ApplyConfigurationTransformsAsync(
+                workingDir, context.Plan.EnvironmentName, context.LogAsync, ct).ConfigureAwait(false);
         }
 
         return true;
@@ -298,5 +297,89 @@ public sealed class OctopusTentaclePackageStepHandler : IStepHandler
         var dir = Path.GetDirectoryName(path) ?? string.Empty;
         var baseName = string.Concat(string.Join('.', parts.Take(parts.Length - 2)), ".config");
         return File.Exists(Path.Combine(dir, baseName));
+    }
+
+    /// <summary>
+    /// Applies XDT transforms for the deployment's environment. For each base
+    /// <c>*.config</c> in <paramref name="workingDir"/>, looks for a sibling
+    /// transform file named <c>&lt;base&gt;.&lt;environmentName&gt;.config</c>
+    /// (e.g. <c>Web.Production.config</c> for <c>Web.config</c> when deploying
+    /// to the <c>Production</c> environment). Applies via <c>Microsoft.Web.Xdt</c>
+    /// and saves the transformed result over the base file.
+    /// </summary>
+    private static async Task ApplyConfigurationTransformsAsync(
+        string workingDir,
+        string environmentName,
+        Func<string, string, Task> log,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(environmentName))
+        {
+            await log("info",
+                "ConfigurationTransforms: deployment has no environment name — skipping (auto-find needs <config>.<env>.config).")
+                .ConfigureAwait(false);
+            return;
+        }
+
+        var baseConfigs = Directory
+            .EnumerateFiles(workingDir, "*.config", SearchOption.AllDirectories)
+            .Where(f => !IsXdtTransform(f))
+            .ToList();
+
+        if (baseConfigs.Count == 0)
+        {
+            await log("info", "ConfigurationTransforms: no base *.config files found.")
+                .ConfigureAwait(false);
+            return;
+        }
+
+        var appliedCount = 0;
+        foreach (var baseConfig in baseConfigs)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var dir = Path.GetDirectoryName(baseConfig) ?? string.Empty;
+            var baseName = Path.GetFileNameWithoutExtension(baseConfig); // "Web"
+            var transformFile = Path.Combine(dir, $"{baseName}.{environmentName}.config");
+            if (!File.Exists(transformFile))
+            {
+                continue;
+            }
+
+            try
+            {
+                using var doc = new XmlTransformableDocument { PreserveWhitespace = true };
+                doc.Load(baseConfig);
+                using var xform = new XmlTransformation(transformFile);
+                if (xform.Apply(doc))
+                {
+                    doc.Save(baseConfig);
+                    appliedCount++;
+                    await log("info",
+                        $"ConfigurationTransforms: applied '{Path.GetRelativePath(workingDir, transformFile)}' to '{Path.GetRelativePath(workingDir, baseConfig)}'.")
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    await log("warning",
+                        $"ConfigurationTransforms: transform '{Path.GetRelativePath(workingDir, transformFile)}' did not apply to '{Path.GetRelativePath(workingDir, baseConfig)}' (XDT engine returned false).")
+                        .ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                await log("error",
+                    $"ConfigurationTransforms: failed to apply '{Path.GetRelativePath(workingDir, transformFile)}': {ex.Message}")
+                    .ConfigureAwait(false);
+                throw;
+            }
+        }
+
+        if (appliedCount == 0)
+        {
+            await log("info",
+                $"ConfigurationTransforms: no transforms matched environment '{environmentName}'.")
+                .ConfigureAwait(false);
+        }
     }
 }

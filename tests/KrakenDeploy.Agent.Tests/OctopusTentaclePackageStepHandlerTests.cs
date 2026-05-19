@@ -295,19 +295,101 @@ public sealed class OctopusTentaclePackageStepHandlerTests : IDisposable
     // ── ConfigurationTransforms (deferred) ────────────────────────────────
 
     [Fact]
-    public async Task ConfigurationTransforms_warns_about_unimplemented_xdt_support()
+    public async Task ConfigurationTransforms_applies_env_specific_transform_to_base_config()
     {
-        var (extractDir, _) = StageExtractedPackage();
+        // Web.config + Web.Production.config — when deploying to Production,
+        // the transform should rewrite Web.config in place.
+        var (extractDir, configPath) = StageExtractedPackageWithConfig("""
+            <?xml version="1.0" encoding="utf-8"?>
+            <configuration>
+              <appSettings>
+                <add key="ServerName" value="localhost" />
+                <add key="Other" value="keep" />
+              </appSettings>
+            </configuration>
+            """);
+
+        // Write the XDT transform alongside the base file.
+        var transformPath = Path.Combine(extractDir, "Web.Production.config");
+        await File.WriteAllTextAsync(transformPath, """
+            <?xml version="1.0"?>
+            <configuration xmlns:xdt="http://schemas.microsoft.com/XML-Document-Transform">
+              <appSettings>
+                <add key="ServerName" value="prod-server"
+                     xdt:Transform="SetAttributes" xdt:Locator="Match(key)" />
+              </appSettings>
+            </configuration>
+            """);
+
         var config = new Dictionary<string, string>
         {
             ["Octopus.Action.EnabledFeatures"] = "Octopus.Features.ConfigurationTransforms",
             ["Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles"] = "True",
         };
 
-        var result = await Run(config, extractDir);
+        var result = await Run(config, extractDir, environmentName: "Production");
 
         result.Success.Should().BeTrue();
-        result.Logs.Should().Contain(l => l.Level == "warning" && l.Message.Contains("XDT"));
+        var content = await File.ReadAllTextAsync(configPath);
+        content.Should().Contain(@"value=""prod-server""");
+        content.Should().Contain(@"value=""keep""", "untouched entries pass through");
+        result.Logs.Should().Contain(l => l.Level == "info" && l.Message.Contains("applied"));
+    }
+
+    [Fact]
+    public async Task ConfigurationTransforms_skips_when_no_env_transform_exists_for_environment()
+    {
+        // Web.config + Web.Production.config, but we deploy to Staging — nothing should change.
+        var (extractDir, configPath) = StageExtractedPackageWithConfig("""
+            <?xml version="1.0" encoding="utf-8"?>
+            <configuration>
+              <appSettings>
+                <add key="ServerName" value="localhost" />
+              </appSettings>
+            </configuration>
+            """);
+        var originalContent = await File.ReadAllTextAsync(configPath);
+
+        await File.WriteAllTextAsync(Path.Combine(extractDir, "Web.Production.config"), """
+            <?xml version="1.0"?>
+            <configuration xmlns:xdt="http://schemas.microsoft.com/XML-Document-Transform">
+              <appSettings>
+                <add key="ServerName" value="prod" xdt:Transform="SetAttributes" xdt:Locator="Match(key)" />
+              </appSettings>
+            </configuration>
+            """);
+
+        var config = new Dictionary<string, string>
+        {
+            ["Octopus.Action.EnabledFeatures"] = "Octopus.Features.ConfigurationTransforms",
+            ["Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles"] = "True",
+        };
+
+        var result = await Run(config, extractDir, environmentName: "Staging");
+
+        result.Success.Should().BeTrue();
+        (await File.ReadAllTextAsync(configPath)).Should().Be(originalContent,
+            "no Staging-named transform exists, so Web.config is untouched");
+        result.Logs.Should().Contain(l => l.Message.Contains("no transforms matched"));
+    }
+
+    [Fact]
+    public async Task ConfigurationTransforms_info_log_when_no_base_config_files_exist()
+    {
+        // Stage an empty extract dir (no *.config files at all).
+        var extractDir = Path.Combine(_root, "extracted");
+        Directory.CreateDirectory(extractDir);
+
+        var config = new Dictionary<string, string>
+        {
+            ["Octopus.Action.EnabledFeatures"] = "Octopus.Features.ConfigurationTransforms",
+            ["Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles"] = "True",
+        };
+
+        var result = await Run(config, extractDir, environmentName: "Production");
+
+        result.Success.Should().BeTrue();
+        result.Logs.Should().Contain(l => l.Message.Contains("no base *.config files"));
     }
 
     // ── Combined feature exercise (mirrors a real Argosy step) ────────────
@@ -344,8 +426,11 @@ public sealed class OctopusTentaclePackageStepHandlerTests : IDisposable
         var deployedConfig = await File.ReadAllTextAsync(Path.Combine(customDir, "Web.config"));
         deployedConfig.Should().Contain(@"value=""prod-srv""",
             "ConfigurationVariables should have substituted in the copied destination");
-        result.Logs.Should().Contain(l => l.Message.Contains("XDT") && l.Level == "warning",
-            "transforms are flagged as not-yet-implemented");
+        // No <env>-named transform exists for the default Test environment, so
+        // the transforms pass logs an info "no transforms matched" rather than
+        // applying anything.
+        result.Logs.Should().Contain(l =>
+            l.Message.Contains("no transforms matched") && l.Level == "info");
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
@@ -379,10 +464,11 @@ public sealed class OctopusTentaclePackageStepHandlerTests : IDisposable
     private static async Task<(bool Success, List<(string Level, string Message)> Logs)> Run(
         Dictionary<string, string> config,
         string extractDir,
-        Dictionary<string, string>? variables = null)
+        Dictionary<string, string>? variables = null,
+        string environmentName = "Test")
     {
         var logs = new List<(string Level, string Message)>();
-        var context = Context(config, extractDir, logs, variables);
+        var context = Context(config, extractDir, logs, variables, environmentName);
         var result = await new OctopusTentaclePackageStepHandler()
             .HandleAsync(context, CancellationToken.None);
         return (result, logs);
@@ -392,11 +478,12 @@ public sealed class OctopusTentaclePackageStepHandlerTests : IDisposable
         Dictionary<string, string> config,
         string extractDir,
         List<(string Level, string Message)> logs,
-        Dictionary<string, string>? variables = null)
+        Dictionary<string, string>? variables = null,
+        string environmentName = "Test")
     {
         var plan = new DeploymentPlan(
             DeploymentId: Guid.NewGuid(),
-            EnvironmentName: "Test",
+            EnvironmentName: environmentName,
             Steps: [],
             Variables: new ReadOnlyDictionary<string, string>(
                 variables ?? new Dictionary<string, string>()),
