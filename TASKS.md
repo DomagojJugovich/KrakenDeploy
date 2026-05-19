@@ -837,8 +837,8 @@ Strategy is **dual-shape**: the importer preserves the Octopus property bag verb
 
 ##### Phase B-3 follow-ups (not in B-3 scope)
 
-- [ ] **`Octopus.IIS` webApplication branch** — extend `IisScriptGenerator` to ensure-or-create a sub-application under an existing site (`Octopus.Action.IISWebSite.WebApplication.*` keys). Currently the mapper throws a clear "not yet supported" error.
-- [ ] **`Octopus.IIS` virtualDirectory branch** — same, for virtual directories (`Octopus.Action.IISWebSite.VirtualDirectory.*` keys).
+- [x] **`Octopus.IIS` webApplication branch** — `KrakenIisWebApplicationConfig` (Contracts) + `IisScriptGenerator.GenerateWebApplication`; `OctopusIisConfig.MapWebApplication` reads `Octopus.Action.IISWebSite.WebApplication.*` (parent site, virtual path, own app pool) + `Octopus.Action.Package.CustomInstallationDirectory` for physical path; handler dispatches via `MappingResult.WebApplication`.
+- [x] **`Octopus.IIS` virtualDirectory branch** — `KrakenIisVirtualDirectoryConfig` (Contracts) + `IisScriptGenerator.GenerateVirtualDirectory`; `OctopusIisConfig.MapVirtualDirectory` reads `Octopus.Action.IISWebSite.VirtualDirectory.{WebSiteName,VirtualPath,CreateOrUpdate}`; no app pool (inherited from parent).
 - [ ] **Auth toggle support in `KrakenIisConfig`** — extend the strongly-typed config to honour `EnableAnonymousAuthentication` / `EnableBasicAuthentication` / `EnableWindowsAuthentication`. Mapper currently warns and falls through to IIS defaults.
 
 ##### Already covered / deferred

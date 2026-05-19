@@ -67,12 +67,12 @@ public sealed class OctopusIisConfigTests
         var result = OctopusIisConfig.MapToKrakenIisConfig(config,
             octostache: PassThrough, fallbackWebRoot: @"C:\fallback");
 
-        result.Config.SiteName.Should().Be("WebArgosy_Prod");
-        result.Config.WebRoot.Should().Be(@"C:\Apps\WebArgosy_Prod");
-        result.Config.AppPool.Name.Should().Be("WebArgosy_Prod_Pool");
-        result.Config.AppPool.RuntimeVersion.Should().Be("v4.0");
+        result.WebSite!.SiteName.Should().Be("WebArgosy_Prod");
+        result.WebSite!.WebRoot.Should().Be(@"C:\Apps\WebArgosy_Prod");
+        result.WebSite!.AppPool.Name.Should().Be("WebArgosy_Prod_Pool");
+        result.WebSite!.AppPool.RuntimeVersion.Should().Be("v4.0");
         // Octopus.IIS shape always lands as InPlace deploy — atomic-swap is a Kraken extra.
-        result.Config.Deploy.IsAtomicSwap.Should().BeFalse();
+        result.WebSite!.Deploy.IsAtomicSwap.Should().BeFalse();
     }
 
     [Fact]
@@ -86,7 +86,7 @@ public sealed class OctopusIisConfigTests
         var result = OctopusIisConfig.MapToKrakenIisConfig(config,
             octostache: PassThrough, fallbackWebRoot: @"C:\extract\xyz");
 
-        result.Config.WebRoot.Should().Be(@"C:\extract\xyz");
+        result.WebSite!.WebRoot.Should().Be(@"C:\extract\xyz");
     }
 
     [Fact]
@@ -102,8 +102,8 @@ public sealed class OctopusIisConfigTests
         var result = OctopusIisConfig.MapToKrakenIisConfig(config,
             octostache: vars.Evaluate, fallbackWebRoot: @"C:\fallback");
 
-        result.Config.SiteName.Should().Be("Site_Production");
-        result.Config.WebRoot.Should().Be(@"C:\Apps\Site_Production");
+        result.WebSite!.SiteName.Should().Be("Site_Production");
+        result.WebSite!.WebRoot.Should().Be(@"C:\Apps\Site_Production");
     }
 
     [Fact]
@@ -120,9 +120,9 @@ public sealed class OctopusIisConfigTests
         var result = OctopusIisConfig.MapToKrakenIisConfig(config,
             octostache: PassThrough, fallbackWebRoot: @"C:\fallback");
 
-        result.Config.AppPool.IdentityType.Should().Be("SpecificUser");
-        result.Config.AppPool.Username.Should().Be("DOMAIN\\Svc");
-        result.Config.AppPool.Password.Should().Be("Sup3rs3cret");
+        result.WebSite!.AppPool.IdentityType.Should().Be("SpecificUser");
+        result.WebSite!.AppPool.Username.Should().Be("DOMAIN\\Svc");
+        result.WebSite!.AppPool.Password.Should().Be("Sup3rs3cret");
     }
 
     [Fact]
@@ -142,7 +142,7 @@ public sealed class OctopusIisConfigTests
         var result = OctopusIisConfig.MapToKrakenIisConfig(config,
             octostache: PassThrough, fallbackWebRoot: @"C:\fallback");
 
-        result.Config.AppPool.Password.Should().BeNullOrEmpty(
+        result.WebSite!.AppPool.Password.Should().BeNullOrEmpty(
             "the sensitive-value envelope is metadata, not a real password");
         result.Warnings.Should().Contain(w => w.Contains("sensitive-value envelope"));
     }
@@ -164,9 +164,9 @@ public sealed class OctopusIisConfigTests
         var result = OctopusIisConfig.MapToKrakenIisConfig(config,
             octostache: PassThrough, fallbackWebRoot: @"C:\fallback");
 
-        result.Config.Authentication.AnonymousEnabled.Should().BeFalse();
-        result.Config.Authentication.BasicEnabled.Should().BeTrue();
-        result.Config.Authentication.WindowsEnabled.Should().BeTrue();
+        result.WebSite!.Authentication.AnonymousEnabled.Should().BeFalse();
+        result.WebSite!.Authentication.BasicEnabled.Should().BeTrue();
+        result.WebSite!.Authentication.WindowsEnabled.Should().BeTrue();
     }
 
     [Fact]
@@ -181,9 +181,9 @@ public sealed class OctopusIisConfigTests
         var result = OctopusIisConfig.MapToKrakenIisConfig(config,
             octostache: PassThrough, fallbackWebRoot: @"C:\fallback");
 
-        result.Config.Authentication.AnonymousEnabled.Should().BeTrue("Kraken default");
-        result.Config.Authentication.BasicEnabled.Should().BeFalse("Kraken default");
-        result.Config.Authentication.WindowsEnabled.Should().BeFalse("Kraken default");
+        result.WebSite!.Authentication.AnonymousEnabled.Should().BeTrue("Kraken default");
+        result.WebSite!.Authentication.BasicEnabled.Should().BeFalse("Kraken default");
+        result.WebSite!.Authentication.WindowsEnabled.Should().BeFalse("Kraken default");
     }
 
     // ── Bindings ──────────────────────────────────────────────────────────
@@ -204,8 +204,8 @@ public sealed class OctopusIisConfigTests
         var result = OctopusIisConfig.MapToKrakenIisConfig(config,
             octostache: PassThrough, fallbackWebRoot: @"C:\fallback");
 
-        result.Config.Bindings.Should().HaveCount(1);
-        var b = result.Config.Bindings[0];
+        result.WebSite!.Bindings.Should().HaveCount(1);
+        var b = result.WebSite!.Bindings[0];
         b.Protocol.Should().Be("http");
         b.Port.Should().Be(80);
         b.Hostname.Should().Be("app.example.com");
@@ -229,8 +229,8 @@ public sealed class OctopusIisConfigTests
         var result = OctopusIisConfig.MapToKrakenIisConfig(config,
             octostache: PassThrough, fallbackWebRoot: @"C:\fallback");
 
-        result.Config.Bindings.Should().HaveCount(1);
-        result.Config.Bindings[0].Hostname.Should().Be("keep");
+        result.WebSite!.Bindings.Should().HaveCount(1);
+        result.WebSite!.Bindings[0].Hostname.Should().Be("keep");
     }
 
     [Fact]
@@ -252,13 +252,13 @@ public sealed class OctopusIisConfigTests
         var disabledVars = new VariableDictionary { ["SSLEnabled"] = "false" };
         var disabled = OctopusIisConfig.MapToKrakenIisConfig(config,
             octostache: disabledVars.Evaluate, fallbackWebRoot: @"C:\fallback");
-        disabled.Config.Bindings.Should().BeEmpty(
+        disabled.WebSite!.Bindings.Should().BeEmpty(
             "the Octostache conditional resolves to False, so the binding is disabled");
 
         var enabledVars = new VariableDictionary { ["SSLEnabled"] = "true" };
         var enabled = OctopusIisConfig.MapToKrakenIisConfig(config,
             octostache: enabledVars.Evaluate, fallbackWebRoot: @"C:\fallback");
-        enabled.Config.Bindings.Should().HaveCount(1);
+        enabled.WebSite!.Bindings.Should().HaveCount(1);
     }
 
     [Fact]
@@ -277,8 +277,8 @@ public sealed class OctopusIisConfigTests
         var result = OctopusIisConfig.MapToKrakenIisConfig(config,
             octostache: PassThrough, fallbackWebRoot: @"C:\fallback");
 
-        result.Config.Bindings.Should().HaveCount(1);
-        var b = result.Config.Bindings[0];
+        result.WebSite!.Bindings.Should().HaveCount(1);
+        var b = result.WebSite!.Bindings[0];
         b.Protocol.Should().Be("https");
         b.Port.Should().Be(443);
         b.CertThumbprint.Should().Be("ABCDEF1234");
@@ -289,37 +289,226 @@ public sealed class OctopusIisConfigTests
     // ── Unsupported deployment types ──────────────────────────────────────
 
     [Fact]
-    public void MapToKrakenIisConfig_throws_on_webApplication_deployment_type()
+    public void MapToKrakenIisConfig_maps_webApplication_into_KrakenIisWebApplicationConfig()
+    {
+        // Mirrors the real WebArgosy "ARR SITE Virtual Folder APP" step.
+        var config = new Dictionary<string, string>
+        {
+            [OctopusIisConfigKeys.DeploymentType]                                = "webApplication",
+            [OctopusIisConfigKeys.WebApplicationCreateOrUpdate]                  = "True",
+            [OctopusIisConfigKeys.WebApplicationWebSiteName]                     = "WebArgosyOD_#{Octopus.Environment.Name}_ARR",
+            [OctopusIisConfigKeys.WebApplicationVirtualPath]                     = "#{ArrVirtualPath}",
+            [OctopusIisConfigKeys.WebApplicationApplicationPoolName]             = "WebArgosyOD#{Octopus.Environment.Name}_ARR",
+            [OctopusIisConfigKeys.WebApplicationApplicationPoolFrameworkVersion] = "v4.0",
+            [OctopusIisConfigKeys.WebApplicationApplicationPoolIdentityType]     = "ApplicationPoolIdentity",
+            [OctopusIisConfigKeys.PackageCustomInstallationDirectory] =
+                @"C:\Apps\WebArgosy_#{Octopus.Environment.Name}_ARR\#{ArrVirtualPath}",
+        };
+
+        var vars = new VariableDictionary
+        {
+            ["Octopus.Environment.Name"] = "Production",
+            ["ArrVirtualPath"] = "/ArrWeb",
+        };
+
+        var result = OctopusIisConfig.MapToKrakenIisConfig(
+            config, vars.Evaluate, fallbackWebRoot: @"C:\fallback");
+
+        result.WebApplication.Should().NotBeNull();
+        result.WebSite.Should().BeNull();
+        result.VirtualDirectory.Should().BeNull();
+
+        var w = result.WebApplication!;
+        w.ParentSiteName.Should().Be("WebArgosyOD_Production_ARR");
+        w.VirtualPath.Should().Be("/ArrWeb");
+        w.PhysicalPath.Should().Be(@"C:\Apps\WebArgosy_Production_ARR\/ArrWeb");
+        // Real Octopus template has no underscore between "OD" and the
+        // Environment.Name placeholder, so the substituted value is run-on.
+        w.AppPool.Name.Should().Be("WebArgosyODProduction_ARR");
+        w.AppPool.RuntimeVersion.Should().Be("v4.0");
+        w.AppPool.IdentityType.Should().Be("ApplicationPoolIdentity");
+    }
+
+    [Fact]
+    public void MapToKrakenIisConfig_webApplication_missing_parent_site_throws()
     {
         var config = new Dictionary<string, string>
         {
             [OctopusIisConfigKeys.DeploymentType] = "webApplication",
-            [OctopusIisConfigKeys.WebApplicationCreateOrUpdate] = "True",
-            [OctopusIisConfigKeys.WebApplicationWebSiteName] = "ParentSite",
             [OctopusIisConfigKeys.WebApplicationVirtualPath] = "/sub",
+            // no WebSiteName
         };
 
         var act = () => OctopusIisConfig.MapToKrakenIisConfig(config,
-            octostache: PassThrough, fallbackWebRoot: @"C:\fallback");
+            PassThrough, fallbackWebRoot: @"C:\fallback");
 
         act.Should().Throw<InvalidOperationException>()
-            .WithMessage("*webApplication*");
+            .WithMessage("*WebApplication.WebSiteName*");
     }
 
     [Fact]
-    public void MapToKrakenIisConfig_throws_on_virtualDirectory_deployment_type()
+    public void MapToKrakenIisConfig_webApplication_missing_virtual_path_throws()
+    {
+        var config = new Dictionary<string, string>
+        {
+            [OctopusIisConfigKeys.DeploymentType] = "webApplication",
+            [OctopusIisConfigKeys.WebApplicationWebSiteName] = "ParentSite",
+            // no VirtualPath
+        };
+
+        var act = () => OctopusIisConfig.MapToKrakenIisConfig(config,
+            PassThrough, fallbackWebRoot: @"C:\fallback");
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*WebApplication.VirtualPath*");
+    }
+
+    [Fact]
+    public void MapToKrakenIisConfig_webApplication_sensitive_password_envelope_warns_and_drops()
+    {
+        var config = new Dictionary<string, string>
+        {
+            [OctopusIisConfigKeys.DeploymentType]                                = "webApplication",
+            [OctopusIisConfigKeys.WebApplicationWebSiteName]                     = "Parent",
+            [OctopusIisConfigKeys.WebApplicationVirtualPath]                     = "/sub",
+            [OctopusIisConfigKeys.WebApplicationApplicationPoolIdentityType]     = "SpecificUser",
+            [OctopusIisConfigKeys.WebApplicationApplicationPoolUsername]         = "DOMAIN\\Svc",
+            [OctopusIisConfigKeys.WebApplicationApplicationPoolPassword]         =
+                "{\"HasValue\":true,\"NewValue\":null,\"Hint\":null}",
+        };
+
+        var result = OctopusIisConfig.MapToKrakenIisConfig(
+            config, PassThrough, fallbackWebRoot: @"C:\fallback");
+
+        result.WebApplication!.AppPool.Password.Should().BeNull();
+        result.Warnings.Should().Contain(w =>
+            w.Contains("WebApplication.ApplicationPoolPassword") &&
+            w.Contains("sensitive-value envelope"));
+    }
+
+    [Fact]
+    public void MapToKrakenIisConfig_maps_virtualDirectory_into_KrakenIisVirtualDirectoryConfig()
+    {
+        var config = new Dictionary<string, string>
+        {
+            [OctopusIisConfigKeys.DeploymentType]                = "virtualDirectory",
+            [OctopusIisConfigKeys.VirtualDirectoryCreateOrUpdate] = "True",
+            [OctopusIisConfigKeys.VirtualDirectoryWebSiteName]    = "WebArgosyOD_Production_ARR",
+            [OctopusIisConfigKeys.VirtualDirectoryVirtualPath]    = "/static-content",
+            [OctopusIisConfigKeys.PackageCustomInstallationDirectory] = @"C:\static-content",
+        };
+
+        var result = OctopusIisConfig.MapToKrakenIisConfig(
+            config, PassThrough, fallbackWebRoot: @"C:\fallback");
+
+        result.VirtualDirectory.Should().NotBeNull();
+        result.WebSite.Should().BeNull();
+        result.WebApplication.Should().BeNull();
+
+        var v = result.VirtualDirectory!;
+        v.ParentSiteName.Should().Be("WebArgosyOD_Production_ARR");
+        v.VirtualPath.Should().Be("/static-content");
+        v.PhysicalPath.Should().Be(@"C:\static-content");
+    }
+
+    [Fact]
+    public void MapToKrakenIisConfig_virtualDirectory_missing_parent_site_throws()
     {
         var config = new Dictionary<string, string>
         {
             [OctopusIisConfigKeys.DeploymentType] = "virtualDirectory",
-            [OctopusIisConfigKeys.VirtualDirectoryCreateOrUpdate] = "True",
+            [OctopusIisConfigKeys.VirtualDirectoryVirtualPath] = "/sub",
+            // no WebSiteName
         };
 
         var act = () => OctopusIisConfig.MapToKrakenIisConfig(config,
-            octostache: PassThrough, fallbackWebRoot: @"C:\fallback");
+            PassThrough, fallbackWebRoot: @"C:\fallback");
 
         act.Should().Throw<InvalidOperationException>()
-            .WithMessage("*virtualDirectory*");
+            .WithMessage("*VirtualDirectory.WebSiteName*");
+    }
+
+    [Fact]
+    public void MapToKrakenIisConfig_virtualDirectory_missing_virtual_path_throws()
+    {
+        var config = new Dictionary<string, string>
+        {
+            [OctopusIisConfigKeys.DeploymentType] = "virtualDirectory",
+            [OctopusIisConfigKeys.VirtualDirectoryWebSiteName] = "Parent",
+            // no VirtualPath
+        };
+
+        var act = () => OctopusIisConfig.MapToKrakenIisConfig(config,
+            PassThrough, fallbackWebRoot: @"C:\fallback");
+
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*VirtualDirectory.VirtualPath*");
+    }
+
+    // ── Script-generation smoke tests for the new branches ────────────────
+
+    [Fact]
+    public void GenerateWebApplication_emits_New_WebApplication_call()
+    {
+        var cfg = new KrakenIisWebApplicationConfig
+        {
+            ParentSiteName = "ParentSite",
+            VirtualPath = "/sub",
+            PhysicalPath = @"C:\Apps\Sub",
+            AppPool = new KrakenIisAppPool { Name = "SubPool", RuntimeVersion = "v4.0" },
+        };
+
+        var script = IisScriptGenerator.GenerateWebApplication(cfg, @"C:\extract", Guid.NewGuid());
+
+        script.Should().Contain("$siteName     = 'ParentSite'");
+        script.Should().Contain("$virtualPath  = '/sub'");
+        script.Should().Contain("$physicalPath = 'C:\\Apps\\Sub'");
+        script.Should().Contain("$appPoolName  = 'SubPool'");
+        script.Should().Contain("New-WebApplication -Site $siteName");
+        // The script references $siteName as a PowerShell variable — substitution
+        // happens at run time, not generation time.
+        script.Should().Contain("Parent site '$siteName' does not exist",
+            "the script must guard against missing parent sites");
+    }
+
+    [Fact]
+    public void GenerateWebApplication_normalises_leading_slash_on_virtualPath()
+    {
+        // Input "sub" (no slash) — expect "/sub" in the emitted script.
+        var cfg = new KrakenIisWebApplicationConfig
+        {
+            ParentSiteName = "ParentSite",
+            VirtualPath = "sub",
+            PhysicalPath = @"C:\Apps\Sub",
+            AppPool = new KrakenIisAppPool { Name = "P", RuntimeVersion = "v4.0" },
+        };
+
+        var script = IisScriptGenerator.GenerateWebApplication(cfg, @"C:\extract", Guid.NewGuid());
+        script.Should().Contain("$virtualPath  = '/sub'");
+    }
+
+    [Fact]
+    public void GenerateVirtualDirectory_emits_New_WebVirtualDirectory_call()
+    {
+        var cfg = new KrakenIisVirtualDirectoryConfig
+        {
+            ParentSiteName = "ParentSite",
+            VirtualPath = "/static-content",
+            PhysicalPath = @"C:\static",
+        };
+
+        var script = IisScriptGenerator.GenerateVirtualDirectory(cfg, @"C:\extract", Guid.NewGuid());
+
+        script.Should().Contain("$siteName     = 'ParentSite'");
+        script.Should().Contain("$virtualPath  = '/static-content'");
+        script.Should().Contain("$physicalPath = 'C:\\static'");
+        script.Should().Contain("New-WebVirtualDirectory -Site $siteName");
+        // The script references $siteName as a PowerShell variable — substitution
+        // happens at run time, not generation time.
+        script.Should().Contain("Parent site '$siteName' does not exist",
+            "the script must guard against missing parent sites");
+        // Virtual directories don't have their own app pool — make sure we don't emit one.
+        script.Should().NotContain("New-WebAppPool");
     }
 
     [Fact]

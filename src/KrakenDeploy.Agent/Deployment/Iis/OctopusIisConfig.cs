@@ -30,10 +30,20 @@ public static class OctopusIisConfigKeys
     public const string StartWebSite                    = IisPrefix + "StartWebSite";
     public const string StartApplicationPool            = IisPrefix + "StartApplicationPool";
 
+    // ── WebApplication branch (DeploymentType=webApplication) ─────────────────
     public const string WebApplicationCreateOrUpdate    = IisPrefix + "WebApplication.CreateOrUpdate";
     public const string WebApplicationWebSiteName       = IisPrefix + "WebApplication.WebSiteName";
     public const string WebApplicationVirtualPath       = IisPrefix + "WebApplication.VirtualPath";
+    public const string WebApplicationApplicationPoolName             = IisPrefix + "WebApplication.ApplicationPoolName";
+    public const string WebApplicationApplicationPoolFrameworkVersion = IisPrefix + "WebApplication.ApplicationPoolFrameworkVersion";
+    public const string WebApplicationApplicationPoolIdentityType     = IisPrefix + "WebApplication.ApplicationPoolIdentityType";
+    public const string WebApplicationApplicationPoolUsername         = IisPrefix + "WebApplication.ApplicationPoolUsername";
+    public const string WebApplicationApplicationPoolPassword         = IisPrefix + "WebApplication.ApplicationPoolPassword";
+
+    // ── VirtualDirectory branch (DeploymentType=virtualDirectory) ─────────────
     public const string VirtualDirectoryCreateOrUpdate  = IisPrefix + "VirtualDirectory.CreateOrUpdate";
+    public const string VirtualDirectoryWebSiteName     = IisPrefix + "VirtualDirectory.WebSiteName";
+    public const string VirtualDirectoryVirtualPath     = IisPrefix + "VirtualDirectory.VirtualPath";
 
     public const string PackageCustomInstallationDirectory = PkgPrefix + "CustomInstallationDirectory";
 }
@@ -86,16 +96,37 @@ public static class OctopusIisConfig
         ArgumentNullException.ThrowIfNull(config);
         ArgumentNullException.ThrowIfNull(octostache);
 
+        var deploymentType = config.GetValueOrDefault(OctopusIisConfigKeys.DeploymentType, "webSite");
+
+        if (deploymentType.Equals("webApplication", StringComparison.OrdinalIgnoreCase))
+        {
+            return MapWebApplication(config, octostache, fallbackWebRoot);
+        }
+        if (deploymentType.Equals("virtualDirectory", StringComparison.OrdinalIgnoreCase))
+        {
+            return MapVirtualDirectory(config, octostache, fallbackWebRoot);
+        }
+
+        // Default branch — webSite (or any unknown value, which we treat as webSite
+        // with a defensive warning so the operator notices).
+        return MapWebSite(config, octostache, fallbackWebRoot, deploymentType);
+    }
+
+    // ── webSite ──────────────────────────────────────────────────────────────
+
+    private static MappingResult MapWebSite(
+        IReadOnlyDictionary<string, string> config,
+        Func<string, string> octostache,
+        string fallbackWebRoot,
+        string sourceDeploymentType)
+    {
         var warnings = new List<string>();
 
-        var deploymentType = config.GetValueOrDefault(OctopusIisConfigKeys.DeploymentType, "webSite");
-        if (!deploymentType.Equals("webSite", StringComparison.OrdinalIgnoreCase))
+        if (!sourceDeploymentType.Equals("webSite", StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException(
-                $"Octopus.IIS DeploymentType '{deploymentType}' is not yet supported. " +
-                "Only DeploymentType=\"webSite\" maps to Kraken.IIS in this version; " +
-                "webApplication and virtualDirectory branches need additional Kraken-side modelling " +
-                "(see TASKS.md Phase B-3 follow-ups).");
+            warnings.Add(
+                $"Octopus.IIS DeploymentType '{sourceDeploymentType}' is not recognised — " +
+                "treating as 'webSite'. Known values: webSite / webApplication / virtualDirectory.");
         }
 
         var siteName = SubstituteOrEmpty(config, OctopusIisConfigKeys.WebSiteName, octostache);
@@ -179,10 +210,157 @@ public static class OctopusIisConfig
             krakenConfig[KrakenIisConfigKeys.Bindings] = bindingLines;
         }
 
-        return new MappingResult(KrakenIisConfig.Parse(krakenConfig), warnings);
+        return MappingResult.ForWebSite(KrakenIisConfig.Parse(krakenConfig), warnings);
     }
 
-    public sealed record MappingResult(KrakenIisConfig Config, IReadOnlyList<string> Warnings);
+    // ── webApplication ───────────────────────────────────────────────────────
+
+    private static MappingResult MapWebApplication(
+        IReadOnlyDictionary<string, string> config,
+        Func<string, string> octostache,
+        string fallbackInstallRoot)
+    {
+        var warnings = new List<string>();
+
+        var parentSite = SubstituteOrEmpty(config, OctopusIisConfigKeys.WebApplicationWebSiteName, octostache);
+        if (string.IsNullOrWhiteSpace(parentSite))
+        {
+            throw new InvalidOperationException(
+                $"Octopus.IIS DeploymentType=webApplication is missing required key " +
+                $"'{OctopusIisConfigKeys.WebApplicationWebSiteName}'.");
+        }
+
+        var virtualPath = SubstituteOrEmpty(config, OctopusIisConfigKeys.WebApplicationVirtualPath, octostache);
+        if (string.IsNullOrWhiteSpace(virtualPath))
+        {
+            throw new InvalidOperationException(
+                $"Octopus.IIS DeploymentType=webApplication is missing required key " +
+                $"'{OctopusIisConfigKeys.WebApplicationVirtualPath}'.");
+        }
+
+        var customDir = SubstituteOrEmpty(config,
+            OctopusIisConfigKeys.PackageCustomInstallationDirectory, octostache);
+        var physicalPath = string.IsNullOrWhiteSpace(customDir) ? fallbackInstallRoot : customDir;
+
+        // App pool — webApplication has its own under WebApplication.* keys.
+        var poolName = SubstituteOrEmpty(config, OctopusIisConfigKeys.WebApplicationApplicationPoolName, octostache);
+        if (string.IsNullOrWhiteSpace(poolName))
+        {
+            // Fall back to a derived name so we always have something to create.
+            poolName = $"{parentSite}_{virtualPath.Trim('/')}";
+        }
+        var runtimeVersion = config.GetValueOrDefault(
+            OctopusIisConfigKeys.WebApplicationApplicationPoolFrameworkVersion, "v4.0");
+        var identityType = config.GetValueOrDefault(
+            OctopusIisConfigKeys.WebApplicationApplicationPoolIdentityType, "ApplicationPoolIdentity");
+        var username = SubstituteOrEmpty(config, OctopusIisConfigKeys.WebApplicationApplicationPoolUsername, octostache);
+        var password = SubstituteOrEmpty(config, OctopusIisConfigKeys.WebApplicationApplicationPoolPassword, octostache);
+
+        if (LooksLikeSensitiveEnvelope(password))
+        {
+            warnings.Add(
+                "Octopus.Action.IISWebSite.WebApplication.ApplicationPoolPassword is a sensitive-value envelope; "
+                + "the actual password is not present in the export. Bind it to a Kraken deployment variable.");
+            password = string.Empty;
+        }
+
+        var webApp = new KrakenIisWebApplicationConfig
+        {
+            ParentSiteName = parentSite,
+            VirtualPath    = virtualPath,
+            PhysicalPath   = physicalPath,
+            AppPool = new KrakenIisAppPool
+            {
+                Name            = poolName,
+                RuntimeVersion  = runtimeVersion,
+                IdentityType    = identityType,
+                Username        = string.IsNullOrWhiteSpace(username) ? null : username,
+                Password        = string.IsNullOrWhiteSpace(password) ? null : password,
+            },
+        };
+
+        return MappingResult.ForWebApplication(webApp, warnings);
+    }
+
+    // ── virtualDirectory ─────────────────────────────────────────────────────
+
+    private static MappingResult MapVirtualDirectory(
+        IReadOnlyDictionary<string, string> config,
+        Func<string, string> octostache,
+        string fallbackInstallRoot)
+    {
+        var warnings = new List<string>();
+
+        // Per the real WebArgosy export, virtualDirectory steps reuse the
+        // VirtualDirectory.* sub-namespace mirroring the WebApplication.* keys.
+        var parentSite = SubstituteOrEmpty(config, OctopusIisConfigKeys.VirtualDirectoryWebSiteName, octostache);
+        if (string.IsNullOrWhiteSpace(parentSite))
+        {
+            throw new InvalidOperationException(
+                $"Octopus.IIS DeploymentType=virtualDirectory is missing required key " +
+                $"'{OctopusIisConfigKeys.VirtualDirectoryWebSiteName}'.");
+        }
+
+        var virtualPath = SubstituteOrEmpty(config, OctopusIisConfigKeys.VirtualDirectoryVirtualPath, octostache);
+        if (string.IsNullOrWhiteSpace(virtualPath))
+        {
+            throw new InvalidOperationException(
+                $"Octopus.IIS DeploymentType=virtualDirectory is missing required key " +
+                $"'{OctopusIisConfigKeys.VirtualDirectoryVirtualPath}'.");
+        }
+
+        var customDir = SubstituteOrEmpty(config,
+            OctopusIisConfigKeys.PackageCustomInstallationDirectory, octostache);
+        var physicalPath = string.IsNullOrWhiteSpace(customDir) ? fallbackInstallRoot : customDir;
+
+        var vdir = new KrakenIisVirtualDirectoryConfig
+        {
+            ParentSiteName = parentSite,
+            VirtualPath    = virtualPath,
+            PhysicalPath   = physicalPath,
+        };
+
+        return MappingResult.ForVirtualDirectory(vdir, warnings);
+    }
+
+    /// <summary>
+    /// Discriminated result of the Octopus → Kraken mapping. Exactly one of
+    /// <see cref="WebSite"/> / <see cref="WebApplication"/> /
+    /// <see cref="VirtualDirectory"/> is non-null, matching the source's
+    /// <c>Octopus.Action.IISWebSite.DeploymentType</c>.
+    /// </summary>
+    public sealed record MappingResult
+    {
+        public KrakenIisConfig?                  WebSite          { get; init; }
+        public KrakenIisWebApplicationConfig?    WebApplication   { get; init; }
+        public KrakenIisVirtualDirectoryConfig?  VirtualDirectory { get; init; }
+        public required IReadOnlyList<string>    Warnings         { get; init; }
+
+        internal static MappingResult ForWebSite(KrakenIisConfig cfg, IReadOnlyList<string> warnings)
+            => new() { WebSite = cfg, Warnings = warnings };
+
+        internal static MappingResult ForWebApplication(KrakenIisWebApplicationConfig cfg, IReadOnlyList<string> warnings)
+            => new() { WebApplication = cfg, Warnings = warnings };
+
+        internal static MappingResult ForVirtualDirectory(KrakenIisVirtualDirectoryConfig cfg, IReadOnlyList<string> warnings)
+            => new() { VirtualDirectory = cfg, Warnings = warnings };
+
+        /// <summary>For back-compat with B-3a's two-arg constructor pattern.</summary>
+        [Obsolete("Use ForWebSite/ForWebApplication/ForVirtualDirectory factories.")]
+        public MappingResult(KrakenIisConfig config, IReadOnlyList<string> warnings)
+        {
+            WebSite  = config;
+            Warnings = warnings;
+        }
+
+        public MappingResult() { Warnings = []; }
+
+        /// <summary>
+        /// Back-compat alias for B-3 tests that read <c>result.Config</c>.
+        /// Equivalent to <see cref="WebSite"/>.
+        /// </summary>
+        public KrakenIisConfig? Config => WebSite;
+    }
 
     // ── Helpers ────────────────────────────────────────────────────────────
 

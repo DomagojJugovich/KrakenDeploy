@@ -48,7 +48,9 @@ public sealed class KrakenIisStepHandler(ScriptRunner scriptRunner) : IStepHandl
             return false;
         }
 
-        KrakenIisConfig cfg;
+        string script;
+        Dictionary<string, string> envVars;
+
         try
         {
             if (OctopusIisConfig.IsOctopusShape(context.Step.Config))
@@ -62,11 +64,35 @@ public sealed class KrakenIisStepHandler(ScriptRunner scriptRunner) : IStepHandl
                 {
                     await context.LogAsync("warning", w).ConfigureAwait(false);
                 }
-                cfg = mapping.Config;
+
+                if (mapping.WebSite is not null)
+                {
+                    (script, envVars) = await BuildSiteScriptAsync(
+                        mapping.WebSite, context, ct).ConfigureAwait(false);
+                }
+                else if (mapping.WebApplication is not null)
+                {
+                    (script, envVars) = await BuildWebApplicationScriptAsync(
+                        mapping.WebApplication, context, ct).ConfigureAwait(false);
+                }
+                else if (mapping.VirtualDirectory is not null)
+                {
+                    (script, envVars) = await BuildVirtualDirectoryScriptAsync(
+                        mapping.VirtualDirectory, context, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    await context.LogAsync("error",
+                        "Octopus.IIS mapper produced no result (this should not happen).")
+                        .ConfigureAwait(false);
+                    return false;
+                }
             }
             else
             {
-                cfg = KrakenIisConfig.Parse(context.Step.Config);
+                var krakenCfg = KrakenIisConfig.Parse(context.Step.Config);
+                (script, envVars) = await BuildSiteScriptAsync(
+                    krakenCfg, context, ct).ConfigureAwait(false);
             }
         }
         catch (Exception ex)
@@ -75,38 +101,6 @@ public sealed class KrakenIisStepHandler(ScriptRunner scriptRunner) : IStepHandl
                 $"Invalid Kraken.IIS step configuration: {ex.Message}").ConfigureAwait(false);
             return false;
         }
-
-        await context.LogAsync("info",
-            $"Kraken.IIS — site '{cfg.SiteName}', app pool '{cfg.AppPool.Name}', " +
-            $"deploy mode {cfg.Deploy.Mode}, {cfg.Bindings.Count} binding(s)" +
-            (cfg.HealthCheck is null ? "." : ", health probe enabled."))
-            .ConfigureAwait(false);
-
-        // Generate the script and persist it as an artifact for troubleshooting.
-        var script = IisScriptGenerator.Generate(cfg, context.ExtractDir, context.Plan.DeploymentId);
-
-        try
-        {
-            Directory.CreateDirectory(context.ArtifactsDir);
-            var scriptPath = Path.Combine(context.ArtifactsDir, "kraken-iis-deploy.ps1");
-            await File.WriteAllTextAsync(scriptPath, script, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            await context.LogAsync("warning",
-                $"Could not write generated script to artifacts directory: {ex.Message}")
-                .ConfigureAwait(false);
-        }
-
-        // Run the script via the same runner used by Octopus.Script so log
-        // streaming and exit-code handling are uniform across step types.
-        var envVars = new Dictionary<string, string>(context.Plan.Variables)
-        {
-            ["KRAKEN_ARTIFACTS_PATH"] = context.ArtifactsDir,
-            ["KRAKEN_DEPLOYMENT_ID"]  = context.Plan.DeploymentId.ToString(),
-            ["KRAKEN_SITE_NAME"]      = cfg.SiteName,
-            ["KRAKEN_APP_POOL"]       = cfg.AppPool.Name,
-        };
 
         return await scriptRunner.RunAsync(
             script,
@@ -125,5 +119,91 @@ public sealed class KrakenIisStepHandler(ScriptRunner scriptRunner) : IStepHandl
             dict.Set(k, v);
         }
         return dict;
+    }
+
+    private static async Task<(string Script, Dictionary<string, string> EnvVars)>
+        BuildSiteScriptAsync(KrakenIisConfig cfg, StepHandlerContext context, CancellationToken ct)
+    {
+        await context.LogAsync("info",
+            $"Kraken.IIS — site '{cfg.SiteName}', app pool '{cfg.AppPool.Name}', " +
+            $"deploy mode {cfg.Deploy.Mode}, {cfg.Bindings.Count} binding(s)" +
+            (cfg.HealthCheck is null ? "." : ", health probe enabled."))
+            .ConfigureAwait(false);
+
+        var script = IisScriptGenerator.Generate(cfg, context.ExtractDir, context.Plan.DeploymentId);
+        await PersistArtifactAsync(script, "kraken-iis-deploy.ps1", context, ct).ConfigureAwait(false);
+
+        var envVars = new Dictionary<string, string>(context.Plan.Variables)
+        {
+            ["KRAKEN_ARTIFACTS_PATH"] = context.ArtifactsDir,
+            ["KRAKEN_DEPLOYMENT_ID"]  = context.Plan.DeploymentId.ToString(),
+            ["KRAKEN_SITE_NAME"]      = cfg.SiteName,
+            ["KRAKEN_APP_POOL"]       = cfg.AppPool.Name,
+        };
+        return (script, envVars);
+    }
+
+    private static async Task<(string Script, Dictionary<string, string> EnvVars)>
+        BuildWebApplicationScriptAsync(
+            KrakenIisWebApplicationConfig cfg, StepHandlerContext context, CancellationToken ct)
+    {
+        await context.LogAsync("info",
+            $"Kraken.IIS web application — parent site '{cfg.ParentSiteName}', " +
+            $"virtual path '{cfg.VirtualPath}', app pool '{cfg.AppPool.Name}'.")
+            .ConfigureAwait(false);
+
+        var script = IisScriptGenerator.GenerateWebApplication(
+            cfg, context.ExtractDir, context.Plan.DeploymentId);
+        await PersistArtifactAsync(script, "kraken-iis-webapplication.ps1", context, ct).ConfigureAwait(false);
+
+        var envVars = new Dictionary<string, string>(context.Plan.Variables)
+        {
+            ["KRAKEN_ARTIFACTS_PATH"]    = context.ArtifactsDir,
+            ["KRAKEN_DEPLOYMENT_ID"]     = context.Plan.DeploymentId.ToString(),
+            ["KRAKEN_PARENT_SITE_NAME"]  = cfg.ParentSiteName,
+            ["KRAKEN_VIRTUAL_PATH"]      = cfg.VirtualPath,
+            ["KRAKEN_APP_POOL"]          = cfg.AppPool.Name,
+        };
+        return (script, envVars);
+    }
+
+    private static async Task<(string Script, Dictionary<string, string> EnvVars)>
+        BuildVirtualDirectoryScriptAsync(
+            KrakenIisVirtualDirectoryConfig cfg, StepHandlerContext context, CancellationToken ct)
+    {
+        await context.LogAsync("info",
+            $"Kraken.IIS virtual directory — parent site '{cfg.ParentSiteName}', " +
+            $"virtual path '{cfg.VirtualPath}'.")
+            .ConfigureAwait(false);
+
+        var script = IisScriptGenerator.GenerateVirtualDirectory(
+            cfg, context.ExtractDir, context.Plan.DeploymentId);
+        await PersistArtifactAsync(script, "kraken-iis-virtualdirectory.ps1", context, ct).ConfigureAwait(false);
+
+        var envVars = new Dictionary<string, string>(context.Plan.Variables)
+        {
+            ["KRAKEN_ARTIFACTS_PATH"]    = context.ArtifactsDir,
+            ["KRAKEN_DEPLOYMENT_ID"]     = context.Plan.DeploymentId.ToString(),
+            ["KRAKEN_PARENT_SITE_NAME"]  = cfg.ParentSiteName,
+            ["KRAKEN_VIRTUAL_PATH"]      = cfg.VirtualPath,
+        };
+        return (script, envVars);
+    }
+
+    private static async Task PersistArtifactAsync(
+        string script, string fileName, StepHandlerContext context, CancellationToken ct)
+    {
+        try
+        {
+            Directory.CreateDirectory(context.ArtifactsDir);
+            await File.WriteAllTextAsync(Path.Combine(context.ArtifactsDir, fileName), script, ct)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            await context.LogAsync("warning",
+                $"Could not write generated script to artifacts directory: {ex.Message}")
+                .ConfigureAwait(false);
+        }
     }
 }

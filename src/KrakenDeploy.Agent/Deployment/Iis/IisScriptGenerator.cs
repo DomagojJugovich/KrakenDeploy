@@ -15,7 +15,7 @@ namespace KrakenDeploy.Agent.Deployment.Iis;
 /// configuration produces the same end state.
 /// </para>
 /// </summary>
-internal static class IisScriptGenerator
+public static class IisScriptGenerator
 {
     /// <summary>
     /// Builds the full PowerShell script.
@@ -54,6 +54,172 @@ internal static class IisScriptGenerator
         sb.AppendLine();
         sb.AppendLine("Write-Host '[Kraken.IIS] Step complete.'");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Generates the PowerShell script for an IIS <strong>web application</strong>
+    /// (sub-application beneath an existing site). Asserts the parent site exists,
+    /// creates and configures the application's app pool (reusing
+    /// <see cref="KrakenIisAppPool"/>), creates or updates the web application
+    /// at <c>IIS:\Sites\&lt;parent&gt;\&lt;virtualPath&gt;</c>, then copies the
+    /// extracted package content to the application's physical path.
+    /// </summary>
+    public static string GenerateWebApplication(
+        KrakenIisWebApplicationConfig cfg, string extractDir, Guid deploymentId)
+    {
+        ArgumentNullException.ThrowIfNull(cfg);
+
+        var sb = new StringBuilder();
+        sb.AppendLine("# ── KrakenDeploy IIS Web Application step ──");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"# Deployment:   {deploymentId}");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"# Parent site:  {cfg.ParentSiteName}");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"# Virtual path: {cfg.VirtualPath}");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"# App pool:     {cfg.AppPool.Name}");
+        sb.AppendLine();
+        sb.AppendLine("$ErrorActionPreference = 'Stop'");
+        sb.AppendLine("Set-StrictMode -Version Latest");
+        sb.AppendLine("Import-Module WebAdministration -ErrorAction Stop");
+        sb.AppendLine();
+
+        // Variable namespace shared with the WriteAppPoolBlock helper.
+        sb.AppendLine("# ── Inputs ──");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"$siteName     = '{Esc(cfg.ParentSiteName)}'");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"$appPoolName  = '{Esc(cfg.AppPool.Name)}'");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"$virtualPath  = '{Esc(NormaliseVirtualPath(cfg.VirtualPath))}'");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"$physicalPath = '{Esc(cfg.PhysicalPath)}'");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"$extractDir   = '{Esc(extractDir)}'");
+        sb.AppendLine();
+
+        sb.AppendLine("# Assert parent site exists — web applications cannot bootstrap one.");
+        sb.AppendLine("if (-not (Test-Path \"IIS:\\Sites\\$siteName\")) {");
+        sb.AppendLine("    throw \"[Kraken.IIS] Parent site '$siteName' does not exist. " +
+                      "Deploy the web site first (Octopus.IIS DeploymentType=webSite).\"");
+        sb.AppendLine("}");
+        sb.AppendLine();
+
+        // Default values that WriteAppPoolBlock reads — for a sub-app these features
+        // are dormant by design (the parent site owns them).
+        WriteAppPoolBlock(sb, cfg.AppPool, new KrakenIisRecycle(), new KrakenIisRapidFail(), alwaysRunning: false);
+
+        sb.AppendLine("# ── Ensure physical path + copy package payload ──");
+        sb.AppendLine("if (-not (Test-Path $physicalPath)) {");
+        sb.AppendLine("    New-Item -ItemType Directory -Path $physicalPath -Force | Out-Null");
+        sb.AppendLine("}");
+        sb.AppendLine("if (Test-Path -LiteralPath $extractDir) {");
+        sb.AppendLine("    $items = Get-ChildItem -LiteralPath $extractDir -Force -ErrorAction SilentlyContinue");
+        sb.AppendLine("    if ($items) {");
+        sb.AppendLine("        Write-Host '[Kraken.IIS] Copying extracted contents to web application…'");
+        sb.AppendLine("        Copy-Item -Path (Join-Path $extractDir '*') -Destination $physicalPath -Recurse -Force");
+        sb.AppendLine("    } else {");
+        sb.AppendLine("        Write-Host '[Kraken.IIS] Extract dir is empty (configure-only deploy) — skipping copy.'");
+        sb.AppendLine("    }");
+        sb.AppendLine("}");
+        sb.AppendLine();
+
+        sb.AppendLine("# ── Create or update the web application ──");
+        sb.AppendLine("$appPath = \"IIS:\\Sites\\$siteName$virtualPath\"");
+        sb.AppendLine("if (-not (Test-Path $appPath)) {");
+        sb.AppendLine("    Write-Host \"[Kraken.IIS] Creating web application at '$appPath'…\"");
+        sb.AppendLine("    New-WebApplication -Site $siteName -Name $virtualPath.TrimStart('/') " +
+                      "-PhysicalPath $physicalPath -ApplicationPool $appPoolName -Force | Out-Null");
+        sb.AppendLine("} else {");
+        sb.AppendLine("    Write-Host \"[Kraken.IIS] Updating web application at '$appPath'…\"");
+        sb.AppendLine("    Set-ItemProperty $appPath -Name 'physicalPath' -Value $physicalPath");
+        sb.AppendLine("    Set-ItemProperty $appPath -Name 'applicationPool' -Value $appPoolName");
+        sb.AppendLine("}");
+        sb.AppendLine();
+
+        sb.AppendLine("# ── Start app pool ──");
+        sb.AppendLine("Start-WebAppPool -Name $appPoolName -ErrorAction SilentlyContinue");
+        sb.AppendLine();
+
+        sb.AppendLine("Write-Host '[Kraken.IIS] Web application step complete.'");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Generates the PowerShell script for an IIS <strong>virtual directory</strong>
+    /// (path-to-disk alias beneath an existing site). Asserts the parent site
+    /// exists, creates or updates the virtual directory at
+    /// <c>IIS:\Sites\&lt;parent&gt;\&lt;virtualPath&gt;</c>, then copies the
+    /// extracted package content to the directory's physical path. A virtual
+    /// directory does not have its own application pool — it inherits the
+    /// parent site/application's pool.
+    /// </summary>
+    public static string GenerateVirtualDirectory(
+        KrakenIisVirtualDirectoryConfig cfg, string extractDir, Guid deploymentId)
+    {
+        ArgumentNullException.ThrowIfNull(cfg);
+
+        var sb = new StringBuilder();
+        sb.AppendLine("# ── KrakenDeploy IIS Virtual Directory step ──");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"# Deployment:   {deploymentId}");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"# Parent site:  {cfg.ParentSiteName}");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"# Virtual path: {cfg.VirtualPath}");
+        sb.AppendLine();
+        sb.AppendLine("$ErrorActionPreference = 'Stop'");
+        sb.AppendLine("Set-StrictMode -Version Latest");
+        sb.AppendLine("Import-Module WebAdministration -ErrorAction Stop");
+        sb.AppendLine();
+
+        sb.AppendLine("# ── Inputs ──");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"$siteName     = '{Esc(cfg.ParentSiteName)}'");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"$virtualPath  = '{Esc(NormaliseVirtualPath(cfg.VirtualPath))}'");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"$physicalPath = '{Esc(cfg.PhysicalPath)}'");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"$extractDir   = '{Esc(extractDir)}'");
+        sb.AppendLine();
+
+        sb.AppendLine("# Assert parent site exists — virtual directories cannot bootstrap one.");
+        sb.AppendLine("if (-not (Test-Path \"IIS:\\Sites\\$siteName\")) {");
+        sb.AppendLine("    throw \"[Kraken.IIS] Parent site '$siteName' does not exist. " +
+                      "Deploy the web site first (Octopus.IIS DeploymentType=webSite).\"");
+        sb.AppendLine("}");
+        sb.AppendLine();
+
+        sb.AppendLine("# ── Ensure physical path + copy package payload ──");
+        sb.AppendLine("if (-not (Test-Path $physicalPath)) {");
+        sb.AppendLine("    New-Item -ItemType Directory -Path $physicalPath -Force | Out-Null");
+        sb.AppendLine("}");
+        sb.AppendLine("if (Test-Path -LiteralPath $extractDir) {");
+        sb.AppendLine("    $items = Get-ChildItem -LiteralPath $extractDir -Force -ErrorAction SilentlyContinue");
+        sb.AppendLine("    if ($items) {");
+        sb.AppendLine("        Write-Host '[Kraken.IIS] Copying extracted contents to virtual directory…'");
+        sb.AppendLine("        Copy-Item -Path (Join-Path $extractDir '*') -Destination $physicalPath -Recurse -Force");
+        sb.AppendLine("    } else {");
+        sb.AppendLine("        Write-Host '[Kraken.IIS] Extract dir is empty (configure-only deploy) — skipping copy.'");
+        sb.AppendLine("    }");
+        sb.AppendLine("}");
+        sb.AppendLine();
+
+        sb.AppendLine("# ── Create or update the virtual directory ──");
+        sb.AppendLine("$vdirPath = \"IIS:\\Sites\\$siteName$virtualPath\"");
+        sb.AppendLine("if (-not (Test-Path $vdirPath)) {");
+        sb.AppendLine("    Write-Host \"[Kraken.IIS] Creating virtual directory at '$vdirPath'…\"");
+        sb.AppendLine("    New-WebVirtualDirectory -Site $siteName -Name $virtualPath.TrimStart('/') " +
+                      "-PhysicalPath $physicalPath -Force | Out-Null");
+        sb.AppendLine("} else {");
+        sb.AppendLine("    Write-Host \"[Kraken.IIS] Updating virtual directory at '$vdirPath'…\"");
+        sb.AppendLine("    Set-ItemProperty $vdirPath -Name 'physicalPath' -Value $physicalPath");
+        sb.AppendLine("}");
+        sb.AppendLine();
+
+        sb.AppendLine("Write-Host '[Kraken.IIS] Virtual directory step complete.'");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Normalises a virtual path to a leading-slash form (<c>arr</c> → <c>/arr</c>,
+    /// <c>/arr</c> → <c>/arr</c>, <c>arr/sub</c> → <c>/arr/sub</c>). Empty input
+    /// becomes <c>/</c> — the IIS root.
+    /// </summary>
+    private static string NormaliseVirtualPath(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return "/";
+        }
+        var trimmed = raw.Trim();
+        return trimmed.StartsWith('/') ? trimmed : "/" + trimmed;
     }
 
     // ── Variables ──────────────────────────────────────────────────────────────
