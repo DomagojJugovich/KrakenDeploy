@@ -802,7 +802,7 @@ Strategy is **dual-shape**: the importer preserves the Octopus property bag verb
 
 ##### Phase B-1 — `Octopus.TentaclePackage` handler
 
-- [ ] **B-1: `OctopusTentaclePackageStepHandler`** — new handler in `KrakenDeploy.Agent/Deployment/Package/`. Claims `Octopus.TentaclePackage`. `RequiresPackage = true`. Reads `Octopus.Action.Package.*` keys + parses `Octopus.Action.EnabledFeatures`. Orchestrates the per-feature passes against `context.ExtractDir`:
+- [x] **B-1: `OctopusTentaclePackageStepHandler`** — new handler in `KrakenDeploy.Agent/Deployment/Package/`. Claims `Octopus.TentaclePackage`. `RequiresPackage = true`. Reads `Octopus.Action.Package.*` keys + parses `Octopus.Action.EnabledFeatures`. Orchestrates the per-feature passes against `context.ExtractDir`:
   - `Octopus.Features.CustomDirectory` — copy contents of `ExtractDir` to `Octopus.Action.Package.CustomInstallationDirectory` (Octostache-substituted). When `…ShouldBePurgedBeforeDeployment="True"`, purge the destination first, honoring `…CustomInstallationDirectoryPurgeExclusions` (newline- or comma-separated glob list, e.g. `App_Data`).
   - `Octopus.Features.ConfigurationVariables` + `…AutomaticallyUpdateAppSettingsAndConnectionStrings="True"` — XML `appSettings` and `connectionStrings` substitution against deployment variables: for each `*.config` file, replace `<add key="X" value="…" />` and `<add name="X" connectionString="…" />` whose key/name matches a deployment variable. **Not** raw Octostache placeholder substitution (that's the separate `Octopus.Features.SubstituteVariablesInFiles` feature handled by the existing `SubstituteVariablesStepHandler`).
   - `Octopus.Features.ConfigurationTransforms` + `…AutomaticallyRunConfigurationTransformationFiles="True"` — apply XDT transforms (`*.<env>.config` over `*.config`, `*.Release.config` over `*.config`, with the existing transform-pairing rules).
@@ -811,7 +811,7 @@ Strategy is **dual-shape**: the importer preserves the Octopus property bag verb
 
 ##### Phase B-2 — Octopus `deploymentprocess` JSON importer
 
-- [ ] **B-2: `DeploymentProcessImportService`** — accepts an Octopus `GET /api/{spaceId}/deploymentprocesses/{processId}` JSON. Maps each `Steps[].Actions[0]` → Kraken `DeploymentStep`. Field mapping (no key translation in `Config`):
+- [x] **B-2: `DeploymentProcessImportService`** — accepts an Octopus `GET /api/{spaceId}/deploymentprocesses/{processId}` JSON. Maps each `Steps[].Actions[0]` → Kraken `DeploymentStep`. Field mapping (no key translation in `Config`):
   - `Action.ActionType` → `StepType` (verbatim, e.g. `Octopus.TentaclePackage`).
   - `Action.Properties` → `Config` (verbatim, all `Octopus.Action.*` keys preserved).
   - `Step.Properties["Octopus.Action.TargetRoles"]` (comma-separated) → `TargetRoles: List<string>`.
@@ -825,15 +825,21 @@ Strategy is **dual-shape**: the importer preserves the Octopus property bag verb
 
 ##### Phase B-3 — `Octopus.IIS` dual-shape support
 
-- [ ] **B-3a: `OctopusIisConfig.Parse`** — new parser alongside the existing `KrakenIisConfig.Parse` in the IIS handler. Shape detection: presence of `Octopus.Action.IISWebSite.WebSiteName` or `…VirtualDirectory.CreateOrUpdate` or `…WebApplication.CreateOrUpdate` → Octopus shape; otherwise → Kraken shape. Reads:
+- [x] **B-3a: `OctopusIisConfig.Parse`** — new parser alongside the existing `KrakenIisConfig.Parse` in the IIS handler. Shape detection: presence of `Octopus.Action.IISWebSite.WebSiteName` or `…VirtualDirectory.CreateOrUpdate` or `…WebApplication.CreateOrUpdate` → Octopus shape; otherwise → Kraken shape. Reads:
   - `Octopus.Action.IISWebSite.DeploymentType` ∈ `{webSite, webApplication, virtualDirectory}` (discriminator).
   - **webSite branch:** `WebSiteName`, `Bindings` (JSON-in-string — Octostache-substitute the string first, then `JsonSerializer.Deserialize`, then walk each `{protocol, ipAddress, port, host, thumbprint, certificateVariable, requireSni, enabled}`; `requireSni` and `enabled` can each be raw `true`/`false` OR Octostache-evaluated strings), `ApplicationPoolName`, `ApplicationPoolFrameworkVersion` (`v2.0`/`v4.0`/`No Managed Code`), `ApplicationPoolIdentityType` (`ApplicationPoolIdentity`/`LocalSystem`/`LocalService`/`NetworkService`/`SpecificUser`), `ApplicationPoolUsername`/`ApplicationPoolPassword` (only when identity is `SpecificUser`), `EnableAnonymousAuthentication`/`EnableBasicAuthentication`/`EnableWindowsAuthentication`, `WebRootType` (`packageRoot`/`packageDirectory`), `StartWebSite`/`StartApplicationPool`, `CreateOrUpdateWebSite`.
   - **webApplication branch:** `WebApplication.WebSiteName`, `WebApplication.VirtualPath`, `WebApplication.ApplicationPoolName`, `WebApplication.ApplicationPoolFrameworkVersion`, `WebApplication.ApplicationPoolIdentityType`, `WebApplication.CreateOrUpdate`.
   - **virtualDirectory branch:** `VirtualDirectory.CreateOrUpdate` + shared keys.
   - Shared: `Octopus.Action.Package.*` payload keys (delegated to the B-1 package machinery).
-- [ ] **B-3b: Map → `KrakenIisConfig`** — translate parsed Octopus shape into the existing `KrakenIisConfig` so `IisScriptGenerator.Generate` stays the single code path. This keeps the script-emit + artifact-write + run flow identical for both shapes.
-- [ ] **B-3c: Dummy-package quirk** — when `Action.Packages[0].PackageId == "dummy"` and `Octopus.Action.IISWebSite.WebRootType == "packageRoot"`, no extraction is attempted (the step only configures IIS). The B-2 importer flags this case during mapping; the handler is told via a config sentinel rather than inferring it.
-- [ ] **B-3d: Tests** — fixtures for each `DeploymentType` branch, the WebArgosy `webSite` real export, bindings with Octostache-conditional `enabled`, SpecificUser app-pool identity, dummy-package round-trip.
+- [x] **B-3b: Map → `KrakenIisConfig`** — translate parsed Octopus shape into the existing `KrakenIisConfig` so `IisScriptGenerator.Generate` stays the single code path. This keeps the script-emit + artifact-write + run flow identical for both shapes.
+- [x] **B-3c: Dummy-package quirk** — when `Action.Packages[0].PackageId == "dummy"` and `Octopus.Action.IISWebSite.WebRootType == "packageRoot"`, no extraction is attempted (the step only configures IIS). The B-2 importer flags this case during mapping; the handler is told via a config sentinel rather than inferring it.
+- [x] **B-3d: Tests** — fixtures for each `DeploymentType` branch, the WebArgosy `webSite` real export, bindings with Octostache-conditional `enabled`, SpecificUser app-pool identity, dummy-package round-trip.
+
+##### Phase B-3 follow-ups (not in B-3 scope)
+
+- [ ] **`Octopus.IIS` webApplication branch** — extend `IisScriptGenerator` to ensure-or-create a sub-application under an existing site (`Octopus.Action.IISWebSite.WebApplication.*` keys). Currently the mapper throws a clear "not yet supported" error.
+- [ ] **`Octopus.IIS` virtualDirectory branch** — same, for virtual directories (`Octopus.Action.IISWebSite.VirtualDirectory.*` keys).
+- [ ] **Auth toggle support in `KrakenIisConfig`** — extend the strongly-typed config to honour `EnableAnonymousAuthentication` / `EnableBasicAuthentication` / `EnableWindowsAuthentication`. Mapper currently warns and falls through to IIS defaults.
 
 ##### Already covered / deferred
 

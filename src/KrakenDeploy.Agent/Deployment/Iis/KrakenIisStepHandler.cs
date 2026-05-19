@@ -1,11 +1,22 @@
 using KrakenDeploy.Agent.Deployment.StepHandlers;
 using KrakenDeploy.Contracts.Steps;
+using Octostache;
 
 namespace KrakenDeploy.Agent.Deployment.Iis;
 
 /// <summary>
 /// Handles the <c>Kraken.IIS</c> step type — a comprehensive superset of
-/// <c>Octopus.IIS</c>. Windows-only.
+/// <c>Octopus.IIS</c> — and the imported <c>Octopus.IIS</c> shape (dual-shape
+/// strategy, see TASKS.md Phase B-3). Windows-only.
+/// <para>
+/// On execution the handler picks a parser by inspecting the step's config:
+/// presence of any <c>Octopus.Action.IISWebSite.*</c> key routes through
+/// <see cref="OctopusIisConfig.MapToKrakenIisConfig"/> (which maps to
+/// <see cref="KrakenIisConfig"/> internally); otherwise the Kraken-native
+/// <see cref="KrakenIisConfig.Parse"/> path runs. Both shapes feed the same
+/// <see cref="IisScriptGenerator"/>, so the PowerShell emit and run flow is
+/// identical regardless of source.
+/// </para>
 /// <para>
 /// Generates a single PowerShell script that:
 /// <list type="bullet">
@@ -40,7 +51,23 @@ public sealed class KrakenIisStepHandler(ScriptRunner scriptRunner) : IStepHandl
         KrakenIisConfig cfg;
         try
         {
-            cfg = KrakenIisConfig.Parse(context.Step.Config);
+            if (OctopusIisConfig.IsOctopusShape(context.Step.Config))
+            {
+                var octostache = BuildOctostache(context.Plan.Variables);
+                var mapping = OctopusIisConfig.MapToKrakenIisConfig(
+                    context.Step.Config,
+                    raw => octostache.Evaluate(raw),
+                    fallbackWebRoot: context.ExtractDir);
+                foreach (var w in mapping.Warnings)
+                {
+                    await context.LogAsync("warning", w).ConfigureAwait(false);
+                }
+                cfg = mapping.Config;
+            }
+            else
+            {
+                cfg = KrakenIisConfig.Parse(context.Step.Config);
+            }
         }
         catch (Exception ex)
         {
@@ -88,5 +115,15 @@ public sealed class KrakenIisStepHandler(ScriptRunner scriptRunner) : IStepHandl
             envVars,
             context.LogAsync,
             ct).ConfigureAwait(false);
+    }
+
+    private static VariableDictionary BuildOctostache(IReadOnlyDictionary<string, string> variables)
+    {
+        var dict = new VariableDictionary();
+        foreach (var (k, v) in variables)
+        {
+            dict.Set(k, v);
+        }
+        return dict;
     }
 }
