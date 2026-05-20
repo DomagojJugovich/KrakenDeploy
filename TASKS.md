@@ -2,6 +2,10 @@
 
 A self-hosted, .NET-native deployment platform inspired by Octopus Deploy. This file tracks work milestone-by-milestone.
 
+## Project status: pre-production — breaking changes allowed
+
+**Not yet deployed to any real installation.** While that holds, **prefer clean redesigns over back-compat shims** — rename freely, drop columns, reshape JSON, change step-type names, retire endpoints. See [docs/architecture.md](docs/architecture.md#project-status-pre-production-breaking-changes-allowed) for the full policy. The first day KrakenDeploy ships to a customer, this section gets deleted and v1 contracts freeze.
+
 ## Locked decisions
 
 - **License:** MIT

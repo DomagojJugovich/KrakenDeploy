@@ -2,6 +2,19 @@
 
 > Living document. Updated as milestones land; pair with [TASKS.md](../TASKS.md) for the roadmap.
 
+## Project status: pre-production, breaking changes ALLOWED
+
+**KrakenDeploy is not yet deployed to any production installation** (LAUS or otherwise). It runs only in dev / test environments. While that holds:
+
+- **Breaking changes to wire contracts, EF schemas, REST endpoints, step-type names, package IDs, and persisted JSON shapes are permitted without back-compat shims.** Prefer the clean rename / clean redesign over a back-compat alias every time the trade-off comes up.
+- **EF migrations may freely drop or rewrite columns** — there's no production data to preserve. A migration that destroys existing data is acceptable; a migration that silently leaves stale shapes in the model is not.
+- **No "soft-fallback for old data" branches** in services or workers. If a model invariant says a column must be populated, the runtime should throw when it isn't, not paper over the gap with a warning + legacy code path. Two paths is a maintenance tax that buys nothing while the only data is what dev seeds.
+- **API versioning is NOT a constraint yet.** The REST surface, gRPC `.proto` messages, and SignalR hub contracts can be reshaped at will. When we ship to a real installation we'll cut a v1 line.
+
+This policy ends the moment KrakenDeploy is installed on a real customer environment. At that point: contracts freeze, migrations become forward-only with explicit data preservation, and back-compat becomes a design constraint. **Until that moment: prefer correctness now over flexibility later.**
+
+The "B: hard error, no fallback" choice for `Release.VariableSnapshotUpdatedUtc IS NULL` (see Release variable snapshot below) is one application of this policy. So is the `Octopus.FileTransform` → `Octopus.JsonConfigurationVariables` rename (D-8.3) with no alias.
+
 ## Topology
 
 Three long-lived processes plus PostgreSQL:
