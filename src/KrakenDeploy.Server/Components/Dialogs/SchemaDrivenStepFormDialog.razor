@@ -1,0 +1,337 @@
+@using System.Text.Json.Nodes
+@using KrakenDeploy.Contracts.Steps
+@inject DialogService DialogService
+
+@*
+    Generic schema-driven step editor (Phase C-4). Renders any step type whose
+    StepUiSchema is provided. Widgets supported in v1:
+        text / textarea / sensitive / select / number-input / checkbox /
+        json-editor.
+    Richer widgets (variable-ref / certificate-ref / package-ref /
+    target-roles / file-picker) fall back to text input with a TODO log line
+    until a v2 pass adds the dedicated pickers.
+
+    Field-level visibleWhen predicates are re-evaluated on every value change
+    via a fresh form rebuild — simple and correct, fast enough for the
+    typical ~30-field IIS-style form.
+
+    Groups render as collapsible RadzenCards in declaration order; fields with
+    no group land in a default "General" section that always renders above the
+    groups so required fundamentals are visible first.
+*@
+
+<RadzenStack Gap="1rem">
+    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-0">@Schema.Title</RadzenText>
+    @if (!string.IsNullOrEmpty(Schema.Description))
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            @Schema.Description
+        </RadzenText>
+    }
+
+    @{ var ungrouped = Schema.Properties.Where(p => string.IsNullOrEmpty(p.Value.Group)).ToList(); }
+    @if (ungrouped.Count > 0)
+    {
+        <RadzenCard>
+            <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-2">General</RadzenText>
+            <RadzenStack Gap="0.75rem">
+                @foreach (var (key, field) in ungrouped)
+                {
+                    @if (IsVisible(field))
+                    {
+                        @RenderField(key, field)
+                    }
+                }
+            </RadzenStack>
+        </RadzenCard>
+    }
+
+    @foreach (var group in Schema.Groups)
+    {
+        var groupFields = Schema.Properties.Where(p => p.Value.Group == group.Id).ToList();
+        if (groupFields.Count == 0)
+        {
+            continue;
+        }
+        <RadzenCard>
+            <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.SpaceBetween" AlignItems="AlignItems.Center" class="rz-mb-2">
+                <RadzenText TextStyle="TextStyle.Subtitle1">@group.Title</RadzenText>
+                <RadzenButton Icon="@(IsCollapsed(group.Id) ? "expand_more" : "expand_less")"
+                              ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                              Click="@(() => ToggleGroup(group.Id))" />
+            </RadzenStack>
+            @if (!string.IsNullOrEmpty(group.Description))
+            {
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-2">
+                    @group.Description
+                </RadzenText>
+            }
+            @if (!IsCollapsed(group.Id))
+            {
+                <RadzenStack Gap="0.75rem">
+                    @foreach (var (key, field) in groupFields)
+                    {
+                        @if (IsVisible(field))
+                        {
+                            @RenderField(key, field)
+                        }
+                    }
+                </RadzenStack>
+            }
+        </RadzenCard>
+    }
+
+    @if (_errors.Count > 0)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" Shade="Shade.Lighter" ShowIcon="true">
+            <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-1">
+                Please fix the following before saving:
+            </RadzenText>
+            <ul class="rz-mb-0">
+                @foreach (var err in _errors)
+                {
+                    <li>@err.Message</li>
+                }
+            </ul>
+        </RadzenAlert>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End" Gap="0.5rem">
+        <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => DialogService.Close((Dictionary<string, string>?)null))" />
+        <RadzenButton Text="Save" ButtonStyle="ButtonStyle.Primary"
+                      Icon="save" Click="@OnSaveAsync" />
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    [Parameter, EditorRequired] public StepUiSchema Schema { get; set; } = default!;
+    [Parameter] public IReadOnlyDictionary<string, string>? InitialValues { get; set; }
+
+    private readonly Dictionary<string, string> _values =
+        new(StringComparer.Ordinal);
+    private readonly HashSet<string> _collapsedGroups =
+        new(StringComparer.Ordinal);
+    private IReadOnlyList<StepUiValidationError> _errors = [];
+
+    protected override void OnInitialized()
+    {
+        ArgumentNullException.ThrowIfNull(Schema);
+
+        // Seed values from InitialValues, falling back to per-field defaults.
+        foreach (var (key, field) in Schema.Properties)
+        {
+            if (InitialValues is not null && InitialValues.TryGetValue(key, out var v))
+            {
+                _values[key] = v ?? string.Empty;
+            }
+            else if (!string.IsNullOrEmpty(field.Default))
+            {
+                _values[key] = field.Default!;
+            }
+            else
+            {
+                _values[key] = string.Empty;
+            }
+        }
+
+        // Honour the schema's "collapsed by default" hint.
+        foreach (var g in Schema.Groups)
+        {
+            if (g.Collapsed) { _collapsedGroups.Add(g.Id); }
+        }
+    }
+
+    private bool IsCollapsed(string groupId) => _collapsedGroups.Contains(groupId);
+
+    private void ToggleGroup(string groupId)
+    {
+        if (!_collapsedGroups.Remove(groupId)) { _collapsedGroups.Add(groupId); }
+    }
+
+    /// <summary>
+    /// Evaluates a field's <see cref="StepUiField.VisibleWhen"/> predicate
+    /// against the current form values. <c>null</c> visibleWhen means
+    /// "always visible".
+    /// </summary>
+    private bool IsVisible(StepUiField field)
+    {
+        if (field.VisibleWhen is null) { return true; }
+        var v = field.VisibleWhen;
+        _values.TryGetValue(v.Field, out var current);
+        current ??= string.Empty;
+
+        return v.Operator switch
+        {
+            "equals"     => string.Equals(current, v.Value, StringComparison.Ordinal),
+            "not-equals" => !string.Equals(current, v.Value, StringComparison.Ordinal),
+            "truthy"     => !string.IsNullOrEmpty(current)
+                            && !current.Equals("false", StringComparison.OrdinalIgnoreCase)
+                            && !current.Equals("0", StringComparison.Ordinal),
+            "falsy"      => string.IsNullOrEmpty(current)
+                            || current.Equals("false", StringComparison.OrdinalIgnoreCase)
+                            || current.Equals("0", StringComparison.Ordinal),
+            "in"         => SplitValues(v.Value)
+                            .Contains(current, StringComparer.Ordinal),
+            "not-in"     => !SplitValues(v.Value)
+                            .Contains(current, StringComparer.Ordinal),
+            _            => true,
+        };
+    }
+
+    private static IEnumerable<string> SplitValues(string? raw)
+    {
+        if (string.IsNullOrEmpty(raw)) { yield break; }
+        foreach (var part in raw.Split(';', StringSplitOptions.RemoveEmptyEntries
+            | StringSplitOptions.TrimEntries))
+        {
+            yield return part;
+        }
+    }
+
+    private RenderFragment RenderField(string key, StepUiField field) => builder =>
+    {
+        var label = field.Label ?? key;
+        // RadzenFormField wraps each input with a consistent label + outline.
+        builder.OpenComponent<RadzenFormField>(0);
+        builder.AddAttribute(1, "Text", label);
+        builder.AddAttribute(2, "Variant", Variant.Outlined);
+        builder.AddAttribute(3, "Style", "width:100%");
+        builder.AddAttribute(4, "ChildContent", (RenderFragment)(formInner => RenderWidget(formInner, key, field)));
+        builder.CloseComponent();
+
+        if (!string.IsNullOrEmpty(field.HelpText))
+        {
+            builder.OpenComponent<RadzenText>(10);
+            builder.AddAttribute(11, "TextStyle", TextStyle.Caption);
+            builder.AddAttribute(12, "class", "rz-color-secondary");
+            builder.AddAttribute(13, "ChildContent",
+                (RenderFragment)(t => t.AddContent(0, field.HelpText)));
+            builder.CloseComponent();
+        }
+    };
+
+    private void RenderWidget(
+        Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder,
+        string key,
+        StepUiField field)
+    {
+        var widget = field.Widget;
+        var value  = _values.GetValueOrDefault(key, string.Empty);
+
+        switch (widget)
+        {
+            case StepUiWidgets.Textarea:
+            case StepUiWidgets.JsonEditor:
+                builder.OpenComponent<RadzenTextArea>(0);
+                builder.AddAttribute(1, "Value", value);
+                builder.AddAttribute(2, "Rows", widget == StepUiWidgets.JsonEditor ? 8 : 4);
+                builder.AddAttribute(3, "Style",
+                    widget == StepUiWidgets.JsonEditor
+                        ? "width:100%; font-family: var(--rz-mono-font, monospace);"
+                        : "width:100%;");
+                builder.AddAttribute(4, "Placeholder", field.Placeholder);
+                builder.AddAttribute(5, "ValueChanged",
+                    Microsoft.AspNetCore.Components.EventCallback.Factory.Create<string>(
+                        this, v => SetValue(key, v ?? string.Empty)));
+                builder.CloseComponent();
+                break;
+
+            case StepUiWidgets.Sensitive:
+                builder.OpenComponent<RadzenPassword>(0);
+                builder.AddAttribute(1, "Value", value);
+                builder.AddAttribute(2, "Style", "width:100%;");
+                builder.AddAttribute(3, "Placeholder", field.Placeholder);
+                builder.AddAttribute(4, "ValueChanged",
+                    Microsoft.AspNetCore.Components.EventCallback.Factory.Create<string>(
+                        this, v => SetValue(key, v ?? string.Empty)));
+                builder.CloseComponent();
+                break;
+
+            case StepUiWidgets.Select:
+                builder.OpenComponent<RadzenDropDown<string>>(0);
+                builder.AddAttribute(1, "Value", value);
+                builder.AddAttribute(2, "Data", field.EnumValues);
+                builder.AddAttribute(3, "TextProperty", nameof(StepUiEnumValue.Label));
+                builder.AddAttribute(4, "ValueProperty", nameof(StepUiEnumValue.Value));
+                builder.AddAttribute(5, "Style", "width:100%;");
+                builder.AddAttribute(6, "ValueChanged",
+                    Microsoft.AspNetCore.Components.EventCallback.Factory.Create<string>(
+                        this, v => SetValue(key, v ?? string.Empty)));
+                builder.CloseComponent();
+                break;
+
+            case StepUiWidgets.Checkbox:
+                builder.OpenComponent<RadzenCheckBox<bool>>(0);
+                builder.AddAttribute(1, "Value",
+                    bool.TryParse(value, out var b) && b);
+                builder.AddAttribute(2, "ValueChanged",
+                    Microsoft.AspNetCore.Components.EventCallback.Factory.Create<bool>(
+                        this, v => SetValue(key, v ? "true" : "false")));
+                builder.CloseComponent();
+                break;
+
+            case StepUiWidgets.NumberInput:
+                builder.OpenComponent<RadzenNumeric<double>>(0);
+                builder.AddAttribute(1, "Value",
+                    double.TryParse(value, System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : 0.0);
+                builder.AddAttribute(2, "Style", "width:100%;");
+                builder.AddAttribute(3, "ValueChanged",
+                    Microsoft.AspNetCore.Components.EventCallback.Factory.Create<double>(
+                        this, v => SetValue(key,
+                            v.ToString(System.Globalization.CultureInfo.InvariantCulture))));
+                builder.CloseComponent();
+                break;
+
+            // Richer widgets fall back to plain text input in v1. The picker
+            // implementations (variable / certificate / package / target-roles /
+            // file) ship in a future C-4 follow-up; nothing breaks today, the
+            // user just edits a raw string.
+            case StepUiWidgets.Text:
+            case StepUiWidgets.VariableRef:
+            case StepUiWidgets.CertificateRef:
+            case StepUiWidgets.PackageRef:
+            case StepUiWidgets.TargetRoles:
+            case StepUiWidgets.FilePicker:
+            default:
+                builder.OpenComponent<RadzenTextBox>(0);
+                builder.AddAttribute(1, "Value", value);
+                builder.AddAttribute(2, "Style", "width:100%;");
+                builder.AddAttribute(3, "Placeholder", field.Placeholder);
+                builder.AddAttribute(4, "ValueChanged",
+                    Microsoft.AspNetCore.Components.EventCallback.Factory.Create<string>(
+                        this, v => SetValue(key, v ?? string.Empty)));
+                builder.CloseComponent();
+                break;
+        }
+    }
+
+    private void SetValue(string key, string value)
+    {
+        _values[key] = value;
+        // Clear stale errors on the field the user is editing — they'll
+        // re-validate on Save. Keeps the alert from feeling sticky.
+        if (_errors.Count > 0)
+        {
+            _errors = [.. _errors.Where(e => e.FieldKey != key)];
+        }
+        StateHasChanged();
+    }
+
+    private async Task OnSaveAsync()
+    {
+        // Snapshot the values into an immutable dict for the validator (which
+        // doesn't mutate but expects the immutable contract).
+        var snapshot = new Dictionary<string, string>(_values, StringComparer.Ordinal);
+        _errors = StepUiSchemaValidator.Validate(Schema, snapshot);
+        if (_errors.Count > 0)
+        {
+            StateHasChanged();
+            return;
+        }
+        // Returns the mutated bag — caller persists into DeploymentStep.Config.
+        await Task.CompletedTask;
+        DialogService.Close(snapshot);
+    }
+}
