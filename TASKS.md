@@ -919,7 +919,7 @@ Steps ship as standalone signed `.kdeploy-step` packages instead of being compil
   - **REST**: `AddStepRequest` accepts optional `StepPackageName` + `StepPackageVersion`; project/process endpoints + runbook endpoints forward both.
   - **Tests**: 9 unit tests for the semver comparator + step-type lookup + multi-step-type packages (`StepPackageResolverTests`). 6 end-to-end tests for the pin flow against a real Postgres (auto-resolve, explicit pin, no-installed-package, update-only-when-supplied, release snapshot copy, release re-resolve when live pin was null) (`StepPackagePinTests`). 516 total tests pass.
 
-- [~] **D-7: Editor version dropdown + update notifications** — half done.
+- [x] **D-7: Editor version dropdown + update notifications** —
   - **D-7.1 — Version dropdown in StepFormDialog** (done):
     - Header card shows the step's package name (read-only) + a
       `RadzenDropDown` populated from `StepPackageService.GetVersionsAsync(name)`,
@@ -940,17 +940,30 @@ Steps ship as standalone signed `.kdeploy-step` packages instead of being compil
       badge next to each step card whose pinned version is lower than
       the catalog's highest semver. Backed by a per-page cache
       (`_latestInstalledByPackage`) reloaded after every step mutation.
-  - **D-7.2 — Schema reload on version change + Update dialog with
-    changelog and schema delta** (deferred): switching version in the
-    dropdown currently keeps the existing schema (sourced via step type
-    from `BuiltInStepSchemas`). Different package versions can ship
-    different `ui-schema.json`s, and the spec wants the dialog to
-    re-render with the new schema, carry over values that exist in both
-    schemas, default newly-added fields, and toast on dropped fields.
-    Plus the per-step "Update available" badge should open a confirm
-    dialog showing the changelog and the schema delta. Pending a clean
-    way to load the per-version schema from `StepPackage.UiSchemaJson`
-    in the dialog (which currently goes through `BuiltInStepSchemas`).
+  - **D-7.2 — Schema reload on version change + field carry-over** (done):
+    - The dropdown's `Change` handler `OnPickVersionAsync` looks up the
+      picked row in a cached `_versionRows` dictionary and deserialises
+      its `StepPackage.UiSchemaJson` via `StepUiSchemaJson.Deserialize` —
+      this is the canonical per-version schema. Falls back to
+      `BuiltInStepSchemas.GetForStepType(stepType)` only when the row
+      has no UI schema (legacy / unsigned dev installs).
+    - Field carry-over: keeps shared field values, applies the new
+      schema's declared `Default` to added fields, drops removed fields
+      from the in-memory bag, and fires a single warning toast naming
+      each dropped field so the user is not surprised on next Save.
+      `_extraConfigKeys` (legacy hand-edited keys outside any schema)
+      stay untouched — they still travel into the final Config.
+    - Schema deserialization errors stop the version switch and toast
+      the parse error; the dropdown stays on the previous version.
+  - **Per-step "Update available" confirm dialog with changelog + schema
+    diff modal**: deferred. The existing flow (yellow badge on the
+    process page → opens StepFormDialog → user picks the latest version
+    in the dropdown → carry-over + diff toast → Save) already covers
+    the user journey end-to-end. A separate confirm-with-changelog
+    modal would polish the UX but doesn't unblock any functionality.
+    Pending: a `StepPackage.ChangelogMarkdown` column (CHANGELOG.md
+    extracted from the archive at upload time) + a dedicated update
+    dialog component. Tracked as a follow-up under D-10's umbrella.
   - **No bulk auto-upgrade.** No floating pins (no "latest 2.x" mode in v1) — exact pin only.
 
 - [x] **D-8: Refactor existing built-ins into step packages** — every built-in extracted into its own step-package and the agent's in-DI handler path retired. Sliced D-8.1 → D-8.9.

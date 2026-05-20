@@ -104,7 +104,8 @@
                     <RadzenFormField Text="Version" Variant="Variant.Outlined">
                         <RadzenDropDown TValue="string"
                                         Data="@_availableVersions"
-                                        @bind-Value="_stepPackageVersion"
+                                        Value="@_stepPackageVersion"
+                                        Change="@(v => OnPickVersionAsync(v as string))"
                                         Style="min-width:140px;" />
                     </RadzenFormField>
                     @if (_stepPackageVersion is not null
@@ -250,6 +251,12 @@
     /// sorted highest semver first so index 0 is "latest installed".</summary>
     private List<string> _availableVersions = [];
 
+    /// <summary>Indexed by version string so the dropdown's Change handler
+    /// can look up the picked row's UiSchemaJson without an extra DB hit.
+    /// Populated alongside <see cref="_availableVersions"/>.</summary>
+    private Dictionary<string, StepPackage> _versionRows =
+        new(StringComparer.OrdinalIgnoreCase);
+
     protected override async Task OnParametersSetAsync()
     {
         _isEdit = Step is not null;
@@ -355,11 +362,107 @@
         if (string.IsNullOrWhiteSpace(packageName))
         {
             _availableVersions = [];
+            _versionRows.Clear();
             return;
         }
 
         var rows = await StepPackageSvc.GetVersionsAsync(packageName).ConfigureAwait(false);
         _availableVersions = StepPackageResolver.OrderByHighestSemver(rows.Select(r => r.Version));
+        _versionRows = rows.ToDictionary(r => r.Version, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Handles the version dropdown's Change event (Phase D-7.2). Pulls the
+    /// new version's per-version <c>UiSchemaJson</c> from the cached row
+    /// and swaps it into the dialog's schema, carrying over any field values
+    /// that exist in both the old and new schemas. Fields added in the new
+    /// schema get their declared default. Fields dropped in the new schema
+    /// fire a single toast naming each one — the value is lost on the next
+    /// Save but the user has been warned.
+    /// </summary>
+    private async Task OnPickVersionAsync(string? newVersion)
+    {
+        if (string.IsNullOrWhiteSpace(newVersion)
+            || string.Equals(newVersion, _stepPackageVersion, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        // Snapshot the current values BEFORE we swap the schema so we can
+        // diff the property sets and decide what carries over.
+        var previousValues = new Dictionary<string, string>(_values, StringComparer.Ordinal);
+        var previousSchema = _schema;
+
+        // Resolve the new schema. Prefer the row's per-version UiSchemaJson —
+        // that's the canonical source for what this exact package version
+        // expects. Fall back to BuiltInStepSchemas by step type only when
+        // the row has no schema (legacy / pre-D-3 install).
+        StepUiSchema? newSchema = null;
+        if (_versionRows.TryGetValue(newVersion, out var row)
+            && !string.IsNullOrWhiteSpace(row.UiSchemaJson))
+        {
+            try
+            {
+                newSchema = StepUiSchemaJson.Deserialize(row.UiSchemaJson);
+            }
+            catch (JsonException ex)
+            {
+                Notifications.Notify(NotificationSeverity.Error, "Schema parse failed",
+                    $"Could not load {row.Name} {newVersion} ui-schema.json: {ex.Message}. " +
+                    "Keeping the previous version selected.", 6000);
+                return;
+            }
+        }
+
+        // Either no per-version schema or it failed to load → fall back.
+        newSchema ??= await ResolveSchemaAsync(_stepType).ConfigureAwait(false);
+
+        // Diff the property sets so we know what to carry over and what to
+        // warn about. Schemas can be null when no built-in covers the step
+        // type either — in that case we keep the values verbatim.
+        if (newSchema is not null)
+        {
+            var droppedKeys = new List<string>();
+            var rebuilt     = new Dictionary<string, string>(StringComparer.Ordinal);
+
+            foreach (var (key, field) in newSchema.Properties)
+            {
+                rebuilt[key] = previousValues.TryGetValue(key, out var carried)
+                    ? carried
+                    : (field.Default ?? string.Empty);
+            }
+
+            if (previousSchema is not null)
+            {
+                foreach (var oldKey in previousSchema.Properties.Keys)
+                {
+                    if (!newSchema.Properties.ContainsKey(oldKey))
+                    {
+                        droppedKeys.Add(oldKey);
+                    }
+                }
+            }
+
+            // Drop the values for keys the new schema doesn't know about
+            // from the in-memory bag. Keep the _extraConfigKeys cache (legacy
+            // / hand-edited keys outside any schema) intact — those still
+            // travel into the final Config on Save.
+            _values.Clear();
+            foreach (var (k, v) in rebuilt) { _values[k] = v; }
+
+            if (droppedKeys.Count > 0)
+            {
+                Notifications.Notify(NotificationSeverity.Warning,
+                    $"{droppedKeys.Count} field(s) dropped",
+                    "These fields aren't in the new version's schema and will not be saved: "
+                    + string.Join(", ", droppedKeys),
+                    8000);
+            }
+        }
+
+        _schema             = newSchema;
+        _stepPackageVersion = newVersion;
+        StateHasChanged();
     }
 
     private async Task<StepUiSchema?> ResolveSchemaAsync(string stepType)
