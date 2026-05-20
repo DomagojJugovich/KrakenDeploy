@@ -83,6 +83,18 @@ public sealed class StepPackageResolver(IDbContextFactory<KrakenDbContext> dbFac
     }
 
     /// <summary>
+    /// Stable sort of a version-string sequence, highest semver first.
+    /// Exposed as a public ordering helper so callers that already have a
+    /// version list (e.g. the editor's version dropdown) can lay out the
+    /// "latest first" UI without re-importing the internal comparator.
+    /// Non-semver-shaped strings sort below well-formed ones.
+    /// </summary>
+    public static List<string> OrderByHighestSemver(IEnumerable<string> versions)
+        => [.. versions
+                .Where(v => !string.IsNullOrWhiteSpace(v))
+                .OrderByDescending(v => v, SemVerComparer.Instance)];
+
+    /// <summary>
     /// Picks the highest semver from a candidate list.
     /// <para>
     /// Comparison is by numeric MAJOR.MINOR.PATCH; anything after a <c>-</c>

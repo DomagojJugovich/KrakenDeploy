@@ -919,9 +919,38 @@ Steps ship as standalone signed `.kdeploy-step` packages instead of being compil
   - **REST**: `AddStepRequest` accepts optional `StepPackageName` + `StepPackageVersion`; project/process endpoints + runbook endpoints forward both.
   - **Tests**: 9 unit tests for the semver comparator + step-type lookup + multi-step-type packages (`StepPackageResolverTests`). 6 end-to-end tests for the pin flow against a real Postgres (auto-resolve, explicit pin, no-installed-package, update-only-when-supplied, release snapshot copy, release re-resolve when live pin was null) (`StepPackagePinTests`). 516 total tests pass.
 
-- [ ] **D-7: Editor version dropdown + update notifications** —
-  - `SchemaDrivenStepFormDialog` (C-4) gains a header row showing the step's package name + a version `RadzenDropDown` populated from `GET /api/step-packages?name=X`. Picking a different version mutates `DeploymentStep.StepPackageVersion`, reloads the schema, and re-renders the form. Form values that exist in both old and new schemas carry over; fields removed in the new schema drop with a warning toast; fields added in the new schema get their `default`.
-  - On the Process page (`Process.razor`), each step card gains an **"Update available"** badge when `DeploymentStep.StepPackageVersion < latestInstalledVersionOfPackage`. Clicking the badge opens a dialog showing the changelog (manifest `changelog` field from D-1) and the schema delta (added fields / removed fields / changed widget types). Confirming bumps `StepPackageVersion`.
+- [~] **D-7: Editor version dropdown + update notifications** — half done.
+  - **D-7.1 — Version dropdown in StepFormDialog** (done):
+    - Header card shows the step's package name (read-only) + a
+      `RadzenDropDown` populated from `StepPackageService.GetVersionsAsync(name)`,
+      ordered highest-semver first via new public
+      `StepPackageResolver.OrderByHighestSemver(...)` helper.
+    - On Edit: initialises from `DeploymentStep.StepPackageName/Version`.
+      On Add: auto-resolves the latest installed pin via
+      `StepPackageResolver.ResolveLatestForStepTypeAsync(stepType)` and
+      surfaces it in the dropdown for user override before save.
+    - Picking a different version is captured on Save: the dialog now
+      passes the explicit `(stepPackageName, stepPackageVersion)` pair to
+      `ProcessService.AddStepAsync` / `UpdateStepAsync` (the optional
+      D-6 parameters that previously only the auto-resolver populated).
+    - **Update-available chip inside the dialog**: if the dropdown's
+      pinned version isn't the first row (which is "latest installed"),
+      a yellow "Update: {version}" badge sits next to it.
+    - Process page (`Process.razor`) now renders an "Update available"
+      badge next to each step card whose pinned version is lower than
+      the catalog's highest semver. Backed by a per-page cache
+      (`_latestInstalledByPackage`) reloaded after every step mutation.
+  - **D-7.2 — Schema reload on version change + Update dialog with
+    changelog and schema delta** (deferred): switching version in the
+    dropdown currently keeps the existing schema (sourced via step type
+    from `BuiltInStepSchemas`). Different package versions can ship
+    different `ui-schema.json`s, and the spec wants the dialog to
+    re-render with the new schema, carry over values that exist in both
+    schemas, default newly-added fields, and toast on dropped fields.
+    Plus the per-step "Update available" badge should open a confirm
+    dialog showing the changelog and the schema delta. Pending a clean
+    way to load the per-version schema from `StepPackage.UiSchemaJson`
+    in the dialog (which currently goes through `BuiltInStepSchemas`).
   - **No bulk auto-upgrade.** No floating pins (no "latest 2.x" mode in v1) — exact pin only.
 
 - [x] **D-8: Refactor existing built-ins into step packages** — every built-in extracted into its own step-package and the agent's in-DI handler path retired. Sliced D-8.1 → D-8.9.

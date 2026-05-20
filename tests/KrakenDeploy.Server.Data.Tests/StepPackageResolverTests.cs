@@ -29,6 +29,28 @@ public sealed class StepPackageResolverUnitTests
         => StepPackageResolver.PickHighestSemver(Array.Empty<string>()).Should().BeNull();
 
     [Fact]
+    public void OrderByHighestSemver_returns_versions_highest_first()
+    {
+        // Used by the editor's version dropdown (D-7) — index 0 must be
+        // "latest installed" so the "Update available" badge can compare
+        // a pinned version against _availableVersions[0] in O(1).
+        var versions = new[] { "1.0.0", "2.0.0-rc.1", "1.10.0", "2.0.0", "1.2.0" };
+
+        var ordered = StepPackageResolver.OrderByHighestSemver(versions);
+
+        ordered.Should().Equal(["2.0.0", "2.0.0-rc.1", "1.10.0", "1.2.0", "1.0.0"]);
+    }
+
+    [Fact]
+    public void OrderByHighestSemver_drops_blank_entries()
+    {
+        var ordered = StepPackageResolver.OrderByHighestSemver(
+            ["1.0.0", "", "   ", "2.0.0", null!]);
+
+        ordered.Should().Equal(["2.0.0", "1.0.0"]);
+    }
+
+    [Fact]
     public void PickHighestSemver_picks_correctly_across_many_versions()
     {
         // SemVer: pre-release identifiers only push a version below the

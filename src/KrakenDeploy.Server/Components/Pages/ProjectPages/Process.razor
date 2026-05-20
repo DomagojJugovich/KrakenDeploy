@@ -4,10 +4,12 @@
 
 @using KrakenDeploy.Server.Core.Domain.Lifecycles
 @using KrakenDeploy.Server.Core.Domain.Processes
+@using KrakenDeploy.Server.Data.Services
 @inject ProjectService ProjectSvc
 @inject ProcessService ProcessSvc
 @inject LifecycleService LifecycleSvc
 @inject StepTemplateService TemplateSvc
+@inject StepPackageService StepPackageSvc
 @inject DialogService Dialog
 @inject NotificationService Notifications
 @inject NavigationManager Nav
@@ -118,6 +120,26 @@
                                         {
                                             <RadzenBadge Text="@role"
                                                          BadgeStyle="BadgeStyle.Secondary" />
+                                        }
+                                    </RadzenStack>
+                                }
+                                @* Phase D-7: step-package pin + "update available" indicator. *@
+                                @if (step.StepPackageName is { } pkgName
+                                     && step.StepPackageVersion is { } pkgVer)
+                                {
+                                    <RadzenStack Orientation="Orientation.Horizontal"
+                                                 AlignItems="AlignItems.Center" Gap="0.4rem"
+                                                 class="rz-mb-2">
+                                        <RadzenBadge IsPill="true"
+                                                     BadgeStyle="BadgeStyle.Light"
+                                                     Text="@($"{pkgName} {pkgVer}")"
+                                                     title="Step package pinned for this step." />
+                                        @if (LatestInstalled(pkgName) is { } latest && latest != pkgVer)
+                                        {
+                                            <RadzenBadge IsPill="true"
+                                                         BadgeStyle="BadgeStyle.Warning"
+                                                         Text="@($"Update available: {latest}")"
+                                                         title="A newer version of this step package is installed. Edit the step to bump." />
                                         }
                                     </RadzenStack>
                                 }
@@ -241,6 +263,18 @@
     private bool _loaded;
     private string? _loadError;
 
+    /// <summary>
+    /// Cache of (package name → highest installed semver) used to render the
+    /// "Update available" badge per step (Phase D-7). Loaded once on page
+    /// init and re-loaded after Add / Edit / Move / Delete so the badges
+    /// reflect the live catalog without per-step DB round-trips.
+    /// </summary>
+    private Dictionary<string, string> _latestInstalledByPackage =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private string? LatestInstalled(string packageName)
+        => _latestInstalledByPackage.TryGetValue(packageName, out var v) ? v : null;
+
     protected override async Task OnParametersSetAsync()
     {
         // Load Project via Slug rather than cascading from ProjectShell — the
@@ -256,6 +290,7 @@
 
             var process = await ProcessSvc.GetAsync(_project.Id);
             _steps = process?.Steps.OrderBy(s => s.SortOrder).ToList() ?? [];
+            await ReloadLatestInstalledMapAsync();
 
             if (_project.LifecycleId is { } lifecycleId)
             {
@@ -277,6 +312,35 @@
         if (_project is null) return;
         var process = await ProcessSvc.GetAsync(_project.Id);
         _steps = process?.Steps.OrderBy(s => s.SortOrder).ToList() ?? [];
+        await ReloadLatestInstalledMapAsync();
+    }
+
+    /// <summary>
+    /// Re-builds <see cref="_latestInstalledByPackage"/> for every distinct
+    /// package referenced by the loaded steps. Done after any step mutation
+    /// so the "Update available" badge picks up newly-installed versions
+    /// without a hard page refresh. Single DB call per distinct package —
+    /// noisy on huge processes but harmless for normal deployment process
+    /// step counts (rarely more than ~20).
+    /// </summary>
+    private async Task ReloadLatestInstalledMapAsync()
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var distinctPackages = _steps
+            .Select(s => s.StepPackageName)
+            .Where(n => !string.IsNullOrWhiteSpace(n))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Cast<string>()
+            .ToList();
+
+        foreach (var name in distinctPackages)
+        {
+            var versions = await StepPackageSvc.GetVersionsAsync(name);
+            var latest   = StepPackageResolver.OrderByHighestSemver(versions.Select(v => v.Version))
+                .FirstOrDefault();
+            if (latest is not null) { map[name] = latest; }
+        }
+        _latestInstalledByPackage = map;
     }
 
     private async Task OpenImportDeploymentProcessAsync()

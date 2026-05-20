@@ -2,11 +2,14 @@
 @using KrakenDeploy.Contracts.Steps
 @using KrakenDeploy.Server.Components.Shared
 @using KrakenDeploy.Server.Core.Domain.Processes
+@using KrakenDeploy.Server.Core.Domain.StepPackages
 @using KrakenDeploy.Server.Core.Domain.StepTemplates
 
 @inject DialogService Dialog
 @inject ProcessService ProcessSvc
 @inject StepTemplateService TemplateSvc
+@inject StepPackageService StepPackageSvc
+@inject StepPackageResolver StepPackageRes
 @inject NotificationService Notifications
 
 @*
@@ -82,6 +85,39 @@
                 </RadzenText>
             </RadzenStack>
         </RadzenCard>
+
+        @* ── Step-package version pin (Phase D-7) ─────────────────────────── *@
+        @if (!string.IsNullOrWhiteSpace(_stepPackageName))
+        {
+            <RadzenCard>
+                <RadzenStack Orientation="Orientation.Horizontal"
+                             AlignItems="AlignItems.Center" Gap="0.75rem">
+                    <RadzenIcon Icon="extension" />
+                    <RadzenStack Gap="0.1rem" Style="flex:1;">
+                        <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-0">
+                            Step package
+                        </RadzenText>
+                        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                            <code>@_stepPackageName</code>
+                        </RadzenText>
+                    </RadzenStack>
+                    <RadzenFormField Text="Version" Variant="Variant.Outlined">
+                        <RadzenDropDown TValue="string"
+                                        Data="@_availableVersions"
+                                        @bind-Value="_stepPackageVersion"
+                                        Style="min-width:140px;" />
+                    </RadzenFormField>
+                    @if (_stepPackageVersion is not null
+                         && _availableVersions.Count > 0
+                         && _stepPackageVersion != _availableVersions[0])
+                    {
+                        <RadzenBadge BadgeStyle="BadgeStyle.Warning" IsPill="true"
+                                     Text="@($"Update: {_availableVersions[0]}")"
+                                     title="A newer version of this step package is installed." />
+                    }
+                </RadzenStack>
+            </RadzenCard>
+        }
 
         @* ── Schema-driven config body ────────────────────────────────────── *@
         <StepUiSchemaForm Schema="@_schema" Values="@_values" />
@@ -203,6 +239,17 @@
     private readonly List<PackageRefRow> _referencedPackages = [];
     private List<string> _errors = [];
 
+    // ── Phase D-7: per-step package version pin ──────────────────────────
+    /// <summary>The installed package that owns this step type (e.g. "kraken.iis").
+    /// Empty/null = no step package claims the type — header card is hidden.</summary>
+    private string? _stepPackageName;
+    /// <summary>The currently-selected version in the dropdown. Bound two-way
+    /// to the RadzenDropDown; persisted into the step on Save.</summary>
+    private string? _stepPackageVersion;
+    /// <summary>All installed versions of <see cref="_stepPackageName"/>,
+    /// sorted highest semver first so index 0 is "latest installed".</summary>
+    private List<string> _availableVersions = [];
+
     protected override async Task OnParametersSetAsync()
     {
         _isEdit = Step is not null;
@@ -214,6 +261,9 @@
             _name = Step.Name;
             _packageId = Step.PackageId;
             _targetRolesCsv = string.Join(", ", Step.TargetRoles);
+            _stepPackageName    = Step.StepPackageName;
+            _stepPackageVersion = Step.StepPackageVersion;
+            await LoadPackageVersionsAsync(Step.StepPackageName).ConfigureAwait(false);
 
             _schema = await ResolveSchemaAsync(Step.StepType).ConfigureAwait(false);
 
@@ -275,7 +325,41 @@
                     }
                 }
             }
+
+            // Auto-pin the latest installed step-package version for the
+            // chosen step type. Mirrors what ProcessService.AddStepAsync's
+            // server-side auto-resolve does — surfacing it here so the user
+            // sees and can override the pick before save (D-7).
+            if (!string.IsNullOrWhiteSpace(_stepType))
+            {
+                var pin = await StepPackageRes
+                    .ResolveLatestForStepTypeAsync(_stepType).ConfigureAwait(false);
+                if (pin is not null)
+                {
+                    _stepPackageName    = pin.Name;
+                    _stepPackageVersion = pin.Version;
+                    await LoadPackageVersionsAsync(pin.Name).ConfigureAwait(false);
+                }
+            }
         }
+    }
+
+    /// <summary>
+    /// Populates <see cref="_availableVersions"/> with every installed
+    /// version of <paramref name="packageName"/>, sorted highest semver
+    /// first so the dropdown's first row is always "latest installed"
+    /// and the "Update available" badge can compare against it cheaply.
+    /// </summary>
+    private async Task LoadPackageVersionsAsync(string? packageName)
+    {
+        if (string.IsNullOrWhiteSpace(packageName))
+        {
+            _availableVersions = [];
+            return;
+        }
+
+        var rows = await StepPackageSvc.GetVersionsAsync(packageName).ConfigureAwait(false);
+        _availableVersions = StepPackageResolver.OrderByHighestSemver(rows.Select(r => r.Version));
     }
 
     private async Task<StepUiSchema?> ResolveSchemaAsync(string stepType)
@@ -415,8 +499,12 @@
         {
             if (_isEdit && Step is not null)
             {
+                // D-7: pass the explicit pin pair if the user picked a non-null
+                // pair. If both are null, UpdateStepAsync keeps whatever pin
+                // already lived on the row — never clears a pin from this UI.
                 await ProcessSvc.UpdateStepAsync(
-                    Step.Id, _name, _packageId, roles, config).ConfigureAwait(false);
+                    Step.Id, _name, _packageId, roles, config,
+                    _stepPackageName, _stepPackageVersion).ConfigureAwait(false);
             }
             else
             {
@@ -426,9 +514,13 @@
                     StateHasChanged();
                     return;
                 }
+                // D-7: pass the auto-resolved (or user-picked) pin pair.
+                // When _stepPackageName is null the service falls back to its
+                // own auto-resolve via the StepPackageResolver — keeping the
+                // ProcessService.AddStepAsync contract honest.
                 await ProcessSvc.AddStepAsync(
-                    ProjectId.Value, _name, _stepType, _packageId, roles, config)
-                    .ConfigureAwait(false);
+                    ProjectId.Value, _name, _stepType, _packageId, roles, config,
+                    _stepPackageName, _stepPackageVersion).ConfigureAwait(false);
             }
             Dialog.Close(true);
         }
