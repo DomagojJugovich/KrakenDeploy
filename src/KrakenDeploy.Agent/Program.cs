@@ -3,7 +3,6 @@ using KrakenDeploy.Agent;
 using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.Deployment;
 using KrakenDeploy.Agent.Deployment.Iis;
-using KrakenDeploy.Agent.Deployment.Package;
 using KrakenDeploy.Agent.Deployment.Service;
 using KrakenDeploy.Agent.Deployment.StepHandlers;
 using KrakenDeploy.Agent.Identity;
@@ -142,13 +141,12 @@ static async Task<int> RunAsync(string[] args)
 
     // ── Step handlers — registered in priority order ─────────────────────
     // DeploymentExecutor resolves the first handler that CanHandle() the step type.
-    builder.Services.AddTransient<IStepHandler, ScriptStepHandler>();
+    // Most built-ins now ship as step packages (D-8); the agent's loader pulls
+    // them from the server. The handlers still listed below haven't been
+    // ported yet — D-8.6 will move KrakenIis (+ OctopusWindowsService).
     builder.Services.AddTransient<IStepHandler, SubstituteVariablesStepHandler>();
-    // Octopus.JsonConfigurationVariables ships as a step package (D-8.3); the
-    // agent's loader pulls it from the server. No in-DI fallback any more.
     builder.Services.AddTransient<IStepHandler, ManualInterventionStepHandler>();
     builder.Services.AddTransient<IStepHandler, KrakenIisStepHandler>();
-    builder.Services.AddTransient<IStepHandler, OctopusTentaclePackageStepHandler>();
     builder.Services.AddTransient<IStepHandler, OctopusWindowsServiceStepHandler>();
 
     // ── Scoped/Transient services ────────────────────────────────────────

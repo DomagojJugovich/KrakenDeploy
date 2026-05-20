@@ -1,6 +1,7 @@
 using System.Text;
+using KrakenDeploy.Contracts.Steps;
 
-namespace KrakenDeploy.Agent.Deployment.StepHandlers;
+namespace KrakenDeploy.Steps.Script;
 
 /// <summary>
 /// Handles <c>Kraken.Script</c> (Kraken-native) and <c>Octopus.Script</c>
@@ -11,8 +12,14 @@ namespace KrakenDeploy.Agent.Deployment.StepHandlers;
 /// Supported syntaxes: PowerShell (Desktop/Core), Bash, CSharp (dotnet-script),
 /// FSharp (dotnet fsi), Python.
 /// </para>
+/// <para>
+/// Step-package implementation (Phase D-8.4). Parameterless constructor —
+/// the agent's <c>StepPackageLoader</c> activates handlers with no DI; the
+/// internal <see cref="ScriptRunner"/> is instantiated on demand with a
+/// null logger (the LogAsync callback still flows output back to the server).
+/// </para>
 /// </summary>
-public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
+public sealed class ScriptStepHandler : IStepHandler
 {
     private static readonly HashSet<string> SupportedTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -57,12 +64,11 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
             ["Octopus.Action.Package.PackageId"]      = context.Step.PackageId,
             ["Octopus.Action.Package.PackageVersion"] = context.Step.PackageVersion,
             ["Octopus.Action.Package.OriginalInstalledPath"] = context.ExtractDir,
-            // Scripts write artifact files here; the executor uploads them after the step.
             ["KRAKEN_ARTIFACTS_PATH"]       = context.ArtifactsDir,
         };
 
         // Referenced packages — one env var per package + an indexed system
-        // variable in $OctopusParameters (see preambleVars above).
+        // variable in $OctopusParameters (see preambleVars below).
         foreach (var (name, path) in context.ReferencedPackagePaths)
         {
             envVars[$"OCTOPUS_REFERENCED_PACKAGE_{name.ToUpperInvariant()}_PATH"] = path;
@@ -83,18 +89,11 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
             ["Octopus.Action.Package.OriginalInstalledPath"] = context.ExtractDir,
         };
 
-        // Referenced packages: each one gets an Octopus.Action.Package[Name].*
-        // family of indexed system variables and a matching env var.
         foreach (var (name, path) in context.ReferencedPackagePaths)
         {
             preambleVars[$"Octopus.Action.Package[{name}].ExtractedPath"] = path;
         }
 
-        // Each supported language gets a small preamble that exposes the same
-        // surface as $OctopusParameters / Set-OctopusVariable / New-OctopusArtifact.
-        // Variables are read from env at runtime (the agent already injects them
-        // via envVars); the preamble just provides ergonomic accessors + the
-        // helpers that emit the ##octopus[...] markers the agent parses.
         var preamble = scriptSyntax.ToLowerInvariant() switch
         {
             "powershell" => BuildPowerShellPreamble(
@@ -113,7 +112,8 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
             ? scriptBody
             : preamble + Environment.NewLine + Environment.NewLine + scriptBody;
 
-        return await scriptRunner.RunAsync(
+        var runner = new ScriptRunner();
+        return await runner.RunAsync(
             fullScript,
             scriptSyntax,
             context.ExtractDir,
@@ -123,7 +123,7 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
             psEdition).ConfigureAwait(false);
     }
 
-    // ── Helpers ────────────────────────────────────────────────────────────────
+    // ── Helpers ────────────────────────────────────────────────────────────
 
     private static (string body, string syntax, string? psEdition) ResolveScript(
         IReadOnlyDictionary<string, string> config, string stepType)
@@ -135,14 +135,14 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
         return (body ?? string.Empty, syntax ?? "PowerShell", edition);
     }
 
-    // ── PowerShell preamble ────────────────────────────────────────────────────
+    // ── PowerShell preamble ────────────────────────────────────────────────
 
     /// <summary>
     /// Builds a PowerShell preamble that populates <c>$OctopusParameters</c>,
     /// <c>$OctopusArrays</c>, and Kraken helper functions for back-compat with
-    /// Octopus step templates.
+    /// Octopus step templates. Internal so tests can drive it directly.
     /// </summary>
-    private static string BuildPowerShellPreamble(
+    internal static string BuildPowerShellPreamble(
         IReadOnlyDictionary<string, string> variables,
         IReadOnlyDictionary<string, string[]> arrayVariables,
         string environmentName,
@@ -151,7 +151,6 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
         var sb = new StringBuilder();
         sb.AppendLine("# ── KrakenDeploy: variable injection ──────────────────────────────────");
 
-        // ── $OctopusParameters ─────────────────────────────────────────────────
         sb.AppendLine("$OctopusParameters = [ordered]@{");
         sb.Append("    'Octopus.Environment.Name' = '")
           .Append(EscapePs(environmentName)).AppendLine("'");
@@ -173,7 +172,6 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
         sb.AppendLine("}");
         sb.AppendLine();
 
-        // ── $OctopusArrays ─────────────────────────────────────────────────────
         sb.AppendLine("$OctopusArrays = [ordered]@{");
         foreach (var (name, items) in arrayVariables)
         {
@@ -185,15 +183,11 @@ public sealed class ScriptStepHandler(ScriptRunner scriptRunner) : IStepHandler
         sb.AppendLine("}");
         sb.AppendLine();
 
-        // ── Kraken module functions ────────────────────────────────────────────
         sb.AppendLine("# KrakenDeploy PowerShell helpers");
         sb.AppendLine("function Write-KrakenInfo    { param([string]$Message) Write-Host $Message }");
         sb.AppendLine("function Write-KrakenWarning { param([string]$Message) Write-Warning $Message }");
         sb.AppendLine("function Write-KrakenError   { param([string]$Message) Write-Error $Message }");
         sb.AppendLine("function Get-KrakenVariable  { param([string]$Name) $OctopusParameters[$Name] }");
-        // Register-KrakenArtifact: copies a file into the KRAKEN_ARTIFACTS_PATH directory
-        // so the executor picks it up and streams it to the server.
-        // The optional -Name parameter overrides the destination filename.
         sb.AppendLine("""
 function Register-KrakenArtifact {
     param(
@@ -206,11 +200,6 @@ function Register-KrakenArtifact {
     Write-Host "[Artifact] Registered '$Name'"
 }
 """);
-        // Set-OctopusVariable: emits a ##octopus[setVariable ...] marker on stdout
-        // with base64-encoded name + value. The agent's DeploymentExecutor parses
-        // these and accumulates output variables for the step. Subsequent steps in
-        // the same deployment can read them via $OctopusParameters["Octopus.Action[StepName].Output.X"].
-        // New-OctopusArtifact: Octopus-compatible alias that calls Register-KrakenArtifact.
         sb.AppendLine("""
 function Set-OctopusVariable {
     param(
@@ -239,9 +228,9 @@ function New-OctopusArtifact {
 
     private static string EscapePs(string s) => s.Replace("'", "''");
 
-    // ── Bash preamble ──────────────────────────────────────────────────────────
+    // ── Bash preamble ──────────────────────────────────────────────────────
 
-    private static string BuildBashPreamble() => """
+    internal static string BuildBashPreamble() => """
 # ── KrakenDeploy / Octopus compat helpers ─────────────────────────────────
 # Octopus.* variables are already in the environment.
 # Bash variable names can't contain dots, so use these helpers for access.
@@ -268,9 +257,9 @@ new_octopusartifact() {
 # ────────────────────────────────────────────────────────────────────────
 """;
 
-    // ── Python preamble ────────────────────────────────────────────────────────
+    // ── Python preamble ────────────────────────────────────────────────────
 
-    private static string BuildPythonPreamble() => """
+    internal static string BuildPythonPreamble() => """
 # ── KrakenDeploy / Octopus compat helpers ─────────────────────────────────
 import os as _kraken_os
 import base64 as _kraken_base64
@@ -297,9 +286,9 @@ def new_octopusartifact(path, name=None):
 # ────────────────────────────────────────────────────────────────────────
 """;
 
-    // ── C# (dotnet-script) preamble ────────────────────────────────────────────
+    // ── C# (dotnet-script) preamble ────────────────────────────────────────
 
-    private static string BuildCSharpPreamble() => """
+    internal static string BuildCSharpPreamble() => """
 // ── KrakenDeploy / Octopus compat helpers ─────────────────────────────────
 using System;
 using System.Collections;
@@ -340,9 +329,9 @@ void NewOctopusArtifact(string path, string? name = null)
 // ────────────────────────────────────────────────────────────────────────
 """;
 
-    // ── F# (dotnet fsi) preamble ───────────────────────────────────────────────
+    // ── F# (dotnet fsi) preamble ───────────────────────────────────────────
 
-    private static string BuildFSharpPreamble() => """
+    internal static string BuildFSharpPreamble() => """
 // ── KrakenDeploy / Octopus compat helpers ─────────────────────────────────
 open System
 open System.Collections

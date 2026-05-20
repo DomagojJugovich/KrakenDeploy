@@ -27,29 +27,9 @@ public sealed class StepHandlerTests : IDisposable
 
     // ── CanHandle / RequiresPackage ───────────────────────────────────────────
 
-    [Theory]
-    [InlineData("Kraken.Script")]
-    [InlineData("kraken.script")]
-    [InlineData("Octopus.Script")]
-    [InlineData("OCTOPUS.SCRIPT")]
-    public void ScriptStepHandler_CanHandle_is_case_insensitive(string stepType)
-    {
-        var handler = new ScriptStepHandler(null!);
-        handler.CanHandle(stepType).Should().BeTrue();
-    }
-
-    [Fact]
-    public void ScriptStepHandler_CanHandle_returns_false_for_unknown_type()
-    {
-        var handler = new ScriptStepHandler(null!);
-        handler.CanHandle("Octopus.IIS").Should().BeFalse();
-    }
-
-    [Fact]
-    public void ScriptStepHandler_RequiresPackage_is_true()
-    {
-        new ScriptStepHandler(null!).RequiresPackage.Should().BeTrue();
-    }
+    // Kraken.Script + Octopus.Script behavioural tests moved to
+    // tests/KrakenDeploy.Steps.Script.Tests/ (D-8.4 — the in-DI Agent handler
+    // + the agent's ScriptRunner singleton were retired).
 
     [Fact]
     public void SubstituteVariablesStepHandler_CanHandle_recognises_step_type()

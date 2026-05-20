@@ -1,10 +1,10 @@
 using System.Xml;
 using System.Xml.Linq;
-using KrakenDeploy.Agent.Deployment.StepHandlers;
+using KrakenDeploy.Contracts.Steps;
 using Microsoft.Web.XmlTransform;
 using Octostache;
 
-namespace KrakenDeploy.Agent.Deployment.Package;
+namespace KrakenDeploy.Steps.OctopusTentaclePackage;
 
 /// <summary>
 /// Handles the <c>Octopus.TentaclePackage</c> step type — deploy the contents
@@ -13,11 +13,12 @@ namespace KrakenDeploy.Agent.Deployment.Package;
 /// <list type="number">
 ///   <item><c>Octopus.Features.CustomDirectory</c> — copy to user-chosen path; optional pre-deploy purge with exclusions.</item>
 ///   <item><c>Octopus.Features.ConfigurationVariables</c> — XML <c>appSettings</c> / <c>connectionStrings</c> substitution against deployment variables.</item>
-///   <item><c>Octopus.Features.ConfigurationTransforms</c> — XDT transforms (deferred — currently warns).</item>
+///   <item><c>Octopus.Features.ConfigurationTransforms</c> — XDT transforms applied per the deployment's environment name.</item>
 /// </list>
 /// <para>
-/// Order matches Octopus's documented behaviour: CustomDirectory is a destination
-/// move, ConfigurationVariables mutates the deployed XML, then transforms run last
+/// Step-package implementation (Phase D-8.5). Order matches Octopus's
+/// documented behaviour: CustomDirectory is a destination move,
+/// ConfigurationVariables mutates the deployed XML, then transforms run last
 /// so they can refine substituted values.
 /// </para>
 /// </summary>
@@ -38,7 +39,7 @@ public sealed class OctopusTentaclePackageStepHandler : IStepHandler
             return false;
         }
 
-        var features = ParseFeatures(context.Step.Config);
+        var features   = ParseFeatures(context.Step.Config);
         var octostache = BuildOctostache(context.Plan.Variables);
         var workingDir = context.ExtractDir;
 

@@ -1,13 +1,14 @@
 using System.Collections.ObjectModel;
 using FluentAssertions;
-using KrakenDeploy.Agent.Deployment.Package;
-using KrakenDeploy.Agent.Deployment.StepHandlers;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Contracts.Steps;
+using KrakenDeploy.Steps.OctopusTentaclePackage;
 
-namespace KrakenDeploy.Agent.Tests;
+namespace KrakenDeploy.Steps.OctopusTentaclePackage.Tests;
 
 /// <summary>
-/// Unit tests for <see cref="OctopusTentaclePackageStepHandler"/>.
+/// Unit tests for <see cref="OctopusTentaclePackageStepHandler"/> (Phase D-8.5
+/// step-package port; tests migrated from KrakenDeploy.Agent.Tests).
 /// Each test stages a temp directory representing the extracted package, drives
 /// the handler with a hand-crafted <c>Octopus.Action.*</c> property bag, and
 /// asserts the on-disk outcome.

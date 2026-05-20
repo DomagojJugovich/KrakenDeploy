@@ -920,7 +920,7 @@ Steps ship as standalone signed `.kdeploy-step` packages instead of being compil
   - On the Process page (`Process.razor`), each step card gains an **"Update available"** badge when `DeploymentStep.StepPackageVersion < latestInstalledVersionOfPackage`. Clicking the badge opens a dialog showing the changelog (manifest `changelog` field from D-1) and the schema delta (added fields / removed fields / changed widget types). Confirming bumps `StepPackageVersion`.
   - **No bulk auto-upgrade.** No floating pins (no "latest 2.x" mode in v1) — exact pin only.
 
-- [ ] **D-8: Refactor existing built-ins into step packages** — sliced; D-8.1/8.2/8.3 done.
+- [ ] **D-8: Refactor existing built-ins into step packages** — sliced; D-8.1/8.2/8.3/8.4/8.5 done.
 
   **D-8.1 — Infrastructure + first port (Manual)** (done):
   - Moved `IStepHandler` + `StepHandlerContext` to `KrakenDeploy.Contracts.Steps` so step packages can compile against the SDK alone (no agent dep). The old agent-namespace types collapse to global-using aliases.
@@ -956,6 +956,33 @@ Steps ship as standalone signed `.kdeploy-step` packages instead of being compil
   - Tests: 7 unit tests on the renamed handler + the built archive
     (`KrakenDeploy.Steps.JsonConfigurationVariables.Tests`). Old `Octopus.FileTransform`
     is now explicitly rejected by `CanHandle`. 546 total tests pass.
+
+  **D-8.4 — Kraken.Script / Octopus.Script port** (done): biggest port so far.
+  `steps/KrakenDeploy.Steps.Script` produces `kraken.script-1.0.0.kdeploy-step`
+  with **two** step types in the manifest (`Kraken.Script,Octopus.Script` — first
+  multi-type package; verified by the new test asserting both names appear).
+  Inlined a private copy of `ScriptRunner` so the package builds against the
+  SDK alone — the legacy agent-side `ScriptRunner` survives until D-8.6 because
+  `KrakenIis` + `OctopusWindowsService` still depend on it. Also added
+  `Microsoft.Extensions.Logging.Abstractions` to `Directory.Packages.props` for
+  central package management. **Retired** the legacy in-DI `ScriptStepHandler`
+  + its DI registration + the 3 Script tests in `Agent.Tests/StepHandlerTests.cs`.
+  14 unit tests cover the handler's `CanHandle` matrix, the static preamble
+  builders for all 5 supported languages (PowerShell / Bash / Python / C# / F#),
+  PowerShell single-quote escape parity with the legacy handler, and the
+  manifest's two-element `stepTypes` array.
+
+  **D-8.5 — Octopus.TentaclePackage port** (done):
+  `steps/KrakenDeploy.Steps.OctopusTentaclePackage` produces
+  `octopus.tentaclepackage-1.0.0.kdeploy-step`. Brings the heaviest feature
+  surface so far — `CustomDirectory` copy + purge (with exclusions),
+  `ConfigurationVariables` (appSettings / connectionStrings XML rewrite),
+  `ConfigurationTransforms` (XDT via `Microsoft.Web.XmlTransform`). Carried
+  the existing 19-test `OctopusTentaclePackageStepHandlerTests` file over from
+  `KrakenDeploy.Agent.Tests` into the package's own test project via `git mv`
+  so history follows. **Retired** the legacy in-DI handler + DI registration
+  + the now-stale `using KrakenDeploy.Agent.Deployment.Package;` in
+  `Agent/Program.cs`. 552 total tests pass across the solution.
 
   Subsequent slices port the remaining handlers in priority order:
   - `KrakenDeploy.Steps.KrakenIis` → `kraken.iis-2.0.0.kdeploy-step` (the existing `KrakenIisStepHandler` + `IisScriptGenerator` + `KrakenIisConfig` + the C-5 schema).

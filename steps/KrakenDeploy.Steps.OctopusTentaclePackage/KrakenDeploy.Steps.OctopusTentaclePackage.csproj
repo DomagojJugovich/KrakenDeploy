@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <KrakenStepPackageId>octopus.tentaclepackage</KrakenStepPackageId>
+    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageDisplayName>Deploy a Package</KrakenStepPackageDisplayName>
+    <KrakenStepPackageStepTypes>Octopus.TentaclePackage</KrakenStepPackageStepTypes>
+    <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.OctopusTentaclePackage.OctopusTentaclePackageStepHandler</KrakenStepPackageExecutorTypeName>
+
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Microsoft.Web.Xdt drives Octopus.Features.ConfigurationTransforms.
+         Octostache resolves #{Var} placeholders inside config strings (e.g.
+         CustomInstallationDirectory). -->
+    <PackageReference Include="Microsoft.Web.Xdt" />
+    <PackageReference Include="Octostache" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
+  </ItemGroup>
+
+  <Import Project="..\KrakenStepPackage.targets" />
+
+</Project>

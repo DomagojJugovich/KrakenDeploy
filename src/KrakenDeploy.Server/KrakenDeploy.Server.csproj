@@ -54,6 +54,16 @@
       <Private>false</Private>
       <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
     </ProjectReference>
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.Script\KrakenDeploy.Steps.Script.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <Private>false</Private>
+      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
+    </ProjectReference>
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.OctopusTentaclePackage\KrakenDeploy.Steps.OctopusTentaclePackage.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <Private>false</Private>
+      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
+    </ProjectReference>
   </ItemGroup>
 
   <Target Name="CollectBuiltInStepPackages"
