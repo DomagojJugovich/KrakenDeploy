@@ -3,10 +3,10 @@ using System.IO.Compression;
 using System.Reflection;
 using System.Runtime.Loader;
 using System.Security.Cryptography;
-using KrakenDeploy.Agent.Deployment.StepHandlers;
 using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Contracts.StepPackages;
+using KrakenDeploy.Contracts.Steps;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 

@@ -1,9 +1,9 @@
 using System.IO.Compression;
 using FluentAssertions;
-using KrakenDeploy.Agent.Deployment.StepHandlers;
 using KrakenDeploy.Agent.StepPackages;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Contracts.StepPackages;
+using KrakenDeploy.Contracts.Steps;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 

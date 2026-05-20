@@ -2,7 +2,6 @@ using System.Globalization;
 using KrakenDeploy.Agent;
 using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.Deployment;
-using KrakenDeploy.Agent.Deployment.StepHandlers;
 using KrakenDeploy.Agent.Identity;
 using KrakenDeploy.Agent.Machine;
 using KrakenDeploy.Agent.Services;
@@ -137,15 +136,12 @@ static async Task<int> RunAsync(string[] args)
             logger: log);
     });
 
-    // ── Step handlers — registered in priority order ─────────────────────
-    // Every built-in step type now ships as a step package (D-8). The
-    // agent's loader pulls them from the server; DeploymentExecutor's
-    // package-first resolve path means these in-DI registrations are dead
-    // code today (the loader always wins). They survive as a safety net
-    // for the migration window — D-8.9 removes the remaining two together
-    // with the in-DI fallback branch in DeploymentExecutor.ResolveHandlerAsync.
-    builder.Services.AddTransient<IStepHandler, SubstituteVariablesStepHandler>();
-    builder.Services.AddTransient<IStepHandler, ManualInterventionStepHandler>();
+    // ── Step handlers ───────────────────────────────────────────────────
+    // Every step handler ships as a step package (Phase D-8). The agent's
+    // StepPackageLoader pulls them from the server; DeploymentExecutor
+    // instantiates the handler types via Activator from the package's
+    // collectible ALC. No in-DI handlers, no fallback path — see
+    // docs/architecture.md "Pre-production policy" and TASKS.md D-8.9.
 
     // ── Scoped/Transient services ────────────────────────────────────────
     builder.Services.AddTransient<DeploymentExecutor>();

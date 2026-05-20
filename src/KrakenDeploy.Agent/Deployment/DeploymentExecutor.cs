@@ -1,9 +1,9 @@
 using System.Globalization;
 using KrakenDeploy.Agent.Config;
-using KrakenDeploy.Agent.Deployment.StepHandlers;
 using KrakenDeploy.Agent.StepPackages;
 using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Contracts.Steps;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -25,12 +25,10 @@ public sealed class DeploymentExecutor(
     IServerLink serverLink,
     GrpcPackageDownloader packageDownloader,
     GrpcArtifactUploader artifactUploader,
-    IEnumerable<IStepHandler> stepHandlers,
     StepPackageLoader stepPackageLoader,
     IOptions<AgentConfig> agentConfig,
     ILogger<DeploymentExecutor> logger)
 {
-    private readonly IReadOnlyList<IStepHandler> _handlers = [.. stepHandlers];
 
     /// <summary>
     /// True while a deployment is executing. Read by <see cref="Services.AgentUpdateService"/>
@@ -344,48 +342,64 @@ public sealed class DeploymentExecutor(
     }
 
     /// <summary>
-    /// Phase D-6 handler resolution: when the plan pins a step-package
-    /// version, ask the loader (downloading on cache miss). Falls back to
-    /// the in-DI handler list when no pin is set OR when the loader can't
-    /// produce a handler. Returns <c>null</c> when nothing claims the step
-    /// type — the caller surfaces an error to the deployment log.
+    /// Phase D-6 handler resolution (D-8.9: package-only, no in-DI fallback).
+    /// Every step must have a <see cref="DeploymentStepPlan.StepPackageName"/>
+    /// + <see cref="DeploymentStepPlan.StepPackageVersion"/> pin — set by
+    /// <c>ProcessService.AddStepAsync</c> on author and re-resolved on
+    /// release snapshot. The loader downloads the package on cache miss
+    /// (gRPC) and instantiates the handler via Activator. Returns
+    /// <c>null</c> when:
+    /// <list type="bullet">
+    ///   <item>the plan has no pin (the server should have failed earlier),</item>
+    ///   <item>the loader can't find or load the package,</item>
+    ///   <item>the loaded handler refuses the step type.</item>
+    /// </list>
+    /// The caller surfaces all three as an "unknown step type" error.
+    /// Per the pre-prod policy in docs/architecture.md, there is no
+    /// fallback to a hardcoded in-DI handler.
     /// </summary>
     private async Task<IStepHandler?> ResolveHandlerAsync(
         DeploymentStepPlan step, CancellationToken ct)
     {
-        if (!string.IsNullOrWhiteSpace(step.StepPackageName)
-            && !string.IsNullOrWhiteSpace(step.StepPackageVersion))
+        if (string.IsNullOrWhiteSpace(step.StepPackageName)
+            || string.IsNullOrWhiteSpace(step.StepPackageVersion))
         {
-            try
-            {
-                var pkg = await stepPackageLoader
-                    .TryLoadOrDownloadAsync(step.StepPackageName, step.StepPackageVersion, ct)
-                    .ConfigureAwait(false);
-
-                if (pkg is not null)
-                {
-                    // Activator-created — per-step-execution lifecycle.
-                    if (Activator.CreateInstance(pkg.HandlerType) is IStepHandler instance
-                        && instance.CanHandle(step.StepType))
-                    {
-                        return instance;
-                    }
-
-                    logger.LogWarning(
-                        "Step package {Name} {Version} loaded but its handler doesn't accept step type '{StepType}'. " +
-                        "Falling back to in-DI handlers.",
-                        step.StepPackageName, step.StepPackageVersion, step.StepType);
-                }
-            }
-            catch (Exception ex)
-            {
-                logger.LogError(ex,
-                    "Step package {Name} {Version} failed to load; falling back to in-DI handlers.",
-                    step.StepPackageName, step.StepPackageVersion);
-            }
+            logger.LogError(
+                "Step '{StepName}' (type {StepType}) has no step-package pin — " +
+                "server failed to resolve a package for this step type at " +
+                "release-creation. Re-create the release after installing a " +
+                "package that claims this step type.",
+                step.Name, step.StepType);
+            return null;
         }
 
-        return _handlers.FirstOrDefault(h => h.CanHandle(step.StepType));
+        try
+        {
+            var pkg = await stepPackageLoader
+                .TryLoadOrDownloadAsync(step.StepPackageName, step.StepPackageVersion, ct)
+                .ConfigureAwait(false);
+
+            if (pkg is null) { return null; }
+
+            // Activator-created — per-step-execution lifecycle.
+            if (Activator.CreateInstance(pkg.HandlerType) is IStepHandler instance
+                && instance.CanHandle(step.StepType))
+            {
+                return instance;
+            }
+
+            logger.LogError(
+                "Step package {Name} {Version} loaded but its handler doesn't accept step type '{StepType}'.",
+                step.StepPackageName, step.StepPackageVersion, step.StepType);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex,
+                "Step package {Name} {Version} failed to load.",
+                step.StepPackageName, step.StepPackageVersion);
+            return null;
+        }
     }
 
     /// <summary>

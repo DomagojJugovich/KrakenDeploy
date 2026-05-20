@@ -924,7 +924,7 @@ Steps ship as standalone signed `.kdeploy-step` packages instead of being compil
   - On the Process page (`Process.razor`), each step card gains an **"Update available"** badge when `DeploymentStep.StepPackageVersion < latestInstalledVersionOfPackage`. Clicking the badge opens a dialog showing the changelog (manifest `changelog` field from D-1) and the schema delta (added fields / removed fields / changed widget types). Confirming bumps `StepPackageVersion`.
   - **No bulk auto-upgrade.** No floating pins (no "latest 2.x" mode in v1) — exact pin only.
 
-- [ ] **D-8: Refactor existing built-ins into step packages** — sliced; D-8.1/8.2/8.3/8.4/8.5/8.6 done.
+- [x] **D-8: Refactor existing built-ins into step packages** — every built-in extracted into its own step-package and the agent's in-DI handler path retired. Sliced D-8.1 → D-8.9.
 
   **D-8.1 — Infrastructure + first port (Manual)** (done):
   - Moved `IStepHandler` + `StepHandlerContext` to `KrakenDeploy.Contracts.Steps` so step packages can compile against the SDK alone (no agent dep). The old agent-namespace types collapse to global-using aliases.
@@ -1022,7 +1022,29 @@ Steps ship as standalone signed `.kdeploy-step` packages instead of being compil
   - 552 total tests still pass — handler instance counts move between
     assemblies as tests follow the source.
 
-  Remaining D-8 work — only one slice left:
+  **D-8.9 — Retire in-DI handler path entirely** (done):
+  - Removed the last two in-DI handler files (`ManualInterventionStepHandler`,
+    `SubstituteVariablesStepHandler`) plus their `AddTransient<IStepHandler, ...>`
+    registrations in `Agent/Program.cs`.
+  - Removed the `IEnumerable<IStepHandler> stepHandlers` constructor parameter
+    and the `_handlers` field from `DeploymentExecutor`. The `ResolveHandlerAsync`
+    fallback branch (`_handlers.FirstOrDefault(h => h.CanHandle(...))`) is gone;
+    `DeploymentExecutor` now refuses to dispatch any step that doesn't carry a
+    valid `(StepPackageName, StepPackageVersion)` pin and logs an actionable
+    error pointing at the missing package install.
+  - Deleted the two type-alias shim files in
+    `KrakenDeploy.Agent.Deployment.StepHandlers/` (`IStepHandler.cs`,
+    `StepHandlerContext.cs`) that existed solely to keep the old namespace
+    importable; nothing references it any more. Cleaned the leftover
+    `using KrakenDeploy.Agent.Deployment.StepHandlers;` imports across
+    `Program.cs`, `DeploymentExecutor.cs`, `StepPackageLoader.cs`, and the
+    Agent.Tests test files — they now import `KrakenDeploy.Contracts.Steps`
+    directly.
+  - Deleted `tests/KrakenDeploy.Agent.Tests/StepHandlerTests.cs` whose 11
+    tests duplicated the package-test-project coverage in
+    `Steps.Manual.Tests` + `Steps.SubstituteVariables.Tests`.
+  - 547 total tests pass — D-8 ends with the agent shipping zero
+    hardcoded step handlers; every step type is package-backed.
   - `KrakenDeploy.Steps.KrakenIis` → `kraken.iis-2.0.0.kdeploy-step` (the existing `KrakenIisStepHandler` + `IisScriptGenerator` + `KrakenIisConfig` + the C-5 schema).
   - `KrakenDeploy.Steps.OctopusIis` → `octopus.iis-1.0.0.kdeploy-step` (the B-3 `OctopusIisConfig` mapper; package is separate because step type is distinct, even though the script-emit reuses the Kraken.IIS generator via an inter-package reference — handled cleanly by ALC sharing).
   - `KrakenDeploy.Steps.OctopusTentaclePackage` → `octopus.tentaclepackage-1.0.0.kdeploy-step` (B-1).
