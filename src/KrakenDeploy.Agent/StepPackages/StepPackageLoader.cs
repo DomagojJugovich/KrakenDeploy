@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Runtime.Loader;
 using System.Security.Cryptography;
 using KrakenDeploy.Agent.Deployment.StepHandlers;
+using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Contracts.StepPackages;
 using Microsoft.Extensions.Configuration;
@@ -62,9 +63,45 @@ namespace KrakenDeploy.Agent.StepPackages;
 /// </summary>
 public sealed class StepPackageLoader(
     IConfiguration config,
-    ILogger<StepPackageLoader> logger)
+    ILogger<StepPackageLoader> logger,
+    IStepPackageSource? source = null)
 {
     private readonly ConcurrentDictionary<(string Name, string Version), LoadedPackage> _cache = new();
+
+    /// <summary>
+    /// Cache-miss-aware load: when <see cref="TryLoad"/> returns <c>null</c>
+    /// because the extraction is missing AND an <see cref="IStepPackageSource"/>
+    /// is wired up, pulls the package from the source and re-tries the load.
+    /// Returns <c>null</c> on any failure (no source configured, download
+    /// failure, post-download load still fails) — all errors are logged.
+    /// </summary>
+    public async Task<LoadedPackage?> TryLoadOrDownloadAsync(
+        string name, string version, CancellationToken ct)
+    {
+        var loaded = TryLoad(name, version);
+        if (loaded is not null) { return loaded; }
+
+        if (source is null)
+        {
+            logger.LogWarning(
+                "StepPackageLoader: {Name} {Version} not in cache and no IStepPackageSource is configured.",
+                name, version);
+            return null;
+        }
+
+        try
+        {
+            await source.EnsureExtractedAsync(name, version, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex,
+                "StepPackageLoader: failed to download {Name} {Version}.", name, version);
+            return null;
+        }
+
+        return TryLoad(name, version);
+    }
 
     /// <summary>
     /// Looks up — or loads on first access — the step-handler type for

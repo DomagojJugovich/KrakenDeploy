@@ -9,7 +9,9 @@ using KrakenDeploy.Agent.Deployment.StepHandlers;
 using KrakenDeploy.Agent.Identity;
 using KrakenDeploy.Agent.Machine;
 using KrakenDeploy.Agent.Services;
+using KrakenDeploy.Agent.StepPackages;
 using KrakenDeploy.Agent.Transport;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Serilog;
 
@@ -104,6 +106,39 @@ static async Task<int> RunAsync(string[] args)
 
     builder.Services.AddSingleton<GrpcPackageDownloader>();
     builder.Services.AddSingleton<GrpcArtifactUploader>();
+
+    // ── Step-package loader + gRPC source (Phase D-4 / D-5) ──────────────
+    // The downloader is a singleton: it closes over AgentContext via
+    // accessor delegates so it resolves the server URL + agent token at
+    // call time (after registration completes). The loader takes the
+    // downloader through the IStepPackageSource port so tests can swap it.
+    builder.Services.AddSingleton<StepPackageLoader>(sp =>
+    {
+        // The IStepPackageSource is set up below — circular reference is
+        // resolved by capturing the IServiceProvider and resolving lazily.
+        var cfg    = sp.GetRequiredService<IConfiguration>();
+        var log    = sp.GetRequiredService<ILogger<StepPackageLoader>>();
+        var source = sp.GetRequiredService<IStepPackageSource>();
+        return new StepPackageLoader(cfg, log, source);
+    });
+    builder.Services.AddSingleton<IStepPackageSource>(sp =>
+    {
+        var ctx = sp.GetRequiredService<AgentContext>();
+        var log = sp.GetRequiredService<ILogger<GrpcStepPackageDownloader>>();
+
+        // Defer the loader lookup to first download — keeps the DI graph
+        // acyclic (loader → source → loader is broken by the lazy resolve).
+        return new GrpcStepPackageDownloader(
+            serverUrl:  () => ctx.Identity?.ServerUrl  ?? throw new InvalidOperationException("Agent identity not yet ready."),
+            agentToken: () => ctx.Identity?.AgentToken ?? throw new InvalidOperationException("Agent identity not yet ready."),
+            extract:    (name, version, archivePath) =>
+            {
+                sp.GetRequiredService<StepPackageLoader>()
+                  .ExtractToCache(name, version, archivePath);
+                return Task.CompletedTask;
+            },
+            logger: log);
+    });
 
     // ── Step handlers — registered in priority order ─────────────────────
     // DeploymentExecutor resolves the first handler that CanHandle() the step type.

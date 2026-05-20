@@ -455,6 +455,7 @@ public static class Program
         app.MapHub<AgentHub>("/hubs/agent");
         app.MapHub<UiHub>("/hubs/ui");
         app.MapGrpcService<GrpcPackageDeliveryService>();
+        app.MapGrpcService<GrpcStepPackageDeliveryService>();
         app.MapGrpcService<GrpcArtifactUploadService>();
 
         // Agent self-registration — exchanges a one-time token for a long-lived JWT.

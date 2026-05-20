@@ -42,6 +42,35 @@ message DownloadChunk {
     bool   is_delta    = 4;
 }
 
+// ── Step-package delivery (Phase D-5) ──────────────────────────────────────
+// The agent calls DownloadStepPackage(); the server streams the raw
+// .kdeploy-step archive bytes in chunks. Same JWT auth as PackageDelivery.
+// Resumable downloads are NOT supported on this surface — packages are
+// small (typically a few MB) so a clean re-fetch on failure is simpler than
+// resumption bookkeeping. SHA-256 verification of the assembled archive
+// happens on the agent side after the last chunk.
+
+service StepPackageDelivery {
+    rpc DownloadStepPackage(StepPackageDownloadRequest) returns (stream StepPackageChunk);
+}
+
+message StepPackageDownloadRequest {
+    // Manifest id (e.g. "kraken.iis").
+    string name    = 1;
+    // Semver version string (e.g. "1.0.0").
+    string version = 2;
+}
+
+message StepPackageChunk {
+    bytes  data        = 1;
+    // Populated only on the first chunk; 0 on subsequent chunks.
+    int64  total_bytes = 2;
+    bool   is_last     = 3;
+    // SHA-256 of the assembled archive, lower-case hex. Populated only on
+    // the LAST chunk (when is_last = true). Agent verifies after assembly.
+    string sha256      = 4;
+}
+
 // ── Artifact upload ───────────────────────────────────────────────────────────
 // After each deployment step the agent streams back any files found in the
 // step's artifact directory.  Authentication uses the same agent JWT.
