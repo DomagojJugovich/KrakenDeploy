@@ -4,6 +4,39 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+
+    <!-- D-2: emit as the Kraken.SDK NuGet so step-package authors take a
+         PackageReference instead of a ProjectReference. The internal name
+         stays KrakenDeploy.Contracts so existing references in the agent /
+         server / Steps.* projects don't churn — `dotnet pack` produces a
+         Kraken.SDK.{version}.nupkg via PackageId. -->
+    <IsPackable>true</IsPackable>
+    <PackageId>Kraken.SDK</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>KrakenDeploy</Authors>
+    <Description>
+      Stable ABI surface for authoring KrakenDeploy step packages
+      (.kdeploy-step). Carries IStepHandler, StepHandlerContext, the
+      step-package manifest schema, the step UI schema, and the
+      deployment wire contract. Step-package authors take this NuGet
+      to write their own KrakenDeploy step types.
+    </Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>krakendeploy;deployment;step-package;sdk</PackageTags>
+    <IncludeBuildOutput>true</IncludeBuildOutput>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- XML-doc noise we don't want failing the NuGet pack:
+         CS1591 — protobuf-generated stubs have no comments.
+         CS1574 — cref to types in other Microsoft packages (HubConnection,
+                  generic placeholders like On{T}) we don't reference from
+                  this assembly; the IDE still resolves them on the user's
+                  end via metadata-only docs.
+         CS1587 — record positional params with /// docs above each line
+                  in DeploymentContracts.cs (the C# parser accepts these
+                  positionally but treats them as floating doc-comments).
+         CS1573 — missing param XML on a record's positional params for
+                  the same reason. -->
+    <NoWarn>$(NoWarn);CS1591;CS1574;CS1587;CS1573</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+
+    <!-- Template package, not a runtime assembly. The .nupkg ships
+         the content/ tree which dotnet-new installs and stamps when
+         users run `dotnet new krakenstep`. No DLL needed. -->
+    <PackageType>Template</PackageType>
+    <PackageId>Kraken.SDK.Templates</PackageId>
+    <Version>1.0.0</Version>
+    <Title>KrakenDeploy step-package templates</Title>
+    <Authors>KrakenDeploy</Authors>
+    <Description>
+      Project templates for authoring KrakenDeploy step packages
+      (.kdeploy-step). Run `dotnet new install Kraken.SDK.Templates`,
+      then `dotnet new krakenstep -n MyStep` to scaffold a new step
+      package with the Kraken.SDK PackageReference, a sample
+      IStepHandler, a sample ui-schema.json, and an MSBuild target
+      that produces a .kdeploy-step zip on `dotnet build`.
+    </Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>krakendeploy;deployment;step-package;template;dotnet-new</PackageTags>
+
+    <IncludeContentInPack>true</IncludeContentInPack>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <ContentTargetFolders>content</ContentTargetFolders>
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- KrakenStep/ is the templated project. ContentTargetFolders=content
+         (above) puts it at content/KrakenStep/ inside the .nupkg, which is
+         where the dotnet-new engine looks. -->
+    <Content Include="KrakenStep\**\*" Exclude="KrakenStep\**\bin\**;KrakenStep\**\obj\**" />
+    <Compile Remove="**\*" />
+  </ItemGroup>
+
+</Project>

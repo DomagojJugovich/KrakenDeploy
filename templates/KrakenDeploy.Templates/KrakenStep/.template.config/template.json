@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "KrakenDeploy",
+  "classifications": [ "KrakenDeploy", "Step package", "Plugin" ],
+  "identity": "KrakenDeploy.Templates.Step",
+  "name": "KrakenDeploy step package",
+  "shortName": "krakenstep",
+  "description": "A class library that produces a .kdeploy-step archive on `dotnet build`. Bundles a sample IStepHandler + a sample ui-schema.json so authors have a working starting point.",
+  "tags": {
+    "language": "C#",
+    "type": "project"
+  },
+  "sourceName": "KrakenStep",
+  "preferNameDirectory": true,
+  "symbols": {
+    "stepTypeId": {
+      "type": "parameter",
+      "description": "The step type id this package handles (e.g. \"MyCompany.DeployToS3\"). Used in the manifest's stepTypes array.",
+      "datatype": "string",
+      "defaultValue": "MyCompany.Sample",
+      "replaces": "STEP_TYPE_PLACEHOLDER",
+      "fileRename": "STEP_TYPE_PLACEHOLDER"
+    },
+    "packageId": {
+      "type": "parameter",
+      "description": "The step-package id (lower-case, dotted; e.g. \"mycompany.deploy-s3\"). Goes into manifest.id and the produced .kdeploy-step filename.",
+      "datatype": "string",
+      "defaultValue": "mycompany.sample",
+      "replaces": "PACKAGE_ID_PLACEHOLDER"
+    },
+    "sdkVersion": {
+      "type": "parameter",
+      "description": "Kraken.SDK NuGet version to reference.",
+      "datatype": "string",
+      "defaultValue": "1.0.0",
+      "replaces": "SDK_VERSION_PLACEHOLDER"
+    }
+  }
+}

@@ -1,0 +1,81 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- ── Kraken step-package metadata ────────────────────────────────
+         These properties are read by the imported KrakenStepPackage.targets
+         to build manifest.json and the .kdeploy-step archive on `dotnet build`.
+         Change them to your own values once you've scaffolded the project. -->
+    <KrakenStepPackageId>PACKAGE_ID_PLACEHOLDER</KrakenStepPackageId>
+    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageDisplayName>KrakenStep</KrakenStepPackageDisplayName>
+    <KrakenStepPackageStepTypes>STEP_TYPE_PLACEHOLDER</KrakenStepPackageStepTypes>
+    <KrakenStepPackageExecutorTypeName>KrakenStep.SampleStepHandler</KrakenStepPackageExecutorTypeName>
+
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Stable ABI surface — IStepHandler, StepHandlerContext, manifest types. -->
+    <PackageReference Include="Kraken.SDK" Version="SDK_VERSION_PLACEHOLDER" />
+  </ItemGroup>
+
+  <!-- ── Pack target ──────────────────────────────────────────────────────
+       In a published Kraken.SDK.Templates NuGet, KrakenStepPackage.targets
+       will land alongside Kraken.SDK and import automatically. For now,
+       a stripped-down inline copy lives in this file so the scaffolded
+       project builds without any external infrastructure. Once Kraken.SDK
+       ships build assets, this Target block becomes:
+           <Import Project="$(KrakenStepPackageTargets)" />
+  -->
+  <Target Name="PackKrakenStepPackage" AfterTargets="Build">
+    <PropertyGroup>
+      <KrakenStepPackageArchiveName>$(KrakenStepPackageId)-$(KrakenStepPackageVersion).kdeploy-step</KrakenStepPackageArchiveName>
+      <KrakenStepPackageArchivePath>$(OutputPath)$(KrakenStepPackageArchiveName)</KrakenStepPackageArchivePath>
+      <KrakenStepPackageStagingDir>$(IntermediateOutputPath)kraken-step-package\</KrakenStepPackageStagingDir>
+    </PropertyGroup>
+
+    <RemoveDir Directories="$(KrakenStepPackageStagingDir)" />
+    <MakeDir Directories="$(KrakenStepPackageStagingDir);$(KrakenStepPackageStagingDir)executor\;$(KrakenStepPackageStagingDir)ui\" />
+
+    <ItemGroup>
+      <_KrakenExecutorDlls Include="$(OutputPath)*.dll"
+                           Exclude="$(OutputPath)KrakenDeploy.Contracts.dll" />
+      <_KrakenStepUiSchema Include="$(MSBuildProjectDirectory)\ui-schema.json" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_KrakenExecutorDlls)"
+          DestinationFolder="$(KrakenStepPackageStagingDir)executor\" />
+    <Copy SourceFiles="@(_KrakenStepUiSchema)"
+          DestinationFolder="$(KrakenStepPackageStagingDir)ui\"
+          Condition="Exists('$(MSBuildProjectDirectory)\ui-schema.json')" />
+
+    <ItemGroup>
+      <_KrakenManifestLines Include="{" />
+      <_KrakenManifestLines Include="  &quot;id&quot;: &quot;$(KrakenStepPackageId)&quot;," />
+      <_KrakenManifestLines Include="  &quot;version&quot;: &quot;$(KrakenStepPackageVersion)&quot;," />
+      <_KrakenManifestLines Include="  &quot;displayName&quot;: &quot;$(KrakenStepPackageDisplayName)&quot;," />
+      <_KrakenManifestLines Include="  &quot;targetFramework&quot;: &quot;$(TargetFramework)&quot;," />
+      <_KrakenManifestLines Include="  &quot;stepTypes&quot;: [ &quot;$(KrakenStepPackageStepTypes.Replace(`,`, `&quot;, &quot;`))&quot; ]," />
+      <_KrakenManifestLines Include="  &quot;executorAssembly&quot;: &quot;$(TargetFileName)&quot;," />
+      <_KrakenManifestLines Include="  &quot;executorTypeName&quot;: &quot;$(KrakenStepPackageExecutorTypeName)&quot;," />
+      <_KrakenManifestLines Include="  &quot;signedBy&quot;: &quot;unsigned&quot;," />
+      <_KrakenManifestLines Include="  &quot;signature&quot;: &quot;unsigned-dev-build&quot;" />
+      <_KrakenManifestLines Include="}" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(KrakenStepPackageStagingDir)manifest.json"
+                      Lines="@(_KrakenManifestLines)"
+                      Overwrite="true"
+                      Encoding="UTF-8" />
+
+    <ZipDirectory SourceDirectory="$(KrakenStepPackageStagingDir)"
+                  DestinationFile="$(KrakenStepPackageArchivePath)"
+                  Overwrite="true" />
+
+    <Message Importance="high"
+             Text="Kraken step package built: $(KrakenStepPackageArchivePath)" />
+  </Target>
+
+</Project>

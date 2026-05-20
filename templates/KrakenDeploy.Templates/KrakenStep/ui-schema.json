@@ -1,0 +1,15 @@
+{
+  "id": "PACKAGE_ID_PLACEHOLDER",
+  "title": "Sample step",
+  "version": "1.0.0",
+  "description": "Replace this with your step type's UI schema. The KrakenDeploy editor renders one form field per property; widget hints (text, textarea, select, checkbox, sensitive, package-ref) drive how each field is shown.",
+  "properties": {
+    "Greeting": {
+      "type": "string",
+      "widget": "text",
+      "label": "Greeting",
+      "default": "Hello",
+      "helpText": "The message the sample handler logs at deployment time."
+    }
+  }
+}
