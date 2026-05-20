@@ -160,25 +160,43 @@ public sealed class StepPackageManifestTests
     {
         // Two manifests differing only in Signature must produce the same
         // canonical signature input — that's the whole point of signing
-        // the "naked" form.
-        var a = NewMinimalManifest() with { Signature = "sig-A" };
-        var b = NewMinimalManifest() with { Signature = "sig-B" };
+        // the "naked" form. The 32-byte SHA appended after the JSON is the
+        // same in both cases here so equality holds.
+        var a   = NewMinimalManifest() with { Signature = "sig-A" };
+        var b   = NewMinimalManifest() with { Signature = "sig-B" };
+        var sha = new byte[32]; // arbitrary but identical across both calls
 
-        var canonicalA = StepPackageManifestJson.CanonicalSignatureInput(a);
-        var canonicalB = StepPackageManifestJson.CanonicalSignatureInput(b);
+        var canonicalA = StepPackageManifestJson.CanonicalSignatureInput(a, sha);
+        var canonicalB = StepPackageManifestJson.CanonicalSignatureInput(b, sha);
 
         canonicalA.Should().BeEquivalentTo(canonicalB);
     }
 
     [Fact]
-    public void CanonicalSignatureInput_emits_UTF8_bytes_of_the_serialised_naked_manifest()
+    public void CanonicalSignatureInput_emits_naked_manifest_UTF8_then_executor_sha()
     {
-        var m         = NewMinimalManifest();
-        var bytes     = StepPackageManifestJson.CanonicalSignatureInput(m);
-        var asString  = Encoding.UTF8.GetString(bytes);
+        var m   = NewMinimalManifest();
+        var sha = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
+        var bytes = StepPackageManifestJson.CanonicalSignatureInput(m, sha);
 
-        asString.Should().Be(StepPackageManifestJson.Serialize(m.WithoutSignature()),
-            "the canonical input must be the exact UTF-8 representation of the naked manifest's JSON");
+        var nakedJson      = StepPackageManifestJson.Serialize(m.WithoutSignature());
+        var nakedJsonBytes = Encoding.UTF8.GetBytes(nakedJson);
+
+        bytes.Length.Should().Be(nakedJsonBytes.Length + 32);
+        bytes[..nakedJsonBytes.Length].Should().Equal(nakedJsonBytes,
+            "the canonical input starts with the exact UTF-8 representation of the naked manifest's JSON");
+        bytes[nakedJsonBytes.Length..].Should().Equal(sha,
+            "and ends with the executor DLL's 32-byte SHA-256, so swapping the DLL invalidates the signature");
+    }
+
+    [Fact]
+    public void CanonicalSignatureInput_rejects_executor_sha_of_wrong_length()
+    {
+        var m = NewMinimalManifest();
+        var bad = new byte[16]; // SHA-128? Wrong.
+
+        var act = () => StepPackageManifestJson.CanonicalSignatureInput(m, bad);
+        act.Should().Throw<ArgumentException>().WithMessage("*32 bytes*");
     }
 
     // ── StepPackageFiles constants ────────────────────────────────────────

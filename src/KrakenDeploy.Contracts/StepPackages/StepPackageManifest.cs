@@ -168,17 +168,39 @@ public static class StepPackageManifestJson
     }
 
     /// <summary>
-    /// Computes the canonical UTF-8 byte sequence that the signing tool feeds
-    /// into RSA-SHA256 along with the executor DLL's SHA-256. Equivalent to
-    /// <c>Encoding.UTF8.GetBytes(Serialize(manifest.WithoutSignature()))</c>
-    /// but factored here so callers don't have to think about the exact
-    /// recipe.
+    /// Computes the canonical byte sequence that the signing tool feeds into
+    /// RSA-SHA256. The recipe is:
+    /// <code>
+    ///   UTF-8(Serialize(manifest.WithoutSignature())) || executorSha256Bytes
+    /// </code>
+    /// — the manifest JSON with the <see cref="StepPackageManifest.Signature"/>
+    /// field blanked out, concatenated with the raw 32-byte SHA-256 of the
+    /// executor DLL. Both the metadata AND the executable code are subject to
+    /// verification: an attacker can't swap the DLL while keeping the signed
+    /// manifest, and can't swap the manifest while keeping the DLL.
+    /// <para>
+    /// <paramref name="executorSha256"/> is the raw 32-byte hash, NOT the
+    /// hex string — passed as <c>ReadOnlySpan&lt;byte&gt;</c> so callers
+    /// don't allocate. Throws when the length isn't 32.
+    /// </para>
     /// </summary>
-    public static byte[] CanonicalSignatureInput(StepPackageManifest manifest)
+    public static byte[] CanonicalSignatureInput(
+        StepPackageManifest manifest, ReadOnlySpan<byte> executorSha256)
     {
         ArgumentNullException.ThrowIfNull(manifest);
-        var json = Serialize(manifest.WithoutSignature());
-        return System.Text.Encoding.UTF8.GetBytes(json);
+        if (executorSha256.Length != 32)
+        {
+            throw new ArgumentException(
+                $"executorSha256 must be exactly 32 bytes (got {executorSha256.Length}).",
+                nameof(executorSha256));
+        }
+
+        var json      = Serialize(manifest.WithoutSignature());
+        var jsonBytes = System.Text.Encoding.UTF8.GetBytes(json);
+        var buffer    = new byte[jsonBytes.Length + 32];
+        Buffer.BlockCopy(jsonBytes, 0, buffer, 0, jsonBytes.Length);
+        executorSha256.CopyTo(buffer.AsSpan(jsonBytes.Length));
+        return buffer;
     }
 }
 

@@ -111,7 +111,8 @@ public sealed class StepPackageLoaderDownloadTests : IDisposable
             ExecutorAssembly =
                 typeof(SamplePluginStepHandler).Assembly.GetName().Name + ".dll",
             ExecutorTypeName = typeof(SamplePluginStepHandler).FullName!,
-            Signature        = "fake-base64-sig",
+            // Dev sentinel — see StepPackageLoaderTests for the same fix.
+            Signature        = "unsigned-dev-build",
             SignedBy         = "kraken-project",
         };
 

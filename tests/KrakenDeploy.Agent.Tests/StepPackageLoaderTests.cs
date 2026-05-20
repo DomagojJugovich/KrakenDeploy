@@ -264,7 +264,11 @@ public sealed class StepPackageLoaderTests : IDisposable
             StepTypes        = ["Kraken.Sample"],
             ExecutorAssembly = testAssemblyName!,
             ExecutorTypeName = typeof(SamplePluginStepHandler).FullName!,
-            Signature        = "fake-base64-sig",
+            // The dev sentinel — paired with AllowUnsignedLoads=true the
+            // loader skips RSA verification (post-D-12). Use this instead
+            // of a fake base64 string because the new verifier would
+            // otherwise try (and fail) to RSA-verify it.
+            Signature        = "unsigned-dev-build",
             SignedBy         = "kraken-project",
         };
     }

@@ -270,11 +270,24 @@ public sealed class StepPackageLoader(
             s.Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries))
          .Replace("..", "_", StringComparison.Ordinal);
 
+    /// <summary>
+    /// Verifies the step-package signature against the agent's trusted
+    /// public key (Phase D-12). Same recipe + same code path as the server
+    /// upload check — the loader pulls <c>StepPackageSigner.Verify</c> via
+    /// the manifest + the extracted executor DLL on disk.
+    /// <para>
+    /// Dev escape hatches: <c>StepPackages:AllowUnsignedLoads=true</c>
+    /// accepts a missing or "unsigned-dev-build" sentinel signature. Useful
+    /// while iterating; production should leave it off and configure
+    /// <c>StepPackages:TrustedPublicKey</c> (inline PEM or .pem path).
+    /// </para>
+    /// </summary>
     private bool VerifySignature(string packageDir, StepPackageManifest manifest)
     {
         var allowUnsigned = config.GetValue<bool?>("StepPackages:AllowUnsignedLoads") ?? false;
 
-        if (string.IsNullOrEmpty(manifest.Signature))
+        if (string.IsNullOrEmpty(manifest.Signature)
+            || string.Equals(manifest.Signature, "unsigned-dev-build", StringComparison.Ordinal))
         {
             if (allowUnsigned)
             {
@@ -285,31 +298,80 @@ public sealed class StepPackageLoader(
                 return true;
             }
             logger.LogError(
-                "StepPackageLoader: {Name} {Version} has no signature in manifest. " +
-                "Configure StepPackages:AllowUnsignedLoads=true to accept unsigned packages (dev only).",
+                "StepPackageLoader: {Name} {Version} is unsigned (or carries the dev sentinel). " +
+                "Configure StepPackages:AllowUnsignedLoads=true to accept unsigned packages (dev only), " +
+                "or have the publisher sign the package with a trusted key.",
                 manifest.Id, manifest.Version);
             return false;
         }
 
-        // Real RSA-SHA256 verification lands in a D-3.x / D-4.x follow-up.
-        // The canonical recipe lives in StepPackageManifestJson.CanonicalSignatureInput
-        // — the loader pairs it with the SHA-256 of the on-disk archive (or the
-        // executor DLL) and the project public key. For v1 we accept any non-empty
-        // signature so the rest of the loading pipeline is testable end-to-end.
-        if (File.Exists(Path.Combine(packageDir, "package" + StepPackageFiles.Extension)))
+        var trustedKey = LoadTrustedPublicKey();
+        if (trustedKey is null)
         {
-            _ = ComputeArchiveSha256(packageDir);
+            logger.LogError(
+                "StepPackageLoader: {Name} {Version} is signed but no trusted public key is " +
+                "configured. Set StepPackages:TrustedPublicKey (inline PEM or .pem path).",
+                manifest.Id, manifest.Version);
+            return false;
         }
-        return true;
+
+        try
+        {
+            var executorDllPath = Path.Combine(
+                packageDir, StepPackageFiles.ExecutorDirectory, manifest.ExecutorAssembly);
+            var result = StepPackageSigner.Verify(manifest, executorDllPath, trustedKey);
+            if (!result.IsValid)
+            {
+                logger.LogError(
+                    "StepPackageLoader: {Name} {Version} signature verification failed: {Reason}",
+                    manifest.Id, manifest.Version, result.Reason);
+                return false;
+            }
+            return true;
+        }
+        finally
+        {
+            trustedKey.Dispose();
+        }
     }
 
-    private static string? ComputeArchiveSha256(string packageDir)
+    /// <summary>
+    /// Reads the trusted public key from <c>StepPackages:TrustedPublicKey</c>.
+    /// Accepts inline PEM (multi-line with BEGIN marker) or a path to a
+    /// <c>.pem</c> file. Returns null when missing or unloadable.
+    /// </summary>
+    private RSA? LoadTrustedPublicKey()
     {
-        var path = Path.Combine(packageDir, "package" + StepPackageFiles.Extension);
-        if (!File.Exists(path)) { return null; }
-        using var sha = SHA256.Create();
-        using var stream = File.OpenRead(path);
-        return Convert.ToHexStringLower(sha.ComputeHash(stream));
+        var raw = config["StepPackages:TrustedPublicKey"];
+        if (string.IsNullOrWhiteSpace(raw)) { return null; }
+
+        string pem;
+        if (raw.Contains("-----BEGIN", StringComparison.Ordinal))
+        {
+            pem = raw;
+        }
+        else if (File.Exists(raw))
+        {
+            pem = File.ReadAllText(raw);
+        }
+        else
+        {
+            logger.LogWarning(
+                "StepPackageLoader: StepPackages:TrustedPublicKey is set but is neither " +
+                "inline PEM nor a path to an existing file: '{Raw}'.", raw);
+            return null;
+        }
+
+        try
+        {
+            return StepPackageSigner.ImportPublicKeyFromPem(pem);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex,
+                "StepPackageLoader: failed to load StepPackages:TrustedPublicKey from PEM.");
+            return null;
+        }
     }
 
     /// <summary>

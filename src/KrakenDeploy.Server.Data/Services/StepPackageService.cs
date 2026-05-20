@@ -108,10 +108,11 @@ public sealed class StepPackageService(
             var validation = ValidateManifest(manifest);
             if (validation is not null) { return Fail(validation); }
 
-            // Signature verification — placeholder for v1. The hook lets us
-            // ship the storage path now and plumb in real RSA verification in
-            // a later D-3.x slice without changing the upload API.
-            var sigCheck = await VerifySignatureAsync(manifest, ct).ConfigureAwait(false);
+            // Signature verification (Phase D-12 — real RSA-SHA256). The
+            // verifier needs the executor DLL bytes from inside the zip to
+            // compute the canonical signature input; pass the tempFile so
+            // VerifySignatureAsync can open its own zip view.
+            var sigCheck = await VerifySignatureAsync(manifest, tempFile, ct).ConfigureAwait(false);
             if (sigCheck is not null) { return Fail(sigCheck); }
 
             // Persist + extract.
@@ -564,10 +565,22 @@ public sealed class StepPackageService(
         return null;
     }
 
-    private Task<string?> VerifySignatureAsync(
-        StepPackageManifest manifest, CancellationToken ct)
+    /// <summary>
+    /// Verifies the step-package signature (Phase D-12). Returns <c>null</c>
+    /// when the manifest passes (or when the dev-mode allowlist is enabled);
+    /// otherwise returns the user-facing failure reason.
+    /// <para>
+    /// Recipe: extract the executor DLL bytes from inside the zip, compute
+    /// SHA-256, build the canonical signature input via
+    /// <see cref="StepPackageManifestJson.CanonicalSignatureInput"/>, verify
+    /// against the trusted public key configured under
+    /// <c>StepPackages:TrustedPublicKey</c> (either inline PEM text or a path
+    /// to a <c>.pem</c> file).
+    /// </para>
+    /// </summary>
+    private async Task<string?> VerifySignatureAsync(
+        StepPackageManifest manifest, string archivePath, CancellationToken ct)
     {
-        _ = ct;
         var allowUnsigned = config.GetValue<bool?>("StepPackages:AllowUnsignedUploads") ?? false;
 
         if (string.IsNullOrEmpty(manifest.Signature))
@@ -579,24 +592,129 @@ public sealed class StepPackageService(
                     "(StepPackages:AllowUnsignedUploads is true). " +
                     "Disable this in production.",
                     manifest.Id, manifest.Version);
-                return Task.FromResult<string?>(null);
+                return null;
             }
-            return Task.FromResult<string?>(
+            return
                 "Manifest is unsigned. Configure StepPackages:AllowUnsignedUploads=true " +
-                "to accept unsigned uploads (dev only), or sign the package.");
+                "to accept unsigned uploads (dev only), or sign the package.";
         }
 
-        // Real RSA-SHA256 verification lands in a follow-up D-3.x slice — the
-        // canonical recipe lives in StepPackageManifestJson.CanonicalSignatureInput
-        // and Server.Data will pair it with the executor DLL SHA-256 and the
-        // project public key. For v1 we accept any non-empty signature when
-        // the operator hasn't explicitly opted in to unsigned uploads, so the
-        // wiring through to the persisted row is testable end-to-end.
+        // The dev-build sentinel — explicit opt-in only.
+        if (string.Equals(manifest.Signature, "unsigned-dev-build", StringComparison.Ordinal))
+        {
+            if (allowUnsigned)
+            {
+                logger.LogWarning(
+                    "Step package {Id} {Version} accepted with the 'unsigned-dev-build' " +
+                    "sentinel signature (StepPackages:AllowUnsignedUploads is true).",
+                    manifest.Id, manifest.Version);
+                return null;
+            }
+            return
+                "Manifest carries the 'unsigned-dev-build' sentinel signature. " +
+                "Set StepPackages:AllowUnsignedUploads=true (dev only) to accept it, " +
+                "or sign the package with a trusted key.";
+        }
+
+        // Real signature → need a trusted public key configured.
+        var trustedKey = await LoadTrustedPublicKeyAsync(ct).ConfigureAwait(false);
+        if (trustedKey is null)
+        {
+            return
+                "Manifest is signed but no trusted public key is configured on this server. " +
+                "Set StepPackages:TrustedPublicKey to the PEM-encoded RSA public key (or a " +
+                "path to a .pem file) of the project that signs your packages.";
+        }
+
+        // Extract the executor DLL bytes from the zip so we can compute its SHA-256.
+        try
+        {
+            await using var fs = File.OpenRead(archivePath);
+            using var zip      = new ZipArchive(fs, ZipArchiveMode.Read, leaveOpen: false);
+            var executorEntry  = zip.GetEntry(
+                $"{StepPackageFiles.ExecutorDirectory}/{manifest.ExecutorAssembly}");
+
+            if (executorEntry is null)
+            {
+                return
+                    $"Manifest's executorAssembly '{manifest.ExecutorAssembly}' is not present " +
+                    $"under '{StepPackageFiles.ExecutorDirectory}/' inside the archive.";
+            }
+
+            // Stage the DLL to a temp file because the signer takes a path; the
+            // canonical recipe is "manifest-without-signature ++ sha256(executor.dll)"
+            // and we want one code path used by both server + agent + CLI.
+            var tempDll = Path.Combine(Path.GetTempPath(),
+                $"kraken-verify-{Guid.NewGuid():N}.dll");
+            try
+            {
+                await using (var src  = executorEntry.Open())
+                await using (var dest = File.Create(tempDll))
+                {
+                    await src.CopyToAsync(dest, ct).ConfigureAwait(false);
+                }
+
+                var verify = StepPackageSigner.Verify(manifest, tempDll, trustedKey);
+                if (!verify.IsValid)
+                {
+                    return $"Signature verification failed: {verify.Reason}";
+                }
+            }
+            finally
+            {
+                try { File.Delete(tempDll); } catch { /* best effort */ }
+            }
+        }
+        finally
+        {
+            trustedKey.Dispose();
+        }
+
         logger.LogInformation(
-            "Step package {Id} {Version} signature verification is a placeholder " +
-            "(real RSA-SHA256 hook lands in a D-3 follow-up).",
+            "Step package {Id} {Version} signature verified against the trusted public key.",
             manifest.Id, manifest.Version);
-        return Task.FromResult<string?>(null);
+        return null;
+    }
+
+    /// <summary>
+    /// Loads the configured trusted public key. Accepts either an inline PEM
+    /// block (multi-line) or a path to a <c>.pem</c> file. Returns null when
+    /// nothing is configured.
+    /// </summary>
+    private async Task<RSA?> LoadTrustedPublicKeyAsync(CancellationToken ct)
+    {
+        var raw = config["StepPackages:TrustedPublicKey"];
+        if (string.IsNullOrWhiteSpace(raw)) { return null; }
+
+        string pem;
+        if (raw.Contains("-----BEGIN", StringComparison.Ordinal))
+        {
+            pem = raw;
+        }
+        else if (File.Exists(raw))
+        {
+            pem = await File.ReadAllTextAsync(raw, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            logger.LogWarning(
+                "StepPackages:TrustedPublicKey is set but is neither inline PEM " +
+                "(must contain BEGIN marker) nor a path to an existing file: '{Raw}'.",
+                raw);
+            return null;
+        }
+
+        try
+        {
+            return StepPackageSigner.ImportPublicKeyFromPem(pem);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex,
+                "Failed to load StepPackages:TrustedPublicKey. Check the PEM format " +
+                "(SubjectPublicKeyInfo or RSA public key).");
+            return null;
+        }
     }
 
     private static void ExtractZipSafely(ZipArchive zip, string destinationRoot)
