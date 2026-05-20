@@ -1,7 +1,7 @@
 using System.Text.Json;
 using KrakenDeploy.Contracts.Steps;
 
-namespace KrakenDeploy.Agent.Deployment.Iis;
+namespace KrakenDeploy.Steps.KrakenIis;
 
 /// <summary>
 /// Step config keys for an <c>Octopus.IIS</c> step, mirroring Octopus's

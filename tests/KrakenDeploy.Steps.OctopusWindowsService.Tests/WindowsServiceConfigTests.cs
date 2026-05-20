@@ -1,8 +1,8 @@
 using FluentAssertions;
-using KrakenDeploy.Agent.Deployment.Service;
+using KrakenDeploy.Steps.OctopusWindowsService;
 using Octostache;
 
-namespace KrakenDeploy.Agent.Tests;
+namespace KrakenDeploy.Steps.OctopusWindowsService.Tests;
 
 /// <summary>
 /// Unit tests for <see cref="WindowsServiceConfig.Parse"/> and

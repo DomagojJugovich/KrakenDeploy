@@ -37,10 +37,18 @@
     <RemoveDir Directories="$(KrakenStepPackageStagingDir)" />
     <MakeDir Directories="$(KrakenStepPackageStagingDir);$(KrakenStepPackageStagingDir)executor\;$(KrakenStepPackageStagingDir)ui\" />
 
-    <!-- Stage executor/ — project DLL only for now. Multi-DLL packages
-         (e.g. Kraken.IIS bundles IisScriptGenerator) just gain additional
-         items here in their own .csproj. -->
-    <Copy SourceFiles="$(TargetPath)"
+    <!-- Stage executor/ — the project DLL plus any non-host runtime DLLs
+         that landed in $(OutputPath). The agent's StepPackageAssemblyLoadContext
+         delegates KrakenDeploy.Contracts back to the default ALC (Phase D-4)
+         so that one stays out of executor/. Everything else (shared step
+         helpers like KrakenDeploy.Steps.Common, third-party deps the package
+         brought in) gets bundled so the loader's AssemblyDependencyResolver
+         can find them at runtime. -->
+    <ItemGroup>
+      <_KrakenExecutorDlls Include="$(OutputPath)*.dll"
+                           Exclude="$(OutputPath)KrakenDeploy.Contracts.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_KrakenExecutorDlls)"
           DestinationFolder="$(KrakenStepPackageStagingDir)executor\" />
 
     <!-- Project-supplied UI schema, if present. -->

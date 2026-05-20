@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace KrakenDeploy.Agent.Deployment.Service;
+namespace KrakenDeploy.Steps.OctopusWindowsService;
 
 /// <summary>
 /// Generates the PowerShell script that drives an <c>Octopus.WindowsService</c>

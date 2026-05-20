@@ -1,9 +1,9 @@
 using FluentAssertions;
-using KrakenDeploy.Agent.Deployment.Iis;
 using KrakenDeploy.Contracts.Steps;
+using KrakenDeploy.Steps.KrakenIis;
 using Octostache;
 
-namespace KrakenDeploy.Agent.Tests;
+namespace KrakenDeploy.Steps.KrakenIis.Tests;
 
 /// <summary>
 /// Unit tests for <see cref="OctopusIisConfig.MapToKrakenIisConfig"/> — the

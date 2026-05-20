@@ -1,8 +1,8 @@
-using KrakenDeploy.Agent.Deployment.StepHandlers;
 using KrakenDeploy.Contracts.Steps;
+using KrakenDeploy.Steps.Common;
 using Octostache;
 
-namespace KrakenDeploy.Agent.Deployment.Iis;
+namespace KrakenDeploy.Steps.KrakenIis;
 
 /// <summary>
 /// Handles the <c>Kraken.IIS</c> step type — a comprehensive superset of
@@ -30,8 +30,13 @@ namespace KrakenDeploy.Agent.Deployment.Iis;
 /// so it appears as a downloadable artifact for troubleshooting.
 /// </para>
 /// </summary>
-public sealed class KrakenIisStepHandler(ScriptRunner scriptRunner) : IStepHandler
+public sealed class KrakenIisStepHandler : IStepHandler
 {
+    // The agent's StepPackageLoader instantiates handlers via Activator,
+    // so we build a ScriptRunner on demand. ScriptRunner has no state worth
+    // sharing across step executions.
+    private readonly ScriptRunner _scriptRunner = new();
+
     public bool CanHandle(string stepType)
         => stepType.Equals("Kraken.IIS", StringComparison.OrdinalIgnoreCase)
         || stepType.Equals("Octopus.IIS", StringComparison.OrdinalIgnoreCase);
@@ -102,7 +107,7 @@ public sealed class KrakenIisStepHandler(ScriptRunner scriptRunner) : IStepHandl
             return false;
         }
 
-        return await scriptRunner.RunAsync(
+        return await _scriptRunner.RunAsync(
             script,
             "PowerShell",
             context.ExtractDir,

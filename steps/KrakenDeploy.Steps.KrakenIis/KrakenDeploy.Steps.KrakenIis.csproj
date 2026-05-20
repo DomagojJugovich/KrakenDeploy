@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <KrakenStepPackageId>kraken.iis</KrakenStepPackageId>
+    <KrakenStepPackageVersion>2.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageDisplayName>Deploy to IIS</KrakenStepPackageDisplayName>
+    <!-- One handler claims both step types: Kraken-native and the Octopus
+         property-bag shape (the handler dispatches internally via
+         OctopusIisConfig.IsOctopusShape). -->
+    <KrakenStepPackageStepTypes>Kraken.IIS,Octopus.IIS</KrakenStepPackageStepTypes>
+    <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.KrakenIis.KrakenIisStepHandler</KrakenStepPackageExecutorTypeName>
+
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Octostache" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
+    <ProjectReference Include="..\KrakenDeploy.Steps.Common\KrakenDeploy.Steps.Common.csproj" />
+  </ItemGroup>
+
+  <Import Project="..\KrakenStepPackage.targets" />
+
+</Project>

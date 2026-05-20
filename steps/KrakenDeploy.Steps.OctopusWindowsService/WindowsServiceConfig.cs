@@ -1,4 +1,4 @@
-namespace KrakenDeploy.Agent.Deployment.Service;
+namespace KrakenDeploy.Steps.OctopusWindowsService;
 
 /// <summary>
 /// Step config keys for an <c>Octopus.WindowsService</c> step, mirroring

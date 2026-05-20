@@ -1,5 +1,6 @@
 using System.Text;
 using KrakenDeploy.Contracts.Steps;
+using KrakenDeploy.Steps.Common;
 
 namespace KrakenDeploy.Steps.Script;
 

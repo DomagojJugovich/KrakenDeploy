@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Text;
 using KrakenDeploy.Contracts.Steps;
 
-namespace KrakenDeploy.Agent.Deployment.Iis;
+namespace KrakenDeploy.Steps.KrakenIis;
 
 /// <summary>
 /// Generates the PowerShell script that drives the <c>Kraken.IIS</c> step on the

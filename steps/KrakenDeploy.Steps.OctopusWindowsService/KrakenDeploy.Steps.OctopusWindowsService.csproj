@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <KrakenStepPackageId>octopus.windowsservice</KrakenStepPackageId>
+    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageDisplayName>Deploy a Windows Service</KrakenStepPackageDisplayName>
+    <KrakenStepPackageStepTypes>Octopus.WindowsService</KrakenStepPackageStepTypes>
+    <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.OctopusWindowsService.OctopusWindowsServiceStepHandler</KrakenStepPackageExecutorTypeName>
+
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Octostache" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
+    <ProjectReference Include="..\KrakenDeploy.Steps.Common\KrakenDeploy.Steps.Common.csproj" />
+  </ItemGroup>
+
+  <Import Project="..\KrakenStepPackage.targets" />
+
+</Project>

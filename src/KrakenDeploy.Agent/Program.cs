@@ -2,8 +2,6 @@ using System.Globalization;
 using KrakenDeploy.Agent;
 using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.Deployment;
-using KrakenDeploy.Agent.Deployment.Iis;
-using KrakenDeploy.Agent.Deployment.Service;
 using KrakenDeploy.Agent.Deployment.StepHandlers;
 using KrakenDeploy.Agent.Identity;
 using KrakenDeploy.Agent.Machine;
@@ -140,17 +138,16 @@ static async Task<int> RunAsync(string[] args)
     });
 
     // ── Step handlers — registered in priority order ─────────────────────
-    // DeploymentExecutor resolves the first handler that CanHandle() the step type.
-    // Most built-ins now ship as step packages (D-8); the agent's loader pulls
-    // them from the server. The handlers still listed below haven't been
-    // ported yet — D-8.6 will move KrakenIis (+ OctopusWindowsService).
+    // Every built-in step type now ships as a step package (D-8). The
+    // agent's loader pulls them from the server; DeploymentExecutor's
+    // package-first resolve path means these in-DI registrations are dead
+    // code today (the loader always wins). They survive as a safety net
+    // for the migration window — D-8.9 removes the remaining two together
+    // with the in-DI fallback branch in DeploymentExecutor.ResolveHandlerAsync.
     builder.Services.AddTransient<IStepHandler, SubstituteVariablesStepHandler>();
     builder.Services.AddTransient<IStepHandler, ManualInterventionStepHandler>();
-    builder.Services.AddTransient<IStepHandler, KrakenIisStepHandler>();
-    builder.Services.AddTransient<IStepHandler, OctopusWindowsServiceStepHandler>();
 
     // ── Scoped/Transient services ────────────────────────────────────────
-    builder.Services.AddTransient<ScriptRunner>();
     builder.Services.AddTransient<DeploymentExecutor>();
 
     // ── Hosted services — registered in start-up order ───────────────────

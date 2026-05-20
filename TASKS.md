@@ -920,7 +920,7 @@ Steps ship as standalone signed `.kdeploy-step` packages instead of being compil
   - On the Process page (`Process.razor`), each step card gains an **"Update available"** badge when `DeploymentStep.StepPackageVersion < latestInstalledVersionOfPackage`. Clicking the badge opens a dialog showing the changelog (manifest `changelog` field from D-1) and the schema delta (added fields / removed fields / changed widget types). Confirming bumps `StepPackageVersion`.
   - **No bulk auto-upgrade.** No floating pins (no "latest 2.x" mode in v1) — exact pin only.
 
-- [ ] **D-8: Refactor existing built-ins into step packages** — sliced; D-8.1/8.2/8.3/8.4/8.5 done.
+- [ ] **D-8: Refactor existing built-ins into step packages** — sliced; D-8.1/8.2/8.3/8.4/8.5/8.6 done.
 
   **D-8.1 — Infrastructure + first port (Manual)** (done):
   - Moved `IStepHandler` + `StepHandlerContext` to `KrakenDeploy.Contracts.Steps` so step packages can compile against the SDK alone (no agent dep). The old agent-namespace types collapse to global-using aliases.
@@ -984,7 +984,41 @@ Steps ship as standalone signed `.kdeploy-step` packages instead of being compil
   + the now-stale `using KrakenDeploy.Agent.Deployment.Package;` in
   `Agent/Program.cs`. 552 total tests pass across the solution.
 
-  Subsequent slices port the remaining handlers in priority order:
+  **D-8.6 — Kraken.IIS + Octopus.IIS + Octopus.WindowsService + Steps.Common**
+  (done): the heaviest slice yet.
+  - New shared library `steps/KrakenDeploy.Steps.Common/` carries `ScriptRunner`
+    — the canonical home converged here once the last in-DI consumer migrated.
+    Script / KrakenIis / OctopusWindowsService all ProjectReference it.
+  - Extended `KrakenStepPackage.targets` to gather every non-`KrakenDeploy.Contracts`
+    DLL from `$(OutputPath)` into `executor/`. Previously the target copied only
+    `$(TargetPath)`; now shared deps (`KrakenDeploy.Steps.Common.dll`,
+    `Microsoft.Extensions.Logging.Abstractions.dll`, etc.) flow through.
+    The agent loader's `AssemblyDependencyResolver` then finds them at runtime
+    via the package's `.deps.json`.
+  - `steps/KrakenDeploy.Steps.KrakenIis/` produces `kraken.iis-2.0.0.kdeploy-step`
+    — second multi-step-type package (`Kraken.IIS,Octopus.IIS`). Handler
+    dispatches internally via `OctopusIisConfig.IsOctopusShape`. Includes
+    `KrakenIisStepHandler` + `IisScriptGenerator` (553 LOC) + `OctopusIisConfig`
+    (474 LOC). Migrated 43 tests (`KrakenIisConfigTests` + `OctopusIisConfigTests`)
+    out of Agent.Tests into the package's own test project.
+  - `steps/KrakenDeploy.Steps.OctopusWindowsService/` produces
+    `octopus.windowsservice-1.0.0.kdeploy-step`. Includes
+    `OctopusWindowsServiceStepHandler` + `WindowsServiceConfig` + `WindowsServiceScriptGenerator`.
+    Migrated 33 tests (`WindowsServiceConfigTests`) over from Agent.Tests.
+  - **Retired the agent-side `ScriptRunner`** entirely — the canonical home is
+    now `KrakenDeploy.Steps.Common`. The handlers that used it (`KrakenIis`,
+    `OctopusWindowsService`) became step packages in the same slice, so the
+    agent-side type has no remaining consumers. Removed its DI registration
+    + the `KrakenDeploy.Agent.Deployment.Iis` + `KrakenDeploy.Agent.Deployment.Service`
+    using imports from `Program.cs`.
+  - Agent in-DI handler list now: `SubstituteVariablesStepHandler` +
+    `ManualInterventionStepHandler` only. Both are already shipped as step
+    packages (D-8.1, D-8.2); D-8.9 retires the last two in-DI registrations
+    along with the fallback branch in `DeploymentExecutor.ResolveHandlerAsync`.
+  - 552 total tests still pass — handler instance counts move between
+    assemblies as tests follow the source.
+
+  Remaining D-8 work — only one slice left:
   - `KrakenDeploy.Steps.KrakenIis` → `kraken.iis-2.0.0.kdeploy-step` (the existing `KrakenIisStepHandler` + `IisScriptGenerator` + `KrakenIisConfig` + the C-5 schema).
   - `KrakenDeploy.Steps.OctopusIis` → `octopus.iis-1.0.0.kdeploy-step` (the B-3 `OctopusIisConfig` mapper; package is separate because step type is distinct, even though the script-emit reuses the Kraken.IIS generator via an inter-package reference — handled cleanly by ALC sharing).
   - `KrakenDeploy.Steps.OctopusTentaclePackage` → `octopus.tentaclepackage-1.0.0.kdeploy-step` (B-1).

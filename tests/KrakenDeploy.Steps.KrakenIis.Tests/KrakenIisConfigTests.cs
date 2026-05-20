@@ -1,8 +1,8 @@
 using FluentAssertions;
-using KrakenDeploy.Agent.Deployment.Iis;
 using KrakenDeploy.Contracts.Steps;
+using KrakenDeploy.Steps.KrakenIis;
 
-namespace KrakenDeploy.Agent.Tests;
+namespace KrakenDeploy.Steps.KrakenIis.Tests;
 
 public sealed class KrakenIisConfigTests
 {
@@ -253,14 +253,14 @@ public sealed class KrakenIisStepHandlerTests
     [InlineData("octopus.iis")]
     public void CanHandle_accepts_kraken_and_octopus_iis_case_insensitive(string stepType)
     {
-        var handler = new KrakenIisStepHandler(null!);
+        var handler = new KrakenIisStepHandler();
         handler.CanHandle(stepType).Should().BeTrue();
     }
 
     [Fact]
     public void CanHandle_rejects_unrelated_step_types()
     {
-        var handler = new KrakenIisStepHandler(null!);
+        var handler = new KrakenIisStepHandler();
         handler.CanHandle("Kraken.Script").Should().BeFalse();
         handler.CanHandle("Octopus.Script").Should().BeFalse();
         handler.CanHandle("Octopus.WindowsService").Should().BeFalse();
@@ -269,7 +269,7 @@ public sealed class KrakenIisStepHandlerTests
     [Fact]
     public void RequiresPackage_is_true()
     {
-        var handler = new KrakenIisStepHandler(null!);
+        var handler = new KrakenIisStepHandler();
         handler.RequiresPackage.Should().BeTrue();
     }
 }

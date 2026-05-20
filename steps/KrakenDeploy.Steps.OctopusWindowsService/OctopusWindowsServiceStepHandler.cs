@@ -1,7 +1,8 @@
-using KrakenDeploy.Agent.Deployment.StepHandlers;
+using KrakenDeploy.Contracts.Steps;
+using KrakenDeploy.Steps.Common;
 using Octostache;
 
-namespace KrakenDeploy.Agent.Deployment.Service;
+namespace KrakenDeploy.Steps.OctopusWindowsService;
 
 /// <summary>
 /// Handles the <c>Octopus.WindowsService</c> step type — Argosy / WebArgosy-style
@@ -18,8 +19,12 @@ namespace KrakenDeploy.Agent.Deployment.Service;
 /// before execution so it appears as a downloadable artifact for troubleshooting.
 /// </para>
 /// </summary>
-public sealed class OctopusWindowsServiceStepHandler(ScriptRunner scriptRunner) : IStepHandler
+public sealed class OctopusWindowsServiceStepHandler : IStepHandler
 {
+    // The agent's StepPackageLoader activates handlers via Activator; we
+    // build a ScriptRunner on demand. ScriptRunner has no state to share.
+    private readonly ScriptRunner _scriptRunner = new();
+
     public bool CanHandle(string stepType)
         => stepType.Equals("Octopus.WindowsService", StringComparison.OrdinalIgnoreCase);
 
@@ -84,7 +89,7 @@ public sealed class OctopusWindowsServiceStepHandler(ScriptRunner scriptRunner) 
             ["KRAKEN_SERVICE_INSTALL_ROOT"] = cfg.InstallRoot,
         };
 
-        return await scriptRunner.RunAsync(
+        return await _scriptRunner.RunAsync(
             script,
             "PowerShell",
             context.ExtractDir,
