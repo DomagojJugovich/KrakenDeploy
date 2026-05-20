@@ -46,4 +46,18 @@ public class Deployment : AuditableEntity, ISpaceScoped
     /// The Hangfire <c>ScheduledDeploymentDispatchJob</c> polls for due entries.
     /// </summary>
     public DateTimeOffset? ScheduledFor { get; set; }
+
+    /// <summary>
+    /// When this deployment was triggered by an <c>Octopus.DeployRelease</c>
+    /// step in another deployment, this is that parent deployment's id.
+    /// <c>null</c> for top-level deployments. Used for the audit trail and to
+    /// power "show child deployments triggered by this one" UI surfaces.
+    /// </summary>
+    public Guid? ParentDeploymentId { get; set; }
+
+    /// <summary>
+    /// Navigation: the parent deployment when <see cref="ParentDeploymentId"/>
+    /// is set. EF lazy-loads on demand; not eagerly included by default.
+    /// </summary>
+    public Deployment? ParentDeployment { get; set; }
 }

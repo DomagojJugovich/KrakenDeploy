@@ -245,6 +245,7 @@ public static class Program
         builder.Services.AddHostedService<DeploymentWorker>();
         builder.Services.AddHostedService<RunbookRunWorker>();
         builder.Services.AddSingleton<ServerScriptStepRunner>();
+        builder.Services.AddSingleton<DeployReleaseStepRunner>();
         builder.Services.AddSingleton<IPendingSubPlanRegistry, PendingSubPlanRegistry>();
 
         // ── Agent auto-update settings ────────────────────────────────────────

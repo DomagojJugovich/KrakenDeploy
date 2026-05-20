@@ -40,6 +40,7 @@ public sealed class DeploymentWorker(
     IAgentConnectionRegistry registry,
     IHubContext<AgentHub, IAgentHubClient> agentHub,
     ServerScriptStepRunner serverRunner,
+    DeployReleaseStepRunner deployReleaseRunner,
     IPendingSubPlanRegistry subPlans,
     IServiceScopeFactory scopeFactory,
     ILogger<DeploymentWorker> logger)
@@ -226,7 +227,9 @@ public sealed class DeploymentWorker(
                 {
                     // Run each server step in-process. Honours
                     // "Server on behalf of each deployment target" via the
-                    // role-filter helper.
+                    // role-filter helper. Dispatch by StepType so server-only
+                    // orchestrator steps (e.g. Octopus.DeployRelease) route to
+                    // a dedicated runner instead of the generic script runner.
                     foreach (var s in group.Steps)
                     {
                         if (!StepAppliesToTarget(deployment, s))
@@ -234,8 +237,8 @@ public sealed class DeploymentWorker(
                             continue;
                         }
 
-                        var ok = await serverRunner.ExecuteAsync(
-                            deployment.Id, s, flatVars, ct).ConfigureAwait(false);
+                        var ok = await ExecuteServerStepAsync(deployment.Id, s, flatVars, ct)
+                            .ConfigureAwait(false);
                         if (!ok)
                         {
                             await FailAsync(db, deployment,
@@ -511,12 +514,51 @@ public sealed class DeploymentWorker(
     }
 
     /// <summary>
-    /// True if the step's config marks it for server-side execution.
-    /// Honours <c>Octopus.Action.RunOnServer = "true"</c> (case-insensitive).
+    /// True if the step's config marks it for server-side execution. A step is
+    /// server-side when EITHER the config carries
+    /// <c>Octopus.Action.RunOnServer = "true"</c> (the explicit Octopus marker),
+    /// OR the <see cref="DeploymentStepPlan.StepType"/> is one of the
+    /// intrinsically server-side orchestrator types (<see cref="ServerOnlyStepTypes"/>).
     /// </summary>
-    private static bool IsServerStep(DeploymentStepPlan step) =>
-        step.Config.TryGetValue("Octopus.Action.RunOnServer", out var v)
-        && string.Equals(v, "true", StringComparison.OrdinalIgnoreCase);
+    private static bool IsServerStep(DeploymentStepPlan step)
+    {
+        if (step.Config.TryGetValue("Octopus.Action.RunOnServer", out var v)
+            && string.Equals(v, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        return ServerOnlyStepTypes.Contains(step.StepType);
+    }
+
+    /// <summary>
+    /// Step types that always run on the server regardless of the
+    /// <c>Octopus.Action.RunOnServer</c> flag — they coordinate other deployments
+    /// or otherwise have no agent-side meaning.
+    /// </summary>
+    private static readonly HashSet<string> ServerOnlyStepTypes =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            DeployReleaseStepRunner.StepType,
+        };
+
+    /// <summary>
+    /// Dispatches one server-side step to the appropriate runner based on its
+    /// <see cref="DeploymentStepPlan.StepType"/>. Orchestrator step types (like
+    /// <c>Octopus.DeployRelease</c>) route to a dedicated runner; everything
+    /// else falls through to the generic <see cref="ServerScriptStepRunner"/>.
+    /// </summary>
+    private Task<bool> ExecuteServerStepAsync(
+        Guid deploymentId,
+        DeploymentStepPlan step,
+        IReadOnlyDictionary<string, string> flatVars,
+        CancellationToken ct)
+    {
+        if (step.StepType.Equals(DeployReleaseStepRunner.StepType, StringComparison.OrdinalIgnoreCase))
+        {
+            return deployReleaseRunner.ExecuteAsync(deploymentId, step, flatVars, ct);
+        }
+        return serverRunner.ExecuteAsync(deploymentId, step, flatVars, ct);
+    }
 
     /// <summary>
     /// Encapsulates "Run on Server on behalf of each deployment target" role

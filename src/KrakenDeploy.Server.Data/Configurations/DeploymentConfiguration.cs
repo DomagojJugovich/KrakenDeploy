@@ -47,6 +47,16 @@ public class DeploymentConfiguration : IEntityTypeConfiguration<Deployment>
 
         builder.HasIndex(x => new { x.ReleaseId, x.EnvironmentId, x.TargetId });
 
+        // Parent-deployment link — set when an Octopus.DeployRelease step in
+        // another deployment triggered this one. SetNull on delete so deleting
+        // a parent doesn't cascade away its child's history.
+        builder.HasOne(x => x.ParentDeployment)
+            .WithMany()
+            .HasForeignKey(x => x.ParentDeploymentId)
+            .OnDelete(DeleteBehavior.SetNull);
+        builder.HasIndex(x => x.ParentDeploymentId)
+            .HasFilter("parent_deployment_id IS NOT NULL");
+
         // Relative path to the drop-bundle zip for offline-drop deployments.
         builder.Property(x => x.DropBundlePath).HasMaxLength(500);
 
