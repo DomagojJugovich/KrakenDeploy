@@ -844,7 +844,7 @@ Strategy is **dual-shape**: the importer preserves the Octopus property bag verb
 ##### Already covered / deferred
 
 - [ ] **`Octopus.DeployRelease`** — server-side orchestrator step: "deploy release of project X to environment Y". Builds on Phase 7b/7d server-side execution. Out of B-1/B-2/B-3 scope; lands separately once B is stable.
-- [ ] **`Octopus.Manual`** — `ManualInterventionStepHandler` already exists; verify parameter shape (Instructions / ResponsibleTeamIds) matches Octopus's exports.
+- [x] **`Octopus.Manual`** — `ManualInterventionStepHandler` aligned with the Octopus public contract. Reads `Octopus.Action.Manual.Instructions` (Octostache-evaluated), `Octopus.Action.Manual.ResponsibleTeamIds` (logged for audit), `Octopus.Action.Manual.BlockConcurrentDeployments` (logged + ignored — Kraken runs unattended). Legacy un-prefixed `Instructions` key honoured for back-compat. New `OctopusManualConfigKeys` constants alongside the handler.
 - [ ] **`Octopus.AwsRunCloudFormation`, `Octopus.AzureFunction`** etc. — long tail; transcribe as Argosy/WebArgosy processes need them. Azure / AWS / Kubernetes packs deferred.
 
 ### M10.4 — Schema-driven step UI + step-package plugin system

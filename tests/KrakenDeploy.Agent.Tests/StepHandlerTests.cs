@@ -87,8 +87,11 @@ public sealed class StepHandlerTests : IDisposable
     // ── ManualInterventionStepHandler.HandleAsync ──────────────────────────────
 
     [Fact]
-    public async Task ManualIntervention_auto_approves_and_returns_true()
+    public async Task ManualIntervention_auto_approves_and_logs_instructions_from_legacy_key()
     {
+        // Back-compat: the legacy un-prefixed "Instructions" key continues to
+        // work for any process authored before the alignment with the Octopus
+        // contract.
         var logs = new List<(string Level, string Message)>();
         var context = MakeContext("Octopus.Manual",
             new Dictionary<string, string> { ["Instructions"] = "Please review the build." },
@@ -100,6 +103,94 @@ public sealed class StepHandlerTests : IDisposable
         result.Should().BeTrue("manual steps auto-approve in unattended mode");
         logs.Should().Contain(l => l.Message.Contains("Please review the build."));
         logs.Should().Contain(l => l.Message.Contains("auto-approved"));
+    }
+
+    [Fact]
+    public async Task ManualIntervention_reads_Octopus_Action_Manual_Instructions_first()
+    {
+        // The Octopus contract key takes priority over the legacy key.
+        var logs = new List<(string Level, string Message)>();
+        var context = MakeContext("Octopus.Manual",
+            new Dictionary<string, string>
+            {
+                [OctopusManualConfigKeys.Instructions] = "Octopus instructions take priority.",
+                [OctopusManualConfigKeys.LegacyInstructionsKey] = "Should be ignored.",
+            },
+            logs);
+
+        var handler = new ManualInterventionStepHandler();
+        var result  = await handler.HandleAsync(context, CancellationToken.None);
+
+        result.Should().BeTrue();
+        logs.Should().Contain(l => l.Message.Contains("Octopus instructions take priority."));
+        logs.Should().NotContain(l => l.Message.Contains("Should be ignored."));
+    }
+
+    [Fact]
+    public async Task ManualIntervention_octostache_evaluates_instructions()
+    {
+        var logs = new List<(string Level, string Message)>();
+        var context = MakeContext("Octopus.Manual",
+            new Dictionary<string, string>
+            {
+                [OctopusManualConfigKeys.Instructions] =
+                    "Please approve deploy of #{Octopus.Project.Name} to #{Octopus.Environment.Name}.",
+            },
+            logs,
+            variables: new Dictionary<string, string>
+            {
+                ["Octopus.Project.Name"]     = "Argosy",
+                ["Octopus.Environment.Name"] = "Production",
+            });
+
+        var handler = new ManualInterventionStepHandler();
+        var result  = await handler.HandleAsync(context, CancellationToken.None);
+
+        result.Should().BeTrue();
+        logs.Should().Contain(l =>
+            l.Message.Contains("Please approve deploy of Argosy to Production."));
+    }
+
+    [Fact]
+    public async Task ManualIntervention_logs_responsible_teams_when_present()
+    {
+        var logs = new List<(string Level, string Message)>();
+        var context = MakeContext("Octopus.Manual",
+            new Dictionary<string, string>
+            {
+                [OctopusManualConfigKeys.Instructions]       = "Approve please.",
+                [OctopusManualConfigKeys.ResponsibleTeamIds] = "teams-administrators,teams-ops",
+            },
+            logs);
+
+        var handler = new ManualInterventionStepHandler();
+        var result  = await handler.HandleAsync(context, CancellationToken.None);
+
+        result.Should().BeTrue();
+        logs.Should().Contain(l =>
+            l.Message.Contains("teams-administrators") &&
+            l.Message.Contains("teams-ops"));
+    }
+
+    [Fact]
+    public async Task ManualIntervention_logs_BlockConcurrentDeployments_when_true()
+    {
+        var logs = new List<(string Level, string Message)>();
+        var context = MakeContext("Octopus.Manual",
+            new Dictionary<string, string>
+            {
+                [OctopusManualConfigKeys.Instructions]                = "Approve please.",
+                [OctopusManualConfigKeys.BlockConcurrentDeployments] = "True",
+            },
+            logs);
+
+        var handler = new ManualInterventionStepHandler();
+        var result  = await handler.HandleAsync(context, CancellationToken.None);
+
+        result.Should().BeTrue();
+        logs.Should().Contain(l =>
+            l.Message.Contains("BlockConcurrentDeployments") &&
+            l.Message.Contains("Kraken runs unattended"));
     }
 
     [Fact]
