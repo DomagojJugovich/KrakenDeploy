@@ -1,4 +1,5 @@
 using System.Text.Json;
+using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Tenants;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using Microsoft.EntityFrameworkCore;
@@ -265,6 +266,91 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
                 ? encryption.Decrypt(winner.Value)
                 : winner.Value;  // String: plain; StringArray: JSON string
         }
+    }
+
+    /// <summary>
+    /// Snapshot-side overload of <see cref="ApplyVariables(IEnumerable{Variable}, …)"/>.
+    /// Same scope-resolution semantics; consumes <see cref="VariableSnapshot"/>
+    /// rows that were frozen into a <see cref="Release"/> instead of live
+    /// <see cref="Variable"/> rows. Sensitive values still get decrypted at
+    /// resolve time using whatever encryption key the agent currently has —
+    /// snapshotting the ciphertext means key rotations after release time
+    /// will break the snapshot unless the old key is retained.
+    /// </summary>
+    private void ApplyVariables(
+        IEnumerable<VariableSnapshot> snapshot,
+        Dictionary<string, string> result,
+        Guid environmentId,
+        Guid? targetId,
+        IReadOnlyList<string> targetRoles,
+        Guid? tenantId)
+    {
+        var byName = snapshot.GroupBy(v => v.Name, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var group in byName)
+        {
+            var winner = group
+                .Where(v => v.Scope.Matches(environmentId, targetId, targetRoles, tenantId))
+                .OrderByDescending(v => v.Scope.SpecificityScore())
+                .FirstOrDefault();
+
+            if (winner is null) { continue; }
+
+            result[winner.Name] = winner.Type == VariableType.Sensitive
+                ? encryption.Decrypt(winner.Value)
+                : winner.Value;
+        }
+    }
+
+    /// <summary>
+    /// Resolves a deployment's effective variable set from a frozen
+    /// <see cref="Release.VariableSnapshot"/> instead of live project
+    /// variables. Tenant common variables (lowest priority) still resolve
+    /// live — the snapshot covers ONLY the project's own variables, mirroring
+    /// Octopus's "Update Variables" semantics where tenant variables track
+    /// the tenant, not the release.
+    /// </summary>
+    public async Task<Dictionary<string, string>> ResolveFromSnapshotAsync(
+        IReadOnlyList<VariableSnapshot> projectSnapshot,
+        Guid environmentId,
+        Guid? targetId,
+        IReadOnlyList<string> targetRoles,
+        Guid? tenantId = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(projectSnapshot);
+
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        // 1. Tenant common variables (live — same as ResolveAsync).
+        if (tenantId.HasValue)
+        {
+            await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+            var tenant = await db.Tenants
+                .AsNoTracking()
+                .FirstOrDefaultAsync(t => t.Id == tenantId.Value, ct)
+                .ConfigureAwait(false);
+
+            if (tenant?.VariableSetId.HasValue == true)
+            {
+                var tenantSet = await db.VariableSets
+                    .Include(vs => vs.Variables)
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(vs => vs.Id == tenant.VariableSetId!.Value, ct)
+                    .ConfigureAwait(false);
+
+                if (tenantSet is not null)
+                {
+                    ApplyVariables(tenantSet.Variables, result, environmentId, targetId, targetRoles, tenantId);
+                }
+            }
+        }
+
+        // 2. Project variables — from the frozen release snapshot (higher
+        //    priority, overwrites tenant common vars).
+        ApplyVariables(projectSnapshot, result, environmentId, targetId, targetRoles, tenantId);
+
+        return result;
     }
 
     // ── Private helpers ────────────────────────────────────────────────────

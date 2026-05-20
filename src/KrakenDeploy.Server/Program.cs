@@ -1145,6 +1145,30 @@ public static class Program
                 }
             }).RequirePermission(Permission.ReleaseCreate);
 
+        // Octopus-style "Update Variables" — re-snapshot the project's
+        // current variable set into an existing release. Gated by
+        // Permission.ReleaseEdit (same level required to delete a release).
+        app.MapPost("/api/releases/{releaseId:guid}/update-variables",
+            async (Guid releaseId, ReleaseService releaseSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var release = await releaseSvc
+                        .UpdateVariablesAsync(releaseId, ct).ConfigureAwait(false);
+                    return Results.Ok(new
+                    {
+                        release.Id,
+                        release.Version,
+                        release.VariableSnapshotUpdatedUtc,
+                        VariableCount = release.VariableSnapshot.Count,
+                    });
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.NotFound(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.ReleaseEdit);
+
         // ── Variable API ─────────────────────────────────────────────────────
         app.MapGet("/api/projects/{projectId:guid}/variables",
             async (Guid projectId, VariableService variableSvc, CancellationToken ct) =>

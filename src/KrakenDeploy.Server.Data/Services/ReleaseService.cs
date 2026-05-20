@@ -1,6 +1,7 @@
 using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Server.Core.Domain.Channels;
 using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.Variables;
 using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data.Services;
@@ -129,11 +130,21 @@ public class ReleaseService(
             });
         }
 
+        // Variable snapshot — Octopus-style "Update Variables" model.
+        // Project variables get frozen at release creation; tenant common
+        // variables continue to resolve live (DeploymentWorker overlays them
+        // at deploy time). Sensitive values stay encrypted — same ciphertext
+        // as the live row so they decrypt at deploy time using whatever key
+        // is current then.
+        var variableSnapshot = await BuildVariableSnapshotAsync(db, projectId, ct).ConfigureAwait(false);
+
         var release = new Release
         {
             ProjectId = projectId,
             Version = version,
             ProcessSnapshot = snapshot,
+            VariableSnapshot = variableSnapshot,
+            VariableSnapshotUpdatedUtc = DateTimeOffset.UtcNow,
             ReleaseNotes = releaseNotes,
             ChannelId = channelId,
         };
@@ -141,6 +152,65 @@ public class ReleaseService(
         db.Releases.Add(release);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return release;
+    }
+
+    /// <summary>
+    /// Re-snapshots the project's current variable set into the release
+    /// (Octopus-style "Update Variables" button). The process snapshot and
+    /// step-package pins are NOT touched — only the variable rows are
+    /// refreshed plus <see cref="Release.VariableSnapshotUpdatedUtc"/>.
+    /// <para>
+    /// Returns the updated release. Throws when the release doesn't exist.
+    /// </para>
+    /// </summary>
+    public async Task<Release> UpdateVariablesAsync(Guid releaseId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        var release = await db.Releases
+            .FirstOrDefaultAsync(r => r.Id == releaseId, ct)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Release {releaseId} not found.");
+
+        release.VariableSnapshot = await BuildVariableSnapshotAsync(
+            db, release.ProjectId, ct).ConfigureAwait(false);
+        release.VariableSnapshotUpdatedUtc = DateTimeOffset.UtcNow;
+
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return release;
+    }
+
+    /// <summary>
+    /// Reads the project's <see cref="VariableSet"/> and projects each row
+    /// into the wire-side <see cref="VariableSnapshot"/> shape — preserves
+    /// name + value (ciphertext for sensitive) + type + scope so the
+    /// deployment worker can run the same scope-resolution algorithm later.
+    /// Returns an empty list when the project has no variable set yet.
+    /// </summary>
+    private static async Task<List<VariableSnapshot>> BuildVariableSnapshotAsync(
+        KrakenDbContext db, Guid projectId, CancellationToken ct)
+    {
+        var set = await db.VariableSets
+            .Include(vs => vs.Variables)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(vs => vs.ProjectId == projectId, ct)
+            .ConfigureAwait(false);
+
+        if (set is null) { return []; }
+
+        return [.. set.Variables.Select(v => new VariableSnapshot
+        {
+            Name  = v.Name,
+            Value = v.Value,
+            Type  = v.Type,
+            Scope = new VariableScope
+            {
+                EnvironmentId = v.Scope.EnvironmentId,
+                TargetId      = v.Scope.TargetId,
+                TenantId      = v.Scope.TenantId,
+                Roles         = v.Scope.Roles is null ? null : [.. v.Scope.Roles],
+            },
+        })];
     }
 
     // ── Query ──────────────────────────────────────────────────────────────

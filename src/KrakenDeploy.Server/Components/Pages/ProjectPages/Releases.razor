@@ -112,6 +112,37 @@
                         @r.ProcessSnapshot.Count
                     </Template>
                 </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="Release" Title="Variables"
+                                      Width="200px" Sortable="false" Filterable="false">
+                    <Template Context="r">
+                        @if (r.VariableSnapshotUpdatedUtc is { } ts)
+                        {
+                            <span title="@($"Snapshotted at {ts:yyyy-MM-dd HH:mm:ss} UTC")">
+                                @($"{r.VariableSnapshot.Count} pinned · {RelativeTime(ts)}")
+                            </span>
+                        }
+                        else
+                        {
+                            <RadzenBadge Text="No snapshot" BadgeStyle="BadgeStyle.Warning"
+                                         IsPill="true"
+                                         title="Pre-snapshot release — variables resolve live at deploy time." />
+                        }
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="Release" Title="" Width="160px"
+                                      Sortable="false" Filterable="false">
+                    <Template Context="r">
+                        <RequirePermission Permission="Permission.ReleaseEdit">
+                            <RadzenButton Icon="refresh" Text="Update variables"
+                                          Size="ButtonSize.ExtraSmall"
+                                          ButtonStyle="ButtonStyle.Light"
+                                          IsBusy="@(_updatingRelease == r.Id)"
+                                          BusyText="…"
+                                          Click="@(() => UpdateVariablesAsync(r))"
+                                          title="Re-snapshot the project's current variable set into this release." />
+                        </RequirePermission>
+                    </Template>
+                </RadzenDataGridColumn>
             </Columns>
         </RadzenDataGrid>
     }
@@ -125,6 +156,7 @@
     private Dictionary<Guid, string> _channelNames = [];
     private bool _loaded;
     private string? _loadError;
+    private Guid? _updatingRelease; // disables the per-row button during the round-trip
 
     protected override async Task OnParametersSetAsync()
     {
@@ -177,5 +209,47 @@
             Notifications.Notify(NotificationSeverity.Success, "Created",
                 "Release was created.", 3000);
         }
+    }
+
+    /// <summary>
+    /// "Update Variables" per-release action — re-snapshots the project's
+    /// current variable set into this release. Service-side call; the
+    /// page just reloads the grid + flashes a toast on success/failure.
+    /// </summary>
+    private async Task UpdateVariablesAsync(Release release)
+    {
+        _updatingRelease = release.Id;
+        try
+        {
+            var updated = await ReleaseSvc.UpdateVariablesAsync(release.Id);
+            await ReloadAsync();
+            Notifications.Notify(NotificationSeverity.Success, "Variables updated",
+                $"Pinned {updated.VariableSnapshot.Count} variable(s) into {release.Version}.",
+                4000);
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Update failed",
+                ex.Message, 6000);
+        }
+        finally
+        {
+            _updatingRelease = null;
+        }
+    }
+
+    /// <summary>
+    /// Human-friendly "5 minutes ago" / "yesterday" style stamp for the
+    /// variables-snapshotted timestamp. Falls back to the absolute date for
+    /// anything older than 30 days.
+    /// </summary>
+    private static string RelativeTime(DateTimeOffset ts)
+    {
+        var delta = DateTimeOffset.UtcNow - ts;
+        if (delta < TimeSpan.FromMinutes(1)) { return "just now"; }
+        if (delta < TimeSpan.FromHours(1))   { return $"{(int)delta.TotalMinutes}m ago"; }
+        if (delta < TimeSpan.FromDays(1))    { return $"{(int)delta.TotalHours}h ago"; }
+        if (delta < TimeSpan.FromDays(30))   { return $"{(int)delta.TotalDays}d ago"; }
+        return ts.ToString("yyyy-MM-dd");
     }
 }

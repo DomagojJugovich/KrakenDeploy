@@ -96,17 +96,46 @@ public sealed class DeploymentWorker(
             }
 
             // ── 1. Resolve project variables ─────────────────────────────────
+            // Variable resolution path depends on whether the release was cut
+            // after the snapshot feature shipped:
+            //   - VariableSnapshotUpdatedUtc set → use the release's frozen
+            //     project-variable snapshot (tenant common vars still live).
+            //     This is the reproducible path — what Octopus's "Update
+            //     Variables" UX patches.
+            //   - VariableSnapshotUpdatedUtc null → release predates the
+            //     feature; fall back to live project-variable resolution
+            //     with a warning, so historical releases stay deployable
+            //     through the migration window.
             // (Agent-connection check is deferred until after we know whether
             // any target-side steps need dispatching — fully-server-side
             // deployments don't require an online agent.)
             var targetRoles = deployment.Target?.Roles ?? [];
-            var rawVars = await variableService.ResolveAsync(
-                deployment.Release.ProjectId,
-                deployment.EnvironmentId,
-                deployment.TargetId,
-                targetRoles,
-                deployment.TenantId,
-                ct).ConfigureAwait(false);
+            Dictionary<string, string> rawVars;
+            if (deployment.Release.VariableSnapshotUpdatedUtc is not null)
+            {
+                rawVars = await variableService.ResolveFromSnapshotAsync(
+                    deployment.Release.VariableSnapshot,
+                    deployment.EnvironmentId,
+                    deployment.TargetId,
+                    targetRoles,
+                    deployment.TenantId,
+                    ct).ConfigureAwait(false);
+            }
+            else
+            {
+                logger.LogWarning(
+                    "Deployment {DeploymentId}: release {ReleaseId} predates the variable-snapshot " +
+                    "feature; resolving project variables from the live set. Run 'Update Variables' " +
+                    "on this release to freeze its current values into a reproducible snapshot.",
+                    deployment.Id, deployment.Release.Id);
+                rawVars = await variableService.ResolveAsync(
+                    deployment.Release.ProjectId,
+                    deployment.EnvironmentId,
+                    deployment.TargetId,
+                    targetRoles,
+                    deployment.TenantId,
+                    ct).ConfigureAwait(false);
+            }
 
             // ── 2. Build Octostache dictionary ───────────────────────────────
             // Scalar (String + Sensitive) variables go straight into Octostache.
