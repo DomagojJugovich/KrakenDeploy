@@ -46,4 +46,27 @@ public class DeploymentStep : Entity
 
     /// <summary>Step-type-specific configuration stored as jsonb.</summary>
     public Dictionary<string, string> Config { get; set; } = [];
+
+    /// <summary>
+    /// The pinned <see cref="StepPackages.StepPackage.Name"/> that supplies
+    /// the handler for this step (Phase D-6). Step type and package name
+    /// differ (e.g. step type <c>Octopus.IIS</c> lives in package
+    /// <c>octopus.iis</c>), so the pin must carry both. <c>null</c> when
+    /// no installed package claims the step type — the agent then falls
+    /// back to its hardcoded handler.
+    /// </summary>
+    public string? StepPackageName { get; set; }
+
+    /// <summary>
+    /// The pinned <see cref="StepPackages.StepPackage.Version"/> the agent
+    /// loads alongside <see cref="StepPackageName"/> (Phase D-6). Must be
+    /// non-null when <see cref="StepPackageName"/> is non-null (the agent
+    /// trusts the pair as a unit).
+    /// <para>
+    /// Pin is exact: the editor (D-7) writes whichever version the user
+    /// picked, and release creation (<see cref="Releases.StepSnapshot"/>)
+    /// freezes the exact pair so the release stays reproducible.
+    /// </para>
+    /// </summary>
+    public string? StepPackageVersion { get; set; }
 }

@@ -10,7 +10,10 @@ namespace KrakenDeploy.Server.Data.Services;
 /// CRUD and dispatch for <see cref="Runbook"/>s, their process steps, and
 /// <see cref="RunbookRun"/> executions.
 /// </summary>
-public class RunbookService(IDbContextFactory<KrakenDbContext> dbFactory, RunbookRunChannel runbookQueue)
+public class RunbookService(
+    IDbContextFactory<KrakenDbContext> dbFactory,
+    RunbookRunChannel runbookQueue,
+    StepPackageResolver? stepPackageResolver = null)
 {
     // ── Runbook CRUD ───────────────────────────────────────────────────────────
 
@@ -96,6 +99,8 @@ public class RunbookService(IDbContextFactory<KrakenDbContext> dbFactory, Runboo
         string packageId,
         List<string> targetRoles,
         Dictionary<string, string> config,
+        string? stepPackageName = null,
+        string? stepPackageVersion = null,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -105,15 +110,21 @@ public class RunbookService(IDbContextFactory<KrakenDbContext> dbFactory, Runboo
             ? process.Steps.Max(s => s.SortOrder)
             : -1;
 
+        var pin = await ResolvePinAsync(
+                stepType, stepPackageName, stepPackageVersion, ct)
+            .ConfigureAwait(false);
+
         var step = new RunbookStep
         {
-            ProcessId = process.Id,
-            Name = name,
-            StepType = stepType,
-            PackageId = packageId,
-            TargetRoles = targetRoles,
-            Config = config,
-            SortOrder = maxOrder + 1,
+            ProcessId          = process.Id,
+            Name               = name,
+            StepType           = stepType,
+            PackageId          = packageId,
+            TargetRoles        = targetRoles,
+            Config             = config,
+            SortOrder          = maxOrder + 1,
+            StepPackageName    = pin?.Name,
+            StepPackageVersion = pin?.Version,
         };
 
         db.RunbookSteps.Add(step);
@@ -128,6 +139,8 @@ public class RunbookService(IDbContextFactory<KrakenDbContext> dbFactory, Runboo
         string packageId,
         List<string> targetRoles,
         Dictionary<string, string> config,
+        string? stepPackageName = null,
+        string? stepPackageVersion = null,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -137,13 +150,41 @@ public class RunbookService(IDbContextFactory<KrakenDbContext> dbFactory, Runboo
             return null;
         }
 
-        step.Name = name;
-        step.StepType = stepType;
-        step.PackageId = packageId;
+        step.Name        = name;
+        step.StepType    = stepType;
+        step.PackageId   = packageId;
         step.TargetRoles = targetRoles;
-        step.Config = config;
+        step.Config      = config;
+
+        if (stepPackageName is not null && stepPackageVersion is not null)
+        {
+            step.StepPackageName    = stepPackageName;
+            step.StepPackageVersion = stepPackageVersion;
+        }
+
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return step;
+    }
+
+    /// <summary>
+    /// Mirrors <c>ProcessService.ResolvePinAsync</c>: explicit (name, version)
+    /// wins; otherwise asks the resolver for the highest semver claiming
+    /// the step type. Returns null when no resolver is wired or no package
+    /// claims the type.
+    /// </summary>
+    private async Task<StepPackagePin?> ResolvePinAsync(
+        string stepType, string? explicitName, string? explicitVersion, CancellationToken ct)
+    {
+        if (explicitName is not null && explicitVersion is not null)
+        {
+            return new StepPackagePin(explicitName, explicitVersion);
+        }
+        if (stepPackageResolver is null)
+        {
+            return null;
+        }
+        return await stepPackageResolver
+            .ResolveLatestForStepTypeAsync(stepType, ct).ConfigureAwait(false);
     }
 
     public async Task<bool> DeleteStepAsync(Guid stepId, CancellationToken ct = default)
@@ -198,13 +239,17 @@ public class RunbookService(IDbContextFactory<KrakenDbContext> dbFactory, Runboo
             .OrderBy(s => s.SortOrder)
             .Select(s => new StepSnapshot
             {
-                Name = s.Name,
-                StepType = s.StepType,
-                PackageId = s.PackageId,
-                PackageVersion = "",   // runbooks don't pin package versions at run time
-                TargetRoles = [.. s.TargetRoles],
-                Config = new Dictionary<string, string>(s.Config),
-                SortOrder = s.SortOrder,
+                Name               = s.Name,
+                StepType           = s.StepType,
+                PackageId          = s.PackageId,
+                PackageVersion     = "",   // runbooks don't pin package versions at run time
+                TargetRoles        = [.. s.TargetRoles],
+                Config             = new Dictionary<string, string>(s.Config),
+                SortOrder          = s.SortOrder,
+                // D-6: step-package pin is copied as-is from the live step.
+                // Runbooks share the same per-step pin contract as releases.
+                StepPackageName    = s.StepPackageName,
+                StepPackageVersion = s.StepPackageVersion,
             })
             .ToList();
 

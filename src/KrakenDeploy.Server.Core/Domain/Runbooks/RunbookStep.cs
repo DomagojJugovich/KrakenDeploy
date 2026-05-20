@@ -24,4 +24,16 @@ public class RunbookStep : Entity
 
     /// <summary>Step-type-specific configuration stored as jsonb.</summary>
     public Dictionary<string, string> Config { get; set; } = [];
+
+    /// <summary>
+    /// Phase D-6: pinned step-package name. See
+    /// <see cref="Processes.DeploymentStep.StepPackageName"/>.
+    /// </summary>
+    public string? StepPackageName { get; set; }
+
+    /// <summary>
+    /// Phase D-6: pinned step-package version. See
+    /// <see cref="Processes.DeploymentStep.StepPackageVersion"/>.
+    /// </summary>
+    public string? StepPackageVersion { get; set; }
 }

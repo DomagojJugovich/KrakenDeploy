@@ -34,7 +34,18 @@ public sealed record DeploymentStepPlan(
     string PackageVersion,
     IReadOnlyDictionary<string, string> Config,
     IReadOnlyList<string>? TargetRoles = null,
-    IReadOnlyList<KrakenDeploy.Contracts.Steps.PackageReference>? ReferencedPackages = null);
+    IReadOnlyList<KrakenDeploy.Contracts.Steps.PackageReference>? ReferencedPackages = null,
+    /// <summary>
+    /// Phase D-6: the pinned step-package <c>(Name, Version)</c> the agent
+    /// hands to its <c>StepPackageLoader</c>. <c>null</c> means the snapshot
+    /// didn't have an installed step-package claiming the step type — the
+    /// agent uses its hardcoded handler instead. Pair must travel together:
+    /// the loader's cache key is <c>(name, version)</c> so the version alone
+    /// is meaningless without the name. Appended for back-compat with older
+    /// clients.
+    /// </summary>
+    string? StepPackageName = null,
+    string? StepPackageVersion = null);
 
 /// <summary>
 /// Sent by the agent to the server when a deployment is triggered.

@@ -143,7 +143,10 @@ public sealed class RunbookRunWorker(
                     PackageId: s.PackageId,
                     PackageVersion: s.PackageVersion,
                     Config: SubstituteConfig(s.Config, varDict),
-                    TargetRoles: s.TargetRoles))
+                    TargetRoles: s.TargetRoles,
+                    ReferencedPackages: null,
+                    StepPackageName: s.StepPackageName,
+                    StepPackageVersion: s.StepPackageVersion))
                 .ToArray();
 
             // The plan uses RunbookRun.Id as DeploymentId — AgentHub resolves both tables.

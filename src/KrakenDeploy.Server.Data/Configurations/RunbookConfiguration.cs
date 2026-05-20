@@ -62,6 +62,10 @@ public class RunbookStepConfiguration : IEntityTypeConfiguration<RunbookStep>
             .HasConversion(
                 new KrakenDeploy.Server.Data.Conventions.JsonbValueConverter<Dictionary<string, string>>());
 
+        // Phase D-6: same nullable column shape as DeploymentStep.
+        builder.Property(x => x.StepPackageName).HasMaxLength(128);
+        builder.Property(x => x.StepPackageVersion).HasMaxLength(64);
+
         builder.HasOne(x => x.Process)
             .WithMany(p => p.Steps)
             .HasForeignKey(x => x.ProcessId)

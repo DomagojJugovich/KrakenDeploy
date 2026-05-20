@@ -6,8 +6,18 @@ namespace KrakenDeploy.Server.Data.Services;
 /// <summary>
 /// Manages the deployment process (ordered step list) for a project.
 /// </summary>
-public class ProcessService(IDbContextFactory<KrakenDbContext> dbFactory)
+/// <remarks>
+/// <paramref name="stepPackageResolver"/> is optional so tests/fixtures that
+/// don't care about D-6 pinning can keep using <c>new ProcessService(db)</c>;
+/// when null, auto-pinning of <c>StepPackageVersion</c> is skipped and steps
+/// keep whatever the caller passed in (possibly null). In production DI it's
+/// always wired.
+/// </remarks>
+public class ProcessService(
+    IDbContextFactory<KrakenDbContext> dbFactory,
+    StepPackageResolver? stepPackageResolver = null)
 {
+
     // ── Get / create ───────────────────────────────────────────────────────
 
     /// <summary>
@@ -32,7 +42,22 @@ public class ProcessService(IDbContextFactory<KrakenDbContext> dbFactory)
 
     // ── Steps ──────────────────────────────────────────────────────────────
 
-    /// <summary>Appends a new step to the end of the process.</summary>
+    /// <summary>
+    /// Appends a new step to the end of the process.
+    /// <para>
+    /// <paramref name="stepPackageName"/> + <paramref name="stepPackageVersion"/>
+    /// (Phase D-6) pin the exact installed step-package the agent will load
+    /// to execute this step. Pass both as a unit, or both <c>null</c>:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item>Both null: the service auto-resolves to the highest installed
+    ///   semver that claims this step type. When no installed package claims
+    ///   it, the pin stays null and the agent falls back to its hardcoded
+    ///   handler (bridges the D-6 → D-8 transition).</item>
+    ///   <item>Both supplied: the caller has explicitly chosen the pair
+    ///   (typically via the D-7 version dropdown).</item>
+    /// </list>
+    /// </summary>
     public async Task<DeploymentStep> AddStepAsync(
         Guid projectId,
         string name,
@@ -40,6 +65,8 @@ public class ProcessService(IDbContextFactory<KrakenDbContext> dbFactory)
         string packageId,
         List<string> targetRoles,
         Dictionary<string, string> config,
+        string? stepPackageName = null,
+        string? stepPackageVersion = null,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -51,15 +78,21 @@ public class ProcessService(IDbContextFactory<KrakenDbContext> dbFactory)
             .MaxAsync(ct)
             .ConfigureAwait(false) ?? -1;
 
+        var pin = await ResolvePinAsync(
+                stepType, stepPackageName, stepPackageVersion, ct)
+            .ConfigureAwait(false);
+
         var step = new DeploymentStep
         {
-            ProcessId = process.Id,
-            Name = name,
-            StepType = stepType,
-            PackageId = packageId,
-            TargetRoles = targetRoles,
-            Config = config,
-            SortOrder = maxSort + 1,
+            ProcessId          = process.Id,
+            Name               = name,
+            StepType           = stepType,
+            PackageId          = packageId,
+            TargetRoles        = targetRoles,
+            Config             = config,
+            SortOrder          = maxSort + 1,
+            StepPackageName    = pin?.Name,
+            StepPackageVersion = pin?.Version,
         };
 
         db.DeploymentSteps.Add(step);
@@ -67,13 +100,20 @@ public class ProcessService(IDbContextFactory<KrakenDbContext> dbFactory)
         return step;
     }
 
-    /// <summary>Updates the mutable fields of an existing step.</summary>
+    /// <summary>
+    /// Updates the mutable fields of an existing step. Pass both
+    /// <paramref name="stepPackageName"/> and <paramref name="stepPackageVersion"/>
+    /// to re-pin (the editor's "switch to version X" path, Phase D-6 / D-7).
+    /// Leave both null to keep the existing pin untouched.
+    /// </summary>
     public async Task<DeploymentStep?> UpdateStepAsync(
         Guid stepId,
         string name,
         string packageId,
         List<string> targetRoles,
         Dictionary<string, string> config,
+        string? stepPackageName = null,
+        string? stepPackageVersion = null,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -83,13 +123,40 @@ public class ProcessService(IDbContextFactory<KrakenDbContext> dbFactory)
             return null;
         }
 
-        step.Name = name;
-        step.PackageId = packageId;
+        step.Name        = name;
+        step.PackageId   = packageId;
         step.TargetRoles = targetRoles;
-        step.Config = config;
+        step.Config      = config;
+
+        if (stepPackageName is not null && stepPackageVersion is not null)
+        {
+            step.StepPackageName    = stepPackageName;
+            step.StepPackageVersion = stepPackageVersion;
+        }
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return step;
+    }
+
+    /// <summary>
+    /// Resolves the pin: explicit (name, version) wins; otherwise asks the
+    /// resolver for the highest semver claiming <paramref name="stepType"/>;
+    /// returns null when no resolver is wired or no installed package claims
+    /// the step type.
+    /// </summary>
+    private async Task<StepPackagePin?> ResolvePinAsync(
+        string stepType, string? explicitName, string? explicitVersion, CancellationToken ct)
+    {
+        if (explicitName is not null && explicitVersion is not null)
+        {
+            return new StepPackagePin(explicitName, explicitVersion);
+        }
+        if (stepPackageResolver is null)
+        {
+            return null;
+        }
+        return await stepPackageResolver
+            .ResolveLatestForStepTypeAsync(stepType, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -216,15 +283,20 @@ public class ProcessService(IDbContextFactory<KrakenDbContext> dbFactory)
         for (var i = 0; i < parsed.Steps.Count; i++)
         {
             var p = parsed.Steps[i];
+            // D-6: auto-pin each imported step. When no installed package
+            // claims the step type the pin stays null (agent falls back).
+            var pin = await ResolvePinAsync(p.StepType, null, null, ct).ConfigureAwait(false);
             db.DeploymentSteps.Add(new DeploymentStep
             {
-                ProcessId   = process.Id,
-                Name        = p.Name,
-                StepType    = p.StepType,
-                PackageId   = p.PackageId,
-                TargetRoles = p.TargetRoles,
-                Config      = p.Config,
-                SortOrder   = startSort + i,
+                ProcessId          = process.Id,
+                Name               = p.Name,
+                StepType           = p.StepType,
+                PackageId          = p.PackageId,
+                TargetRoles        = p.TargetRoles,
+                Config             = p.Config,
+                SortOrder          = startSort + i,
+                StepPackageName    = pin?.Name,
+                StepPackageVersion = pin?.Version,
             });
         }
 

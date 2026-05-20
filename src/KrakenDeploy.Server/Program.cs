@@ -1082,7 +1082,8 @@ public static class Program
             {
                 var step = await processSvc.AddStepAsync(
                     projectId, req.Name, req.StepType, req.PackageId,
-                    req.TargetRoles, req.Config, ct).ConfigureAwait(false);
+                    req.TargetRoles, req.Config,
+                    req.StepPackageName, req.StepPackageVersion, ct).ConfigureAwait(false);
                 return Results.Created($"/api/projects/{projectId}/process/steps/{step.Id}", step);
             }).RequirePermission(Permission.ProcessEdit);
 
@@ -1975,7 +1976,8 @@ public static class Program
             async (Guid runbookId, AddStepRequest req, RunbookService runbookSvc, CancellationToken ct) =>
             {
                 var step = await runbookSvc.AddStepAsync(
-                    runbookId, req.Name, req.StepType, req.PackageId, req.TargetRoles, req.Config, ct)
+                    runbookId, req.Name, req.StepType, req.PackageId, req.TargetRoles, req.Config,
+                    req.StepPackageName, req.StepPackageVersion, ct)
                     .ConfigureAwait(false);
                 return Results.Created($"/api/runbooks/{runbookId}/steps/{step.Id}", step);
             }).RequirePermission(Permission.RunbookEdit);
@@ -1984,7 +1986,8 @@ public static class Program
             async (Guid stepId, AddStepRequest req, RunbookService runbookSvc, CancellationToken ct) =>
             {
                 var step = await runbookSvc.UpdateStepAsync(
-                    stepId, req.Name, req.StepType, req.PackageId, req.TargetRoles, req.Config, ct)
+                    stepId, req.Name, req.StepType, req.PackageId, req.TargetRoles, req.Config,
+                    req.StepPackageName, req.StepPackageVersion, ct)
                     .ConfigureAwait(false);
                 return step is null ? Results.NotFound() : Results.Ok(step);
             }).RequirePermission(Permission.RunbookEdit);

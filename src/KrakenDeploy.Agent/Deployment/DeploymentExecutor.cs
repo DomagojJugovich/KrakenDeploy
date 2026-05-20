@@ -1,6 +1,7 @@
 using System.Globalization;
 using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.Deployment.StepHandlers;
+using KrakenDeploy.Agent.StepPackages;
 using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
 using Microsoft.Extensions.Logging;
@@ -25,6 +26,7 @@ public sealed class DeploymentExecutor(
     GrpcPackageDownloader packageDownloader,
     GrpcArtifactUploader artifactUploader,
     IEnumerable<IStepHandler> stepHandlers,
+    StepPackageLoader stepPackageLoader,
     IOptions<AgentConfig> agentConfig,
     ILogger<DeploymentExecutor> logger)
 {
@@ -133,13 +135,22 @@ public sealed class DeploymentExecutor(
         // through as visible log lines.
         var capturedOutputs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-        // Resolve a handler for this step type.
-        var handler = _handlers.FirstOrDefault(h => h.CanHandle(step.StepType));
+        // Resolve a handler. Two paths (Phase D-6):
+        //   1. If the server pinned a StepPackageVersion, try the
+        //      StepPackageLoader first — the package owns the step type and
+        //      its handler takes precedence over any in-DI built-in that
+        //      coincidentally claims the same step type. On cache miss the
+        //      loader pulls the package via IStepPackageSource (D-5).
+        //   2. Otherwise fall back to the in-DI handlers (the pre-D-6 path).
+        //      Once D-8 has extracted every built-in into a package this
+        //      fallback becomes the empty case and can be removed.
+        var handler = await ResolveHandlerAsync(step, ct).ConfigureAwait(false);
         if (handler is null)
         {
             await LogAsync(plan.DeploymentId, "error",
-                $"Unknown step type '{step.StepType}'. No handler is registered for it.", ct)
-                .ConfigureAwait(false);
+                $"Unknown step type '{step.StepType}'. No handler is registered for it " +
+                $"(pin={step.StepPackageName ?? "<null>"} {step.StepPackageVersion ?? "<null>"}).",
+                ct).ConfigureAwait(false);
             return (false, capturedOutputs);
         }
 
@@ -330,6 +341,51 @@ public sealed class DeploymentExecutor(
         catch { /* non-fatal */ }
 
         return (success, capturedOutputs);
+    }
+
+    /// <summary>
+    /// Phase D-6 handler resolution: when the plan pins a step-package
+    /// version, ask the loader (downloading on cache miss). Falls back to
+    /// the in-DI handler list when no pin is set OR when the loader can't
+    /// produce a handler. Returns <c>null</c> when nothing claims the step
+    /// type — the caller surfaces an error to the deployment log.
+    /// </summary>
+    private async Task<IStepHandler?> ResolveHandlerAsync(
+        DeploymentStepPlan step, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(step.StepPackageName)
+            && !string.IsNullOrWhiteSpace(step.StepPackageVersion))
+        {
+            try
+            {
+                var pkg = await stepPackageLoader
+                    .TryLoadOrDownloadAsync(step.StepPackageName, step.StepPackageVersion, ct)
+                    .ConfigureAwait(false);
+
+                if (pkg is not null)
+                {
+                    // Activator-created — per-step-execution lifecycle.
+                    if (Activator.CreateInstance(pkg.HandlerType) is IStepHandler instance
+                        && instance.CanHandle(step.StepType))
+                    {
+                        return instance;
+                    }
+
+                    logger.LogWarning(
+                        "Step package {Name} {Version} loaded but its handler doesn't accept step type '{StepType}'. " +
+                        "Falling back to in-DI handlers.",
+                        step.StepPackageName, step.StepPackageVersion, step.StepType);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex,
+                    "Step package {Name} {Version} failed to load; falling back to in-DI handlers.",
+                    step.StepPackageName, step.StepPackageVersion);
+            }
+        }
+
+        return _handlers.FirstOrDefault(h => h.CanHandle(step.StepType));
     }
 
     /// <summary>

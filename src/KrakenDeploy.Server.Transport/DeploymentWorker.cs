@@ -191,7 +191,9 @@ public sealed class DeploymentWorker(
                     PackageVersion: s.PackageVersion,
                     Config: substitutedConfig,
                     TargetRoles: s.TargetRoles,
-                    ReferencedPackages: referenced.Count > 0 ? referenced : null);
+                    ReferencedPackages: referenced.Count > 0 ? referenced : null,
+                    StepPackageName: s.StepPackageName,
+                    StepPackageVersion: s.StepPackageVersion);
             }
 
             var plan = new DeploymentPlan(

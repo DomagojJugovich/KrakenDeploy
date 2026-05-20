@@ -11,12 +11,21 @@ public sealed record UpdateSpaceRequest(string Name, string? Description);
 // ── Process API ────────────────────────────────────────────────────────────────
 
 /// <summary>Request body for POST /api/projects/{projectId}/process/steps.</summary>
+/// <remarks>
+/// <c>StepPackageName</c> + <c>StepPackageVersion</c> (Phase D-6) pair the
+/// step to an installed step-package. Pass both, or omit both — when omitted,
+/// the server auto-resolves to the highest installed package that claims
+/// <paramref name="StepType"/>. Older clients that don't send either continue
+/// to work via the auto-resolve path.
+/// </remarks>
 public sealed record AddStepRequest(
     string Name,
     string StepType,
     string PackageId,
     List<string> TargetRoles,
-    Dictionary<string, string> Config);
+    Dictionary<string, string> Config,
+    string? StepPackageName = null,
+    string? StepPackageVersion = null);
 
 // ── Release API ────────────────────────────────────────────────────────────────
 

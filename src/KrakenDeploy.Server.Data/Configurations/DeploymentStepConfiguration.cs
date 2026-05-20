@@ -24,6 +24,11 @@ public class DeploymentStepConfiguration : IEntityTypeConfiguration<DeploymentSt
         builder.Property(x => x.Config)
             .HasJsonbColumn<Dictionary<string, string>>();
 
+        // Phase D-6: nullable for the migration window (existing rows have no
+        // pin); D-8 will fill in real pins once built-ins are package-backed.
+        builder.Property(x => x.StepPackageName).HasMaxLength(128);
+        builder.Property(x => x.StepPackageVersion).HasMaxLength(64);
+
         builder.HasOne(x => x.Process)
             .WithMany(p => p.Steps)
             .HasForeignKey(x => x.ProcessId)

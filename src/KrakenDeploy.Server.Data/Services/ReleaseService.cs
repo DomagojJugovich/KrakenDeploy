@@ -10,7 +10,15 @@ namespace KrakenDeploy.Server.Data.Services;
 /// A release locks in a specific version of the project's deployment process
 /// with pinned package versions.
 /// </summary>
-public class ReleaseService(IDbContextFactory<KrakenDbContext> dbFactory)
+/// <remarks>
+/// <paramref name="stepPackageResolver"/> is optional so tests/fixtures can
+/// keep the legacy single-arg construction. In production it's wired through
+/// DI; when null, <see cref="StepSnapshot.StepPackageVersion"/> is copied
+/// from the underlying <see cref="DeploymentStep"/> as-is (no re-resolution).
+/// </remarks>
+public class ReleaseService(
+    IDbContextFactory<KrakenDbContext> dbFactory,
+    StepPackageResolver? stepPackageResolver = null)
 {
     // ── Create ─────────────────────────────────────────────────────────────
 
@@ -89,15 +97,35 @@ public class ReleaseService(IDbContextFactory<KrakenDbContext> dbFactory)
             var snapshotConfig = new Dictionary<string, string>(step.Config);
             await PinReferencedPackagesAsync(snapshotConfig, db, ct).ConfigureAwait(false);
 
+            // D-6: freeze the step-package pin. If the deployment step
+            // didn't have one (older row, or no package installed when the
+            // step was added), re-resolve "latest installed" *now* so the
+            // release is reproducible. Resolver is optional in test fixtures.
+            string? snapshotPackageName    = step.StepPackageName;
+            string? snapshotPackageVersion = step.StepPackageVersion;
+            if (snapshotPackageVersion is null && stepPackageResolver is not null)
+            {
+                var pin = await stepPackageResolver
+                    .ResolveLatestForStepTypeAsync(step.StepType, ct)
+                    .ConfigureAwait(false);
+                if (pin is not null)
+                {
+                    snapshotPackageName    = pin.Name;
+                    snapshotPackageVersion = pin.Version;
+                }
+            }
+
             snapshot.Add(new StepSnapshot
             {
-                Name = step.Name,
-                StepType = step.StepType,
-                PackageId = step.PackageId,
-                PackageVersion = pinned,
-                TargetRoles = [.. step.TargetRoles],
-                Config = snapshotConfig,
-                SortOrder = step.SortOrder,
+                Name               = step.Name,
+                StepType           = step.StepType,
+                PackageId          = step.PackageId,
+                PackageVersion     = pinned,
+                TargetRoles        = [.. step.TargetRoles],
+                Config             = snapshotConfig,
+                SortOrder          = step.SortOrder,
+                StepPackageName    = snapshotPackageName,
+                StepPackageVersion = snapshotPackageVersion,
             });
         }
 

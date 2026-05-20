@@ -29,4 +29,8 @@
     <ProjectReference Include="..\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="KrakenDeploy.Server.Data.Tests" />
+  </ItemGroup>
+
 </Project>
