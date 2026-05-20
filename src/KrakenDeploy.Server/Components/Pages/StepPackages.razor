@@ -73,6 +73,19 @@ else
                     <code style="font-size: 0.75em;">@TruncSha(p.Sha256)</code>
                 </Template>
             </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="StepPackage" Title="" Width="60px"
+                                  Sortable="false" Filterable="false">
+                <Template Context="p">
+                    <RequirePermission Permission="Permission.StepPackageManage">
+                        <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                      Size="ButtonSize.ExtraSmall"
+                                      Variant="Variant.Text"
+                                      IsBusy="@(_uninstalling == p.Id)"
+                                      Click="@(() => UninstallAsync(p))"
+                                      title="Uninstall this version" />
+                    </RequirePermission>
+                </Template>
+            </RadzenDataGridColumn>
         </Columns>
     </RadzenDataGrid>
 }
@@ -80,6 +93,7 @@ else
 @code {
     private bool _loaded;
     private List<StepPackage> _packages = [];
+    private Guid? _uninstalling;
 
     protected override async Task OnInitializedAsync()
     {
@@ -117,4 +131,92 @@ else
 
     private static string TruncSha(string sha)
         => string.IsNullOrEmpty(sha) ? "" : sha[..Math.Min(16, sha.Length)] + "…";
+
+    /// <summary>
+    /// Uninstall flow (Phase D-11). Two-stage so the admin sees what they're
+    /// destroying before it's gone:
+    ///   1. Plain confirm dialog up-front.
+    ///   2. If the service reports conflicts, present the conflict report
+    ///      (live steps + release snapshots) and abort.
+    /// </summary>
+    private async Task UninstallAsync(StepPackage pkg)
+    {
+        var confirmed = await Dialog.Confirm(
+            $"Remove step package '{pkg.Name}' version '{pkg.Version}'? " +
+            "Any deployment / runbook steps pinned to this version will block the uninstall.",
+            "Uninstall step package",
+            new ConfirmOptions { OkButtonText = "Uninstall", CancelButtonText = "Cancel" });
+
+        if (confirmed != true) { return; }
+
+        _uninstalling = pkg.Id;
+        try
+        {
+            var result = await Svc.UninstallAsync(pkg.Name, pkg.Version);
+            switch (result.Status)
+            {
+                case StepPackageService.UninstallStatus.Uninstalled:
+                    Notifications.Notify(NotificationSeverity.Success,
+                        "Uninstalled",
+                        $"Removed {pkg.Name} {pkg.Version}.", 4000);
+                    await ReloadAsync();
+                    break;
+
+                case StepPackageService.UninstallStatus.Blocked:
+                    await ShowConflictAsync(result.Conflicts!);
+                    break;
+
+                case StepPackageService.UninstallStatus.NotFound:
+                    // Stale UI — someone else removed it. Refresh quietly.
+                    await ReloadAsync();
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error,
+                "Uninstall failed", ex.Message, 6000);
+        }
+        finally
+        {
+            _uninstalling = null;
+        }
+    }
+
+    /// <summary>
+    /// Renders the conflict report into a Radzen Alert dialog. No bulk-upgrade
+    /// affordances here — that's D-10. For now the admin's options are
+    /// (a) cancel, (b) edit each live step's version pin in the UI, or
+    /// (c) wait for releases that snapshotted the version to age out.
+    /// </summary>
+    private async Task ShowConflictAsync(StepPackageUsageReport report)
+    {
+        var liveByProject = report.LiveSteps
+            .GroupBy(s => s.ProjectSlug)
+            .Select(g => $"{g.First().ProjectName} ({g.Key}): " +
+                         string.Join(", ", g.Select(s =>
+                            $"{s.StepName}{(s.IsRunbook ? " (runbook)" : "")}")));
+        var releasesByProject = report.ReleaseSnapshots
+            .GroupBy(r => r.ProjectSlug)
+            .Select(g => $"{g.First().ProjectName} ({g.Key}): " +
+                         string.Join(", ", g.Select(r => r.ReleaseVersion)));
+
+        var body =
+            $"'{report.Name} {report.Version}' is still pinned by " +
+            $"{report.LiveSteps.Count} live step(s) and " +
+            $"{report.ReleaseSnapshots.Count} release snapshot(s).\n\n" +
+            (report.LiveSteps.Count > 0
+                ? "Live steps:\n  • " + string.Join("\n  • ", liveByProject) + "\n\n"
+                : "") +
+            (report.ReleaseSnapshots.Count > 0
+                ? "Release snapshots:\n  • " + string.Join("\n  • ", releasesByProject) + "\n\n"
+                : "") +
+            "Edit each live step's version pin (or delete the affected releases) " +
+            "before retrying the uninstall.";
+
+        await Dialog.Alert(body, "Uninstall blocked", new AlertOptions
+        {
+            OkButtonText = "Close",
+        });
+    }
 }

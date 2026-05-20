@@ -203,6 +203,138 @@ public sealed class StepPackageService(
             .FirstOrDefaultAsync(p => p.Id == id, ct).ConfigureAwait(false);
     }
 
+    // ── Uninstall (Phase D-11) ────────────────────────────────────────────
+
+    /// <summary>
+    /// Outcome of an uninstall request. <see cref="Status"/> tells the
+    /// caller whether the package was removed, blocked by live or
+    /// snapshotted references, or simply not installed.
+    /// </summary>
+    public sealed record UninstallResult(
+        UninstallStatus Status,
+        StepPackageUsageReport? Conflicts);
+
+    public enum UninstallStatus
+    {
+        /// <summary>Package removed; row deleted; disk dir cleaned.</summary>
+        Uninstalled,
+        /// <summary>One or more live steps or release snapshots still pin this version.</summary>
+        Blocked,
+        /// <summary>No row matched <c>(name, version)</c>.</summary>
+        NotFound,
+    }
+
+    /// <summary>
+    /// Removes an installed step-package version when nothing references
+    /// it. The conflict report (when <see cref="UninstallStatus.Blocked"/>)
+    /// lists every live <c>DeploymentStep</c> + <c>RunbookStep</c> + every
+    /// <c>Release</c> whose <see cref="StepSnapshot"/> still pins the version.
+    /// <para>
+    /// Released-snapshot references are permanent — the version stays
+    /// uninstall-blocked until those releases are deleted or pruned by
+    /// retention. Live step references can be cleared by editing the step
+    /// to a different version (D-7) or via the bulk-upgrade tool (D-10).
+    /// </para>
+    /// <para>
+    /// Agent-side cached copies are NOT actively purged — they sit until
+    /// the cache TTL or a manual <c>kraken cache prune</c> sweep.
+    /// </para>
+    /// </summary>
+    public async Task<UninstallResult> UninstallAsync(
+        string name, string version, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentException.ThrowIfNullOrWhiteSpace(version);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        var row = await db.StepPackages
+            .FirstOrDefaultAsync(p => p.Name == name && p.Version == version, ct)
+            .ConfigureAwait(false);
+
+        if (row is null)
+        {
+            return new UninstallResult(UninstallStatus.NotFound, null);
+        }
+
+        // ── Live process steps (DeploymentStep + RunbookStep) ───────────
+        var liveDeploymentSteps = await db.DeploymentSteps
+            .AsNoTracking()
+            .Where(s => s.StepPackageName == name && s.StepPackageVersion == version)
+            .Select(s => new StepPackageUsageReport.LiveStepRef(
+                s.Id, s.Process.Project.Name, s.Process.Project.Slug, s.Name, IsRunbook: false))
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        var liveRunbookSteps = await db.RunbookSteps
+            .AsNoTracking()
+            .Where(s => s.StepPackageName == name && s.StepPackageVersion == version)
+            .Select(s => new StepPackageUsageReport.LiveStepRef(
+                s.Id, s.Process.Runbook.Project.Name, s.Process.Runbook.Project.Slug,
+                s.Name, IsRunbook: true))
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        // ── Release snapshots (project releases) ────────────────────────
+        // JSONB containment via Postgres operator @> would be cleaner, but
+        // EF doesn't translate it cleanly, so we pull releases and filter
+        // in C#. Release counts are bounded (rarely > a few thousand per
+        // server); good enough until volume justifies a json-path predicate.
+        var releaseRefs = new List<StepPackageUsageReport.ReleaseSnapshotRef>();
+        var releases = await db.Releases
+            .AsNoTracking()
+            .Include(r => r.Project)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        foreach (var r in releases)
+        {
+            if (r.ProcessSnapshot.Any(s =>
+                string.Equals(s.StepPackageName, name, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(s.StepPackageVersion, version, StringComparison.OrdinalIgnoreCase)))
+            {
+                releaseRefs.Add(new StepPackageUsageReport.ReleaseSnapshotRef(
+                    r.Id, r.Project.Name, r.Project.Slug, r.Version));
+            }
+        }
+
+        if (liveDeploymentSteps.Count > 0 || liveRunbookSteps.Count > 0 || releaseRefs.Count > 0)
+        {
+            return new UninstallResult(
+                UninstallStatus.Blocked,
+                new StepPackageUsageReport(
+                    name, version,
+                    [.. liveDeploymentSteps, .. liveRunbookSteps],
+                    releaseRefs));
+        }
+
+        // ── Clean up DB + disk ──────────────────────────────────────────
+        db.StepPackages.Remove(row);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        var dir = ResolveDir(name, version);
+        try
+        {
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+        catch (Exception ex)
+        {
+            // The DB row is gone; surface the on-disk failure as a warning
+            // but don't fail the uninstall — admin can mop up manually.
+            logger.LogWarning(ex,
+                "StepPackageService.UninstallAsync: removed DB row for {Name} {Version} " +
+                "but failed to delete on-disk dir '{Path}'.", name, version, dir);
+        }
+
+        logger.LogInformation(
+            "StepPackageService.UninstallAsync: removed {Name} {Version}.", name, version);
+
+        return new UninstallResult(UninstallStatus.Uninstalled, null);
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private string ResolveDir(string name, string version)

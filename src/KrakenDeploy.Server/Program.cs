@@ -4,6 +4,8 @@ using Hangfire;
 using Hangfire.PostgreSql;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Auth;
+using KrakenDeploy.Server.Core.Domain.Audit;
+using KrakenDeploy.Server.Core.Domain.StepPackages;
 using KrakenDeploy.Server.Commands;
 using KrakenDeploy.Server.Components;
 using KrakenDeploy.Server.Data;
@@ -1485,6 +1487,36 @@ public static class Program
                 return Results.Created($"/api/step-packages/{result.Installed!.Id}", result.Installed);
             }).RequirePermission(Permission.StepPackageManage)
               .DisableAntiforgery();
+
+        // Uninstall a specific version. Returns:
+        //   204 No Content                — package removed.
+        //   409 Conflict + ConflictReport — live or snapshotted references still pin this version.
+        //   404 Not Found                 — no row at this (name, version).
+        app.MapDelete("/api/step-packages/{name}/{version}",
+            async (string name, string version,
+                   StepPackageService svc, IAuditLog audit, CancellationToken ct) =>
+            {
+                var result = await svc.UninstallAsync(name, version, ct).ConfigureAwait(false);
+                return result.Status switch
+                {
+                    StepPackageService.UninstallStatus.Uninstalled => await EmitUninstallAuditAsync(),
+                    StepPackageService.UninstallStatus.Blocked     => Results.Conflict(result.Conflicts),
+                    StepPackageService.UninstallStatus.NotFound    => Results.NotFound(),
+                    _ => Results.StatusCode(500),
+                };
+
+                async Task<IResult> EmitUninstallAuditAsync()
+                {
+                    await audit.RecordAsync(
+                        AuditEventType.StepPackageUninstalled,
+                        subjectType: nameof(StepPackage),
+                        subjectId: $"{name}@{version}",
+                        subjectName: $"{name} {version}",
+                        details: $"Removed step package '{name}' version '{version}'.",
+                        ct: ct).ConfigureAwait(false);
+                    return Results.NoContent();
+                }
+            }).RequirePermission(Permission.StepPackageManage);
 
         // ── Deployment API ───────────────────────────────────────────────────
         app.MapGet("/api/deployments",
