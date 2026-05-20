@@ -61,7 +61,13 @@
                                 AllowPaging="false" AllowSorting="true" AllowFiltering="false"
                                 Density="Density.Compact">
                     <Columns>
-                        <RadzenDataGridColumn TItem="StepPackage" Property="Name" Title="Package" />
+                        <RadzenDataGridColumn TItem="StepPackage" Property="Name" Title="Package">
+                            <Template Context="p">
+                                <RadzenLink Path="@($"/step-packages/{p.Name}/usage")"
+                                            Text="@p.Name"
+                                            title="See every step pinned to this package + bulk-upgrade." />
+                            </Template>
+                        </RadzenDataGridColumn>
                         <RadzenDataGridColumn TItem="StepPackage" Property="Version" Title="Version" Width="120px" />
                         <RadzenDataGridColumn TItem="StepPackage" Property="StepTypes" Title="Step types" />
                         <RadzenDataGridColumn TItem="StepPackage" Property="Source" Title="Source" Width="120px">

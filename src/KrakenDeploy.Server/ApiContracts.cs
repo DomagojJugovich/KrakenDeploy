@@ -27,6 +27,19 @@ public sealed record AddStepRequest(
     string? StepPackageName = null,
     string? StepPackageVersion = null);
 
+// ── Step-package bulk upgrade (Phase D-10) ──────────────────────────────────
+
+/// <summary>
+/// Request body for <c>POST /api/step-packages/{name}/bulk-upgrade</c>.
+/// Caller supplies the target version + the deployment-step and runbook-step
+/// IDs to bump. Either list may be empty; both empty is a no-op that still
+/// validates the target version exists.
+/// </summary>
+public sealed record BulkUpgradeRequest(
+    string TargetVersion,
+    List<Guid>? DeploymentStepIds = null,
+    List<Guid>? RunbookStepIds    = null);
+
 // ── Release API ────────────────────────────────────────────────────────────────
 
 /// <summary>Request body for POST /api/projects/{projectId}/releases.</summary>

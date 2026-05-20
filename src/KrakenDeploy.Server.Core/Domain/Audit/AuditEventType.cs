@@ -33,6 +33,7 @@ public static class AuditEventType
     public const string RunbookRunFailed    = "RunbookRun.Failed";
 
     // ── Step package lifecycle (Phase D) ─────────────────────────────────────
-    public const string StepPackageInstalled   = "StepPackage.Installed";
-    public const string StepPackageUninstalled = "StepPackage.Uninstalled";
+    public const string StepPackageInstalled    = "StepPackage.Installed";
+    public const string StepPackageUninstalled  = "StepPackage.Uninstalled";
+    public const string StepPackageBulkUpgraded = "StepPackage.BulkUpgraded";
 }

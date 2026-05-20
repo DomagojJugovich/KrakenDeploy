@@ -1542,6 +1542,46 @@ public static class Program
                 }
             }).RequirePermission(Permission.StepPackageManage);
 
+        // ── Step-package usage + bulk upgrade (Phase D-10) ───────────────────
+
+        app.MapGet("/api/step-packages/{name}/usage",
+            async (string name, StepPackageService svc, CancellationToken ct) =>
+                Results.Ok(await svc.GetUsageAsync(name, ct).ConfigureAwait(false))
+        ).RequirePermission(Permission.StepPackageView);
+
+        app.MapPost("/api/step-packages/{name}/bulk-upgrade",
+            async (string name, BulkUpgradeRequest req,
+                   StepPackageService svc, IAuditLog audit, CancellationToken ct) =>
+            {
+                try
+                {
+                    var result = await svc.BulkUpgradeAsync(
+                        name,
+                        req.TargetVersion,
+                        req.DeploymentStepIds ?? [],
+                        req.RunbookStepIds ?? [],
+                        ct).ConfigureAwait(false);
+
+                    // One audit event for the bulk action — captures the package,
+                    // target version, and the count of touched steps. Individual
+                    // step row changes are also picked up by the EF
+                    // AuditableEntityInterceptor on DeploymentStep/RunbookStep.
+                    await audit.RecordAsync(
+                        AuditEventType.StepPackageBulkUpgraded,
+                        subjectType: nameof(StepPackage),
+                        subjectId: $"{name}@{req.TargetVersion}",
+                        subjectName: $"{name} → {req.TargetVersion}",
+                        details: $"Bulk upgrade: touched={result.Touched}, skipped={result.Skipped.Count}.",
+                        ct: ct).ConfigureAwait(false);
+
+                    return Results.Ok(result);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.StepPackageManage);
+
         app.MapPost("/api/step-package-catalog/{name}/{version}/install",
             async (string name, string version,
                    StepPackageCatalogService catalog, IAuditLog audit, CancellationToken ct) =>

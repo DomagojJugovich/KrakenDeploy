@@ -1,0 +1,220 @@
+@page "/step-packages/{Name}/usage"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using KrakenDeploy.Server.Core.Domain.Security
+@using KrakenDeploy.Server.Core.Domain.StepPackages
+@using KrakenDeploy.Server.Data.Services
+@inject StepPackageService Svc
+@inject NavigationManager Nav
+@inject NotificationService Notifications
+
+<PageTitle>@Name — usage</PageTitle>
+
+<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+             JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-3">
+    <RadzenStack Gap="0.2rem">
+        <RadzenLink Path="/step-packages" Text="← All step packages" />
+        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
+            <code>@Name</code> usage
+        </RadzenText>
+    </RadzenStack>
+    @if (_loaded && _availableVersions.Count > 0)
+    {
+        <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.5rem">
+            <RadzenFormField Text="Bump to version" Variant="Variant.Outlined">
+                <RadzenDropDown TValue="string"
+                                Data="@_availableVersions"
+                                @bind-Value="_targetVersion"
+                                Style="min-width:140px;" />
+            </RadzenFormField>
+            <RequirePermission Permission="Permission.StepPackageManage">
+                <RadzenButton Icon="upgrade" Text="Bump selected"
+                              Size="ButtonSize.Small"
+                              ButtonStyle="ButtonStyle.Primary"
+                              IsBusy="@_upgrading"
+                              Disabled="@(_selected.Count == 0 || string.IsNullOrEmpty(_targetVersion))"
+                              Click="OnBulkUpgradeAsync" />
+            </RequirePermission>
+        </RadzenStack>
+    }
+</RadzenStack>
+
+<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-3">
+    Every live deployment step and runbook step pinned to any version of
+    <code>@Name</code>, grouped by the pinned version. Pick rows + a target
+    version above to bulk-bump them in a single transaction. Released
+    snapshots are <strong>not</strong> touched — they're permanent by contract.
+</RadzenText>
+
+@if (!_loaded)
+{
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading…</RadzenText>
+}
+else if (_usage is null || _usage.Groups.Count == 0)
+{
+    <RadzenCard class="rz-p-5 rz-text-align-center">
+        <RadzenIcon Icon="info" Style="font-size: 3rem; opacity: 0.3;" />
+        <RadzenText TextStyle="TextStyle.H6" class="rz-mt-3">No live usage</RadzenText>
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            Nothing in any project's process or runbook is currently pinned
+            to <code>@Name</code>. The package may be eligible for uninstall
+            if no release snapshots reference it either.
+        </RadzenText>
+    </RadzenCard>
+}
+else
+{
+    @foreach (var group in _usage.Groups)
+    {
+        <RadzenCard class="rz-mb-3">
+            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                         JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-2">
+                <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-0">
+                        Pinned to version <strong>@group.Version</strong>
+                    </RadzenText>
+                    <RadzenBadge Text="@($"{group.Rows.Count} step(s)")"
+                                 BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                </RadzenStack>
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.4rem">
+                    <RadzenButton Text="Select group"
+                                  Size="ButtonSize.ExtraSmall"
+                                  ButtonStyle="ButtonStyle.Light"
+                                  Click="@(() => SelectAllInGroup(group, true))" />
+                    <RadzenButton Text="Clear group"
+                                  Size="ButtonSize.ExtraSmall"
+                                  ButtonStyle="ButtonStyle.Light"
+                                  Click="@(() => SelectAllInGroup(group, false))" />
+                </RadzenStack>
+            </RadzenStack>
+
+            <RadzenDataGrid Data="@group.Rows" TItem="StepPackageUsage.UsageRow"
+                            Density="Density.Compact"
+                            AllowSorting="false" AllowFiltering="false" AllowPaging="false">
+                <Columns>
+                    <RadzenDataGridColumn TItem="StepPackageUsage.UsageRow" Width="40px"
+                                          Sortable="false" Filterable="false">
+                        <Template Context="r">
+                            <RadzenCheckBox TValue="bool"
+                                            Value="@(_selected.Contains(r.StepId))"
+                                            Change="@(v => Toggle(r, (bool)v))" />
+                        </Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="StepPackageUsage.UsageRow" Property="ProjectName" Title="Project">
+                        <Template Context="r">
+                            <RadzenLink Path="@($"/projects/{r.ProjectSlug}/{(r.IsRunbook ? "runbooks" : "process")}")"
+                                        Text="@r.ProjectName" />
+                            @if (r.IsRunbook)
+                            {
+                                <RadzenBadge Text="runbook" IsPill="true"
+                                             BadgeStyle="BadgeStyle.Secondary" class="rz-ml-2" />
+                            }
+                        </Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="StepPackageUsage.UsageRow" Property="StepName" Title="Step" />
+                    <RadzenDataGridColumn TItem="StepPackageUsage.UsageRow" Property="StepType" Title="Step type" />
+                </Columns>
+            </RadzenDataGrid>
+        </RadzenCard>
+    }
+}
+
+@code {
+    [Parameter] public string Name { get; set; } = "";
+
+    private bool _loaded;
+    private bool _upgrading;
+    private StepPackageUsage? _usage;
+    private List<string> _availableVersions = [];
+    private string? _targetVersion;
+
+    /// <summary>StepId set selected for bulk upgrade. Indexed for O(1)
+    /// add/remove during checkbox toggles.</summary>
+    private readonly HashSet<Guid> _selected = [];
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _loaded = false;
+        _selected.Clear();
+        try
+        {
+            _usage = await Svc.GetUsageAsync(Name);
+            var versions = await Svc.GetVersionsAsync(Name);
+            _availableVersions = StepPackageResolver.OrderByHighestSemver(
+                versions.Select(v => v.Version));
+            _targetVersion = _availableVersions.FirstOrDefault();
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error,
+                "Failed to load usage", ex.Message, 6000);
+        }
+        _loaded = true;
+    }
+
+    private void Toggle(StepPackageUsage.UsageRow row, bool value)
+    {
+        if (value) { _selected.Add(row.StepId); }
+        else       { _selected.Remove(row.StepId); }
+    }
+
+    private void SelectAllInGroup(StepPackageUsage.VersionGroup group, bool selected)
+    {
+        foreach (var row in group.Rows)
+        {
+            if (selected) { _selected.Add(row.StepId); }
+            else          { _selected.Remove(row.StepId); }
+        }
+    }
+
+    /// <summary>
+    /// Walks every group, partitions the selected step IDs into
+    /// (deployment vs runbook) buckets, and calls
+    /// <c>StepPackageService.BulkUpgradeAsync</c>. After the round-trip,
+    /// reloads + toasts the touched/skipped counts.
+    /// </summary>
+    private async Task OnBulkUpgradeAsync()
+    {
+        if (string.IsNullOrEmpty(_targetVersion) || _usage is null) { return; }
+
+        var rowsById = _usage.Groups
+            .SelectMany(g => g.Rows)
+            .ToDictionary(r => r.StepId);
+
+        var deploymentIds = new List<Guid>();
+        var runbookIds    = new List<Guid>();
+        foreach (var id in _selected)
+        {
+            if (!rowsById.TryGetValue(id, out var row)) { continue; }
+            if (row.IsRunbook) { runbookIds.Add(id); }
+            else               { deploymentIds.Add(id); }
+        }
+
+        _upgrading = true;
+        try
+        {
+            var result = await Svc.BulkUpgradeAsync(
+                Name, _targetVersion, deploymentIds, runbookIds);
+            Notifications.Notify(NotificationSeverity.Success,
+                "Bulk upgrade complete",
+                $"Touched {result.Touched} step(s), skipped {result.Skipped.Count}.",
+                5000);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error,
+                "Bulk upgrade failed", ex.Message, 8000);
+        }
+        finally
+        {
+            _upgrading = false;
+        }
+    }
+}

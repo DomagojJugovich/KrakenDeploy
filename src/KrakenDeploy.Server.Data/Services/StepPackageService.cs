@@ -335,6 +335,170 @@ public sealed class StepPackageService(
         return new UninstallResult(UninstallStatus.Uninstalled, null);
     }
 
+    // ── Bulk usage + upgrade (Phase D-10) ──────────────────────────────────
+
+    /// <summary>
+    /// Returns every live step (deployment process + runbook process)
+    /// pinned to any version of <paramref name="packageName"/>, grouped by
+    /// the pinned version. Released snapshots are excluded — they're
+    /// permanent by contract and the bulk-upgrade tool deliberately does
+    /// not touch them.
+    /// </summary>
+    public async Task<StepPackageUsage> GetUsageAsync(
+        string packageName, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(packageName);
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        var deploymentRows = await db.DeploymentSteps
+            .AsNoTracking()
+            .Where(s => s.StepPackageName == packageName && s.StepPackageVersion != null)
+            .Select(s => new StepPackageUsage.UsageRow(
+                s.Id,
+                s.Process.Project.Name,
+                s.Process.Project.Slug,
+                s.Name,
+                s.StepType,
+                false))
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var runbookRows = await db.RunbookSteps
+            .AsNoTracking()
+            .Where(s => s.StepPackageName == packageName && s.StepPackageVersion != null)
+            .Select(s => new StepPackageUsage.UsageRow(
+                s.Id,
+                s.Process.Runbook.Project.Name,
+                s.Process.Runbook.Project.Slug,
+                s.Name,
+                s.StepType,
+                true))
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        // Re-query to grab each step's version (Select dropped it because the
+        // UsageRow record doesn't carry it — version is the GROUPING key).
+        var dpVersions = await db.DeploymentSteps
+            .AsNoTracking()
+            .Where(s => s.StepPackageName == packageName && s.StepPackageVersion != null)
+            .Select(s => new { s.Id, s.StepPackageVersion })
+            .ToDictionaryAsync(s => s.Id, s => s.StepPackageVersion!, ct).ConfigureAwait(false);
+        var rbVersions = await db.RunbookSteps
+            .AsNoTracking()
+            .Where(s => s.StepPackageName == packageName && s.StepPackageVersion != null)
+            .Select(s => new { s.Id, s.StepPackageVersion })
+            .ToDictionaryAsync(s => s.Id, s => s.StepPackageVersion!, ct).ConfigureAwait(false);
+
+        var groups = deploymentRows.Concat(runbookRows)
+            .GroupBy(r => r.IsRunbook ? rbVersions[r.StepId] : dpVersions[r.StepId])
+            .OrderByDescending(g => g.Key, StringComparer.Ordinal)
+            .Select(g => new StepPackageUsage.VersionGroup(
+                g.Key,
+                [.. g.OrderBy(r => r.ProjectName).ThenBy(r => r.StepName)]))
+            .ToList();
+
+        return new StepPackageUsage(packageName, groups);
+    }
+
+    /// <summary>
+    /// Bumps the <c>(StepPackageName, StepPackageVersion)</c> pin on a
+    /// batch of live steps to a target version (Phase D-10 bulk upgrade).
+    /// <para>
+    /// Rules:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item>Target version must exist in the catalog (an installed
+    ///   <see cref="StepPackage"/> row at <c>(packageName, targetVersion)</c>).
+    ///   Throws when it doesn't.</item>
+    ///   <item>Step IDs that are already on the target version count as
+    ///   <c>Skipped</c> with reason <c>"already-target"</c>.</item>
+    ///   <item>Step IDs that don't exist (race with a delete) count as
+    ///   <c>Skipped</c> with reason <c>"not-found"</c>.</item>
+    ///   <item>Released snapshots (<c>StepSnapshot</c>) are never touched.</item>
+    /// </list>
+    /// </summary>
+    public async Task<BulkUpgradeResult> BulkUpgradeAsync(
+        string packageName,
+        string targetVersion,
+        IReadOnlyList<Guid> deploymentStepIds,
+        IReadOnlyList<Guid> runbookStepIds,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(packageName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetVersion);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        var targetExists = await db.StepPackages
+            .AnyAsync(p => p.Name == packageName && p.Version == targetVersion, ct)
+            .ConfigureAwait(false);
+        if (!targetExists)
+        {
+            throw new InvalidOperationException(
+                $"Target version '{targetVersion}' of step package '{packageName}' " +
+                "is not installed. Install it first or pick a different target.");
+        }
+
+        var skipped = new List<BulkUpgradeResult.SkippedRow>();
+        var touched = 0;
+
+        // ── Deployment steps ───────────────────────────────────────────
+        if (deploymentStepIds.Count > 0)
+        {
+            var rows = await db.DeploymentSteps
+                .Where(s => deploymentStepIds.Contains(s.Id)
+                            && s.StepPackageName == packageName)
+                .ToDictionaryAsync(s => s.Id, ct).ConfigureAwait(false);
+
+            foreach (var id in deploymentStepIds)
+            {
+                if (!rows.TryGetValue(id, out var row))
+                {
+                    skipped.Add(new BulkUpgradeResult.SkippedRow(id, "not-found"));
+                    continue;
+                }
+                if (string.Equals(row.StepPackageVersion, targetVersion, StringComparison.Ordinal))
+                {
+                    skipped.Add(new BulkUpgradeResult.SkippedRow(id, "already-target"));
+                    continue;
+                }
+                row.StepPackageVersion = targetVersion;
+                touched++;
+            }
+        }
+
+        // ── Runbook steps ──────────────────────────────────────────────
+        if (runbookStepIds.Count > 0)
+        {
+            var rows = await db.RunbookSteps
+                .Where(s => runbookStepIds.Contains(s.Id)
+                            && s.StepPackageName == packageName)
+                .ToDictionaryAsync(s => s.Id, ct).ConfigureAwait(false);
+
+            foreach (var id in runbookStepIds)
+            {
+                if (!rows.TryGetValue(id, out var row))
+                {
+                    skipped.Add(new BulkUpgradeResult.SkippedRow(id, "not-found"));
+                    continue;
+                }
+                if (string.Equals(row.StepPackageVersion, targetVersion, StringComparison.Ordinal))
+                {
+                    skipped.Add(new BulkUpgradeResult.SkippedRow(id, "already-target"));
+                    continue;
+                }
+                row.StepPackageVersion = targetVersion;
+                touched++;
+            }
+        }
+
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        logger.LogInformation(
+            "StepPackageService.BulkUpgradeAsync: {Name} → {Version}, touched={Touched}, skipped={Skipped}.",
+            packageName, targetVersion, touched, skipped.Count);
+
+        return new BulkUpgradeResult(packageName, targetVersion, touched, skipped);
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private string ResolveDir(string name, string version)
