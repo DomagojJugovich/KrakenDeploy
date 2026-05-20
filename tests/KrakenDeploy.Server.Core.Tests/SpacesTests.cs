@@ -91,6 +91,10 @@ public sealed class SpacesTests
             // plugins). Packages are platform-level: a Kraken admin manages them
             // centrally, not per Space.
             "StepPackage",
+            // System-wide step-package catalog cache (Phase D-9) — Hangfire job
+            // mirrors a public GitHub feed; same platform-level scope as
+            // StepPackage itself.
+            "StepPackageCatalogEntry",
         };
 
         var assembly = typeof(Project).Assembly;

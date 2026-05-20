@@ -6,6 +6,7 @@
 @using KrakenDeploy.Server.Core.Domain.StepPackages
 @using KrakenDeploy.Server.Data.Services
 @inject StepPackageService Svc
+@inject StepPackageCatalogService Catalog
 @inject DialogService Dialog
 @inject NotificationService Notifications
 
@@ -23,81 +24,190 @@
     </RequirePermission>
 </RadzenStack>
 
-<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-3">
-    Installed <code>.kdeploy-step</code> packages. Each row is a single
-    (name, version) install. Multiple versions of the same package coexist;
-    each step in a deployment process pins to one exact version, locked
-    further at release time so old releases continue to deploy with the
-    package they were authored against.
-</RadzenText>
+<RadzenTabs @bind-SelectedIndex="_activeTab">
+    <Tabs>
+        <RadzenTabsItem Text="Installed">
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-3">
+                Installed <code>.kdeploy-step</code> packages. Each row is a single
+                (name, version) install. Multiple versions of the same package coexist;
+                each step in a deployment process pins to one exact version, locked
+                further at release time so old releases continue to deploy with the
+                package they were authored against.
+            </RadzenText>
 
-@if (!_loaded)
-{
-    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading…</RadzenText>
-}
-else if (_packages.Count == 0)
-{
-    <RadzenCard class="rz-p-5 rz-text-align-center">
-        <RadzenIcon Icon="extension" Style="font-size: 3rem; opacity: 0.3;" />
-        <RadzenText TextStyle="TextStyle.H6" class="rz-mt-3">No packages installed</RadzenText>
-        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
-            Upload a <code>.kdeploy-step</code> archive to install a step package
-            on this Kraken server.
-        </RadzenText>
-        <RequirePermission Permission="Permission.StepPackageManage">
-            <RadzenButton Text="Upload" Icon="cloud_upload"
-                          ButtonStyle="ButtonStyle.Primary"
-                          Click="OpenUploadAsync" />
-        </RequirePermission>
-    </RadzenCard>
-}
-else
-{
-    <RadzenDataGrid Data="@_packages" TItem="StepPackage"
-                    AllowPaging="false" AllowSorting="true" AllowFiltering="false"
-                    Density="Density.Compact">
-        <Columns>
-            <RadzenDataGridColumn TItem="StepPackage" Property="Name" Title="Package" />
-            <RadzenDataGridColumn TItem="StepPackage" Property="Version" Title="Version" Width="120px" />
-            <RadzenDataGridColumn TItem="StepPackage" Property="StepTypes" Title="Step types" />
-            <RadzenDataGridColumn TItem="StepPackage" Property="Source" Title="Source" Width="120px">
-                <Template Context="p">@p.Source</Template>
-            </RadzenDataGridColumn>
-            <RadzenDataGridColumn TItem="StepPackage" Property="CreatedUtc" Title="Installed" Width="180px">
-                <Template Context="p">
-                    @p.CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
-                </Template>
-            </RadzenDataGridColumn>
-            <RadzenDataGridColumn TItem="StepPackage" Property="Sha256" Title="SHA-256" Width="220px">
-                <Template Context="p">
-                    <code style="font-size: 0.75em;">@TruncSha(p.Sha256)</code>
-                </Template>
-            </RadzenDataGridColumn>
-            <RadzenDataGridColumn TItem="StepPackage" Title="" Width="60px"
-                                  Sortable="false" Filterable="false">
-                <Template Context="p">
+            @if (!_loaded)
+            {
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading…</RadzenText>
+            }
+            else if (_packages.Count == 0)
+            {
+                <RadzenCard class="rz-p-5 rz-text-align-center">
+                    <RadzenIcon Icon="extension" Style="font-size: 3rem; opacity: 0.3;" />
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mt-3">No packages installed</RadzenText>
+                    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+                        Upload a <code>.kdeploy-step</code> archive or pick one from the
+                        Catalog tab.
+                    </RadzenText>
                     <RequirePermission Permission="Permission.StepPackageManage">
-                        <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
-                                      Size="ButtonSize.ExtraSmall"
-                                      Variant="Variant.Text"
-                                      IsBusy="@(_uninstalling == p.Id)"
-                                      Click="@(() => UninstallAsync(p))"
-                                      title="Uninstall this version" />
+                        <RadzenButton Text="Upload" Icon="cloud_upload"
+                                      ButtonStyle="ButtonStyle.Primary"
+                                      Click="OpenUploadAsync" />
                     </RequirePermission>
-                </Template>
-            </RadzenDataGridColumn>
-        </Columns>
-    </RadzenDataGrid>
-}
+                </RadzenCard>
+            }
+            else
+            {
+                <RadzenDataGrid Data="@_packages" TItem="StepPackage"
+                                AllowPaging="false" AllowSorting="true" AllowFiltering="false"
+                                Density="Density.Compact">
+                    <Columns>
+                        <RadzenDataGridColumn TItem="StepPackage" Property="Name" Title="Package" />
+                        <RadzenDataGridColumn TItem="StepPackage" Property="Version" Title="Version" Width="120px" />
+                        <RadzenDataGridColumn TItem="StepPackage" Property="StepTypes" Title="Step types" />
+                        <RadzenDataGridColumn TItem="StepPackage" Property="Source" Title="Source" Width="120px">
+                            <Template Context="p">@p.Source</Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="StepPackage" Property="CreatedUtc" Title="Installed" Width="180px">
+                            <Template Context="p">
+                                @p.CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+                            </Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="StepPackage" Property="Sha256" Title="SHA-256" Width="220px">
+                            <Template Context="p">
+                                <code style="font-size: 0.75em;">@TruncSha(p.Sha256)</code>
+                            </Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="StepPackage" Title="" Width="60px"
+                                              Sortable="false" Filterable="false">
+                            <Template Context="p">
+                                <RequirePermission Permission="Permission.StepPackageManage">
+                                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                                  Size="ButtonSize.ExtraSmall"
+                                                  Variant="Variant.Text"
+                                                  IsBusy="@(_uninstalling == p.Id)"
+                                                  Click="@(() => UninstallAsync(p))"
+                                                  title="Uninstall this version" />
+                                </RequirePermission>
+                            </Template>
+                        </RadzenDataGridColumn>
+                    </Columns>
+                </RadzenDataGrid>
+            }
+        </RadzenTabsItem>
+
+        <RadzenTabsItem Text="Catalog">
+            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                         JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-3">
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-0">
+                    Step packages discovered on the public KrakenDeploy/StepPackages
+                    GitHub feed (configurable). The catalog refreshes hourly via a
+                    background job; click "Refresh now" to pull immediately.
+                    @if (_catalogLastSync is { } sync)
+                    {
+                        <span> Last sync: <strong>@sync.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</strong>.</span>
+                    }
+                </RadzenText>
+                <RequirePermission Permission="Permission.StepPackageManage">
+                    <RadzenButton Icon="refresh" Text="Refresh now"
+                                  Size="ButtonSize.Small"
+                                  ButtonStyle="ButtonStyle.Light"
+                                  IsBusy="@_refreshing"
+                                  Click="RefreshCatalogAsync" />
+                </RequirePermission>
+            </RadzenStack>
+
+            @if (!_catalogLoaded)
+            {
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading…</RadzenText>
+            }
+            else if (_catalog.Count == 0)
+            {
+                <RadzenCard class="rz-p-5 rz-text-align-center">
+                    <RadzenIcon Icon="public" Style="font-size: 3rem; opacity: 0.3;" />
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mt-3">Empty catalog</RadzenText>
+                    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                        No catalog entries cached locally yet. Click "Refresh now" to pull
+                        from GitHub, or check the <code>StepPackages:Catalog:Owner/Repo</code>
+                        config if you've pointed at a private feed.
+                    </RadzenText>
+                </RadzenCard>
+            }
+            else
+            {
+                <RadzenDataGrid Data="@_catalog" TItem="StepPackageCatalogEntry"
+                                AllowPaging="false" AllowSorting="true" AllowFiltering="false"
+                                Density="Density.Compact">
+                    <Columns>
+                        <RadzenDataGridColumn TItem="StepPackageCatalogEntry" Property="Name" Title="Package" />
+                        <RadzenDataGridColumn TItem="StepPackageCatalogEntry" Property="Version" Title="Version" Width="120px" />
+                        <RadzenDataGridColumn TItem="StepPackageCatalogEntry" Property="PublishedUtc"
+                                              Title="Published" Width="160px">
+                            <Template Context="e">
+                                @e.PublishedUtc.ToLocalTime().ToString("yyyy-MM-dd")
+                            </Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="StepPackageCatalogEntry" Title="Status" Width="140px"
+                                              Sortable="false" Filterable="false">
+                            <Template Context="e">
+                                @if (IsInstalled(e.Name, e.Version))
+                                {
+                                    <RadzenBadge BadgeStyle="BadgeStyle.Success" IsPill="true"
+                                                 Text="Installed" />
+                                }
+                                else
+                                {
+                                    <RadzenBadge BadgeStyle="BadgeStyle.Info" IsPill="true"
+                                                 Text="Available" />
+                                }
+                            </Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="StepPackageCatalogEntry" Title="" Width="200px"
+                                              Sortable="false" Filterable="false">
+                            <Template Context="e">
+                                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.4rem">
+                                    <RadzenLink Path="@e.ReleaseHtmlUrl" Target="_blank"
+                                                Text="View release" />
+                                    <RequirePermission Permission="Permission.StepPackageManage">
+                                        @if (!IsInstalled(e.Name, e.Version))
+                                        {
+                                            <RadzenButton Icon="cloud_download" Text="Install"
+                                                          Size="ButtonSize.ExtraSmall"
+                                                          ButtonStyle="ButtonStyle.Primary"
+                                                          Variant="Variant.Outlined"
+                                                          IsBusy="@(_installingKey == $"{e.Name}@{e.Version}")"
+                                                          Click="@(() => InstallFromCatalogAsync(e))" />
+                                        }
+                                    </RequirePermission>
+                                </RadzenStack>
+                            </Template>
+                        </RadzenDataGridColumn>
+                    </Columns>
+                </RadzenDataGrid>
+            }
+        </RadzenTabsItem>
+    </Tabs>
+</RadzenTabs>
 
 @code {
     private bool _loaded;
     private List<StepPackage> _packages = [];
     private Guid? _uninstalling;
 
+    private int _activeTab;
+    private bool _catalogLoaded;
+    private bool _refreshing;
+    private List<StepPackageCatalogEntry> _catalog = [];
+    private DateTimeOffset? _catalogLastSync;
+    /// <summary>"name@version" of the catalog entry being installed, for IsBusy.</summary>
+    private string? _installingKey;
+    /// <summary>(name, version) tuples of every locally-installed package, for the
+    /// "Installed" badge on catalog rows. Rebuilt after each install or refresh.</summary>
+    private HashSet<(string Name, string Version)> _installedKeys = new();
+
     protected override async Task OnInitializedAsync()
     {
         await ReloadAsync();
+        await ReloadCatalogAsync();
     }
 
     private async Task ReloadAsync()
@@ -106,15 +216,90 @@ else
         try
         {
             _packages = await Svc.GetAllAsync();
+            _installedKeys = new HashSet<(string, string)>(
+                _packages.Select(p => (p.Name, p.Version)));
         }
         catch (Exception ex)
         {
             Notifications.Notify(NotificationSeverity.Error,
                 "Failed to load step packages", ex.Message, 6000);
             _packages = [];
+            _installedKeys.Clear();
         }
         _loaded = true;
     }
+
+    /// <summary>
+    /// Loads the cached catalog rows from the local DB. Does NOT hit GitHub
+    /// — that only happens on `RefreshCatalogAsync` (manual) or the hourly
+    /// Hangfire job. So the tab is fast on every page load.
+    /// </summary>
+    private async Task ReloadCatalogAsync()
+    {
+        _catalogLoaded = false;
+        try
+        {
+            _catalog = await Catalog.GetAllAsync();
+            _catalogLastSync = await Catalog.GetLastSyncAsync();
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error,
+                "Failed to load catalog", ex.Message, 6000);
+            _catalog = [];
+        }
+        _catalogLoaded = true;
+    }
+
+    private async Task RefreshCatalogAsync()
+    {
+        _refreshing = true;
+        try
+        {
+            var result = await Catalog.RefreshAsync();
+            Notifications.Notify(NotificationSeverity.Success,
+                "Catalog refreshed",
+                $"upstream={result.UpstreamCount} added={result.Added} " +
+                $"updated={result.Updated} unchanged={result.Unchanged} " +
+                $"removed={result.Removed} failed={result.Failed}",
+                5000);
+            await ReloadCatalogAsync();
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error,
+                "Refresh failed", ex.Message, 8000);
+        }
+        finally
+        {
+            _refreshing = false;
+        }
+    }
+
+    private async Task InstallFromCatalogAsync(StepPackageCatalogEntry entry)
+    {
+        _installingKey = $"{entry.Name}@{entry.Version}";
+        try
+        {
+            await Catalog.InstallAsync(entry.Name, entry.Version);
+            Notifications.Notify(NotificationSeverity.Success,
+                "Installed",
+                $"{entry.Name} {entry.Version} pulled from catalog.", 4000);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error,
+                "Install failed", ex.Message, 8000);
+        }
+        finally
+        {
+            _installingKey = null;
+        }
+    }
+
+    private bool IsInstalled(string name, string version)
+        => _installedKeys.Contains((name, version));
 
     private async Task OpenUploadAsync()
     {

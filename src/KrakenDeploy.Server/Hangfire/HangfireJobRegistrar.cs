@@ -54,5 +54,16 @@ public static class HangfireJobRegistrar
             job => job.ExecuteAsync(CancellationToken.None),
             Cron.Hourly(),
             new RecurringJobOptions { TimeZone = utc });
+
+        // Step-package catalog (Phase D-9) — defaults to KrakenDeploy/StepPackages,
+        // configurable via StepPackages:Catalog:Owner / .Repo. Uses the same
+        // kraken.github named HttpClient + optional GitHub:Token as the
+        // step-template catalog above; one /releases call per hour is cheap
+        // even on the unauthenticated rate budget.
+        RecurringJob.AddOrUpdate<StepPackageCatalogPollJob>(
+            "kraken.step-package-catalog-poll",
+            job => job.ExecuteAsync(CancellationToken.None),
+            Cron.Hourly(),
+            new RecurringJobOptions { TimeZone = utc });
     }
 }

@@ -1518,6 +1518,52 @@ public static class Program
                 }
             }).RequirePermission(Permission.StepPackageManage);
 
+        // ── Step-package catalog (Phase D-9) ─────────────────────────────────
+        // GitHub-feed mirror of KrakenDeploy/StepPackages. Hourly Hangfire
+        // poll keeps the catalog table fresh; admins can install / refresh
+        // on demand here.
+
+        app.MapGet("/api/step-package-catalog",
+            async (StepPackageCatalogService catalog, CancellationToken ct) =>
+                Results.Ok(await catalog.GetAllAsync(ct).ConfigureAwait(false))
+        ).RequirePermission(Permission.StepPackageView);
+
+        app.MapPost("/api/step-package-catalog/refresh",
+            async (StepPackageCatalogService catalog, CancellationToken ct) =>
+            {
+                try
+                {
+                    var result = await catalog.RefreshAsync(ct).ConfigureAwait(false);
+                    return Results.Ok(result);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.Problem(ex.Message, statusCode: StatusCodes.Status502BadGateway);
+                }
+            }).RequirePermission(Permission.StepPackageManage);
+
+        app.MapPost("/api/step-package-catalog/{name}/{version}/install",
+            async (string name, string version,
+                   StepPackageCatalogService catalog, IAuditLog audit, CancellationToken ct) =>
+            {
+                try
+                {
+                    var installed = await catalog.InstallAsync(name, version, ct).ConfigureAwait(false);
+                    await audit.RecordAsync(
+                        AuditEventType.StepPackageInstalled,
+                        subjectType: nameof(StepPackage),
+                        subjectId: $"{installed.Name}@{installed.Version}",
+                        subjectName: $"{installed.Name} {installed.Version}",
+                        details: $"Installed from catalog (pull from GitHub feed).",
+                        ct: ct).ConfigureAwait(false);
+                    return Results.Created($"/api/step-packages/{installed.Id}", installed);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.Problem(ex.Message, statusCode: StatusCodes.Status409Conflict);
+                }
+            }).RequirePermission(Permission.StepPackageManage);
+
         // ── Deployment API ───────────────────────────────────────────────────
         app.MapGet("/api/deployments",
             async (Guid? projectId, DeploymentService deploymentSvc, CancellationToken ct) =>

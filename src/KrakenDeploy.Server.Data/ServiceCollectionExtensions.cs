@@ -76,6 +76,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<VariableService>();
         services.AddScoped<StepTemplateService>();
         services.AddScoped<StepTemplateCatalogService>();
+        services.AddScoped<StepPackageCatalogService>();
         services.AddScoped<StepPackageService>();
         services.AddScoped<StepPackageResolver>();
         services.AddScoped<TenantService>();
@@ -106,6 +107,7 @@ public static class ServiceCollectionExtensions
         services.AddTransient<RegistrationTokenExpiryJob>();
         services.AddTransient<ScheduledDeploymentDispatchJob>();
         services.AddTransient<StepTemplateCatalogPollJob>();
+        services.AddTransient<StepPackageCatalogPollJob>();
 
         // Octodiff delta generation — singleton because it has no mutable state;
         // signatures are cached on disk alongside the package files.
