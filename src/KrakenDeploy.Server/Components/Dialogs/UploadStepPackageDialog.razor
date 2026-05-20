@@ -1,0 +1,125 @@
+@using KrakenDeploy.Server.Core.Domain.StepPackages
+@using KrakenDeploy.Server.Data.Services
+@using Microsoft.AspNetCore.Components.Forms
+
+@inject StepPackageService Svc
+@inject DialogService DialogService
+
+@*
+    Upload a .kdeploy-step archive. The user picks the file, we stream it to
+    StepPackageService.UploadAsync, and show the resulting StepPackage row
+    (or the error message). Closes the dialog with the installed StepPackage
+    on success so the caller can refresh its list.
+*@
+
+<RadzenStack Gap="1rem">
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+        Upload a <code>.kdeploy-step</code> archive. The server extracts it,
+        verifies the signature (if configured), and persists the install to
+        the step-package store. Multiple versions of the same package can
+        coexist — pick a new version number for each upload.
+    </RadzenText>
+
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                 AlignItems="AlignItems.Center">
+        <InputFile OnChange="@OnFilePickedAsync" accept=".kdeploy-step,.zip" />
+        @if (!string.IsNullOrEmpty(_fileName))
+        {
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                Picked <code>@_fileName</code> (@FormatBytes(_fileSize))
+            </RadzenText>
+        }
+    </RadzenStack>
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" Shade="Shade.Lighter">@_error</RadzenAlert>
+    }
+
+    @if (_installed is not null)
+    {
+        <RadzenCard>
+            <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-2">Installed</RadzenText>
+            <div class="rz-grid-table" style="grid-template-columns: auto 1fr;">
+                <span class="rz-color-secondary">Name</span><span>@_installed.Name</span>
+                <span class="rz-color-secondary">Version</span><span>@_installed.Version</span>
+                <span class="rz-color-secondary">Step types</span><span>@_installed.StepTypes</span>
+                <span class="rz-color-secondary">SHA-256</span>
+                <span style="font-family: var(--rz-mono-font, monospace);">@_installed.Sha256</span>
+                <span class="rz-color-secondary">Source</span><span>@_installed.Source</span>
+            </div>
+        </RadzenCard>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End" Gap="0.5rem">
+        <RadzenButton Text="@(_installed is null ? "Cancel" : "Close")"
+                      ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => DialogService.Close(_installed))" />
+        @if (_installed is null)
+        {
+            <RadzenButton Text="Upload" ButtonStyle="ButtonStyle.Primary"
+                          Icon="cloud_upload" IsBusy="@_busy"
+                          Disabled="@(_pickedFile is null)"
+                          Click="@UploadAsync" />
+        }
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    private IBrowserFile? _pickedFile;
+    private string  _fileName = "";
+    private long    _fileSize;
+    private string? _error;
+    private bool    _busy;
+    private StepPackage? _installed;
+
+    // 64 MB cap matches the server-side request-size limit.
+    private const long MaxFileSize = 64L * 1024 * 1024;
+
+    private Task OnFilePickedAsync(InputFileChangeEventArgs e)
+    {
+        _error    = null;
+        _pickedFile = e.File;
+        _fileName   = e.File?.Name ?? "";
+        _fileSize   = e.File?.Size ?? 0L;
+        if (_fileSize > MaxFileSize)
+        {
+            _error    = $"File is too large ({FormatBytes(_fileSize)}). Maximum is {FormatBytes(MaxFileSize)}.";
+            _pickedFile = null;
+        }
+        return Task.CompletedTask;
+    }
+
+    private async Task UploadAsync()
+    {
+        if (_pickedFile is null) { return; }
+        _busy  = true;
+        _error = null;
+        try
+        {
+            await using var stream = _pickedFile.OpenReadStream(maxAllowedSize: MaxFileSize);
+            var result = await Svc.UploadAsync(stream);
+            if (!result.Success)
+            {
+                _error = result.ErrorMessage;
+                return;
+            }
+            _installed = result.Installed;
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024)         { return $"{bytes} B"; }
+        if (bytes < 1024 * 1024)  { return $"{bytes / 1024.0:F1} KB"; }
+        return $"{bytes / (1024.0 * 1024.0):F2} MB";
+    }
+}

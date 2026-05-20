@@ -76,6 +76,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<VariableService>();
         services.AddScoped<StepTemplateService>();
         services.AddScoped<StepTemplateCatalogService>();
+        services.AddScoped<StepPackageService>();
         services.AddScoped<TenantService>();
         services.AddScoped<LifecycleService>();
         services.AddScoped<ChannelService>();

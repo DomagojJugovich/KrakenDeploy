@@ -12,6 +12,7 @@ using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Spaces;
+using KrakenDeploy.Server.Core.Domain.StepPackages;
 using KrakenDeploy.Server.Core.Domain.StepTemplates;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Tenants;
@@ -51,6 +52,7 @@ public class KrakenDbContext(
     public DbSet<Variable> Variables => Set<Variable>();
     public DbSet<StepTemplate> StepTemplates => Set<StepTemplate>();
     public DbSet<StepTemplateCatalogEntry> StepTemplateCatalog => Set<StepTemplateCatalogEntry>();
+    public DbSet<StepPackage> StepPackages => Set<StepPackage>();
     public DbSet<Tenant> Tenants => Set<Tenant>();
     public DbSet<TagSet> TagSets => Set<TagSet>();
     public DbSet<TenantTag> TenantTags => Set<TenantTag>();

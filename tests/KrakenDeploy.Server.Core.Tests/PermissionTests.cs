@@ -113,6 +113,9 @@ public sealed class PermissionTests
     [InlineData(Permission.StepTemplateCreate,   901)]
     [InlineData(Permission.StepTemplateEdit,     902)]
     [InlineData(Permission.StepTemplateDelete,   903)]
+    // Step Packages (Phase D)
+    [InlineData(Permission.StepPackageView,      950)]
+    [InlineData(Permission.StepPackageManage,    951)]
     // Package Library
     [InlineData(Permission.PackageView,         1000)]
     [InlineData(Permission.PackageEdit,         1001)]
@@ -161,7 +164,7 @@ public sealed class PermissionTests
 
         // Count from the [Theory]/[InlineData] entries above. If you add new
         // ones, bump this number.
-        const int expectedCoverage = 105;
+        const int expectedCoverage = 107;
 
         allMembers.Should().Be(expectedCoverage,
             "the stability theory must cover every Permission member; " +

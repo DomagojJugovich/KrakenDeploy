@@ -87,6 +87,10 @@ public sealed class SpacesTests
             // System-wide GitHub community-template cache — refreshed by a
             // server-side poller; not partitioned per Space.
             "StepTemplateCatalogEntry",
+            // System-wide step-package install registry (Phase D — .kdeploy-step
+            // plugins). Packages are platform-level: a Kraken admin manages them
+            // centrally, not per Space.
+            "StepPackage",
         };
 
         var assembly = typeof(Project).Assembly;

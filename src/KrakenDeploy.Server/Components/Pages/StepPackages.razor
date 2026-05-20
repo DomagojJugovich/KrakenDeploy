@@ -1,0 +1,120 @@
+@page "/step-packages"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using KrakenDeploy.Server.Core.Domain.Security
+@using KrakenDeploy.Server.Core.Domain.StepPackages
+@using KrakenDeploy.Server.Data.Services
+@inject StepPackageService Svc
+@inject DialogService Dialog
+@inject NotificationService Notifications
+
+<PageTitle>Step Packages</PageTitle>
+
+<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+             JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-4">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
+        Step Packages
+    </RadzenText>
+    <RequirePermission Permission="Permission.StepPackageManage">
+        <RadzenButton Text="Upload" Icon="cloud_upload" Size="ButtonSize.Small"
+                      ButtonStyle="ButtonStyle.Primary"
+                      Click="OpenUploadAsync" />
+    </RequirePermission>
+</RadzenStack>
+
+<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-3">
+    Installed <code>.kdeploy-step</code> packages. Each row is a single
+    (name, version) install. Multiple versions of the same package coexist;
+    each step in a deployment process pins to one exact version, locked
+    further at release time so old releases continue to deploy with the
+    package they were authored against.
+</RadzenText>
+
+@if (!_loaded)
+{
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading…</RadzenText>
+}
+else if (_packages.Count == 0)
+{
+    <RadzenCard class="rz-p-5 rz-text-align-center">
+        <RadzenIcon Icon="extension" Style="font-size: 3rem; opacity: 0.3;" />
+        <RadzenText TextStyle="TextStyle.H6" class="rz-mt-3">No packages installed</RadzenText>
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+            Upload a <code>.kdeploy-step</code> archive to install a step package
+            on this Kraken server.
+        </RadzenText>
+        <RequirePermission Permission="Permission.StepPackageManage">
+            <RadzenButton Text="Upload" Icon="cloud_upload"
+                          ButtonStyle="ButtonStyle.Primary"
+                          Click="OpenUploadAsync" />
+        </RequirePermission>
+    </RadzenCard>
+}
+else
+{
+    <RadzenDataGrid Data="@_packages" TItem="StepPackage"
+                    AllowPaging="false" AllowSorting="true" AllowFiltering="false"
+                    Density="Density.Compact">
+        <Columns>
+            <RadzenDataGridColumn TItem="StepPackage" Property="Name" Title="Package" />
+            <RadzenDataGridColumn TItem="StepPackage" Property="Version" Title="Version" Width="120px" />
+            <RadzenDataGridColumn TItem="StepPackage" Property="StepTypes" Title="Step types" />
+            <RadzenDataGridColumn TItem="StepPackage" Property="Source" Title="Source" Width="120px">
+                <Template Context="p">@p.Source</Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="StepPackage" Property="CreatedUtc" Title="Installed" Width="180px">
+                <Template Context="p">
+                    @p.CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="StepPackage" Property="Sha256" Title="SHA-256" Width="220px">
+                <Template Context="p">
+                    <code style="font-size: 0.75em;">@TruncSha(p.Sha256)</code>
+                </Template>
+            </RadzenDataGridColumn>
+        </Columns>
+    </RadzenDataGrid>
+}
+
+@code {
+    private bool _loaded;
+    private List<StepPackage> _packages = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _loaded = false;
+        try
+        {
+            _packages = await Svc.GetAllAsync();
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error,
+                "Failed to load step packages", ex.Message, 6000);
+            _packages = [];
+        }
+        _loaded = true;
+    }
+
+    private async Task OpenUploadAsync()
+    {
+        var result = await Dialog.OpenAsync<UploadStepPackageDialog>(
+            "Upload step package",
+            new Dictionary<string, object?>(),
+            new DialogOptions { Width = "640px", CloseDialogOnOverlayClick = false });
+
+        if (result is StepPackage)
+        {
+            await ReloadAsync();
+        }
+    }
+
+    private static string TruncSha(string sha)
+        => string.IsNullOrEmpty(sha) ? "" : sha[..Math.Min(16, sha.Length)] + "…";
+}

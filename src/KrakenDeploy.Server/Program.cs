@@ -1409,6 +1409,51 @@ public static class Program
                 }
             }).RequirePermission(Permission.StepTemplateCreate);
 
+        // ── Step Packages (Phase D — .kdeploy-step plugins) ──────────────────
+
+        app.MapGet("/api/step-packages",
+            async (string? name, StepPackageService svc, CancellationToken ct) =>
+            {
+                var rows = string.IsNullOrWhiteSpace(name)
+                    ? await svc.GetAllAsync(ct).ConfigureAwait(false)
+                    : await svc.GetVersionsAsync(name, ct).ConfigureAwait(false);
+                return Results.Ok(rows);
+            }).RequirePermission(Permission.StepPackageView);
+
+        app.MapGet("/api/step-packages/{id:guid}",
+            async (Guid id, StepPackageService svc, CancellationToken ct) =>
+            {
+                var row = await svc.GetAsync(id, ct).ConfigureAwait(false);
+                return row is null ? Results.NotFound() : Results.Ok(row);
+            }).RequirePermission(Permission.StepPackageView);
+
+        // Multipart upload of a .kdeploy-step archive. Form field name is
+        // "file"; size cap is 64 MB (RequestSizeLimitAttribute equivalent).
+        app.MapPost("/api/step-packages",
+            async (HttpRequest req, StepPackageService svc, CancellationToken ct) =>
+            {
+                if (!req.HasFormContentType)
+                {
+                    return Results.BadRequest(new { error =
+                        "Request must be multipart/form-data with a 'file' field carrying the .kdeploy-step archive." });
+                }
+                var form = await req.ReadFormAsync(ct).ConfigureAwait(false);
+                var file = form.Files["file"]
+                    ?? (form.Files.Count > 0 ? form.Files[0] : null);
+                if (file is null || file.Length == 0)
+                {
+                    return Results.BadRequest(new { error = "No file uploaded." });
+                }
+                await using var stream = file.OpenReadStream();
+                var result = await svc.UploadAsync(stream, ct: ct).ConfigureAwait(false);
+                if (!result.Success)
+                {
+                    return Results.BadRequest(new { error = result.ErrorMessage });
+                }
+                return Results.Created($"/api/step-packages/{result.Installed!.Id}", result.Installed);
+            }).RequirePermission(Permission.StepPackageManage)
+              .DisableAntiforgery();
+
         // ── Deployment API ───────────────────────────────────────────────────
         app.MapGet("/api/deployments",
             async (Guid? projectId, DeploymentService deploymentSvc, CancellationToken ct) =>

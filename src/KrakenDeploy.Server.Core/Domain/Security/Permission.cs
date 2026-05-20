@@ -170,6 +170,12 @@ public enum Permission
     StepTemplateEdit      = 902,
     StepTemplateDelete    = 903,
 
+    // ── Step Packages (Phase D — .kdeploy-step plugins) ─────────────────────
+
+    StepPackageView       = 950,
+    /// <summary>Upload, install from catalog, and uninstall step packages.</summary>
+    StepPackageManage     = 951,
+
     // ── Package Library (1000–1099) ─────────────────────────────────────────
 
     PackageView           = 1000,
