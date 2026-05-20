@@ -1,100 +1,109 @@
 @using System.Text.Json
 @using KrakenDeploy.Contracts.Steps
+@using KrakenDeploy.Server.Components.Shared
 @using KrakenDeploy.Server.Core.Domain.Processes
+@using KrakenDeploy.Server.Core.Domain.StepTemplates
+
 @inject DialogService Dialog
 @inject ProcessService ProcessSvc
+@inject StepTemplateService TemplateSvc
+@inject NotificationService Notifications
 
 @*
-    Add / edit a deployment step. The only step type currently supported is
-    Kraken.Script — fields here capture: Name, Package ID, Target Roles
-    (comma-separated tags), and the script body + syntax that will run
-    during deployment. Config keys are Octopus-compatible
-    (Octopus.Action.Script.*) so processes import unchanged.
+    Unified step add/edit dialog. Replaces the legacy script-only StepFormDialog
+    and TemplatedStepFormDialog with one schema-driven flow.
 
-    To add: pass ProjectId; leave Step null.
-    To edit: pass Step; ProjectId is ignored.
+    Inputs (use ONE of):
+      Add a new step:
+        ProjectId + Template      — schema derived from template parameters
+        ProjectId + ActionType    — schema looked up in BuiltInStepSchemas
+                                     (also the blank "Run a Script" path —
+                                      pass "Kraken.Script")
+      Edit an existing step:
+        Step                      — schema resolved from BuiltInStepSchemas
+                                     first; falls back to the matching
+                                     template by ActionType.
+
+    Renders:
+      - Common Step columns (Name, Package ID, Target Roles) as chrome.
+      - Schema-driven body via <StepUiSchemaForm /> for the Config bag.
+      - Conditional referenced-packages grid for script step types
+        (Kraken.Script / Octopus.Script) since that's a structured list
+        the v1 schema vocabulary doesn't yet model as a widget.
+
+    Save flow:
+      - Schema validator runs on the snapshot; errors show inline + block close.
+      - Common-field validation: Name + PackageId required.
+      - Persist via ProcessService.AddStepAsync / UpdateStepAsync.
 *@
 
-<div style="min-width: 560px; padding: 0.25rem 0;">
-    <EditForm Model="_model" OnValidSubmit="SaveAsync">
-        <DataAnnotationsValidator />
-        <RadzenStack Gap="1rem">
-            <div>
-                <RadzenLabel Text="Name *" />
-                <RadzenTextBox @bind-Value="_model.Name" Style="width:100%"
-                               aria-label="Name" Placeholder="e.g. Deploy WebApp" />
-                <ValidationMessage For="() => _model.Name" class="kraken-validation-error" />
-            </div>
+<div style="min-width:640px; padding:0.25rem 0;">
+    <RadzenStack Gap="1rem">
 
-            <div>
-                <RadzenLabel Text="Package ID *" />
-                <RadzenTextBox @bind-Value="_model.PackageId" Style="width:100%"
-                               aria-label="Package ID"
-                               Placeholder="Logical package identifier (e.g. ArgosyBASE)" />
-                <ValidationMessage For="() => _model.PackageId" class="kraken-validation-error" />
-            </div>
+        @if (_schema is null)
+        {
+            <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+                <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-1">
+                    No schema available for this step type.
+                </RadzenText>
+                <RadzenText TextStyle="TextStyle.Body2">
+                    @(_resolveError ?? "Step type is missing both a built-in schema and a matching step template.")
+                </RadzenText>
+            </RadzenAlert>
+            <RadzenStack Orientation="Orientation.Horizontal"
+                         JustifyContent="JustifyContent.End" Gap="0.5rem">
+                <RadzenButton Text="Close" ButtonStyle="ButtonStyle.Light"
+                              Click="@(_ => Dialog.Close(false))" />
+            </RadzenStack>
+            return;
+        }
 
-            <div>
-                <RadzenLabel Text="Target Roles" />
-                <RadzenTextBox @bind-Value="_model.TargetRolesCsv" Style="width:100%"
-                               aria-label="Target Roles"
-                               Placeholder="Comma-separated, e.g. SERVER, TERMINAL, WORKSTATION" />
+        @* ── Common Step columns ─────────────────────────────────────────── *@
+        <RadzenCard>
+            <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-2">Step</RadzenText>
+            <RadzenStack Gap="0.75rem">
+                <RadzenFormField Text="Name" Variant="Variant.Outlined" Style="width:100%">
+                    <RadzenTextBox @bind-Value="_name" Style="width:100%"
+                                   Placeholder="e.g. Deploy WebApp" />
+                </RadzenFormField>
+
+                <RadzenFormField Text="Package ID" Variant="Variant.Outlined" Style="width:100%">
+                    <RadzenTextBox @bind-Value="_packageId" Style="width:100%"
+                                   Placeholder="Logical package identifier (optional for some step types)" />
+                </RadzenFormField>
+
+                <RadzenFormField Text="Target roles" Variant="Variant.Outlined" Style="width:100%">
+                    <RadzenTextBox @bind-Value="_targetRolesCsv" Style="width:100%"
+                                   Placeholder="Comma-separated, e.g. SERVER, TERMINAL" />
+                </RadzenFormField>
                 <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
                     Only deployment targets whose roles overlap this list run the step.
                     Leave empty to run on every target.
                 </RadzenText>
-            </div>
+            </RadzenStack>
+        </RadzenCard>
 
-            <div>
-                <RadzenLabel Text="Execution Location" />
-                <RadzenRadioButtonList @bind-Value="_model.RunOnServer" TValue="bool"
-                                       Orientation="Orientation.Vertical">
-                    <Items>
-                        <RadzenRadioButtonListItem Text="Run on each deployment target" Value="false" />
-                        <RadzenRadioButtonListItem Text="Run on the KrakenDeploy Server" Value="true" />
-                    </Items>
-                </RadzenRadioButtonList>
-                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
-                    Server execution runs the script in the server process —
-                    useful for steps that talk to external APIs (Slack, JIRA, …)
-                    or perform pre/post deployment work without needing a target.
-                    Set Target Roles on a server step to act on behalf of the
-                    deployment target (Octopus's "Server on behalf of each
-                    deployment target" mode).
-                </RadzenText>
-            </div>
+        @* ── Schema-driven config body ────────────────────────────────────── *@
+        <StepUiSchemaForm Schema="@_schema" Values="@_values" />
 
-            <div>
-                <RadzenLabel Text="Script Syntax" />
-                <RadzenDropDown @bind-Value="_model.ScriptSyntax"
-                                Data="@_syntaxOptions"
-                                Style="width: 200px" />
-            </div>
-
-            <div>
-                <RadzenLabel Text="Script Body" />
-                <RadzenTextArea @bind-Value="_model.ScriptBody"
-                                Rows="10" Style="width:100%; font-family: var(--rz-mono-font, monospace);"
-                                aria-label="Script Body"
-                                Placeholder="# Script that runs on the target during deployment" />
-            </div>
-
-            <div>
+        @* ── Referenced packages grid — script types only ─────────────────── *@
+        @if (IsScriptStepType(_stepType))
+        {
+            <RadzenCard>
                 <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
-                             AlignItems="AlignItems.Center" class="rz-mb-1">
-                    <RadzenLabel Text="Referenced Packages" />
+                             AlignItems="AlignItems.Center" class="rz-mb-2">
+                    <RadzenText TextStyle="TextStyle.Subtitle1">Referenced packages</RadzenText>
                     <RadzenButton Icon="add_circle_outline" Size="ButtonSize.ExtraSmall"
                                   Variant="Variant.Text" ButtonStyle="ButtonStyle.Light"
                                   Text="Add" Click="@AddReferencedPackage" />
                 </RadzenStack>
-                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-1">
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-2">
                     Extra packages this step depends on. Each is extracted to
                     <code>refs/&lt;Name&gt;/</code> and surfaced as
-                    <code>$OctopusParameters["Octopus.Action.Package[Name].ExtractedPath"]</code>
-                    + <code>OCTOPUS_REFERENCED_PACKAGE_&lt;NAME&gt;_PATH</code>.
+                    <code>$OctopusParameters["Octopus.Action.Package[Name].ExtractedPath"]</code>.
                     Version blank = latest at dispatch time.
                 </RadzenText>
-                @if (_model.ReferencedPackages.Count > 0)
+                @if (_referencedPackages.Count > 0)
                 {
                     <table style="width:100%; border-collapse: collapse;">
                         <thead>
@@ -106,116 +115,279 @@
                             </tr>
                         </thead>
                         <tbody>
-                            @for (var i = 0; i < _model.ReferencedPackages.Count; i++)
+                            @for (var i = 0; i < _referencedPackages.Count; i++)
                             {
                                 var idx = i;
                                 <tr>
                                     <td style="padding:2px 8px;">
-                                        <RadzenTextBox @bind-Value="_model.ReferencedPackages[idx].Name"
+                                        <RadzenTextBox @bind-Value="_referencedPackages[idx].Name"
                                                        Placeholder="helper" Style="width:100%;" />
                                     </td>
                                     <td style="padding:2px 8px;">
-                                        <RadzenTextBox @bind-Value="_model.ReferencedPackages[idx].PackageId"
+                                        <RadzenTextBox @bind-Value="_referencedPackages[idx].PackageId"
                                                        Placeholder="MyHelperLib" Style="width:100%;" />
                                     </td>
                                     <td style="padding:2px 8px;">
-                                        <RadzenTextBox @bind-Value="_model.ReferencedPackages[idx].Version"
+                                        <RadzenTextBox @bind-Value="_referencedPackages[idx].Version"
                                                        Placeholder="(latest)" Style="width:100%;" />
                                     </td>
                                     <td style="padding:2px 8px;">
                                         <RadzenButton Icon="delete" Size="ButtonSize.ExtraSmall"
                                                       Variant="Variant.Text"
                                                       ButtonStyle="ButtonStyle.Danger"
-                                                      Click="@(() => _model.ReferencedPackages.RemoveAt(idx))" />
+                                                      Click="@(() => _referencedPackages.RemoveAt(idx))" />
                                     </td>
                                 </tr>
                             }
                         </tbody>
                     </table>
                 }
-            </div>
+            </RadzenCard>
+        }
 
-            @if (_errorMessage is not null)
-            {
-                <div class="kraken-login-error rz-text-body2">@_errorMessage</div>
-            }
+        @if (_errors.Count > 0)
+        {
+            <RadzenAlert AlertStyle="AlertStyle.Danger" Shade="Shade.Lighter" ShowIcon="true">
+                <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-1">
+                    Please fix the following before saving:
+                </RadzenText>
+                <ul class="rz-mb-0">
+                    @foreach (var msg in _errors) { <li>@msg</li> }
+                </ul>
+            </RadzenAlert>
+        }
 
-            <RadzenStack Orientation="Orientation.Horizontal"
-                         JustifyContent="JustifyContent.End" Gap="0.5rem">
-                <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
-                              Click="@(_ => Dialog.Close(false))" />
-                <RadzenButton Text="Save" ButtonType="ButtonType.Submit"
-                              ButtonStyle="ButtonStyle.Primary" />
-            </RadzenStack>
+        <RadzenStack Orientation="Orientation.Horizontal"
+                     JustifyContent="JustifyContent.End" Gap="0.5rem">
+            <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                          Click="@(_ => Dialog.Close(false))" />
+            <RadzenButton Text="@(_isEdit ? "Save" : "Add step")"
+                          ButtonStyle="ButtonStyle.Primary"
+                          Icon="save" Click="@OnSaveAsync" />
         </RadzenStack>
-    </EditForm>
+    </RadzenStack>
 </div>
 
 @code {
+    /// <summary>Required for Add: the project the step is added to.</summary>
     [Parameter] public Guid? ProjectId { get; set; }
+
+    /// <summary>Required for Edit: the existing step row.</summary>
     [Parameter] public DeploymentStep? Step { get; set; }
 
-    private readonly FormModel _model = new();
-    private string? _errorMessage;
-    private bool _isEdit;
-    private readonly string[] _syntaxOptions = ["PowerShell", "Bash"];
+    /// <summary>
+    /// Optional. Add path with a template — the schema is derived from the
+    /// template's parameters via <see cref="StepTemplateSchemaAdapter"/>.
+    /// </summary>
+    [Parameter] public StepTemplate? Template { get; set; }
 
-    protected override void OnParametersSet()
+    /// <summary>
+    /// Optional. Add path without a template — the schema is looked up by
+    /// step type in <see cref="BuiltInStepSchemas"/>. Used for blank
+    /// "Run a Script" and any future built-in step type added directly.
+    /// </summary>
+    [Parameter] public string? ActionType { get; set; }
+
+    private string _name           = "";
+    private string _packageId      = "";
+    private string _targetRolesCsv = "";
+
+    /// <summary>The flat config-bag values the schema renderer mutates.</summary>
+    private readonly Dictionary<string, string> _values =
+        new(StringComparer.Ordinal);
+    /// <summary>Resolved per-step-type schema. Null = no schema available.</summary>
+    private StepUiSchema? _schema;
+    private string  _stepType      = "";
+    private string? _resolveError;
+    private bool _isEdit;
+    private readonly List<PackageRefRow> _referencedPackages = [];
+    private List<string> _errors = [];
+
+    protected override async Task OnParametersSetAsync()
     {
+        _isEdit = Step is not null;
+
         if (Step is not null)
         {
-            _isEdit = true;
-            _model.Name = Step.Name;
-            _model.PackageId = Step.PackageId;
-            _model.TargetRolesCsv = string.Join(", ", Step.TargetRoles);
-            _model.ScriptSyntax = Step.Config.GetValueOrDefault("Octopus.Action.Script.Syntax", "PowerShell");
-            _model.ScriptBody = Step.Config.GetValueOrDefault("Octopus.Action.Script.ScriptBody", "");
-            _model.RunOnServer = string.Equals(
-                Step.Config.GetValueOrDefault("Octopus.Action.RunOnServer"),
-                "true", StringComparison.OrdinalIgnoreCase);
+            // ── Edit path ───────────────────────────────────────────────────
+            _stepType = Step.StepType;
+            _name = Step.Name;
+            _packageId = Step.PackageId;
+            _targetRolesCsv = string.Join(", ", Step.TargetRoles);
 
-            // Parse the referenced-packages JSON back into form rows.
-            if (Step.Config.TryGetValue(KrakenScriptConfigKeys.PackageReferences, out var refsJson)
-                && !string.IsNullOrWhiteSpace(refsJson))
+            _schema = await ResolveSchemaAsync(Step.StepType).ConfigureAwait(false);
+
+            // Seed _values from existing Step.Config (overlaying schema
+            // defaults where Config has no entry yet).
+            if (_schema is not null)
             {
-                try
+                foreach (var (key, field) in _schema.Properties)
                 {
-                    var parsed = JsonSerializer.Deserialize<List<PackageReference>>(refsJson,
-                        new JsonSerializerOptions(JsonSerializerDefaults.Web));
-                    if (parsed is not null)
+                    _values[key] = Step.Config.TryGetValue(key, out var v)
+                        ? v
+                        : (field.Default ?? string.Empty);
+                }
+            }
+
+            // Preserve any pre-existing Config keys the schema doesn't know
+            // about (legacy data, hand-edits) by keeping a parallel cache for
+            // the Save merge.
+            _extraConfigKeys = new(Step.Config.Where(kv =>
+                _schema is null || !_schema.Properties.ContainsKey(kv.Key)),
+                StringComparer.Ordinal);
+
+            HydrateReferencedPackagesFromConfig(Step.Config);
+        }
+        else
+        {
+            // ── Add path ────────────────────────────────────────────────────
+            if (Template is not null)
+            {
+                _stepType = Template.ActionType;
+                _name = Template.Name;
+
+                // Template's Properties seed the bag before the schema fields
+                // overlay it. This carries any template-author defaults that
+                // the schema doesn't include as a field default.
+                foreach (var (k, v) in Template.Properties) { _values[k] = v; }
+
+                _schema = StepTemplateSchemaAdapter.BuildSchema(Template);
+
+                // Overlay schema defaults for keys without an existing value.
+                foreach (var (key, field) in _schema.Properties)
+                {
+                    if (!_values.ContainsKey(key) && !string.IsNullOrEmpty(field.Default))
                     {
-                        _model.ReferencedPackages = [..
-                            parsed.Select(r => new PackageRefRow
-                            {
-                                Name      = r.Name ?? "",
-                                PackageId = r.PackageId ?? "",
-                                Version   = r.Version ?? "",
-                            })];
+                        _values[key] = field.Default!;
                     }
                 }
-                catch (JsonException)
+            }
+            else if (!string.IsNullOrWhiteSpace(ActionType))
+            {
+                _stepType = ActionType;
+                _schema   = await ResolveSchemaAsync(ActionType).ConfigureAwait(false);
+
+                if (_schema is not null)
                 {
-                    // Tolerate malformed JSON — surface as an empty list.
+                    foreach (var (key, field) in _schema.Properties)
+                    {
+                        _values[key] = field.Default ?? string.Empty;
+                    }
                 }
             }
         }
     }
 
-    private async Task SaveAsync()
+    private async Task<StepUiSchema?> ResolveSchemaAsync(string stepType)
     {
-        _errorMessage = null;
+        // Built-in schemas first (covers Kraken.IIS, Kraken.Script,
+        // Octopus.IIS, Octopus.TentaclePackage, Octopus.Manual, …).
+        var built = BuiltInStepSchemas.GetForStepType(stepType);
+        if (built is not null) { return built; }
+
+        // Fall back to a community-library template's parameter schema.
         try
         {
-            var roles = ParseCsv(_model.TargetRolesCsv);
-            var config = new Dictionary<string, string>
+            var all = await TemplateSvc.GetAllAsync().ConfigureAwait(false);
+            var match = all.FirstOrDefault(t =>
+                t.ActionType.Equals(stepType, StringComparison.OrdinalIgnoreCase));
+            if (match is not null)
             {
-                ["Octopus.Action.Script.Syntax"]     = _model.ScriptSyntax,
-                ["Octopus.Action.Script.ScriptBody"] = _model.ScriptBody ?? "",
-                ["Octopus.Action.RunOnServer"]       = _model.RunOnServer ? "true" : "false",
-            };
+                return StepTemplateSchemaAdapter.BuildSchema(match);
+            }
+        }
+        catch (Exception ex)
+        {
+            _resolveError = $"Failed to look up step template: {ex.Message}";
+            return null;
+        }
 
-            // Serialise the referenced-packages grid back to JSON, dropping empty rows.
-            var refs = _model.ReferencedPackages
+        _resolveError =
+            $"No built-in schema or step template matches step type '{stepType}'.";
+        return null;
+    }
+
+    // ── Referenced packages helpers ─────────────────────────────────────────
+
+    private static bool IsScriptStepType(string stepType)
+        => stepType.Equals("Kraken.Script", StringComparison.OrdinalIgnoreCase)
+        || stepType.Equals("Octopus.Script", StringComparison.OrdinalIgnoreCase);
+
+    private void HydrateReferencedPackagesFromConfig(Dictionary<string, string> config)
+    {
+        if (!config.TryGetValue(KrakenScriptConfigKeys.PackageReferences, out var json)
+            || string.IsNullOrWhiteSpace(json))
+        {
+            return;
+        }
+        try
+        {
+            var parsed = JsonSerializer.Deserialize<List<PackageReference>>(
+                json, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            if (parsed is null) { return; }
+            foreach (var r in parsed)
+            {
+                _referencedPackages.Add(new PackageRefRow
+                {
+                    Name      = r.Name      ?? "",
+                    PackageId = r.PackageId ?? "",
+                    Version   = r.Version   ?? "",
+                });
+            }
+        }
+        catch (JsonException)
+        {
+            // Tolerate malformed JSON — surface as an empty list.
+        }
+    }
+
+    private void AddReferencedPackage()
+        => _referencedPackages.Add(new PackageRefRow());
+
+    // ── Save ────────────────────────────────────────────────────────────────
+
+    private Dictionary<string, string> _extraConfigKeys = new(StringComparer.Ordinal);
+
+    private async Task OnSaveAsync()
+    {
+        _errors = [];
+
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            _errors.Add("Name is required.");
+        }
+
+        if (_schema is null)
+        {
+            _errors.Add("No schema is available for this step type.");
+            return;
+        }
+
+        // Schema validator — handles per-field required, enum membership,
+        // length / pattern / numeric range.
+        var snapshot = new Dictionary<string, string>(_values, StringComparer.Ordinal);
+        var schemaErrors = StepUiSchemaValidator.Validate(_schema, snapshot);
+        foreach (var e in schemaErrors)
+        {
+            _errors.Add(e.Message);
+        }
+
+        if (_errors.Count > 0)
+        {
+            StateHasChanged();
+            return;
+        }
+
+        // ── Build the final Config bag ──────────────────────────────────────
+        // Order: extra (pre-existing keys the schema doesn't know about) +
+        // schema values (latest user-entered) + referenced-packages JSON
+        // (for script types). Later assignments win.
+        var config = new Dictionary<string, string>(_extraConfigKeys, StringComparer.Ordinal);
+        foreach (var (k, v) in _values) { config[k] = v; }
+
+        if (IsScriptStepType(_stepType))
+        {
+            var refs = _referencedPackages
                 .Where(r => !string.IsNullOrWhiteSpace(r.Name)
                          && !string.IsNullOrWhiteSpace(r.PackageId))
                 .Select(r => new PackageReference
@@ -226,64 +398,58 @@
                     Extract   = true,
                 })
                 .ToList();
-
             if (refs.Count > 0)
             {
-                config[KrakenScriptConfigKeys.PackageReferences] = JsonSerializer.Serialize(refs,
-                    new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                config[KrakenScriptConfigKeys.PackageReferences] = JsonSerializer.Serialize(
+                    refs, new JsonSerializerOptions(JsonSerializerDefaults.Web));
             }
+            else
+            {
+                config.Remove(KrakenScriptConfigKeys.PackageReferences);
+            }
+        }
 
-            if (_isEdit)
+        var roles = ParseCsv(_targetRolesCsv);
+
+        try
+        {
+            if (_isEdit && Step is not null)
             {
                 await ProcessSvc.UpdateStepAsync(
-                    Step!.Id, _model.Name, _model.PackageId, roles, config);
+                    Step.Id, _name, _packageId, roles, config).ConfigureAwait(false);
             }
             else
             {
                 if (ProjectId is null)
                 {
-                    _errorMessage = "Missing ProjectId — cannot create a step.";
+                    _errors.Add("Missing ProjectId — cannot create a step.");
+                    StateHasChanged();
                     return;
                 }
-
                 await ProcessSvc.AddStepAsync(
-                    ProjectId.Value, _model.Name, "Kraken.Script",
-                    _model.PackageId, roles, config);
+                    ProjectId.Value, _name, _stepType, _packageId, roles, config)
+                    .ConfigureAwait(false);
             }
-
             Dialog.Close(true);
         }
         catch (InvalidOperationException ex)
         {
-            _errorMessage = ex.Message;
+            _errors.Add(ex.Message);
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Save failed", ex.Message, 6000);
+            _errors.Add(ex.Message);
+            StateHasChanged();
         }
     }
 
     private static List<string> ParseCsv(string? raw)
     {
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return [];
-        }
-        return raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                  .ToList();
-    }
-
-    private sealed class FormModel
-    {
-        [System.ComponentModel.DataAnnotations.Required]
-        [System.ComponentModel.DataAnnotations.MaxLength(200)]
-        public string Name { get; set; } = "";
-
-        [System.ComponentModel.DataAnnotations.Required]
-        [System.ComponentModel.DataAnnotations.MaxLength(200)]
-        public string PackageId { get; set; } = "";
-
-        public string TargetRolesCsv { get; set; } = "";
-        public string ScriptSyntax { get; set; } = "PowerShell";
-        public string? ScriptBody { get; set; }
-        public bool RunOnServer { get; set; }
-        public List<PackageRefRow> ReferencedPackages { get; set; } = [];
+        if (string.IsNullOrWhiteSpace(raw)) { return []; }
+        return [.. raw.Split(',',
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
     }
 
     private sealed class PackageRefRow
@@ -292,7 +458,4 @@
         public string PackageId { get; set; } = "";
         public string Version { get; set; } = "";
     }
-
-    private void AddReferencedPackage()
-        => _model.ReferencedPackages.Add(new PackageRefRow());
 }

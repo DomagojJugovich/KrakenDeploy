@@ -319,13 +319,17 @@
             return; // user cancelled
         }
 
-        // Blank script step → existing form.
+        // Blank script step → unified dialog with the built-in Kraken.Script schema.
         if (result.IsBlankScriptStep)
         {
             var formResult = await Dialog.OpenAsync<StepFormDialog>(
                 "Add Step",
-                new Dictionary<string, object?> { [nameof(StepFormDialog.ProjectId)] = _project.Id },
-                new DialogOptions { Width = "640px" });
+                new Dictionary<string, object?>
+                {
+                    [nameof(StepFormDialog.ProjectId)]  = _project.Id,
+                    [nameof(StepFormDialog.ActionType)] = "Kraken.Script",
+                },
+                new DialogOptions { Width = "720px", CloseDialogOnOverlayClick = false });
 
             if (formResult is true)
             {
@@ -337,29 +341,14 @@
         var template = result.Template;
         if (template is null) return;
 
-        // Script-flavoured template → existing form (TODO 5b: prefill body/syntax).
-        if (template.ActionType.Equals("Kraken.Script", StringComparison.OrdinalIgnoreCase) ||
-            template.ActionType.Equals("Octopus.Script", StringComparison.OrdinalIgnoreCase))
-        {
-            var formResult = await Dialog.OpenAsync<StepFormDialog>(
-                "Add Step",
-                new Dictionary<string, object?> { [nameof(StepFormDialog.ProjectId)] = _project.Id },
-                new DialogOptions { Width = "640px" });
-
-            if (formResult is true)
-            {
-                await ReloadStepsAsync();
-            }
-            return;
-        }
-
-        // Non-script template — render the generic parameter form.
-        var templatedResult = await Dialog.OpenAsync<TemplatedStepFormDialog>(
+        // Template-backed step (script-flavoured or otherwise) → unified dialog
+        // with the template's parameter schema (via StepTemplateSchemaAdapter).
+        var templatedResult = await Dialog.OpenAsync<StepFormDialog>(
             $"Add Step — {template.Name}",
             new Dictionary<string, object?>
             {
-                [nameof(TemplatedStepFormDialog.ProjectId)] = _project.Id,
-                [nameof(TemplatedStepFormDialog.Template)]  = template,
+                [nameof(StepFormDialog.ProjectId)] = _project.Id,
+                [nameof(StepFormDialog.Template)]  = template,
             },
             new DialogOptions { Width = "720px", CloseDialogOnOverlayClick = false });
 
@@ -371,49 +360,14 @@
 
     private async Task OpenEditStepAsync(DeploymentStep step)
     {
-        // Script-flavoured steps → existing dedicated form.
-        var isScript = step.StepType.Equals("Kraken.Script", StringComparison.OrdinalIgnoreCase)
-                    || step.StepType.Equals("Octopus.Script", StringComparison.OrdinalIgnoreCase);
-
-        if (isScript)
-        {
-            var scriptResult = await Dialog.OpenAsync<StepFormDialog>(
-                "Edit Step",
-                new Dictionary<string, object?> { [nameof(StepFormDialog.Step)] = step },
-                new DialogOptions { Width = "640px" });
-
-            if (scriptResult is true)
-            {
-                await ReloadStepsAsync();
-            }
-            return;
-        }
-
-        // Non-script step → render the generic parameter form, resolving the
-        // template by ActionType (most ActionTypes have exactly one template).
-        // If no template matches, fall back to a notice — there's nothing
-        // sensible to render without knowing the parameter list.
-        var allTemplates = await TemplateSvc.GetAllAsync();
-        var template = allTemplates.FirstOrDefault(t =>
-            t.ActionType.Equals(step.StepType, StringComparison.OrdinalIgnoreCase));
-
-        if (template is null)
-        {
-            Notifications.Notify(NotificationSeverity.Warning,
-                "Cannot edit step",
-                $"No installed template matches step type '{step.StepType}'. " +
-                "Install a matching template (or edit Config via the API).",
-                5000);
-            return;
-        }
-
-        var result = await Dialog.OpenAsync<TemplatedStepFormDialog>(
-            $"Edit Step — {template.Name}",
-            new Dictionary<string, object?>
-            {
-                [nameof(TemplatedStepFormDialog.Step)]     = step,
-                [nameof(TemplatedStepFormDialog.Template)] = template,
-            },
+        // Unified dialog resolves the schema for any step type — built-in
+        // first (Kraken.IIS / Octopus.IIS / Octopus.TentaclePackage / script /
+        // …), then falls back to the matching community-library template by
+        // ActionType. If neither matches, the dialog itself shows a clear
+        // "no schema available" notice with a Close button.
+        var result = await Dialog.OpenAsync<StepFormDialog>(
+            $"Edit Step — {step.Name}",
+            new Dictionary<string, object?> { [nameof(StepFormDialog.Step)] = step },
             new DialogOptions { Width = "720px", CloseDialogOnOverlayClick = false });
 
         if (result is true)
