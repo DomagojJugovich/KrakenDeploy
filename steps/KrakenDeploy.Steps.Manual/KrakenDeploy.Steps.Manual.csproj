@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- Step-package metadata. Pack target below reads these values. -->
+    <KrakenStepPackageId>octopus.manual</KrakenStepPackageId>
+    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageDisplayName>Manual Intervention</KrakenStepPackageDisplayName>
+    <KrakenStepPackageStepTypes>Octopus.Manual</KrakenStepPackageStepTypes>
+    <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.Manual.ManualInterventionStepHandler</KrakenStepPackageExecutorTypeName>
+
+    <!-- Don't litter the install dir with NuGet symbols / docs. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Octostache" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The SDK surface. Step packages depend ONLY on Contracts so they
+         compile + ship without a transitive Agent dependency. The agent's
+         StepPackageLoader delegates Contracts back to the default ALC at
+         load time (Phase D-4) so types identify cleanly across the
+         boundary. -->
+    <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
+  </ItemGroup>
+
+  <Import Project="..\KrakenStepPackage.targets" />
+
+</Project>

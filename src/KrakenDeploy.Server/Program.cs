@@ -384,6 +384,12 @@ public static class Program
             var seeder = scope.ServiceProvider.GetRequiredService<BuiltInStepTemplateSeeder>();
             await seeder.SeedAsync().ConfigureAwait(false);
 
+            // Seed built-in step packages (.kdeploy-step archives shipped
+            // alongside the server binary). Idempotent — only installs
+            // packages whose (name, version) isn't already in the catalog.
+            var pkgSeeder = scope.ServiceProvider.GetRequiredService<BuiltInStepPackageSeeder>();
+            await pkgSeeder.SeedAsync().ConfigureAwait(false);
+
             await PrintFirstRunHintIfNoUsersAsync(scope.ServiceProvider, app.Logger)
                 .ConfigureAwait(false);
         }

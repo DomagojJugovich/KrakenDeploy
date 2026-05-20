@@ -1,29 +1,8 @@
-namespace KrakenDeploy.Agent.Deployment.StepHandlers;
-
-/// <summary>
-/// Pluggable handler for a specific deployment step type.
-/// Register all implementations with the DI container; <see cref="DeploymentExecutor"/>
-/// resolves the first handler that returns <c>true</c> from <see cref="CanHandle"/>.
-/// </summary>
-public interface IStepHandler
-{
-    /// <summary>
-    /// Returns <c>true</c> when this handler can execute the given <paramref name="stepType"/>.
-    /// </summary>
-    bool CanHandle(string stepType);
-
-    /// <summary>
-    /// <c>true</c> if the handler requires the step's package to be downloaded and
-    /// extracted before <see cref="HandleAsync"/> is called.
-    /// <c>false</c> for step types that operate independently of a package
-    /// (e.g. <c>Octopus.Manual</c>).
-    /// </summary>
-    bool RequiresPackage { get; }
-
-    /// <summary>
-    /// Executes the step.
-    /// Returns <c>true</c> on success, <c>false</c> on failure.
-    /// Any exception thrown will be caught by the executor and treated as a failure.
-    /// </summary>
-    Task<bool> HandleAsync(StepHandlerContext context, CancellationToken ct);
-}
+// The canonical IStepHandler now lives in KrakenDeploy.Contracts.Steps so step
+// packages (Phase D-8) can reference the SDK surface alone — no agent dep.
+// This file is kept ONLY as a namespace re-export so existing in-DI handlers
+// in the agent (KrakenIis, OctopusTentaclePackage, Script, etc.) keep compiling
+// without changing every using directive. Once Phase D-8 has extracted every
+// built-in into its own package this file can go away.
+global using IStepHandler        = KrakenDeploy.Contracts.Steps.IStepHandler;
+global using StepHandlerContext  = KrakenDeploy.Contracts.Steps.StepHandlerContext;

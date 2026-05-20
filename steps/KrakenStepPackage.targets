@@ -1,0 +1,84 @@
+<Project>
+
+  <!--
+    Shared pack target for Kraken step packages (Phase D-8).
+
+    Convention: each KrakenDeploy.Steps.* project sets the metadata properties
+    (KrakenStepPackageId, KrakenStepPackageVersion, etc.) in its .csproj and
+    imports this targets file. On `dotnet build` the project produces both its
+    regular bin output AND a `{id}-{version}.kdeploy-step` archive in the
+    output directory, ready to be consumed by:
+      - the server's StepPackageSeeder (built-ins seeded on first run)
+      - the StepPackageService's manual-upload path (D-3)
+      - the agent's loader after download (D-5)
+
+    The pack target lays out:
+        manifest.json     ← JSON-serialised StepPackageManifest
+        executor/         ← project DLL + non-framework runtime deps
+        ui/ui-schema.json ← optional, when ui-schema.json is present in the project
+  -->
+
+  <PropertyGroup>
+    <KrakenStepPackageArchiveName>$(KrakenStepPackageId)-$(KrakenStepPackageVersion).kdeploy-step</KrakenStepPackageArchiveName>
+  </PropertyGroup>
+
+  <Target Name="PackKrakenStepPackage"
+          AfterTargets="Build">
+
+    <!-- Properties depending on OutputPath / IntermediateOutputPath are
+         evaluated INSIDE the target body — at parse-time those are empty
+         on the .csproj first load. -->
+    <PropertyGroup>
+      <KrakenStepPackageArchivePath>$(OutputPath)$(KrakenStepPackageArchiveName)</KrakenStepPackageArchivePath>
+      <KrakenStepPackageStagingDir>$(IntermediateOutputPath)kraken-step-package\</KrakenStepPackageStagingDir>
+    </PropertyGroup>
+
+    <!-- Clean staging dir for a deterministic layout. -->
+    <RemoveDir Directories="$(KrakenStepPackageStagingDir)" />
+    <MakeDir Directories="$(KrakenStepPackageStagingDir);$(KrakenStepPackageStagingDir)executor\;$(KrakenStepPackageStagingDir)ui\" />
+
+    <!-- Stage executor/ — project DLL only for now. Multi-DLL packages
+         (e.g. Kraken.IIS bundles IisScriptGenerator) just gain additional
+         items here in their own .csproj. -->
+    <Copy SourceFiles="$(TargetPath)"
+          DestinationFolder="$(KrakenStepPackageStagingDir)executor\" />
+
+    <!-- Project-supplied UI schema, if present. -->
+    <ItemGroup>
+      <_KrakenStepUiSchema Include="$(MSBuildProjectDirectory)\ui-schema.json" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_KrakenStepUiSchema)"
+          DestinationFolder="$(KrakenStepPackageStagingDir)ui\"
+          Condition="Exists('$(MSBuildProjectDirectory)\ui-schema.json')" />
+
+    <!-- manifest.json. We synthesise it here from the .csproj properties so
+         every package gets a canonical shape — same JSON the server's
+         StepPackageService verifies on upload and the agent's loader reads. -->
+    <ItemGroup>
+      <_KrakenManifestLines Include="{" />
+      <_KrakenManifestLines Include="  &quot;id&quot;: &quot;$(KrakenStepPackageId)&quot;," />
+      <_KrakenManifestLines Include="  &quot;version&quot;: &quot;$(KrakenStepPackageVersion)&quot;," />
+      <_KrakenManifestLines Include="  &quot;displayName&quot;: &quot;$(KrakenStepPackageDisplayName)&quot;," />
+      <_KrakenManifestLines Include="  &quot;targetFramework&quot;: &quot;$(TargetFramework)&quot;," />
+      <_KrakenManifestLines Include="  &quot;stepTypes&quot;: [ &quot;$(KrakenStepPackageStepTypes.Replace(`,`, `&quot;, &quot;`))&quot; ]," />
+      <_KrakenManifestLines Include="  &quot;executorAssembly&quot;: &quot;$(TargetFileName)&quot;," />
+      <_KrakenManifestLines Include="  &quot;executorTypeName&quot;: &quot;$(KrakenStepPackageExecutorTypeName)&quot;," />
+      <_KrakenManifestLines Include="  &quot;signedBy&quot;: &quot;kraken-project&quot;," />
+      <_KrakenManifestLines Include="  &quot;signature&quot;: &quot;unsigned-dev-build&quot;" />
+      <_KrakenManifestLines Include="}" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(KrakenStepPackageStagingDir)manifest.json"
+                      Lines="@(_KrakenManifestLines)"
+                      Overwrite="true"
+                      Encoding="UTF-8" />
+
+    <!-- Zip the staged tree into {id}-{version}.kdeploy-step. -->
+    <ZipDirectory SourceDirectory="$(KrakenStepPackageStagingDir)"
+                  DestinationFile="$(KrakenStepPackageArchivePath)"
+                  Overwrite="true" />
+
+    <Message Importance="high"
+             Text="Kraken step package built: $(KrakenStepPackageArchivePath)" />
+  </Target>
+
+</Project>

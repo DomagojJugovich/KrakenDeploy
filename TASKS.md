@@ -920,7 +920,17 @@ Steps ship as standalone signed `.kdeploy-step` packages instead of being compil
   - On the Process page (`Process.razor`), each step card gains an **"Update available"** badge when `DeploymentStep.StepPackageVersion < latestInstalledVersionOfPackage`. Clicking the badge opens a dialog showing the changelog (manifest `changelog` field from D-1) and the schema delta (added fields / removed fields / changed widget types). Confirming bumps `StepPackageVersion`.
   - **No bulk auto-upgrade.** No floating pins (no "latest 2.x" mode in v1) — exact pin only.
 
-- [ ] **D-8: Refactor existing built-ins into step packages** — extract each currently-hardcoded handler into its own project that produces a `.kdeploy-step`:
+- [ ] **D-8: Refactor existing built-ins into step packages** — sliced; D-8.1 done.
+
+  **D-8.1 — Infrastructure + first port (Manual)** (done):
+  - Moved `IStepHandler` + `StepHandlerContext` to `KrakenDeploy.Contracts.Steps` so step packages can compile against the SDK alone (no agent dep). The old agent-namespace types collapse to global-using aliases.
+  - New `steps/KrakenStepPackage.targets` — shared MSBuild target that AfterTargets="Build" lays out `manifest.json` + `executor/` + `ui/` from .csproj metadata properties (`KrakenStepPackageId`, `Version`, `DisplayName`, `StepTypes`, `ExecutorTypeName`) and zips to `bin/.../{id}-{version}.kdeploy-step`.
+  - First port: `steps/KrakenDeploy.Steps.Manual` produces `octopus.manual-1.0.0.kdeploy-step`. Handler class identical behaviour to the legacy in-DI one (clean-room from Octopus docs); the in-DI handler stays in place until D-8.9 retires it.
+  - Server-side `BuiltInStepPackageSeeder` scans `{contentRoot}/seed/step-packages/` on startup, installs anything new via the existing `StepPackageService.UploadAsync` with `Source = Preinstalled`. Idempotent: re-runs are cheap (name, version) lookups. Configurable via `StepPackages:SeedDirectory`.
+  - `Server.csproj` takes a `<ReferenceOutputAssembly>false</ReferenceOutputAssembly>` ProjectReference to each Steps.* project so they build first, plus an `AfterTargets="Build"` copy target that gathers `steps/*/bin/.../*.kdeploy-step` into the server output's `seed/step-packages/`.
+  - Tests: 4 integration tests for the seeder (fresh install, idempotency, bad-filename tolerance, missing-dir tolerance — `BuiltInStepPackageSeederTests`). 10 unit tests on the ported handler + the built archive (`ManualStepPackageTests`). 530 total tests pass.
+
+  Subsequent slices port the remaining handlers in priority order:
   - `KrakenDeploy.Steps.KrakenIis` → `kraken.iis-2.0.0.kdeploy-step` (the existing `KrakenIisStepHandler` + `IisScriptGenerator` + `KrakenIisConfig` + the C-5 schema).
   - `KrakenDeploy.Steps.OctopusIis` → `octopus.iis-1.0.0.kdeploy-step` (the B-3 `OctopusIisConfig` mapper; package is separate because step type is distinct, even though the script-emit reuses the Kraken.IIS generator via an inter-package reference — handled cleanly by ALC sharing).
   - `KrakenDeploy.Steps.OctopusTentaclePackage` → `octopus.tentaclepackage-1.0.0.kdeploy-step` (B-1).

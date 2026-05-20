@@ -32,4 +32,32 @@
     <ProjectReference Include="..\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
   </ItemGroup>
 
+  <!-- Phase D-8: built-in step packages. Each Steps.* project produces a
+       {id}-{version}.kdeploy-step archive in its bin/. We take "no-link"
+       project references so the Steps projects are built before Server,
+       then a copy target gathers their archives into seed/step-packages/
+       under the server's output dir. On first startup the
+       BuiltInStepPackageSeeder installs anything new from that directory. -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.Manual\KrakenDeploy.Steps.Manual.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <Private>false</Private>
+      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
+    </ProjectReference>
+  </ItemGroup>
+
+  <Target Name="CollectBuiltInStepPackages"
+          AfterTargets="Build">
+    <ItemGroup>
+      <_KrakenSeedPackages Include="..\..\steps\**\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_KrakenSeedPackages)"
+          DestinationFolder="$(OutputPath)seed\step-packages\"
+          SkipUnchangedFiles="true"
+          Condition="'@(_KrakenSeedPackages)' != ''" />
+    <Message Importance="high"
+             Text="Seeded %(_KrakenSeedPackages.Filename)%(_KrakenSeedPackages.Extension) → $(OutputPath)seed\step-packages\"
+             Condition="'@(_KrakenSeedPackages)' != ''" />
+  </Target>
+
 </Project>
