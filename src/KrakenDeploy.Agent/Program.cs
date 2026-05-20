@@ -144,7 +144,8 @@ static async Task<int> RunAsync(string[] args)
     // DeploymentExecutor resolves the first handler that CanHandle() the step type.
     builder.Services.AddTransient<IStepHandler, ScriptStepHandler>();
     builder.Services.AddTransient<IStepHandler, SubstituteVariablesStepHandler>();
-    builder.Services.AddTransient<IStepHandler, FileTransformStepHandler>();
+    // Octopus.JsonConfigurationVariables ships as a step package (D-8.3); the
+    // agent's loader pulls it from the server. No in-DI fallback any more.
     builder.Services.AddTransient<IStepHandler, ManualInterventionStepHandler>();
     builder.Services.AddTransient<IStepHandler, KrakenIisStepHandler>();
     builder.Services.AddTransient<IStepHandler, OctopusTentaclePackageStepHandler>();

@@ -19,7 +19,7 @@ public sealed class BuiltInStepSchemasTests
     [InlineData("Kraken.Script")]
     [InlineData("Octopus.Script")]
     [InlineData("Octopus.SubstituteVariables")]
-    [InlineData("Octopus.FileTransform")]
+    [InlineData("Octopus.JsonConfigurationVariables")]
     [InlineData("Octopus.Manual")]
     public void GetForStepType_returns_a_schema_for_every_built_in_step_type(string stepType)
     {
@@ -193,9 +193,9 @@ public sealed class BuiltInStepSchemasTests
     }
 
     [Fact]
-    public void FileTransform_schema_has_single_required_Targets_field()
+    public void JsonConfigurationVariables_schema_has_single_required_Targets_field()
     {
-        var schema = BuiltInStepSchemas.GetForStepType("Octopus.FileTransform")!;
+        var schema = BuiltInStepSchemas.GetForStepType("Octopus.JsonConfigurationVariables")!;
         schema.Properties.Should().ContainSingle();
         schema.Properties["Octopus.Action.Package.JsonConfigurationVariablesTargets"]
             .Validation!.Required.Should().BeTrue();
@@ -209,7 +209,7 @@ public sealed class BuiltInStepSchemasTests
     [InlineData("Octopus.TentaclePackage")]
     [InlineData("Kraken.Script")]
     [InlineData("Octopus.SubstituteVariables")]
-    [InlineData("Octopus.FileTransform")]
+    [InlineData("Octopus.JsonConfigurationVariables")]
     [InlineData("Octopus.Manual")]
     public void Every_schema_round_trips_through_JSON_serialization(string stepType)
     {

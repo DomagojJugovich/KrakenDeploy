@@ -44,8 +44,8 @@ public static class BuiltInStepSchemas
             StepUiSchemaBuilder.FromType<KrakenScriptStepSchemaShape>());
         Register(map, "Octopus.SubstituteVariables",
             StepUiSchemaBuilder.FromType<OctopusSubstituteVariablesStepSchemaShape>());
-        Register(map, "Octopus.FileTransform",
-            StepUiSchemaBuilder.FromType<OctopusFileTransformStepSchemaShape>());
+        Register(map, "Octopus.JsonConfigurationVariables",
+            StepUiSchemaBuilder.FromType<OctopusJsonConfigurationVariablesStepSchemaShape>());
         Register(map, "Octopus.Manual",
             StepUiSchemaBuilder.FromType<OctopusManualStepSchemaShape>());
         return map;
@@ -654,15 +654,19 @@ internal sealed class OctopusSubstituteVariablesStepSchemaShape
     public string TargetFiles { get; set; } = "";
 }
 
-// ── Octopus.FileTransform ──────────────────────────────────────────────────
+// ── Octopus.JsonConfigurationVariables ─────────────────────────────────────
+// Was historically named Octopus.FileTransform in Kraken's schema; renamed to
+// match what Octopus's own docs call this feature ("JSON Configuration
+// Variables"). XDT (XML) transforms live on Octopus.TentaclePackage where
+// Octopus puts them, not here.
 
 /// <summary>
 /// Schema shape for the standalone JSON-config-variables step.
 /// </summary>
-[StepUiSchemaRoot(Id = "octopus.filetransform", Title = "Apply JSON configuration variables",
+[StepUiSchemaRoot(Id = "octopus.jsonconfigurationvariables", Title = "Apply JSON configuration variables",
     Version = "1.0.0",
     Description = "Walks each variable name like 'A.B.C' and applies it to the JSON path A → B → C in the target files.")]
-internal sealed class OctopusFileTransformStepSchemaShape
+internal sealed class OctopusJsonConfigurationVariablesStepSchemaShape
 {
     [StepUiField(Key = "Octopus.Action.Package.JsonConfigurationVariablesTargets",
         Widget = StepUiWidgets.Textarea, Label = "Target files",

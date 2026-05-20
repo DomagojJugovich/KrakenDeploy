@@ -60,14 +60,9 @@ public sealed class StepHandlerTests : IDisposable
         handler.CanHandle("Octopus.Script").Should().BeFalse();
     }
 
-    [Fact]
-    public void FileTransformStepHandler_CanHandle_recognises_step_type()
-    {
-        var handler = new FileTransformStepHandler();
-        handler.CanHandle("Octopus.FileTransform").Should().BeTrue();
-        handler.CanHandle("OCTOPUS.FILETRANSFORM").Should().BeTrue();
-        handler.CanHandle("Octopus.Script").Should().BeFalse();
-    }
+    // Octopus.JsonConfigurationVariables (formerly Octopus.FileTransform) now
+    // ships as a step package — see KrakenDeploy.Steps.JsonConfigurationVariables.Tests
+    // for its behavioural tests. The in-DI handler was retired in D-8.3.
 
     [Fact]
     public void ManualInterventionStepHandler_CanHandle_recognises_step_type()
@@ -253,58 +248,9 @@ public sealed class StepHandlerTests : IDisposable
         logs.Should().Contain(l => l.Level == "warning");
     }
 
-    // ── FileTransformStepHandler.HandleAsync ──────────────────────────────────
-
-    [Fact]
-    public async Task FileTransform_applies_variable_to_json_property()
-    {
-        var filePath = Path.Combine(_tempDir, "appsettings.json");
-        await File.WriteAllTextAsync(filePath, """
-            {
-              "ConnectionStrings": {
-                "Default": "Server=old;Database=db"
-              }
-            }
-            """);
-
-        var variables = new Dictionary<string, string>
-        {
-            ["ConnectionStrings.Default"] = "Server=prod-db01;Database=proddb",
-        };
-
-        var logs = new List<(string Level, string Message)>();
-        var context = MakeContext(
-            "Octopus.FileTransform",
-            new Dictionary<string, string>
-            {
-                ["Octopus.Action.Package.JsonConfigurationVariablesTargets"] = "appsettings.json",
-            },
-            logs,
-            extractDir: _tempDir,
-            variables: variables);
-
-        var handler = new FileTransformStepHandler();
-        var result  = await handler.HandleAsync(context, CancellationToken.None);
-
-        result.Should().BeTrue();
-        var content = await File.ReadAllTextAsync(filePath);
-        content.Should().Contain("Server=prod-db01;Database=proddb");
-        content.Should().NotContain("Server=old");
-    }
-
-    [Fact]
-    public async Task FileTransform_returns_true_when_no_targets_specified()
-    {
-        var logs = new List<(string Level, string Message)>();
-        var context = MakeContext("Octopus.FileTransform", [], logs,
-            extractDir: _tempDir);
-
-        var handler = new FileTransformStepHandler();
-        var result  = await handler.HandleAsync(context, CancellationToken.None);
-
-        result.Should().BeTrue();
-        logs.Should().Contain(l => l.Level == "warning");
-    }
+    // Octopus.JsonConfigurationVariables behavioural tests have moved to
+    // tests/KrakenDeploy.Steps.JsonConfigurationVariables.Tests/ along with
+    // the handler itself (D-8.3 — the in-DI Agent handler was retired).
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 

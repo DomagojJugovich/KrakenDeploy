@@ -875,7 +875,7 @@ Octopus's framework exposes a declarative TypeScript DSL that compiles to a JS b
   - `Octopus.TentaclePackage` — Custom Directory (visible when `Octopus.Features.CustomDirectory` enabled), Configuration Variables (visible when feature enabled), Configuration Transforms (visible when feature enabled), Substitute Variables in Files (visible when feature enabled).
   - `Kraken.Script` / `Octopus.Script` — Script body (`textarea`), Syntax (`select` with PowerShell/Bash/CSharp/FSharp/Python), PowerShell Edition (`select` visible only when `Syntax=PowerShell`), Run on (`select` agent/server).
   - `Octopus.SubstituteVariables` — single `textarea` for target-file globs.
-  - `Octopus.FileTransform` — single `textarea` for JSON config-variable targets.
+  - `Octopus.JsonConfigurationVariables` — single `textarea` for JSON config-variable targets. (Was historically named `Octopus.FileTransform`; renamed in D-8.3 to match Octopus's own docs — XDT for XML lives on `Octopus.TentaclePackage`, not here.)
   - `Octopus.Manual` — Instructions (`textarea`), Responsible team (`target-roles` widget).
 
 - [x] **C-6: Bridge for legacy `StepTemplateParameter`** — `StepTemplateSchemaAdapter` in `KrakenDeploy.Server.Data.Services` builds a `StepUiSchema` from a `StepTemplate` or directly from a parameter list (`BuildSchema(StepTemplate)` + `BuildPropertyMap(IReadOnlyList<StepTemplateParameter>)`). The bridge lives in `Server.Data` because it crosses the `KrakenDeploy.Server.Core` (`StepTemplateParameter`) → `KrakenDeploy.Contracts` (`StepUiSchema`) domain boundary that Contracts can't see. `ControlType` mapping: `SingleLineText` → `text`; `MultiLineText` → `textarea`; `Sensitive` → `sensitive`; `Checkbox` → `checkbox`; `Select` → `select` (with `value|label` parsing on `SelectOptions`); `Package` → `package-ref`; unknown → defensive `text` fallback. `Checkbox` yields `StepUiFieldType.Boolean`, everything else `String`. Legacy parameters never carry validation / visibleWhen / group metadata. **Dialog unification shipped:** the old `TemplatedStepFormDialog` was deleted and the old script-only `StepFormDialog` was replaced with a unified `StepFormDialog` that resolves any step type's schema (`BuiltInStepSchemas` first → `StepTemplateSchemaAdapter.BuildSchema(template)` fallback). A pure-body `StepUiSchemaForm` Razor component is shared by both `SchemaDrivenStepFormDialog` and the unified `StepFormDialog`. One renderer for every step type; `Process.razor` dispatches all Add and Edit flows through the single dialog.
@@ -936,13 +936,26 @@ Steps ship as standalone signed `.kdeploy-step` packages instead of being compil
   empty-target-pattern warning, dir-relative glob (`config/*.txt`), and the
   built archive's manifest shape.
 
-  **D-8.3 — Octopus.FileTransform port** (done): JSON Configuration Variables
-  feature. No external runtime deps beyond `System.Text.Json`. Produces
-  `octopus.filetransform-1.0.0.kdeploy-step`. 7 tests including dotted JSON
-  path substitution, case-insensitive key match with original-case preservation,
-  and the empty-target-pattern warning. Note: the legacy in-DI handler's
-  `**/*` glob handling has a known limitation (carried over for parity — the
-  package is a true drop-in). 546 total tests pass.
+  **D-8.3 — Octopus.JsonConfigurationVariables port + rename** (done): JSON
+  Configuration Variables feature. **Breaking rename**: the step type was
+  historically called `Octopus.FileTransform` in Kraken's schema, which
+  collided with Octopus's "configuration transforms" (XDT for XML) vocabulary.
+  Renamed to `Octopus.JsonConfigurationVariables` — matches what Octopus's
+  own docs call this feature. XDT for XML stays where Octopus puts it: as a
+  feature on `Octopus.TentaclePackage`.
+  - Package: `steps/KrakenDeploy.Steps.JsonConfigurationVariables` produces
+    `octopus.jsonconfigurationvariables-1.0.0.kdeploy-step`. Handler class
+    `JsonConfigurationVariablesStepHandler`. No external runtime deps beyond
+    `System.Text.Json`.
+  - **Retired the legacy in-DI `FileTransformStepHandler`** (along with its
+    DI registration and Agent.Tests block) — the package is now the only
+    home for this step type. First D-8 handler to fully complete its
+    in-DI → package migration.
+  - Updated schemas + Razor step-type lists + docs to the new name. Solution
+    and Server.csproj project paths updated to match the new project name.
+  - Tests: 7 unit tests on the renamed handler + the built archive
+    (`KrakenDeploy.Steps.JsonConfigurationVariables.Tests`). Old `Octopus.FileTransform`
+    is now explicitly rejected by `CanHandle`. 546 total tests pass.
 
   Subsequent slices port the remaining handlers in priority order:
   - `KrakenDeploy.Steps.KrakenIis` → `kraken.iis-2.0.0.kdeploy-step` (the existing `KrakenIisStepHandler` + `IisScriptGenerator` + `KrakenIisConfig` + the C-5 schema).
@@ -950,7 +963,7 @@ Steps ship as standalone signed `.kdeploy-step` packages instead of being compil
   - `KrakenDeploy.Steps.OctopusTentaclePackage` → `octopus.tentaclepackage-1.0.0.kdeploy-step` (B-1).
   - `KrakenDeploy.Steps.Script` → `kraken.script-1.0.0.kdeploy-step` (handles both `Kraken.Script` and `Octopus.Script`).
   - `KrakenDeploy.Steps.SubstituteVariables` → `octopus.substitutevariables-1.0.0.kdeploy-step`.
-  - `KrakenDeploy.Steps.FileTransform` → `octopus.filetransform-1.0.0.kdeploy-step`.
+  - `KrakenDeploy.Steps.JsonConfigurationVariables` → `octopus.jsonconfigurationvariables-1.0.0.kdeploy-step` (renamed from `Octopus.FileTransform` in D-8.3 to match Octopus's vocabulary).
   - `KrakenDeploy.Steps.Manual` → `octopus.manual-1.0.0.kdeploy-step`.
   - Agent's `Program.cs` stops registering these handlers in DI. Server fresh-install seed (new `seed/step-packages/` directory) contains the built-in zips; first-run server-startup code copies them into the data dir (so out-of-the-box every install has the same preinstalled set). Each package gets its own test project asserting `manifest.json` parses, signature verifies, and `IStepHandler.CanHandle` returns expected types.
 

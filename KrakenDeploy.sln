@@ -41,9 +41,9 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Steps.Substitu
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Steps.SubstituteVariables.Tests", "tests\KrakenDeploy.Steps.SubstituteVariables.Tests\KrakenDeploy.Steps.SubstituteVariables.Tests.csproj", "{5EC2BE91-8C2C-4D1F-BF17-BAC591119FEE}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Steps.FileTransform", "steps\KrakenDeploy.Steps.FileTransform\KrakenDeploy.Steps.FileTransform.csproj", "{6AAFAA8E-B702-43D9-9A74-1084BA64F3A4}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Steps.JsonConfigurationVariables", "steps\KrakenDeploy.Steps.JsonConfigurationVariables\KrakenDeploy.Steps.JsonConfigurationVariables.csproj", "{6AAFAA8E-B702-43D9-9A74-1084BA64F3A4}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Steps.FileTransform.Tests", "tests\KrakenDeploy.Steps.FileTransform.Tests\KrakenDeploy.Steps.FileTransform.Tests.csproj", "{56AFD09F-2042-485F-9869-5465E7F69E46}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Steps.JsonConfigurationVariables.Tests", "tests\KrakenDeploy.Steps.JsonConfigurationVariables.Tests\KrakenDeploy.Steps.JsonConfigurationVariables.Tests.csproj", "{56AFD09F-2042-485F-9869-5465E7F69E46}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

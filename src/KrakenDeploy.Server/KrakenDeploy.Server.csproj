@@ -49,7 +49,7 @@
       <Private>false</Private>
       <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
     </ProjectReference>
-    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.FileTransform\KrakenDeploy.Steps.FileTransform.csproj">
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.JsonConfigurationVariables\KrakenDeploy.Steps.JsonConfigurationVariables.csproj">
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <Private>false</Private>
       <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>

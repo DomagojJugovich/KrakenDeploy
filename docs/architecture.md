@@ -72,7 +72,7 @@ Current handlers:
 | `ScriptStepHandler` | `Kraken.Script`, `Octopus.Script` | Inline script in PowerShell / Bash / CSharp / FSharp / Python. Single entry point. |
 | `KrakenIisStepHandler` | `Kraken.IIS`, `Octopus.IIS` | Generates a PowerShell deployment script, runs via `ScriptRunner`. |
 | `SubstituteVariablesStepHandler` | `Octopus.SubstituteVariables` | In-place file variable substitution. |
-| `FileTransformStepHandler` | `Octopus.FileTransform` | XML config transforms. |
+| `JsonConfigurationVariablesStepHandler` (step package `octopus.jsonconfigurationvariables`) | `Octopus.JsonConfigurationVariables` | JSON config variable substitution by dotted path (mirrors Octopus's "JSON Configuration Variables" feature). XDT for XML lives on `Octopus.TentaclePackage`, not here. |
 | `ManualInterventionStepHandler` | `Octopus.Manual` | Auto-approves in unattended mode. |
 
 ### `ScriptRunner` dispatch

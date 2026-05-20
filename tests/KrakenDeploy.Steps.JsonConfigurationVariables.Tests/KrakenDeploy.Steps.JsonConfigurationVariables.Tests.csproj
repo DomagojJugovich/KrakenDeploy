@@ -20,7 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.FileTransform\KrakenDeploy.Steps.FileTransform.csproj" />
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.JsonConfigurationVariables\KrakenDeploy.Steps.JsonConfigurationVariables.csproj" />
     <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
   </ItemGroup>
 

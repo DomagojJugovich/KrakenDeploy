@@ -4,22 +4,23 @@ using FluentAssertions;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Contracts.StepPackages;
 using KrakenDeploy.Contracts.Steps;
-using KrakenDeploy.Steps.FileTransform;
+using KrakenDeploy.Steps.JsonConfigurationVariables;
 
-namespace KrakenDeploy.Steps.FileTransform.Tests;
+namespace KrakenDeploy.Steps.JsonConfigurationVariables.Tests;
 
 /// <summary>
-/// Unit tests for the Phase D-8 step-package port of <c>Octopus.FileTransform</c>.
-/// Behavioural parity with the legacy in-DI handler — the same JSON path
-/// substitution semantics, case-insensitive key matching, and silent skip
-/// when no path matches.
+/// Unit tests for the canonical <c>Octopus.JsonConfigurationVariables</c>
+/// step-package handler (Phase D-8). Covers the JSON path substitution
+/// semantics, case-insensitive key matching, and silent skip when no path
+/// matches. The matching XDT-for-XML feature lives on
+/// <c>Octopus.TentaclePackage</c>, not here — name mirrors Octopus's docs.
 /// </summary>
-public sealed class FileTransformPackageTests : IDisposable
+public sealed class JsonConfigurationVariablesPackageTests : IDisposable
 {
     private readonly string _workspace =
-        Path.Combine(Path.GetTempPath(), $"kraken-filetransform-test-{Guid.NewGuid():N}");
+        Path.Combine(Path.GetTempPath(), $"kraken-jsonvars-test-{Guid.NewGuid():N}");
 
-    public FileTransformPackageTests() => Directory.CreateDirectory(_workspace);
+    public JsonConfigurationVariablesPackageTests() => Directory.CreateDirectory(_workspace);
 
     public void Dispose()
     {
@@ -27,11 +28,12 @@ public sealed class FileTransformPackageTests : IDisposable
     }
 
     [Theory]
-    [InlineData("Octopus.FileTransform", true)]
-    [InlineData("octopus.filetransform", true)]
-    [InlineData("Kraken.Script",         false)]
-    public void CanHandle_only_octopus_filetransform(string stepType, bool expected)
-        => new FileTransformStepHandler().CanHandle(stepType).Should().Be(expected);
+    [InlineData("Octopus.JsonConfigurationVariables", true)]
+    [InlineData("octopus.jsonconfigurationvariables", true)]    // case-insensitive
+    [InlineData("Octopus.FileTransform",              false)]   // old name no longer accepted
+    [InlineData("Kraken.Script",                      false)]
+    public void CanHandle_only_octopus_jsonconfigurationvariables(string stepType, bool expected)
+        => new JsonConfigurationVariablesStepHandler().CanHandle(stepType).Should().Be(expected);
 
     [Fact]
     public async Task Applies_dotted_variable_names_to_nested_json_paths()
@@ -54,7 +56,7 @@ public sealed class FileTransformPackageTests : IDisposable
                 ["NoMatch.Key.Here"]          = "ignored",
             });
 
-        var handler = new FileTransformStepHandler();
+        var handler = new JsonConfigurationVariablesStepHandler();
         var ok      = await handler.HandleAsync(ctx, CancellationToken.None);
 
         ok.Should().BeTrue();
@@ -75,7 +77,7 @@ public sealed class FileTransformPackageTests : IDisposable
             config: new() { ["Octopus.Action.Package.JsonConfigurationVariablesTargets"] = "appsettings.json" },
             variables: new() { ["connectionstrings.DEFAULT"] = "new" });
 
-        await new FileTransformStepHandler().HandleAsync(ctx, CancellationToken.None);
+        await new JsonConfigurationVariablesStepHandler().HandleAsync(ctx, CancellationToken.None);
 
         var raw = await File.ReadAllTextAsync(path);
         raw.Should().Contain("\"ConnectionStrings\"",
@@ -89,7 +91,7 @@ public sealed class FileTransformPackageTests : IDisposable
         var logs = new List<(string, string)>();
         var ctx  = NewContext(_workspace, new(), new(), logs);
 
-        (await new FileTransformStepHandler().HandleAsync(ctx, CancellationToken.None))
+        (await new JsonConfigurationVariablesStepHandler().HandleAsync(ctx, CancellationToken.None))
             .Should().BeTrue();
         logs.Should().Contain(l => l.Item1 == "warning" && l.Item2.Contains("No JSON config targets"));
     }
@@ -99,7 +101,7 @@ public sealed class FileTransformPackageTests : IDisposable
     {
         var path = FindBuiltArchive();
         path.Should().NotBeNull(
-            "the pack target must produce octopus.filetransform-1.0.0.kdeploy-step");
+            "the pack target must produce octopus.jsonconfigurationvariables-1.0.0.kdeploy-step");
 
         using var fs  = File.OpenRead(path!);
         using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
@@ -107,10 +109,10 @@ public sealed class FileTransformPackageTests : IDisposable
             zip.GetEntry(StepPackageFiles.ManifestFileName)!.Open());
         var manifest = StepPackageManifestJson.Deserialize(r.ReadToEnd());
 
-        manifest.Id.Should().Be("octopus.filetransform");
+        manifest.Id.Should().Be("octopus.jsonconfigurationvariables");
         manifest.Version.Should().Be("1.0.0");
-        manifest.StepTypes.Should().ContainSingle().Which.Should().Be("Octopus.FileTransform");
-        manifest.ExecutorTypeName.Should().Be(typeof(FileTransformStepHandler).FullName!);
+        manifest.StepTypes.Should().ContainSingle().Which.Should().Be("Octopus.JsonConfigurationVariables");
+        manifest.ExecutorTypeName.Should().Be(typeof(JsonConfigurationVariablesStepHandler).FullName!);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
@@ -129,7 +131,7 @@ public sealed class FileTransformPackageTests : IDisposable
             ArrayVariables: new Dictionary<string, string[]>());
 
         var step = new DeploymentStepPlan(
-            Index: 0, Name: "Tx", StepType: "Octopus.FileTransform",
+            Index: 0, Name: "Tx", StepType: "Octopus.JsonConfigurationVariables",
             PackageId: "p", PackageVersion: "1.0.0", Config: config);
 
         return new StepHandlerContext
@@ -151,9 +153,9 @@ public sealed class FileTransformPackageTests : IDisposable
         var here      = AppContext.BaseDirectory;
         var candidate = Path.GetFullPath(Path.Combine(
             here, "..", "..", "..", "..", "..",
-            "steps", "KrakenDeploy.Steps.FileTransform",
+            "steps", "KrakenDeploy.Steps.JsonConfigurationVariables",
             "bin", "Debug", "net10.0",
-            "octopus.filetransform-1.0.0.kdeploy-step"));
+            "octopus.jsonconfigurationvariables-1.0.0.kdeploy-step"));
         return File.Exists(candidate) ? candidate : null;
     }
 }

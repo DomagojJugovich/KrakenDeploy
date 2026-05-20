@@ -5,11 +5,11 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
 
-    <KrakenStepPackageId>octopus.filetransform</KrakenStepPackageId>
+    <KrakenStepPackageId>octopus.jsonconfigurationvariables</KrakenStepPackageId>
     <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>JSON Configuration Variables</KrakenStepPackageDisplayName>
-    <KrakenStepPackageStepTypes>Octopus.FileTransform</KrakenStepPackageStepTypes>
-    <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.FileTransform.FileTransformStepHandler</KrakenStepPackageExecutorTypeName>
+    <KrakenStepPackageStepTypes>Octopus.JsonConfigurationVariables</KrakenStepPackageStepTypes>
+    <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.JsonConfigurationVariables.JsonConfigurationVariablesStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>
   </PropertyGroup>

@@ -2,14 +2,16 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using KrakenDeploy.Contracts.Steps;
 
-namespace KrakenDeploy.Steps.FileTransform;
+namespace KrakenDeploy.Steps.JsonConfigurationVariables;
 
 /// <summary>
-/// Handles <c>Octopus.FileTransform</c> — applies Octopus's "JSON
-/// Configuration Variables" feature to JSON files inside the extracted
-/// package. Step-package implementation (Phase D-8); identical behaviour
-/// to the legacy in-DI handler at
-/// <c>KrakenDeploy.Agent.Deployment.StepHandlers.FileTransformStepHandler</c>.
+/// Handles <c>Octopus.JsonConfigurationVariables</c> — applies Octopus's
+/// "JSON Configuration Variables" feature to JSON files inside the extracted
+/// package. Canonical home for this step type (Phase D-8); the legacy
+/// in-DI <c>FileTransformStepHandler</c> + matching <c>Octopus.FileTransform</c>
+/// step type were retired in favour of this naming so the vocabulary matches
+/// what Octopus's docs actually call this feature. XDT (XML) transforms live
+/// separately on the <c>Octopus.TentaclePackage</c> step (Octopus's own model).
 /// <para>
 /// Reads <c>Octopus.Action.Package.JsonConfigurationVariablesTargets</c> —
 /// a newline- or comma-separated list of JSON file glob patterns. For each
@@ -19,12 +21,12 @@ namespace KrakenDeploy.Steps.FileTransform;
 /// Case-insensitive key match.
 /// </para>
 /// </summary>
-public sealed class FileTransformStepHandler : IStepHandler
+public sealed class JsonConfigurationVariablesStepHandler : IStepHandler
 {
     private static readonly JsonSerializerOptions WriteOpts = new() { WriteIndented = true };
 
     public bool CanHandle(string stepType)
-        => stepType.Equals("Octopus.FileTransform", StringComparison.OrdinalIgnoreCase);
+        => stepType.Equals("Octopus.JsonConfigurationVariables", StringComparison.OrdinalIgnoreCase);
 
     public bool RequiresPackage => true;
 
