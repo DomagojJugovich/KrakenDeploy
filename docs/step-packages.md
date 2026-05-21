@@ -1,6 +1,6 @@
 # Authoring step packages
 
-> Version: 1.0. Last updated: 2026-05-20. Status: Draft.
+> Version: 1.1. Last updated: 2026-05-21. Status: Draft.
 
 A *step package* is a versioned, signed `.kdeploy-step` archive that supplies
 a custom step type to a KrakenDeploy installation. Authors get exactly the
@@ -171,12 +171,37 @@ openssl genrsa -out kraken-signing.key 4096
 openssl rsa -in kraken-signing.key -pubout -out kraken-signing.pub
 ```
 
-### Sign your package
+### Sign your package — the easy path
 
-Use `Kraken.SDK`'s `StepPackageSigner` from a build-time script:
+The `kraken pack` CLI verb builds (if needed) and signs in one step:
+
+```pwsh
+# 1. Build only (dev sentinel signature — works locally with AllowUnsignedUploads)
+kraken pack ./MyCompany.MyStep/MyCompany.MyStep.csproj
+
+# 2. Build + sign for production
+kraken pack ./MyCompany.MyStep/MyCompany.MyStep.csproj `
+            --key ./kraken-signing.key                 `
+            --output ./out/mycompany.deploy-s3-1.0.0.kdeploy-step
+```
+
+Modes (dispatched by extension):
+
+| Input | Behaviour |
+|---|---|
+| `.csproj` | Runs `dotnet build -c Release`, locates the produced `.kdeploy-step`, optionally signs it. |
+| `.kdeploy-step` | Skips the build and just re-signs the existing archive. Useful in CI when a previous job built the zip. |
+
+Without `--key`, the dev sentinel signature emitted by `KrakenStepPackage.targets`
+stays in place — fine for local iteration with `AllowUnsignedUploads = true`, **never**
+for production.
+
+### Sign your package — the manual path
+
+If you can't invoke the CLI (constrained CI image, custom build host), the same
+recipe lives behind `Kraken.SDK`'s `StepPackageSigner`:
 
 ```csharp
-using System.Security.Cryptography;
 using System.IO.Compression;
 using KrakenDeploy.Contracts.StepPackages;
 
@@ -184,8 +209,6 @@ var archivePath  = "bin/Debug/net10.0/mycompany.deploy-s3-1.0.0.kdeploy-step";
 var privateKey   = File.ReadAllText("kraken-signing.key");
 using var rsa    = StepPackageSigner.ImportPrivateKeyFromPem(privateKey);
 
-// Open the archive to read the current manifest + extract the executor DLL
-// to a temp path (the signer needs a file path, not a stream).
 using var fs   = File.Open(archivePath, FileMode.Open, FileAccess.ReadWrite);
 using var zip  = new ZipArchive(fs, ZipArchiveMode.Update);
 var manifestEntry = zip.GetEntry("manifest.json")!;
@@ -199,7 +222,6 @@ using (var dst = File.Create(tempDll)) { src.CopyTo(dst); }
 
 var signed = StepPackageSigner.Sign(manifest, tempDll, rsa);
 
-// Rewrite manifest.json inside the zip with the signed copy.
 manifestEntry.Delete();
 var newEntry = zip.CreateEntry("manifest.json");
 using (var w = new StreamWriter(newEntry.Open()))
@@ -209,8 +231,8 @@ using (var w = new StreamWriter(newEntry.Open()))
 File.Delete(tempDll);
 ```
 
-The `kraken pack` CLI verb wrapping this exact flow is on the roadmap
-(D-12 follow-up).
+`kraken pack` runs exactly this code path under the hood (see
+[`PackCommands.SignArchive`](../src/KrakenDeploy.Cli/Commands/PackCommands.cs)).
 
 ### Server-side trust
 
@@ -253,7 +275,8 @@ with a warning log line.
 
 ## Local testing
 
-1. Build → `dotnet build` produces the archive.
+1. Build → either `dotnet build` (dev sentinel signature) or
+   `kraken pack ./MyStep.csproj --key ./kraken-signing.key` (real signature).
 2. Upload via the UI: `/step-packages` → Upload → pick the `.kdeploy-step`.
 3. Or via REST:
 
@@ -360,12 +383,35 @@ the `StepPackageAssemblyLoadContext` delegates `KrakenDeploy.Contracts.*`
 back to the agent's default load context — so `IStepHandler` in your DLL
 **is the same type** as the agent's `IStepHandler`. Type-identity holds.
 
+## Reference example: AWS S3 upload
+
+[`examples/AwsS3UploadStepPackage`](../examples/AwsS3UploadStepPackage/)
+is a non-trivial sample demonstrating the patterns this guide teaches:
+
+| Pattern | Where in the example |
+|---|---|
+| Async I/O end-to-end | `AwsS3UploadStepHandler.HandleAsync` |
+| Live log streaming | `context.LogAsync("info", "Uploaded …")` between files |
+| Artifacts directory | `WriteArtifactManifestAsync` drops `uploaded.json` into `ArtifactsDir` |
+| Cancellation honored | `ct.ThrowIfCancellationRequested()` between files; `OperationCanceledException` rethrown |
+| Config validation | `TryParseConfig` fails loudly with a clear log line on missing required keys |
+| Test seam without DI | `internal` ctor taking an `IS3Uploader` factory + `[InternalsVisibleTo]` |
+| Sensitive variables | UI schema marks `SecretAccessKey` as `sensitive: true` and uses the `variable` widget |
+
+The sample ships with `IS3Uploader` as an abstraction so test code can drive
+the handler without depending on the real AWS SDK; the README explains how to
+swap in an `AWSSDK.S3`-backed implementation in 20 lines. See the
+[`examples/AwsS3UploadStepPackage/README.md`](../examples/AwsS3UploadStepPackage/README.md)
+for the full walk-through.
+
 ---
 
-Open follow-ups (tracked in [TASKS.md](../TASKS.md) D-12 plus separate
-tickets):
+Open follow-ups (tracked in [TASKS.md](../TASKS.md)):
 
-- `kraken pack` CLI verb wrapping build + sign + emit
 - `StepPackage.ChangelogMarkdown` column (extracted from `CHANGELOG.md` at
   upload) — surfaces in the "Update available" dialog
-- Sample step-package repo with a non-trivial "AWS S3 upload" example
+- MSBuild signing integration so `dotnet build --p:KrakenSigningKey=...`
+  signs in-place without a separate `kraken pack` step
+- GitHub Actions workflow YAML in the public
+  [`KrakenDeploy/StepPackages`](https://github.com/KrakenDeploy/StepPackages)
+  repo wiring tag-push → build → sign → release → catalog discovery

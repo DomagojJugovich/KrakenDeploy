@@ -20,6 +20,7 @@ root.AddGlobalOption(serverOption);
 root.AddGlobalOption(apiKeyOption);
 
 root.AddCommand(PackageCommands.Build(serverOption, apiKeyOption));
+root.AddCommand(PackCommands.Build());
 root.AddCommand(ReleaseCommands.Build(serverOption, apiKeyOption));
 root.AddCommand(TargetCommands.Build(serverOption, apiKeyOption));
 

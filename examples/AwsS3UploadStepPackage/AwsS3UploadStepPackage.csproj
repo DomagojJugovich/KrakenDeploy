@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>AwsS3UploadStepPackage</RootNamespace>
+
+    <!-- ── Kraken step-package metadata ────────────────────────────────
+         Same property contract as the built-ins under steps/. The imported
+         KrakenStepPackage.targets reads these to emit manifest.json + zip
+         the {id}-{version}.kdeploy-step on `dotnet build`. -->
+    <KrakenStepPackageId>kraken.steps.aws-s3-upload</KrakenStepPackageId>
+    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageDisplayName>Upload to AWS S3</KrakenStepPackageDisplayName>
+    <KrakenStepPackageStepTypes>Kraken.Steps.AwsS3Upload</KrakenStepPackageStepTypes>
+    <KrakenStepPackageExecutorTypeName>AwsS3UploadStepPackage.AwsS3UploadStepHandler</KrakenStepPackageExecutorTypeName>
+
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Step packages depend ONLY on Contracts — the stable SDK surface.
+         No transitive Agent / Server dep so the .kdeploy-step zip remains
+         self-contained at the bytes the agent's loader sees. -->
+    <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
+  </ItemGroup>
+
+  <!-- Tests reach into the internal ctor that takes an IS3Uploader factory. -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="AwsS3UploadStepPackage.Tests" />
+  </ItemGroup>
+
+  <Import Project="..\..\steps\KrakenStepPackage.targets" />
+
+</Project>

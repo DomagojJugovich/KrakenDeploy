@@ -1,0 +1,77 @@
+{
+  "$schema": "https://raw.githubusercontent.com/KrakenDeploy/KrakenDeploy/main/docs/schemas/step-ui-schema.json",
+  "id": "kraken.steps.aws-s3-upload",
+  "version": "1.0.0",
+  "title": "Upload to AWS S3",
+  "description": "Uploads files from the deployment package to an S3 bucket. Pair with an AWS-account variable set for the access keys.",
+  "fields": [
+    {
+      "key": "Kraken.AwsS3.BucketName",
+      "label": "Bucket name",
+      "widget": "text",
+      "required": true,
+      "help": "S3 bucket the files are uploaded to. Octostache placeholders supported, e.g. `kraken-#{Octopus.Environment.Name | ToLower}-artefacts`."
+    },
+    {
+      "key": "Kraken.AwsS3.Region",
+      "label": "AWS region",
+      "widget": "text",
+      "required": true,
+      "default": "eu-central-1",
+      "help": "AWS region code (`eu-central-1`, `us-east-1`, ...)."
+    },
+    {
+      "key": "Kraken.AwsS3.ObjectKeyPrefix",
+      "label": "Object key prefix",
+      "widget": "text",
+      "required": false,
+      "help": "Prefix prepended to each uploaded file's relative path. Trailing slash optional."
+    },
+    {
+      "key": "Kraken.AwsS3.FileGlob",
+      "label": "File glob",
+      "widget": "text",
+      "required": false,
+      "default": "**/*",
+      "help": "Glob selecting which files in the deployment package get uploaded. Defaults to everything."
+    },
+    {
+      "key": "Kraken.AwsS3.AccessKeyId",
+      "label": "Access key ID (variable)",
+      "widget": "variable",
+      "required": true,
+      "help": "Reference a sensitive variable that holds the AWS access key ID. Never hand-typed."
+    },
+    {
+      "key": "Kraken.AwsS3.SecretAccessKey",
+      "label": "Secret access key (variable)",
+      "widget": "variable",
+      "sensitive": true,
+      "required": true,
+      "help": "Reference a sensitive variable that holds the AWS secret access key. The value is encrypted at rest and never logged."
+    },
+    {
+      "key": "Kraken.AwsS3.CannedAcl",
+      "label": "Canned ACL",
+      "widget": "select",
+      "required": false,
+      "options": [
+        { "value": "private",                   "label": "private (default)" },
+        { "value": "public-read",               "label": "public-read" },
+        { "value": "public-read-write",         "label": "public-read-write" },
+        { "value": "authenticated-read",        "label": "authenticated-read" },
+        { "value": "bucket-owner-read",         "label": "bucket-owner-read" },
+        { "value": "bucket-owner-full-control", "label": "bucket-owner-full-control" }
+      ],
+      "help": "Optional canned ACL applied to every uploaded object. Leave empty to inherit the bucket default."
+    },
+    {
+      "key": "Kraken.AwsS3.ContinueOnError",
+      "label": "Continue on error",
+      "widget": "checkbox",
+      "required": false,
+      "default": false,
+      "help": "When true, per-file failures are logged but don't fail the step. The artifact manifest carries a `partial: true` flag in that case."
+    }
+  ]
+}

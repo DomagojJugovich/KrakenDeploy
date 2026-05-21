@@ -28,6 +28,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\KrakenDeploy.Cli\KrakenDeploy.Cli.csproj" />
+    <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
   </ItemGroup>
 
 </Project>

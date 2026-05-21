@@ -22,4 +22,12 @@
     <PackageReference Include="System.CommandLine" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Contracts carries StepPackageSigner + StepPackageManifestJson,
+         the same signing recipe the server + agent verify against.
+         The CLI's `pack` verb calls Sign() directly so authors don't
+         re-implement the recipe outside the SDK. -->
+    <ProjectReference Include="..\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
+  </ItemGroup>
+
 </Project>
