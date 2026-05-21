@@ -1149,6 +1149,15 @@ Steps ship as standalone signed `.kdeploy-step` packages instead of being compil
   - **Deferred** (documented as follow-ups, none blocking D-track completion):
     - ~~`kraken pack` CLI verb in `KrakenDeploy.Cli`~~ — **done in D-12.1** (see below).
     - ~~Sample step-package with a non-trivial "AWS S3 upload" example~~ — **done in D-12.2** (see below).
+    - **MUST: smoke-test the AWS S3 sample with real AWS credentials against a real S3 bucket.** All current tests use the `FakeS3Uploader` — they prove the handler logic, the credential-resolution rules, and the disposal contract, but they DO NOT exercise `Amazon.S3.AmazonS3Client.PutObjectAsync` against real S3. Required before recommending the sample as production-ready:
+        1. Provision a test bucket (e.g. `kraken-deploy-step-test`) in a region close to the test host — `eu-central-1` recommended for LAUS.
+        2. Create an IAM user with `s3:PutObject` + `s3:PutObjectAcl` scoped to that bucket only (no `s3:ListBucket`, no wildcards). Issue an access key pair.
+        3. Stand up a Kraken server + agent locally. Upload `kraken.steps.aws-s3-upload-1.0.0.kdeploy-step` via the UI or `curl`.
+        4. Author a project / process with the step, bind `Kraken.AwsS3.AccessKeyId` + `Kraken.AwsS3.SecretAccessKey` to sensitive variables, set BucketName + Region + ObjectKeyPrefix. Stage a small package payload (a few KB of text files).
+        5. Run a deployment. Verify: (a) files appear in S3 under the expected key prefix, (b) deployment log streams "Uploaded <file> → s3://… (<bytes> bytes)" lines as each upload completes, (c) `uploaded.json` lands in the deployment's artifacts with the correct shape, (d) cancelling mid-batch aborts cleanly without partial-bucket corruption.
+        6. Repeat with `ContinueOnError = True` + a deliberately invalid object key to confirm per-file failure tolerance.
+        7. Repeat the happy-path run on an EC2 instance with both credential keys BLANK to confirm the default-credential-chain path picks up the instance IAM role.
+        8. Rotate / revoke the test IAM user's keys after the smoke test. **Do NOT commit the keys or attach them to the test issue.** Sanitize logs before sharing externally — they contain bucket names and (if anything leaks) credential prefixes.
     - `StepPackage.ChangelogMarkdown` column extracted from `CHANGELOG.md` at upload.
     - GitHub Actions workflow YAML (lives in the separate `KrakenDeploy/StepPackages` repo).
     - MSBuild signing integration (currently manual via `StepPackageSigner` API, or via `kraken pack --key`).
