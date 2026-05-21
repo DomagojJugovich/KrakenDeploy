@@ -96,4 +96,11 @@
     <PackageVersion Include="coverlet.collector" Version="6.0.2" />
   </ItemGroup>
 
+  <ItemGroup Label="Sample dependencies">
+    <!-- AWSSDK.S3 v4 targets net10.0 directly. Only consumed by the
+         examples/AwsS3UploadStepPackage sample — the main KrakenDeploy
+         binaries do NOT depend on this. -->
+    <PackageVersion Include="AWSSDK.S3" Version="4.0.16" />
+  </ItemGroup>
+
 </Project>

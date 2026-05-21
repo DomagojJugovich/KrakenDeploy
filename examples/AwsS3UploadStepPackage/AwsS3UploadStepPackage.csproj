@@ -17,13 +17,30 @@
     <KrakenStepPackageExecutorTypeName>AwsS3UploadStepPackage.AwsS3UploadStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>
+
+    <!-- Class libraries don't copy NuGet runtime DLLs to $(OutputPath) by
+         default. The KrakenStepPackage.targets pack target globs *.dll
+         from $(OutputPath) into executor/, so without this property the
+         AWSSDK.S3 + AWSSDK.Core DLLs would be missing from the produced
+         .kdeploy-step and the agent's loader would fail to resolve
+         Amazon.S3.AmazonS3Client at HandleAsync time. -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Step packages depend ONLY on Contracts — the stable SDK surface.
-         No transitive Agent / Server dep so the .kdeploy-step zip remains
-         self-contained at the bytes the agent's loader sees. -->
+    <!-- The stable SDK surface — IStepHandler + StepHandlerContext.
+         Step packages MUST NOT pull a transitive Agent / Server dep so the
+         .kdeploy-step zip remains self-contained at the bytes the agent's
+         loader sees. -->
     <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Real S3 client. The MSBuild pack target bundles every non-Contracts
+         DLL from $(OutputPath) into executor/, so AWSSDK.S3 + AWSSDK.Core
+         ride along with the .kdeploy-step archive — the agent's
+         AssemblyDependencyResolver finds them at handler-load time. -->
+    <PackageReference Include="AWSSDK.S3" />
   </ItemGroup>
 
   <!-- Tests reach into the internal ctor that takes an IS3Uploader factory. -->

@@ -386,7 +386,10 @@ back to the agent's default load context — so `IStepHandler` in your DLL
 ## Reference example: AWS S3 upload
 
 [`examples/AwsS3UploadStepPackage`](../examples/AwsS3UploadStepPackage/)
-is a non-trivial sample demonstrating the patterns this guide teaches:
+is a non-trivial sample demonstrating the patterns this guide teaches.
+The sample bundles `AWSSDK.S3` v4 and **works against real S3 out of the
+box** — `dotnet build` + `kraken pack` produces a working
+`.kdeploy-step` that talks to `Amazon.S3.AmazonS3Client`.
 
 | Pattern | Where in the example |
 |---|---|
@@ -394,15 +397,31 @@ is a non-trivial sample demonstrating the patterns this guide teaches:
 | Live log streaming | `context.LogAsync("info", "Uploaded …")` between files |
 | Artifacts directory | `WriteArtifactManifestAsync` drops `uploaded.json` into `ArtifactsDir` |
 | Cancellation honored | `ct.ThrowIfCancellationRequested()` between files; `OperationCanceledException` rethrown |
-| Config validation | `TryParseConfig` fails loudly with a clear log line on missing required keys |
-| Test seam without DI | `internal` ctor taking an `IS3Uploader` factory + `[InternalsVisibleTo]` |
-| Sensitive variables | UI schema marks `SecretAccessKey` as `sensitive: true` and uses the `variable` widget |
+| Config validation | `TryParseConfig` fails loudly on missing required keys + asymmetric credentials |
+| Test seam without DI | `internal` ctor taking `Func<S3UploadConfig, IS3Uploader>` + `[InternalsVisibleTo]` |
+| Sensitive variables | UI schema marks `SecretAccessKey` as `sensitive: true` + `widget: "variable"` |
+| Real third-party SDK packaging | `<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>` ships `AWSSDK.S3.dll` + `AWSSDK.Core.dll` inside `executor/` |
+| Disposable resources | `IS3Uploader : IAsyncDisposable` + `await using` in the handler; `AmazonS3Client.Dispose()` runs at end-of-step |
 
-The sample ships with `IS3Uploader` as an abstraction so test code can drive
-the handler without depending on the real AWS SDK; the README explains how to
-swap in an `AWSSDK.S3`-backed implementation in 20 lines. See the
-[`examples/AwsS3UploadStepPackage/README.md`](../examples/AwsS3UploadStepPackage/README.md)
-for the full walk-through.
+Credential handling: both `AccessKeyId` + `SecretAccessKey` set →
+`BasicAWSCredentials`; both blank → SDK's default chain (env vars / IAM
+role); only one set → hard config error. See
+[the sample's README](../examples/AwsS3UploadStepPackage/README.md) for
+the full walk-through.
+
+### Bundling third-party DLLs in your step package
+
+If your step package uses any NuGet runtime dependency the agent
+doesn't already host (anything beyond `Octostache` + the gRPC + protobuf
+stack — those happen to be Agent transitives), you need
+`<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>` in
+your `.csproj`. Class libraries don't copy NuGet runtime DLLs to
+`bin/$(Configuration)/$(TargetFramework)/` by default, and the
+`KrakenStepPackage.targets` pack target globs that directory for
+DLLs to ship in `executor/`. Without the flag your archive's
+`executor/` will only carry your project's own DLL — and the agent's
+`AssemblyDependencyResolver` will fail to resolve the third-party type
+at handler-load time.
 
 ---
 

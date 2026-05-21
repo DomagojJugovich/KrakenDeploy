@@ -27,4 +27,9 @@
     <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The credential-resolution test asserts BasicAWSCredentials directly. -->
+    <PackageReference Include="AWSSDK.S3" />
+  </ItemGroup>
+
 </Project>

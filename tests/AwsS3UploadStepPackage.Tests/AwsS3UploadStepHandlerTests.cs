@@ -165,6 +165,72 @@ public sealed class AwsS3UploadStepHandlerTests : IDisposable
     }
 
     [Fact]
+    public async Task Asymmetric_credentials_fail_with_a_clear_error()
+    {
+        var cfg = new Dictionary<string, string>(HappyConfig())
+        {
+            ["Kraken.AwsS3.AccessKeyId"] = "AKIAEXAMPLE",
+            // SecretAccessKey deliberately omitted
+        };
+        var (handler, _, ctx, logs) = StageHandler(config: cfg);
+
+        var ok = await handler.HandleAsync(ctx, CancellationToken.None);
+
+        ok.Should().BeFalse();
+        logs.Should().Contain(l =>
+            l.level == "error"
+            && l.message.Contains("AccessKeyId")
+            && l.message.Contains("SecretAccessKey"));
+    }
+
+    [Fact]
+    public async Task Both_credentials_blank_is_explicitly_allowed_default_chain()
+    {
+        StageFile("a.txt", "a");
+        var (handler, fake, ctx, logs) = StageHandler(config: HappyConfig());
+
+        var ok = await handler.HandleAsync(ctx, CancellationToken.None);
+
+        ok.Should().BeTrue();
+        // The pre-upload announcement names which credential path we picked.
+        logs.Should().Contain(l =>
+            l.level == "info"
+            && l.message.Contains("default credential chain"));
+        fake.UploadedKeys.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task Both_credentials_provided_announces_explicit_credentials()
+    {
+        StageFile("a.txt", "a");
+        var cfg = new Dictionary<string, string>(HappyConfig())
+        {
+            ["Kraken.AwsS3.AccessKeyId"]     = "AKIAEXAMPLE",
+            ["Kraken.AwsS3.SecretAccessKey"] = "an-example-secret-not-real",
+        };
+        var (handler, _, ctx, logs) = StageHandler(config: cfg);
+
+        var ok = await handler.HandleAsync(ctx, CancellationToken.None);
+
+        ok.Should().BeTrue();
+        logs.Should().Contain(l =>
+            l.level == "info"
+            && l.message.Contains("explicit credentials"));
+    }
+
+    [Fact]
+    public async Task Uploader_is_disposed_after_a_successful_batch()
+    {
+        StageFile("a.txt", "a");
+        var (handler, fake, ctx, _) = StageHandler(config: HappyConfig());
+
+        await handler.HandleAsync(ctx, CancellationToken.None);
+
+        fake.Disposed.Should().BeTrue(
+            "the handler must await using its uploader so AmazonS3Client gets disposed");
+    }
+
+    [Fact]
     public async Task Missing_extract_dir_fails_with_a_clear_error()
     {
         var (handler, _, ctx, logs) = StageHandler(
@@ -199,7 +265,7 @@ public sealed class AwsS3UploadStepHandlerTests : IDisposable
         }
 
         var fake    = uploaderOverride as FakeS3Uploader ?? new FakeS3Uploader();
-        var handler = new AwsS3UploadStepHandler(_ => uploaderOverride ?? fake);
+        var handler = new AwsS3UploadStepHandler(_cfg => uploaderOverride ?? fake);
 
         var logs = new List<(string level, string message)>();
         var ctx  = new StepHandlerContext
@@ -255,6 +321,7 @@ public sealed class AwsS3UploadStepHandlerTests : IDisposable
         public List<string>                    UploadedKeys        { get; } = [];
         public string?                         FailWhenKeyContains { get; set; }
         public Action<string, string>?         OnUploadStarted     { get; set; }
+        public bool                            Disposed            { get; private set; }
 
         public Task<long> PutObjectAsync(
             string bucket, string objectKey, Stream content,
@@ -271,6 +338,12 @@ public sealed class AwsS3UploadStepHandlerTests : IDisposable
             }
             UploadedKeys.Add(objectKey);
             return Task.FromResult(content.Length);
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Disposed = true;
+            return ValueTask.CompletedTask;
         }
     }
 }

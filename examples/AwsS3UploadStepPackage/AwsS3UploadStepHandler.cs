@@ -25,18 +25,23 @@ namespace AwsS3UploadStepPackage;
 /// </summary>
 public sealed class AwsS3UploadStepHandler : IStepHandler
 {
-    private readonly Func<string, IS3Uploader> _uploaderFactory;
-
-    /// <summary>Production constructor — the agent's loader calls this via reflection.</summary>
-    public AwsS3UploadStepHandler()
-        : this(static _region => new NotImplementedAwsS3Uploader()) { }
+    private readonly Func<S3UploadConfig, IS3Uploader> _uploaderFactory;
 
     /// <summary>
-    /// Test seam — the test project subclasses this with <c>InternalsVisibleTo</c>
-    /// and supplies a fake uploader. The factory takes the AWS region so the
-    /// real impl can construct the client with <c>RegionEndpoint.GetBySystemName</c>.
+    /// Production constructor — the agent's loader calls this via reflection.
+    /// Default factory news up <see cref="AwsSdkS3Uploader"/>, which talks
+    /// to real S3 via <c>AWSSDK.S3</c>.
     /// </summary>
-    internal AwsS3UploadStepHandler(Func<string, IS3Uploader> uploaderFactory)
+    public AwsS3UploadStepHandler()
+        : this(static cfg => new AwsSdkS3Uploader(cfg)) { }
+
+    /// <summary>
+    /// Test seam — the test project uses <c>InternalsVisibleTo</c> to reach
+    /// this ctor and supplies a fake uploader. The factory takes the parsed
+    /// <see cref="S3UploadConfig"/> so the production impl can pick up
+    /// credentials + region from one bundle.
+    /// </summary>
+    internal AwsS3UploadStepHandler(Func<S3UploadConfig, IS3Uploader> uploaderFactory)
     {
         _uploaderFactory = uploaderFactory;
     }
@@ -83,9 +88,11 @@ public sealed class AwsS3UploadStepHandler : IStepHandler
 
         await context.LogAsync("info",
             $"Uploading {files.Count} file(s) to s3://{config.BucketName} (region {config.Region}) " +
-            $"under prefix '{config.ObjectKeyPrefix}'.").ConfigureAwait(false);
+            $"under prefix '{config.ObjectKeyPrefix}' " +
+            $"using {(config.HasExplicitCredentials ? "explicit credentials" : "the AWS default credential chain")}.")
+            .ConfigureAwait(false);
 
-        var uploader = _uploaderFactory(config.Region);
+        await using var uploader = _uploaderFactory(config);
         var uploaded = new List<UploadedObject>(files.Count);
         var anyFailed = false;
 
@@ -166,18 +173,34 @@ public sealed class AwsS3UploadStepHandler : IStepHandler
             return false;
         }
 
+        var accessKeyId     = NullIfBlank(raw.GetValueOrDefault(OctopusS3ConfigKeys.AccessKeyId));
+        var secretAccessKey = NullIfBlank(raw.GetValueOrDefault(OctopusS3ConfigKeys.SecretAccessKey));
+        if ((accessKeyId is null) != (secretAccessKey is null))
+        {
+            config = null!;
+            error  = $"keys '{OctopusS3ConfigKeys.AccessKeyId}' and " +
+                     $"'{OctopusS3ConfigKeys.SecretAccessKey}' must both be set or both be blank " +
+                     "(blank = use the AWS SDK's default credential chain).";
+            return false;
+        }
+
         config = new S3UploadConfig
         {
             BucketName      = bucket,
             Region          = region,
             ObjectKeyPrefix = prefix,
             FileGlob        = glob,
+            AccessKeyId     = accessKeyId,
+            SecretAccessKey = secretAccessKey,
             CannedAcl       = raw.GetValueOrDefault(OctopusS3ConfigKeys.CannedAcl),
             ContinueOnError = ParseBool(raw.GetValueOrDefault(OctopusS3ConfigKeys.ContinueOnError)),
         };
         error = string.Empty;
         return true;
     }
+
+    private static string? NullIfBlank(string? value)
+        => string.IsNullOrWhiteSpace(value) ? null : value;
 
     private static List<(string relPath, string absPath)> EnumerateMatchingFiles(
         string root, string glob)
