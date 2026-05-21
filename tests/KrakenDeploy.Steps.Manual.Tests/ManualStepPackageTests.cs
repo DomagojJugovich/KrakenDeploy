@@ -135,6 +135,57 @@ public sealed class ManualStepPackageTests
             "the manifest's executorAssembly must exist under executor/ inside the archive");
     }
 
+    [Fact]
+    public void Built_archive_bundles_Octostache_runtime_DLL()
+    {
+        // Pins the CopyLocalLockFileAssemblies fix in
+        // steps/KrakenStepPackage.targets. Octostache is the handler's
+        // only third-party runtime dep — if it stops shipping in executor/
+        // the agent's AssemblyDependencyResolver will silently fall back
+        // to the default ALC (if the agent host happens to reference it)
+        // OR fail at HandleAsync time (if the agent host doesn't). Either
+        // way the package isn't actually self-contained anymore. The
+        // archive carries it so step packages with NuGet deps the agent
+        // does NOT host (AWSSDK.S3, AWSSDK.CloudFront, …) work the same
+        // way as this one.
+        var archivePath = FindBuiltArchive();
+        archivePath.Should().NotBeNull();
+
+        using var fs  = File.OpenRead(archivePath!);
+        using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
+
+        zip.GetEntry("executor/Octostache.dll").Should().NotBeNull(
+            "Octostache is referenced by the handler — its runtime DLL must " +
+            "ship inside the .kdeploy-step archive's executor/ directory");
+    }
+
+    [Fact]
+    public void Built_archive_excludes_agent_hosted_runtime_DLLs()
+    {
+        // The agent host process references Contracts (which pulls in
+        // Google.Protobuf + the Grpc.Net stack) plus Microsoft.Extensions
+        // .Logging.Abstractions through Serilog. Those are explicitly
+        // excluded from executor/ in KrakenStepPackage.targets so we don't
+        // ship ~1 MB of dead weight that the D-4 ALC delegation would
+        // resolve from the default ALC anyway.
+        var archivePath = FindBuiltArchive();
+        archivePath.Should().NotBeNull();
+
+        using var fs  = File.OpenRead(archivePath!);
+        using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
+
+        var entries = zip.Entries.Select(e => e.FullName).ToArray();
+
+        entries.Should().NotContain(e => e.EndsWith(
+            "/KrakenDeploy.Contracts.dll", StringComparison.OrdinalIgnoreCase));
+        entries.Should().NotContain(e => e.EndsWith(
+            "/Google.Protobuf.dll", StringComparison.OrdinalIgnoreCase));
+        entries.Should().NotContain(e => e.Contains(
+            "/Grpc.", StringComparison.OrdinalIgnoreCase));
+        entries.Should().NotContain(e => e.EndsWith(
+            "/Microsoft.Extensions.Logging.Abstractions.dll", StringComparison.OrdinalIgnoreCase));
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private static StepHandlerContext NewContext(

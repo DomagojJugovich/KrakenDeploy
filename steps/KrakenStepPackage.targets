@@ -20,6 +20,18 @@
 
   <PropertyGroup>
     <KrakenStepPackageArchiveName>$(KrakenStepPackageId)-$(KrakenStepPackageVersion).kdeploy-step</KrakenStepPackageArchiveName>
+
+    <!-- Class libraries don't copy NuGet runtime DLLs to $(OutputPath) by
+         default. The pack target below globs that directory for *.dll, so
+         without this every step package's archive would carry only the
+         project's own DLL — the agent's AssemblyDependencyResolver would
+         then fail to resolve any third-party NuGet runtime dep at
+         HandleAsync time. Early step packages happened to work because
+         their deps (Octostache, gRPC) are also in the agent host and the
+         D-4 ALC delegation fell back there, but that's a leak in the
+         contract — anything the agent doesn't host (AWSSDK.S3,
+         AWSSDK.CloudFront, ...) would break. -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
   </PropertyGroup>
 
   <Target Name="PackKrakenStepPackage"
@@ -39,14 +51,26 @@
 
     <!-- Stage executor/ — the project DLL plus any non-host runtime DLLs
          that landed in $(OutputPath). The agent's StepPackageAssemblyLoadContext
-         delegates KrakenDeploy.Contracts back to the default ALC (Phase D-4)
-         so that one stays out of executor/. Everything else (shared step
-         helpers like KrakenDeploy.Steps.Common, third-party deps the package
-         brought in) gets bundled so the loader's AssemblyDependencyResolver
-         can find them at runtime. -->
+         delegates anything matching the Default ALC's loaded assemblies back
+         to the default ALC (Phase D-4), so DLLs the agent already hosts are
+         excluded here to keep archives lean.
+
+         The excluded set is deterministic — everything Contracts pulls in
+         transitively shows up in $(OutputPath) and is guaranteed to be in
+         the agent's host process (since the agent IS the consumer of the
+         gRPC + protobuf wire transport). Bundling these would just add
+         ~1 MB of dead weight per package; the agent's copies win on type
+         identity either way.
+
+         Microsoft.Extensions.Logging.Abstractions is the one non-Contracts
+         transitive that's reliably in the agent host (via Serilog + the
+         generic Host abstractions); excluded for the same reason. -->
     <ItemGroup>
       <_KrakenExecutorDlls Include="$(OutputPath)*.dll"
-                           Exclude="$(OutputPath)KrakenDeploy.Contracts.dll" />
+                           Exclude="$(OutputPath)KrakenDeploy.Contracts.dll;
+                                    $(OutputPath)Google.Protobuf.dll;
+                                    $(OutputPath)Grpc.*.dll;
+                                    $(OutputPath)Microsoft.Extensions.Logging.Abstractions.dll" />
     </ItemGroup>
     <Copy SourceFiles="@(_KrakenExecutorDlls)"
           DestinationFolder="$(KrakenStepPackageStagingDir)executor\" />

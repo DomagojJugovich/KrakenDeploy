@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using Amazon.Runtime;
 using AwsS3UploadStepPackage;
 using FluentAssertions;
@@ -45,5 +46,50 @@ public sealed class AwsSdkS3UploaderResolveCredentialsTests
         var act = () => AwsSdkS3Uploader.ResolveCredentials(null, "secret-not-real");
         act.Should().Throw<ArgumentException>()
            .WithMessage("*both*blank*");
+    }
+}
+
+/// <summary>
+/// Pins the contract that the produced <c>.kdeploy-step</c> archive
+/// carries the AWS SDK runtime DLLs. AWSSDK isn't in the agent host,
+/// so the agent's <c>AssemblyDependencyResolver</c> can only resolve
+/// <c>Amazon.S3.AmazonS3Client</c> if it ships inside the archive's
+/// <c>executor/</c> directory.
+/// </summary>
+public sealed class AwsS3UploadArchiveTests
+{
+    [Fact]
+    public void Built_archive_bundles_AWSSDK_S3_and_Core_runtime_DLLs()
+    {
+        var archivePath = FindBuiltArchive();
+        archivePath.Should().NotBeNull(
+            "the sample's pack target must produce " +
+            "kraken.steps.aws-s3-upload-1.0.0.kdeploy-step");
+
+        using var fs  = File.OpenRead(archivePath!);
+        using var zip = new ZipArchive(fs, ZipArchiveMode.Read);
+
+        zip.GetEntry("executor/AwsS3UploadStepPackage.dll").Should().NotBeNull();
+        zip.GetEntry("executor/AWSSDK.S3.dll").Should().NotBeNull(
+            "AWSSDK.S3 must be inside the archive — the agent host does NOT " +
+            "reference it, so the ALC delegation fallback can't save us " +
+            "if it's missing");
+        zip.GetEntry("executor/AWSSDK.Core.dll").Should().NotBeNull(
+            "AWSSDK.Core is the SDK's runtime spine; missing it would " +
+            "TypeLoadException on AmazonS3Client construction");
+    }
+
+    private static string? FindBuiltArchive()
+    {
+        var here = AppContext.BaseDirectory;
+        // tests/AwsS3UploadStepPackage.Tests/bin/Debug/net10.0/
+        //   → up five → solution root
+        //   → examples/AwsS3UploadStepPackage/bin/Debug/net10.0/*.kdeploy-step
+        var candidate = Path.GetFullPath(Path.Combine(
+            here, "..", "..", "..", "..", "..",
+            "examples", "AwsS3UploadStepPackage",
+            "bin", "Debug", "net10.0",
+            "kraken.steps.aws-s3-upload-1.0.0.kdeploy-step"));
+        return File.Exists(candidate) ? candidate : null;
     }
 }

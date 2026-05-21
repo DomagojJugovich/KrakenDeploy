@@ -17,14 +17,9 @@
     <KrakenStepPackageExecutorTypeName>AwsS3UploadStepPackage.AwsS3UploadStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>
-
-    <!-- Class libraries don't copy NuGet runtime DLLs to $(OutputPath) by
-         default. The KrakenStepPackage.targets pack target globs *.dll
-         from $(OutputPath) into executor/, so without this property the
-         AWSSDK.S3 + AWSSDK.Core DLLs would be missing from the produced
-         .kdeploy-step and the agent's loader would fail to resolve
-         Amazon.S3.AmazonS3Client at HandleAsync time. -->
-    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <!-- CopyLocalLockFileAssemblies is set centrally in
+         ../../steps/KrakenStepPackage.targets so every step package's
+         archive ships its NuGet runtime DLLs reliably. -->
   </PropertyGroup>
 
   <ItemGroup>

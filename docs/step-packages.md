@@ -411,17 +411,26 @@ the full walk-through.
 
 ### Bundling third-party DLLs in your step package
 
-If your step package uses any NuGet runtime dependency the agent
-doesn't already host (anything beyond `Octostache` + the gRPC + protobuf
-stack — those happen to be Agent transitives), you need
-`<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>` in
-your `.csproj`. Class libraries don't copy NuGet runtime DLLs to
-`bin/$(Configuration)/$(TargetFramework)/` by default, and the
-`KrakenStepPackage.targets` pack target globs that directory for
-DLLs to ship in `executor/`. Without the flag your archive's
-`executor/` will only carry your project's own DLL — and the agent's
-`AssemblyDependencyResolver` will fail to resolve the third-party type
-at handler-load time.
+`steps/KrakenStepPackage.targets` sets
+`<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>`
+centrally so every step package's archive ships its NuGet runtime
+DLLs in `executor/`. Class libraries don't copy those by default —
+without the flag your archive would carry only the project's own DLL
+and the agent's `AssemblyDependencyResolver` would fail to resolve any
+third-party type at handler-load time.
+
+The targets file also excludes the DLLs the agent host is guaranteed
+to provide — `KrakenDeploy.Contracts.dll`, `Google.Protobuf.dll`,
+`Grpc.*.dll`, `Microsoft.Extensions.Logging.Abstractions.dll` — so
+archives stay lean. The D-4 ALC delegation resolves those from the
+default ALC anyway, and bundling them would add ~1 MB of dead weight
+per package.
+
+If your package needs something else the agent doesn't host (a new
+AWS SDK service, a custom transport library, …), nothing special — it
+ships automatically. Add a pinning test alongside your package's other
+tests asserting `zip.GetEntry("executor/YourDep.dll")` is non-null to
+catch regressions if someone ever turns the flag off.
 
 ---
 
