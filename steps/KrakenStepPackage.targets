@@ -113,4 +113,52 @@
              Text="Kraken step package built: $(KrakenStepPackageArchivePath)" />
   </Target>
 
+  <!--
+    Phase D-12.5 — opt-in MSBuild signing integration.
+
+    Usage:
+        dotnet build path/to/MyStep.csproj -c Release -p:KrakenSigningKey=./signing.key
+
+    Behaviour:
+      - When KrakenSigningKey is empty (the default), this target is a no-op
+        and the dev sentinel signature emitted by PackKrakenStepPackage above
+        stays in place. Fine for local iteration with AllowUnsignedUploads.
+      - When set, this target invokes `kraken pack` with the `key` switch
+        on the freshly-built archive, rewriting manifest.json in place with
+        an RSA-SHA256 signature that the server + agent will verify against
+        their configured trusted public key.
+
+    CLI resolution:
+      - If a built KrakenDeploy.Cli is available in this repo (the in-tree
+        build path), invoke it via `dotnet <path-to-kraken.dll>`. Lets the
+        Steps.* projects sign without needing the CLI installed globally.
+      - Otherwise fall back to `dotnet kraken` — requires
+        `dotnet tool install -g KrakenDeploy.Cli`. Documented in
+        docs/step-packages.md for external Kraken.SDK consumers.
+  -->
+  <Target Name="SignKrakenStepPackage"
+          AfterTargets="PackKrakenStepPackage"
+          Condition="'$(KrakenSigningKey)' != ''">
+
+    <PropertyGroup>
+      <_KrakenCliInRepoDebug>$(MSBuildThisFileDirectory)..\src\KrakenDeploy.Cli\bin\Debug\net10.0\kraken.dll</_KrakenCliInRepoDebug>
+      <_KrakenCliInRepoRelease>$(MSBuildThisFileDirectory)..\src\KrakenDeploy.Cli\bin\Release\net10.0\kraken.dll</_KrakenCliInRepoRelease>
+      <_KrakenCliInvocation Condition="Exists('$(_KrakenCliInRepoDebug)')">dotnet "$(_KrakenCliInRepoDebug)"</_KrakenCliInvocation>
+      <_KrakenCliInvocation Condition="'$(_KrakenCliInvocation)' == '' AND Exists('$(_KrakenCliInRepoRelease)')">dotnet "$(_KrakenCliInRepoRelease)"</_KrakenCliInvocation>
+      <_KrakenCliInvocation Condition="'$(_KrakenCliInvocation)' == ''">dotnet kraken</_KrakenCliInvocation>
+    </PropertyGroup>
+
+    <Error Condition="!Exists('$(KrakenSigningKey)')"
+           Text="KrakenSigningKey was set to '$(KrakenSigningKey)' but no file exists at that path." />
+
+    <Message Importance="high"
+             Text="Signing $(KrakenStepPackageArchiveName) with key $(KrakenSigningKey) via $(_KrakenCliInvocation)" />
+
+    <Exec Command="$(_KrakenCliInvocation) pack &quot;$(KrakenStepPackageArchivePath)&quot; --key &quot;$(KrakenSigningKey)&quot;"
+          WorkingDirectory="$(MSBuildProjectDirectory)" />
+
+    <Message Importance="high"
+             Text="Kraken step package signed: $(KrakenStepPackageArchivePath)" />
+  </Target>
+
 </Project>

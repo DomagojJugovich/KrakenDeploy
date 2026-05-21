@@ -83,6 +83,28 @@
                                 <code style="font-size: 0.75em;">@TruncSha(p.Sha256)</code>
                             </Template>
                         </RadzenDataGridColumn>
+                        @* D-12.4: hidden-by-default changelog column;
+                           the icon only shows when the package shipped a
+                           CHANGELOG.md inside its .kdeploy-step. *@
+                        <RadzenDataGridColumn TItem="StepPackage" Title="Changelog" Width="100px"
+                                              Sortable="false" Filterable="false">
+                            <Template Context="p">
+                                @if (!string.IsNullOrWhiteSpace(p.ChangelogMarkdown))
+                                {
+                                    <RadzenButton Icon="description"
+                                                  Size="ButtonSize.ExtraSmall"
+                                                  Variant="Variant.Text"
+                                                  ButtonStyle="ButtonStyle.Light"
+                                                  title="Show release notes"
+                                                  Click="@(() => ShowChangelog(p))" />
+                                }
+                                else
+                                {
+                                    <span class="rz-color-secondary"
+                                          title="No CHANGELOG.md shipped with this version">&mdash;</span>
+                                }
+                            </Template>
+                        </RadzenDataGridColumn>
                         <RadzenDataGridColumn TItem="StepPackage" Title="" Width="60px"
                                               Sortable="false" Filterable="false">
                             <Template Context="p">
@@ -409,5 +431,20 @@
         {
             OkButtonText = "Close",
         });
+    }
+
+    /// <summary>
+    /// D-12.4: pops the package's release notes into a Radzen Alert. Plain
+    /// pre-formatted text rather than full Markdown rendering — keeps the
+    /// server's NuGet surface lean (no Markdig dep) and the source is
+    /// readable as-is for typical changelogs.
+    /// </summary>
+    private async Task ShowChangelog(StepPackage pkg)
+    {
+        if (string.IsNullOrWhiteSpace(pkg.ChangelogMarkdown)) { return; }
+        await Dialog.Alert(
+            pkg.ChangelogMarkdown,
+            $"Changelog — {pkg.Name} {pkg.Version}",
+            new AlertOptions { OkButtonText = "Close" });
     }
 }

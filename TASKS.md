@@ -1149,6 +1149,8 @@ Steps ship as standalone signed `.kdeploy-step` packages instead of being compil
   - **Deferred** (documented as follow-ups, none blocking D-track completion):
     - ~~`kraken pack` CLI verb in `KrakenDeploy.Cli`~~ — **done in D-12.1** (see below).
     - ~~Sample step-package with a non-trivial "AWS S3 upload" example~~ — **done in D-12.2** (see below).
+    - ~~`StepPackage.ChangelogMarkdown` column extracted from `CHANGELOG.md` at upload~~ — **done in D-12.4** (see below).
+    - ~~MSBuild signing integration~~ — **done in D-12.5** (see below).
     - **MUST: smoke-test the AWS S3 sample with real AWS credentials against a real S3 bucket.** All current tests use the `FakeS3Uploader` — they prove the handler logic, the credential-resolution rules, and the disposal contract, but they DO NOT exercise `Amazon.S3.AmazonS3Client.PutObjectAsync` against real S3. Required before recommending the sample as production-ready:
         1. Provision a test bucket (e.g. `kraken-deploy-step-test`) in a region close to the test host — `eu-central-1` recommended for LAUS.
         2. Create an IAM user with `s3:PutObject` + `s3:PutObjectAcl` scoped to that bucket only (no `s3:ListBucket`, no wildcards). Issue an access key pair.
@@ -1158,9 +1160,7 @@ Steps ship as standalone signed `.kdeploy-step` packages instead of being compil
         6. Repeat with `ContinueOnError = True` + a deliberately invalid object key to confirm per-file failure tolerance.
         7. Repeat the happy-path run on an EC2 instance with both credential keys BLANK to confirm the default-credential-chain path picks up the instance IAM role.
         8. Rotate / revoke the test IAM user's keys after the smoke test. **Do NOT commit the keys or attach them to the test issue.** Sanitize logs before sharing externally — they contain bucket names and (if anything leaks) credential prefixes.
-    - `StepPackage.ChangelogMarkdown` column extracted from `CHANGELOG.md` at upload.
-    - GitHub Actions workflow YAML (lives in the separate `KrakenDeploy/StepPackages` repo).
-    - MSBuild signing integration (currently manual via `StepPackageSigner` API, or via `kraken pack --key`).
+    - GitHub Actions workflow YAML (lives in the separate `KrakenDeploy/StepPackages` repo, not this one).
 
 - [x] **D-12.1: `kraken pack` CLI verb** (done) —
   - New `PackCommands` in `src/KrakenDeploy.Cli/Commands/PackCommands.cs`. Two argument shapes dispatched by extension: `.csproj` → runs `dotnet build -c $(configuration)`, locates the produced `.kdeploy-step` under `bin/$configuration/*/`, then optionally signs in place; `.kdeploy-step` → skips build and just re-signs. Without `--key` it's a no-op build (the dev sentinel signature emitted by `KrakenStepPackage.targets` stays in place — fine for local iteration with `AllowUnsignedUploads`, never for production).
@@ -1187,6 +1187,26 @@ Steps ship as standalone signed `.kdeploy-step` packages instead of being compil
   - Redundant `<CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>` removed from `examples/AwsS3UploadStepPackage/AwsS3UploadStepPackage.csproj` since the imported targets file now handles it.
   - Pinning tests added: `Built_archive_bundles_Octostache_runtime_DLL` + `Built_archive_excludes_agent_hosted_runtime_DLLs` in `ManualStepPackageTests`; `AwsS3UploadArchiveTests.Built_archive_bundles_AWSSDK_S3_and_Core_runtime_DLLs` in the AWS sample's test project. These fail loudly if anyone ever turns the flag off or adds an agent-hosted dep to the bundle.
   - `docs/step-packages.md` "Bundling third-party DLLs" callout rewritten to reflect that the targets file handles this centrally; authors don't need any csproj-level configuration for their NuGet runtime deps to land in the archive. 601 total tests pass (was 598 after D-12.2; +3 archive-content pinning assertions).
+
+- [x] **D-12.4: `StepPackage.ChangelogMarkdown` column + UI** (done) —
+  - New nullable `ChangelogMarkdown` column on the `StepPackage` aggregate (`text` in Postgres, no length cap at the DB level since the upload path bounds bytes — see below). EF migration `AddStepPackageChangelogMarkdown` lands the column.
+  - `StepPackageService.UploadAsync` now reads `CHANGELOG.md` from the zip root via `StepPackageFiles.ChangelogFileName` (constant introduced earlier in D-1) and persists the content. Uses a new `ReadTextWithCapAsync(maxBytes: 256 * 1024)` helper so a malicious or accidentally-huge changelog can't bloat the DB row; oversized files are truncated with a trailing "`…truncated at 262 144 bytes.`" marker so operators see why the text ends abruptly.
+  - REST passthrough: the existing `GET /api/step-packages` endpoint returns the entity directly, so adding the column auto-exposes it — no DTO churn.
+  - UI surfaces:
+    - **`StepFormDialog.razor`**: the existing "Update available" badge gets a sibling icon button (`description` Material icon) that toggles a compact `RadzenCard` showing the latest installed version's changelog as pre-formatted text. Off by default — keeps the dialog tight for users who don't care about release notes; one click reveals up to 240 px of scrollable changelog when investigating an upgrade.
+    - **`StepPackages.razor`**: new "Changelog" column on the installed grid with a description-icon button per row. Clicking pops the changelog into a `RadzenDialog.Alert`. Rows whose package shipped no `CHANGELOG.md` show a grey em-dash with a tooltip explaining why.
+  - Rendering decision: plain pre-formatted text inside a `<pre style="white-space:pre-wrap">` rather than full Markdown-to-HTML. Avoided pulling Markdig into the server's NuGet surface for a feature this small; typical changelogs (`## 1.2.0`, bullet lists) are scan-readable as raw text. Documented as a future polish target.
+  - 3 new integration tests in `StepPackageChangelogTests` (Server.Data.Tests) drive the new path through Postgres: archive ships a `CHANGELOG.md` → contents persist verbatim; archive omits the file → column stays `null`; archive ships a 300 KB changelog → contents are truncated with the marker, total length stays just past the 256 KB cap. 604 total tests pass (was 601 after D-12.3).
+
+- [x] **D-12.5: MSBuild signing integration** (done) —
+  - New `SignKrakenStepPackage` target in `steps/KrakenStepPackage.targets` runs `AfterTargets="PackKrakenStepPackage"` and signs the just-built archive in place when `$(KrakenSigningKey)` is set. Authors get one-step `dotnet build -p:KrakenSigningKey=./signing.key` ergonomics — no separate `kraken pack` invocation needed in CI.
+  - CLI resolution strategy: the target prefers the in-repo built CLI (`src/KrakenDeploy.Cli/bin/{Debug,Release}/net10.0/kraken.dll`) so the in-tree `steps/*` projects sign without needing the CLI installed globally; falls back to `dotnet kraken` when no in-repo build exists (the external Kraken.SDK consumer path — documented as `dotnet tool install -g KrakenDeploy.Cli`).
+  - Hard-errors with a clear MSBuild error message when `KrakenSigningKey` is set but the path doesn't exist, so CI configuration typos fail loudly at build time instead of silently shipping unsigned archives.
+  - The target's `Condition="'$(KrakenSigningKey)' != ''"` means it's a true no-op when the property is empty — local iteration with the dev sentinel signature stays free.
+  - 2 new end-to-end tests in `MsBuildIntegrationTests` (Cli.Tests) spawn a real `dotnet build` of the Manual step package with and without `KrakenSigningKey` set. With key: the produced archive's signature is NOT the dev sentinel and verifies cleanly against the matching public key via `StepPackageSigner.Verify`. Without key: the dev sentinel stays in place. Together they pin both the happy-path and the no-op contract; an XML typo in the targets file caused a "An XML comment cannot contain '--'" parse failure during development that this test caught immediately.
+  - `docs/step-packages.md` "Sign on every build via MSBuild" section added between the `kraken pack` CLI section and the manual `StepPackageSigner` fallback. Documents the CLI resolution chain + the `dotnet tool install -g KrakenDeploy.Cli` prerequisite for external authors. 606 total tests pass (was 604 after D-12.4; +2 MSBuild integration assertions).
+
+**Phase D — closed.** D-1 through D-12 done in 4 main commits, plus D-12.1 (kraken pack CLI), D-12.2 (AWS S3 sample), D-12.3 (runtime-DLL bundling fix), D-12.4 (changelog), D-12.5 (MSBuild signing). Open follow-ups carried as separate tasks (none blocking): live S3 smoke-test, GitHub Actions workflow YAML in the public KrakenDeploy/StepPackages repo.
 
 ### M11 — AI integration (MCP server, autonomous diagnosis, process assistant)
 Three features sharing a common `IAiProvider` abstraction (pluggable: Anthropic, OpenAI, Azure OpenAI — user supplies API key) and a shared MCP tool layer.

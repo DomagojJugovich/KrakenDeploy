@@ -48,6 +48,17 @@ public class StepPackage : AuditableEntity
     public string? UiSchemaJson { get; set; }
 
     /// <summary>
+    /// Optional release notes for this version, taken from the
+    /// <c>CHANGELOG.md</c> file at the zip root (Phase D-12.4). Surfaced
+    /// in the "Update available" dialog when a process step is pinned to
+    /// an older version, and in the catalog UI when browsing available
+    /// versions. Plain Markdown text — the renderer (Markdig) handles
+    /// it client-side. <c>null</c> when the package didn't ship a
+    /// changelog file.
+    /// </summary>
+    public string? ChangelogMarkdown { get; set; }
+
+    /// <summary>
     /// Where the install came from. Drives the catalog UI's "installed"
     /// badge and informs uninstall confirmations.
     /// </summary>

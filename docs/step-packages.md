@@ -196,6 +196,35 @@ Without `--key`, the dev sentinel signature emitted by `KrakenStepPackage.target
 stays in place — fine for local iteration with `AllowUnsignedUploads = true`, **never**
 for production.
 
+### Sign on every build via MSBuild
+
+For CI pipelines that don't want a separate `kraken pack` step, set
+`KrakenSigningKey` and signing happens as part of `dotnet build`:
+
+```pwsh
+dotnet build ./MyCompany.MyStep/MyCompany.MyStep.csproj `
+             -c Release `
+             -p:KrakenSigningKey=./kraken-signing.key
+```
+
+The `SignKrakenStepPackage` target in `steps/KrakenStepPackage.targets`
+runs `AfterTargets="PackKrakenStepPackage"` and shells out to `kraken pack`
+with the path you provided. CLI resolution:
+
+1. If a built `KrakenDeploy.Cli` is present in this repo's `src/KrakenDeploy.Cli/bin/`
+   the targets file invokes it directly via `dotnet <kraken.dll>` — no
+   install needed for the in-tree Steps.* projects.
+2. Otherwise the targets file falls back to `dotnet kraken`, which
+   requires authors to install the CLI globally:
+
+   ```pwsh
+   dotnet tool install -g KrakenDeploy.Cli
+   ```
+
+When `KrakenSigningKey` is empty (the default), the target is a no-op
+and the dev sentinel signature stays in place — local iteration costs
+nothing.
+
 ### Sign your package — the manual path
 
 If you can't invoke the CLI (constrained CI image, custom build host), the same

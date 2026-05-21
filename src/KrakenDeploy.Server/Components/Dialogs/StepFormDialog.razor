@@ -112,11 +112,44 @@
                          && _availableVersions.Count > 0
                          && _stepPackageVersion != _availableVersions[0])
                     {
-                        <RadzenBadge BadgeStyle="BadgeStyle.Warning" IsPill="true"
-                                     Text="@($"Update: {_availableVersions[0]}")"
-                                     title="A newer version of this step package is installed." />
+                        <RadzenStack Orientation="Orientation.Horizontal"
+                                     AlignItems="AlignItems.Center" Gap="0.5rem">
+                            <RadzenBadge BadgeStyle="BadgeStyle.Warning" IsPill="true"
+                                         Text="@($"Update: {_availableVersions[0]}")"
+                                         title="A newer version of this step package is installed." />
+                            <RadzenButton Icon="@(_changelogVisible ? "expand_less" : "description")"
+                                          Size="ButtonSize.ExtraSmall"
+                                          Variant="Variant.Text"
+                                          ButtonStyle="ButtonStyle.Light"
+                                          title="@(_changelogVisible ? "Hide changelog" : "Show changelog")"
+                                          Click="@(() => _changelogVisible = !_changelogVisible)" />
+                        </RadzenStack>
                     }
                 </RadzenStack>
+
+                @* ── Phase D-12.4: changelog for the latest installed version ── *@
+                @if (_changelogVisible
+                     && _availableVersions.Count > 0
+                     && _versionRows.TryGetValue(_availableVersions[0], out var _latestRow))
+                {
+                    <RadzenCard Variant="Variant.Outlined" class="rz-mt-2 rz-p-2">
+                        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-1">
+                            Changelog — @(_availableVersions[0])
+                        </RadzenText>
+                        @if (string.IsNullOrWhiteSpace(_latestRow.ChangelogMarkdown))
+                        {
+                            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                                <em>No changelog provided.</em>
+                            </RadzenText>
+                        }
+                        else
+                        {
+                            <pre style="white-space:pre-wrap; font-family:var(--rz-mono-font-family,monospace); font-size:0.85em; max-height:240px; overflow-y:auto; margin:0;">
+@_latestRow.ChangelogMarkdown
+                            </pre>
+                        }
+                    </RadzenCard>
+                }
             </RadzenCard>
         }
 
@@ -256,6 +289,14 @@
     /// Populated alongside <see cref="_availableVersions"/>.</summary>
     private Dictionary<string, StepPackage> _versionRows =
         new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// D-12.4: drives the expand-changelog toggle next to the "Update
+    /// available" badge. Off by default so the dialog stays compact for
+    /// users who don't care about release notes; on when the user clicks
+    /// the description-icon button.
+    /// </summary>
+    private bool _changelogVisible;
 
     protected override async Task OnParametersSetAsync()
     {

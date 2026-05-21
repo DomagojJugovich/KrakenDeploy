@@ -77,6 +77,7 @@ public sealed class StepPackageService(
             // Open the zip and read the manifest.
             StepPackageManifest manifest;
             string? uiSchemaJson;
+            string? changelogMarkdown;
             try
             {
                 await using var temp = File.OpenRead(tempFile);
@@ -94,6 +95,18 @@ public sealed class StepPackageService(
                 uiSchemaJson = uiSchemaEntry is null
                     ? null
                     : await ReadAllTextAsync(uiSchemaEntry, ct).ConfigureAwait(false);
+
+                // CHANGELOG.md at the zip root is optional (Phase D-12.4).
+                // The renderer treats null vs empty differently — empty means
+                // "package shipped an explicit zero-changes note", null means
+                // "no changelog file at all". Cap at 256 KB so a malicious
+                // package can't blow up the DB row; real changelogs are
+                // single-digit KB.
+                var changelogEntry = zip.GetEntry(StepPackageFiles.ChangelogFileName);
+                changelogMarkdown = changelogEntry is null
+                    ? null
+                    : await ReadTextWithCapAsync(changelogEntry, maxBytes: 256 * 1024, ct)
+                        .ConfigureAwait(false);
             }
             catch (InvalidDataException ex)
             {
@@ -149,13 +162,14 @@ public sealed class StepPackageService(
 
             var row = new StepPackage
             {
-                Name         = manifest.Id,
-                Version      = manifest.Version,
-                Sha256       = sha256,
-                ManifestJson = StepPackageManifestJson.Serialize(manifest),
-                UiSchemaJson = uiSchemaJson,
-                Source       = source,
-                StepTypes    = string.Join(',',
+                Name              = manifest.Id,
+                Version           = manifest.Version,
+                Sha256            = sha256,
+                ManifestJson      = StepPackageManifestJson.Serialize(manifest),
+                UiSchemaJson      = uiSchemaJson,
+                ChangelogMarkdown = changelogMarkdown,
+                Source            = source,
+                StepTypes         = string.Join(',',
                     manifest.StepTypes.Select(t => t.ToLowerInvariant())),
             };
             db.StepPackages.Add(row);
@@ -533,6 +547,34 @@ public sealed class StepPackageService(
         await using var s = entry.Open();
         using var reader = new StreamReader(s);
         return await reader.ReadToEndAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reads a zip entry's text content with an upper-bound on bytes —
+    /// truncates with a trailing marker if the entry exceeds the cap.
+    /// Used for CHANGELOG.md (256 KB cap) so a malicious or accidentally
+    /// huge file can't blow up the DB row that lives in <c>varchar(max)</c>.
+    /// </summary>
+    private static async Task<string> ReadTextWithCapAsync(
+        ZipArchiveEntry entry, int maxBytes, CancellationToken ct)
+    {
+        await using var s = entry.Open();
+        using var ms = new MemoryStream();
+        var buffer = new byte[8192];
+        int read;
+        while ((read = await s.ReadAsync(buffer.AsMemory(), ct).ConfigureAwait(false)) > 0)
+        {
+            if (ms.Length + read > maxBytes)
+            {
+                var spare = maxBytes - (int)ms.Length;
+                if (spare > 0) { ms.Write(buffer, 0, spare); }
+                ms.Write(System.Text.Encoding.UTF8.GetBytes(
+                    $"\n\n_…truncated at {maxBytes:N0} bytes._\n"));
+                break;
+            }
+            ms.Write(buffer, 0, read);
+        }
+        return System.Text.Encoding.UTF8.GetString(ms.ToArray());
     }
 
     private static async Task<string> ComputeSha256Async(Stream s, CancellationToken ct)
