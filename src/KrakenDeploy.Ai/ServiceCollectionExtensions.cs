@@ -26,6 +26,13 @@ public static class ServiceCollectionExtensions
         // Stateless; safe as a singleton.
         services.AddSingleton<KrakenAiClientFactory>();
 
+        // M11.A.4 — prompt sanitiser is pure string replacement, no
+        // mutable state, safe as a singleton. Callers thread the per-call
+        // sensitive-values map through KrakenAiRequestOptions.
+        Microsoft.Extensions.DependencyInjection.Extensions
+            .ServiceCollectionDescriptorExtensions
+            .TryAddSingleton<IPromptSanitizer, PromptSanitizer>(services);
+
         // Per-request — settings are Space-scoped, so the wrapper resolves
         // a fresh settings instance on every call rather than caching.
         services.AddScoped<IKrakenAi, KrakenAi>();

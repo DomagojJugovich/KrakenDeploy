@@ -33,17 +33,20 @@ public sealed class KrakenAi : IKrakenAi
 {
     private readonly KrakenAiClientFactory _factory;
     private readonly IKrakenAiSettingsProvider _settingsProvider;
+    private readonly IPromptSanitizer _sanitizer;
     private readonly IKrakenAiCallSink _callSink;
     private readonly ILogger<KrakenAi> _logger;
 
     public KrakenAi(
         KrakenAiClientFactory factory,
         IKrakenAiSettingsProvider settingsProvider,
+        IPromptSanitizer sanitizer,
         IKrakenAiCallSink callSink,
         ILogger<KrakenAi> logger)
     {
         _factory          = factory;
         _settingsProvider = settingsProvider;
+        _sanitizer        = sanitizer;
         _callSink         = callSink;
         _logger           = logger;
     }
@@ -59,13 +62,15 @@ public sealed class KrakenAi : IKrakenAi
         var settings = await GuardAsync(feature, ct).ConfigureAwait(false);
         using var client = _factory.CreateClient(settings);
 
+        var (sanitisedMessages, scrubbedNames) = ApplySanitization(messages, options);
+
         var sw = Stopwatch.StartNew();
         ChatResponse? response = null;
         Exception?    error    = null;
         try
         {
             response = await client
-                .GetResponseAsync(messages, ToChatOptions(options), ct)
+                .GetResponseAsync(sanitisedMessages, ToChatOptions(options), ct)
                 .ConfigureAwait(false);
             return BuildCompletion(settings, response, sw.Elapsed);
         }
@@ -78,8 +83,8 @@ public sealed class KrakenAi : IKrakenAi
         {
             sw.Stop();
             await EmitAuditAsync(
-                settings, feature, options, messages, response, sw.Elapsed, error, ct)
-                .ConfigureAwait(false);
+                settings, feature, options, sanitisedMessages, scrubbedNames,
+                response, sw.Elapsed, error, ct).ConfigureAwait(false);
         }
     }
 
@@ -95,6 +100,8 @@ public sealed class KrakenAi : IKrakenAi
         var settings = await GuardAsync(feature, ct).ConfigureAwait(false);
         using var client = _factory.CreateClient(settings);
 
+        var (sanitisedMessages, scrubbedNames) = ApplySanitization(messages, options);
+
         // Microsoft.Extensions.AI.IChatClient.GetResponseAsync<T> wraps the
         // provider's structured-output mode (Anthropic tool use / OpenAI
         // response_format=json_schema) and deserialises to TResult. Single
@@ -105,7 +112,7 @@ public sealed class KrakenAi : IKrakenAi
         try
         {
             response = await client
-                .GetResponseAsync<TResult>(messages, ToChatOptions(options), cancellationToken: ct)
+                .GetResponseAsync<TResult>(sanitisedMessages, ToChatOptions(options), cancellationToken: ct)
                 .ConfigureAwait(false);
             if (response.TryGetResult(out var result))
             {
@@ -125,7 +132,7 @@ public sealed class KrakenAi : IKrakenAi
         {
             sw.Stop();
             await EmitAuditAsync(
-                settings, feature, options, messages,
+                settings, feature, options, sanitisedMessages, scrubbedNames,
                 response?.Messages.FirstOrDefault() is { } _
                     ? new ChatResponse(response.Messages) { Usage = response.Usage }
                     : null,
@@ -144,6 +151,8 @@ public sealed class KrakenAi : IKrakenAi
         var settings = await GuardAsync(feature, ct).ConfigureAwait(false);
         using var client = _factory.CreateClient(settings);
 
+        var (sanitisedMessages, scrubbedNames) = ApplySanitization(messages, options);
+
         var sw            = Stopwatch.StartNew();
         var accumulator   = new StringBuilder();
         Exception? error  = null;
@@ -152,14 +161,14 @@ public sealed class KrakenAi : IKrakenAi
         try
         {
             enumerator = client
-                .GetStreamingResponseAsync(messages, ToChatOptions(options), ct)
+                .GetStreamingResponseAsync(sanitisedMessages, ToChatOptions(options), ct)
                 .GetAsyncEnumerator(ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             sw.Stop();
             await EmitAuditAsync(
-                settings, feature, options, messages,
+                settings, feature, options, sanitisedMessages, scrubbedNames,
                 response: null, sw.Elapsed, ex, ct).ConfigureAwait(false);
             throw;
         }
@@ -195,7 +204,7 @@ public sealed class KrakenAi : IKrakenAi
         // know (latency + accumulated text length as a proxy on the body
         // when LogPromptBodies is on).
         await EmitStreamingAuditAsync(
-            settings, feature, options, messages,
+            settings, feature, options, sanitisedMessages, scrubbedNames,
             accumulator.ToString(), sw.Elapsed, error, ct).ConfigureAwait(false);
         if (error is not null) { throw error; }
     }
@@ -241,6 +250,25 @@ public sealed class KrakenAi : IKrakenAi
         return chatOptions;
     }
 
+    /// <summary>
+    /// Runs the prompt through <see cref="IPromptSanitizer"/> when the
+    /// caller supplied a <see cref="KrakenAiRequestOptions.SensitiveValues"/>
+    /// map. Returns the original messages + empty scrubbed-name list when
+    /// no map was supplied — the wrapper stays a no-op for callers that
+    /// don't touch user-supplied variables (purely synthetic prompts).
+    /// </summary>
+    private (IReadOnlyList<ChatMessage> Messages, IReadOnlyList<string> ScrubbedNames)
+        ApplySanitization(
+            IReadOnlyList<ChatMessage> messages, KrakenAiRequestOptions? options)
+    {
+        if (options?.SensitiveValues is null || options.SensitiveValues.Count == 0)
+        {
+            return (messages, Array.Empty<string>());
+        }
+        var result = _sanitizer.Sanitize(messages, options.SensitiveValues);
+        return (result.Messages, result.ScrubbedNames);
+    }
+
     private static KrakenAiCompletion BuildCompletion(
         KrakenAiSettings settings, ChatResponse response, TimeSpan latency) =>
         new(
@@ -261,6 +289,7 @@ public sealed class KrakenAi : IKrakenAi
         KrakenAiFeature  feature,
         KrakenAiRequestOptions? options,
         IReadOnlyList<ChatMessage> messages,
+        IReadOnlyList<string> scrubbedNames,
         ChatResponse? response,
         TimeSpan latency,
         Exception? error,
@@ -271,19 +300,22 @@ public sealed class KrakenAi : IKrakenAi
 
         var entry = new AiCallLogEntry
         {
-            Provider         = settings.Provider.ToString(),
-            Model            = settings.Model ?? string.Empty,
-            Feature          = feature.ToString(),
-            PromptTokens     = prompt,
-            CompletionTokens = output,
-            LatencyMs        = (int)latency.TotalMilliseconds,
+            Provider              = settings.Provider.ToString(),
+            Model                 = settings.Model ?? string.Empty,
+            Feature               = feature.ToString(),
+            PromptTokens          = prompt,
+            CompletionTokens      = output,
+            LatencyMs             = (int)latency.TotalMilliseconds,
             // CostUsd: zero for now — populated by M11.A.5's rate table.
-            CostUsd          = 0m,
-            Success          = error is null,
-            ErrorMessage     = SanitizeError(error),
-            CorrelationId    = options?.CorrelationId,
-            PromptBodyJson   = settings.LogPromptBodies ? SerializePrompt(messages) : null,
-            ResponseBody     = settings.LogPromptBodies ? response?.Text             : null,
+            CostUsd               = 0m,
+            Success               = error is null,
+            ErrorMessage          = SanitizeError(error),
+            CorrelationId         = options?.CorrelationId,
+            ScrubbedVariableNames = scrubbedNames.Count == 0
+                ? null
+                : string.Join(',', scrubbedNames),
+            PromptBodyJson        = settings.LogPromptBodies ? SerializePrompt(messages) : null,
+            ResponseBody          = settings.LogPromptBodies ? response?.Text            : null,
         };
 
         try
@@ -309,6 +341,7 @@ public sealed class KrakenAi : IKrakenAi
         KrakenAiFeature  feature,
         KrakenAiRequestOptions? options,
         IReadOnlyList<ChatMessage> messages,
+        IReadOnlyList<string> scrubbedNames,
         string accumulatedText,
         TimeSpan latency,
         Exception? error,
@@ -316,18 +349,21 @@ public sealed class KrakenAi : IKrakenAi
     {
         var entry = new AiCallLogEntry
         {
-            Provider         = settings.Provider.ToString(),
-            Model            = settings.Model ?? string.Empty,
-            Feature          = feature.ToString(),
-            PromptTokens     = 0,
-            CompletionTokens = 0,
-            LatencyMs        = (int)latency.TotalMilliseconds,
-            CostUsd          = 0m,
-            Success          = error is null,
-            ErrorMessage     = SanitizeError(error),
-            CorrelationId    = options?.CorrelationId,
-            PromptBodyJson   = settings.LogPromptBodies ? SerializePrompt(messages) : null,
-            ResponseBody     = settings.LogPromptBodies ? accumulatedText           : null,
+            Provider              = settings.Provider.ToString(),
+            Model                 = settings.Model ?? string.Empty,
+            Feature               = feature.ToString(),
+            PromptTokens          = 0,
+            CompletionTokens      = 0,
+            LatencyMs             = (int)latency.TotalMilliseconds,
+            CostUsd               = 0m,
+            Success               = error is null,
+            ErrorMessage          = SanitizeError(error),
+            CorrelationId         = options?.CorrelationId,
+            ScrubbedVariableNames = scrubbedNames.Count == 0
+                ? null
+                : string.Join(',', scrubbedNames),
+            PromptBodyJson        = settings.LogPromptBodies ? SerializePrompt(messages) : null,
+            ResponseBody          = settings.LogPromptBodies ? accumulatedText           : null,
         };
 
         try

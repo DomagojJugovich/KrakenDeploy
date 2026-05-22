@@ -131,6 +131,69 @@ public sealed class KrakenAiAuditTests
     }
 
     [Fact]
+    public async Task Sanitization_replaces_values_before_provider_call_and_records_names()
+    {
+        // End-to-end M11.A.4: the wrapper invokes the sanitiser before
+        // the provider call, so the recorded prompt that lands in the
+        // IChatClient stub never sees the raw sensitive value. The audit
+        // row's ScrubbedVariableNames lists the substituted names.
+        var sink     = new RecordingSink();
+        var capture  = new CapturingFactory();
+        var ai = NewAi(
+            settings: HappySettings() with { LogPromptBodies = true },
+            factory:  capture,
+            sink:     sink);
+
+        var sensitive = new Dictionary<string, string>
+        {
+            ["DbPassword"] = "hunter2",
+            ["ApiKey"]     = "k-abc",
+        };
+
+        await ai.CompleteAsync(
+            messages: [new ChatMessage(ChatRole.User,
+                "Connect with password=hunter2 and key=k-abc")],
+            feature: KrakenAiFeature.Diagnosis,
+            options:  new KrakenAiRequestOptions { SensitiveValues = sensitive });
+
+        // The IChatClient stub received the sanitised messages, NOT the raw text.
+        capture.LastMessages.Should().NotBeNull();
+        var sentText = capture.LastMessages!.Single().Text;
+        sentText.Should().NotContain("hunter2", "the raw password must not reach the provider");
+        sentText.Should().NotContain("k-abc",  "the raw key must not reach the provider");
+        sentText.Should().Contain("[REDACTED:DbPassword]");
+        sentText.Should().Contain("[REDACTED:ApiKey]");
+
+        // The audit row's ScrubbedVariableNames captures the names.
+        var entry = sink.Entries.Should().ContainSingle().Subject;
+        entry.ScrubbedVariableNames.Should().NotBeNull();
+        entry.ScrubbedVariableNames!.Split(',').Should().BeEquivalentTo(
+            ["DbPassword", "ApiKey"]);
+
+        // With LogPromptBodies=true, the recorded PromptBodyJson reflects
+        // the SANITISED message — never the raw secrets, even in the audit table.
+        entry.PromptBodyJson.Should().NotContain("hunter2");
+        entry.PromptBodyJson.Should().NotContain("k-abc");
+        entry.PromptBodyJson.Should().Contain("[REDACTED:DbPassword]");
+    }
+
+    [Fact]
+    public async Task No_SensitiveValues_means_no_ScrubbedVariableNames()
+    {
+        var sink = new RecordingSink();
+        var ai = NewAi(HappySettings(), new HappyFactory(), sink);
+
+        await ai.CompleteAsync(
+            messages: [new ChatMessage(ChatRole.User, "nothing sensitive here")],
+            feature: KrakenAiFeature.Diagnosis);
+
+        sink.Entries[0].ScrubbedVariableNames.Should().BeNull(
+            "the wrapper bypasses sanitisation when no SensitiveValues map " +
+            "is supplied — the audit row leaves the column null to " +
+            "distinguish 'nothing to scrub' from 'no values configured'");
+    }
+
+    [Fact]
     public async Task Feature_disabled_does_NOT_emit_audit_row()
     {
         // When a feature is disabled, we short-circuit before contacting the
@@ -176,6 +239,7 @@ public sealed class KrakenAiAuditTests
         IKrakenAiCallSink sink)
         => new(factory,
                new StubSettingsProvider(settings),
+               new PromptSanitizer(),
                sink,
                NullLogger<KrakenAi>.Instance);
 
@@ -210,6 +274,45 @@ public sealed class KrakenAiAuditTests
     {
         public override IChatClient CreateClient(KrakenAiSettings settings)
             => new HappyChatClient(responseText);
+    }
+
+    /// <summary>Factory that captures the messages the wrapper passed to the provider.</summary>
+    private sealed class CapturingFactory : KrakenAiClientFactory
+    {
+        public IReadOnlyList<ChatMessage>? LastMessages { get; private set; }
+
+        public override IChatClient CreateClient(KrakenAiSettings settings)
+            => new CapturingChatClient(this);
+
+        private sealed class CapturingChatClient(CapturingFactory parent) : IChatClient
+        {
+            public Task<ChatResponse> GetResponseAsync(
+                IEnumerable<ChatMessage> messages,
+                ChatOptions? options = null,
+                CancellationToken cancellationToken = default)
+            {
+                parent.LastMessages = messages.ToList();
+                return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, "")));
+            }
+
+            public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+                IEnumerable<ChatMessage> messages,
+                ChatOptions? options = null,
+                CancellationToken cancellationToken = default)
+            {
+                parent.LastMessages = messages.ToList();
+                return EmptyAsync();
+            }
+
+            private static async IAsyncEnumerable<ChatResponseUpdate> EmptyAsync()
+            {
+                await Task.CompletedTask;
+                yield break;
+            }
+
+            public object? GetService(Type serviceType, object? serviceKey = null) => null;
+            public void Dispose() { }
+        }
     }
 
     /// <summary>Factory whose IChatClient throws on every call.</summary>

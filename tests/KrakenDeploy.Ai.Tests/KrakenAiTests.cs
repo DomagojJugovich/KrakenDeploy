@@ -91,6 +91,7 @@ public sealed class KrakenAiTests
     private static KrakenAi NewAi(KrakenAiSettings settings, KrakenAiClientFactory factory) =>
         new(factory,
             new StubSettingsProvider(settings),
+            new PromptSanitizer(),
             new NullKrakenAiCallSink(),
             NullLogger<KrakenAi>.Instance);
 

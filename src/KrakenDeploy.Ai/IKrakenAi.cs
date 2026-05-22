@@ -94,6 +94,22 @@ public sealed record KrakenAiRequestOptions
     /// (e.g. all iterations of one adhoc session).
     /// </summary>
     public string? CorrelationId { get; init; }
+
+    /// <summary>
+    /// Map of variable name → sensitive value that the wrapper passes to
+    /// <see cref="IPromptSanitizer"/> before sending the prompt to the LLM
+    /// (M11.A.4). Each value found in any message's text is replaced with
+    /// <c>[REDACTED:&lt;name&gt;]</c>; the names of substituted variables
+    /// land in the audit row's <c>ScrubbedVariableNames</c> column.
+    /// <para>
+    /// <c>null</c> = no sanitisation (the wrapper passes messages through
+    /// verbatim). Callers in features that ever touch deployment variables
+    /// (M11.C diagnosis, M11.E adhoc, M11.D assistant) MUST populate this
+    /// when the prompt contains any user-supplied value — the sanitiser
+    /// is the last line of defence against credential exfiltration.
+    /// </para>
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? SensitiveValues { get; init; }
 }
 
 /// <summary>Result of a one-shot completion.</summary>
