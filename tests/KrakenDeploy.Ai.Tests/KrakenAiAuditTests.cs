@@ -236,11 +236,14 @@ public sealed class KrakenAiAuditTests
     private static KrakenAi NewAi(
         KrakenAiSettings settings,
         KrakenAiClientFactory factory,
-        IKrakenAiCallSink sink)
+        IKrakenAiCallSink sink,
+        IBudgetTracker? budgetTracker = null)
         => new(factory,
                new StubSettingsProvider(settings),
                new PromptSanitizer(),
                sink,
+               new AiCostCatalog(),
+               budgetTracker ?? new NullBudgetTracker(),
                NullLogger<KrakenAi>.Instance);
 
     private sealed class StubSettingsProvider(KrakenAiSettings settings) : IKrakenAiSettingsProvider

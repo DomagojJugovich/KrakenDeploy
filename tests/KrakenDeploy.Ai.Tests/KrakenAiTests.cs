@@ -93,6 +93,8 @@ public sealed class KrakenAiTests
             new StubSettingsProvider(settings),
             new PromptSanitizer(),
             new NullKrakenAiCallSink(),
+            new AiCostCatalog(),
+            new NullBudgetTracker(),
             NullLogger<KrakenAi>.Instance);
 
     private sealed class StubSettingsProvider(KrakenAiSettings settings) : IKrakenAiSettingsProvider

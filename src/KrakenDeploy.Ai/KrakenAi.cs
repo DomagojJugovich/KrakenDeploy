@@ -35,6 +35,8 @@ public sealed class KrakenAi : IKrakenAi
     private readonly IKrakenAiSettingsProvider _settingsProvider;
     private readonly IPromptSanitizer _sanitizer;
     private readonly IKrakenAiCallSink _callSink;
+    private readonly IAiCostCatalog _costCatalog;
+    private readonly IBudgetTracker _budgetTracker;
     private readonly ILogger<KrakenAi> _logger;
 
     public KrakenAi(
@@ -42,12 +44,16 @@ public sealed class KrakenAi : IKrakenAi
         IKrakenAiSettingsProvider settingsProvider,
         IPromptSanitizer sanitizer,
         IKrakenAiCallSink callSink,
+        IAiCostCatalog costCatalog,
+        IBudgetTracker budgetTracker,
         ILogger<KrakenAi> logger)
     {
         _factory          = factory;
         _settingsProvider = settingsProvider;
         _sanitizer        = sanitizer;
         _callSink         = callSink;
+        _costCatalog      = costCatalog;
+        _budgetTracker    = budgetTracker;
         _logger           = logger;
     }
 
@@ -212,16 +218,62 @@ public sealed class KrakenAi : IKrakenAi
     // ── Helpers ────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Resolves the current Space's settings + enforces both the global
-    /// "AI is configured" gate and the per-feature flag. Throws the
-    /// appropriate <see cref="KrakenAiException"/> on failure.
+    /// Resolves the current Space's settings + enforces three gates:
+    /// global "AI is configured", per-feature flag, and the monthly
+    /// budget cap (M11.A.5). Throws the appropriate
+    /// <see cref="KrakenAiException"/> on failure.
     /// </summary>
     private async ValueTask<KrakenAiSettings> GuardAsync(
         KrakenAiFeature feature, CancellationToken ct)
     {
         var settings = await _settingsProvider.GetAsync(ct).ConfigureAwait(false);
         EnsureFeatureEnabled(settings, feature);
+        await EnsureBudgetAsync(settings, ct).ConfigureAwait(false);
         return settings;
+    }
+
+    /// <summary>
+    /// Budget gate: when the Space has a positive monthly cap and the
+    /// current MTD spend has reached it, refuse the call before it
+    /// reaches the provider. Zero / negative cap = no enforcement.
+    /// </summary>
+    private async ValueTask EnsureBudgetAsync(
+        KrakenAiSettings settings, CancellationToken ct)
+    {
+        if (settings.BudgetUsdPerMonth <= 0m)
+        {
+            return; // No cap.
+        }
+
+        var mtd = await _budgetTracker.GetMonthToDateUsdAsync(ct).ConfigureAwait(false);
+        if (mtd >= settings.BudgetUsdPerMonth)
+        {
+            throw new KrakenAiBudgetExceededException(mtd, settings.BudgetUsdPerMonth);
+        }
+    }
+
+    /// <summary>
+    /// Computes the USD cost of a single call from the rate catalog +
+    /// reported token counts. Returns 0 when the catalog doesn't know
+    /// the provider/model pair — logs a warning so operators see the gap.
+    /// Computed in <c>numeric(12,6)</c>-friendly precision; we don't
+    /// round here, the DB column handles fractional cent precision.
+    /// </summary>
+    private decimal ComputeCost(
+        KrakenAiSettings settings, int promptTokens, int completionTokens)
+    {
+        var rate = _costCatalog.TryGetRate(settings.Provider, settings.Model ?? string.Empty);
+        if (rate is null)
+        {
+            _logger.LogWarning(
+                "AI cost catalog has no rate for {Provider}/{Model}; recording cost as $0. " +
+                "Update IAiCostCatalog to track this model.",
+                settings.Provider, settings.Model);
+            return 0m;
+        }
+        // Tokens / 1000 × per-1k rate. decimal arithmetic to avoid float drift.
+        return (promptTokens     / 1000m) * rate.InputUsdPer1k
+             + (completionTokens / 1000m) * rate.OutputUsdPer1k;
     }
 
     private static void EnsureFeatureEnabled(KrakenAiSettings settings, KrakenAiFeature feature)
@@ -306,8 +358,7 @@ public sealed class KrakenAi : IKrakenAi
             PromptTokens          = prompt,
             CompletionTokens      = output,
             LatencyMs             = (int)latency.TotalMilliseconds,
-            // CostUsd: zero for now — populated by M11.A.5's rate table.
-            CostUsd               = 0m,
+            CostUsd               = ComputeCost(settings, prompt, output),
             Success               = error is null,
             ErrorMessage          = SanitizeError(error),
             CorrelationId         = options?.CorrelationId,
@@ -352,6 +403,10 @@ public sealed class KrakenAi : IKrakenAi
             Provider              = settings.Provider.ToString(),
             Model                 = settings.Model ?? string.Empty,
             Feature               = feature.ToString(),
+            // Streaming completions don't surface usage stats on the wire
+            // for most providers — cost stays at $0 unless we ever switch
+            // to a streaming path that supports usage reporting (Anthropic
+            // beta in 2026; OpenAI o4-stream).
             PromptTokens          = 0,
             CompletionTokens      = 0,
             LatencyMs             = (int)latency.TotalMilliseconds,

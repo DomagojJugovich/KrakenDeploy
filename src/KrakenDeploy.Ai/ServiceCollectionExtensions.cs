@@ -33,6 +33,20 @@ public static class ServiceCollectionExtensions
             .ServiceCollectionDescriptorExtensions
             .TryAddSingleton<IPromptSanitizer, PromptSanitizer>(services);
 
+        // M11.A.5 — cost catalog is a static rate table; safe as a singleton.
+        // Operators can override per-installation (custom EA pricing) by
+        // registering a custom IAiCostCatalog BEFORE AddKrakenAi.
+        Microsoft.Extensions.DependencyInjection.Extensions
+            .ServiceCollectionDescriptorExtensions
+            .TryAddSingleton<IAiCostCatalog, AiCostCatalog>(services);
+
+        // M11.A.5 — budget tracker default is a no-op (zero MTD). The host
+        // (KrakenDeploy.Server.Data) replaces with DbBudgetTracker which
+        // sums AiCallLog.CostUsd for the current Space + month.
+        Microsoft.Extensions.DependencyInjection.Extensions
+            .ServiceCollectionDescriptorExtensions
+            .TryAddScoped<IBudgetTracker, NullBudgetTracker>(services);
+
         // Per-request — settings are Space-scoped, so the wrapper resolves
         // a fresh settings instance on every call rather than caching.
         services.AddScoped<IKrakenAi, KrakenAi>();

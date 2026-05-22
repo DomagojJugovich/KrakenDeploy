@@ -84,6 +84,11 @@ public static class ServiceCollectionExtensions
         // land in the ai_call_logs table.
         services.AddScoped<KrakenDeploy.Ai.IKrakenAiCallSink,
                            Services.Ai.DbKrakenAiCallSink>();
+        // M11.A.5 — EF-backed budget tracker. Sums AiCallLog.CostUsd over
+        // the current UTC month for the current Space; the wrapper refuses
+        // calls when MTD >= BudgetUsdPerMonth.
+        services.AddScoped<KrakenDeploy.Ai.IBudgetTracker,
+                           Services.Ai.DbBudgetTracker>();
         services.AddScoped<TenantService>();
         services.AddScoped<LifecycleService>();
         services.AddScoped<ChannelService>();
