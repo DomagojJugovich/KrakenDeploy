@@ -1337,8 +1337,9 @@ Planning pass triggered by a walk-through of Octopus Deploy's `/configuration/*`
     Codify by adding new permission groupings; existing single-admin role gets migrated to System administrator. Operators who want delegated admin (the common LAUS case) can grant System manager to junior admins without exposing crypto rotation.
   - **M13.C.6** Filter-state callout on list pages — `Filtering by: <space> includes <foo>` strip above the result grid. Apply to Users / Teams / API Keys / Audit. Already done on Step Packages; spread the pattern.
 
-- [ ] **M13.D: Crypto & Keys** —
-  - **M13.D.1** `/configuration/signing-keys` — unified UI for the keys M11.A/D-12 introduced: step-package signing key (D-12), adhoc-script signing key (M11.E.6). Lists Active / Expired rows with id, created, expiry. **"Rotate"** button generates a new key, marks the old one Expired (still validates incoming requests for a configurable grace window — default 90 days). **"Revoke"** dropdown on expired rows immediately invalidates. Rotation writes a new audit event type per key kind.
+- [ ] **M13.D: Code Signing Keys + Encryption Master Key** —
+  - **Terminology note (critical, easy to miss):** Octopus's "Signing Keys" sidebar entry is for **OIDC token signing keys** — RSA keys that Octopus uses when it acts as an OIDC *issuer* for its own resource APIs (auto-rotate every 90 days; no UI to manage because OIDC issuer is EAP). **That does NOT apply to KrakenDeploy** because KrakenDeploy is an OIDC *client* (we consume external IdPs via `IdentityProvider`), not an issuer. The keys we DO manage are code-artifact signing keys, an entirely different domain. We name our page "Code Signing Keys" to avoid the conceptual conflict; "Signing Keys" matching Octopus's vocabulary would mislead.
+  - **M13.D.1** `/configuration/code-signing-keys` — unified UI for the keys M11.A / D-12 introduced: **step-package signing key** (D-12, `StepPackageSigner` + `StepPackages:TrustedPublicKey`), **adhoc-script signing key** (M11.E.6). Lists Active / Expired rows with id, created, expiry. **"Rotate"** button generates a new key, marks the old one Expired (still validates incoming requests for a configurable grace window — default 90 days). **"Revoke"** dropdown on expired rows immediately invalidates. Rotation writes a new audit event type per key kind.
   - **M13.D.2** Encryption-master-key rotation runbook + UI. Today the AES-256-GCM master key in `appsettings.json` is fixed; rotating it breaks all encrypted columns (sensitive variables, AI API keys). The UI gates a re-encryption job: new key supplied, background job iterates `Variable` + `SpaceAiSettings` + (future) `AiCostOverride` rows decrypting with old key + re-encrypting with new key. **High-risk operation** — requires double-confirmation + maintenance mode (M13.A.3).
 
 - [ ] **M13.E: System & License** —
@@ -1348,7 +1349,7 @@ Planning pass triggered by a walk-through of Octopus Deploy's `/configuration/*`
 
 - [ ] **M13.F: Features & Behaviour** (lower priority; mostly nice-to-haves) —
   - **M13.F.1** Per-instance feature toggle panel (`/configuration/features`). Bool toggles grouped by topic: Feeds, Steps, Onboarding, Help. **Not the same as the per-Space AI feature flags** — those stay per-Space. This is for things like "Community Step Templates enabled", "Onboarding wizard shown to new users", etc.
-  - **M13.F.2** Deployment freezes — `/configuration/freezes`. Define windows where deployments are blocked (release weeks, maintenance windows, holiday lockdowns). Each freeze: name, start/end, optional scope (env / project / tag selector), optional override-permission. `DeploymentWorker` consults the freeze table before starting.
+  - **M13.F.2** **Global Deployment Freezes** — `/configuration/freezes`. Define windows where deployments are blocked across **multiple projects** simultaneously (release weeks, holidays, maintenance lockdowns). Octopus added this specifically because per-project freezes led to inconsistent enforcement + manual overhead; KrakenDeploy mirrors that shape. Each freeze: name, start/end window, **scope selector** (all projects in Space / specific projects / specific environments / tag selector for tenanted deploys) + optional `OverrideFreeze` permission for emergency-bypass roles. `DeploymentWorker` consults the freeze table before starting; failed start gets a clear "blocked by freeze 'X' until Y" message in the deployment log.
   - **M13.F.3** Performance knobs — worker concurrency, queue depth, slow-step threshold for warnings. Today these are `appsettings.json`-only.
   - **M13.F.4** Audit-log retention policy. Today `ai_call_logs` + `audit_entries` grow unbounded. Add retention setting (per category) + a background sweep job that deletes rows older than the retention window. Critical for LAUS GDPR posture — "show me everything you have about user X" is currently unbounded.
 
@@ -1415,6 +1416,7 @@ Configuration
 - Encryption master rotation: do we ship the runbook + UI together, or runbook first / UI later?
 
 **Out of scope for M13** (documented so we don't drift):
+- **Octopus "Signing Keys" (OIDC token signing keys)** — Octopus's sidebar entry of this name is for RSA keys it uses when it acts as an OIDC *issuer* for its own resource APIs. KrakenDeploy is an OIDC *client* only (consumes external IdPs via `IdentityProvider`), not an issuer. Our code-signing keys for step-packages + adhoc scripts (M13.D.1) are a different concern and live under "Code Signing Keys" to keep the conceptual line clear.
 - Nodes (single-node design; multi-node is M-Scale if ever).
 - Thumbprint (no Tentacle handshake — we use SignalR + gRPC for agents).
 - Git as config-as-code source (separate milestone — M-ConfigAsCode if pursued).
