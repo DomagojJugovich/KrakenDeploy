@@ -1,0 +1,238 @@
+@page "/configuration/license-usage"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using KrakenDeploy.Server.Core.Domain.Licensing
+
+@inject LicenseService LicenseSvc
+@inject LicenseUsageCounter UsageCounter
+@inject NavigationManager Nav
+@inject NotificationService Notify
+
+<PageTitle>License Usage — KrakenDeploy</PageTitle>
+
+<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-1">
+    License Usage
+</RadzenText>
+<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+    How much of the active license you're consuming, across every Space.
+    Caps are enforced at write-boundaries (target registration, user invite)
+    — this page is the read-only view of the same data the gate sees.
+</RadzenText>
+
+<RequirePermission Permission="Permission.ConfigureServer">
+
+    @if (_loading)
+    {
+        <RadzenProgressBarCircular ShowValue="false"
+                                   Mode="ProgressBarMode.Indeterminate"
+                                   Style="margin: 2rem auto; display: block;" />
+    }
+    else if (_result is null || !_result.IsValid)
+    {
+        @* ── No valid license ─────────────────────────────────────────── *@
+        <RadzenAlert AlertStyle="AlertStyle.Warning" Variant="Variant.Flat"
+                     Shade="Shade.Light" AllowClose="false"
+                     Style="max-width: 800px;">
+            <RadzenStack Gap="0.5rem">
+                <strong>No valid license loaded.</strong>
+                <span>
+                    Upload a license key in
+                    <RadzenLink Path="/settings/license" Text="Settings → License" />
+                    to see usage gauges. Without a license, the cap defaults
+                    refuse new targets and users.
+                </span>
+            </RadzenStack>
+        </RadzenAlert>
+    }
+    else
+    {
+        var claims = _result.Claims!;
+
+        @* ── License summary banner ───────────────────────────────────── *@
+        <RadzenCard class="rz-mb-3" Style="max-width: 1100px;">
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="2rem"
+                         AlignItems="AlignItems.Center" Style="flex-wrap: wrap;">
+                <div>
+                    <RadzenText TextStyle="TextStyle.Caption"
+                                class="rz-color-secondary rz-mb-0">
+                        Licensed to
+                    </RadzenText>
+                    <RadzenText TextStyle="TextStyle.Body1" class="rz-mb-0">
+                        <strong>@claims.CustomerName</strong>
+                    </RadzenText>
+                </div>
+                <div>
+                    <RadzenText TextStyle="TextStyle.Caption"
+                                class="rz-color-secondary rz-mb-0">
+                        Type
+                    </RadzenText>
+                    <RadzenBadge BadgeStyle="@LicenseTypeStyle(claims.LicenseType)"
+                                 Text="@claims.LicenseType.ToString()" IsPill="true" />
+                </div>
+                <div>
+                    <RadzenText TextStyle="TextStyle.Caption"
+                                class="rz-color-secondary rz-mb-0">
+                        Expires
+                    </RadzenText>
+                    <RadzenText TextStyle="TextStyle.Body1" class="rz-mb-0">
+                        @claims.ExpiresUtc.ToString("yyyy-MM-dd")
+                        <span class="rz-color-secondary">
+                            (@DaysRemaining(claims.ExpiresUtc))
+                        </span>
+                    </RadzenText>
+                </div>
+                <RadzenButton Text="Manage License"
+                              Icon="vpn_key"
+                              Variant="Variant.Outlined"
+                              Size="ButtonSize.Small"
+                              Style="margin-left: auto;"
+                              Click="@(() => Nav.NavigateTo("/settings/license"))" />
+            </RadzenStack>
+        </RadzenCard>
+
+        @* ── Cap-bearing resources (gauges) ───────────────────────────── *@
+        <RadzenRow class="rz-mb-3" Gap="1rem">
+            <RadzenColumn Size="12" SizeMD="6">
+                <UsageGaugeCard Title="Deployment Targets"
+                                Icon="computer"
+                                Current="@_targetCount"
+                                Max="@claims.MaxTargets" />
+            </RadzenColumn>
+            <RadzenColumn Size="12" SizeMD="6">
+                <UsageGaugeCard Title="Users"
+                                Icon="person"
+                                Current="@_userCount"
+                                Max="@claims.MaxUsers" />
+            </RadzenColumn>
+        </RadzenRow>
+
+        @* ── Per-Space target rollup ──────────────────────────────────── *@
+        <RadzenCard class="rz-mb-3" Style="max-width: 1100px;">
+            <RadzenStack Gap="0.5rem" class="rz-mb-3">
+                <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H2" class="rz-mb-0">
+                    Targets per Space
+                </RadzenText>
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-0">
+                    Server-wide cap (@(claims.MaxTargets == 0 ? "unlimited" : claims.MaxTargets.ToString()))
+                    is shared across every Space — these are individual
+                    contributions, not separate caps.
+                </RadzenText>
+            </RadzenStack>
+
+            <RadzenDataGrid Data="@_perSpace"
+                            TItem="SpaceTargetCount"
+                            AllowPaging="false"
+                            AllowSorting="true"
+                            Density="Density.Compact"
+                            EmptyText="No Spaces yet.">
+                <Columns>
+                    <RadzenDataGridColumn TItem="SpaceTargetCount" Property="SpaceName"
+                                          Title="Space" Sortable="true" />
+                    <RadzenDataGridColumn TItem="SpaceTargetCount" Property="TargetCount"
+                                          Title="Targets" Sortable="true"
+                                          Width="160px"
+                                          TextAlign="TextAlign.Right" />
+                    <RadzenDataGridColumn TItem="SpaceTargetCount" Property="TargetCount"
+                                          Title="Share" Sortable="false"
+                                          Width="320px">
+                        <Template Context="row">
+                            @if (_targetCount > 0)
+                            {
+                                var pct = (double)row.TargetCount / _targetCount * 100.0;
+                                <RadzenProgressBar Value="@pct" Max="100"
+                                                   ShowValue="true"
+                                                   Unit="%"
+                                                   ProgressBarStyle="ProgressBarStyle.Info" />
+                            }
+                            else
+                            {
+                                <span class="rz-color-secondary">—</span>
+                            }
+                        </Template>
+                    </RadzenDataGridColumn>
+                </Columns>
+            </RadzenDataGrid>
+        </RadzenCard>
+
+        @* ── Other resources (context, not capped) ────────────────────── *@
+        <RadzenCard Style="max-width: 1100px;">
+            <RadzenStack Gap="0.5rem" class="rz-mb-3">
+                <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H2" class="rz-mb-0">
+                    Other resources
+                </RadzenText>
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-0">
+                    Not capped by the current license — included for capacity
+                    planning. If the license schema later adds caps for any
+                    of these, the dashboard will promote them to gauges.
+                </RadzenText>
+            </RadzenStack>
+
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="2rem"
+                         Style="flex-wrap: wrap;">
+                <ResourceCounter Icon="folder_open" Label="Projects"     Count="@_other.Projects" />
+                <ResourceCounter Icon="people"      Label="Tenants"      Count="@_other.Tenants" />
+                <ResourceCounter Icon="layers"      Label="Environments" Count="@_other.Environments" />
+                <ResourceCounter Icon="workspaces"  Label="Spaces"       Count="@_other.Spaces" />
+            </RadzenStack>
+        </RadzenCard>
+    }
+</RequirePermission>
+
+@code {
+    private bool _loading = true;
+    private LicenseValidationResult? _result;
+
+    private int _targetCount;
+    private int _userCount;
+    private IReadOnlyList<SpaceTargetCount> _perSpace = [];
+    private OtherResourceCounts _other = new(0, 0, 0, 0);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _result = LicenseSvc.LoadAndValidate();
+            // Even when the license is missing/invalid the counts are still
+            // useful (banner shows them in the warning), but if we're going
+            // to render the empty-state alert there's no point querying.
+            if (_result.IsValid)
+            {
+                var (t, u) = await UsageCounter.GetSnapshotAsync();
+                _targetCount = t;
+                _userCount   = u;
+                _perSpace    = await UsageCounter.GetPerSpaceTargetCountsAsync();
+                _other       = await UsageCounter.GetOtherResourceCountsAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error,
+                "Failed to load license usage", ex.Message, 6000);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static BadgeStyle LicenseTypeStyle(LicenseType type) => type switch
+    {
+        LicenseType.Trial     => BadgeStyle.Warning,
+        LicenseType.Full      => BadgeStyle.Success,
+        LicenseType.Developer => BadgeStyle.Info,
+        _                     => BadgeStyle.Light,
+    };
+
+    private static string DaysRemaining(DateTimeOffset expiresUtc)
+    {
+        var days = (int)(expiresUtc - DateTimeOffset.UtcNow).TotalDays;
+        return days switch
+        {
+            < 0 => "expired",
+            0   => "today",
+            1   => "1 day left",
+            _   => $"{days} days left",
+        };
+    }
+}

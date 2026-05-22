@@ -1,0 +1,26 @@
+@*
+    Compact "icon + label + count" tile used in the License Usage page's
+    "Other resources" row. Plain number — no bar, no percentage, since
+    these resources are not capped today.
+*@
+
+<RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem"
+             AlignItems="AlignItems.Center"
+             Style="min-width: 180px;">
+    <RadzenIcon Icon="@Icon"
+                Style="font-size: 2rem; color: var(--rz-text-secondary-color);" />
+    <RadzenStack Gap="0">
+        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-0">
+            @Label
+        </RadzenText>
+        <RadzenText TextStyle="TextStyle.H6" TagName="TagName.P" class="rz-mb-0">
+            <strong>@Count</strong>
+        </RadzenText>
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    [Parameter, EditorRequired] public string Icon  { get; set; } = "";
+    [Parameter, EditorRequired] public string Label { get; set; } = "";
+    [Parameter, EditorRequired] public int    Count { get; set; }
+}

@@ -1,0 +1,98 @@
+@*
+    Card with a single license-cap gauge — "X of Y used (Z%)" plus a
+    progress bar coloured by threshold:
+
+      green   < 75%
+      info    75% – 89%
+      amber   90% – 99%
+      red     ≥ 100% (at or over cap)
+
+    Max == 0 means "unlimited" (consistent with the LicenseService
+    convention) and renders as a neutral count with no bar — drawing
+    a bar against an infinite max is meaningless.
+*@
+
+<RadzenCard>
+    <RadzenStack Gap="0.75rem">
+        <RadzenStack Orientation="Orientation.Horizontal"
+                     AlignItems="AlignItems.Center" Gap="0.5rem">
+            <RadzenIcon Icon="@Icon" />
+            <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H3" class="rz-mb-0">
+                @Title
+            </RadzenText>
+        </RadzenStack>
+
+        @if (Max == 0)
+        {
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                         AlignItems="AlignItems.Center">
+                <RadzenText TextStyle="TextStyle.DisplayH4" TagName="TagName.P" class="rz-mb-0">
+                    @Current
+                </RadzenText>
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-0">
+                    of unlimited
+                </RadzenText>
+            </RadzenStack>
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-0">
+                This license has no cap on @Title.ToLower().
+            </RadzenText>
+        }
+        else
+        {
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                         AlignItems="AlignItems.Center">
+                <RadzenText TextStyle="TextStyle.DisplayH4" TagName="TagName.P" class="rz-mb-0">
+                    @Current
+                </RadzenText>
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-0">
+                    of @Max
+                </RadzenText>
+                <RadzenBadge BadgeStyle="@BadgeFor(Percentage)"
+                             Text="@($"{Percentage:F0}%")"
+                             IsPill="true" />
+            </RadzenStack>
+            <RadzenProgressBar Value="@Math.Min(Percentage, 100)"
+                               Max="100"
+                               ShowValue="false"
+                               ProgressBarStyle="@BarStyleFor(Percentage)" />
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-0">
+                @SubLabel(Current, Max)
+            </RadzenText>
+        }
+    </RadzenStack>
+</RadzenCard>
+
+@code {
+    [Parameter, EditorRequired] public string Title   { get; set; } = "";
+    [Parameter, EditorRequired] public string Icon    { get; set; } = "";
+    [Parameter, EditorRequired] public int    Current { get; set; }
+    [Parameter, EditorRequired] public int    Max     { get; set; }
+
+    private double Percentage => Max <= 0 ? 0 : (double)Current / Max * 100.0;
+
+    // Match LicenseService thresholds: 90% = approaching, 100% = reached.
+    // Tighter "<75% green" boundary just to give the operator a calmer
+    // colour while there's plenty of headroom.
+    private static ProgressBarStyle BarStyleFor(double pct) => pct switch
+    {
+        >= 100 => ProgressBarStyle.Danger,
+        >=  90 => ProgressBarStyle.Warning,
+        >=  75 => ProgressBarStyle.Info,
+        _      => ProgressBarStyle.Success,
+    };
+
+    private static BadgeStyle BadgeFor(double pct) => pct switch
+    {
+        >= 100 => BadgeStyle.Danger,
+        >=  90 => BadgeStyle.Warning,
+        >=  75 => BadgeStyle.Info,
+        _      => BadgeStyle.Success,
+    };
+
+    private static string SubLabel(int current, int max) => (max - current) switch
+    {
+        <= 0 => "Limit reached — new ones will be refused at creation.",
+        1    => "1 more allowed.",
+        var headroom => $"{headroom} more allowed.",
+    };
+}
