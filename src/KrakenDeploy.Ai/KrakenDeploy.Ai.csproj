@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The IChatClient abstraction + provider adapters. Every Kraken AI
+         call goes through KrakenAiClient → IChatClient → provider adapter,
+         so switching providers is a config change, not a code change. -->
+    <PackageReference Include="Microsoft.Extensions.AI" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" />
+    <!-- Anthropic official SDK. Its .AsIChatClient(model) plugs the
+         Claude API into the Microsoft.Extensions.AI abstraction so we
+         can treat it like any other provider. -->
+    <PackageReference Include="Anthropic" />
+
+    <!-- Shared abstractions / DI / config. -->
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+
+</Project>
