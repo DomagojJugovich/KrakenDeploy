@@ -1302,3 +1302,122 @@ Five top-level sub-features sharing one `IKrakenAi` abstraction over `Microsoft.
 
 ### M12 additinal polish 
 OpenTelemetry export to Grafana stack or Seq.
+
+### M13 — Configuration & Admin UX
+
+Planning pass triggered by a walk-through of Octopus Deploy's `/configuration/*` surface (25 sub-sections). M13 brings KrakenDeploy's operator-facing admin surface up to parity with the parts of Octopus's catalog we actually need. Sequenced after M11; we'll start M13 once M11 closes.
+
+**Scope-shaping decisions (locked):**
+- **Six top-level groups instead of Octopus's flat 25-item sidebar.** Octopus's flat list works for them but bloats the nav. We group by what the sub-page actually IS (status vs config vs identity vs crypto vs notifications vs behaviour) — easier to find things, easier to gate-by-permission cleanly.
+- **Per-instance vs per-Space split surfaced in the nav.** Some things are inherently per-Space (AI settings, webhooks). Others are inherently instance-wide (license, server-cert thumbprint). Octopus puts everything under one "Configuration" — for our multi-Space model we make the scope visible.
+- **Out of scope** (documented explicitly so we don't drift): **Nodes** (KrakenDeploy is single-node; multi-node is M-Scale if ever), **Thumbprint** (we use SignalR + gRPC, not Tentacle's cert-handshake), **Git as config source** (separate config-as-code milestone), **Let's Encrypt ACME wizard** (operators handle TLS via their reverse proxy; we don't ship the wizard).
+- **Reuse before rebuild.** Several sub-pages are thin glue over services we already have. Test Permissions is the clearest example — `IPermissionEvaluator` is built (Server.Data/Services/PermissionEvaluator.cs); the UI is just user-picker + scope-picker + permission grid + a single `HasPermissionAsync` call per cell.
+
+**Group structure:**
+
+- [ ] **M13.A: Audit & Diagnostics** (highest LAUS value; quickest path to operator self-service) —
+  - **M13.A.1** `Audit.razor` polish — date-range picker (Last 7d / 30d / 90d / custom), advanced filters (user, event type, subject type, IP), export to CSV/JSON. The data model + permission gate (`EventView`) already exist; this is UI work on top of the existing query path.
+  - **M13.A.2** `/configuration/diagnostics` page — server info card (OS, .NET runtime, working set, thread count, uptime, build commit hash), "Run integrity check" button (validates EF schema + key invariants like Space-scoped row counts, FK consistency), "Download System Diagnostics Report" button that bundles config + recent log tail + DB row counts into a zip (sanitised — no API keys, no Sensitive variable values).
+  - **M13.A.3** `/configuration/maintenance` — single `MaintenanceMode` flag (instance-wide). When on, write endpoints reject with 503 + a clear "instance under maintenance" message unless the caller holds a new `BypassMaintenance` permission. Existing background jobs (Hangfire) pause on the flag. New audit events `Maintenance.Enabled` / `Maintenance.Disabled`.
+
+- [ ] **M13.B: Notifications & event routing** —
+  - **M13.B.1** `/configuration/smtp` — Host / Port / Timeout / TLS-mode / From / Auth fields, **"Save and test" button** that sends a probe email and surfaces the result inline (failure mode is "operator pastes wrong port and never gets notifications" — a test button kills that class of bug).
+  - **M13.B.2** Generalised event subscription system. `EventSubscription` aggregate (Space-scoped): name, event-type filter list (`Deployment.Failed`, `Deployment.Succeeded`, `Release.Created`, etc.), team/user recipients, transport (email via M13.B.1, webhook URL), schedule (immediate vs digest every N hours). The M11.C diagnosis webhook becomes one specific subscription, not its own bespoke wiring.
+  - **M13.B.3** `/configuration/subscriptions` page — list / filter / add / edit / pause. Per-subscription "Trigger test event" button for the same reason as M13.B.1's test button.
+
+- [ ] **M13.C: Identity & Access polish** (lots of small wins, low risk) —
+  - **M13.C.1** **Test Permissions page** — `/configuration/test-permissions`. User picker → scope picker (Space dropdown + optional Project/Environment/Tenant) → grid of every Permission with green-tick / red-cross + the "why" (which Role × Team Membership granted or denied it). Thin wrapper on existing `IPermissionEvaluator.HasPermissionAsync` (Server.Data/Services/PermissionEvaluator.cs:42). High admin-quality-of-life, low implementation cost.
+  - **M13.C.2** User Invites — code-based invitation flow. Operator generates N single-use codes scoped to specific teams (multi-select), codes expire in 48h. Invitee enters code at `/register/{code}` → creates account + auto-joined to the teams. Right shape for on-prem networks where email delivery isn't reliable (state-institution context). New `UserInvite` aggregate + `Permission.UserInviteManage`.
+  - **M13.C.3** Service-account distinction on `Users.razor`. Add `User.Kind ∈ {Human, ServiceAccount}` discriminator + "View service accounts only" filter toggle. Service accounts are API-key-only (no password, no SSO claim mapping). Pin the contract that Hangfire jobs + MCP tool calls attribute to service accounts, not phantom humans.
+  - **M13.C.4** API Keys cross-user admin view. We have `ApiKeyView` / `ApiKeyViewAll` permissions already (Permission.cs:1300-1311). New "My API Keys" ↔ "All API Keys" toggle on the page header, with the cross-user list showing User / Purpose / Hint-prefix-only / Created / Expires badge. Hint format `API-XXXX•••••••` (never the full key).
+  - **M13.C.5** Three-tier admin role split. Today we have one "admin" notion (`ConfigureServer` permission). Split into:
+    - **System administrator** — everything, including license + signing key rotation.
+    - **System manager** — instance-wide read + most writes, but NOT license / signing keys / encryption master key.
+    - **Space manager** — full power within one Space, no instance-wide visibility.
+    Codify by adding new permission groupings; existing single-admin role gets migrated to System administrator. Operators who want delegated admin (the common LAUS case) can grant System manager to junior admins without exposing crypto rotation.
+  - **M13.C.6** Filter-state callout on list pages — `Filtering by: <space> includes <foo>` strip above the result grid. Apply to Users / Teams / API Keys / Audit. Already done on Step Packages; spread the pattern.
+
+- [ ] **M13.D: Crypto & Keys** —
+  - **M13.D.1** `/configuration/signing-keys` — unified UI for the keys M11.A/D-12 introduced: step-package signing key (D-12), adhoc-script signing key (M11.E.6). Lists Active / Expired rows with id, created, expiry. **"Rotate"** button generates a new key, marks the old one Expired (still validates incoming requests for a configurable grace window — default 90 days). **"Revoke"** dropdown on expired rows immediately invalidates. Rotation writes a new audit event type per key kind.
+  - **M13.D.2** Encryption-master-key rotation runbook + UI. Today the AES-256-GCM master key in `appsettings.json` is fixed; rotating it breaks all encrypted columns (sensitive variables, AI API keys). The UI gates a re-encryption job: new key supplied, background job iterates `Variable` + `SpaceAiSettings` + (future) `AiCostOverride` rows decrypting with old key + re-encrypting with new key. **High-risk operation** — requires double-confirmation + maintenance mode (M13.A.3).
+
+- [ ] **M13.E: System & License** —
+  - **M13.E.1** `/settings/license` polish — paste-license-blob field exists as a stub. Add: parsed-license display (limits + expiry + features), validation (signature check), audit on save. License model TBD — XML-signed-blob like Octopus, or JWT, or simpler? Decide when we ship licensing.
+  - **M13.E.2** `/configuration/license-usage` — quota dashboard with per-quantity gauges (Projects, Tenants, Targets, Users, Task Cap) + over-limit banner + per-Space rollup table. Numbers come from existing queries; the UI is the deliverable.
+  - **M13.E.3** Quota enforcement at write boundaries. Project create / Tenant create / Target register endpoints check the resolved license + current usage and refuse with a clear "license limit reached — see License Usage page" message when over.
+
+- [ ] **M13.F: Features & Behaviour** (lower priority; mostly nice-to-haves) —
+  - **M13.F.1** Per-instance feature toggle panel (`/configuration/features`). Bool toggles grouped by topic: Feeds, Steps, Onboarding, Help. **Not the same as the per-Space AI feature flags** — those stay per-Space. This is for things like "Community Step Templates enabled", "Onboarding wizard shown to new users", etc.
+  - **M13.F.2** Deployment freezes — `/configuration/freezes`. Define windows where deployments are blocked (release weeks, maintenance windows, holiday lockdowns). Each freeze: name, start/end, optional scope (env / project / tag selector), optional override-permission. `DeploymentWorker` consults the freeze table before starting.
+  - **M13.F.3** Performance knobs — worker concurrency, queue depth, slow-step threshold for warnings. Today these are `appsettings.json`-only.
+  - **M13.F.4** Audit-log retention policy. Today `ai_call_logs` + `audit_entries` grow unbounded. Add retention setting (per category) + a background sweep job that deletes rows older than the retention window. Critical for LAUS GDPR posture — "show me everything you have about user X" is currently unbounded.
+
+- [ ] **M13.G: Backup & Restore** (defer; biggest scope) —
+  - **M13.G.1** `/configuration/backup` — schedule (cron) for DB backup + artifact-storage backup. Output to a configurable target path (local FS, SMB share, S3 via the AWSSDK we already added). Master-key warning callout (encrypted columns won't decrypt without the same `Encryption:MasterKey`). Restore is operator-side scripted (we provide a `kraken restore` CLI verb but no UI — restore-from-UI in a deployment orchestrator is too dangerous).
+  - **M13.G.2** Backup health dashboard — last successful backup timestamp + size + duration, last N runs with status.
+
+**M13 nav restructure (proposed)**
+
+Today the sidebar has "Configuration" with five flat items (Spaces / Users / Teams / Roles / Identity Providers). M13 expands it to a grouped panel:
+
+```
+Configuration
+├── Audit & Diagnostics
+│   ├── Audit              (have, polish)
+│   ├── Diagnostics        (new — M13.A.2)
+│   └── Maintenance        (new — M13.A.3)
+├── System
+│   ├── License            (stub, polish — M13.E.1)
+│   ├── License Usage      (new — M13.E.2)
+│   ├── Backup             (new — M13.G)
+│   └── Performance        (new — M13.F.3)
+├── Identity & Access
+│   ├── Users              (have, polish — M13.C.3)
+│   ├── Teams              (have, polish — M13.C.6)
+│   ├── User Roles         (have)
+│   ├── API Keys           (partial — M13.C.4)
+│   ├── User Invites       (new — M13.C.2)
+│   ├── Spaces             (have)
+│   ├── Identity Providers (have)
+│   └── Test Permissions   (new — M13.C.1; quick win)
+├── Crypto & Keys
+│   ├── Signing Keys       (new — M13.D.1)
+│   └── Encryption Master  (new — M13.D.2; high-risk)
+├── Notifications
+│   ├── SMTP               (new — M13.B.1)
+│   └── Subscriptions      (new — M13.B.2/3)
+└── Behaviour
+    ├── Features           (new — M13.F.1)
+    └── Freezes            (new — M13.F.2)
+```
+
+**Recommended ordering inside M13:**
+1. **M13.C.1** Test Permissions (quick win — `IPermissionEvaluator` already built).
+2. **M13.A.3** Maintenance mode (small surface, immediate operational value).
+3. **M13.A.2** Diagnostics page (operator self-service for support tickets).
+4. **M13.B.1+B.2+B.3** SMTP + Subscriptions (unblocks M11.C webhook delivery cleanly).
+5. **M13.A.1** Audit polish.
+6. **M13.C.4** API Keys admin view.
+7. **M13.C.2** User Invites.
+8. **M13.C.3** Service-account distinction.
+9. **M13.C.6** Filter-state callouts (cosmetic; sweep).
+10. **M13.D.1** Signing Keys.
+11. **M13.F.4** Retention policy (GDPR-critical).
+12. **M13.E.x** Licensing (depends on the licensing model decision).
+13. **M13.D.2** Master-key rotation runbook (high risk; do once everything else is mature).
+14. **M13.G** Backup (largest scope; do last).
+15. **M13.F.1-3** Features / Freezes / Performance (polish; do as needed).
+
+**M13 open questions** (resolve before each sub-task lands):
+- License model: XML-signed-blob (Octopus pattern) vs JWT vs simpler?
+- Quota enforcement: hard refuse vs grace banner (the Octopus approach lets you go over limit + show a banner; some installations prefer hard refuse).
+- Subscription channels v1: email only, or email + webhook from day one?
+- Encryption master rotation: do we ship the runbook + UI together, or runbook first / UI later?
+
+**Out of scope for M13** (documented so we don't drift):
+- Nodes (single-node design; multi-node is M-Scale if ever).
+- Thumbprint (no Tentacle handshake — we use SignalR + gRPC for agents).
+- Git as config-as-code source (separate milestone — M-ConfigAsCode if pursued).
+- Let's Encrypt ACME wizard (operators handle TLS via their reverse proxy / load balancer).
+- Telemetry-to-vendor (Octopus uses this for usage analytics; KrakenDeploy doesn't need it — M12 OpenTelemetry export is for operator-controlled targets, not vendor reporting).
+- Multi-node clustering UI.
