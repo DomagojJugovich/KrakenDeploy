@@ -11,16 +11,47 @@
 <PageTitle>Teams - KrakenDeploy</PageTitle>
 
 <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
-             JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-4">
+             Gap="1rem" class="rz-mb-4" Style="flex-wrap:wrap">
     <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">Teams</RadzenText>
     <RequirePermission Permission="Permission.TeamCreate">
         <RadzenButton Icon="add_circle_outline" Text="New Team"
                       ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
                       Click="OpenCreateDialogAsync" />
     </RequirePermission>
+
+    @* "Hide built-in" toggle — built-in teams (Kraken Administrators,
+       Everyone, etc.) are immutable seed rows that clutter the list for
+       operators managing their own teams. The toggle defaults to OFF
+       so the page looks the same as before for users who don't notice it. *@
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                 AlignItems="AlignItems.Center" Style="margin-left:auto">
+        <RadzenSwitch @bind-Value="_hideBuiltIn" Name="hideBuiltIn"
+                      Change="@((bool _) => StateHasChanged())" />
+        <RadzenLabel Text="Hide built-in" Component="hideBuiltIn" />
+    </RadzenStack>
 </RadzenStack>
 
-<RadzenDataGrid Data="@_teams" TItem="Team"
+@if (_hideBuiltIn)
+{
+    @* Filter-state callout — pattern from Step Packages + Users (M13.C.3).
+       Prevents the "where did Kraken Administrators go?" support ticket. *@
+    <RadzenAlert AlertStyle="AlertStyle.Info" Variant="Variant.Flat"
+                 Shade="Shade.Lighter" AllowClose="false" class="rz-mb-2">
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                     AlignItems="AlignItems.Center">
+            <RadzenIcon Icon="filter_alt" />
+            <span>
+                Built-in teams are hidden — @VisibleCount of @_teams.Count team@(_teams.Count == 1 ? "" : "s").
+            </span>
+            <RadzenButton Text="Show all"
+                          Size="ButtonSize.ExtraSmall"
+                          Variant="Variant.Text"
+                          Click="@(() => _hideBuiltIn = false)" />
+        </RadzenStack>
+    </RadzenAlert>
+}
+
+<RadzenDataGrid Data="@VisibleTeams" TItem="Team"
                 AllowPaging="true" PageSize="25"
                 AllowSorting="true"
                 AllowFiltering="true" FilterMode="FilterMode.Simple"
@@ -90,6 +121,11 @@
 
 @code {
     private List<Team> _teams = [];
+    private bool       _hideBuiltIn;
+
+    private IEnumerable<Team> VisibleTeams =>
+        _hideBuiltIn ? _teams.Where(t => !t.IsBuiltIn) : _teams;
+    private int VisibleCount => VisibleTeams.Count();
 
     protected override async Task OnInitializedAsync()
         => _teams = await TeamSvc.GetAllAsync(SpaceCtx.CurrentSpaceId);

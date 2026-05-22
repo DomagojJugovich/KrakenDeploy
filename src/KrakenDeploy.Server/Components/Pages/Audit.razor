@@ -23,6 +23,30 @@
         </RadzenText>
     </RadzenStack>
 
+    @if (HasNonDefaultFilters)
+    {
+        @* Filter-state callout — pattern from Step Packages + Users +
+           Teams. Audit's filter card is right above the grid so the
+           operator can see WHAT they typed, but the callout makes it
+           obvious WHY the grid might be empty + provides a one-click
+           reset path. *@
+        <RadzenAlert AlertStyle="AlertStyle.Info" Variant="Variant.Flat"
+                     Shade="Shade.Lighter" AllowClose="false" class="rz-mb-2">
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                         AlignItems="AlignItems.Center">
+                <RadzenIcon Icon="filter_alt" />
+                <span>
+                    Filters active: <strong>@ActiveFiltersSummary</strong>.
+                    Showing <strong>@_totalCount</strong> matching @(_totalCount == 1 ? "entry" : "entries").
+                </span>
+                <RadzenButton Text="Reset filters"
+                              Size="ButtonSize.ExtraSmall"
+                              Variant="Variant.Text"
+                              Click="ResetFilters" />
+            </RadzenStack>
+        </RadzenAlert>
+    }
+
     @* ── Filters ──────────────────────────────────────────────────────── *@
     <RadzenCard Variant="Variant.Outlined" class="rz-p-4">
         <RadzenStack Orientation="Orientation.Horizontal" Gap="1rem"
@@ -276,6 +300,33 @@
         _to   = DateTime.Today;
         _from = DateTime.Today.AddDays(-30);
         _ = ApplyFiltersAsync();
+    }
+
+    /// <summary>
+    /// True when any free-text filter has a value. The date range is NOT
+    /// counted as "non-default" because the page initialises it to last
+    /// 30 days — calling that out on every visit would be noise.
+    /// </summary>
+    private bool HasNonDefaultFilters =>
+        !string.IsNullOrWhiteSpace(_eventTypeFilter)
+        || !string.IsNullOrWhiteSpace(_userFilter)
+        || !string.IsNullOrWhiteSpace(_subjectTypeFilter);
+
+    /// <summary>
+    /// Comma-separated list of which filters are set, for the callout text.
+    /// Specific values are still visible in the input boxes above; this is
+    /// just a quick scan of what's narrowing the result set.
+    /// </summary>
+    private string ActiveFiltersSummary
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(_eventTypeFilter))   { parts.Add($"event=\"{_eventTypeFilter}\""); }
+            if (!string.IsNullOrWhiteSpace(_userFilter))        { parts.Add($"user=\"{_userFilter}\""); }
+            if (!string.IsNullOrWhiteSpace(_subjectTypeFilter)) { parts.Add($"subject=\"{_subjectTypeFilter}\""); }
+            return string.Join(", ", parts);
+        }
     }
 
     /// <summary>
