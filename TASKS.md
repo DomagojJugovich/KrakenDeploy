@@ -1208,14 +1208,77 @@ Steps ship as standalone signed `.kdeploy-step` packages instead of being compil
 
 **Phase D — closed.** D-1 through D-12 done in 4 main commits, plus D-12.1 (kraken pack CLI), D-12.2 (AWS S3 sample), D-12.3 (runtime-DLL bundling fix), D-12.4 (changelog), D-12.5 (MSBuild signing). Open follow-ups carried as separate tasks (none blocking): live S3 smoke-test, GitHub Actions workflow YAML in the public KrakenDeploy/StepPackages repo.
 
-### M11 — AI integration (MCP server, autonomous diagnosis, process assistant)
-Three features sharing a common `IAiProvider` abstraction (pluggable: Anthropic, OpenAI, Azure OpenAI — user supplies API key) and a shared MCP tool layer.
+### M11 — AI integration (MCP, autonomous diagnosis, ad-hoc agent actions, process assistant)
 
-**MCP server (`KrakenDeploy.Mcp` project):** Exposes KrakenDeploy to any MCP-compatible AI agent (Claude, Copilot, Cursor, etc.) via stdio or HTTP+SSE transport, authenticated with the same API key as the REST API. Resources: deployment logs, artifacts, target status, release history. Tools: `get_deployment_log`, `list_failed_deployments`, `get_target_health`, `retry_deployment`, `get_release_history`, `get_step_config`, `query_targets`, `get_deployment_diff` (structured delta between a failing run and the last successful one — variables changed, package version bumped, target OS patched, etc.).
+Five top-level sub-features sharing one `IKrakenAi` abstraction over `Microsoft.Extensions.AI.IChatClient`. Pluggable providers via `IChatClient` adapters: Anthropic (official `Anthropic` NuGet), OpenAI / Azure OpenAI (`Microsoft.Extensions.AI.OpenAI`), DeepSeek (OpenAI-compatible endpoint), local Ollama / LM Studio. Default provider: **Anthropic Claude** (cleanest tool-use + structured-output story); admin picks per-Space at runtime.
 
-**Autonomous failure diagnosis:** Hangfire job triggered on deployment failure. Assembles a context packet (full log, failed step config, target info, `get_deployment_diff` output) and calls the configured AI provider. Stores a structured `DeploymentDiagnosis` — probable cause, confidence level, suggested fix, relevant log lines. Rendered as an **"AI Analysis"** card on the failed deployment detail page. Optional webhook push (Slack, Teams) with the summary.
+**Architecture decisions (locked):**
+- **Per-Space API keys.** Each Space stores its own `Ai:Provider` + `Ai:ApiKey` + `Ai:Model` + monthly budget cap. Costs attribute to the Space; one Space's exhausted budget doesn't block another's deployments.
+- **Token-count audit only by default.** Every AI call writes `AiCallLog { provider, model, promptTokens, completionTokens, latencyMs, featureTag, spaceId, userId? }`. Full prompt + response bodies are NOT stored unless an admin flips `Ai:LogPromptBodies = true` per Space — the audit table is a juicy GDPR target with bodies on.
+- **Sanitisation at the `IKrakenAi` wrapper.** Variable values marked `Sensitive` are stripped before any prompt leaves the process. Variable NAMES + non-sensitive values stay so the LLM has enough context to be useful. Sanitisation events get an audit row (the metadata of what was scrubbed, never the value).
+- **Default provider = `Disabled`.** AI features are off until an admin sets a provider + key. No global LAUS key shipped in source; every installation supplies its own.
+- **DeepSeek data-residency warning surfaced in the settings UI** (the provider hosts in China). Same UI mechanism as the `AllowUnsignedUploads` warning.
+- **Agents NEVER call LLMs directly.** All AI calls route through the server. Reasoning: production-target nodes in segmented AD networks don't have egress to api.anthropic.com / api.openai.com; punching N firewall rules per agent is a security non-starter. Server already has egress for catalog polling; one extra outbound destination. Centralised audit + budget + key management + sanitisation as a side benefit.
+- **Skipped: AgentBlazor.** Single-maintainer beta, MudBlazor coupling (we use Radzen), wrong shape for our actual UX (schema-aware sidebar, not floating chat). All assistant UI is bespoke Radzen.
 
-**Process builder assistant (UI):** Step suggester proposes a starter process from package contents (detects ASP.NET, Windows Service, static site, etc.). Inline script editor sidebar helps write PowerShell/Bash steps — explains available variables, suggests error handling, flags risky patterns. Step configuration helper provides contextual field explanations and smart defaults based on project and target context.
+**Sequencing:** M11.A → M11.B → M11.C → M11.E → M11.D. Each ships as a separate phase.
+
+- [ ] **M11.A: Shared AI infrastructure** —
+  - **M11.A.1** New `src/KrakenDeploy.Ai/` library. `IKrakenAi` interface wrapping `Microsoft.Extensions.AI.IChatClient`. DI registration per provider via `KrakenAiProvider` enum: `Anthropic`, `OpenAI`, `AzureOpenAI`, `DeepSeek`, `LocalOpenAiCompatible` (Ollama / LM Studio), `Disabled`.
+  - **M11.A.2** Provider adapters: Anthropic uses `Anthropic 12.22+`'s `.AsIChatClient("claude-…")`; OpenAI / Azure OpenAI / DeepSeek all use `Microsoft.Extensions.AI.OpenAI`'s client pointed at the provider's base URL. Single code path for OpenAI-compatible providers.
+  - **M11.A.3** `AiCallLog` aggregate (Space-scoped) + EF migration. Columns: `Provider`, `Model`, `FeatureTag` (`Diagnosis`, `Mcp`, `Adhoc`, `Assistant`), `PromptTokens`, `CompletionTokens`, `LatencyMs`, `Success`, `ErrorMessage?`, `UserId?`. Plus opt-in `PromptBody?` + `ResponseBody?` columns gated by `Ai:LogPromptBodies`.
+  - **M11.A.4** Sanitisation layer: `IPromptSanitizer` strips `Sensitive`-flagged variable values from any string passed into `IKrakenAi`. Tested against the Variables table + the Octostache substitution surface. Audit row records what was scrubbed (variable name + the deployment / project / Space it came from), never the value.
+  - **M11.A.5** Per-Space monthly budget cap (`Ai:BudgetUsdPerMonth`). `IKrakenAi` checks current Space's month-to-date cost against the cap before every call; exceeded → clear `BudgetExceededException` that callers handle without crashing the deployment. Cost = tokens × per-1k rate (rate table embedded in source, updated as providers change pricing).
+  - **M11.A.6** Settings page (Space-scoped): provider dropdown, API key input (`type=password`), model picker, monthly budget input, `LogPromptBodies` toggle with a clear "GDPR implication" footer. Per-feature toggles: `Ai:Diagnosis:Enabled`, `Ai:Mcp:Enabled`, `Ai:Adhoc:Enabled`, `Ai:Assistant:Enabled`. Default all off.
+  - **M11.A.7** DeepSeek + (any OpenAI-compatible non-EU endpoint) surfaces a "**This provider routes prompts to <region>. Not recommended for state-institution data**" warning banner in the settings page.
+  - **M11.A.8** `docs/ai-integration.md`: the data-flow diagram, sanitisation rules, GDPR posture, budget mechanics, key-rotation procedure, troubleshooting. Plus a "which provider for LAUS" decision table.
+
+- [ ] **M11.B: MCP server** (closes the "external AI tools can talk to Kraken" story) —
+  - **M11.B.1** New `src/KrakenDeploy.Mcp/` library using the official `ModelContextProtocol` 1.3.0 + `ModelContextProtocol.AspNetCore` packages (co-maintained Microsoft + Anthropic). Hosted in-process inside the server on a new HTTP+SSE endpoint.
+  - **M11.B.2** Resources (read-only): `kraken://deployments/{id}/log` (full log), `kraken://deployments/{id}/artifacts/{name}`, `kraken://targets/{name}/health` (heartbeat + last failure reason), `kraken://releases/{projectSlug}/{version}` (release manifest), `kraken://step-packages/{name}/{version}/manifest`. All gated by existing `Permission.*View` checks via the existing API-key auth.
+  - **M11.B.3** Tools: `list_failed_deployments(envName?, projectSlug?, sinceHours?)`, `get_deployment_log(deploymentId)`, `get_deployment_diff(deploymentId)` (structured delta vs last green run — variables changed, package version bumped, target patched, etc.), `get_target_health(targetName)`, `retry_deployment(deploymentId)` [requires `DeploymentExecute`], `get_release_history(projectSlug, count?)`, `query_targets(role?, environment?)`, `get_step_config(deploymentId, stepIndex)`. Permission gates same as REST.
+  - **M11.B.4** Standalone `kraken-mcp` exe (new `src/KrakenDeploy.Mcp.Cli/` project) that proxies stdio↔HTTP. Lets Claude Desktop / Cursor / Copilot Chat connect to a remote Kraken server via the local stdio MCP protocol. Auth via existing API key.
+  - **M11.B.5** Tests against the [MCP inspector](https://github.com/modelcontextprotocol/inspector) for protocol compliance + integration tests that spin the server + a stdio client and round-trip each tool. Audit log entry per tool call.
+  - **M11.B.6** `docs/mcp.md`: quick-start (one-liner config for Claude Desktop / Cursor / Copilot Chat), tool reference, permission matrix, troubleshooting.
+
+- [ ] **M11.C: Autonomous failure diagnosis** —
+  - **M11.C.1** `DeploymentDiagnosis` aggregate (Space-scoped) + EF migration. Fields: `DeploymentId`, `ProbableCause` (text), `Confidence ∈ {Low, Medium, High}`, `SuggestedFix` (text), `RelevantLogLinesJson` (`[{line: 42, text: "…"}]`), `ModelUsed`, token counts. One row per failed deployment.
+  - **M11.C.2** Context assembler: full log (tail-of-failure focus — last 200 lines + step boundaries), failed step config (post-sanitisation), target info (OS, last successful deploy timestamp), output of `get_deployment_diff` vs last green run. Reuses the same diff logic as M11.B.3's tool.
+  - **M11.C.3** Hangfire job `DeploymentDiagnosisJob`. Triggered from `DeploymentWorker` after `Status → Failed`. Calls `IKrakenAi.CompleteAsync<DeploymentDiagnosis>` with structured-output schema, persists. Async, doesn't block deployment finalisation. Exponential backoff on transient LLM errors.
+  - **M11.C.4** "AI Analysis" card on the deployment-failure detail page. Renders above the log: probable cause, confidence badge, suggested fix. Confidence-Low cases show a "AI guess — verify yourself" footer. "Show in log" links highlight the relevant log lines.
+  - **M11.C.5** Optional webhook push (Slack / Teams) when `Notifications:Failure:WebhookUrl` is set in the Space. Body = diagnosis summary + link to the failed deployment.
+
+- [ ] **M11.E: Ad-hoc agent actions** (natural-language → server-generated PowerShell → operator-approved → agent runs) —
+  - **Architecture: B2 (script-handoff).** Server takes prompt + target set, LLM generates a PowerShell script, operator approves, server signs the approved script, agents verify the signature and execute via the existing script-execution machinery. Agents have ZERO AI awareness — they see a signed script command, same shape as a deployment step. B1 (LLM-driven tool calls back into agents per turn) is intentionally deferred to a later release; B2 is auditable, the script is human-readable, and approval breaks the prompt-injection loop.
+  - **M11.E.1** `POST /api/adhoc-actions` endpoint. Body: `{ prompt, targetSelector, mode }`. `mode ∈ {readonly, mutating}`; default `readonly`. RBAC: new `Permission.AdhocActionsExecute`. Per-Space rate limits.
+  - **M11.E.2** Generation pipeline: server LLM call with target context in the system prompt (target OS list, available roles, target health snapshots, the relevant package layout). Output is JSON-shaped via structured-output: `{ description, generatedScript, expectedOutputShape, riskAssessment, requiresMutation }`.
+  - **M11.E.3** Static analysis gate. AST-level PowerShell parser (reusing `KrakenDeploy.Steps.Common`'s ScriptRunner machinery) rejects the generated script if it contains: `Invoke-Expression`, `Invoke-Command -ComputerName` (the agent runs ON the target — no remoting needed), `Remove-Item -Recurse -Force`, `Stop-Service` / `Remove-Service` (without explicit mutation flag), service install/uninstall, registry writes, file I/O outside designated paths. For `mode=readonly`: only `Get-*` / `Test-*` / `Measure-*` cmdlets allowed.
+  - **M11.E.4** Operator approval dialog: Radzen syntax-highlighted PowerShell block, target list, risk assessment from the LLM, estimated duration. Three buttons: "Approve" / "Edit and approve" (textbox lets operators tweak before approving) / "Reject".
+  - **M11.E.5** **Single-approver rule (locked).** Same model as deployments today: `Permission.AdhocActionsExecute` + Space membership is enough. Two-person rule deferred — revisit if production incidents motivate it.
+  - **M11.E.6** Script signing on approval. Server signs the approved script using the existing step-package signing-key infrastructure (D-12 `StepPackageSigner`-style recipe with a separate `Adhoc:SigningKey` config slot). Agent verifies before execution; mismatched signatures rejected loudly.
+  - **M11.E.7** Dispatch via existing SignalR agent transport. Each target runs the script; results stream back. Server collates per target.
+  - **M11.E.8** Optional narrative summary: a SECOND LLM call with the results as input → human-readable summary ("3/5 nodes healthy; node-04 has 4 GB free on C:; node-05 timed out"). This is summarisation only, NOT an execution loop — no LLM-driven follow-up actions.
+  - **M11.E.9** UI page `/adhoc`: prompt input, target selector, approval dialog, live result rendering, audit trail. Radzen.
+  - **M11.E.10** Expose adhoc-action as an MCP tool (`run_adhoc_action`) so external AI clients can drive the same flow. Approval gate still enforced server-side regardless of the source.
+  - **M11.E.11** Per-target `RiskLevel ∈ {Dev, Staging, Production}` column on the target entity. Production targets in `mode=mutating` get a clearer warning banner in the approval dialog. Two-person rule lives behind a feature flag for later activation.
+  - **Out of v1 scope** (documented): autonomous remediation (LLM acting without operator approval); persistent cross-action agent memory; LLM-driven tool chains across multiple agent rounds. These are the high-risk B1 patterns; their absence is intentional.
+
+- [ ] **M11.D: Process builder assistant (UI)** —
+  - **M11.D.1** Step suggester (one-shot). New-project / empty-process screens get a "Suggest process from package" button. AI inspects the selected package's payload manifest (top-level dirs, .csproj names, web.config / .service / static asset presence) → proposes a starter step list with rationale. Structured output. User confirms or edits before save.
+  - **M11.D.2** Script editor sidebar. Right-rail of `Process` step edit when step type is `Octopus.Script` / `Kraken.Script`. AI suggestions as user types (debounced 800 ms). Context fed in: available variables (sanitised), target type, package layout, current script body. Streaming responses via `IKrakenAi.StreamChatAsync`. Multi-turn within the edit session; state component-local, not persisted.
+  - **M11.D.3** Field-level explanations. AI icon next to each step-config field. Click → contextual explanation (one-shot, cached per `(stepType, fieldKey, projectId)` for the page session). Uses the schema field's `Help` / `Description` plus project + target context.
+
+**M11 dependencies + risks:**
+- M11.A blocks everything (the wrapper, the audit, the sanitisation).
+- M11.B depends only on M11.A; ships fast, high external leverage.
+- M11.C depends on M11.A + M11.B (uses `get_deployment_diff`).
+- M11.E depends on M11.A + M11.B (the static-analysis + signing + dispatch matures during MCP work; expose adhoc as an MCP tool in M11.E.10).
+- M11.D depends on M11.A only but is the heaviest UI work; do last.
+
+**Open follow-ups carried across all of M11** (none blocking):
+- Live LLM-provider smoke-test against real API keys (each provider needs at least one end-to-end "send prompt, get response, verify token-count audit row" run before declaring production-ready).
+- Cost-per-1k-token rate table maintenance — providers update pricing periodically; the embedded table needs a refresh procedure.
+- Prompt-template registry — initially prompts live in source per-feature; if they grow numerous, extract to a database-backed registry with version pinning per Space.
 
 ### M12 additinal polish 
 OpenTelemetry export to Grafana stack or Seq.
