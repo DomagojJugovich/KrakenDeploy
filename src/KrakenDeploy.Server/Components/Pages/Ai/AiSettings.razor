@@ -1,0 +1,526 @@
+@page "/settings/ai"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using KrakenDeploy.Server.Core.Domain.Ai
+@using KrakenDeploy.Server.Core.Domain.Security
+@using KrakenDeploy.Server.Core.Domain.Spaces
+@using KrakenDeploy.Server.Data.Services.Ai
+
+@inject SpaceAiSettingsService SettingsSvc
+@inject NotificationService Notify
+@inject DialogService Dialog
+@inject IPermissionEvaluator PermissionEvaluator
+@inject ISpaceContext SpaceContext
+@inject AuthenticationStateProvider AuthStateProvider
+
+<PageTitle>AI Settings — KrakenDeploy</PageTitle>
+
+<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-1">
+    AI Settings
+</RadzenText>
+<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+    Per-Space AI provider, monthly budget cap, and per-feature toggles.
+    Default is fully disabled until you configure a provider here.
+    See <a href="/docs/ai-integration.md" target="_blank">ai-integration.md</a>
+    for the data-flow + GDPR posture overview.
+</RadzenText>
+
+<RequirePermission Permission="Permission.SpaceAiSettingsView">
+    @if (_loaded is null)
+    {
+        <RadzenProgressBarCircular ShowValue="false" Mode="ProgressBarMode.Indeterminate"
+                                   Style="margin: 2rem auto; display: block;" />
+    }
+    else
+    {
+        <RadzenStack Gap="1rem" Style="max-width: 900px;">
+
+            @* ── Provider ─────────────────────────────────────────── *@
+            <RadzenCard>
+                <RadzenStack Gap="1rem">
+                    <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H2" class="rz-mb-0">
+                        Provider
+                    </RadzenText>
+
+                    <RadzenFormField Text="Provider" Variant="Variant.Outlined">
+                        <RadzenDropDown TValue="string"
+                                        Data="@_providerOptions"
+                                        ValueProperty="Value"
+                                        TextProperty="Label"
+                                        @bind-Value="_form.Provider"
+                                        Change="OnProviderChanged"
+                                        Disabled="@(!_canManage)" />
+                    </RadzenFormField>
+
+                    @if (RequiresDataResidencyWarning(_form.Provider))
+                    {
+                        <RadzenAlert AlertStyle="AlertStyle.Warning"
+                                     ShowIcon="true" AllowClose="false"
+                                     Variant="Variant.Filled" class="rz-mb-0">
+                            <strong>Data residency warning.</strong>
+                            @ProviderWarningText(_form.Provider)
+                            Operators handling state-institution data should pick
+                            <em>Anthropic</em>, <em>Azure OpenAI</em> in an EU region,
+                            or self-host via <em>LocalOpenAiCompatible</em>.
+                        </RadzenAlert>
+                    }
+
+                    @if (_form.Provider != KrakenAiProviderValue.Disabled)
+                    {
+                        <RadzenFormField Text="Model" Variant="Variant.Outlined">
+                            <RadzenTextBox @bind-Value="_form.Model"
+                                           Placeholder="@SuggestedModelFor(_form.Provider)"
+                                           Disabled="@(!_canManage)" />
+                        </RadzenFormField>
+
+                        @if (RequiresBaseUrl(_form.Provider))
+                        {
+                            <RadzenFormField Text="Base URL" Variant="Variant.Outlined">
+                                <RadzenTextBox @bind-Value="_form.BaseUrl"
+                                               Placeholder="@SuggestedBaseUrlFor(_form.Provider)"
+                                               Disabled="@(!_canManage)" />
+                            </RadzenFormField>
+                        }
+
+                        <div>
+                            <RadzenText TextStyle="TextStyle.Subtitle2" TagName="TagName.H3"
+                                        class="rz-mb-1">API key</RadzenText>
+                            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                                         AlignItems="AlignItems.Center">
+                                <RadzenTextBox @bind-Value="_form.ApiKey"
+                                               Style="flex: 1; font-family: monospace;"
+                                               Placeholder="@((_loaded?.HasApiKey ?? false)
+                                                   ? (_loaded?.ApiKeyMasked ?? string.Empty)
+                                                   : "Paste your provider API key...")"
+                                               Disabled="@(!_canManage)" />
+                                <RequirePermission Permission="Permission.SpaceAiSettingsManage">
+                                    @if ((_loaded?.HasApiKey ?? false))
+                                    {
+                                        <RadzenButton Icon="visibility"
+                                                      Size="ButtonSize.ExtraSmall"
+                                                      Variant="Variant.Outlined"
+                                                      Click="RevealApiKeyAsync"
+                                                      title="Reveal stored API key (audit-logged on every call)" />
+                                        <RadzenButton Icon="delete_outline"
+                                                      Size="ButtonSize.ExtraSmall"
+                                                      ButtonStyle="ButtonStyle.Warning"
+                                                      Variant="Variant.Outlined"
+                                                      Click="QueueClearApiKey"
+                                                      title="Mark the key for deletion on next Save" />
+                                    }
+                                </RequirePermission>
+                            </RadzenStack>
+                            @if (_clearApiKeyOnSave)
+                            {
+                                <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="false"
+                                             AllowClose="true"
+                                             Close="@(() => _clearApiKeyOnSave = false)"
+                                             class="rz-mt-2 rz-mb-0">
+                                    The stored API key will be <strong>deleted</strong> on Save.
+                                    AI calls will fail until a new key is set.
+                                </RadzenAlert>
+                            }
+                            else if (string.IsNullOrEmpty(_form.ApiKey) && (_loaded?.HasApiKey ?? false))
+                            {
+                                <RadzenText TextStyle="TextStyle.Caption"
+                                            class="rz-color-secondary rz-mt-1 rz-mb-0">
+                                    Leave the field blank to keep the existing key on Save.
+                                </RadzenText>
+                            }
+                        </div>
+                    }
+                </RadzenStack>
+            </RadzenCard>
+
+            @* ── Budget ───────────────────────────────────────────── *@
+            <RadzenCard>
+                <RadzenStack Gap="1rem">
+                    <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H2" class="rz-mb-0">
+                        Budget
+                    </RadzenText>
+
+                    <RadzenFormField Text="Monthly cap (USD) — 0 means no cap"
+                                     Variant="Variant.Outlined">
+                        <RadzenNumeric @bind-Value="_form.BudgetUsdPerMonth"
+                                       Format="N2"
+                                       Min="0"
+                                       Disabled="@(!_canManage)" />
+                    </RadzenFormField>
+
+                    @if (_usage is not null)
+                    {
+                        <RadzenStack Orientation="Orientation.Horizontal" Gap="2rem">
+                            <div>
+                                <RadzenText TextStyle="TextStyle.Caption"
+                                            class="rz-color-secondary">Spent this month</RadzenText>
+                                <RadzenText TextStyle="TextStyle.H5" class="rz-mb-0">
+                                    $@_usage.TotalCostUsd.ToString("N2")
+                                </RadzenText>
+                            </div>
+                            <div>
+                                <RadzenText TextStyle="TextStyle.Caption"
+                                            class="rz-color-secondary">Calls</RadzenText>
+                                <RadzenText TextStyle="TextStyle.H5" class="rz-mb-0">
+                                    @_usage.TotalCalls
+                                </RadzenText>
+                            </div>
+                            <RadzenButton Icon="refresh" Size="ButtonSize.ExtraSmall"
+                                          Variant="Variant.Text"
+                                          Click="LoadUsageAsync"
+                                          title="Refresh usage" />
+                        </RadzenStack>
+
+                        @if (_usage.FeatureBreakdown.Count > 0)
+                        {
+                            <RadzenDataGrid Data="@_usage.FeatureBreakdown"
+                                            TItem="SpaceAiUsageFeatureBreakdown"
+                                            Density="Density.Compact"
+                                            AllowSorting="false" AllowPaging="false">
+                                <Columns>
+                                    <RadzenDataGridColumn TItem="SpaceAiUsageFeatureBreakdown"
+                                                          Property="Feature" Title="Feature" />
+                                    <RadzenDataGridColumn TItem="SpaceAiUsageFeatureBreakdown"
+                                                          Property="Calls" Title="Calls"
+                                                          Width="100px" TextAlign="TextAlign.Right" />
+                                    <RadzenDataGridColumn TItem="SpaceAiUsageFeatureBreakdown"
+                                                          Property="PromptTokens"
+                                                          Title="Prompt tokens"
+                                                          Width="140px" TextAlign="TextAlign.Right" />
+                                    <RadzenDataGridColumn TItem="SpaceAiUsageFeatureBreakdown"
+                                                          Property="CompletionTokens"
+                                                          Title="Completion tokens"
+                                                          Width="160px" TextAlign="TextAlign.Right" />
+                                    <RadzenDataGridColumn TItem="SpaceAiUsageFeatureBreakdown"
+                                                          Title="Cost"
+                                                          Width="100px" TextAlign="TextAlign.Right">
+                                        <Template Context="row">
+                                            $@row.CostUsd.ToString("N4")
+                                        </Template>
+                                    </RadzenDataGridColumn>
+                                </Columns>
+                            </RadzenDataGrid>
+                        }
+                    }
+                </RadzenStack>
+            </RadzenCard>
+
+            @* ── Features ─────────────────────────────────────────── *@
+            <RadzenCard>
+                <RadzenStack Gap="1rem">
+                    <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H2" class="rz-mb-0">
+                        Features
+                    </RadzenText>
+                    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                        Per-feature kill switches. AI is opt-in per feature, not just AI-overall —
+                        you can keep diagnosis on while leaving ad-hoc actions off.
+                    </RadzenText>
+
+                    <RadzenCheckBox @bind-Value="_form.DiagnosisEnabled"
+                                    TValue="bool"
+                                    Disabled="@(!_canManage)" />
+                    <label class="rz-checkbox-label" style="margin-left: -1rem;">
+                        Autonomous failure diagnosis <em>(M11.C)</em> — write an AI Analysis card
+                        on every failed deployment.
+                    </label>
+
+                    <RadzenCheckBox @bind-Value="_form.McpEnabled"
+                                    TValue="bool"
+                                    Disabled="@(!_canManage)" />
+                    <label class="rz-checkbox-label" style="margin-left: -1rem;">
+                        MCP server <em>(M11.B)</em> — expose this Space to MCP-aware AI clients
+                        (Claude Desktop, Cursor, Copilot Chat).
+                    </label>
+
+                    <RadzenCheckBox @bind-Value="_form.AdhocEnabled"
+                                    TValue="bool"
+                                    Disabled="@(!_canManage)" />
+                    <label class="rz-checkbox-label" style="margin-left: -1rem;">
+                        Ad-hoc agent actions <em>(M11.E)</em> — natural-language → operator-approved
+                        PowerShell run on selected targets.
+                    </label>
+
+                    <RadzenCheckBox @bind-Value="_form.AssistantEnabled"
+                                    TValue="bool"
+                                    Disabled="@(!_canManage)" />
+                    <label class="rz-checkbox-label" style="margin-left: -1rem;">
+                        Process-builder assistant <em>(M11.D)</em> — inline AI suggestions in
+                        the step editor + field-level explanations.
+                    </label>
+                </RadzenStack>
+            </RadzenCard>
+
+            @* ── Audit ───────────────────────────────────────────── *@
+            <RadzenCard>
+                <RadzenStack Gap="1rem">
+                    <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H2" class="rz-mb-0">
+                        Audit
+                    </RadzenText>
+
+                    <div>
+                        <RadzenCheckBox @bind-Value="_form.LogPromptBodies"
+                                        TValue="bool"
+                                        Disabled="@(!_canManage)" />
+                        <label class="rz-checkbox-label" style="margin-left: -1rem;">
+                            Log full prompt + response bodies in <code>ai_call_logs</code>
+                        </label>
+                    </div>
+                    <RadzenAlert AlertStyle="AlertStyle.Warning"
+                                 Variant="Variant.Outlined" ShowIcon="true" AllowClose="false"
+                                 class="rz-mb-0">
+                        <strong>GDPR caveat.</strong>
+                        Storing bodies in the audit table makes <code>ai_call_logs</code>
+                        a target for any GDPR access / erasure request that touches a
+                        deployment-scoped subject. Default is off so token counts +
+                        scrub-name metadata remain low-risk. Enable only when actively
+                        debugging an AI feature.
+                    </RadzenAlert>
+                </RadzenStack>
+            </RadzenCard>
+
+            @* ── Save / Discard ──────────────────────────────────── *@
+            <RequirePermission Permission="Permission.SpaceAiSettingsManage">
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+                    <RadzenButton Text="Save"
+                                  ButtonStyle="ButtonStyle.Primary"
+                                  IsBusy="@_saving"
+                                  Disabled="@(!_canManage)"
+                                  Click="SaveAsync" />
+                    <RadzenButton Text="Discard changes"
+                                  ButtonStyle="ButtonStyle.Light"
+                                  Variant="Variant.Outlined"
+                                  Disabled="@(!_canManage || _saving)"
+                                  Click="ReloadAsync" />
+                </RadzenStack>
+            </RequirePermission>
+        </RadzenStack>
+    }
+</RequirePermission>
+
+@code {
+    private bool                  _canManage;
+    private SpaceAiSettingsDto?   _loaded;
+    private FormState             _form  = new();
+    private SpaceAiUsageDto?      _usage;
+    private bool                  _saving;
+    private bool                  _clearApiKeyOnSave;
+
+    private static readonly ProviderOption[] _providerOptions =
+    [
+        new(KrakenAiProviderValue.Disabled,              "Disabled (default — AI features off)"),
+        new(KrakenAiProviderValue.Anthropic,             "Anthropic Claude"),
+        new(KrakenAiProviderValue.AzureOpenAI,           "Azure OpenAI"),
+        new(KrakenAiProviderValue.OpenAI,                "OpenAI (direct, api.openai.com)"),
+        new(KrakenAiProviderValue.DeepSeek,              "DeepSeek (api.deepseek.com)"),
+        new(KrakenAiProviderValue.LocalOpenAiCompatible, "Local (Ollama / LM Studio / vLLM)"),
+    ];
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await AuthStateProvider.GetAuthenticationStateAsync();
+        _canManage = await PermissionEvaluator.HasPermissionAsync(
+            state.User,
+            Permission.SpaceAiSettingsManage,
+            new PermissionScope(SpaceId: SpaceContext.CurrentSpaceId));
+
+        await ReloadAsync();
+        await LoadUsageAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        try
+        {
+            _loaded = await SettingsSvc.GetAsync();
+            _form   = FormState.FromDto(_loaded);
+            _clearApiKeyOnSave = false;
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error,
+                "Failed to load AI settings", ex.Message, 6000);
+        }
+    }
+
+    private async Task LoadUsageAsync()
+    {
+        try
+        {
+            _usage = await SettingsSvc.GetUsageAsync();
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Warning,
+                "Failed to load usage stats", ex.Message, 4000);
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        _saving = true;
+        try
+        {
+            var apiKey = _clearApiKeyOnSave
+                ? SpaceAiSettingsService.ApiKeyClearSentinel
+                : _form.ApiKey;
+
+            var req = new UpdateSpaceAiSettingsRequest
+            {
+                Provider          = _form.Provider,
+                Model             = _form.Model,
+                ApiKey            = apiKey,
+                BaseUrl           = _form.BaseUrl,
+                BudgetUsdPerMonth = _form.BudgetUsdPerMonth,
+                LogPromptBodies   = _form.LogPromptBodies,
+                DiagnosisEnabled  = _form.DiagnosisEnabled,
+                McpEnabled        = _form.McpEnabled,
+                AdhocEnabled      = _form.AdhocEnabled,
+                AssistantEnabled  = _form.AssistantEnabled,
+            };
+            _loaded = await SettingsSvc.UpdateAsync(req);
+            _form   = FormState.FromDto(_loaded);
+            _clearApiKeyOnSave = false;
+
+            Notify.Notify(NotificationSeverity.Success, "AI settings saved", duration: 3000);
+        }
+        catch (ArgumentException ex)
+        {
+            Notify.Notify(NotificationSeverity.Error,
+                "Validation failed", ex.Message, 6000);
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error,
+                "Save failed", ex.Message, 6000);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task RevealApiKeyAsync()
+    {
+        try
+        {
+            var key = await SettingsSvc.RevealApiKeyAsync();
+            if (key is null)
+            {
+                Notify.Notify(NotificationSeverity.Info,
+                    "No key configured", duration: 3000);
+                return;
+            }
+            await Dialog.Alert(key,
+                "Stored API key",
+                new AlertOptions
+                {
+                    OkButtonText = "Close",
+                });
+            // The audit row is written on every call; surface that to the
+            // operator so they don't reveal habitually.
+            Notify.Notify(NotificationSeverity.Info,
+                "Key reveal logged",
+                "An audit entry was written for this reveal.",
+                duration: 4000);
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error,
+                "Reveal failed", ex.Message, 6000);
+        }
+    }
+
+    private void QueueClearApiKey()
+    {
+        _clearApiKeyOnSave = true;
+        _form.ApiKey       = string.Empty;
+    }
+
+    private Task OnProviderChanged(object _)
+    {
+        // Reset Base URL when switching to a provider that doesn't need one,
+        // and seed a sensible default when switching to one that does.
+        if (!RequiresBaseUrl(_form.Provider))
+        {
+            _form.BaseUrl = null;
+        }
+        else if (string.IsNullOrEmpty(_form.BaseUrl))
+        {
+            _form.BaseUrl = SuggestedBaseUrlFor(_form.Provider);
+        }
+        return Task.CompletedTask;
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────
+
+    private static bool RequiresBaseUrl(string provider) =>
+        provider == KrakenAiProviderValue.AzureOpenAI
+        || provider == KrakenAiProviderValue.LocalOpenAiCompatible;
+
+    private static bool RequiresDataResidencyWarning(string provider) =>
+        provider == KrakenAiProviderValue.DeepSeek
+        || provider == KrakenAiProviderValue.OpenAI;
+
+    private static string ProviderWarningText(string provider) => provider switch
+    {
+        KrakenAiProviderValue.DeepSeek =>
+            "DeepSeek-hosted inference runs on servers in China. Prompts (and " +
+            "any non-sanitised values) leave the EU.",
+        KrakenAiProviderValue.OpenAI =>
+            "Direct OpenAI (api.openai.com) routes prompts to US servers.",
+        _ => string.Empty,
+    };
+
+    private static string SuggestedModelFor(string provider) => provider switch
+    {
+        KrakenAiProviderValue.Anthropic             => "claude-sonnet-4.6",
+        KrakenAiProviderValue.OpenAI                => "gpt-5.5",
+        KrakenAiProviderValue.AzureOpenAI           => "<your Azure deployment name>",
+        KrakenAiProviderValue.DeepSeek              => "deepseek-chat",
+        KrakenAiProviderValue.LocalOpenAiCompatible => "llama3.2:3b",
+        _                                           => "",
+    };
+
+    private static string SuggestedBaseUrlFor(string provider) => provider switch
+    {
+        KrakenAiProviderValue.AzureOpenAI           => "https://<your-resource>.openai.azure.com",
+        KrakenAiProviderValue.LocalOpenAiCompatible => "http://localhost:11434/v1",
+        _                                           => "",
+    };
+
+    private sealed record ProviderOption(string Value, string Label);
+
+    /// <summary>
+    /// Local-only mutable view-model. Keeps the Razor binding simple
+    /// (Radzen needs settable refs) without mutating the DTO returned
+    /// from the service. <see cref="ApiKey"/> is the user-typed input
+    /// (blank = preserve existing); the masked value lives on <see cref="SpaceAiSettingsDto"/>.
+    /// </summary>
+    private sealed class FormState
+    {
+        public string  Provider          { get; set; } = KrakenAiProviderValue.Disabled;
+        public string? Model             { get; set; }
+        public string? ApiKey            { get; set; }
+        public string? BaseUrl           { get; set; }
+        public decimal BudgetUsdPerMonth { get; set; }
+        public bool    LogPromptBodies   { get; set; }
+        public bool    DiagnosisEnabled  { get; set; }
+        public bool    McpEnabled        { get; set; }
+        public bool    AdhocEnabled      { get; set; }
+        public bool    AssistantEnabled  { get; set; }
+
+        public static FormState FromDto(SpaceAiSettingsDto dto) => new()
+        {
+            Provider          = dto.Provider,
+            Model             = dto.Model,
+            ApiKey            = null,
+            BaseUrl           = dto.BaseUrl,
+            BudgetUsdPerMonth = dto.BudgetUsdPerMonth,
+            LogPromptBodies   = dto.LogPromptBodies,
+            DiagnosisEnabled  = dto.DiagnosisEnabled,
+            McpEnabled        = dto.McpEnabled,
+            AdhocEnabled      = dto.AdhocEnabled,
+            AssistantEnabled  = dto.AssistantEnabled,
+        };
+    }
+}
