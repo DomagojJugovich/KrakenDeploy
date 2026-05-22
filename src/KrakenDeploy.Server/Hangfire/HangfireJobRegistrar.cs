@@ -14,11 +14,24 @@ public static class HangfireJobRegistrar
     {
         var utc = TimeZoneInfo.Utc;
 
-        // Purge audit log entries older than 365 days — 03:00 UTC daily.
+        // Purge audit_entries older than Retention:AuditLogDays (default 365).
+        // 03:00 UTC daily.
         RecurringJob.AddOrUpdate<AuditRetentionJob>(
             "kraken.audit-retention",
             job => job.ExecuteAsync(CancellationToken.None),
             Cron.Daily(3, 0),
+            new RecurringJobOptions { TimeZone = utc });
+
+        // Purge ai_call_logs older than Retention:AiCallLogDays (default 90).
+        // Tighter default than audit retention because AI call rows can
+        // carry full prompt + response bodies (GDPR-relevant payloads) —
+        // see AiCallLogRetentionJob's class-level comment for the
+        // why-different-from-audit reasoning. 03:15 UTC daily so it doesn't
+        // collide with the audit sweep.
+        RecurringJob.AddOrUpdate<AiCallLogRetentionJob>(
+            "kraken.ai-call-log-retention",
+            job => job.ExecuteAsync(CancellationToken.None),
+            Cron.Daily(3, 15),
             new RecurringJobOptions { TimeZone = utc });
 
         // Mark stale Online targets as Offline — every 5 minutes.
