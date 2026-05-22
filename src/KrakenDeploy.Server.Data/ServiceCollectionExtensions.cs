@@ -95,6 +95,11 @@ public static class ServiceCollectionExtensions
         // would have registered (it uses TryAdd, so this Add wins).
         services.AddScoped<KrakenDeploy.Ai.IKrakenAiSettingsProvider,
                            Services.Ai.DbKrakenAiSettingsProvider>();
+        // M11.A.6.3 — CRUD service backing the AI-settings REST endpoints.
+        // Distinct from DbKrakenAiSettingsProvider: the provider is the
+        // read-only path optimised for the LLM-call hot loop (no masking,
+        // no audit overhead). This service handles update + masking + reveal.
+        services.AddScoped<Services.Ai.SpaceAiSettingsService>();
         services.AddScoped<TenantService>();
         services.AddScoped<LifecycleService>();
         services.AddScoped<ChannelService>();

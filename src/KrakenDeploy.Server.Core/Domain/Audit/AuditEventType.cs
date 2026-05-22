@@ -36,4 +36,11 @@ public static class AuditEventType
     public const string StepPackageInstalled    = "StepPackage.Installed";
     public const string StepPackageUninstalled  = "StepPackage.Uninstalled";
     public const string StepPackageBulkUpgraded = "StepPackage.BulkUpgraded";
+
+    // ── AI settings (M11.A.6) ────────────────────────────────────────────────
+    /// <summary>Operator updated this Space's AI settings via PUT.</summary>
+    public const string SpaceAiSettingsUpdated  = "SpaceAi.SettingsUpdated";
+    /// <summary>Operator viewed the decrypted API key via the reveal endpoint.
+    /// Sensitive operation — every call writes a row regardless of outcome.</summary>
+    public const string SpaceAiApiKeyRevealed   = "SpaceAi.ApiKeyRevealed";
 }

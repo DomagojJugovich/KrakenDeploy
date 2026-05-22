@@ -962,6 +962,80 @@ public static class Program
                 }
             }).RequirePermission(Permission.SpaceDelete);
 
+        // ── AI settings (Phase M11.A.6.3) ───────────────────────────────────
+        // Per-Space AI provider + budget + feature flags. The {id} route param
+        // is the Space id, but the actual scoping happens via ISpaceContext
+        // (which is driven by the kraken-active-space cookie / route).
+        // Keeping {id} in the URL makes the endpoint trivially CLIable + URL-greppable
+        // even though the server's authoritative SpaceId is the ambient one.
+        app.MapGet("/api/spaces/{id:guid}/ai-settings",
+            async (Guid id,
+                   KrakenDeploy.Server.Data.Services.Ai.SpaceAiSettingsService svc,
+                   CancellationToken ct) =>
+                Results.Ok(await svc.GetAsync(ct).ConfigureAwait(false))
+        ).RequirePermission(Permission.SpaceAiSettingsView);
+
+        app.MapPut("/api/spaces/{id:guid}/ai-settings",
+            async (Guid id,
+                   KrakenDeploy.Server.Data.Services.Ai.UpdateSpaceAiSettingsRequest req,
+                   KrakenDeploy.Server.Data.Services.Ai.SpaceAiSettingsService svc,
+                   IAuditLog audit,
+                   CancellationToken ct) =>
+            {
+                try
+                {
+                    var dto = await svc.UpdateAsync(req, ct).ConfigureAwait(false);
+                    // Redact ApiKey from the audit payload — capture the
+                    // intent (changed / cleared / preserved) without
+                    // recording any form of the secret itself.
+                    var apiKeyAction = string.IsNullOrWhiteSpace(req.ApiKey)
+                        ? "preserved"
+                        : req.ApiKey == KrakenDeploy.Server.Data.Services.Ai.SpaceAiSettingsService.ApiKeyClearSentinel
+                            ? "cleared"
+                            : "changed";
+                    await audit.RecordAsync(
+                        AuditEventType.SpaceAiSettingsUpdated,
+                        subjectType: "SpaceAiSettings",
+                        subjectId:   id.ToString(),
+                        details:     $"Provider={req.Provider}, Model={req.Model}, " +
+                                     $"Budget=${req.BudgetUsdPerMonth}, ApiKey={apiKeyAction}, " +
+                                     $"Diagnosis={req.DiagnosisEnabled}, Mcp={req.McpEnabled}, " +
+                                     $"Adhoc={req.AdhocEnabled}, Assistant={req.AssistantEnabled}, " +
+                                     $"LogBodies={req.LogPromptBodies}",
+                        ct: ct).ConfigureAwait(false);
+                    return Results.Ok(dto);
+                }
+                catch (ArgumentException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.SpaceAiSettingsManage);
+
+        app.MapGet("/api/spaces/{id:guid}/ai-settings/api-key",
+            async (Guid id,
+                   KrakenDeploy.Server.Data.Services.Ai.SpaceAiSettingsService svc,
+                   IAuditLog audit,
+                   CancellationToken ct) =>
+            {
+                var key = await svc.RevealApiKeyAsync(ct).ConfigureAwait(false);
+                // Reveal is logged on every call regardless of outcome —
+                // operators reading the key IS the sensitive operation.
+                await audit.RecordAsync(
+                    AuditEventType.SpaceAiApiKeyRevealed,
+                    subjectType: "SpaceAiSettings",
+                    subjectId:   id.ToString(),
+                    details:     key is null ? "key not configured" : "key revealed",
+                    ct: ct).ConfigureAwait(false);
+                return Results.Ok(new { apiKey = key });
+            }).RequirePermission(Permission.SpaceAiSettingsManage);
+
+        app.MapGet("/api/spaces/{id:guid}/ai-settings/usage",
+            async (Guid id,
+                   KrakenDeploy.Server.Data.Services.Ai.SpaceAiSettingsService svc,
+                   CancellationToken ct) =>
+                Results.Ok(await svc.GetUsageAsync(ct).ConfigureAwait(false))
+        ).RequirePermission(Permission.SpaceAiSettingsView);
+
         app.MapGet("/api/projects",
             async (ProjectService projectSvc, CancellationToken ct) =>
                 Results.Ok(await projectSvc.GetAllAsync(ct).ConfigureAwait(false))

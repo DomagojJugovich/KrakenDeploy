@@ -218,6 +218,16 @@ public enum Permission
     IdentityProviderEdit   = 1402,
     IdentityProviderDelete = 1403,
 
+    // ── AI Settings (1500–1599; Phase M11.A.6) ──────────────────────────────
+
+    /// <summary>View this Space's AI provider + budget + MTD usage. API
+    /// key is always returned masked in this scope.</summary>
+    SpaceAiSettingsView    = 1500,
+    /// <summary>Edit this Space's AI settings + reveal the API key + manage
+    /// cost overrides. Reveal of the key writes a SpaceAi.ApiKeyRevealed
+    /// audit row on every call.</summary>
+    SpaceAiSettingsManage  = 1501,
+
     // ── Reserved blocks for future entities ─────────────────────────────────
     // Add when the matching domain entity ships. Keeps the enum stable so
     // existing roles don't have their permission-set IDs renumbered.
