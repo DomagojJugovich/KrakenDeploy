@@ -1415,6 +1415,62 @@ Configuration
 - Subscription channels v1: email only, or email + webhook from day one?
 - Encryption master rotation: do we ship the runbook + UI together, or runbook first / UI later?
 
+### M13 — audit of what's already built vs gap (per-section)
+
+After walking through Octopus's full /configuration/* surface (25 sub-sections) and grepping the codebase end-to-end on 2026-05-22, the per-feature reality vs the original M13 plan is much more favourable than the plan suggested. Eight items are already substantially done; six items are partial (the pipes are there, just no consumer); the rest are greenfield. Captured here so the implementation order can pick the cheapest wins first.
+
+| M13 sub-task | Existing infrastructure (file references) | True effort |
+|---|---|---|
+| **M13.A.1** Audit polish | `Audit.razor` (285 lines) — date pickers, event/user/subject filters, server-side paging, sortable grid. Backed by `AuditEntry` + `AuditLogService`. `EventView` / `EventViewUnscoped` perms exist. | Small — add CSV/JSON export button + endpoint. |
+| **M13.A.2** Diagnostics page | `/healthz` exists (`Program.cs:833`) — DB connect + target + agent counts. | Medium — page + integrity-check + diagnostic-zip builder. |
+| **M13.A.3** Maintenance mode | Nothing. | Medium. |
+| **M13.B.1** SMTP | Nothing. | Medium. |
+| **M13.B.2/3** Subscriptions | Nothing. | Large — full event-routing system. |
+| **M13.C.1** **Test Permissions** | **>95% done.** `IPermissionEvaluator.HasPermissionAsync` + `GetPermissionsAsync(user, scope)` both exist (`Server.Core/Domain/Security/IPermissionEvaluator.cs`). `BuiltInRoles.cs` defines 8 named roles. `PermissionScope` + audit `PermissionDenied` event already wired. | **Trivial** — UI binds `GetPermissionsAsync` to a permission grid. ~1-2h. |
+| **M13.C.2** User Invites | `UserInvite` permission reserved (Permission.cs:43). No entity / service. `RegistrationTokenExpiryJob` exists but is for DEPLOYMENT TARGETS (agent registration), not users. | Medium — `UserInvite` aggregate + service + flow page. |
+| **M13.C.3** Service accounts | `ApplicationUser : IdentityUser<Guid>` has no Kind discriminator. | Small — column + filter toggle on Users.razor. |
+| **M13.C.4** API Keys cross-user | Permissions reserved (`ApiKeyView` / `ApiKeyViewAll`). **No `ApiKey` aggregate exists** — only the single `appsettings.json:ApiKey:Key` consumed by `Auth/ApiKeyAuthenticationHandler.cs`. | **Large** — full build (entity + migration + service + per-user issue/revoke + admin "all keys" view). |
+| **M13.C.5** Three-tier admin (System mgr middle tier) | `BuiltInRoles.cs` already has `SystemAdministratorId` + `SpaceManagerId` + 6 task roles. | **Tiny** — add 1 entry to `BuiltInRoles.All` (System Manager = everything except crypto rotation). ~30 min. |
+| **M13.C.6** Filter-state callouts | Pattern exists on Step Packages. | Tiny — cosmetic sweep across Users / Teams / API Keys / Audit pages. |
+| **M13.D.1** Code Signing Keys UI | `StepPackageSigner` + `StepPackages:TrustedPublicKey` config exist (D-12). M11.E.6 adhoc-script signing not yet built. **No `SigningKey` entity** for rotation history. | Medium — entity + page + rotation flow. |
+| **M13.D.2** Master-key rotation | `AesEncryptionService` reads `Encryption:MasterKey` from config (hardcoded at startup, no rotation hook). | Large + high risk — re-encryption job over `Variable` + `SpaceAiSettings`. |
+| **M13.E.1** License polish | **Surprise — fully built.** Full JWT-signed model: `LicenseClaims { CustomerName, MaxTargets, MaxUsers, ExpiresUtc, IssuedUtc, LicenseType ∈ {Trial,Full,Developer} }`. `LicenseService.ValidateLicense` (RSA-2048 sig, expiry, embedded public key). `LicenseValidationResult`. `Admin/License.razor` paste-and-validate page. `LicenseWarningBanner.razor` shared banner. License-model question resolved: **JWT, not XML**. | Small — parsed-license display + audit on save. ~1h. |
+| **M13.E.2** License Usage dashboard | `LicenseService.GetLicenseWarning(currentTargetCount, currentUserCount)` exists with 90% / 100% thresholds. **But:** `LicenseWarningBanner.razor:30-32` passes **placeholder zeros** — never sees real counts. Quotas limited to MaxTargets + MaxUsers (no MaxProjects / MaxTenants / MaxTaskCap). | Small-Medium — wire real counts; add UI gauges + per-Space rollup. ~2-3h. |
+| **M13.E.3** Quota enforcement | `LicenseService.GetLicenseWarning` exists but **NOTHING in the codebase calls it for refuse-on-create**. | Small — call from Project / Target / User create paths. ~1h. |
+| **M13.F.1** Per-instance features panel | Nothing. | Medium. |
+| **M13.F.2** Global Deployment Freezes | Nothing. | Medium. |
+| **M13.F.3** Performance knobs UI | `appsettings.json`-only today. | Small — move to DB + Razor page. |
+| **M13.F.4** Audit-log retention | **Already done.** `AuditRetentionJob` registered (`HangfireJobRegistrar.cs:18`) — daily 03:00 UTC, deletes audit_entries older than 365 days (hardcoded). `AuditLogService.PurgeOldEntriesAsync` does the work. | **Tiny gap** — (a) make 365-day window configurable; (b) **new** `AiCallLogRetentionJob` for `ai_call_logs` (M11.A.3 added that table without an accompanying sweep — the deferred TODO from M11.A.3). ~1-2h total. |
+| **M13.G** Backup & Restore | `IArtifactStore` abstraction exists with `LocalArtifactStore` impl + explicit comment "future implementation can swap in S3, Azure Blob, etc." Same shape we'd want for `IBackupTarget`. AWSSDK.S3 is in CPM (from M11/D-12.2). `HangfireJobRegistrar` pattern is the obvious place to slot a `BackupJob` recurring task. | Large but **scaffolding is partly there** — `IBackupTarget : ` mirroring `IArtifactStore`, cron job, UI page. |
+
+### M13 revised effort ordering (smallest → largest)
+
+After the audit, the smallest items first (each ~½ day or less) become attractive quick wins to ship as a single "M13 quick polish" batch before tackling the bigger pieces:
+
+1. **M13.C.5** System Manager built-in role — one entry in `BuiltInRoles.All`. 30 min.
+2. **M13.C.1** Test Permissions page — bind `GetPermissionsAsync` to a Radzen grid. 1-2h.
+3. **M13.C.6** Filter-state callouts — cosmetic sweep across 4 list pages. 1h.
+4. **M13.F.4** Configurable retention window + `AiCallLogRetentionJob`. 1-2h.
+5. **M13.E.3** Quota enforcement — call existing `LicenseService.GetLicenseWarning` from write paths. 1h.
+6. **M13.E.2** License Usage dashboard — wire real counts + add per-Space rollup UI. 2-3h.
+7. **M13.E.1** License page polish — parsed display + audit on save. 1h.
+8. **M13.A.1** Audit export buttons. 2h.
+9. **M13.C.3** Service-account discriminator on `ApplicationUser`. 2h.
+10. **M13.A.3** Maintenance mode. 3h.
+11. **M13.F.3** Performance knobs UI. 2h.
+12. **M13.A.2** Diagnostics page. Half day.
+13. **M13.B.1** SMTP config + Save-and-test. Half day.
+14. **M13.D.1** Code Signing Keys UI. Half day.
+15. **M13.F.1** Features panel. Half day.
+16. **M13.F.2** Global Deployment Freezes. Half day.
+17. **M13.C.2** User Invites. Half day.
+18. **M13.B.2/3** Subscriptions (full event-routing system). 2-3 days.
+19. **M13.C.4** API Keys (full per-user system). 2-3 days.
+20. **M13.D.2** Encryption master-key rotation. 2-3 days, high risk.
+21. **M13.G** Backup & Restore. 3-5 days.
+
+Items 1-9 collectively close half of M13 in roughly 2 working days. They're the candidates for a "M13 quick polish" batch landed before the heavier items.
+
 **Out of scope for M13** (documented so we don't drift):
 - **Octopus "Signing Keys" (OIDC token signing keys)** — Octopus's sidebar entry of this name is for RSA keys it uses when it acts as an OIDC *issuer* for its own resource APIs. KrakenDeploy is an OIDC *client* only (consumes external IdPs via `IdentityProvider`), not an issuer. Our code-signing keys for step-packages + adhoc scripts (M13.D.1) are a different concern and live under "Code Signing Keys" to keep the conceptual line clear.
 - Nodes (single-node design; multi-node is M-Scale if ever).
