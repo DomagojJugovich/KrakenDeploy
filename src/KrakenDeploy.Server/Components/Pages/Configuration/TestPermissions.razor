@@ -1,0 +1,276 @@
+@page "/configuration/test-permissions"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using System.Security.Claims
+@using KrakenDeploy.Server.Core.Domain.Security
+@using KrakenDeploy.Server.Core.Domain.Spaces
+@using KrakenDeploy.Server.Data.Identity
+@using KrakenDeploy.Server.Data.Services
+
+@inject UserService UserSvc
+@inject SpaceService SpaceSvc
+@inject IPermissionEvaluator Evaluator
+@inject ISpaceContext SpaceContext
+@inject NotificationService Notify
+
+<PageTitle>Test Permissions — KrakenDeploy</PageTitle>
+
+<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-1">
+    Test Permissions
+</RadzenText>
+<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+    Simulate which permissions a user effectively holds in a given Space,
+    without signing in as them. Useful for diagnosing "why can't user X
+    do Y?" tickets — every check goes through the same
+    <code>IPermissionEvaluator</code> the runtime uses.
+</RadzenText>
+
+<RequirePermission Permission="Permission.UserView">
+    <RadzenStack Gap="1rem" Style="max-width: 1200px;">
+
+        @* ── Picker ───────────────────────────────────────────────── *@
+        <RadzenCard>
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="1rem"
+                         AlignItems="AlignItems.End" Style="flex-wrap: wrap;">
+                <RadzenFormField Text="User" Variant="Variant.Outlined"
+                                 Style="min-width: 320px;">
+                    <RadzenDropDown TValue="Guid?"
+                                    Data="@_users"
+                                    TextProperty="UserName"
+                                    ValueProperty="Id"
+                                    @bind-Value="_selectedUserId"
+                                    Placeholder="Pick a user…"
+                                    AllowFiltering="true"
+                                    FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive" />
+                </RadzenFormField>
+
+                <RadzenFormField Text="Space (scope)" Variant="Variant.Outlined"
+                                 Style="min-width: 240px;">
+                    <RadzenDropDown TValue="Guid?"
+                                    Data="@_spaces"
+                                    TextProperty="Name"
+                                    ValueProperty="Id"
+                                    @bind-Value="_selectedSpaceId"
+                                    Placeholder="(any Space)"
+                                    AllowClear="true"
+                                    AllowFiltering="true"
+                                    FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive" />
+                </RadzenFormField>
+
+                <RadzenButton Text="Evaluate" Icon="play_arrow"
+                              ButtonStyle="ButtonStyle.Primary"
+                              IsBusy="@_evaluating"
+                              Disabled="@(_selectedUserId is null)"
+                              Click="EvaluateAsync" />
+            </RadzenStack>
+        </RadzenCard>
+
+        @* ── Results ──────────────────────────────────────────────── *@
+        @if (_evaluatedFor is not null)
+        {
+            <RadzenCard>
+                <RadzenStack Gap="0.5rem" class="rz-mb-3">
+                    <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H2" class="rz-mb-0">
+                        Effective permissions
+                    </RadzenText>
+                    <div>
+                        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-1">
+                            User <strong>@_evaluatedFor</strong>
+                            in Space <strong>@(_evaluatedSpaceName ?? "(any)")</strong>.
+                        </RadzenText>
+                        @if (_isSystemAdmin)
+                        {
+                            <RadzenStack Orientation="Orientation.Horizontal"
+                                         AlignItems="AlignItems.Center" Gap="0.5rem">
+                                <RadzenBadge BadgeStyle="BadgeStyle.Danger" IsPill="true"
+                                             Text="System Administrator (god-mode)" />
+                                <RadzenText TextStyle="TextStyle.Body2"
+                                            class="rz-color-secondary rz-mb-0">
+                                    All permissions auto-granted via
+                                    <code>Permission.AdministerSystem</code>.
+                                </RadzenText>
+                            </RadzenStack>
+                        }
+                        else
+                        {
+                            <RadzenText TextStyle="TextStyle.Body2"
+                                        class="rz-color-secondary rz-mb-0">
+                                <strong>@_granted</strong> of <strong>@_totalCount</strong>
+                                permissions granted via this user's team memberships + role
+                                assignments resolving to the selected scope.
+                            </RadzenText>
+                        }
+                    </div>
+                </RadzenStack>
+
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="1rem"
+                             AlignItems="AlignItems.Center" class="rz-mb-2">
+                    <RadzenCheckBox TValue="bool" @bind-Value="_showOnlyGranted" />
+                    <RadzenLabel Text="Show only granted" />
+                    <RadzenButton Icon="filter_list_off" Text="Clear filter"
+                                  Size="ButtonSize.ExtraSmall"
+                                  Variant="Variant.Text"
+                                  Click="@(() => _showOnlyGranted = false)"
+                                  Visible="@_showOnlyGranted" />
+                </RadzenStack>
+
+                <RadzenDataGrid Data="@_displayRows"
+                                TItem="PermissionRow"
+                                AllowPaging="true" PageSize="50"
+                                AllowSorting="true" AllowColumnResize="true"
+                                Density="Density.Compact"
+                                EmptyText="@(_showOnlyGranted ? "No granted permissions in this scope." : "No permissions.")">
+                    <Columns>
+                        <RadzenDataGridColumn TItem="PermissionRow" Property="Granted"
+                                              Title="" Width="70px" TextAlign="TextAlign.Center"
+                                              Sortable="true">
+                            <Template Context="row">
+                                @if (row.Granted)
+                                {
+                                    <RadzenIcon Icon="check_circle" Style="color: var(--rz-success);" />
+                                }
+                                else
+                                {
+                                    <RadzenIcon Icon="cancel" Style="color: var(--rz-base-400);" />
+                                }
+                            </Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="PermissionRow" Property="Category"
+                                              Title="Category" Width="200px" Sortable="true" />
+                        <RadzenDataGridColumn TItem="PermissionRow" Property="Name"
+                                              Title="Permission" Sortable="true">
+                            <Template Context="row">
+                                <code>@row.Name</code>
+                            </Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="PermissionRow" Property="Id"
+                                              Title="Id" Width="80px" Sortable="true"
+                                              TextAlign="TextAlign.Right" />
+                    </Columns>
+                </RadzenDataGrid>
+            </RadzenCard>
+        }
+    </RadzenStack>
+</RequirePermission>
+
+@code {
+    private List<ApplicationUser> _users  = [];
+    private List<Space>           _spaces = [];
+
+    private Guid? _selectedUserId;
+    private Guid? _selectedSpaceId;
+
+    private bool _evaluating;
+    private string? _evaluatedFor;
+    private string? _evaluatedSpaceName;
+    private bool _isSystemAdmin;
+    private int _granted;
+    private int _totalCount;
+
+    private bool _showOnlyGranted;
+
+    private List<PermissionRow> _allRows = [];
+    private IEnumerable<PermissionRow> _displayRows =>
+        _showOnlyGranted ? _allRows.Where(r => r.Granted) : _allRows;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _users  = await UserSvc.GetAllAsync();
+            _spaces = await SpaceSvc.GetAllAsync();
+            // Default scope = current Space.
+            _selectedSpaceId = SpaceContext.CurrentSpaceId == Guid.Empty
+                ? null
+                : SpaceContext.CurrentSpaceId;
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error,
+                "Failed to load user/Space lists", ex.Message, 6000);
+        }
+    }
+
+    private async Task EvaluateAsync()
+    {
+        if (_selectedUserId is null) { return; }
+        _evaluating = true;
+        try
+        {
+            // Synthesise the minimal ClaimsPrincipal — IPermissionEvaluator
+            // only reads ClaimTypes.NameIdentifier; everything else (team
+            // membership, role assignments, sysadmin status) is resolved
+            // from the DB by the evaluator itself.
+            var principal = new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(ClaimTypes.NameIdentifier, _selectedUserId.Value.ToString())],
+                authenticationType: "test-permissions"));
+
+            var scope = new PermissionScope(SpaceId: _selectedSpaceId);
+            var grantedSet = await Evaluator.GetPermissionsAsync(principal, scope);
+
+            var user = _users.FirstOrDefault(u => u.Id == _selectedUserId);
+            _evaluatedFor       = user?.UserName ?? "(unknown)";
+            _evaluatedSpaceName = _selectedSpaceId is null
+                ? null
+                : _spaces.FirstOrDefault(s => s.Id == _selectedSpaceId)?.Name;
+
+            // Build the full grid of every Permission enum value × granted-flag.
+            var all = Enum.GetValues<Permission>();
+            _allRows = all
+                .OrderBy(p => (int)p)
+                .Select(p => new PermissionRow(
+                    Id:       (int)p,
+                    Name:     p.ToString(),
+                    Category: CategoryOf((int)p),
+                    Granted:  grantedSet.Contains(p)))
+                .ToList();
+
+            _granted    = grantedSet.Count;
+            _totalCount = _allRows.Count;
+            // SystemAdministrator shortcut: the evaluator returns the full
+            // enum set for sysadmin. Detect that for the banner.
+            _isSystemAdmin = grantedSet.Contains(Permission.AdministerSystem)
+                            && _granted == _totalCount;
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error,
+                "Evaluation failed", ex.Message, 6000);
+        }
+        finally
+        {
+            _evaluating = false;
+        }
+    }
+
+    /// <summary>
+    /// Maps the Permission enum id range to its domain category for the
+    /// "Category" grid column. Ranges match the comments in
+    /// <c>Server.Core/Domain/Security/Permission.cs</c> — keep in sync if
+    /// new permission blocks are added.
+    /// </summary>
+    private static string CategoryOf(int id) => id switch
+    {
+        < 100  => "System / Cross-Space",
+        < 200  => "Project Group",
+        < 300  => "Project / Process",
+        < 400  => "Release / Deployment",
+        < 500  => "Environment / Target",
+        < 600  => "Variables",
+        < 700  => "Lifecycle / Channel",
+        < 800  => "Tenant",
+        < 900  => "Runbook",
+        < 950  => "Step Templates",
+        < 1000 => "Step Packages",
+        < 1100 => "Package Library",
+        < 1200 => "Task / Interruption",
+        < 1300 => "Audit",
+        < 1400 => "API Key",
+        < 1500 => "Identity Provider",
+        < 1600 => "AI Settings",
+        _      => "Other",
+    };
+
+    private sealed record PermissionRow(int Id, string Name, string Category, bool Granted);
+}
