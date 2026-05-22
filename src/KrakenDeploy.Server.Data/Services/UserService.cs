@@ -1,4 +1,5 @@
 using KrakenDeploy.Server.Core.Domain.Licensing;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Data.Identity;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -69,6 +70,69 @@ public class UserService(
         }
 
         return (user, tempPassword);
+    }
+
+    /// <summary>
+    /// Creates a new service-account identity. Service accounts are
+    /// <see cref="UserKind.ServiceAccount"/> users that authenticate ONLY
+    /// via API keys (no password set, OIDC blocked at the registrar). The
+    /// display name becomes the human-readable label; the username is a
+    /// slug-derived "svc-{slug}" so it's distinguishable from human emails
+    /// in audit rows and team-membership lists.
+    /// </summary>
+    public async Task<ApplicationUser> CreateServiceAccountAsync(
+        string displayName, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(displayName);
+
+        var slug = ProjectService.Slugify(displayName);
+        if (string.IsNullOrEmpty(slug))
+        {
+            throw new InvalidOperationException(
+                "Display name must contain at least one alphanumeric character.");
+        }
+        var userName = $"svc-{slug}";
+
+        var existing = await userManager.FindByNameAsync(userName).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            throw new InvalidOperationException(
+                $"A service account named '{displayName}' already exists.");
+        }
+
+        // Service accounts count against MaxUsers — they consume identity
+        // rows and could be used to escape the cap otherwise.
+        var currentUsers = await userManager.Users.CountAsync(ct).ConfigureAwait(false);
+        var refusal = licenseGate.CheckUserCreate(currentUsers);
+        if (refusal is not null)
+        {
+            throw new LicenseLimitException(refusal);
+        }
+
+        var user = new ApplicationUser
+        {
+            UserName       = userName,
+            // Synthetic local-only email so display fallbacks ("u.Email")
+            // still produce something usable. The `.kraken.local` suffix
+            // is a deliberate non-deliverable domain so nobody emails it.
+            Email          = $"{userName}@kraken.local",
+            EmailConfirmed = true,
+            Kind           = UserKind.ServiceAccount,
+        };
+
+        // CreateAsync without a password — UserManager.HasPasswordAsync
+        // returns false, so the password sign-in flow naturally refuses
+        // (returning "Invalid login attempt" with no lockout counter).
+        // Pair this with the OIDC-registrar refuse-on-Kind check below.
+        var result = await userManager.CreateAsync(user).ConfigureAwait(false);
+        if (!result.Succeeded)
+        {
+            var errors = string.Join(", ", result.Errors.Select(e => e.Description));
+            throw new InvalidOperationException(
+                $"Failed to create service account: {errors}");
+        }
+
+        return user;
     }
 
     /// <summary>

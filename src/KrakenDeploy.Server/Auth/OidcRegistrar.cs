@@ -177,6 +177,23 @@ public static class OidcRegistrar
                 // ── 2. Find or provision user ─────────────────────────────────
                 var user = await userManager.FindByEmailAsync(email);
 
+                // Service accounts authenticate ONLY via API keys — block
+                // SSO sign-in even if a matching row exists. Without this,
+                // an IdP user whose email happens to collide with a service
+                // account would inherit the service account's team
+                // membership (a real escalation risk).
+                if (user is not null && user.Kind == UserKind.ServiceAccount)
+                {
+                    logger.LogWarning(
+                        "OIDC [{Scheme}]: sign-in refused for {Email} — that " +
+                        "username belongs to a service account; service accounts " +
+                        "authenticate via API keys only.",
+                        scheme, email);
+                    context.Response.Redirect("/login?error=service_account_no_sso");
+                    context.HandleResponse();
+                    return;
+                }
+
                 if (user is null)
                 {
                     if (!autoProvision)

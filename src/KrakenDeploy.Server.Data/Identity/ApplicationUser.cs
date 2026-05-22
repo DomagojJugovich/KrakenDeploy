@@ -1,3 +1,4 @@
+using KrakenDeploy.Server.Core.Domain.Security;
 using Microsoft.AspNetCore.Identity;
 
 namespace KrakenDeploy.Server.Data.Identity;
@@ -13,6 +14,14 @@ public class ApplicationUser : IdentityUser<Guid>
     {
         Id = Guid.CreateVersion7();
     }
+
+    /// <summary>
+    /// Human vs. ServiceAccount discriminator. Defaults to <see cref="UserKind.Human"/>
+    /// so existing rows (pre-migration) and new password / OIDC sign-ups are
+    /// treated as people. Service accounts authenticate ONLY via API keys —
+    /// the sign-in flow refuses password / OIDC for them.
+    /// </summary>
+    public UserKind Kind { get; set; } = UserKind.Human;
 
     /// <summary>
     /// The <see cref="KrakenDeploy.Server.Core.Domain.Security.IdentityProvider"/> used
