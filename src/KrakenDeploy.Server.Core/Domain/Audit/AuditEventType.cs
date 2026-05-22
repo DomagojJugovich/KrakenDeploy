@@ -43,4 +43,13 @@ public static class AuditEventType
     /// <summary>Operator viewed the decrypted API key via the reveal endpoint.
     /// Sensitive operation — every call writes a row regardless of outcome.</summary>
     public const string SpaceAiApiKeyRevealed   = "SpaceAi.ApiKeyRevealed";
+
+    // ── Licensing (M13.E.1) ──────────────────────────────────────────────────
+    /// <summary>Operator uploaded a license key on /settings/license. Details
+    /// carry the sanitised summary (customer + type + expiry + caps) — never
+    /// the raw JWT, which is sensitive vendor-signed material.</summary>
+    public const string LicenseUploaded         = "License.Uploaded";
+    /// <summary>Upload attempt rejected (invalid signature, expired, malformed).
+    /// Recorded so forensic review can spot license-key brute-force attempts.</summary>
+    public const string LicenseUploadRejected   = "License.UploadRejected";
 }

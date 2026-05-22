@@ -100,8 +100,7 @@ public class LicenseService : ILicenseGate
 
         if (string.IsNullOrWhiteSpace(key))
         {
-            var dataPath = _configuration["Server:DataPath"] ?? "data";
-            var filePath = Path.Combine(dataPath, "license.key");
+            var filePath = GetLicenseFilePath();
             if (File.Exists(filePath))
             {
                 key = File.ReadAllText(filePath).Trim();
@@ -109,6 +108,83 @@ public class LicenseService : ILicenseGate
         }
 
         return ValidateLicense(key ?? string.Empty);
+    }
+
+    /// <summary>
+    /// Validates the pasted key. On success persists it to
+    /// <c>data/license.key</c> so the activation survives restart, clears the
+    /// cached validation result so the next read picks up the new key, and
+    /// returns the validation result. On failure nothing is persisted — the
+    /// previous key (if any) remains active.
+    /// <para>
+    /// Will refuse to overwrite if <c>KRAKEN_LICENSE_KEY</c> or
+    /// <c>License:Key</c> is set in config (those take precedence over the
+    /// file), because writing the file in that case has no effect and would
+    /// silently mislead the operator into thinking they activated something.
+    /// </para>
+    /// </summary>
+    public async Task<LicenseValidationResult> SaveAndActivateAsync(
+        string licenseKey, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(licenseKey);
+
+        // Block when an environment/config override is set — saving the file
+        // would not change runtime behaviour because LoadAndValidate reads
+        // config first.
+        if (!string.IsNullOrWhiteSpace(_configuration["KRAKEN_LICENSE_KEY"]) ||
+            !string.IsNullOrWhiteSpace(_configuration["License:Key"]))
+        {
+            throw new InvalidOperationException(
+                "A license key is provided via KRAKEN_LICENSE_KEY or " +
+                "License:Key in configuration. Remove the environment / config " +
+                "override before activating a key from the UI — otherwise the " +
+                "saved file would be ignored.");
+        }
+
+        // Validate FIRST so an invalid paste doesn't trample a good file.
+        ClearCache();
+        var result = ValidateLicense(licenseKey);
+        if (!result.IsValid)
+        {
+            return result;
+        }
+
+        var filePath = GetLicenseFilePath();
+        var directory = Path.GetDirectoryName(filePath);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+        await File.WriteAllTextAsync(filePath, licenseKey.Trim(), ct).ConfigureAwait(false);
+
+        // Already cached under the new key from ValidateLicense above —
+        // banner + LicenseUsageCounter consumers are caller responsibility.
+        _logger.LogInformation(
+            "License activated and persisted to {Path}. Customer={Customer}, Type={Type}, Expires={Expires}.",
+            filePath, result.Claims!.CustomerName, result.Claims.LicenseType, result.Claims.ExpiresUtc);
+        return result;
+    }
+
+    /// <summary>
+    /// Returns a short, audit-safe summary of the parsed license claims —
+    /// customer name, type, expiry, caps. <em>Never</em> includes the raw JWT
+    /// (that's vendor-signed material; storing it in <c>audit_entries</c>
+    /// would leak it to anyone with audit-view permission).
+    /// </summary>
+    public static string FormatAuditSummary(LicenseClaims claims)
+    {
+        ArgumentNullException.ThrowIfNull(claims);
+        var maxTargets = claims.MaxTargets == 0 ? "unlimited" : claims.MaxTargets.ToString(CultureInfo.InvariantCulture);
+        var maxUsers   = claims.MaxUsers   == 0 ? "unlimited" : claims.MaxUsers.ToString(CultureInfo.InvariantCulture);
+        return $"Customer={claims.CustomerName}, Type={claims.LicenseType}, " +
+               $"Expires={claims.ExpiresUtc:yyyy-MM-dd}, " +
+               $"MaxTargets={maxTargets}, MaxUsers={maxUsers}";
+    }
+
+    private string GetLicenseFilePath()
+    {
+        var dataPath = _configuration["Server:DataPath"] ?? "data";
+        return Path.Combine(dataPath, "license.key");
     }
 
     /// <summary>

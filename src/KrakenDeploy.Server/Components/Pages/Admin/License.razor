@@ -1,10 +1,14 @@
 @page "/settings/license"
 @rendermode InteractiveServer
 @attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.Audit
 @using KrakenDeploy.Server.Core.Domain.Licensing
 
 @inject LicenseService LicenseSvc
+@inject LicenseUsageCounter UsageCounter
+@inject IAuditLog Audit
 @inject NotificationService Notify
+@inject ILogger<License> Log
 
 <PageTitle>License - KrakenDeploy</PageTitle>
 
@@ -18,7 +22,9 @@
             </RadzenText>
             <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
                 Paste the license key you received from KrakenDeploy. The key is
-                validated locally — no internet connection required.
+                validated locally — no internet connection required. On
+                successful activation the key is persisted to
+                <code>data/license.key</code> so it survives server restart.
             </RadzenText>
             <div>
                 <RadzenTextArea @bind-Value="_licenseText"
@@ -30,6 +36,7 @@
             <div>
                 <RadzenButton Text="Validate &amp; Activate"
                               ButtonStyle="ButtonStyle.Primary"
+                              IsBusy="@_saving"
                               Click="ActivateAsync"
                               Disabled="@string.IsNullOrWhiteSpace(_licenseText)" />
             </div>
@@ -69,7 +76,7 @@
                     <div>
                         <strong>Expires:</strong> @c.ExpiresUtc.ToString("yyyy-MM-dd")
                         <span class="rz-color-secondary">
-                            (@((c.ExpiresUtc - DateTimeOffset.UtcNow).Days) days remaining)
+                            (@DaysRemaining(c.ExpiresUtc))
                         </span>
                     </div>
                     <div>
@@ -82,6 +89,14 @@
                         <strong>Issued:</strong> @c.IssuedUtc.ToString("yyyy-MM-dd")
                     </div>
                 </RadzenStack>
+
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+                    <RadzenButton Text="View usage"
+                                  Icon="speed"
+                                  Variant="Variant.Outlined"
+                                  Size="ButtonSize.Small"
+                                  Click="@(() => Navigation.NavigateTo("/configuration/license-usage"))" />
+                </RadzenStack>
             }
             else if (_result.ErrorMessage is not null)
             {
@@ -93,30 +108,87 @@
 }
 
 @code {
+    [Inject] private NavigationManager Navigation { get; set; } = default!;
+
     private string _licenseText = "";
     private LicenseValidationResult? _result;
+    private bool _saving;
 
     protected override void OnInitialized()
     {
         _result = LicenseSvc.LoadAndValidate();
     }
 
-    private void ActivateAsync()
+    private async Task ActivateAsync()
     {
-        LicenseSvc.ClearCache();
-        _result = LicenseSvc.ValidateLicense(_licenseText);
-
-        if (_result.IsValid)
+        if (string.IsNullOrWhiteSpace(_licenseText)) { return; }
+        _saving = true;
+        try
         {
-            Notify.Notify(NotificationSeverity.Success, "Activated",
-                $"License for {_result.Claims!.CustomerName} is active.");
-        }
-        else
-        {
-            Notify.Notify(NotificationSeverity.Error, "Invalid",
-                _result.ErrorMessage ?? "Unknown error.");
-        }
+            // Persist + validate together so a bad paste can't overwrite a
+            // good license file. The cache is also cleared inside the call.
+            _result = await LicenseSvc.SaveAndActivateAsync(_licenseText);
 
-        _licenseText = "";
+            if (_result.IsValid)
+            {
+                // Drop the cached counter snapshot so the banner reflects
+                // the new caps immediately instead of waiting up to 60 s.
+                UsageCounter.Invalidate();
+
+                var summary = LicenseService.FormatAuditSummary(_result.Claims!);
+                await Audit.RecordAsync(
+                    AuditEventType.LicenseUploaded,
+                    subjectType: "License",
+                    subjectName: _result.Claims!.CustomerName,
+                    details:     summary);
+
+                Notify.Notify(NotificationSeverity.Success, "Activated",
+                    $"License for {_result.Claims.CustomerName} is active.");
+                _licenseText = "";
+            }
+            else
+            {
+                // Record the failed attempt — forensic trail for license-key
+                // brute-force or replay scenarios. ErrorMessage is the
+                // validation-layer reason ("signature mismatch", "expired",
+                // etc.) — safe to surface, not the raw JWT.
+                await Audit.RecordAsync(
+                    AuditEventType.LicenseUploadRejected,
+                    subjectType: "License",
+                    details:     _result.ErrorMessage ?? "Unknown validation failure.");
+
+                Notify.Notify(NotificationSeverity.Error, "Invalid",
+                    _result.ErrorMessage ?? "Unknown error.");
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Config-override case — not a validation failure, no point
+            // auditing as such.
+            Notify.Notify(NotificationSeverity.Warning,
+                "Cannot persist license", ex.Message, 8000);
+        }
+        catch (Exception ex)
+        {
+            Log.LogError(ex, "License activation failed unexpectedly.");
+            Notify.Notify(NotificationSeverity.Error,
+                "Activation failed", ex.Message, 6000);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private static string DaysRemaining(DateTimeOffset expiresUtc)
+    {
+        var days = (int)(expiresUtc - DateTimeOffset.UtcNow).TotalDays;
+        return days switch
+        {
+            < 0 => "expired",
+            0   => "today",
+            1   => "1 day remaining",
+            _   => $"{days} days remaining",
+        };
     }
 }
