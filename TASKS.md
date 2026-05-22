@@ -1353,9 +1353,17 @@ Planning pass triggered by a walk-through of Octopus Deploy's `/configuration/*`
   - **M13.F.3** Performance knobs — worker concurrency, queue depth, slow-step threshold for warnings. Today these are `appsettings.json`-only.
   - **M13.F.4** Audit-log retention policy. Today `ai_call_logs` + `audit_entries` grow unbounded. Add retention setting (per category) + a background sweep job that deletes rows older than the retention window. Critical for LAUS GDPR posture — "show me everything you have about user X" is currently unbounded.
 
-- [ ] **M13.G: Backup & Restore** (defer; biggest scope) —
-  - **M13.G.1** `/configuration/backup` — schedule (cron) for DB backup + artifact-storage backup. Output to a configurable target path (local FS, SMB share, S3 via the AWSSDK we already added). Master-key warning callout (encrypted columns won't decrypt without the same `Encryption:MasterKey`). Restore is operator-side scripted (we provide a `kraken restore` CLI verb but no UI — restore-from-UI in a deployment orchestrator is too dangerous).
-  - **M13.G.2** Backup health dashboard — last successful backup timestamp + size + duration, last N runs with status.
+- [ ] **M13.G: Backup & Restore** —
+  - **Massive correction after audit**: backup + restore are **substantially built already** as **CLI commands**, not a fresh greenfield as the original M13 plan assumed. `src/KrakenDeploy.Server/Commands/BackupCommands.cs` (205 lines) + `RestoreCommands.cs` (178 lines) wire `dotnet KrakenDeploy.Server.dll backup --to <dir>` and `… restore --from <dir>` into the Server entry-point switch (Program.cs:57-60). Documented in `docs/on-prem-guide.md` with cron + Task Scheduler examples.
+  - **What `backup` already does**: spawns `pg_dump --clean --if-exists` (auto-detects PostgreSQL 15/16 on Windows + `/usr/bin/pg_dump` + `which pg_dump` on Linux), writes `database.sql`; copies `Server:DataPath` (packages, artifacts, agent binaries) into a sibling `data/`; emits `manifest.json` with timestamp + server version + connection-info; bundles all three into `kraken-backup-{yyyyMMdd-HHmmss}/`.
+  - **What `restore` already does**: reads + validates `manifest.json`; **rejects on server-version mismatch** with a clear "downgrade first" message; runs `psql -v ON_ERROR_STOP=1 -f database.sql`; prompts on data-dir overwrite (`y/N`); copies data dir back.
+  - **Real M13.G gap (much smaller than originally scoped):**
+    - **M13.G.1** UI page `/configuration/backup` that triggers the existing backup logic on-demand from the running server (without requiring shell access). Two modes: "Backup now" (writes to a configurable on-server target dir; shows a progress + final-path notification) and "Schedule" (Hangfire recurring job that calls the same backup code path — slots into `HangfireJobRegistrar` next to the existing 6 jobs).
+    - **M13.G.2** Backup target abstraction. Today output is always a local directory (`--to <dir>`). For S3 / SMB targets we'd lift the inner "where the bundle goes" into an `IBackupTarget` interface (mirrors the established `IArtifactStore` pattern + comment about future S3/Azure swap). `AWSSDK.S3` is already in CPM from M11/D-12.2 — no new dep.
+    - **M13.G.3** Backup health dashboard — last-successful timestamp + size + duration; last N runs with status. Just a query over a new `BackupRun` audit-log row (or reuse `audit_entries` with a `Backup.Completed` event type).
+    - **M13.G.4** Encryption-master-key warning callout in the UI — "this backup cannot be decrypted without the same `Encryption:MasterKey`." Already mentioned in `docs/on-prem-guide.md` but never surfaced visually.
+  - **Restore remains CLI-only** — restore-from-UI in a deployment orchestrator is too dangerous (server can't restore itself while it's running; needs to be stopped, the binary version aligned, then restore). The on-prem guide's CLI workflow stays the source of truth.
+  - Effort: ~half day for the UI + scheduled-job path (reuses existing logic); ~half day for `IBackupTarget` + S3 impl. Much smaller than the original "3-5 days" estimate.
 
 **M13 nav restructure (proposed)**
 
@@ -1441,7 +1449,7 @@ After walking through Octopus's full /configuration/* surface (25 sub-sections) 
 | **M13.F.2** Global Deployment Freezes | Nothing. | Medium. |
 | **M13.F.3** Performance knobs UI | `appsettings.json`-only today. | Small — move to DB + Razor page. |
 | **M13.F.4** Audit-log retention | **Already done.** `AuditRetentionJob` registered (`HangfireJobRegistrar.cs:18`) — daily 03:00 UTC, deletes audit_entries older than 365 days (hardcoded). `AuditLogService.PurgeOldEntriesAsync` does the work. | **Tiny gap** — (a) make 365-day window configurable; (b) **new** `AiCallLogRetentionJob` for `ai_call_logs` (M11.A.3 added that table without an accompanying sweep — the deferred TODO from M11.A.3). ~1-2h total. |
-| **M13.G** Backup & Restore | `IArtifactStore` abstraction exists with `LocalArtifactStore` impl + explicit comment "future implementation can swap in S3, Azure Blob, etc." Same shape we'd want for `IBackupTarget`. AWSSDK.S3 is in CPM (from M11/D-12.2). `HangfireJobRegistrar` pattern is the obvious place to slot a `BackupJob` recurring task. | Large but **scaffolding is partly there** — `IBackupTarget : ` mirroring `IArtifactStore`, cron job, UI page. |
+| **M13.G** Backup & Restore | **Substantially built as CLI.** `Commands/BackupCommands.cs` (205 lines) + `RestoreCommands.cs` (178 lines): pg_dump wrapper + data-dir copy + manifest.json + version-checked restore. Wired into `Program.cs:57-60` switch. Documented in `docs/on-prem-guide.md` with cron + Task Scheduler examples. `IArtifactStore` + `AWSSDK.S3` (CPM) ready for the future `IBackupTarget` abstraction. | **Much smaller than scoped** — UI page that triggers the existing logic + Hangfire schedule + `IBackupTarget` for S3/SMB + health dashboard. ~1 day total. |
 
 ### M13 revised effort ordering (smallest → largest)
 
@@ -1467,7 +1475,7 @@ After the audit, the smallest items first (each ~½ day or less) become attracti
 18. **M13.B.2/3** Subscriptions (full event-routing system). 2-3 days.
 19. **M13.C.4** API Keys (full per-user system). 2-3 days.
 20. **M13.D.2** Encryption master-key rotation. 2-3 days, high risk.
-21. **M13.G** Backup & Restore. 3-5 days.
+21. **M13.G** Backup & Restore — UI page + Hangfire schedule + IBackupTarget. ~1 day (CLI core is already done — `BackupCommands.cs` + `RestoreCommands.cs` exist).
 
 Items 1-9 collectively close half of M13 in roughly 2 working days. They're the candidates for a "M13 quick polish" batch landed before the heavier items.
 
