@@ -197,11 +197,31 @@ public class LicenseService : ILicenseGate
     /// <inheritdoc />
     public string? CheckTargetCreate(int currentTargetCount)
     {
+        if (_cachedResult is null) { LoadAndValidate(); }
+        return EvaluateTargetCreate(_cachedResult, currentTargetCount, DateTimeOffset.UtcNow);
+    }
+
+    /// <inheritdoc />
+    public string? CheckUserCreate(int currentUserCount)
+    {
+        if (_cachedResult is null) { LoadAndValidate(); }
+        return EvaluateUserCreate(_cachedResult, currentUserCount, DateTimeOffset.UtcNow);
+    }
+
+    // ── Pure evaluation core ──────────────────────────────────────────────
+    // These statics carry the gate logic and are unit-tested directly. They
+    // take the validation result + current count + a clock value, so tests
+    // can construct deterministic scenarios (no real time, no real JWT) and
+    // production callers feed in `_cachedResult` + `DateTimeOffset.UtcNow`.
+
+    internal static string? EvaluateTargetCreate(
+        LicenseValidationResult? cachedResult, int currentTargetCount, DateTimeOffset now)
+    {
         ArgumentOutOfRangeException.ThrowIfNegative(currentTargetCount);
-        var refusal = CheckLicenseHealthForCreate();
+        var refusal = EvaluateLicenseHealth(cachedResult, now);
         if (refusal is not null) { return refusal; }
 
-        var claims = _cachedResult!.Claims!;
+        var claims = cachedResult!.Claims!;
         if (claims.MaxTargets > 0 && currentTargetCount >= claims.MaxTargets)
         {
             return $"Target limit reached ({currentTargetCount}/{claims.MaxTargets}). " +
@@ -210,14 +230,14 @@ public class LicenseService : ILicenseGate
         return null;
     }
 
-    /// <inheritdoc />
-    public string? CheckUserCreate(int currentUserCount)
+    internal static string? EvaluateUserCreate(
+        LicenseValidationResult? cachedResult, int currentUserCount, DateTimeOffset now)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(currentUserCount);
-        var refusal = CheckLicenseHealthForCreate();
+        var refusal = EvaluateLicenseHealth(cachedResult, now);
         if (refusal is not null) { return refusal; }
 
-        var claims = _cachedResult!.Claims!;
+        var claims = cachedResult!.Claims!;
         if (claims.MaxUsers > 0 && currentUserCount >= claims.MaxUsers)
         {
             return $"User limit reached ({currentUserCount}/{claims.MaxUsers}). " +
@@ -232,19 +252,16 @@ public class LicenseService : ILicenseGate
     /// on top), or a user-facing refusal message when the license itself
     /// is unusable.
     /// </summary>
-    private string? CheckLicenseHealthForCreate()
+    internal static string? EvaluateLicenseHealth(
+        LicenseValidationResult? cachedResult, DateTimeOffset now)
     {
-        if (_cachedResult is null)
-        {
-            LoadAndValidate();
-        }
-        if (_cachedResult is null || !_cachedResult.IsValid)
+        if (cachedResult is null || !cachedResult.IsValid)
         {
             return "No valid license. Upload a license key in Settings → License " +
                    "before adding more resources.";
         }
-        var claims = _cachedResult.Claims!;
-        if (claims.ExpiresUtc <= DateTimeOffset.UtcNow)
+        var claims = cachedResult.Claims!;
+        if (claims.ExpiresUtc <= now)
         {
             return "License has expired. Upload a new license key to add more resources.";
         }

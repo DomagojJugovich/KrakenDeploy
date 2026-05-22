@@ -32,6 +32,10 @@
     <ProjectReference Include="..\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="KrakenDeploy.Server.Tests" />
+  </ItemGroup>
+
   <!-- Phase D-8: built-in step packages. Each Steps.* project produces a
        {id}-{version}.kdeploy-step archive in its bin/. We take "no-link"
        project references so the Steps projects are built before Server,
