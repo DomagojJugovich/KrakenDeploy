@@ -25,6 +25,7 @@ internal static class BuiltInRoles
     public static readonly Guid TenantManagerId       = new("00000000-0000-0000-0001-000000000006");
     public static readonly Guid RunbookProducerId     = new("00000000-0000-0000-0001-000000000007");
     public static readonly Guid RunbookConsumerId     = new("00000000-0000-0000-0001-000000000008");
+    public static readonly Guid SystemManagerId       = new("00000000-0000-0000-0001-000000000009");
 
     // ── Permission sets ────────────────────────────────────────────────────────
     // Declared BEFORE the All array so static field initialization order
@@ -192,6 +193,118 @@ internal static class BuiltInRoles
         Permission.EventView,
     ];
 
+    /// <summary>
+    /// System Manager = the "delegated admin" tier (M13.C.5). Every
+    /// explicit permission in the enum EXCEPT <see cref="Permission.AdministerSystem"/>.
+    /// <para>
+    /// Why exclude AdministerSystem? It's the god-mode catch-all that
+    /// <see cref="IPermissionEvaluator"/> treats as "implies every other
+    /// permission everywhere, including ones added in future releases."
+    /// Granting AdministerSystem would auto-grant future high-risk
+    /// permissions (encryption-master-key rotation in M13.D.2, signing-
+    /// key revocation in M13.D.1) the moment they ship — without an
+    /// admin's explicit decision to expand the role.
+    /// </para>
+    /// <para>
+    /// What System Manager CAN do: edit users, manage teams + roles,
+    /// configure identity providers, edit license, manage every Space's
+    /// projects + deployments + variables (sensitive included), read
+    /// cross-Space audit log, manage every Space's AI settings + every
+    /// installed step package. Essentially everything an operator might
+    /// delegate to a junior admin.
+    /// </para>
+    /// <para>
+    /// What System Manager CANNOT do: anything we tag with a new
+    /// "danger zone" permission added AFTER this release without
+    /// updating <see cref="SystemManagerPermissions"/>. That's the safety
+    /// property — operators reviewing the role on a future release see
+    /// exactly which new permissions need a conscious grant decision.
+    /// </para>
+    /// </summary>
+    private static readonly Permission[] SystemManagerPermissions =
+    [
+        // ── Cross-Space + server settings ──────────────────────────────────
+        Permission.ConfigureServer,
+        Permission.SpaceView, Permission.SpaceCreate, Permission.SpaceEdit, Permission.SpaceDelete,
+        Permission.UserView, Permission.UserEdit, Permission.UserInvite, Permission.UserChangePassword,
+        Permission.TeamView, Permission.TeamCreate, Permission.TeamEdit, Permission.TeamDelete,
+        Permission.RoleView, Permission.RoleCreate, Permission.RoleEdit, Permission.RoleDelete,
+        Permission.EventViewUnscoped,
+
+        // ── Project Group ─────────────────────────────────────────────────
+        Permission.ProjectGroupView, Permission.ProjectGroupCreate,
+        Permission.ProjectGroupEdit, Permission.ProjectGroupDelete,
+
+        // ── Project / Process ─────────────────────────────────────────────
+        Permission.ProjectView, Permission.ProjectCreate,
+        Permission.ProjectEdit, Permission.ProjectDelete,
+        Permission.ProjectExport, Permission.ProjectImport,
+        Permission.ProcessView, Permission.ProcessEdit,
+
+        // ── Release / Deployment ──────────────────────────────────────────
+        Permission.ReleaseView, Permission.ReleaseCreate,
+        Permission.ReleaseEdit, Permission.ReleaseDelete,
+        Permission.DeploymentView, Permission.DeploymentCreate, Permission.DeploymentDelete,
+        Permission.ArtifactView, Permission.ArtifactDownload,
+        Permission.ArtifactCreate, Permission.ArtifactDelete,
+        Permission.OfflineResultUpload,
+
+        // ── Environment / Target ──────────────────────────────────────────
+        Permission.EnvironmentView, Permission.EnvironmentCreate,
+        Permission.EnvironmentEdit, Permission.EnvironmentDelete,
+        Permission.MachineView, Permission.MachineCreate,
+        Permission.MachineEdit, Permission.MachineDelete, Permission.MachineRetire,
+
+        // ── Variables (incl. sensitive — System Manager is system-wide admin) ─
+        Permission.VariableView, Permission.VariableEdit,
+        Permission.VariableViewUnscoped, Permission.VariableEditUnscoped,
+        Permission.LibraryVariableSetView, Permission.LibraryVariableSetCreate,
+        Permission.LibraryVariableSetEdit, Permission.LibraryVariableSetDelete,
+
+        // ── Lifecycle / Channel ───────────────────────────────────────────
+        Permission.LifecycleView, Permission.LifecycleCreate,
+        Permission.LifecycleEdit, Permission.LifecycleDelete,
+        Permission.ChannelView, Permission.ChannelCreate,
+        Permission.ChannelEdit, Permission.ChannelDelete,
+
+        // ── Tenant ────────────────────────────────────────────────────────
+        Permission.TenantView, Permission.TenantCreate,
+        Permission.TenantEdit, Permission.TenantDelete,
+        Permission.TagSetView, Permission.TagSetCreate,
+        Permission.TagSetEdit, Permission.TagSetDelete,
+
+        // ── Runbook ───────────────────────────────────────────────────────
+        Permission.RunbookView, Permission.RunbookEdit,
+        Permission.RunbookRunView, Permission.RunbookRunCreate, Permission.RunbookRunDelete,
+
+        // ── Step Templates + Step Packages ───────────────────────────────
+        Permission.StepTemplateView, Permission.StepTemplateCreate,
+        Permission.StepTemplateEdit, Permission.StepTemplateDelete,
+        Permission.StepPackageView, Permission.StepPackageManage,
+
+        // ── Package Library ──────────────────────────────────────────────
+        Permission.PackageView, Permission.PackageEdit, Permission.PackageDelete,
+
+        // ── Task / Interruption ──────────────────────────────────────────
+        Permission.TaskView, Permission.TaskCancel, Permission.TaskEdit, Permission.TaskRerun,
+        Permission.InterruptionView, Permission.InterruptionViewSubmitResponsible,
+
+        // ── Audit ────────────────────────────────────────────────────────
+        Permission.EventView,
+
+        // ── API Key (admin view + own) ───────────────────────────────────
+        Permission.ApiKeyView, Permission.ApiKeyCreate,
+        Permission.ApiKeyEdit, Permission.ApiKeyDelete,
+        Permission.ApiKeyViewAll, Permission.ApiKeyDeleteAll,
+
+        // ── Identity Provider ────────────────────────────────────────────
+        Permission.IdentityProviderView, Permission.IdentityProviderCreate,
+        Permission.IdentityProviderEdit, Permission.IdentityProviderDelete,
+
+        // ── AI Settings ──────────────────────────────────────────────────
+        Permission.SpaceAiSettingsView, Permission.SpaceAiSettingsManage,
+    ];
+
     // ── Built-in role definitions (declared LAST — depends on permission sets above) ─
 
     public static readonly BuiltInRoleDef[] All =
@@ -200,6 +313,18 @@ internal static class BuiltInRoles
             "God mode. Implies every other permission everywhere. Cannot be " +
             "scope-restricted; always granted system-wide.",
             permissions: [Permission.AdministerSystem],
+            isSystemOnly: true),
+
+        new(SystemManagerId, "System Manager",
+            "Delegated-admin tier. System-wide access to everything an " +
+            "operator might delegate to a junior admin — manage users, " +
+            "teams, roles, IdPs, edit the license, manage every Space's " +
+            "projects + variables + step packages, read cross-Space audit. " +
+            "EXCLUDES AdministerSystem (the god-mode catch-all) so future " +
+            "high-risk permissions (encryption master-key rotation, signing-" +
+            "key revocation) require an explicit grant decision when they " +
+            "ship — they're not auto-granted by virtue of holding this role.",
+            permissions: SystemManagerPermissions,
             isSystemOnly: true),
 
         new(SpaceManagerId, "Space Manager",
