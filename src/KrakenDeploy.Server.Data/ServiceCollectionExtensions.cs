@@ -89,6 +89,12 @@ public static class ServiceCollectionExtensions
         // calls when MTD >= BudgetUsdPerMonth.
         services.AddScoped<KrakenDeploy.Ai.IBudgetTracker,
                            Services.Ai.DbBudgetTracker>();
+        // M11.A.6.2 — EF-backed settings provider. Reads the Space's
+        // SpaceAiSettings row, decrypts the API key, projects to
+        // KrakenAiSettings. Replaces the no-op default Ai.AddKrakenAi
+        // would have registered (it uses TryAdd, so this Add wins).
+        services.AddScoped<KrakenDeploy.Ai.IKrakenAiSettingsProvider,
+                           Services.Ai.DbKrakenAiSettingsProvider>();
         services.AddScoped<TenantService>();
         services.AddScoped<LifecycleService>();
         services.AddScoped<ChannelService>();
