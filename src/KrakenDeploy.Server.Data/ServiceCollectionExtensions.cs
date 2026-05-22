@@ -79,6 +79,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<StepPackageCatalogService>();
         services.AddScoped<StepPackageService>();
         services.AddScoped<StepPackageResolver>();
+        // M11.A.3 — EF-backed AI audit sink. Replaces the no-op default
+        // registered by KrakenDeploy.Ai.AddKrakenAi() so production rows
+        // land in the ai_call_logs table.
+        services.AddScoped<KrakenDeploy.Ai.IKrakenAiCallSink,
+                           Services.Ai.DbKrakenAiCallSink>();
         services.AddScoped<TenantService>();
         services.AddScoped<LifecycleService>();
         services.AddScoped<ChannelService>();

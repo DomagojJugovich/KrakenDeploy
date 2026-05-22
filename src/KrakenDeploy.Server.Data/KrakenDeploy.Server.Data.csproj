@@ -27,6 +27,9 @@
   <ItemGroup>
     <ProjectReference Include="..\KrakenDeploy.Server.Core\KrakenDeploy.Server.Core.csproj" />
     <ProjectReference Include="..\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
+    <!-- M11.A — Server.Data hosts the EF-backed DbKrakenAiCallSink that
+         persists IKrakenAi audit rows into the AiCallLog table. -->
+    <ProjectReference Include="..\KrakenDeploy.Ai\KrakenDeploy.Ai.csproj" />
   </ItemGroup>
 
   <ItemGroup>

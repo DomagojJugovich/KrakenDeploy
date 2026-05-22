@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using KrakenDeploy.Server.Core.Domain.Ai;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Channels;
 using KrakenDeploy.Server.Core.Domain.Common;
@@ -54,6 +55,7 @@ public class KrakenDbContext(
     public DbSet<StepTemplateCatalogEntry> StepTemplateCatalog => Set<StepTemplateCatalogEntry>();
     public DbSet<StepPackage> StepPackages => Set<StepPackage>();
     public DbSet<StepPackageCatalogEntry> StepPackageCatalog => Set<StepPackageCatalogEntry>();
+    public DbSet<AiCallLog> AiCallLogs => Set<AiCallLog>();
     public DbSet<Tenant> Tenants => Set<Tenant>();
     public DbSet<TagSet> TagSets => Set<TagSet>();
     public DbSet<TenantTag> TenantTags => Set<TenantTag>();

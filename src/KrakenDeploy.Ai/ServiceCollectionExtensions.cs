@@ -30,6 +30,16 @@ public static class ServiceCollectionExtensions
         // a fresh settings instance on every call rather than caching.
         services.AddScoped<IKrakenAi, KrakenAi>();
 
+        // Default sink is a no-op; the host (KrakenDeploy.Server.Data)
+        // overrides via TryAddScoped<IKrakenAiCallSink, DbKrakenAiCallSink>()
+        // BEFORE this method runs, or simply replaces this registration
+        // after. The TryAddScoped here uses the framework's "if not
+        // already registered" semantics so a prior host-side registration
+        // wins.
+        Microsoft.Extensions.DependencyInjection.Extensions
+            .ServiceCollectionDescriptorExtensions
+            .TryAddScoped<IKrakenAiCallSink, NullKrakenAiCallSink>(services);
+
         return services;
     }
 }

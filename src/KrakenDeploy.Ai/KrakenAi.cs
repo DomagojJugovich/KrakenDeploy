@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -32,15 +33,18 @@ public sealed class KrakenAi : IKrakenAi
 {
     private readonly KrakenAiClientFactory _factory;
     private readonly IKrakenAiSettingsProvider _settingsProvider;
+    private readonly IKrakenAiCallSink _callSink;
     private readonly ILogger<KrakenAi> _logger;
 
     public KrakenAi(
         KrakenAiClientFactory factory,
         IKrakenAiSettingsProvider settingsProvider,
+        IKrakenAiCallSink callSink,
         ILogger<KrakenAi> logger)
     {
         _factory          = factory;
         _settingsProvider = settingsProvider;
+        _callSink         = callSink;
         _logger           = logger;
     }
 
@@ -55,22 +59,28 @@ public sealed class KrakenAi : IKrakenAi
         var settings = await GuardAsync(feature, ct).ConfigureAwait(false);
         using var client = _factory.CreateClient(settings);
 
-        var sw       = Stopwatch.StartNew();
-        var response = await client
-            .GetResponseAsync(messages, ToChatOptions(options), ct)
-            .ConfigureAwait(false);
-        sw.Stop();
-
-        var prompt   = response.Usage?.InputTokenCount  ?? 0;
-        var output   = response.Usage?.OutputTokenCount ?? 0;
-
-        return new KrakenAiCompletion(
-            Text:             response.Text ?? string.Empty,
-            PromptTokens:     (int)prompt,
-            CompletionTokens: (int)output,
-            Latency:          sw.Elapsed,
-            Provider:         settings.Provider.ToString(),
-            Model:            settings.Model ?? "");
+        var sw = Stopwatch.StartNew();
+        ChatResponse? response = null;
+        Exception?    error    = null;
+        try
+        {
+            response = await client
+                .GetResponseAsync(messages, ToChatOptions(options), ct)
+                .ConfigureAwait(false);
+            return BuildCompletion(settings, response, sw.Elapsed);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            error = ex;
+            throw;
+        }
+        finally
+        {
+            sw.Stop();
+            await EmitAuditAsync(
+                settings, feature, options, messages, response, sw.Elapsed, error, ct)
+                .ConfigureAwait(false);
+        }
     }
 
     public async Task<TResult> CompleteAsync<TResult>(
@@ -89,17 +99,38 @@ public sealed class KrakenAi : IKrakenAi
         // provider's structured-output mode (Anthropic tool use / OpenAI
         // response_format=json_schema) and deserialises to TResult. Single
         // call site for every structured-prompt across the codebase.
-        var response = await client
-            .GetResponseAsync<TResult>(messages, ToChatOptions(options), cancellationToken: ct)
-            .ConfigureAwait(false);
-
-        if (response.TryGetResult(out var result))
+        var sw = Stopwatch.StartNew();
+        ChatResponse<TResult>? response = null;
+        Exception? error = null;
+        try
         {
-            return result;
+            response = await client
+                .GetResponseAsync<TResult>(messages, ToChatOptions(options), cancellationToken: ct)
+                .ConfigureAwait(false);
+            if (response.TryGetResult(out var result))
+            {
+                return result;
+            }
+            error = new InvalidOperationException(
+                $"AI provider returned a response that could not be parsed as {typeof(TResult).Name}. " +
+                $"Raw text: {response.Text}");
+            throw error;
         }
-        throw new InvalidOperationException(
-            $"AI provider returned a response that could not be parsed as {typeof(TResult).Name}. " +
-            $"Raw text: {response.Text}");
+        catch (Exception ex) when (error is null && ex is not OperationCanceledException)
+        {
+            error = ex;
+            throw;
+        }
+        finally
+        {
+            sw.Stop();
+            await EmitAuditAsync(
+                settings, feature, options, messages,
+                response?.Messages.FirstOrDefault() is { } _
+                    ? new ChatResponse(response.Messages) { Usage = response.Usage }
+                    : null,
+                sw.Elapsed, error, ct).ConfigureAwait(false);
+        }
     }
 
     public async IAsyncEnumerable<string> StreamChatAsync(
@@ -113,20 +144,60 @@ public sealed class KrakenAi : IKrakenAi
         var settings = await GuardAsync(feature, ct).ConfigureAwait(false);
         using var client = _factory.CreateClient(settings);
 
-        await foreach (var update in client
-            .GetStreamingResponseAsync(messages, ToChatOptions(options), ct)
-            .ConfigureAwait(false))
+        var sw            = Stopwatch.StartNew();
+        var accumulator   = new StringBuilder();
+        Exception? error  = null;
+
+        IAsyncEnumerator<ChatResponseUpdate> enumerator;
+        try
         {
-            // Each update may carry multiple content parts; concatenate any
-            // text parts and yield the merged delta. Provider-specific
-            // tool-call deltas are ignored — streaming surface is text-only
-            // by design (the assistant UI doesn't need tools).
-            var text = update.Text;
-            if (!string.IsNullOrEmpty(text))
+            enumerator = client
+                .GetStreamingResponseAsync(messages, ToChatOptions(options), ct)
+                .GetAsyncEnumerator(ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            sw.Stop();
+            await EmitAuditAsync(
+                settings, feature, options, messages,
+                response: null, sw.Elapsed, ex, ct).ConfigureAwait(false);
+            throw;
+        }
+
+        await using (enumerator.ConfigureAwait(false))
+        {
+            while (true)
             {
-                yield return text;
+                bool hasNext;
+                try
+                {
+                    hasNext = await enumerator.MoveNextAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    error = ex;
+                    break;
+                }
+                if (!hasNext) { break; }
+
+                var text = enumerator.Current.Text;
+                if (!string.IsNullOrEmpty(text))
+                {
+                    accumulator.Append(text);
+                    yield return text;
+                }
             }
         }
+
+        sw.Stop();
+        // For streaming responses Microsoft.Extensions.AI doesn't always
+        // surface usage stats — emit a partial audit row capturing what we
+        // know (latency + accumulated text length as a proxy on the body
+        // when LogPromptBodies is on).
+        await EmitStreamingAuditAsync(
+            settings, feature, options, messages,
+            accumulator.ToString(), sw.Elapsed, error, ct).ConfigureAwait(false);
+        if (error is not null) { throw error; }
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
@@ -168,6 +239,139 @@ public sealed class KrakenAi : IKrakenAi
         chatOptions.Temperature     = options.Temperature;
         chatOptions.MaxOutputTokens = options.MaxOutputTokens;
         return chatOptions;
+    }
+
+    private static KrakenAiCompletion BuildCompletion(
+        KrakenAiSettings settings, ChatResponse response, TimeSpan latency) =>
+        new(
+            Text:             response.Text ?? string.Empty,
+            PromptTokens:     (int)(response.Usage?.InputTokenCount  ?? 0),
+            CompletionTokens: (int)(response.Usage?.OutputTokenCount ?? 0),
+            Latency:          latency,
+            Provider:         settings.Provider.ToString(),
+            Model:            settings.Model ?? "");
+
+    /// <summary>
+    /// Writes one audit row to the sink for a non-streaming call. Never
+    /// throws — sink failures are logged and swallowed because audit
+    /// emission must not break the user-facing AI surface.
+    /// </summary>
+    private async Task EmitAuditAsync(
+        KrakenAiSettings settings,
+        KrakenAiFeature  feature,
+        KrakenAiRequestOptions? options,
+        IReadOnlyList<ChatMessage> messages,
+        ChatResponse? response,
+        TimeSpan latency,
+        Exception? error,
+        CancellationToken ct)
+    {
+        var prompt = (int)(response?.Usage?.InputTokenCount  ?? 0);
+        var output = (int)(response?.Usage?.OutputTokenCount ?? 0);
+
+        var entry = new AiCallLogEntry
+        {
+            Provider         = settings.Provider.ToString(),
+            Model            = settings.Model ?? string.Empty,
+            Feature          = feature.ToString(),
+            PromptTokens     = prompt,
+            CompletionTokens = output,
+            LatencyMs        = (int)latency.TotalMilliseconds,
+            // CostUsd: zero for now — populated by M11.A.5's rate table.
+            CostUsd          = 0m,
+            Success          = error is null,
+            ErrorMessage     = SanitizeError(error),
+            CorrelationId    = options?.CorrelationId,
+            PromptBodyJson   = settings.LogPromptBodies ? SerializePrompt(messages) : null,
+            ResponseBody     = settings.LogPromptBodies ? response?.Text             : null,
+        };
+
+        try
+        {
+            await _callSink.WriteAsync(entry, ct).ConfigureAwait(false);
+        }
+        catch (Exception sinkError)
+        {
+            _logger.LogError(sinkError,
+                "KrakenAi audit sink failed; AI call itself succeeded={Success}.",
+                error is null);
+        }
+    }
+
+    /// <summary>
+    /// Variant for streaming completions — we don't have a final
+    /// <c>ChatResponse</c>, just the accumulated text. Token counts are
+    /// zero because most providers don't surface usage stats on the
+    /// streaming wire.
+    /// </summary>
+    private async Task EmitStreamingAuditAsync(
+        KrakenAiSettings settings,
+        KrakenAiFeature  feature,
+        KrakenAiRequestOptions? options,
+        IReadOnlyList<ChatMessage> messages,
+        string accumulatedText,
+        TimeSpan latency,
+        Exception? error,
+        CancellationToken ct)
+    {
+        var entry = new AiCallLogEntry
+        {
+            Provider         = settings.Provider.ToString(),
+            Model            = settings.Model ?? string.Empty,
+            Feature          = feature.ToString(),
+            PromptTokens     = 0,
+            CompletionTokens = 0,
+            LatencyMs        = (int)latency.TotalMilliseconds,
+            CostUsd          = 0m,
+            Success          = error is null,
+            ErrorMessage     = SanitizeError(error),
+            CorrelationId    = options?.CorrelationId,
+            PromptBodyJson   = settings.LogPromptBodies ? SerializePrompt(messages) : null,
+            ResponseBody     = settings.LogPromptBodies ? accumulatedText           : null,
+        };
+
+        try
+        {
+            await _callSink.WriteAsync(entry, ct).ConfigureAwait(false);
+        }
+        catch (Exception sinkError)
+        {
+            _logger.LogError(sinkError,
+                "KrakenAi audit sink failed for streaming call; AI call itself succeeded={Success}.",
+                error is null);
+        }
+    }
+
+    /// <summary>
+    /// Serialises the chat messages array to JSON for the audit row's
+    /// PromptBodyJson column. Only invoked when LogPromptBodies is on.
+    /// </summary>
+    private static string SerializePrompt(IReadOnlyList<ChatMessage> messages)
+    {
+        var simplified = messages.Select(m => new
+        {
+            role    = m.Role.Value,
+            content = m.Text,
+        });
+        return JsonSerializer.Serialize(simplified);
+    }
+
+    /// <summary>
+    /// Cleans up the error message for audit storage. Strips any value
+    /// resembling an API key (anything that looks like <c>sk-…</c> or a
+    /// long base64-ish blob) so a botched call doesn't bleed credentials
+    /// into the audit table.
+    /// </summary>
+    private static string? SanitizeError(Exception? error)
+    {
+        if (error is null) { return null; }
+        var message = $"{error.GetType().Name}: {error.Message}";
+        // Crude but effective: redact anything resembling an api key.
+        message = System.Text.RegularExpressions.Regex.Replace(
+            message,
+            @"(sk-[A-Za-z0-9_\-]{16,}|[A-Za-z0-9_\-]{40,})",
+            "<redacted>");
+        return message.Length > 4096 ? message[..4096] : message;
     }
 }
 
