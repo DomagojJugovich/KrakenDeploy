@@ -12,7 +12,7 @@ namespace KrakenDeploy.Server.Services;
 /// no phone-home. The private key is held by the license issuer (vendor), not
 /// the server.
 /// </summary>
-public class LicenseService
+public class LicenseService : ILicenseGate
 {
     private readonly RSA _rsa;
     private readonly IConfiguration _configuration;
@@ -184,6 +184,71 @@ public class LicenseService
     public void ClearCache()
     {
         _cachedResult = null;
+    }
+
+    // ── ILicenseGate ───────────────────────────────────────────────────────
+    // Enforcement is deliberately separate from GetLicenseWarning(): the
+    // banner conflates expiry + cap warnings into one user-friendly string,
+    // but a refuse-on-create gate needs to distinguish "expired" (refuse
+    // everything) from "approaching limit" (allow, just warn). The methods
+    // below treat the 90% threshold purely as a soft warning surface; the
+    // hard stop only fires AT the cap (currentCount >= max).
+
+    /// <inheritdoc />
+    public string? CheckTargetCreate(int currentTargetCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(currentTargetCount);
+        var refusal = CheckLicenseHealthForCreate();
+        if (refusal is not null) { return refusal; }
+
+        var claims = _cachedResult!.Claims!;
+        if (claims.MaxTargets > 0 && currentTargetCount >= claims.MaxTargets)
+        {
+            return $"Target limit reached ({currentTargetCount}/{claims.MaxTargets}). " +
+                   "Upgrade your license to add more targets.";
+        }
+        return null;
+    }
+
+    /// <inheritdoc />
+    public string? CheckUserCreate(int currentUserCount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(currentUserCount);
+        var refusal = CheckLicenseHealthForCreate();
+        if (refusal is not null) { return refusal; }
+
+        var claims = _cachedResult!.Claims!;
+        if (claims.MaxUsers > 0 && currentUserCount >= claims.MaxUsers)
+        {
+            return $"User limit reached ({currentUserCount}/{claims.MaxUsers}). " +
+                   "Upgrade your license to add more users.";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Common health gate for create operations. Returns null when the
+    /// license is valid + unexpired (cap-specific checks are then layered
+    /// on top), or a user-facing refusal message when the license itself
+    /// is unusable.
+    /// </summary>
+    private string? CheckLicenseHealthForCreate()
+    {
+        if (_cachedResult is null)
+        {
+            LoadAndValidate();
+        }
+        if (_cachedResult is null || !_cachedResult.IsValid)
+        {
+            return "No valid license. Upload a license key in Settings → License " +
+                   "before adding more resources.";
+        }
+        var claims = _cachedResult.Claims!;
+        if (claims.ExpiresUtc <= DateTimeOffset.UtcNow)
+        {
+            return "License has expired. Upload a new license key to add more resources.";
+        }
+        return null;
     }
 
     private static LicenseClaims ParseClaims(ClaimsPrincipal principal)

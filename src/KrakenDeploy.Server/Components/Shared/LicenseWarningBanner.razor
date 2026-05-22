@@ -1,5 +1,6 @@
 @using KrakenDeploy.Server.Core.Domain.Licensing
 @inject LicenseService LicenseSvc
+@inject LicenseUsageCounter UsageCounter
 @inject NavigationManager Nav
 
 @if (_warning is not null)
@@ -22,14 +23,29 @@
     private string? _warning;
     private string _severityClass = "kraken-license-warning";
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
-        // Check immediately. For target/user count we use
-        // reasonable placeholders that the full implementation
-        // can refine with actual DB counts.
-        _warning = LicenseSvc.GetLicenseWarning(
-            currentTargetCount: 0,
-            currentUserCount: 0);
+        // Real counts from the cached UsageCounter (60 s TTL). The banner
+        // sits in MainLayout, so this is called on every navigation — the
+        // cache keeps the DB load to ~1 query / minute / instance.
+        try
+        {
+            var (targets, users) = await UsageCounter.GetSnapshotAsync();
+            _warning = LicenseSvc.GetLicenseWarning(
+                currentTargetCount: targets,
+                currentUserCount:   users);
+        }
+        catch
+        {
+            // Banner must never break the layout. If the snapshot fails
+            // (e.g. DB unreachable during startup), fall back to a license-
+            // health-only check with zero counts — the expiry/no-license
+            // path still surfaces, the cap path silently no-ops.
+            _warning = LicenseSvc.GetLicenseWarning(
+                currentTargetCount: 0,
+                currentUserCount:   0);
+        }
+
         _severityClass = _warning is not null && _warning.Contains("expired", StringComparison.OrdinalIgnoreCase)
             ? "kraken-license-error"
             : "kraken-license-warning";

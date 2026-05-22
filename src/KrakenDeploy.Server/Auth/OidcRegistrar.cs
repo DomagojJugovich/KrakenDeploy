@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using KrakenDeploy.Server.Core.Domain.Licensing;
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data;
@@ -181,6 +182,23 @@ public static class OidcRegistrar
                     if (!autoProvision)
                     {
                         context.Response.Redirect("/login?error=not_provisioned");
+                        context.HandleResponse();
+                        return;
+                    }
+
+                    // License-cap gate. Without it, an unmetered IdP can
+                    // silently mint users past the license's MaxUsers (just
+                    // by letting people log in once). Counts against the
+                    // global Identity table — same metric as InviteAsync.
+                    var licenseGate = services.GetRequiredService<ILicenseGate>();
+                    var currentUsers = await userManager.Users.CountAsync();
+                    var capRefusal = licenseGate.CheckUserCreate(currentUsers);
+                    if (capRefusal is not null)
+                    {
+                        logger.LogWarning(
+                            "OIDC [{Scheme}]: JIT provisioning refused for {Email} — {Reason}",
+                            scheme, email, capRefusal);
+                        context.Response.Redirect("/login?error=license_limit");
                         context.HandleResponse();
                         return;
                     }

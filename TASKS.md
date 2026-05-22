@@ -1471,11 +1471,11 @@ After walking through Octopus's full /configuration/* surface (25 sub-sections) 
 
 After the audit, the smallest items first (each ~½ day or less) become attractive quick wins to ship as a single "M13 quick polish" batch before tackling the bigger pieces:
 
-1. **M13.C.5** System Manager built-in role — one entry in `BuiltInRoles.All`. 30 min.
-2. **M13.C.1** Test Permissions page — bind `GetPermissionsAsync` to a Radzen grid. 1-2h.
+1. **M13.C.5** System Manager built-in role — one entry in `BuiltInRoles.All`. 30 min. **DONE** (commit `3a52e08`).
+2. **M13.C.1** Test Permissions page — bind `GetPermissionsAsync` to a Radzen grid. 1-2h. **DONE** (commit `6a3054d`).
 3. **M13.C.6** Filter-state callouts — cosmetic sweep across 4 list pages. 1h.
-4. **M13.F.4** Configurable retention window + `AiCallLogRetentionJob`. 1-2h.
-5. **M13.E.3** Quota enforcement — call existing `LicenseService.GetLicenseWarning` from write paths. 1h.
+4. **M13.F.4** Configurable retention window + `AiCallLogRetentionJob`. 1-2h. **DONE** (commit `de9868a`).
+5. **M13.E.3** Quota enforcement — call existing `LicenseService.GetLicenseWarning` from write paths. 1h. **DONE** — `ILicenseGate` introduced in `Server.Core/Domain/Licensing`; `LicenseService` implements it; `TargetRegistrationService.CreateAsync`, `UserService.InviteAsync`, and OIDC JIT-provisioning gate against it. `LicenseWarningBanner` now reads real counts via `LicenseUsageCounter` (60 s cache). 4 integration tests pin the contract.
 6. **M13.E.2** License Usage dashboard — wire real counts + add per-Space rollup UI. 2-3h.
 7. **M13.E.1** License page polish — parsed display + audit on save. 1h.
 8. **M13.A.1** Audit export buttons. 2h.

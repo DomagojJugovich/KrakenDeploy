@@ -5,6 +5,7 @@ using Hangfire.PostgreSql;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Auth;
 using KrakenDeploy.Server.Core.Domain.Audit;
+using KrakenDeploy.Server.Core.Domain.Licensing;
 using KrakenDeploy.Server.Core.Domain.StepPackages;
 using KrakenDeploy.Server.Commands;
 using KrakenDeploy.Server.Components;
@@ -244,6 +245,14 @@ public static class Program
         builder.Services.AddSingleton<TargetStatusPublisher>();
         builder.Services.AddSingleton<ServerAgentUpdateService>();
         builder.Services.AddSingleton<LicenseService>();
+        // ILicenseGate forwards to the same LicenseService instance — the
+        // data layer enforces quotas through this interface so it stays
+        // free of the JWT / RSA dependency chain.
+        builder.Services.AddSingleton<ILicenseGate>(
+            sp => sp.GetRequiredService<LicenseService>());
+        // Cached snapshot of target + user counts for the banner. Scoped so
+        // the cache lives across requests but is bounded to one DI tree.
+        builder.Services.AddSingleton<LicenseUsageCounter>();
         builder.Services.AddHostedService<DeploymentWorker>();
         builder.Services.AddHostedService<RunbookRunWorker>();
         builder.Services.AddSingleton<ServerScriptStepRunner>();

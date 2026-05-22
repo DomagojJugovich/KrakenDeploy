@@ -1,3 +1,4 @@
+using KrakenDeploy.Server.Core.Domain.Licensing;
 using KrakenDeploy.Server.Data.Identity;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -11,7 +12,8 @@ namespace KrakenDeploy.Server.Data.Services;
 /// </summary>
 public class UserService(
     UserManager<ApplicationUser> userManager,
-    IDbContextFactory<KrakenDbContext> dbFactory)
+    IDbContextFactory<KrakenDbContext> dbFactory,
+    ILicenseGate licenseGate)
 {
     public Task<List<ApplicationUser>> GetAllAsync(CancellationToken ct = default)
         => userManager.Users
@@ -37,6 +39,17 @@ public class UserService(
         if (existing is not null)
         {
             throw new InvalidOperationException($"A user with email '{email}' already exists.");
+        }
+
+        // License quota gate. We count via UserManager.Users (no Space filter
+        // applies to Identity rows) so the count is naturally global. Done
+        // after the duplicate-email check so the operator gets the more
+        // specific error first if both apply.
+        var currentUsers = await userManager.Users.CountAsync(ct).ConfigureAwait(false);
+        var refusal = licenseGate.CheckUserCreate(currentUsers);
+        if (refusal is not null)
+        {
+            throw new LicenseLimitException(refusal);
         }
 
         var tempPassword = GenerateTempPassword();

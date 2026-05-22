@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using KrakenDeploy.Server.Core.Domain.Licensing;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using Microsoft.EntityFrameworkCore;
 
@@ -10,7 +11,10 @@ namespace KrakenDeploy.Server.Data.Services;
 /// The raw token is returned once (to show in the wizard); only its SHA-256
 /// hash is persisted, giving the same security property as a password hash.
 /// </summary>
-public class TargetRegistrationService(IDbContextFactory<KrakenDbContext> dbFactory, TimeProvider timeProvider)
+public class TargetRegistrationService(
+    IDbContextFactory<KrakenDbContext> dbFactory,
+    TimeProvider timeProvider,
+    ILicenseGate licenseGate)
 {
     private const int TokenByteLength = 32; // 256-bit → 43-char base64url
     private static readonly TimeSpan TokenLifetime = TimeSpan.FromHours(24);
@@ -31,6 +35,23 @@ public class TargetRegistrationService(IDbContextFactory<KrakenDbContext> dbFact
         ArgumentNullException.ThrowIfNull(roles);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // License quota gate. Count across ALL Spaces — the license cap is
+        // server-wide, not per-Space; an operator must not be able to bypass
+        // it by hopping between Spaces. The count happens inside the same
+        // DbContext for cheap-and-correct (any concurrent inserts will race,
+        // but the cap is a soft business limit, not a security boundary —
+        // worst case is +1 over the cap under heavy concurrent operator
+        // activity, which the next attempt will block).
+        var currentTargets = await db.DeploymentTargets
+            .IgnoreQueryFilters()
+            .CountAsync(ct)
+            .ConfigureAwait(false);
+        var refusal = licenseGate.CheckTargetCreate(currentTargets);
+        if (refusal is not null)
+        {
+            throw new LicenseLimitException(refusal);
+        }
 
         var (plainToken, hash) = GenerateToken();
         var now = timeProvider.GetUtcNow();
