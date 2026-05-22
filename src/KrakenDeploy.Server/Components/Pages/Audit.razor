@@ -60,6 +60,20 @@
             <RadzenButton Icon="clear" Text="Reset"
                           ButtonStyle="ButtonStyle.Light"
                           Click="ResetFilters" />
+
+            @* Export takes the current filter values via query string so the
+               download mirrors exactly what's on screen. Anchor download
+               attribute hints the filename; the server's
+               Content-Disposition header wins, so the stamped name shows. *@
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                         Style="margin-left:auto">
+                <RadzenButton Icon="download" Text="CSV"
+                              ButtonStyle="ButtonStyle.Light"
+                              Click="@(() => Nav.NavigateTo(BuildExportUrl(".csv"), forceLoad: true))" />
+                <RadzenButton Icon="data_object" Text="JSON"
+                              ButtonStyle="ButtonStyle.Light"
+                              Click="@(() => Nav.NavigateTo(BuildExportUrl(".json"), forceLoad: true))" />
+            </RadzenStack>
         </RadzenStack>
     </RadzenCard>
 
@@ -262,6 +276,45 @@
         _to   = DateTime.Today;
         _from = DateTime.Today.AddDays(-30);
         _ = ApplyFiltersAsync();
+    }
+
+    /// <summary>
+    /// Builds an export URL with the current filter values as query
+    /// parameters. <paramref name="suffix"/> selects the format (".csv" or
+    /// ".json"). The "to" boundary mirrors the page's BuildQuery() — it's
+    /// pushed to the next day so the endpoint's exclusive comparison
+    /// includes everything from the chosen day.
+    /// </summary>
+    private string BuildExportUrl(string suffix)
+    {
+        var qs = new List<string>();
+
+        if (_from.HasValue)
+        {
+            var fromUtc = new DateTimeOffset(DateTime.SpecifyKind(_from.Value.Date, DateTimeKind.Utc));
+            qs.Add($"from={Uri.EscapeDataString(fromUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture))}");
+        }
+        if (_to.HasValue)
+        {
+            // Match BuildQuery: exclusive day boundary = chosen day + 1.
+            var toUtc = new DateTimeOffset(DateTime.SpecifyKind(_to.Value.Date.AddDays(1), DateTimeKind.Utc));
+            qs.Add($"to={Uri.EscapeDataString(toUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture))}");
+        }
+        if (!string.IsNullOrWhiteSpace(_eventTypeFilter))
+        {
+            qs.Add($"eventType={Uri.EscapeDataString(_eventTypeFilter.Trim())}");
+        }
+        if (!string.IsNullOrWhiteSpace(_userFilter))
+        {
+            qs.Add($"user={Uri.EscapeDataString(_userFilter.Trim())}");
+        }
+        if (!string.IsNullOrWhiteSpace(_subjectTypeFilter))
+        {
+            qs.Add($"subjectType={Uri.EscapeDataString(_subjectTypeFilter.Trim())}");
+        }
+
+        var query = qs.Count == 0 ? "" : "?" + string.Join('&', qs);
+        return $"/api/audit/export{suffix}{query}";
     }
 
     private async Task ShowSnapshot(AuditEntry e)

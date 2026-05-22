@@ -253,6 +253,9 @@ public static class Program
         // Cached snapshot of target + user counts for the banner. Scoped so
         // the cache lives across requests but is bounded to one DI tree.
         builder.Services.AddSingleton<LicenseUsageCounter>();
+        // Streaming CSV / JSON export of audit_entries (M13.A.1). Scoped
+        // because each export opens its own DbContext.
+        builder.Services.AddScoped<AuditExportService>();
         builder.Services.AddHostedService<DeploymentWorker>();
         builder.Services.AddHostedService<RunbookRunWorker>();
         builder.Services.AddSingleton<ServerScriptStepRunner>();
@@ -1421,6 +1424,54 @@ public static class Program
                     return Results.BadRequest(new { error = ex.Message });
                 }
             }).RequirePermission(Permission.StepTemplateCreate);
+
+        // ── Audit log streaming export (M13.A.1) ─────────────────────────────
+        // Two endpoints — CSV (Excel-friendly) + JSON (round-trippable) —
+        // both stream the filtered audit rows directly to the response body
+        // without buffering the full result set. Filter params mirror the
+        // /audit page UI: from/to/eventType/user/subjectType.
+
+        static AuditExportService.Filter ParseAuditExportFilter(HttpRequest req)
+        {
+            DateTimeOffset? Parse(string? s)
+                => string.IsNullOrWhiteSpace(s)
+                    ? null
+                    : DateTimeOffset.Parse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal);
+
+            // The page UI sends "to" as an inclusive day boundary; the
+            // service treats it as exclusive (< toUtc). Caller already
+            // adds the +1 day, so we just pass it through.
+            return new AuditExportService.Filter(
+                FromUtc:              Parse(req.Query["from"]),
+                ToUtcExclusive:       Parse(req.Query["to"]),
+                EventTypeContains:    req.Query["eventType"].FirstOrDefault(),
+                UserDisplayContains:  req.Query["user"].FirstOrDefault(),
+                SubjectTypeContains:  req.Query["subjectType"].FirstOrDefault());
+        }
+
+        app.MapGet("/api/audit/export.csv",
+            async (HttpContext ctx, AuditExportService svc) =>
+            {
+                var filter = ParseAuditExportFilter(ctx.Request);
+                var stamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+                ctx.Response.ContentType = "text/csv; charset=utf-8";
+                ctx.Response.Headers.ContentDisposition =
+                    $"attachment; filename=\"audit-{stamp}.csv\"";
+                await svc.WriteCsvAsync(ctx.Response.Body, filter, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+            }).RequirePermission(Permission.EventView);
+
+        app.MapGet("/api/audit/export.json",
+            async (HttpContext ctx, AuditExportService svc) =>
+            {
+                var filter = ParseAuditExportFilter(ctx.Request);
+                var stamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+                ctx.Response.ContentType = "application/json; charset=utf-8";
+                ctx.Response.Headers.ContentDisposition =
+                    $"attachment; filename=\"audit-{stamp}.json\"";
+                await svc.WriteJsonAsync(ctx.Response.Body, filter, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+            }).RequirePermission(Permission.EventView);
 
         app.MapGet("/api/step-templates/{id:guid}/export",
             async (Guid id, StepTemplateService svc, CancellationToken ct) =>
