@@ -100,6 +100,15 @@
     <PackageVersion Include="coverlet.collector" Version="6.0.2" />
   </ItemGroup>
 
+  <ItemGroup Label="Email / SMTP (M13.B.1)">
+    <!-- MailKit / MimeKit — modern .NET SMTP client. System.Net.Mail.SmtpClient
+         is documented as "not recommended for new development" because it
+         doesn't speak TLS 1.2+ STARTTLS properly. State-institution SMTP
+         relays (the LAUS audience) often run older Exchange or sendmail
+         with quirky STARTTLS handshakes; MailKit handles those cleanly. -->
+    <PackageVersion Include="MailKit" Version="4.16.0" />
+  </ItemGroup>
+
   <ItemGroup Label="Sample dependencies">
     <!-- AWSSDK.S3 v4 targets net10.0 directly. Only consumed by the
          examples/AwsS3UploadStepPackage sample — the main KrakenDeploy

@@ -52,4 +52,16 @@ public static class AuditEventType
     /// <summary>Upload attempt rejected (invalid signature, expired, malformed).
     /// Recorded so forensic review can spot license-key brute-force attempts.</summary>
     public const string LicenseUploadRejected   = "License.UploadRejected";
+
+    // ── SMTP (M13.B.1) ───────────────────────────────────────────────────────
+    /// <summary>Operator updated the server-wide SMTP settings. Details carry
+    /// the host + port + TLS mode + from-address + whether the password was
+    /// changed — never the password itself.</summary>
+    public const string SmtpSettingsUpdated     = "Smtp.SettingsUpdated";
+    /// <summary>Operator clicked "Send test email" and the probe succeeded.
+    /// Details: recipient + elapsed time.</summary>
+    public const string SmtpTestProbeSucceeded  = "Smtp.TestProbeSucceeded";
+    /// <summary>Operator clicked "Send test email" and the probe failed.
+    /// Details: recipient + MailKit error message (no credentials leaked).</summary>
+    public const string SmtpTestProbeFailed     = "Smtp.TestProbeFailed";
 }

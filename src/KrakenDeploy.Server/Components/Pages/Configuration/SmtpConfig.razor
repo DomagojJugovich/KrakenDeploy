@@ -1,0 +1,319 @@
+@page "/configuration/smtp"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using KrakenDeploy.Server.Core.Domain.Audit
+@using KrakenDeploy.Server.Core.Domain.Notifications
+
+@inject SmtpSettingsService SmtpSvc
+@inject IAuditLog Audit
+@inject NotificationService Notify
+@inject ILogger<SmtpConfig> Log
+
+<PageTitle>SMTP — KrakenDeploy</PageTitle>
+
+<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-1">
+    SMTP
+</RadzenText>
+<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+    Outbound mail relay used by event-subscription notifications (M13.B.2/3),
+    deployment alerts, and the "Send test" button below. The password is
+    AES-256-GCM-encrypted at rest. Leave it blank when saving to keep the
+    existing one — only paste a new value when you actually want to rotate.
+</RadzenText>
+
+<RequirePermission Permission="Permission.ConfigureServer">
+    @if (_loading)
+    {
+        <RadzenProgressBarCircular ShowValue="false"
+                                   Mode="ProgressBarMode.Indeterminate"
+                                   Style="margin: 2rem auto; display: block;" />
+    }
+    else
+    {
+        <RadzenCard Style="max-width: 760px;" class="rz-mb-3">
+            <RadzenStack Gap="1rem">
+
+                @* ── Master switch ───────────────────────────────────── *@
+                <RadzenStack Orientation="Orientation.Horizontal"
+                             AlignItems="AlignItems.Center" Gap="0.75rem">
+                    <RadzenSwitch @bind-Value="_form.Enabled" Name="enabled" />
+                    <RadzenLabel Text="Enable outbound mail" Component="enabled" />
+                    @if (!_form.Enabled)
+                    {
+                        <span class="rz-color-secondary" style="font-size:0.85em;">
+                            (settings persist; pipeline silently no-ops)
+                        </span>
+                    }
+                </RadzenStack>
+
+                @* ── Host / Port / TLS ──────────────────────────────── *@
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem"
+                             Style="flex-wrap:wrap">
+                    <RadzenFormField Text="Host *" Variant="Variant.Outlined"
+                                     Style="min-width:280px;flex:1">
+                        <RadzenTextBox @bind-Value="_form.Host" Placeholder="smtp.example.com" />
+                    </RadzenFormField>
+                    <RadzenFormField Text="Port" Variant="Variant.Outlined"
+                                     Style="min-width:120px;width:120px">
+                        <RadzenNumeric TValue="int" @bind-Value="_form.Port" Min="1" Max="65535" />
+                    </RadzenFormField>
+                </RadzenStack>
+
+                <RadzenFormField Text="TLS mode" Variant="Variant.Outlined"
+                                 Style="max-width:380px">
+                    <RadzenDropDown TValue="SmtpTlsMode"
+                                    @bind-Value="_form.TlsMode"
+                                    Data="@_tlsModes"
+                                    TextProperty="Label" ValueProperty="Value" />
+                </RadzenFormField>
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-0">
+                    @TlsHint(_form.TlsMode)
+                </RadzenText>
+
+                @* ── Auth ───────────────────────────────────────────── *@
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem"
+                             Style="flex-wrap:wrap">
+                    <RadzenFormField Text="Username" Variant="Variant.Outlined"
+                                     Style="min-width:280px;flex:1">
+                        <RadzenTextBox @bind-Value="_form.Username"
+                                       Placeholder="(leave blank for anonymous)" />
+                    </RadzenFormField>
+                    <RadzenFormField Text="@(_passwordIsSet ? "Password (set — leave blank to keep)" : "Password")"
+                                     Variant="Variant.Outlined"
+                                     Style="min-width:280px;flex:1">
+                        <RadzenPassword @bind-Value="_passwordInput"
+                                        Placeholder="@(_passwordIsSet ? "•••••• (unchanged)" : "")"
+                                        AutoComplete="false" />
+                    </RadzenFormField>
+                </RadzenStack>
+
+                @* ── From + Timeout ─────────────────────────────────── *@
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem"
+                             Style="flex-wrap:wrap">
+                    <RadzenFormField Text="From address *" Variant="Variant.Outlined"
+                                     Style="min-width:280px;flex:1">
+                        <RadzenTextBox @bind-Value="_form.FromAddress"
+                                       Placeholder="kraken@example.com" />
+                    </RadzenFormField>
+                    <RadzenFormField Text="From display name" Variant="Variant.Outlined"
+                                     Style="min-width:240px;flex:1">
+                        <RadzenTextBox @bind-Value="_form.FromDisplayName"
+                                       Placeholder="KrakenDeploy" />
+                    </RadzenFormField>
+                    <RadzenFormField Text="Timeout (s)" Variant="Variant.Outlined"
+                                     Style="min-width:120px;width:120px">
+                        <RadzenNumeric TValue="int" @bind-Value="_form.TimeoutSeconds" Min="1" Max="300" />
+                    </RadzenFormField>
+                </RadzenStack>
+
+                @* ── Save buttons ──────────────────────────────────── *@
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+                    <RadzenButton Text="Save"
+                                  ButtonStyle="ButtonStyle.Light"
+                                  Icon="save"
+                                  IsBusy="@_saving"
+                                  Click="@(() => SaveAsync(thenTest: false))" />
+                    <RadzenButton Text="Save and send test"
+                                  ButtonStyle="ButtonStyle.Primary"
+                                  Icon="outgoing_mail"
+                                  IsBusy="@_saving"
+                                  Click="@(() => SaveAsync(thenTest: true))" />
+                </RadzenStack>
+            </RadzenStack>
+        </RadzenCard>
+
+        @* ── Test box ───────────────────────────────────────────────── *@
+        <RadzenCard Style="max-width: 760px;" class="rz-mb-3">
+            <RadzenStack Gap="0.75rem">
+                <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H2" class="rz-mb-0">
+                    Send test
+                </RadzenText>
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-0">
+                    Sends a probe email using the form values above. Use this
+                    after pasting credentials to confirm the relay works
+                    before any real notification depends on it.
+                </RadzenText>
+                <RadzenFormField Text="Recipient *" Variant="Variant.Outlined"
+                                 Style="max-width:380px">
+                    <RadzenTextBox @bind-Value="_recipient"
+                                   Placeholder="ops@example.com" />
+                </RadzenFormField>
+
+                @if (_lastProbe is not null)
+                {
+                    <RadzenAlert
+                        AlertStyle="@(_lastProbe.Succeeded ? AlertStyle.Success : AlertStyle.Danger)"
+                        Variant="Variant.Flat" Shade="Shade.Lighter" AllowClose="false">
+                        <RadzenStack Gap="0.25rem">
+                            <strong>
+                                @(_lastProbe.Succeeded
+                                    ? $"Probe ok ({_lastProbe.Elapsed.TotalMilliseconds:F0} ms)"
+                                    : "Probe failed")
+                            </strong>
+                            <span style="font-family:monospace;font-size:0.85em">
+                                @_lastProbe.Detail
+                            </span>
+                        </RadzenStack>
+                    </RadzenAlert>
+                }
+            </RadzenStack>
+        </RadzenCard>
+    }
+</RequirePermission>
+
+@code {
+    private bool _loading = true;
+    private bool _saving;
+    private SmtpSettings _form = new();
+    private bool _passwordIsSet;
+    private string? _passwordInput;
+    private string _recipient = "";
+    private SmtpSettingsService.ProbeResult? _lastProbe;
+
+    private sealed record TlsModeOption(string Label, SmtpTlsMode Value);
+
+    private readonly List<TlsModeOption> _tlsModes =
+    [
+        new("None (plaintext)",                 SmtpTlsMode.None),
+        new("STARTTLS when available",          SmtpTlsMode.StartTlsWhenAvailable),
+        new("STARTTLS required",                SmtpTlsMode.StartTlsRequired),
+        new("Implicit TLS (port 465-style)",    SmtpTlsMode.ImplicitTls),
+    ];
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var existing = await SmtpSvc.GetAsync();
+            if (existing is not null)
+            {
+                _form = existing;
+            }
+
+            // Probe whether a password is set without revealing it. We
+            // can't expose the cipher to the browser, so the only signal
+            // we need is "field is non-null" — fetch via the decrypted
+            // overload but immediately drop the actual value.
+            var decrypted = await SmtpSvc.GetDecryptedSettingsAsync();
+            _passwordIsSet = !string.IsNullOrEmpty(decrypted?.Password);
+
+            _recipient = _form.FromAddress;
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error,
+                "Failed to load SMTP settings", ex.Message, 6000);
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task SaveAsync(bool thenTest)
+    {
+        // Minimal client-side validation — the service applies its own
+        // ArgumentException guard but we want to fail fast before round-
+        // tripping through the encryption + DB layers.
+        if (string.IsNullOrWhiteSpace(_form.Host))
+        {
+            Notify.Notify(NotificationSeverity.Warning, "Host is required");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(_form.FromAddress))
+        {
+            Notify.Notify(NotificationSeverity.Warning, "From address is required");
+            return;
+        }
+        if (thenTest && string.IsNullOrWhiteSpace(_recipient))
+        {
+            Notify.Notify(NotificationSeverity.Warning, "Recipient is required for test");
+            return;
+        }
+
+        _saving = true;
+        _lastProbe = null;
+        try
+        {
+            // Save first. Pass _passwordInput; the service treats null as
+            // "keep existing", empty as "clear", non-empty as "replace".
+            var savedPassword = _passwordInput;
+            var saved = await SmtpSvc.UpsertAsync(_form, savedPassword);
+            _form = saved;
+            _passwordIsSet = _passwordIsSet || !string.IsNullOrEmpty(savedPassword);
+            _passwordInput = null; // clear the input field after a successful save
+
+            var passwordAction = savedPassword switch
+            {
+                null     => "preserved",
+                ""       => "cleared",
+                _        => "rotated",
+            };
+            await Audit.RecordAsync(
+                AuditEventType.SmtpSettingsUpdated,
+                subjectType: "SmtpSettings",
+                details:     $"Host={_form.Host}, Port={_form.Port}, " +
+                             $"TlsMode={_form.TlsMode}, From={_form.FromAddress}, " +
+                             $"Enabled={_form.Enabled}, Password={passwordAction}");
+
+            if (!thenTest)
+            {
+                Notify.Notify(NotificationSeverity.Success, "Saved",
+                    "SMTP settings updated.", 3000);
+                return;
+            }
+
+            // Test: fetch the decrypted snapshot just persisted so the
+            // probe sends with whatever the operator just saved (including
+            // a preserved-but-not-changed password).
+            var snapshot = await SmtpSvc.GetDecryptedSettingsAsync();
+            _lastProbe = await SmtpSvc.SendProbeAsync(
+                snapshot!.Value.Settings,
+                snapshot!.Value.Password,
+                _recipient!);
+
+            await Audit.RecordAsync(
+                _lastProbe.Succeeded
+                    ? AuditEventType.SmtpTestProbeSucceeded
+                    : AuditEventType.SmtpTestProbeFailed,
+                subjectType: "SmtpSettings",
+                details:     $"Recipient={_recipient}, " +
+                             $"Elapsed={_lastProbe.Elapsed.TotalMilliseconds:F0} ms, " +
+                             $"Detail={_lastProbe.Detail}");
+
+            if (_lastProbe.Succeeded)
+            {
+                Notify.Notify(NotificationSeverity.Success, "Test sent",
+                    $"Delivered in {_lastProbe.Elapsed.TotalMilliseconds:F0} ms.", 4000);
+            }
+            else
+            {
+                Notify.Notify(NotificationSeverity.Error, "Test failed",
+                    _lastProbe.Detail, 8000);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.LogError(ex, "SMTP save / test failed.");
+            Notify.Notify(NotificationSeverity.Error, "Save failed", ex.Message, 6000);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private static string TlsHint(SmtpTlsMode mode) => mode switch
+    {
+        SmtpTlsMode.None
+            => "Plaintext only — acceptable for trusted internal relays on a private network; never for the public internet.",
+        SmtpTlsMode.StartTlsWhenAvailable
+            => "Tries STARTTLS, falls back to plaintext. A downgrade attacker can strip STARTTLS — use 'STARTTLS required' for any relay outside your trusted perimeter.",
+        SmtpTlsMode.StartTlsRequired
+            => "STARTTLS required; refuses to send if the server doesn't advertise it or the upgrade fails. Safe default for the public internet.",
+        SmtpTlsMode.ImplicitTls
+            => "Wraps the socket in TLS from byte 0 (port 465). Use this when the relay expects a TLS-only port.",
+        _ => "",
+    };
+}

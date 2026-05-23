@@ -57,6 +57,8 @@ public class KrakenDbContext(
     public DbSet<StepPackageCatalogEntry> StepPackageCatalog => Set<StepPackageCatalogEntry>();
     public DbSet<AiCallLog> AiCallLogs => Set<AiCallLog>();
     public DbSet<SpaceAiSettings> SpaceAiSettings => Set<SpaceAiSettings>();
+    public DbSet<KrakenDeploy.Server.Core.Domain.Notifications.SmtpSettings> SmtpSettings
+        => Set<KrakenDeploy.Server.Core.Domain.Notifications.SmtpSettings>();
     public DbSet<Tenant> Tenants => Set<Tenant>();
     public DbSet<TagSet> TagSets => Set<TagSet>();
     public DbSet<TenantTag> TenantTags => Set<TenantTag>();
