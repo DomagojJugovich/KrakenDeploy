@@ -125,6 +125,7 @@ public static class ServiceCollectionExtensions
         // service opens its own DbContext per call via the factory.
         services.AddSingleton<FeatureFlagService>();
         services.AddSingleton<DeploymentFreezeService>();
+        services.AddScoped<EventSubscriptionService>();
         // Backup engine + service (M13.G). Scoped because the service opens
         // its own DbContext per call (manual UI invocation + Hangfire schedule
         // both go through it). BackupJob resolves out of the Hangfire scope.

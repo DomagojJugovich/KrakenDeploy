@@ -104,6 +104,12 @@ public sealed class SpacesTests
             // server-level audit-like rows.
             "BackupSettings",
             "BackupRun",
+            // Subscriptions (M13.B.2/3) — nullable-SpaceId pattern (like
+            // Team / RoleAssignment) instead of the ISpaceScoped marker
+            // because a single row can be either Space-scoped or
+            // system-wide (SpaceId=null).
+            "EventSubscription",
+            "SubscriptionDelivery",
         };
 
         var assembly = typeof(Project).Assembly;

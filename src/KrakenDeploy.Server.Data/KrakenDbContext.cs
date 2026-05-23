@@ -67,6 +67,10 @@ public class KrakenDbContext(
         => Set<KrakenDeploy.Server.Core.Domain.Backup.BackupSettings>();
     public DbSet<KrakenDeploy.Server.Core.Domain.Backup.BackupRun> BackupRuns
         => Set<KrakenDeploy.Server.Core.Domain.Backup.BackupRun>();
+    public DbSet<KrakenDeploy.Server.Core.Domain.Subscriptions.EventSubscription> EventSubscriptions
+        => Set<KrakenDeploy.Server.Core.Domain.Subscriptions.EventSubscription>();
+    public DbSet<KrakenDeploy.Server.Core.Domain.Subscriptions.SubscriptionDelivery> SubscriptionDeliveries
+        => Set<KrakenDeploy.Server.Core.Domain.Subscriptions.SubscriptionDelivery>();
     public DbSet<Tenant> Tenants => Set<Tenant>();
     public DbSet<TagSet> TagSets => Set<TagSet>();
     public DbSet<TenantTag> TenantTags => Set<TenantTag>();

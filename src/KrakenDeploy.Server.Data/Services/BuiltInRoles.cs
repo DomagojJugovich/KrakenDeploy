@@ -307,6 +307,9 @@ internal static class BuiltInRoles
         // ── Deployment freezes (M13.F.2) ─────────────────────────────────
         Permission.DeploymentFreezeView, Permission.DeploymentFreezeManage,
         Permission.DeploymentFreezeOverride,
+
+        // ── Subscriptions (M13.B.2/3) ───────────────────────────────────
+        Permission.SubscriptionView, Permission.SubscriptionManage,
     ];
 
     // ── Built-in role definitions (declared LAST — depends on permission sets above) ─

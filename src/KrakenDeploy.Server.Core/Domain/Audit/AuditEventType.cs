@@ -60,6 +60,28 @@ public static class AuditEventType
     /// readers can spot deviations at a glance).</summary>
     public const string FeatureFlagUpdated      = "Feature.Updated";
 
+    // ── Subscriptions (M13.B.2/3) ────────────────────────────────────────────
+    /// <summary>Operator created an EventSubscription.</summary>
+    public const string SubscriptionCreated        = "Subscription.Created";
+    /// <summary>Operator modified an existing EventSubscription.</summary>
+    public const string SubscriptionUpdated        = "Subscription.Updated";
+    /// <summary>Operator deleted an EventSubscription.</summary>
+    public const string SubscriptionDeleted        = "Subscription.Deleted";
+    /// <summary>A transport delivery for a matched event completed
+    /// successfully. Details: subscription id + transport + detail blurb
+    /// + elapsed ms.</summary>
+    public const string SubscriptionDeliverySucceeded = "Subscription.DeliverySucceeded";
+    /// <summary>A transport delivery failed (after Hangfire exhausted its
+    /// retry policy). Details: subscription id + transport + error
+    /// message + final attempt number.</summary>
+    public const string SubscriptionDeliveryFailed = "Subscription.DeliveryFailed";
+
+    /// <summary>The AI inspection transport produced a diagnosis. Written
+    /// as its own audit event so the diagnosis itself becomes subscribable
+    /// (the "diagnose, then post to Slack" workflow chains two subscriptions).
+    /// Details: subject event id + truncated summary.</summary>
+    public const string DiagnosisCompleted         = "Diagnosis.Completed";
+
     // ── Backup (M13.G) ───────────────────────────────────────────────────────
     /// <summary>Operator changed the backup schedule / target directory /
     /// retention. Details: enabled + cron + target + retention.</summary>

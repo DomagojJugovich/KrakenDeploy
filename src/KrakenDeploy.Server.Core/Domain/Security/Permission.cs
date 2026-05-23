@@ -242,6 +242,15 @@ public enum Permission
     /// </summary>
     DeploymentFreezeOverride = 1602,
 
+    // ── Subscriptions (1700–1799; Phase M13.B.2/3) ──────────────────────────
+
+    /// <summary>View event-subscription definitions + delivery history.</summary>
+    SubscriptionView       = 1700,
+    /// <summary>Create / edit / delete event subscriptions. Doesn't grant
+    /// view-event access — recipients still need EventView on the source
+    /// scope to receive deliveries for that scope.</summary>
+    SubscriptionManage     = 1701,
+
     // ── Reserved blocks for future entities ─────────────────────────────────
     // Add when the matching domain entity ships. Keeps the enum stable so
     // existing roles don't have their permission-set IDs renumbered.
