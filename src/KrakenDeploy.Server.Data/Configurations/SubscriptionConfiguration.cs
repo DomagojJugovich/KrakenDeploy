@@ -79,3 +79,22 @@ public sealed class SubscriptionPollerStateConfiguration
         builder.HasKey(s => s.Id);
     }
 }
+
+public sealed class EmailDigestOutboxEntryConfiguration
+    : IEntityTypeConfiguration<EmailDigestOutboxEntry>
+{
+    public void Configure(EntityTypeBuilder<EmailDigestOutboxEntry> builder)
+    {
+        builder.ToTable("email_digest_outbox");
+        builder.HasKey(e => e.Id);
+
+        // UNIQUE (SubscriptionId, EventId) — same idempotency guard as
+        // SubscriptionDelivery. A crash-resumed dispatcher must not
+        // double-enqueue an event into the outbox.
+        builder.HasIndex(e => new { e.SubscriptionId, e.EventId }).IsUnique();
+
+        // The flusher's "what's due to send" query reads by SubscriptionId
+        // + AddedUtc, so a composite index keeps that cheap.
+        builder.HasIndex(e => new { e.SubscriptionId, e.AddedUtc });
+    }
+}

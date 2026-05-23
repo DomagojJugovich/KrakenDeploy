@@ -38,6 +38,15 @@ public sealed class EventDispatcher(
         ArgumentNullException.ThrowIfNull(subscription);
         ArgumentNullException.ThrowIfNull(auditEvent);
 
+        // Email-digest mode bypasses the immediate transport — accumulate
+        // into the outbox and let EmailDigestFlushJob batch + send when
+        // the digest window elapses. Phase 5.
+        if (subscription.Transport == SubscriptionTransport.Email &&
+            subscription.DigestEveryMinutes > 0)
+        {
+            return await EnqueueDigestAsync(subscription, auditEvent, ct).ConfigureAwait(false);
+        }
+
         if (!_byKind.TryGetValue(subscription.Transport, out var transport))
         {
             logger.LogWarning(
@@ -113,6 +122,45 @@ public sealed class EventDispatcher(
             ct: ct).ConfigureAwait(false);
 
         return delivery;
+    }
+
+    /// <summary>
+    /// Append one event to the digest outbox for a digest-mode email
+    /// subscription. Returns a synthetic delivery record for the
+    /// in-flight state so the page's history grid shows "in-progress"
+    /// for the events waiting to be batched.
+    /// </summary>
+    private async Task<SubscriptionDelivery?> EnqueueDigestAsync(
+        EventSubscription subscription, AuditEntry auditEvent, CancellationToken ct)
+    {
+        var entry = new EmailDigestOutboxEntry
+        {
+            SubscriptionId = subscription.Id,
+            EventId        = auditEvent.Id,
+            AddedUtc       = time.GetUtcNow(),
+        };
+        try
+        {
+            await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+            db.EmailDigestOutbox.Add(entry);
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            logger.LogDebug(
+                "Digest queued: sub={SubId} event={EventId} (window={Window}m)",
+                subscription.Id, auditEvent.Id, subscription.DigestEveryMinutes);
+        }
+        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+        {
+            // Already queued — same idempotency contract as
+            // SubscriptionDelivery's pre-insert.
+            logger.LogDebug(
+                "Duplicate digest queue skipped (sub {SubId}, event {EventId})",
+                subscription.Id, auditEvent.Id);
+        }
+        // No SubscriptionDelivery row gets written here — the flusher
+        // produces ONE delivery row per BATCH, not per event. Return null
+        // so the poller logs "delivered=0" for this match (the actual
+        // delivery happens in the flush cycle).
+        return null;
     }
 
     private static bool IsUniqueViolation(DbUpdateException ex)

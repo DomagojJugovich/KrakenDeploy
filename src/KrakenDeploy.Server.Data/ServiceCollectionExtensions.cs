@@ -156,7 +156,12 @@ public static class ServiceCollectionExtensions
             KrakenDeploy.Server.Data.Services.Subscriptions.IEventTransport,
             KrakenDeploy.Server.Data.Services.Subscriptions.EmailImmediateTransport>(
             sp => sp.GetRequiredService<KrakenDeploy.Server.Data.Services.Subscriptions.EmailImmediateTransport>());
+        // Digest sender — used by EmailDigestFlushJob; shares the MailKit
+        // handshake shape with EmailImmediateTransport so "test SMTP passes"
+        // implies "digest delivery will work too".
+        services.AddScoped<KrakenDeploy.Server.Data.Services.Subscriptions.EmailDigestSender>();
         services.AddTransient<SubscriptionPollerJob>();
+        services.AddTransient<EmailDigestFlushJob>();
         // Backup engine + service (M13.G). Scoped because the service opens
         // its own DbContext per call (manual UI invocation + Hangfire schedule
         // both go through it). BackupJob resolves out of the Hangfire scope.

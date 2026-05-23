@@ -99,6 +99,51 @@ public sealed class EventSubscriptionService(
         return existing;
     }
 
+    /// <summary>
+    /// M11.C closes through here. Ensures a Space has a built-in
+    /// "diagnose Deployment.Failed via AI" subscription — creates it if
+    /// missing, leaves it alone otherwise. Operator drives this from the
+    /// AI Settings page when they enable Diagnosis. The seeded
+    /// subscription is a normal row — operator can edit / disable /
+    /// delete it like any other; re-calling this method after delete
+    /// re-creates the row (intentional — pin the "AI diagnose is on
+    /// and this is the wire" mapping).
+    /// </summary>
+    public async Task<EventSubscription> EnsureDiagnoseDeploymentFailedAsync(
+        Guid spaceId, CancellationToken ct = default)
+    {
+        const string BuiltInName = "Built-in: AI diagnose Deployment.Failed";
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var existing = await db.EventSubscriptions
+            .FirstOrDefaultAsync(s =>
+                s.SpaceId == spaceId &&
+                s.Name == BuiltInName, ct)
+            .ConfigureAwait(false);
+
+        if (existing is not null)
+        {
+            return existing;
+        }
+
+        var seeded = new EventSubscription
+        {
+            SpaceId             = spaceId,
+            Name                = BuiltInName,
+            Description         = "Auto-created by 'Diagnose failures' on the AI Settings " +
+                                  "page. Edit or disable like any subscription — recreating " +
+                                  "the same name from the AI page after delete is intentional " +
+                                  "(re-seeds the row).",
+            EventTypePatterns   = ["Deployment.Failed"],
+            Transport           = SubscriptionTransport.AiInspect,
+            TransportConfigJson = "{}",  // default prompt template
+            Disabled            = false,
+        };
+        db.EventSubscriptions.Add(seeded);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return seeded;
+    }
+
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);

@@ -93,5 +93,16 @@ public static class HangfireJobRegistrar
             job => job.ExecuteAsync(CancellationToken.None),
             Cron.Minutely(),
             new RecurringJobOptions { TimeZone = utc });
+
+        // Email-digest flusher (M13.B.2/3 phase 5) — every minute.
+        // Drains email_digest_outbox: one digest email per subscription
+        // whose configured DigestEveryMinutes window has elapsed. Cap of
+        // 100 events per digest (Octopus parity); remainder waits for
+        // the next cycle.
+        RecurringJob.AddOrUpdate<EmailDigestFlushJob>(
+            EmailDigestFlushJob.RecurringJobId,
+            job => job.ExecuteAsync(CancellationToken.None),
+            Cron.Minutely(),
+            new RecurringJobOptions { TimeZone = utc });
     }
 }

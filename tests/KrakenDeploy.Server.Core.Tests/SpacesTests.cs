@@ -113,6 +113,10 @@ public sealed class SpacesTests
             // Singleton row for the outbox-poller cursor (M13.B.2/3
             // Phase 2). Server-wide; not partitioned per Space.
             "SubscriptionPollerState",
+            // Digest-outbox buffer (M13.B.2/3 Phase 5). References a
+            // subscription which carries its own SpaceId; outbox rows
+            // inherit scope transitively via SubscriptionId.
+            "EmailDigestOutboxEntry",
         };
 
         var assembly = typeof(Project).Assembly;

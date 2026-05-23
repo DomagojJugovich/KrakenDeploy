@@ -238,6 +238,77 @@ public sealed class EventSubscriptionServiceTests(PostgresFixture postgres)
             .WithMessage("*DigestEveryMinutes*");
     }
 
+    // ── M11.C seeder (Phase 5) ────────────────────────────────────────────
+
+    [Fact]
+    public async Task EnsureDiagnoseDeploymentFailedAsync_creates_built_in_subscription_when_missing()
+    {
+        var svc = new EventSubscriptionService(postgres);
+
+        var seeded = await svc.EnsureDiagnoseDeploymentFailedAsync(WellKnown.DefaultSpaceId);
+
+        seeded.SpaceId.Should().Be(WellKnown.DefaultSpaceId);
+        seeded.Transport.Should().Be(SubscriptionTransport.AiInspect);
+        seeded.EventTypePatterns.Should().ContainSingle("Deployment.Failed");
+        seeded.Disabled.Should().BeFalse();
+        seeded.Name.Should().Contain("Built-in",
+            "the name flags it as system-seeded so operators don't confuse it " +
+            "with their own subscriptions");
+    }
+
+    [Fact]
+    public async Task EnsureDiagnoseDeploymentFailedAsync_is_idempotent()
+    {
+        // Operator flips Diagnosis on / off / on — the seeder must not
+        // produce duplicate rows.
+        var svc = new EventSubscriptionService(postgres);
+
+        var first  = await svc.EnsureDiagnoseDeploymentFailedAsync(WellKnown.DefaultSpaceId);
+        var second = await svc.EnsureDiagnoseDeploymentFailedAsync(WellKnown.DefaultSpaceId);
+
+        first.Id.Should().Be(second.Id,
+            "second call returned the existing row, not a fresh one");
+
+        await using var db = postgres.CreateContext();
+        var count = await db.EventSubscriptions
+            .Where(s => s.SpaceId == WellKnown.DefaultSpaceId && s.Name.Contains("Built-in"))
+            .CountAsync();
+        count.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task EnsureDiagnoseDeploymentFailedAsync_does_not_overwrite_operator_changes()
+    {
+        // Pin the "operator can edit the seeded row without it being
+        // reset on next enable" contract.
+        var svc = new EventSubscriptionService(postgres);
+
+        var seeded = await svc.EnsureDiagnoseDeploymentFailedAsync(WellKnown.DefaultSpaceId);
+
+        // Operator edits the row.
+        var edit = new EventSubscription
+        {
+            SpaceId             = seeded.SpaceId,
+            Name                = seeded.Name,
+            Description         = "Operator-customised",
+            EventTypePatterns   = ["Deployment.*"], // broader scope
+            Transport           = SubscriptionTransport.AiInspect,
+            TransportConfigJson = """{"prompt":"Custom prompt"}""",
+            Disabled            = true,
+        };
+        await svc.UpdateAsync(seeded.Id, edit);
+
+        // Operator flips Diagnosis off then on — seeder runs again.
+        await svc.EnsureDiagnoseDeploymentFailedAsync(WellKnown.DefaultSpaceId);
+
+        var reloaded = (await svc.GetAsync(seeded.Id))!;
+        reloaded.Description.Should().Be("Operator-customised");
+        reloaded.EventTypePatterns.Should().Equal("Deployment.*");
+        reloaded.Disabled.Should().BeTrue(
+            "the seeder finds-or-creates; it doesn't overwrite an existing " +
+            "operator-customised row");
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────
 
     private const string WebhookJson =
