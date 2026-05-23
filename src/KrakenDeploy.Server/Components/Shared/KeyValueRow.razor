@@ -1,0 +1,20 @@
+@*
+    Two-column label/value row used by the Diagnostics page. Keeping the
+    layout consistent across rows is the whole job — extracting this into
+    a component prevents the row spacing / column widths drifting between
+    sections.
+*@
+
+<div style="display:flex;gap:1rem;margin-bottom:0.4rem;align-items:baseline">
+    <span style="min-width:130px;color:var(--rz-text-secondary-color);font-size:0.85em">
+        @Label
+    </span>
+    <span>
+        @ChildContent
+    </span>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string Label { get; set; } = "";
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

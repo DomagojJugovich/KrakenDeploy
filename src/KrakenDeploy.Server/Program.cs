@@ -253,6 +253,7 @@ public static class Program
         // Cached snapshot of target + user counts for the banner. Scoped so
         // the cache lives across requests but is bounded to one DI tree.
         builder.Services.AddSingleton<LicenseUsageCounter>();
+        builder.Services.AddSingleton<DiagnosticsService>();
         // Streaming CSV / JSON export of audit_entries (M13.A.1). Scoped
         // because each export opens its own DbContext.
         builder.Services.AddScoped<AuditExportService>();
@@ -1448,6 +1449,22 @@ public static class Program
                 UserDisplayContains:  req.Query["user"].FirstOrDefault(),
                 SubjectTypeContains:  req.Query["subjectType"].FirstOrDefault());
         }
+
+        // ── Diagnostics zip download (M13.A.2) ───────────────────────────────
+        // Permission-gated on ConfigureServer (same tier as License / SMTP /
+        // Features pages). The zip is built in-memory then streamed; it's
+        // small (a few KB JSON + a 1000-line log tail) so a buffered build
+        // is fine.
+        app.MapGet("/api/diagnostics/report.zip",
+            async (HttpContext ctx, DiagnosticsService svc) =>
+            {
+                var stamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+                ctx.Response.ContentType = "application/zip";
+                ctx.Response.Headers.ContentDisposition =
+                    $"attachment; filename=\"kraken-diagnostics-{stamp}.zip\"";
+                await svc.WriteDiagnosticsReportZipAsync(ctx.Response.Body, ctx.RequestAborted)
+                    .ConfigureAwait(false);
+            }).RequirePermission(Permission.ConfigureServer);
 
         app.MapGet("/api/audit/export.csv",
             async (HttpContext ctx, AuditExportService svc) =>
