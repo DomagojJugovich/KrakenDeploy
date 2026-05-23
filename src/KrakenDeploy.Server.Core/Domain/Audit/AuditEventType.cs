@@ -53,6 +53,13 @@ public static class AuditEventType
     /// Recorded so forensic review can spot license-key brute-force attempts.</summary>
     public const string LicenseUploadRejected   = "License.UploadRejected";
 
+    // ── Features panel (M13.F.1) ──────────────────────────────────────────────
+    /// <summary>Operator toggled a per-instance feature flag on
+    /// <c>/configuration/features</c>. Details carry the key + new state +
+    /// whether the new state matches the catalogue default (so audit
+    /// readers can spot deviations at a glance).</summary>
+    public const string FeatureFlagUpdated      = "Feature.Updated";
+
     // ── SMTP (M13.B.1) ───────────────────────────────────────────────────────
     /// <summary>Operator updated the server-wide SMTP settings. Details carry
     /// the host + port + TLS mode + from-address + whether the password was

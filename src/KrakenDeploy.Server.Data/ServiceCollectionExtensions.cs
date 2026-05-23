@@ -119,6 +119,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IAuditLog, AuditLogService>();
         services.AddScoped<AuditLogService>(); // also register concrete for PurgeOldEntriesAsync
         services.AddScoped<SmtpSettingsService>();
+        services.AddSingleton<KrakenDeploy.Server.Core.Domain.Features.IFeatureCatalog,
+                              KrakenDeploy.Server.Core.Domain.Features.BuiltInFeatureCatalog>();
+        // Singleton because the cache must persist across requests — the
+        // service opens its own DbContext per call via the factory.
+        services.AddSingleton<FeatureFlagService>();
 
         // ── Hangfire background jobs ──────────────────────────────────────────
         // Transient so Hangfire's AspNetCoreJobActivator creates a fresh scope
