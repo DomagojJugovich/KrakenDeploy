@@ -7,6 +7,23 @@ using Microsoft.EntityFrameworkCore;
 namespace KrakenDeploy.Server.Data.Services;
 
 /// <summary>
+/// Narrow interface exposing only the runbook-trigger surface that
+/// external callers (e.g. the M13.B.2/3 Runbook subscription transport)
+/// need. Keeps the dependency on RunbookService's broader CRUD API out
+/// of consumer code + lets tests substitute a stub without touching the
+/// runbook execution pipeline.
+/// </summary>
+public interface IRunbookTrigger
+{
+    Task<RunbookRun> TriggerAsync(
+        Guid runbookId,
+        Guid environmentId,
+        Guid targetId,
+        Guid? tenantId = null,
+        CancellationToken ct = default);
+}
+
+/// <summary>
 /// CRUD and dispatch for <see cref="Runbook"/>s, their process steps, and
 /// <see cref="RunbookRun"/> executions.
 /// </summary>
@@ -14,6 +31,7 @@ public class RunbookService(
     IDbContextFactory<KrakenDbContext> dbFactory,
     RunbookRunChannel runbookQueue,
     StepPackageResolver? stepPackageResolver = null)
+    : IRunbookTrigger
 {
     // ── Runbook CRUD ───────────────────────────────────────────────────────────
 

@@ -106,6 +106,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<RetentionService>();
         services.AddSingleton<RunbookRunChannel>();
         services.AddScoped<RunbookService>();
+        // IRunbookTrigger surface — narrow interface consumed by the
+        // M13.B.2/3 RunbookTransport. RunbookService implements it; the
+        // alias keeps the transport's dependency surface small (and the
+        // test surface stub-able without instantiating RunbookService).
+        services.AddScoped<IRunbookTrigger>(sp => sp.GetRequiredService<RunbookService>());
         services.AddScoped<DropBundleService>();
         services.AddScoped<OfflineResultService>();
         services.AddScoped<BuiltInStepTemplateSeeder>();
@@ -135,6 +140,22 @@ public static class ServiceCollectionExtensions
             KrakenDeploy.Server.Data.Services.Subscriptions.IEventTransport,
             KrakenDeploy.Server.Data.Services.Subscriptions.WebhookTransport>(
             sp => sp.GetRequiredService<KrakenDeploy.Server.Data.Services.Subscriptions.WebhookTransport>());
+        // Runbook + AI + Email transports (Phase 3).
+        services.AddScoped<KrakenDeploy.Server.Data.Services.Subscriptions.RunbookTransport>();
+        services.AddScoped<
+            KrakenDeploy.Server.Data.Services.Subscriptions.IEventTransport,
+            KrakenDeploy.Server.Data.Services.Subscriptions.RunbookTransport>(
+            sp => sp.GetRequiredService<KrakenDeploy.Server.Data.Services.Subscriptions.RunbookTransport>());
+        services.AddScoped<KrakenDeploy.Server.Data.Services.Subscriptions.AiInspectTransport>();
+        services.AddScoped<
+            KrakenDeploy.Server.Data.Services.Subscriptions.IEventTransport,
+            KrakenDeploy.Server.Data.Services.Subscriptions.AiInspectTransport>(
+            sp => sp.GetRequiredService<KrakenDeploy.Server.Data.Services.Subscriptions.AiInspectTransport>());
+        services.AddScoped<KrakenDeploy.Server.Data.Services.Subscriptions.EmailImmediateTransport>();
+        services.AddScoped<
+            KrakenDeploy.Server.Data.Services.Subscriptions.IEventTransport,
+            KrakenDeploy.Server.Data.Services.Subscriptions.EmailImmediateTransport>(
+            sp => sp.GetRequiredService<KrakenDeploy.Server.Data.Services.Subscriptions.EmailImmediateTransport>());
         services.AddTransient<SubscriptionPollerJob>();
         // Backup engine + service (M13.G). Scoped because the service opens
         // its own DbContext per call (manual UI invocation + Hangfire schedule

@@ -186,12 +186,18 @@ public sealed class EventSubscriptionService(
                 }
                 break;
             case SubscriptionTransport.Runbook:
-                if (!config.TryGetProperty("runbookId", out var runbookId) ||
-                    runbookId.ValueKind != JsonValueKind.String ||
-                    !Guid.TryParse(runbookId.GetString(), out _))
+                // RunbookService.TriggerAsync requires all three. Surface
+                // the missing-field error at save time instead of letting
+                // the operator wait for the first event to discover the gap.
+                foreach (var requiredField in new[] { "runbookId", "environmentId", "targetId" })
                 {
-                    throw new ArgumentException(
-                        "Runbook transport requires a 'runbookId' GUID field.");
+                    if (!config.TryGetProperty(requiredField, out var fieldValue) ||
+                        fieldValue.ValueKind != JsonValueKind.String ||
+                        !Guid.TryParse(fieldValue.GetString(), out _))
+                    {
+                        throw new ArgumentException(
+                            $"Runbook transport requires a '{requiredField}' GUID field.");
+                    }
                 }
                 break;
             case SubscriptionTransport.AiInspect:
