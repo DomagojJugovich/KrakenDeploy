@@ -1,0 +1,223 @@
+@page "/configuration/subscriptions"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using KrakenDeploy.Server.Core.Domain.Audit
+@using KrakenDeploy.Server.Core.Domain.Spaces
+@using KrakenDeploy.Server.Core.Domain.Subscriptions
+
+@inject EventSubscriptionService SubscriptionSvc
+@inject ISpaceContext SpaceCtx
+@inject DialogService Dialog
+@inject NotificationService Notify
+@inject IAuditLog Audit
+
+<PageTitle>Subscriptions — KrakenDeploy</PageTitle>
+
+<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+             Gap="1rem" class="rz-mb-2" Style="flex-wrap:wrap">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">
+        Subscriptions
+    </RadzenText>
+    <RequirePermission Permission="Permission.SubscriptionManage">
+        <RadzenButton Icon="add_circle_outline" Text="New Subscription"
+                      ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                      Click="OpenCreateAsync" />
+    </RequirePermission>
+</RadzenStack>
+
+<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+    Route audit events to webhooks, runbook triggers, AI diagnosis, or email.
+    Matching happens once per audit row — see <RadzenLink Path="/audit" Text="Audit log" />
+    for the full event stream. System-wide rows appear at the top with a
+    badge and can only be edited by system administrators.
+</RadzenText>
+
+<RequirePermission Permission="Permission.SubscriptionView">
+    <RadzenDataGrid Data="@_subscriptions" TItem="EventSubscription"
+                    AllowPaging="true" PageSize="25"
+                    AllowSorting="true"
+                    AllowColumnResize="true"
+                    EmptyText="No subscriptions yet.">
+        <Columns>
+            <RadzenDataGridColumn TItem="EventSubscription" Property="Name" Title="Name" Width="280px">
+                <Template Context="s">
+                    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                                 AlignItems="AlignItems.Center">
+                        <strong>@s.Name</strong>
+                        @if (s.SpaceId is null)
+                        {
+                            <RadzenBadge Text="System-wide" BadgeStyle="BadgeStyle.Warning" IsPill="true" />
+                        }
+                        @if (s.Disabled)
+                        {
+                            <RadzenBadge Text="Disabled" BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                        }
+                    </RadzenStack>
+                    @if (!string.IsNullOrEmpty(s.Description))
+                    {
+                        <div class="rz-color-secondary" style="font-size:0.85em">
+                            @s.Description
+                        </div>
+                    }
+                </Template>
+            </RadzenDataGridColumn>
+
+            <RadzenDataGridColumn TItem="EventSubscription" Property="Transport" Title="Transport" Width="160px">
+                <Template Context="s">
+                    <RadzenBadge BadgeStyle="@TransportStyle(s.Transport)" IsPill="true"
+                                 Text="@TransportLabel(s.Transport)" />
+                    @if (s.Transport == SubscriptionTransport.Email && s.DigestEveryMinutes > 0)
+                    {
+                        <span class="rz-color-secondary" style="font-size:0.8em; margin-left:0.4rem;">
+                            digest @s.DigestEveryMinutes m
+                        </span>
+                    }
+                </Template>
+            </RadzenDataGridColumn>
+
+            <RadzenDataGridColumn TItem="EventSubscription" Title="Filter">
+                <Template Context="s">
+                    @FilterSummary(s)
+                </Template>
+            </RadzenDataGridColumn>
+
+            <RadzenDataGridColumn TItem="EventSubscription" Title="" Width="160px"
+                                  Sortable="false" TextAlign="TextAlign.Right">
+                <Template Context="s">
+                    <RadzenButton Icon="history" ButtonStyle="ButtonStyle.Light"
+                                  Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                                  Click="@(() => OpenHistoryAsync(s))" title="Delivery history" />
+                    <RequirePermission Permission="Permission.SubscriptionManage">
+                        <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
+                                      Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                                      Click="@(() => OpenEditAsync(s))" title="Edit"
+                                      Disabled="@(s.SpaceId is null && !_isSysAdmin)" />
+                        <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                      Size="ButtonSize.ExtraSmall"
+                                      Click="@(() => DeleteAsync(s))" title="Delete"
+                                      Disabled="@(s.SpaceId is null && !_isSysAdmin)" />
+                    </RequirePermission>
+                </Template>
+            </RadzenDataGridColumn>
+        </Columns>
+    </RadzenDataGrid>
+</RequirePermission>
+
+@code {
+    [Inject] private IPermissionEvaluator Evaluator { get; set; } = default!;
+    [Inject] private AuthenticationStateProvider AuthState { get; set; } = default!;
+
+    private List<EventSubscription> _subscriptions = [];
+    private bool _isSysAdmin;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await AuthState.GetAuthenticationStateAsync();
+        _isSysAdmin = await Evaluator.HasPermissionAsync(
+            state.User, Permission.AdministerSystem, new PermissionScope());
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _subscriptions = await SubscriptionSvc.GetForSpaceAsync(SpaceCtx.CurrentSpaceId);
+    }
+
+    private async Task OpenCreateAsync()
+    {
+        var result = await Dialog.OpenAsync<SubscriptionEditDialog>(
+            "New Subscription",
+            new Dictionary<string, object?>
+            {
+                [nameof(SubscriptionEditDialog.Existing)] = (EventSubscription?)null,
+                [nameof(SubscriptionEditDialog.IsSysAdmin)] = _isSysAdmin,
+            },
+            new DialogOptions { Width = "720px", Height = "auto" });
+
+        if (result is true) { await ReloadAsync(); }
+    }
+
+    private async Task OpenEditAsync(EventSubscription s)
+    {
+        var result = await Dialog.OpenAsync<SubscriptionEditDialog>(
+            "Edit Subscription",
+            new Dictionary<string, object?>
+            {
+                [nameof(SubscriptionEditDialog.Existing)] = s,
+                [nameof(SubscriptionEditDialog.IsSysAdmin)] = _isSysAdmin,
+            },
+            new DialogOptions { Width = "720px", Height = "auto" });
+
+        if (result is true) { await ReloadAsync(); }
+    }
+
+    private async Task OpenHistoryAsync(EventSubscription s)
+    {
+        await Dialog.OpenAsync<SubscriptionHistoryDialog>(
+            $"Delivery history — {s.Name}",
+            new Dictionary<string, object?>
+            {
+                [nameof(SubscriptionHistoryDialog.SubscriptionId)] = s.Id,
+            },
+            new DialogOptions { Width = "1000px", Height = "70vh", Resizable = true });
+    }
+
+    private async Task DeleteAsync(EventSubscription s)
+    {
+        var confirmed = await Dialog.Confirm(
+            $"Delete subscription '{s.Name}'? Delivery history rows stay for " +
+            "forensic review — only the subscription row is removed.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+        if (confirmed != true) { return; }
+
+        await SubscriptionSvc.DeleteAsync(s.Id);
+        await Audit.RecordAsync(
+            AuditEventType.SubscriptionDeleted,
+            subjectType: "EventSubscription",
+            subjectId:   s.Id.ToString(),
+            subjectName: s.Name);
+        await ReloadAsync();
+        Notify.Notify(NotificationSeverity.Info, "Deleted", s.Name, 4000);
+    }
+
+    // ── Helpers ────────────────────────────────────────────────────────────
+
+    private static BadgeStyle TransportStyle(SubscriptionTransport t) => t switch
+    {
+        SubscriptionTransport.Webhook   => BadgeStyle.Info,
+        SubscriptionTransport.Email     => BadgeStyle.Secondary,
+        SubscriptionTransport.Runbook   => BadgeStyle.Success,
+        SubscriptionTransport.AiInspect => BadgeStyle.Primary,
+        _                               => BadgeStyle.Light,
+    };
+
+    private static string TransportLabel(SubscriptionTransport t) => t switch
+    {
+        SubscriptionTransport.Webhook   => "Webhook",
+        SubscriptionTransport.Email     => "Email",
+        SubscriptionTransport.Runbook   => "Runbook",
+        SubscriptionTransport.AiInspect => "AI Inspect",
+        _                               => t.ToString(),
+    };
+
+    private static string FilterSummary(EventSubscription s)
+    {
+        var parts = new List<string>();
+        parts.Add(s.EventTypePatterns.Count == 0
+            ? "any event"
+            : s.EventTypePatterns.Count == 1
+                ? $"event = {s.EventTypePatterns[0]}"
+                : $"{s.EventTypePatterns.Count} event patterns");
+        if (s.ProjectIds.Count > 0)
+        {
+            parts.Add($"{s.ProjectIds.Count} project{(s.ProjectIds.Count == 1 ? "" : "s")}");
+        }
+        if (s.EnvironmentIds.Count > 0)
+        {
+            parts.Add($"{s.EnvironmentIds.Count} environment{(s.EnvironmentIds.Count == 1 ? "" : "s")}");
+        }
+        return string.Join(" × ", parts);
+    }
+}

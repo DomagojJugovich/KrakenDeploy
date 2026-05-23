@@ -1,0 +1,106 @@
+@using KrakenDeploy.Server.Core.Domain.Subscriptions
+@using KrakenDeploy.Server.Data
+@using Microsoft.EntityFrameworkCore
+
+@inject IDbContextFactory<KrakenDbContext> DbFactory
+@inject DialogService Dialog
+
+<RadzenStack Gap="0.75rem">
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                 AlignItems="AlignItems.Center">
+        <RadzenButton Icon="refresh" Variant="Variant.Text"
+                      Size="ButtonSize.ExtraSmall"
+                      Click="LoadAsync" />
+        <span class="rz-color-secondary" style="font-size:0.85em">
+            Showing last @_rows.Count delivery attempts (most recent first).
+        </span>
+    </RadzenStack>
+
+    <RadzenDataGrid Data="@_rows" TItem="SubscriptionDelivery"
+                    AllowPaging="false" AllowSorting="false"
+                    EmptyText="No deliveries yet — wait for a matching event or use 'Send test event' (Phase 4 polish)."
+                    Density="Density.Compact" Style="max-height:60vh; overflow:auto;">
+        <Columns>
+            <RadzenDataGridColumn TItem="SubscriptionDelivery" Title="Started" Width="170px">
+                <Template Context="d">
+                    <span title="@d.StartedUtc.ToString("O")">
+                        @d.StartedUtc.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")
+                    </span>
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="SubscriptionDelivery" Title="Outcome" Width="120px">
+                <Template Context="d">
+                    @switch (d.Outcome)
+                    {
+                        case SubscriptionDeliveryOutcome.Succeeded:
+                            <RadzenBadge BadgeStyle="BadgeStyle.Success" IsPill="true" Text="Succeeded" />
+                            break;
+                        case SubscriptionDeliveryOutcome.Failed:
+                            <RadzenBadge BadgeStyle="BadgeStyle.Danger" IsPill="true" Text="Failed" />
+                            break;
+                        case SubscriptionDeliveryOutcome.InProgress:
+                            <RadzenBadge BadgeStyle="BadgeStyle.Info" IsPill="true" Text="In progress" />
+                            break;
+                        case SubscriptionDeliveryOutcome.Cancelled:
+                            <RadzenBadge BadgeStyle="BadgeStyle.Light" IsPill="true" Text="Cancelled" />
+                            break;
+                    }
+                    @if (d.AttemptNumber > 1)
+                    {
+                        <span class="rz-color-secondary" style="font-size:0.8em; margin-left:0.4rem">
+                            (try #@d.AttemptNumber)
+                        </span>
+                    }
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="SubscriptionDelivery" Title="Duration" Width="100px">
+                <Template Context="d">
+                    @(d.Duration.HasValue
+                        ? $"{d.Duration.Value.TotalMilliseconds:F0} ms"
+                        : "—")
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="SubscriptionDelivery" Title="Event ID" Width="320px">
+                <Template Context="d">
+                    <code style="font-size:0.85em">@d.EventId</code>
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="SubscriptionDelivery" Title="Detail / Error">
+                <Template Context="d">
+                    @if (d.Outcome == SubscriptionDeliveryOutcome.Succeeded && !string.IsNullOrEmpty(d.Detail))
+                    {
+                        <span style="font-size:0.85em">@d.Detail</span>
+                    }
+                    else if (!string.IsNullOrEmpty(d.ErrorMessage))
+                    {
+                        <span style="font-size:0.85em; color:var(--rz-danger);">@d.ErrorMessage</span>
+                    }
+                </Template>
+            </RadzenDataGridColumn>
+        </Columns>
+    </RadzenDataGrid>
+
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                 JustifyContent="JustifyContent.End">
+        <RadzenButton Text="Close" ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => Dialog.Close(false))" />
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    [Parameter] public Guid SubscriptionId { get; set; }
+
+    private List<SubscriptionDelivery> _rows = [];
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _rows = await db.SubscriptionDeliveries
+            .Where(d => d.SubscriptionId == SubscriptionId)
+            .OrderByDescending(d => d.StartedUtc)
+            .Take(50)
+            .ToListAsync();
+    }
+}

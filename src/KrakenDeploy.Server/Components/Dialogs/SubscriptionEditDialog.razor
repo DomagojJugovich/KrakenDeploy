@@ -1,0 +1,440 @@
+@using System.Text.Json
+@using KrakenDeploy.Server.Core.Domain.Audit
+@using KrakenDeploy.Server.Core.Domain.Environments
+@using KrakenDeploy.Server.Core.Domain.Projects
+@using KrakenDeploy.Server.Core.Domain.Runbooks
+@using KrakenDeploy.Server.Core.Domain.Spaces
+@using KrakenDeploy.Server.Core.Domain.Subscriptions
+
+@inject EventSubscriptionService SubscriptionSvc
+@inject ProjectService ProjectSvc
+@inject EnvironmentService EnvironmentSvc
+@inject ISpaceContext SpaceCtx
+@inject IAuditLog Audit
+@inject DialogService Dialog
+
+<RadzenStack Gap="0.75rem">
+
+    @* ── Common fields ─────────────────────────────────────────────────── *@
+    <RadzenFormField Text="Name *" Variant="Variant.Outlined" Style="width:100%">
+        <RadzenTextBox @bind-Value="_form.Name" Placeholder="e.g. Slack on prod failures" />
+    </RadzenFormField>
+
+    <RadzenFormField Text="Description" Variant="Variant.Outlined" Style="width:100%">
+        <RadzenTextArea @bind-Value="_form.Description" Rows="2"
+                        Placeholder="Optional. Shown on the list page; doesn't enter matching logic." />
+    </RadzenFormField>
+
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" AlignItems="AlignItems.Center">
+        <RadzenSwitch @bind-Value="_form.Disabled" Name="disabled" />
+        <RadzenLabel Text="Disabled (paused — not delivered)" Component="disabled" />
+        @if (IsSysAdmin && Existing is null)
+        {
+            <span style="margin-left:auto"></span>
+            <RadzenSwitch @bind-Value="_systemWide" Name="sysWide" />
+            <RadzenLabel Text="System-wide (matches all Spaces)" Component="sysWide" />
+        }
+    </RadzenStack>
+
+    @* ── Filter ────────────────────────────────────────────────────────── *@
+    <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-0" Style="margin-top:0.5rem">
+        Filter
+    </RadzenText>
+
+    <RadzenFormField Text="Event types (one per line; empty = any)" Variant="Variant.Outlined" Style="width:100%">
+        <RadzenTextArea @bind-Value="_eventTypesText" Rows="3"
+                        Placeholder="Deployment.Failed&#10;Backup.*&#10;Subscription.DeliveryFailed" />
+    </RadzenFormField>
+    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-0">
+        Exact name (<code>Deployment.Failed</code>), category wildcard
+        (<code>Deployment.*</code>), or <code>*</code> for everything.
+        Case-insensitive.
+    </RadzenText>
+
+    <RadzenFormField Text="Projects (empty = any)" Variant="Variant.Outlined" Style="width:100%">
+        <RadzenDropDown TValue="IEnumerable<Guid>"
+                        @bind-Value="_selectedProjects"
+                        Data="@_projects"
+                        TextProperty="Name" ValueProperty="Id"
+                        Multiple="true" Chips="true" AllowFiltering="true"
+                        FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                        Disabled="@_systemWide" />
+    </RadzenFormField>
+
+    <RadzenFormField Text="Environments (empty = any)" Variant="Variant.Outlined" Style="width:100%">
+        <RadzenDropDown TValue="IEnumerable<Guid>"
+                        @bind-Value="_selectedEnvironments"
+                        Data="@_environments"
+                        TextProperty="Name" ValueProperty="Id"
+                        Multiple="true" Chips="true" AllowFiltering="true"
+                        FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                        Disabled="@_systemWide" />
+    </RadzenFormField>
+
+    @* ── Transport ─────────────────────────────────────────────────────── *@
+    <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-0" Style="margin-top:0.5rem">
+        Transport
+    </RadzenText>
+
+    <RadzenFormField Text="Type *" Variant="Variant.Outlined" Style="max-width:300px">
+        <RadzenDropDown TValue="SubscriptionTransport"
+                        @bind-Value="_form.Transport"
+                        Change="@(args => OnTransportChanged())"
+                        Data="@_transports"
+                        TextProperty="Label" ValueProperty="Value" />
+    </RadzenFormField>
+
+    @* Per-transport config — only the fields the chosen transport reads. *@
+    @switch (_form.Transport)
+    {
+        case SubscriptionTransport.Webhook:
+            <RadzenFormField Text="URL *" Variant="Variant.Outlined" Style="width:100%">
+                <RadzenTextBox @bind-Value="_webhookUrl"
+                               Placeholder="https://hooks.slack.com/services/..." />
+            </RadzenFormField>
+            <RadzenFormField Text="HMAC secret (optional)" Variant="Variant.Outlined" Style="width:100%">
+                <RadzenPassword @bind-Value="_webhookSecret"
+                                Placeholder="Leave blank to skip signature header"
+                                AutoComplete="false" />
+            </RadzenFormField>
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-0">
+                When set, every POST carries <code>X-Kraken-Signature: sha256=&lt;hex&gt;</code>
+                computed as HMAC-SHA256(secret, raw-body). Same recipe as
+                Stripe / GitHub.
+            </RadzenText>
+            break;
+
+        case SubscriptionTransport.Email:
+            <RadzenFormField Text="Recipients (one email per line) *" Variant="Variant.Outlined" Style="width:100%">
+                <RadzenTextArea @bind-Value="_emailRecipientsText" Rows="3"
+                                Placeholder="ops@example.com&#10;sre@example.com" />
+            </RadzenFormField>
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" AlignItems="AlignItems.Center">
+                <RadzenLabel Text="Digest every (minutes)" />
+                <RadzenNumeric TValue="int" @bind-Value="_form.DigestEveryMinutes"
+                               Min="0" Max="1440" Style="width:120px" />
+                <span class="rz-color-secondary" style="font-size:0.85em">
+                    0 = immediate per-event; >0 = bucket events and send a single email at the end of each window
+                </span>
+            </RadzenStack>
+            break;
+
+        case SubscriptionTransport.Runbook:
+            <RadzenFormField Text="Runbook *" Variant="Variant.Outlined" Style="width:100%">
+                <RadzenDropDown TValue="Guid?" @bind-Value="_runbookId"
+                                Data="@_runbooks" TextProperty="Name" ValueProperty="Id"
+                                AllowFiltering="true"
+                                FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                Placeholder="Pick the runbook to trigger…" />
+            </RadzenFormField>
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem" Style="flex-wrap:wrap">
+                <RadzenFormField Text="Environment *" Variant="Variant.Outlined" Style="min-width:240px;flex:1">
+                    <RadzenDropDown TValue="Guid?" @bind-Value="_runbookEnvironmentId"
+                                    Data="@_environments" TextProperty="Name" ValueProperty="Id"
+                                    AllowFiltering="true"
+                                    FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                    Placeholder="…in which environment…" />
+                </RadzenFormField>
+                <RadzenFormField Text="Target ID *" Variant="Variant.Outlined" Style="min-width:300px;flex:1">
+                    <RadzenTextBox @bind-Value="_runbookTargetIdText"
+                                   Placeholder="GUID — copy from Infrastructure → Targets" />
+                </RadzenFormField>
+            </RadzenStack>
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-0">
+                Event data isn't passed as runbook input variables — the
+                run reads its variables from the project's variable scope.
+                The runbook's audit log will carry the triggering event id
+                for correlation.
+            </RadzenText>
+            break;
+
+        case SubscriptionTransport.AiInspect:
+            <RadzenFormField Text="Prompt template (optional)" Variant="Variant.Outlined" Style="width:100%">
+                <RadzenTextArea @bind-Value="_aiPrompt" Rows="5"
+                                Placeholder="Leave blank for the built-in 'diagnose this event' template." />
+            </RadzenFormField>
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-0">
+                Placeholders: <code>{EventType}</code>, <code>{Subject}</code>,
+                <code>{Details}</code>, <code>{OccurredUtc}</code>. The model's
+                response becomes a <code>Diagnosis.Completed</code> audit row
+                — itself subscribable, so you can chain "diagnose, then
+                webhook the diagnosis" by stacking two subscriptions.
+            </RadzenText>
+            break;
+    }
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="false">@_error</RadzenAlert>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                 JustifyContent="JustifyContent.End">
+        <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => Dialog.Close(false))" />
+        <RadzenButton Text="Save" ButtonStyle="ButtonStyle.Primary"
+                      IsBusy="@_saving" Click="SaveAsync" />
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    [Parameter] public EventSubscription? Existing { get; set; }
+    [Parameter] public bool IsSysAdmin { get; set; }
+
+    private EventSubscription _form = new();
+    private bool _systemWide;
+    private string _eventTypesText = "";
+    private IEnumerable<Guid> _selectedProjects     = [];
+    private IEnumerable<Guid> _selectedEnvironments = [];
+
+    // Per-transport fields — only the chosen one is read at save.
+    private string _webhookUrl    = "";
+    private string _webhookSecret = "";
+    private string _emailRecipientsText = "";
+    private Guid?  _runbookId;
+    private Guid?  _runbookEnvironmentId;
+    private string _runbookTargetIdText = "";
+    private string _aiPrompt = "";
+
+    private List<Project>               _projects     = [];
+    private List<DeploymentEnvironment> _environments = [];
+    private List<Runbook>               _runbooks     = [];
+
+    private sealed record TransportOption(string Label, SubscriptionTransport Value);
+    private readonly List<TransportOption> _transports =
+    [
+        new("Webhook (HTTP POST + HMAC)",   SubscriptionTransport.Webhook),
+        new("Email (SMTP)",                  SubscriptionTransport.Email),
+        new("Runbook trigger",               SubscriptionTransport.Runbook),
+        new("AI Inspect (diagnose via LLM)", SubscriptionTransport.AiInspect),
+    ];
+
+    private string? _error;
+    private bool _saving;
+
+    [Inject] private RunbookService RunbookSvc { get; set; } = default!;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _projects     = await ProjectSvc.GetAllAsync();
+        _environments = await EnvironmentSvc.GetAllOrderedAsync();
+        // Pull every runbook across every project in the current Space —
+        // RunbookService.GetAllAsync is per-project; the page wants a flat
+        // list so the operator picks by name. Manual flatten.
+        foreach (var p in _projects)
+        {
+            _runbooks.AddRange(await RunbookSvc.GetAllAsync(p.Id));
+        }
+
+        if (Existing is not null)
+        {
+            _form = new EventSubscription
+            {
+                Id                  = Existing.Id,
+                SpaceId             = Existing.SpaceId,
+                Name                = Existing.Name,
+                Description         = Existing.Description,
+                EventTypePatterns   = [.. Existing.EventTypePatterns],
+                ProjectIds          = [.. Existing.ProjectIds],
+                EnvironmentIds      = [.. Existing.EnvironmentIds],
+                Transport           = Existing.Transport,
+                TransportConfigJson = Existing.TransportConfigJson,
+                DigestEveryMinutes  = Existing.DigestEveryMinutes,
+                Disabled            = Existing.Disabled,
+            };
+            _systemWide           = _form.SpaceId is null;
+            _eventTypesText       = string.Join('\n', _form.EventTypePatterns);
+            _selectedProjects     = [.. _form.ProjectIds];
+            _selectedEnvironments = [.. _form.EnvironmentIds];
+
+            HydrateTransportFields(_form);
+        }
+        else
+        {
+            // Sensible default for new rows: Space-scoped + webhook.
+            _form.SpaceId = SpaceCtx.CurrentSpaceId;
+        }
+    }
+
+    private void OnTransportChanged()
+    {
+        // Reset per-transport fields on type change so the operator doesn't
+        // end up with stale webhook URL after switching to email.
+        _webhookUrl = "";
+        _webhookSecret = "";
+        _emailRecipientsText = "";
+        _runbookId = null;
+        _runbookEnvironmentId = null;
+        _runbookTargetIdText = "";
+        _aiPrompt = "";
+        if (_form.Transport != SubscriptionTransport.Email)
+        {
+            _form.DigestEveryMinutes = 0;
+        }
+    }
+
+    /// <summary>Pulls the transport-specific fields out of the existing
+    /// row's TransportConfigJson so the UI shows what the operator saved
+    /// last time. Schema-on-read; tolerates missing fields.</summary>
+    private void HydrateTransportFields(EventSubscription src)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(src.TransportConfigJson);
+            var root = doc.RootElement;
+            switch (src.Transport)
+            {
+                case SubscriptionTransport.Webhook:
+                    if (root.TryGetProperty("url", out var u)) { _webhookUrl = u.GetString() ?? ""; }
+                    // NEVER hydrate the secret into the form — saved secrets
+                    // stay opaque. Operator must re-paste to change.
+                    break;
+                case SubscriptionTransport.Email:
+                    if (root.TryGetProperty("recipients", out var r) && r.ValueKind == JsonValueKind.Array)
+                    {
+                        var addrs = new List<string>();
+                        foreach (var item in r.EnumerateArray()) { addrs.Add(item.GetString() ?? ""); }
+                        _emailRecipientsText = string.Join('\n', addrs);
+                    }
+                    break;
+                case SubscriptionTransport.Runbook:
+                    if (root.TryGetProperty("runbookId", out var rb) &&
+                        Guid.TryParse(rb.GetString(), out var rbId)) { _runbookId = rbId; }
+                    if (root.TryGetProperty("environmentId", out var env) &&
+                        Guid.TryParse(env.GetString(), out var envId)) { _runbookEnvironmentId = envId; }
+                    if (root.TryGetProperty("targetId", out var t)) { _runbookTargetIdText = t.GetString() ?? ""; }
+                    break;
+                case SubscriptionTransport.AiInspect:
+                    if (root.TryGetProperty("prompt", out var p)) { _aiPrompt = p.GetString() ?? ""; }
+                    break;
+            }
+        }
+        catch { /* malformed JSON on an existing row — operator can fix by re-entering. */ }
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = null;
+
+        // Common validation.
+        if (string.IsNullOrWhiteSpace(_form.Name))
+        {
+            _error = "Name is required.";
+            return;
+        }
+
+        // Build the canonical fields from the form.
+        _form.EventTypePatterns = ParseLines(_eventTypesText);
+        _form.ProjectIds        = _systemWide ? [] : [.. _selectedProjects];
+        _form.EnvironmentIds    = _systemWide ? [] : [.. _selectedEnvironments];
+        if (Existing is null)
+        {
+            _form.SpaceId = _systemWide ? null : SpaceCtx.CurrentSpaceId;
+        }
+
+        // Build transport-specific config JSON.
+        try
+        {
+            _form.TransportConfigJson = BuildTransportConfigJson();
+        }
+        catch (ArgumentException ex)
+        {
+            _error = ex.Message;
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            EventSubscription saved;
+            if (Existing is null)
+            {
+                saved = await SubscriptionSvc.CreateAsync(_form);
+                await Audit.RecordAsync(
+                    AuditEventType.SubscriptionCreated,
+                    subjectType: "EventSubscription",
+                    subjectId:   saved.Id.ToString(),
+                    subjectName: saved.Name,
+                    details:     $"Transport={saved.Transport}, " +
+                                 $"EventTypes={saved.EventTypePatterns.Count}, " +
+                                 $"Disabled={saved.Disabled}");
+            }
+            else
+            {
+                saved = (await SubscriptionSvc.UpdateAsync(Existing.Id, _form))
+                    ?? throw new InvalidOperationException("Subscription not found.");
+                await Audit.RecordAsync(
+                    AuditEventType.SubscriptionUpdated,
+                    subjectType: "EventSubscription",
+                    subjectId:   saved.Id.ToString(),
+                    subjectName: saved.Name,
+                    details:     $"Transport={saved.Transport}, " +
+                                 $"EventTypes={saved.EventTypePatterns.Count}, " +
+                                 $"Disabled={saved.Disabled}");
+            }
+            Dialog.Close(true);
+        }
+        catch (ArgumentException ex)
+        {
+            _error = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private string BuildTransportConfigJson()
+    {
+        switch (_form.Transport)
+        {
+            case SubscriptionTransport.Webhook:
+                if (string.IsNullOrWhiteSpace(_webhookUrl))
+                {
+                    throw new ArgumentException("Webhook URL is required.");
+                }
+                var webhook = new Dictionary<string, string> { ["url"] = _webhookUrl.Trim() };
+                if (!string.IsNullOrEmpty(_webhookSecret)) { webhook["secret"] = _webhookSecret; }
+                return JsonSerializer.Serialize(webhook);
+
+            case SubscriptionTransport.Email:
+                var recipients = ParseLines(_emailRecipientsText);
+                if (recipients.Count == 0)
+                {
+                    throw new ArgumentException("At least one email recipient is required.");
+                }
+                return JsonSerializer.Serialize(new { recipients });
+
+            case SubscriptionTransport.Runbook:
+                if (_runbookId is null)            { throw new ArgumentException("Runbook is required."); }
+                if (_runbookEnvironmentId is null) { throw new ArgumentException("Environment is required."); }
+                if (!Guid.TryParse(_runbookTargetIdText, out var targetId))
+                {
+                    throw new ArgumentException("Target ID must be a valid GUID.");
+                }
+                return JsonSerializer.Serialize(new
+                {
+                    runbookId     = _runbookId.Value.ToString(),
+                    environmentId = _runbookEnvironmentId.Value.ToString(),
+                    targetId      = targetId.ToString(),
+                });
+
+            case SubscriptionTransport.AiInspect:
+                return string.IsNullOrWhiteSpace(_aiPrompt)
+                    ? "{}"
+                    : JsonSerializer.Serialize(new { prompt = _aiPrompt.Trim() });
+
+            default:
+                throw new ArgumentException($"Unknown transport: {_form.Transport}");
+        }
+    }
+
+    private static List<string> ParseLines(string text) =>
+        string.IsNullOrWhiteSpace(text)
+            ? []
+            : [.. text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+}
