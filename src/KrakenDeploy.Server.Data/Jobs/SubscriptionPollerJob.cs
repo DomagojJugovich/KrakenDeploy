@@ -33,6 +33,7 @@ public sealed class SubscriptionPollerJob(
     IDbContextFactory<KrakenDbContext> dbFactory,
     EventSubscriptionService subscriptionService,
     EventDispatcher dispatcher,
+    MaintenancePause maintenancePause,
     ILogger<SubscriptionPollerJob> logger,
     TimeProvider time)
 {
@@ -50,6 +51,12 @@ public sealed class SubscriptionPollerJob(
 
     public async Task ExecuteAsync(CancellationToken ct)
     {
+        if (await maintenancePause.ShouldPauseAsync(ct, logger, RecurringJobId)
+            .ConfigureAwait(false))
+        {
+            return;
+        }
+
         // 1. Load the cursor + the active subscription set.
         var (cursor, isFirstRun) = await LoadCursorAsync(ct).ConfigureAwait(false);
         var subscriptions = await subscriptionService.GetAllActiveAsync(ct).ConfigureAwait(false);

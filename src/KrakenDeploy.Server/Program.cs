@@ -14,6 +14,7 @@ using KrakenDeploy.Server.Data.Encryption;
 using KrakenDeploy.Server.Data.Identity;
 using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Hangfire;
+using KrakenDeploy.Server.Maintenance;
 using KrakenDeploy.Server.Services;
 using KrakenDeploy.Server.Transport;
 using KrakenDeploy.Server.Core.Domain.Lifecycles;
@@ -431,6 +432,12 @@ public static class Program
         app.UseAuthentication();
         app.UseAuthorization();
         app.UseAntiforgery();
+
+        // Maintenance gate (M13.A.3) — MUST be after auth so the
+        // middleware can check the caller's BypassMaintenance permission.
+        // MUST be before the page / API routing so a non-bypassed user
+        // can't reach a write endpoint while the gate is on.
+        app.UseMaintenanceMode();
 
         // Hangfire dashboard — SystemAdmin-only (enforced by HangfireDashboardAuthFilter).
         // Must be placed after UseAuthentication / UseAuthorization so the auth

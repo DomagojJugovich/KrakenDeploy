@@ -310,6 +310,11 @@ internal static class BuiltInRoles
 
         // ── Subscriptions (M13.B.2/3) ───────────────────────────────────
         Permission.SubscriptionView, Permission.SubscriptionManage,
+
+        // ── Maintenance mode (M13.A.3) ──────────────────────────────────
+        // SystemManager runs the maintenance work itself — pause window
+        // exists to keep normal users out, not to gate the operator.
+        Permission.BypassMaintenance,
     ];
 
     // ── Built-in role definitions (declared LAST — depends on permission sets above) ─

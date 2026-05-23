@@ -281,6 +281,7 @@ public sealed class SubscriptionPollerJobTests(PostgresFixture postgres)
         var subscriptionSvc = new EventSubscriptionService(postgres);
         var job = new SubscriptionPollerJob(
             postgres, subscriptionSvc, dispatcher,
+            NoopMaintenancePause.For(postgres),
             NullLogger<SubscriptionPollerJob>.Instance, TimeProvider.System);
         return (handler, job);
     }

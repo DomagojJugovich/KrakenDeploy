@@ -33,6 +33,7 @@ public sealed class EmailDigestFlushJob(
     IDbContextFactory<KrakenDbContext> dbFactory,
     EmailDigestSender sender,
     IAuditLog audit,
+    MaintenancePause maintenancePause,
     ILogger<EmailDigestFlushJob> logger,
     TimeProvider time)
 {
@@ -43,6 +44,12 @@ public sealed class EmailDigestFlushJob(
 
     public async Task ExecuteAsync(CancellationToken ct)
     {
+        if (await maintenancePause.ShouldPauseAsync(ct, logger, RecurringJobId)
+            .ConfigureAwait(false))
+        {
+            return;
+        }
+
         var now = time.GetUtcNow();
 
         // Two-step "find due subscriptions" — EF Core can't translate the

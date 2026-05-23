@@ -253,6 +253,7 @@ public sealed class EmailDigestFlushJobTests(PostgresFixture postgres)
         var audit = new SilentAuditLog();
         return new EmailDigestFlushJob(
             postgres, sender, audit,
+            NoopMaintenancePause.For(postgres),
             NullLogger<EmailDigestFlushJob>.Instance,
             TimeProvider.System);
     }

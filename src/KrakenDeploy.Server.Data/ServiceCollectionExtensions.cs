@@ -130,6 +130,12 @@ public static class ServiceCollectionExtensions
         // service opens its own DbContext per call via the factory.
         services.AddSingleton<FeatureFlagService>();
         services.AddSingleton<DeploymentFreezeService>();
+        // Maintenance mode (M13.A.3) — singleton so the cached state is
+        // shared across requests; the middleware hits GetStateAsync on
+        // every non-exempt write request.
+        services.AddSingleton<MaintenanceModeService>();
+        // Helper recurring jobs call to short-circuit during maintenance.
+        services.AddScoped<MaintenancePause>();
         services.AddScoped<EventSubscriptionService>();
         services.AddScoped<KrakenDeploy.Server.Data.Services.Subscriptions.EventDispatcher>();
         // Subscriptions transports — registered as IEventTransport so the

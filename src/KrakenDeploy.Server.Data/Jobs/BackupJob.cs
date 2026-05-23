@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 namespace KrakenDeploy.Server.Data.Jobs;
 
 /// <summary>
@@ -8,16 +10,14 @@ namespace KrakenDeploy.Server.Data.Jobs;
 /// because the operator owns it.
 ///
 /// <para>
-/// The job class lives in <c>KrakenDeploy.Server.Data.Jobs</c> for parity
-/// with the other Hangfire jobs (AuditRetentionJob, etc.); the actual
-/// backup engine + service live in <c>KrakenDeploy.Server.Services</c>,
-/// so this class is a thin marker that the registrar's
-/// <c>RecurringJob.AddOrUpdate&lt;T&gt;</c> can type-bind to. The job runs
-/// in a Hangfire scope which auto-resolves <c>BackupService</c> at fire time.
+/// Pauses when maintenance mode is on (M13.A.3) — a backup that fires
+/// mid-upgrade would race the migration and produce a half-state bundle.
 /// </para>
 /// </summary>
 public sealed class BackupJob(
-    KrakenDeploy.Server.Data.Services.BackupService backupService)
+    KrakenDeploy.Server.Data.Services.BackupService backupService,
+    MaintenancePause maintenancePause,
+    ILogger<BackupJob> logger)
 {
     /// <summary>Hangfire recurring-job constant — used by both the
     /// registration call and the page's "next run" indicator.</summary>
@@ -27,6 +27,13 @@ public sealed class BackupJob(
     /// the job fires automatically (as opposed to a manual UI click).</summary>
     public const string TriggeredByLabel = "Schedule";
 
-    public Task ExecuteAsync(CancellationToken ct)
-        => backupService.RunOnceAsync(TriggeredByLabel, ct);
+    public async Task ExecuteAsync(CancellationToken ct)
+    {
+        if (await maintenancePause.ShouldPauseAsync(ct, logger, RecurringJobId)
+            .ConfigureAwait(false))
+        {
+            return;
+        }
+        await backupService.RunOnceAsync(TriggeredByLabel, ct).ConfigureAwait(false);
+    }
 }

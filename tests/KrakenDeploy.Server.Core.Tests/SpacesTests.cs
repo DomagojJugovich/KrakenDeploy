@@ -117,6 +117,9 @@ public sealed class SpacesTests
             // subscription which carries its own SpaceId; outbox rows
             // inherit scope transitively via SubscriptionId.
             "EmailDigestOutboxEntry",
+            // Singleton flag for instance-wide maintenance (M13.A.3) —
+            // server-wide; one row per instance, no Space partition.
+            "MaintenanceSettings",
         };
 
         var assembly = typeof(Project).Assembly;

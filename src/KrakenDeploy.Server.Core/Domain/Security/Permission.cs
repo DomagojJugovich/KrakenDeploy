@@ -251,6 +251,17 @@ public enum Permission
     /// scope to receive deliveries for that scope.</summary>
     SubscriptionManage     = 1701,
 
+    // ── Maintenance mode (1800–1899; Phase M13.A.3) ─────────────────────────
+
+    /// <summary>
+    /// Bypass the instance-wide maintenance gate. Granted to
+    /// <c>SystemAdministrator</c> via the god-mode catch-all and to
+    /// <c>SystemManager</c> explicitly — the delegated-admin tier still
+    /// needs to run the maintenance work itself. Normal users hit the
+    /// 503 wall regardless of their other permissions.
+    /// </summary>
+    BypassMaintenance      = 1800,
+
     // ── Reserved blocks for future entities ─────────────────────────────────
     // Add when the matching domain entity ships. Keeps the enum stable so
     // existing roles don't have their permission-set IDs renumbered.

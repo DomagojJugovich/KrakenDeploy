@@ -60,6 +60,15 @@ public static class AuditEventType
     /// readers can spot deviations at a glance).</summary>
     public const string FeatureFlagUpdated      = "Feature.Updated";
 
+    // ── Maintenance mode (M13.A.3) ───────────────────────────────────────────
+    /// <summary>Operator enabled instance-wide maintenance mode.
+    /// Details: reason text + who enabled it. Pair with
+    /// <see cref="MaintenanceDisabled"/> so audit readers see the window
+    /// as a bracketed [Enabled ... Disabled] interval.</summary>
+    public const string MaintenanceEnabled         = "Maintenance.Enabled";
+    /// <summary>Operator disabled maintenance mode.</summary>
+    public const string MaintenanceDisabled        = "Maintenance.Disabled";
+
     // ── Subscriptions (M13.B.2/3) ────────────────────────────────────────────
     /// <summary>Operator created an EventSubscription.</summary>
     public const string SubscriptionCreated        = "Subscription.Created";
