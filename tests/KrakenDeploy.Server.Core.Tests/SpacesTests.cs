@@ -99,6 +99,11 @@ public sealed class SpacesTests
             // instance, no per-Space partitioning by design.
             "SmtpSettings",
             "FeatureFlag",
+            // Server-wide backup config + history (M13.G) — same reasoning;
+            // there's one backup policy per KrakenDeploy instance, runs are
+            // server-level audit-like rows.
+            "BackupSettings",
+            "BackupRun",
         };
 
         var assembly = typeof(Project).Assembly;

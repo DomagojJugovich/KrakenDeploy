@@ -254,6 +254,9 @@ public static class Program
         // the cache lives across requests but is bounded to one DI tree.
         builder.Services.AddSingleton<LicenseUsageCounter>();
         builder.Services.AddSingleton<DiagnosticsService>();
+        // Backup schedule applicator (M13.G). Scoped because it pulls
+        // BackupService (scoped) which pulls the DbContextFactory.
+        builder.Services.AddScoped<BackupScheduler>();
         // Streaming CSV / JSON export of audit_entries (M13.A.1). Scoped
         // because each export opens its own DbContext.
         builder.Services.AddScoped<AuditExportService>();
@@ -2348,6 +2351,27 @@ public static class Program
         // is fully initialised.  Safe to call multiple times (AddOrUpdate is
         // idempotent) — on each restart the schedule is refreshed.
         HangfireJobRegistrar.RegisterRecurringJobs();
+
+        // Apply the operator-controlled backup schedule (M13.G). The cron
+        // lives in BackupSettings, not in the Registrar above, so this needs
+        // its own Apply pass at startup. The settings page calls Apply again
+        // after every save.
+        await using (var scope = app.Services.CreateAsyncScope())
+        {
+            try
+            {
+                await scope.ServiceProvider
+                    .GetRequiredService<BackupScheduler>()
+                    .ApplyAsync()
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                app.Logger.LogWarning(ex,
+                    "Failed to apply backup schedule at startup — UI can " +
+                    "re-save settings to retry.");
+            }
+        }
 
         // Validate license on startup — warn in logs but don't block.
         // The UI also shows a banner to System Administrators.

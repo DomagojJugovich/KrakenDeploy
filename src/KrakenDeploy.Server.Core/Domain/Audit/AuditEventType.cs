@@ -60,6 +60,17 @@ public static class AuditEventType
     /// readers can spot deviations at a glance).</summary>
     public const string FeatureFlagUpdated      = "Feature.Updated";
 
+    // ── Backup (M13.G) ───────────────────────────────────────────────────────
+    /// <summary>Operator changed the backup schedule / target directory /
+    /// retention. Details: enabled + cron + target + retention.</summary>
+    public const string BackupSettingsUpdated   = "Backup.SettingsUpdated";
+    /// <summary>One backup run finished successfully (manual or scheduled).
+    /// Details: bundle path + size + duration + triggered-by.</summary>
+    public const string BackupCompleted         = "Backup.Completed";
+    /// <summary>One backup run failed. Details: triggered-by + error message
+    /// (verbatim from BackupEngine — operator-actionable).</summary>
+    public const string BackupFailed            = "Backup.Failed";
+
     // ── Deployment Freezes (M13.F.2) ─────────────────────────────────────────
     /// <summary>Operator created a new freeze definition. Details: name +
     /// window + scope summary.</summary>

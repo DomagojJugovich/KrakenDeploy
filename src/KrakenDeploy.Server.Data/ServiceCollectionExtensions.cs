@@ -125,6 +125,11 @@ public static class ServiceCollectionExtensions
         // service opens its own DbContext per call via the factory.
         services.AddSingleton<FeatureFlagService>();
         services.AddSingleton<DeploymentFreezeService>();
+        // Backup engine + service (M13.G). Scoped because the service opens
+        // its own DbContext per call (manual UI invocation + Hangfire schedule
+        // both go through it). BackupJob resolves out of the Hangfire scope.
+        services.AddScoped<BackupEngine>();
+        services.AddScoped<BackupService>();
 
         // ── Hangfire background jobs ──────────────────────────────────────────
         // Transient so Hangfire's AspNetCoreJobActivator creates a fresh scope
@@ -136,6 +141,7 @@ public static class ServiceCollectionExtensions
         services.AddTransient<ScheduledDeploymentDispatchJob>();
         services.AddTransient<StepTemplateCatalogPollJob>();
         services.AddTransient<StepPackageCatalogPollJob>();
+        services.AddTransient<BackupJob>();
 
         // Octodiff delta generation — singleton because it has no mutable state;
         // signatures are cached on disk alongside the package files.

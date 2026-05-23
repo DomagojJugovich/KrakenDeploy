@@ -1,0 +1,322 @@
+@page "/configuration/backup"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using KrakenDeploy.Server.Core.Domain.Audit
+@using KrakenDeploy.Server.Core.Domain.Backup
+@using KrakenDeploy.Server.Hangfire
+
+@inject BackupService BackupSvc
+@inject BackupScheduler Scheduler
+@inject IAuditLog Audit
+@inject NotificationService Notify
+@inject ILogger<Backup> Log
+
+<PageTitle>Backup — KrakenDeploy</PageTitle>
+
+<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-1">
+    Backup
+</RadzenText>
+<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+    On-server backup orchestration. The engine here is the same one
+    <code>kraken backup --to &lt;dir&gt;</code> uses on the CLI — bundles stay
+    interchangeable, the on-prem guide's restore workflow still applies.
+    Restore intentionally stays CLI-only: the running server can't restore
+    itself; the CLI is the safer path.
+</RadzenText>
+
+<RequirePermission Permission="Permission.ConfigureServer">
+
+    @* ── Encryption master-key warning (M13.G.4) ─────────────────────── *@
+    <RadzenAlert AlertStyle="AlertStyle.Warning" Variant="Variant.Flat"
+                 Shade="Shade.Lighter" AllowClose="false" class="rz-mb-3"
+                 Style="max-width: 900px;">
+        <RadzenStack Gap="0.25rem">
+            <strong>Bundles require the same <code>Encryption:MasterKey</code> to restore.</strong>
+            <span>
+                Sensitive variables and stored credentials in the bundle are
+                AES-256-GCM ciphertext. Restoring on a server with a different
+                <code>Encryption:MasterKey</code> leaves those columns
+                undecryptable. Back up <em>both</em> the bundle <em>and</em>
+                the master key — separately.
+            </span>
+        </RadzenStack>
+    </RadzenAlert>
+
+    @if (_settings is null)
+    {
+        <RadzenProgressBarCircular ShowValue="false"
+                                   Mode="ProgressBarMode.Indeterminate"
+                                   Style="margin: 2rem auto; display: block;" />
+    }
+    else
+    {
+        @* ── Settings card ──────────────────────────────────────────── *@
+        <RadzenCard class="rz-mb-3" Style="max-width: 900px;">
+            <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H2" class="rz-mb-3">
+                Settings
+            </RadzenText>
+
+            <RadzenStack Gap="0.75rem">
+                <RadzenFormField Text="Target directory *" Variant="Variant.Outlined"
+                                 Style="width:100%">
+                    <RadzenTextBox @bind-Value="_settings.TargetDirectory"
+                                   Placeholder="backups" />
+                </RadzenFormField>
+
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem"
+                             Style="flex-wrap:wrap">
+                    <RadzenStack Orientation="Orientation.Horizontal"
+                                 AlignItems="AlignItems.Center" Gap="0.5rem">
+                        <RadzenSwitch @bind-Value="_settings.ScheduleEnabled"
+                                      Name="enabled" />
+                        <RadzenLabel Text="Run on a schedule" Component="enabled" />
+                    </RadzenStack>
+
+                    <RadzenFormField Text="Cron (UTC)" Variant="Variant.Outlined"
+                                     Style="min-width:240px;flex:1">
+                        <RadzenTextBox @bind-Value="_settings.ScheduleCron"
+                                       Disabled="@(!_settings.ScheduleEnabled)"
+                                       Placeholder="0 2 * * *" />
+                    </RadzenFormField>
+
+                    <RadzenFormField Text="Retain (last N)" Variant="Variant.Outlined"
+                                     Style="min-width:140px;width:140px">
+                        <RadzenNumeric TValue="int" @bind-Value="_settings.RetainLastN"
+                                       Min="0" Max="1000" />
+                    </RadzenFormField>
+                </RadzenStack>
+
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-0">
+                    Cron is a standard 5-field expression evaluated in UTC.
+                    <code>0 2 * * *</code> = 02:00 UTC daily.
+                    Retain <code>0</code> = keep every bundle (operator manages
+                    retention externally).
+                </RadzenText>
+
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+                    <RadzenButton Text="Save settings"
+                                  Icon="save" ButtonStyle="ButtonStyle.Light"
+                                  IsBusy="@_saving"
+                                  Click="SaveSettingsAsync" />
+                    <RadzenButton Text="Run backup now"
+                                  Icon="cloud_download" ButtonStyle="ButtonStyle.Primary"
+                                  IsBusy="@_running"
+                                  Click="RunNowAsync" />
+                </RadzenStack>
+            </RadzenStack>
+        </RadzenCard>
+
+        @* ── Last successful banner ─────────────────────────────────── *@
+        @if (_lastSuccess is not null)
+        {
+            <RadzenAlert AlertStyle="AlertStyle.Success" Variant="Variant.Flat"
+                         Shade="Shade.Lighter" AllowClose="false" class="rz-mb-3"
+                         Style="max-width: 900px;">
+                <RadzenStack Gap="0.25rem">
+                    <strong>
+                        Last successful backup: @_lastSuccess.StartedUtc.LocalDateTime.ToString("yyyy-MM-dd HH:mm")
+                    </strong>
+                    <span class="rz-color-secondary">
+                        <code>@_lastSuccess.BundlePath</code> &middot;
+                        @FormatBytes(_lastSuccess.BundleSizeBytes) &middot;
+                        @FormatDuration(_lastSuccess.Duration ?? TimeSpan.Zero) &middot;
+                        triggered by @_lastSuccess.TriggeredBy.
+                    </span>
+                </RadzenStack>
+            </RadzenAlert>
+        }
+        else
+        {
+            <RadzenAlert AlertStyle="AlertStyle.Info" Variant="Variant.Flat"
+                         Shade="Shade.Lighter" AllowClose="false" class="rz-mb-3"
+                         Style="max-width: 900px;">
+                No successful backups recorded yet. Click <strong>Run backup now</strong> to take the first one.
+            </RadzenAlert>
+        }
+
+        @* ── History card ──────────────────────────────────────────── *@
+        <RadzenCard Style="max-width: 1100px;">
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                         AlignItems="AlignItems.Center" class="rz-mb-3">
+                <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H2" class="rz-mb-0">
+                    Recent runs
+                </RadzenText>
+                <RadzenButton Icon="refresh" Variant="Variant.Text"
+                              Size="ButtonSize.ExtraSmall"
+                              Click="ReloadHistoryAsync" />
+            </RadzenStack>
+
+            <RadzenDataGrid Data="@_history" TItem="BackupRun"
+                            AllowPaging="false" AllowSorting="false"
+                            EmptyText="No runs yet.">
+                <Columns>
+                    <RadzenDataGridColumn TItem="BackupRun" Title="Started" Width="180px">
+                        <Template Context="r">
+                            <span title="@r.StartedUtc.ToString("O")">
+                                @r.StartedUtc.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")
+                            </span>
+                        </Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="BackupRun" Title="Outcome" Width="120px">
+                        <Template Context="r">
+                            @if (r.Outcome == BackupOutcome.Success)
+                            {
+                                <RadzenBadge BadgeStyle="BadgeStyle.Success" IsPill="true" Text="Success" />
+                            }
+                            else if (r.CompletedUtc is null)
+                            {
+                                <RadzenBadge BadgeStyle="BadgeStyle.Light" IsPill="true" Text="In progress" />
+                            }
+                            else
+                            {
+                                <RadzenBadge BadgeStyle="BadgeStyle.Danger" IsPill="true" Text="Failed" />
+                            }
+                        </Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="BackupRun" Title="Duration" Width="100px">
+                        <Template Context="r">
+                            @(r.Duration.HasValue ? FormatDuration(r.Duration.Value) : "—")
+                        </Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="BackupRun" Title="Size" Width="110px">
+                        <Template Context="r">
+                            @FormatBytes(r.BundleSizeBytes)
+                        </Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="BackupRun" Property="TriggeredBy"
+                                          Title="Triggered" Width="110px" />
+                    <RadzenDataGridColumn TItem="BackupRun" Title="Detail">
+                        <Template Context="r">
+                            @if (r.Outcome == BackupOutcome.Success)
+                            {
+                                <code style="font-size:0.85em">@r.BundlePath</code>
+                            }
+                            else if (!string.IsNullOrEmpty(r.ErrorMessage))
+                            {
+                                <span style="color:var(--rz-danger);font-size:0.85em">
+                                    @r.ErrorMessage
+                                </span>
+                            }
+                        </Template>
+                    </RadzenDataGridColumn>
+                </Columns>
+            </RadzenDataGrid>
+        </RadzenCard>
+    }
+
+</RequirePermission>
+
+@code {
+    private BackupSettings? _settings;
+    private BackupRun? _lastSuccess;
+    private List<BackupRun> _history = [];
+    private bool _saving;
+    private bool _running;
+
+    protected override async Task OnInitializedAsync() => await ReloadAllAsync();
+
+    private async Task ReloadAllAsync()
+    {
+        _settings    = await BackupSvc.GetSettingsAsync();
+        _lastSuccess = await BackupSvc.GetLastSuccessfulRunAsync();
+        _history     = await BackupSvc.GetRecentRunsAsync(20);
+    }
+
+    private async Task ReloadHistoryAsync()
+    {
+        _lastSuccess = await BackupSvc.GetLastSuccessfulRunAsync();
+        _history     = await BackupSvc.GetRecentRunsAsync(20);
+    }
+
+    private async Task SaveSettingsAsync()
+    {
+        if (_settings is null) { return; }
+        _saving = true;
+        try
+        {
+            _settings = await BackupSvc.UpsertSettingsAsync(_settings);
+            await Scheduler.ApplyAsync();
+            await Audit.RecordAsync(
+                AuditEventType.BackupSettingsUpdated,
+                subjectType: "BackupSettings",
+                details:     $"Target={_settings.TargetDirectory}, " +
+                             $"Schedule={(_settings.ScheduleEnabled ? _settings.ScheduleCron : "off")}, " +
+                             $"RetainLastN={_settings.RetainLastN}");
+            Notify.Notify(NotificationSeverity.Success,
+                "Saved", _settings.ScheduleEnabled
+                    ? $"Schedule on: {_settings.ScheduleCron}"
+                    : "Schedule off.", 3000);
+        }
+        catch (ArgumentException ex)
+        {
+            Notify.Notify(NotificationSeverity.Warning, "Invalid settings", ex.Message, 6000);
+        }
+        catch (Exception ex)
+        {
+            Log.LogError(ex, "Backup settings save failed");
+            Notify.Notify(NotificationSeverity.Error, "Save failed", ex.Message, 8000);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task RunNowAsync()
+    {
+        _running = true;
+        try
+        {
+            var run = await BackupSvc.RunOnceAsync(triggeredBy: "User");
+            await ReloadHistoryAsync();
+
+            if (run.Outcome == BackupOutcome.Success)
+            {
+                await Audit.RecordAsync(
+                    AuditEventType.BackupCompleted,
+                    subjectType: "BackupRun",
+                    subjectId:   run.Id.ToString(),
+                    details:     $"Bundle={run.BundlePath}, Size={run.BundleSizeBytes} B, " +
+                                 $"Duration={(run.Duration?.TotalMilliseconds ?? 0):F0} ms, " +
+                                 $"TriggeredBy={run.TriggeredBy}");
+                Notify.Notify(NotificationSeverity.Success, "Backup complete",
+                    $"{FormatBytes(run.BundleSizeBytes)} in {FormatDuration(run.Duration ?? TimeSpan.Zero)}.",
+                    5000);
+            }
+            else
+            {
+                await Audit.RecordAsync(
+                    AuditEventType.BackupFailed,
+                    subjectType: "BackupRun",
+                    subjectId:   run.Id.ToString(),
+                    details:     $"TriggeredBy={run.TriggeredBy}, Error={run.ErrorMessage}");
+                Notify.Notify(NotificationSeverity.Error, "Backup failed",
+                    run.ErrorMessage ?? "Unknown error", 10000);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.LogError(ex, "Backup run-now failed");
+            Notify.Notify(NotificationSeverity.Error, "Run failed", ex.Message, 8000);
+        }
+        finally
+        {
+            _running = false;
+        }
+    }
+
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+        0                   => "—",
+        < 1024              => $"{bytes} B",
+        < 1024L * 1024      => $"{bytes / 1024.0:F1} KiB",
+        < 1024L * 1024 * 1024 => $"{bytes / (1024.0 * 1024):F1} MiB",
+        _                   => $"{bytes / (1024.0 * 1024 * 1024):F1} GiB",
+    };
+
+    private static string FormatDuration(TimeSpan d)
+        => d.TotalSeconds < 60
+            ? $"{d.TotalSeconds:F1} s"
+            : $"{(int)d.TotalMinutes}m {d.Seconds}s";
+}

@@ -63,6 +63,10 @@ public class KrakenDbContext(
         => Set<KrakenDeploy.Server.Core.Domain.Features.FeatureFlag>();
     public DbSet<KrakenDeploy.Server.Core.Domain.Freezes.DeploymentFreeze> DeploymentFreezes
         => Set<KrakenDeploy.Server.Core.Domain.Freezes.DeploymentFreeze>();
+    public DbSet<KrakenDeploy.Server.Core.Domain.Backup.BackupSettings> BackupSettings
+        => Set<KrakenDeploy.Server.Core.Domain.Backup.BackupSettings>();
+    public DbSet<KrakenDeploy.Server.Core.Domain.Backup.BackupRun> BackupRuns
+        => Set<KrakenDeploy.Server.Core.Domain.Backup.BackupRun>();
     public DbSet<Tenant> Tenants => Set<Tenant>();
     public DbSet<TagSet> TagSets => Set<TagSet>();
     public DbSet<TenantTag> TenantTags => Set<TenantTag>();
