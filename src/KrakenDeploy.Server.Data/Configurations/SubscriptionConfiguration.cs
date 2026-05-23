@@ -61,9 +61,21 @@ public sealed class SubscriptionDeliveryConfiguration : IEntityTypeConfiguration
         // deliveries by StartedUtc descending.
         builder.HasIndex(d => new { d.SubscriptionId, d.StartedUtc }).IsDescending(false, true);
 
-        // Index on EventId so the delivery row can be joined back to the
-        // audit_entry that triggered it (M13.B.2/3 UI: "show me what
-        // deliveries this event triggered").
-        builder.HasIndex(d => d.EventId);
+        // Composite UNIQUE index — the idempotency guard for the poller.
+        // If a crash leaves the cursor stale, the next poll might re-
+        // process the same audit row; the UNIQUE constraint stops it
+        // from emitting a duplicate delivery for the same (subscription,
+        // event) pair.
+        builder.HasIndex(d => new { d.SubscriptionId, d.EventId }).IsUnique();
+    }
+}
+
+public sealed class SubscriptionPollerStateConfiguration
+    : IEntityTypeConfiguration<SubscriptionPollerState>
+{
+    public void Configure(EntityTypeBuilder<SubscriptionPollerState> builder)
+    {
+        builder.ToTable("subscription_poller_state");
+        builder.HasKey(s => s.Id);
     }
 }

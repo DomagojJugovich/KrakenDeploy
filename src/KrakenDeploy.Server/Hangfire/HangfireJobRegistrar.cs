@@ -78,5 +78,20 @@ public static class HangfireJobRegistrar
             job => job.ExecuteAsync(CancellationToken.None),
             Cron.Hourly(),
             new RecurringJobOptions { TimeZone = utc });
+
+        // Subscription poller (M13.B.2/3) — every minute. Reads
+        // audit_entries since the cursor in subscription_poller_state,
+        // matches active subscriptions, dispatches transport deliveries.
+        // Latency floor for an event reaching a webhook is therefore
+        // ~1 minute. Idempotency (UNIQUE subscription+event on the
+        // delivery table) lets the job re-run safely on crash recovery.
+        // Disable temporarily by removing this recurring entry from
+        // /hangfire's recurring-jobs view; per-subscription pause goes
+        // through the Disabled flag on the row.
+        RecurringJob.AddOrUpdate<SubscriptionPollerJob>(
+            SubscriptionPollerJob.RecurringJobId,
+            job => job.ExecuteAsync(CancellationToken.None),
+            Cron.Minutely(),
+            new RecurringJobOptions { TimeZone = utc });
     }
 }

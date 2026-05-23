@@ -71,6 +71,8 @@ public class KrakenDbContext(
         => Set<KrakenDeploy.Server.Core.Domain.Subscriptions.EventSubscription>();
     public DbSet<KrakenDeploy.Server.Core.Domain.Subscriptions.SubscriptionDelivery> SubscriptionDeliveries
         => Set<KrakenDeploy.Server.Core.Domain.Subscriptions.SubscriptionDelivery>();
+    public DbSet<KrakenDeploy.Server.Core.Domain.Subscriptions.SubscriptionPollerState> SubscriptionPollerStates
+        => Set<KrakenDeploy.Server.Core.Domain.Subscriptions.SubscriptionPollerState>();
     public DbSet<Tenant> Tenants => Set<Tenant>();
     public DbSet<TagSet> TagSets => Set<TagSet>();
     public DbSet<TenantTag> TenantTags => Set<TenantTag>();

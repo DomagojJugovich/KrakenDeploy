@@ -126,6 +126,16 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<FeatureFlagService>();
         services.AddSingleton<DeploymentFreezeService>();
         services.AddScoped<EventSubscriptionService>();
+        services.AddScoped<KrakenDeploy.Server.Data.Services.Subscriptions.EventDispatcher>();
+        // Subscriptions transports — registered as IEventTransport so the
+        // dispatcher can pick the matching implementation by enum. Add a
+        // new transport: implement IEventTransport + register here.
+        services.AddHttpClient<KrakenDeploy.Server.Data.Services.Subscriptions.WebhookTransport>();
+        services.AddScoped<
+            KrakenDeploy.Server.Data.Services.Subscriptions.IEventTransport,
+            KrakenDeploy.Server.Data.Services.Subscriptions.WebhookTransport>(
+            sp => sp.GetRequiredService<KrakenDeploy.Server.Data.Services.Subscriptions.WebhookTransport>());
+        services.AddTransient<SubscriptionPollerJob>();
         // Backup engine + service (M13.G). Scoped because the service opens
         // its own DbContext per call (manual UI invocation + Hangfire schedule
         // both go through it). BackupJob resolves out of the Hangfire scope.

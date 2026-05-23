@@ -110,6 +110,9 @@ public sealed class SpacesTests
             // system-wide (SpaceId=null).
             "EventSubscription",
             "SubscriptionDelivery",
+            // Singleton row for the outbox-poller cursor (M13.B.2/3
+            // Phase 2). Server-wide; not partitioned per Space.
+            "SubscriptionPollerState",
         };
 
         var assembly = typeof(Project).Assembly;
