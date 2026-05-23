@@ -60,6 +60,21 @@ public static class AuditEventType
     /// readers can spot deviations at a glance).</summary>
     public const string FeatureFlagUpdated      = "Feature.Updated";
 
+    // ── Deployment Freezes (M13.F.2) ─────────────────────────────────────────
+    /// <summary>Operator created a new freeze definition. Details: name +
+    /// window + scope summary.</summary>
+    public const string FreezeCreated           = "Freeze.Created";
+    /// <summary>Operator updated a freeze definition. EF interceptor writes
+    /// the field-level before/after via the entity-modified path; this
+    /// constant is kept for explicit code paths to use if they want a
+    /// freeze-specific event type instead of the generic Modified one.</summary>
+    public const string FreezeUpdated           = "Freeze.Updated";
+    /// <summary>Operator deleted a freeze definition.</summary>
+    public const string FreezeDeleted           = "Freeze.Deleted";
+    /// <summary>DeploymentWorker blocked a deployment because an active freeze
+    /// matched its scope. Details: freeze id + name + end-time.</summary>
+    public const string DeploymentBlockedByFreeze = "Deployment.BlockedByFreeze";
+
     // ── SMTP (M13.B.1) ───────────────────────────────────────────────────────
     /// <summary>Operator updated the server-wide SMTP settings. Details carry
     /// the host + port + TLS mode + from-address + whether the password was

@@ -95,6 +95,10 @@ public sealed class SpacesTests
             // mirrors a public GitHub feed; same platform-level scope as
             // StepPackage itself.
             "StepPackageCatalogEntry",
+            // Server-wide singletons (M13.B.1 + M13.F.1) — one row per
+            // instance, no per-Space partitioning by design.
+            "SmtpSettings",
+            "FeatureFlag",
         };
 
         var assembly = typeof(Project).Assembly;

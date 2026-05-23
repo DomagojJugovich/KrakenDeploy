@@ -1,0 +1,199 @@
+@using KrakenDeploy.Server.Core.Domain.Audit
+@using KrakenDeploy.Server.Core.Domain.Environments
+@using KrakenDeploy.Server.Core.Domain.Freezes
+@using KrakenDeploy.Server.Core.Domain.Projects
+@using KrakenDeploy.Server.Core.Domain.Spaces
+
+@inject DeploymentFreezeService FreezeSvc
+@inject ProjectService ProjectSvc
+@inject EnvironmentService EnvironmentSvc
+@inject ISpaceContext SpaceCtx
+@inject IAuditLog Audit
+@inject DialogService Dialog
+
+<RadzenStack Gap="0.75rem">
+    <RadzenFormField Text="Name *" Variant="Variant.Outlined" Style="width:100%">
+        <RadzenTextBox @bind-Value="_form.Name"
+                       Placeholder="e.g. Christmas lockdown" />
+    </RadzenFormField>
+
+    <RadzenFormField Text="Description" Variant="Variant.Outlined" Style="width:100%">
+        <RadzenTextArea @bind-Value="_form.Description" Rows="2"
+                        Placeholder="Optional rationale shown on the freezes page" />
+    </RadzenFormField>
+
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem"
+                 Style="flex-wrap:wrap">
+        <RadzenFormField Text="Start (UTC) *" Variant="Variant.Outlined"
+                         Style="min-width:240px;flex:1">
+            <RadzenDatePicker TValue="DateTime"
+                              @bind-Value="_startLocal"
+                              ShowTime="true"
+                              DateFormat="yyyy-MM-dd HH:mm" />
+        </RadzenFormField>
+        <RadzenFormField Text="End (UTC) *" Variant="Variant.Outlined"
+                         Style="min-width:240px;flex:1">
+            <RadzenDatePicker TValue="DateTime"
+                              @bind-Value="_endLocal"
+                              ShowTime="true"
+                              DateFormat="yyyy-MM-dd HH:mm" />
+        </RadzenFormField>
+    </RadzenStack>
+
+    <RadzenFormField Text="Projects (empty = all)" Variant="Variant.Outlined"
+                     Style="width:100%">
+        <RadzenDropDown TValue="IEnumerable<Guid>"
+                        @bind-Value="_selectedProjectIds"
+                        Data="@_projects"
+                        TextProperty="Name" ValueProperty="Id"
+                        Multiple="true" Chips="true"
+                        AllowFiltering="true"
+                        FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive" />
+    </RadzenFormField>
+
+    <RadzenFormField Text="Environments (empty = all)" Variant="Variant.Outlined"
+                     Style="width:100%">
+        <RadzenDropDown TValue="IEnumerable<Guid>"
+                        @bind-Value="_selectedEnvironmentIds"
+                        Data="@_environments"
+                        TextProperty="Name" ValueProperty="Id"
+                        Multiple="true" Chips="true"
+                        AllowFiltering="true"
+                        FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive" />
+    </RadzenFormField>
+
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                 Gap="0.5rem">
+        <RadzenSwitch @bind-Value="_form.Disabled" Name="disabled" />
+        <RadzenLabel Text="Disabled (draft only — not enforced)" Component="disabled" />
+    </RadzenStack>
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="false">@_error</RadzenAlert>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                 JustifyContent="JustifyContent.End">
+        <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => Dialog.Close(false))" />
+        <RadzenButton Text="Save" ButtonStyle="ButtonStyle.Primary"
+                      IsBusy="@_saving" Click="SaveAsync" />
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    [Parameter] public DeploymentFreeze? Existing { get; set; }
+
+    private DeploymentFreeze _form = new();
+    private DateTime _startLocal = DateTime.Today;
+    private DateTime _endLocal   = DateTime.Today.AddDays(1);
+    private IEnumerable<Guid> _selectedProjectIds     = [];
+    private IEnumerable<Guid> _selectedEnvironmentIds = [];
+
+    private List<Project>              _projects     = [];
+    private List<DeploymentEnvironment> _environments = [];
+
+    private string? _error;
+    private bool _saving;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _projects     = await ProjectSvc.GetAllAsync();
+        _environments = await EnvironmentSvc.GetAllOrderedAsync();
+
+        if (Existing is not null)
+        {
+            // Clone so we don't mutate the parent's reference until Save.
+            _form = new DeploymentFreeze
+            {
+                Id                      = Existing.Id,
+                SpaceId                 = Existing.SpaceId,
+                Name                    = Existing.Name,
+                Description             = Existing.Description,
+                StartUtc                = Existing.StartUtc,
+                EndUtc                  = Existing.EndUtc,
+                ProjectIds              = [.. Existing.ProjectIds],
+                EnvironmentIds          = [.. Existing.EnvironmentIds],
+                TenantTagCanonicalNames = [.. Existing.TenantTagCanonicalNames],
+                Disabled                = Existing.Disabled,
+            };
+            _startLocal = Existing.StartUtc.UtcDateTime;
+            _endLocal   = Existing.EndUtc.UtcDateTime;
+            _selectedProjectIds     = [.. _form.ProjectIds];
+            _selectedEnvironmentIds = [.. _form.EnvironmentIds];
+        }
+        else
+        {
+            _startLocal = DateTime.UtcNow.Date.AddDays(1);
+            _endLocal   = _startLocal.AddDays(1);
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = null;
+
+        if (string.IsNullOrWhiteSpace(_form.Name))
+        {
+            _error = "Name is required.";
+            return;
+        }
+        if (_endLocal <= _startLocal)
+        {
+            _error = "End must be after Start.";
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            _form.StartUtc = new DateTimeOffset(_startLocal, TimeSpan.Zero);
+            _form.EndUtc   = new DateTimeOffset(_endLocal,   TimeSpan.Zero);
+            _form.ProjectIds     = [.. _selectedProjectIds];
+            _form.EnvironmentIds = [.. _selectedEnvironmentIds];
+
+            if (Existing is null)
+            {
+                // SpaceScopingInterceptor will fill SpaceId from the ambient
+                // context if we leave it empty.
+                var created = await FreezeSvc.CreateAsync(_form);
+                await Audit.RecordAsync(
+                    AuditEventType.FreezeCreated,
+                    subjectType: "DeploymentFreeze",
+                    subjectId:   created.Id.ToString(),
+                    subjectName: created.Name,
+                    details:     $"Window={created.StartUtc:O}..{created.EndUtc:O}, " +
+                                 $"Projects={created.ProjectIds.Count}, " +
+                                 $"Environments={created.EnvironmentIds.Count}, " +
+                                 $"Disabled={created.Disabled}");
+            }
+            else
+            {
+                var updated = await FreezeSvc.UpdateAsync(Existing.Id, _form);
+                if (updated is not null)
+                {
+                    await Audit.RecordAsync(
+                        AuditEventType.FreezeUpdated,
+                        subjectType: "DeploymentFreeze",
+                        subjectId:   updated.Id.ToString(),
+                        subjectName: updated.Name,
+                        details:     $"Window={updated.StartUtc:O}..{updated.EndUtc:O}, " +
+                                     $"Projects={updated.ProjectIds.Count}, " +
+                                     $"Environments={updated.EnvironmentIds.Count}, " +
+                                     $"Disabled={updated.Disabled}");
+                }
+            }
+
+            Dialog.Close(true);
+        }
+        catch (ArgumentException ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

@@ -228,6 +228,20 @@ public enum Permission
     /// audit row on every call.</summary>
     SpaceAiSettingsManage  = 1501,
 
+    // ── Deployment Freezes (1600–1699; Phase M13.F.2) ───────────────────────
+
+    /// <summary>View global deployment-freeze definitions.</summary>
+    DeploymentFreezeView   = 1600,
+    /// <summary>Create / edit / delete global deployment-freeze windows.</summary>
+    DeploymentFreezeManage = 1601,
+    /// <summary>
+    /// Override an active freeze when starting a deployment. Granted to
+    /// emergency-bypass roles only (a freeze without the option to override
+    /// blocks security-patch hotfixes). Override use is always audited via
+    /// <c>Freeze.Overridden</c> regardless of who clicked it.
+    /// </summary>
+    DeploymentFreezeOverride = 1602,
+
     // ── Reserved blocks for future entities ─────────────────────────────────
     // Add when the matching domain entity ships. Keeps the enum stable so
     // existing roles don't have their permission-set IDs renumbered.

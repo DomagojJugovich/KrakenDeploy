@@ -1,0 +1,170 @@
+@page "/configuration/freezes"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using KrakenDeploy.Server.Core.Domain.Freezes
+@using KrakenDeploy.Server.Core.Domain.Spaces
+
+@inject DeploymentFreezeService FreezeSvc
+@inject ISpaceContext SpaceCtx
+@inject DialogService Dialog
+@inject NotificationService Notify
+
+<PageTitle>Deployment Freezes — KrakenDeploy</PageTitle>
+
+<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+             Gap="1rem" class="rz-mb-2" Style="flex-wrap:wrap">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">
+        Deployment Freezes
+    </RadzenText>
+    <RequirePermission Permission="Permission.DeploymentFreezeManage">
+        <RadzenButton Icon="add_circle_outline" Text="New Freeze"
+                      ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                      Click="OpenCreateAsync" />
+    </RequirePermission>
+</RadzenStack>
+
+<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+    Block deployments across multiple projects during release weeks, holidays,
+    or maintenance lockdowns. Scope is composable: leave a field empty for
+    "any" on that dimension, fill in to narrow. Override is permission-gated
+    (<code>DeploymentFreezeOverride</code>) — there's no per-freeze "no
+    override" flag, because a freeze that blocks emergency security hotfixes
+    creates worse problems than the one it solves.
+</RadzenText>
+
+<RequirePermission Permission="Permission.DeploymentFreezeView">
+    <RadzenDataGrid Data="@_freezes" TItem="DeploymentFreeze"
+                    AllowPaging="true" PageSize="25"
+                    AllowSorting="true"
+                    AllowColumnResize="true"
+                    EmptyText="No freezes defined.">
+        <Columns>
+            <RadzenDataGridColumn TItem="DeploymentFreeze" Property="Name" Title="Name" Width="240px">
+                <Template Context="f">
+                    <strong>@f.Name</strong>
+                    @if (f.Disabled)
+                    {
+                        <RadzenBadge Text="Disabled" BadgeStyle="BadgeStyle.Light"
+                                     IsPill="true" Style="margin-left:0.4rem" />
+                    }
+                    else if (f.IsActiveAt(DateTimeOffset.UtcNow))
+                    {
+                        <RadzenBadge Text="Active" BadgeStyle="BadgeStyle.Danger"
+                                     IsPill="true" Style="margin-left:0.4rem" />
+                    }
+                    else if (DateTimeOffset.UtcNow < f.StartUtc)
+                    {
+                        <RadzenBadge Text="Upcoming" BadgeStyle="BadgeStyle.Info"
+                                     IsPill="true" Style="margin-left:0.4rem" />
+                    }
+                    else
+                    {
+                        <RadzenBadge Text="Past" BadgeStyle="BadgeStyle.Secondary"
+                                     IsPill="true" Style="margin-left:0.4rem" />
+                    }
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="DeploymentFreeze" Title="Window">
+                <Template Context="f">
+                    <span title="@f.StartUtc.ToString("O")">
+                        @f.StartUtc.LocalDateTime.ToString("yyyy-MM-dd HH:mm")
+                    </span>
+                    <span class="rz-color-secondary">→</span>
+                    <span title="@f.EndUtc.ToString("O")">
+                        @f.EndUtc.LocalDateTime.ToString("yyyy-MM-dd HH:mm")
+                    </span>
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="DeploymentFreeze" Title="Scope">
+                <Template Context="f">
+                    @ScopeSummary(f)
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="DeploymentFreeze" Title="" Width="120px"
+                                  Sortable="false" TextAlign="TextAlign.Right">
+                <Template Context="f">
+                    <RequirePermission Permission="Permission.DeploymentFreezeManage">
+                        <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
+                                      Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                                      Click="@(() => OpenEditAsync(f))" title="Edit" />
+                        <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                      Size="ButtonSize.ExtraSmall"
+                                      Click="@(() => DeleteAsync(f))" title="Delete" />
+                    </RequirePermission>
+                </Template>
+            </RadzenDataGridColumn>
+        </Columns>
+    </RadzenDataGrid>
+</RequirePermission>
+
+@code {
+    private List<DeploymentFreeze> _freezes = [];
+
+    protected override async Task OnInitializedAsync()
+        => _freezes = await FreezeSvc.GetAllAsync();
+
+    private async Task OpenCreateAsync()
+    {
+        var result = await Dialog.OpenAsync<FreezeEditDialog>(
+            "New Deployment Freeze",
+            new Dictionary<string, object?>
+            {
+                [nameof(FreezeEditDialog.Existing)] = (DeploymentFreeze?)null,
+            },
+            new DialogOptions { Width = "720px" });
+
+        if (result is true)
+        {
+            _freezes = await FreezeSvc.GetAllAsync();
+        }
+    }
+
+    private async Task OpenEditAsync(DeploymentFreeze f)
+    {
+        var result = await Dialog.OpenAsync<FreezeEditDialog>(
+            "Edit Freeze",
+            new Dictionary<string, object?>
+            {
+                [nameof(FreezeEditDialog.Existing)] = f,
+            },
+            new DialogOptions { Width = "720px" });
+
+        if (result is true)
+        {
+            _freezes = await FreezeSvc.GetAllAsync();
+        }
+    }
+
+    private async Task DeleteAsync(DeploymentFreeze f)
+    {
+        var confirmed = await Dialog.Confirm(
+            $"Delete freeze '{f.Name}'? Any deployments currently in the window " +
+            "will be unblocked on the next dispatch.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+
+        if (confirmed != true) { return; }
+
+        await FreezeSvc.DeleteAsync(f.Id);
+        _freezes = await FreezeSvc.GetAllAsync();
+        Notify.Notify(NotificationSeverity.Info, "Deleted", f.Name, 4000);
+    }
+
+    private static string ScopeSummary(DeploymentFreeze f)
+    {
+        var parts = new List<string>();
+        parts.Add(f.ProjectIds.Count == 0
+            ? "all projects"
+            : $"{f.ProjectIds.Count} project{(f.ProjectIds.Count == 1 ? "" : "s")}");
+        parts.Add(f.EnvironmentIds.Count == 0
+            ? "all environments"
+            : $"{f.EnvironmentIds.Count} environment{(f.EnvironmentIds.Count == 1 ? "" : "s")}");
+        if (f.TenantTagCanonicalNames.Count > 0)
+        {
+            parts.Add($"{f.TenantTagCanonicalNames.Count} tenant tag" +
+                      $"{(f.TenantTagCanonicalNames.Count == 1 ? "" : "s")}");
+        }
+        return string.Join(" × ", parts);
+    }
+}

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Threading.Channels;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data;
@@ -84,6 +85,64 @@ public sealed class DeploymentWorker(
             {
                 await FailAsync(db, deployment, "No target assigned to deployment.", ct)
                     .ConfigureAwait(false);
+                return;
+            }
+
+            // ── Deployment-freeze gate (M13.F.2) ────────────────────────────
+            // Consulted before EVERY dispatch path (online + offline) so an
+            // operator can't sneak past the gate by configuring a target as
+            // OfflineDrop. The check is cheap (30 s cache; almost always a
+            // dictionary lookup; only the first call per Space per 30 s
+            // round-trips to the DB). Override is gated at the deployment-
+            // CREATE endpoint via DeploymentFreezeOverride permission — by
+            // the time we get here, the deployment has already been
+            // authorised to run, so we just block on raw freeze match.
+            var freezeService = scope.ServiceProvider.GetRequiredService<DeploymentFreezeService>();
+            // NOTE: tenant-tag matching is intentionally left empty for now.
+            // The Tenant aggregate doesn't carry a flat canonical-name
+            // collection (tags live on TagSets) — wiring that resolution
+            // here would require an extra join per dispatch. Project +
+            // Environment scoping covers the common freeze use cases; the
+            // tenant-tag dimension can light up when the tenant rendering
+            // path needs the same lookup anyway.
+            var blockingFreeze = await freezeService.FindBlockingFreezeAsync(
+                spaceId:                 deployment.Release.Project.SpaceId,
+                projectId:               deployment.Release.ProjectId,
+                environmentId:           deployment.EnvironmentId,
+                tenantTagCanonicalNames: null,
+                ct:                      ct).ConfigureAwait(false);
+            if (blockingFreeze is not null)
+            {
+                var msg =
+                    $"Blocked by freeze '{blockingFreeze.Name}' until " +
+                    $"{blockingFreeze.EndUtc:O}. Either wait until the window " +
+                    $"ends or have an operator with DeploymentFreezeOverride " +
+                    $"re-issue the deployment.";
+                logger.LogWarning(
+                    "Deployment {DeploymentId} blocked by freeze {FreezeId} ({FreezeName}); " +
+                    "window ends {EndUtc}.",
+                    deployment.Id, blockingFreeze.Id, blockingFreeze.Name, blockingFreeze.EndUtc);
+                db.DeploymentLogEntries.Add(new DeploymentLogEntry
+                {
+                    DeploymentId = deployment.Id,
+                    Sequence     = deployment.NextLogSequence++,
+                    Timestamp    = DateTimeOffset.UtcNow,
+                    Level        = "error",
+                    Message      = msg,
+                });
+                // The IAuditLog event tags the deployment + freeze so a
+                // forensic review of "why did Friday's release not ship"
+                // points straight at the freeze + window.
+                var audit = scope.ServiceProvider.GetRequiredService<IAuditLog>();
+                await audit.RecordAsync(
+                    KrakenDeploy.Server.Core.Domain.Audit.AuditEventType.DeploymentBlockedByFreeze,
+                    subjectType: "Deployment",
+                    subjectId:   deployment.Id.ToString(),
+                    details:     $"FreezeId={blockingFreeze.Id}, " +
+                                 $"Freeze={blockingFreeze.Name}, " +
+                                 $"EndUtc={blockingFreeze.EndUtc:O}",
+                    ct: ct).ConfigureAwait(false);
+                await FailAsync(db, deployment, msg, ct).ConfigureAwait(false);
                 return;
             }
 

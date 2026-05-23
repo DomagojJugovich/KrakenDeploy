@@ -1483,10 +1483,10 @@ After the audit, the smallest items first (each ~½ day or less) become attracti
 10. **M13.A.3** Maintenance mode. 3h.
 11. **M13.F.3** Performance knobs UI. 2h.
 12. **M13.A.2** Diagnostics page. Half day.
-13. **M13.B.1** SMTP config + Save-and-test. Half day.
+13. **M13.B.1** SMTP config + Save-and-test. Half day. **DONE** (commit `12e69c1`).
 14. **M13.D.1** Code Signing Keys UI. Half day.
-15. **M13.F.1** Features panel. Half day.
-16. **M13.F.2** Global Deployment Freezes. Half day.
+15. **M13.F.1** Features panel. Half day. **DONE** (commit `3e30c73`).
+16. **M13.F.2** Global Deployment Freezes. Half day. **DONE** — `DeploymentFreeze` aggregate (Space-scoped) with composable scope (project IDs, environment IDs, tenant-tag canonical names — all `jsonb`, empty list = "any"). `DeploymentFreezeService` with 30 s in-memory cache keyed by Space. Three new permissions: `DeploymentFreezeView` (1600), `DeploymentFreezeManage` (1601), `DeploymentFreezeOverride` (1602) — no per-freeze "no override" flag because a freeze that blocks emergency security hotfixes is worse than the one it solves. `DeploymentWorker` consults the freeze gate before every dispatch (online + offline drop paths both), failure writes both a deployment-log entry and a `Deployment.BlockedByFreeze` audit event. `/configuration/freezes` page + `FreezeEditDialog`. Deleted the existing 11-line `Pages/ProjectPages/Freezes.razor` stub and its ProjectShell nav link — Octopus's lesson is that freezes are global, not per-project. 15 new tests covering window boundaries (before/active/after/disabled), scope conjunctive matching (project + env combinations), case-insensitive tag matching, and cross-Space isolation.
 17. **M13.C.2** User Invites. Half day.
 18. **M13.B.2/3** Subscriptions (full event-routing system). 2-3 days.
 19. **M13.C.4** API Keys (full per-user system). 2-3 days.

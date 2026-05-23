@@ -303,6 +303,10 @@ internal static class BuiltInRoles
 
         // ── AI Settings ──────────────────────────────────────────────────
         Permission.SpaceAiSettingsView, Permission.SpaceAiSettingsManage,
+
+        // ── Deployment freezes (M13.F.2) ─────────────────────────────────
+        Permission.DeploymentFreezeView, Permission.DeploymentFreezeManage,
+        Permission.DeploymentFreezeOverride,
     ];
 
     // ── Built-in role definitions (declared LAST — depends on permission sets above) ─

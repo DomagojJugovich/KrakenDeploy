@@ -124,6 +124,7 @@ public static class ServiceCollectionExtensions
         // Singleton because the cache must persist across requests — the
         // service opens its own DbContext per call via the factory.
         services.AddSingleton<FeatureFlagService>();
+        services.AddSingleton<DeploymentFreezeService>();
 
         // ── Hangfire background jobs ──────────────────────────────────────────
         // Transient so Hangfire's AspNetCoreJobActivator creates a fresh scope

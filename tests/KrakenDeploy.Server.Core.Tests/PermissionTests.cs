@@ -141,6 +141,13 @@ public sealed class PermissionTests
     [InlineData(Permission.IdentityProviderCreate, 1401)]
     [InlineData(Permission.IdentityProviderEdit,   1402)]
     [InlineData(Permission.IdentityProviderDelete, 1403)]
+    // AI Settings (M11.A.6)
+    [InlineData(Permission.SpaceAiSettingsView,    1500)]
+    [InlineData(Permission.SpaceAiSettingsManage,  1501)]
+    // Deployment Freezes (M13.F.2)
+    [InlineData(Permission.DeploymentFreezeView,     1600)]
+    [InlineData(Permission.DeploymentFreezeManage,   1601)]
+    [InlineData(Permission.DeploymentFreezeOverride, 1602)]
     public void Permission_integer_values_are_stable(Permission perm, int expectedValue)
     {
         ((int)perm).Should().Be(expectedValue,
@@ -164,7 +171,7 @@ public sealed class PermissionTests
 
         // Count from the [Theory]/[InlineData] entries above. If you add new
         // ones, bump this number.
-        const int expectedCoverage = 107;
+        const int expectedCoverage = 112;
 
         allMembers.Should().Be(expectedCoverage,
             "the stability theory must cover every Permission member; " +
