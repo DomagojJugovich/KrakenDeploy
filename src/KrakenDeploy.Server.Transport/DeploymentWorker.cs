@@ -84,6 +84,11 @@ public sealed class DeploymentWorker(
                 return;
             }
 
+            // M14.3.1 — serialise log-sequence allocation. Single-threaded
+            // today; M14.4's wave-parallel execution shares this carrier
+            // across concurrent step paths within the same deployment.
+            var logSeq = new LogSequencer(deployment);
+
             if (deployment.TargetId is null)
             {
                 await FailAsync(db, deployment, "No target assigned to deployment.", ct)
@@ -128,7 +133,7 @@ public sealed class DeploymentWorker(
                 db.DeploymentLogEntries.Add(new DeploymentLogEntry
                 {
                     DeploymentId = deployment.Id,
-                    Sequence     = deployment.NextLogSequence++,
+                    Sequence     = logSeq.Next(),
                     Timestamp    = DateTimeOffset.UtcNow,
                     Level        = "error",
                     Message      = msg,
@@ -186,7 +191,7 @@ public sealed class DeploymentWorker(
                 db.DeploymentLogEntries.Add(new DeploymentLogEntry
                 {
                     DeploymentId = deployment.Id,
-                    Sequence     = deployment.NextLogSequence++,
+                    Sequence     = logSeq.Next(),
                     Timestamp    = DateTimeOffset.UtcNow,
                     Level        = "error",
                     Message      = msg,
@@ -350,7 +355,7 @@ public sealed class DeploymentWorker(
                         if (decision.Action == StepConditionEvaluator.Action.Skip)
                         {
                             await LogAndAuditStepSkippedAsync(
-                                db, auditLog, deployment, snapshot, decision, ct)
+                                db, auditLog, logSeq, deployment, snapshot, decision, ct)
                                 .ConfigureAwait(false);
                             continue;
                         }
@@ -363,11 +368,11 @@ public sealed class DeploymentWorker(
                         // ── M14.2 Per-step Timeout + M14.3 Retries ────────
                         var (ok, timedOut) = await RunServerStepWithRetriesAsync(
                             deployment.Id, s, snapshot, deployment, db, auditLog,
-                            flatVars, ct).ConfigureAwait(false);
+                            logSeq, flatVars, ct).ConfigureAwait(false);
                         if (timedOut)
                         {
                             await LogAndAuditStepTimedOutAsync(
-                                db, auditLog, deployment, snapshot, ct).ConfigureAwait(false);
+                                db, auditLog, logSeq, deployment, snapshot, ct).ConfigureAwait(false);
                         }
 
                         if (!ok)
@@ -387,7 +392,7 @@ public sealed class DeploymentWorker(
                             }
                             // Non-required failure — log + audit + continue.
                             await LogAndAuditStepFailedNonRequiredAsync(
-                                db, auditLog, deployment, snapshot, ct).ConfigureAwait(false);
+                                db, auditLog, logSeq, deployment, snapshot, ct).ConfigureAwait(false);
                             hasFailed = true;
                         }
                     }
@@ -409,7 +414,7 @@ public sealed class DeploymentWorker(
                         if (decision.Action == StepConditionEvaluator.Action.Skip)
                         {
                             await LogAndAuditStepSkippedAsync(
-                                db, auditLog, deployment, snapshot, decision, ct)
+                                db, auditLog, logSeq, deployment, snapshot, decision, ct)
                                 .ConfigureAwait(false);
                             continue;
                         }
@@ -430,57 +435,141 @@ public sealed class DeploymentWorker(
 
                     var subPlan = plan with { Steps = stepsToRun.ToArray() };
 
-                    // ── M14.2 Group Timeout ──────────────────────────────
-                    // Use the longest per-step timeout in the group. 0 = unlimited.
+                    // ── M14.2 Group Timeout + M14.3.1 Target-side Retries ─
+                    // Group timeout = longest TimeoutSeconds in the group (0 = unlimited).
+                    // Group retries = longest MaxRetries + matching RetryDelaySeconds.
+                    // Retry semantics: re-dispatches the WHOLE sub-plan to the
+                    // agent on failure. Re-runs every step in the group, not just
+                    // the failed one — per-step attribution needs the wave-aware
+                    // agent contract that M14.4 introduces. Operators relying on
+                    // retries here must ensure their step scripts are idempotent;
+                    // documented in the M14.4 plan + commit body.
                     var groupTimeoutSeconds = stepsToRun
                         .Select(p => snapshotSteps[p.Index].TimeoutSeconds)
                         .DefaultIfEmpty(0)
                         .Max();
+                    var groupMaxRetries = stepsToRun
+                        .Select(p => snapshotSteps[p.Index].MaxRetries)
+                        .DefaultIfEmpty(0)
+                        .Max();
+                    var groupRetryDelaySeconds = stepsToRun
+                        .Select(p => snapshotSteps[p.Index].RetryDelaySeconds)
+                        .DefaultIfEmpty(0)
+                        .Max();
+                    var groupNamesForAudit = string.Join(", ",
+                        stepsToRun.Select(p => p.Name));
 
-                    var tcs = new TaskCompletionSource<SubPlanResult>(
-                        TaskCreationOptions.RunContinuationsAsynchronously);
-                    subPlans.Register(deployment.Id, tcs);
-
-                    SubPlanResult subPlanResult;
+                    SubPlanResult subPlanResult = default!;
                     var timedOut = false;
-                    using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                    if (groupTimeoutSeconds > 0)
+                    var attempt = 0;
+                    while (true)
                     {
-                        linkedCts.CancelAfter(TimeSpan.FromSeconds(groupTimeoutSeconds));
-                    }
+                        var tcs = new TaskCompletionSource<SubPlanResult>(
+                            TaskCreationOptions.RunContinuationsAsynchronously);
+                        subPlans.Register(deployment.Id, tcs);
 
-                    try
-                    {
-                        await agentHub.Clients.Client(connectionId)
-                            .RunDeploymentAsync(subPlan).ConfigureAwait(false);
+                        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                        if (groupTimeoutSeconds > 0)
+                        {
+                            linkedCts.CancelAfter(TimeSpan.FromSeconds(groupTimeoutSeconds));
+                        }
+                        var thisAttemptTimedOut = false;
 
-                        using var ctr = linkedCts.Token.Register(
-                            () => tcs.TrySetCanceled(linkedCts.Token));
                         try
                         {
-                            subPlanResult = await tcs.Task.ConfigureAwait(false);
+                            await agentHub.Clients.Client(connectionId)
+                                .RunDeploymentAsync(subPlan).ConfigureAwait(false);
+
+                            using var ctr = linkedCts.Token.Register(
+                                () => tcs.TrySetCanceled(linkedCts.Token));
+                            try
+                            {
+                                subPlanResult = await tcs.Task.ConfigureAwait(false);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                // Timeout fired (or external cancel). Distinguish
+                                // by whether the outer ct was cancelled too.
+                                if (!ct.IsCancellationRequested && linkedCts.IsCancellationRequested)
+                                {
+                                    thisAttemptTimedOut = true;
+                                    subPlanResult = new SubPlanResult(
+                                        Success: false,
+                                        ErrorMessage:
+                                            $"Target step group timed out after {groupTimeoutSeconds}s.");
+                                }
+                                else
+                                {
+                                    throw;
+                                }
+                            }
                         }
-                        catch (OperationCanceledException)
+                        finally
                         {
-                            // Timeout fired (or external cancel). Distinguish
-                            // by whether the outer ct was cancelled too.
-                            if (!ct.IsCancellationRequested && linkedCts.IsCancellationRequested)
-                            {
-                                timedOut = true;
-                                subPlanResult = new SubPlanResult(
-                                    Success: false,
-                                    ErrorMessage:
-                                        $"Target step group timed out after {groupTimeoutSeconds}s.");
-                            }
-                            else
-                            {
-                                throw;
-                            }
+                            subPlans.Cancel(deployment.Id, "completed");
                         }
-                    }
-                    finally
-                    {
-                        subPlans.Cancel(deployment.Id, "completed");
+
+                        if (subPlanResult.Success)
+                        {
+                            timedOut = false;
+                            if (attempt > 0)
+                            {
+                                db.DeploymentLogEntries.Add(new DeploymentLogEntry
+                                {
+                                    DeploymentId = deployment.Id,
+                                    Sequence     = logSeq.Next(),
+                                    Timestamp    = DateTimeOffset.UtcNow,
+                                    Level        = "info",
+                                    Message      = $"--- Target group [{groupNamesForAudit}] " +
+                                                   $"succeeded on attempt " +
+                                                   $"{(attempt + 1).ToString(CultureInfo.InvariantCulture)} ---",
+                                });
+                                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                            }
+                            break;
+                        }
+
+                        if (attempt >= groupMaxRetries)
+                        {
+                            // Final attempt failed — fall through to the Required gate.
+                            timedOut = thisAttemptTimedOut;
+                            break;
+                        }
+
+                        // Non-final attempt failed — emit retry marker + audit + delay.
+                        attempt++;
+                        db.DeploymentLogEntries.Add(new DeploymentLogEntry
+                        {
+                            DeploymentId = deployment.Id,
+                            Sequence     = logSeq.Next(),
+                            Timestamp    = DateTimeOffset.UtcNow,
+                            Level        = "warning",
+                            Message      =
+                                $"--- Target group [{groupNamesForAudit}] attempt " +
+                                $"{attempt.ToString(CultureInfo.InvariantCulture)} failed; retrying " +
+                                $"(attempt {(attempt + 1).ToString(CultureInfo.InvariantCulture)} of " +
+                                $"{(groupMaxRetries + 1).ToString(CultureInfo.InvariantCulture)})" +
+                                (groupRetryDelaySeconds > 0
+                                    ? $" in {groupRetryDelaySeconds.ToString(CultureInfo.InvariantCulture)}s ---"
+                                    : " ---"),
+                        });
+                        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                        await auditLog.RecordAsync(
+                            AuditEventType.DeploymentStepRetried,
+                            subjectType: "Deployment",
+                            subjectId:   deployment.Id.ToString(),
+                            details:     $"TargetGroup=[{groupNamesForAudit}], " +
+                                         $"Attempt={attempt.ToString(CultureInfo.InvariantCulture)}, " +
+                                         $"MaxRetries={groupMaxRetries.ToString(CultureInfo.InvariantCulture)}, " +
+                                         $"RetryDelaySeconds={groupRetryDelaySeconds.ToString(CultureInfo.InvariantCulture)}",
+                            ct: ct).ConfigureAwait(false);
+
+                        if (groupRetryDelaySeconds > 0)
+                        {
+                            await Task.Delay(
+                                TimeSpan.FromSeconds(groupRetryDelaySeconds), ct)
+                                .ConfigureAwait(false);
+                        }
                     }
 
                     if (timedOut)
@@ -494,7 +583,7 @@ public sealed class DeploymentWorker(
                         if (timeoutStep is not null)
                         {
                             await LogAndAuditStepTimedOutAsync(
-                                db, auditLog, deployment, timeoutStep, ct).ConfigureAwait(false);
+                                db, auditLog, logSeq, deployment, timeoutStep, ct).ConfigureAwait(false);
                         }
                     }
 
@@ -503,12 +592,12 @@ public sealed class DeploymentWorker(
                         // ── M14.2 Required gate at the group level ──────
                         // If ANY step in the dispatched group is Required,
                         // the whole sub-plan failure aborts the deployment.
-                        // The simplification is conservative: it never
-                        // continues past a Required failure, but may
-                        // pessimistically abort even when the actually-
-                        // failing step was non-required. Per-step attribution
-                        // needs an agent contract change (M14.4-adjacent)
-                        // for the agent to report which step failed.
+                        // Conservative: it never continues past a Required
+                        // failure, but may pessimistically abort even when
+                        // the actually-failing step was non-required.
+                        // Per-step attribution narrows this scope and is
+                        // M14.4 work (agent contract reports which step
+                        // in the wave actually failed).
                         var anyRequired = stepsToRun.Any(p =>
                             snapshotSteps[p.Index].Required);
                         if (anyRequired)
@@ -530,7 +619,7 @@ public sealed class DeploymentWorker(
                         foreach (var p in stepsToRun)
                         {
                             await LogAndAuditStepFailedNonRequiredAsync(
-                                db, auditLog, deployment, snapshotSteps[p.Index], ct)
+                                db, auditLog, logSeq, deployment, snapshotSteps[p.Index], ct)
                                 .ConfigureAwait(false);
                         }
                         hasFailed = true;
@@ -882,11 +971,19 @@ public sealed class DeploymentWorker(
 
     /// <summary>
     /// Wraps <see cref="RunServerStepWithTimeoutAsync"/> with the M14.3
-    /// retry loop. On each non-final attempt failure, logs a retry
-    /// marker + emits <c>Deployment.StepRetried</c> audit + sleeps
+    /// retry loop for server-side steps. Target-side groups have their
+    /// own equivalent retry loop inline in <c>DispatchAsync</c> because
+    /// the sub-plan dispatch lifecycle (TCS + subPlans.Register + linked
+    /// CTS) doesn't factor cleanly into a generic wrapper without
+    /// adding more parameters than the readability gain justifies.
+    ///
+    /// <para>
+    /// On each non-final attempt failure, logs a retry marker + emits
+    /// <c>Deployment.StepRetried</c> audit + sleeps
     /// <see cref="StepSnapshot.RetryDelaySeconds"/> before the next try.
     /// Returns <c>(ok, timedOut)</c> reflecting the FINAL attempt only —
     /// the retry detail lives in the deployment-log entries + audit rows.
+    /// </para>
     ///
     /// <para>
     /// <c>MaxRetries = 0</c> (default) makes this a single-attempt call,
@@ -917,6 +1014,7 @@ public sealed class DeploymentWorker(
         Deployment deployment,
         KrakenDbContext db,
         IAuditLog audit,
+        LogSequencer logSeq,
         IReadOnlyDictionary<string, string> flatVars,
         CancellationToken ct)
     {
@@ -936,7 +1034,7 @@ public sealed class DeploymentWorker(
                     db.DeploymentLogEntries.Add(new DeploymentLogEntry
                     {
                         DeploymentId = deployment.Id,
-                        Sequence     = deployment.NextLogSequence++,
+                        Sequence     = logSeq.Next(),
                         Timestamp    = DateTimeOffset.UtcNow,
                         Level        = "info",
                         Message      = $"--- Step '{snapshot.Name}' succeeded on attempt " +
@@ -968,7 +1066,7 @@ public sealed class DeploymentWorker(
             db.DeploymentLogEntries.Add(new DeploymentLogEntry
             {
                 DeploymentId = deployment.Id,
-                Sequence     = deployment.NextLogSequence++,
+                Sequence     = logSeq.Next(),
                 Timestamp    = DateTimeOffset.UtcNow,
                 Level        = "warning",
                 Message      = msg,
@@ -1046,7 +1144,7 @@ public sealed class DeploymentWorker(
     }
 
     private static async Task LogAndAuditStepSkippedAsync(
-        KrakenDbContext db, IAuditLog audit,
+        KrakenDbContext db, IAuditLog audit, LogSequencer logSeq,
         Deployment deployment, StepSnapshot snapshot,
         StepConditionEvaluator.Decision decision,
         CancellationToken ct)
@@ -1054,17 +1152,17 @@ public sealed class DeploymentWorker(
         db.DeploymentLogEntries.Add(new DeploymentLogEntry
         {
             DeploymentId = deployment.Id,
-            Sequence     = deployment.NextLogSequence++,
+            Sequence     = logSeq.Next(),
             Timestamp    = DateTimeOffset.UtcNow,
             Level        = "info",
             Message      = $"--- Step '{snapshot.Name}' skipped: {decision.Reason} ---",
         });
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
-        // Variable conditions get a dedicated audit type so operators can
-        // filter for "deployments where the expression didn't resolve."
-        // Other skips share the StepSkipped event type.
-        var eventType = decision.Reason.Contains("unresolved", StringComparison.Ordinal)
+        // M14.3.1 — typed Decision.Kind drives the audit event type
+        // (replaced the pre-M14.3.1 substring-on-Reason heuristic which
+        // would silently change behaviour when the reason wording changed).
+        var eventType = decision.Kind == StepConditionEvaluator.Kind.Unresolved
             ? AuditEventType.DeploymentVariableConditionUnresolved
             : AuditEventType.DeploymentStepSkipped;
         await audit.RecordAsync(
@@ -1076,7 +1174,7 @@ public sealed class DeploymentWorker(
     }
 
     private static async Task LogAndAuditStepTimedOutAsync(
-        KrakenDbContext db, IAuditLog audit,
+        KrakenDbContext db, IAuditLog audit, LogSequencer logSeq,
         Deployment deployment, StepSnapshot snapshot,
         CancellationToken ct)
     {
@@ -1085,7 +1183,7 @@ public sealed class DeploymentWorker(
         db.DeploymentLogEntries.Add(new DeploymentLogEntry
         {
             DeploymentId = deployment.Id,
-            Sequence     = deployment.NextLogSequence++,
+            Sequence     = logSeq.Next(),
             Timestamp    = DateTimeOffset.UtcNow,
             Level        = "error",
             Message      = msg,
@@ -1101,14 +1199,14 @@ public sealed class DeploymentWorker(
     }
 
     private static async Task LogAndAuditStepFailedNonRequiredAsync(
-        KrakenDbContext db, IAuditLog audit,
+        KrakenDbContext db, IAuditLog audit, LogSequencer logSeq,
         Deployment deployment, StepSnapshot snapshot,
         CancellationToken ct)
     {
         db.DeploymentLogEntries.Add(new DeploymentLogEntry
         {
             DeploymentId = deployment.Id,
-            Sequence     = deployment.NextLogSequence++,
+            Sequence     = logSeq.Next(),
             Timestamp    = DateTimeOffset.UtcNow,
             Level        = "warning",
             Message      = $"--- Step '{snapshot.Name}' failed (not required) — " +

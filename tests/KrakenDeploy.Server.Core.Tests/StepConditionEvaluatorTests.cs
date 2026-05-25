@@ -20,6 +20,7 @@ public sealed class StepConditionEvaluatorTests
         var d = StepConditionEvaluator.Evaluate(
             StepCondition.Success, null, hasFailed: false, EmptyVars());
         d.Action.Should().Be(StepConditionEvaluator.Action.Run);
+        d.Kind.Should().Be(StepConditionEvaluator.Kind.Run);
         d.Reason.Should().Contain("no prior failure");
     }
 
@@ -102,8 +103,53 @@ public sealed class StepConditionEvaluatorTests
         var d2 = StepConditionEvaluator.Evaluate(
             StepCondition.Variable, falsyExpr, hasFailed: false, vars);
         d2.Action.Should().Be(StepConditionEvaluator.Action.Skip,
-            "#{NotSet} resolves to null (unresolved) → falsy");
-        d2.Reason.Should().Contain("unresolved");
+            "#{NotSet} is missing — Octostache reports an error → Unresolved");
+        d2.Kind.Should().Be(StepConditionEvaluator.Kind.Unresolved,
+            "Octostache's out-error parameter is the authoritative signal " +
+            "for missing variables — replaces the pre-M14.3.1 substring " +
+            "heuristic on the result string");
+    }
+
+    [Fact]
+    public void Variable_condition_distinguishes_Unresolved_from_falsy()
+    {
+        // M14.3.1 — the orchestrator routes Unresolved decisions to a
+        // dedicated audit event type (DeploymentVariableConditionUnresolved).
+        // Falsy-but-resolved (e.g. "#{Flag}" where Flag="false") routes to
+        // DeploymentStepSkipped. Locking the Kind field prevents a future
+        // contributor breaking the routing by changing Reason wording.
+        var vars = new VariableDictionary();
+        vars["Flag"] = "false";
+
+        var falsy = StepConditionEvaluator.Evaluate(
+            StepCondition.Variable, "#{Flag}", hasFailed: false, vars);
+        falsy.Action.Should().Be(StepConditionEvaluator.Action.Skip);
+        falsy.Kind.Should().Be(StepConditionEvaluator.Kind.Skipped,
+            "resolved-but-falsy is Skipped, not Unresolved");
+
+        var unresolved = StepConditionEvaluator.Evaluate(
+            StepCondition.Variable, "#{MissingVar}", hasFailed: false, vars);
+        unresolved.Action.Should().Be(StepConditionEvaluator.Action.Skip);
+        unresolved.Kind.Should().Be(StepConditionEvaluator.Kind.Unresolved,
+            "referenced variable absent — Octostache error → Unresolved");
+    }
+
+    [Fact]
+    public void Variable_condition_with_literal_template_in_value_is_not_misclassified()
+    {
+        // M14.3.1 fix — pre-fix the evaluator did result.Contains("#{") to
+        // flag unresolved. A resolved value that LEGITIMATELY contained
+        // "#{" (e.g. a templated connection string operator copy-pasted
+        // as a literal) would have been misclassified as Unresolved.
+        // The new Octostache-error-driven detection is immune.
+        var vars = new VariableDictionary();
+        vars["WeirdLiteral"] = "true";
+        vars["TemplateInside"] = "literal #{notathing} text"; // contains #{
+        // The "WeirdLiteral" value is "true" — truthy.
+        var d = StepConditionEvaluator.Evaluate(
+            StepCondition.Variable, "#{WeirdLiteral}", hasFailed: false, vars);
+        d.Action.Should().Be(StepConditionEvaluator.Action.Run);
+        d.Kind.Should().Be(StepConditionEvaluator.Kind.Run);
     }
 
     [Fact]
