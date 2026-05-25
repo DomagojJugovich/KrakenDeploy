@@ -360,10 +360,10 @@ public sealed class DeploymentWorker(
                             continue;
                         }
 
-                        // ── M14.2 Per-step Timeout ───────────────────────
-                        var (ok, timedOut) = await RunServerStepWithTimeoutAsync(
-                            deployment.Id, s, snapshot, flatVars, ct)
-                            .ConfigureAwait(false);
+                        // ── M14.2 Per-step Timeout + M14.3 Retries ────────
+                        var (ok, timedOut) = await RunServerStepWithRetriesAsync(
+                            deployment.Id, s, snapshot, deployment, db, auditLog,
+                            flatVars, ct).ConfigureAwait(false);
                         if (timedOut)
                         {
                             await LogAndAuditStepTimedOutAsync(
@@ -878,7 +878,129 @@ public sealed class DeploymentWorker(
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 
-    // ── M14.2 helpers ────────────────────────────────────────────────────
+    // ── M14.2 + M14.3 helpers ────────────────────────────────────────────
+
+    /// <summary>
+    /// Wraps <see cref="RunServerStepWithTimeoutAsync"/> with the M14.3
+    /// retry loop. On each non-final attempt failure, logs a retry
+    /// marker + emits <c>Deployment.StepRetried</c> audit + sleeps
+    /// <see cref="StepSnapshot.RetryDelaySeconds"/> before the next try.
+    /// Returns <c>(ok, timedOut)</c> reflecting the FINAL attempt only —
+    /// the retry detail lives in the deployment-log entries + audit rows.
+    ///
+    /// <para>
+    /// <c>MaxRetries = 0</c> (default) makes this a single-attempt call,
+    /// equivalent to <see cref="RunServerStepWithTimeoutAsync"/> directly.
+    /// </para>
+    ///
+    /// <para>
+    /// Each retry attempt gets a fresh per-step timeout window — total
+    /// wall time can be up to <c>(TimeoutSeconds + RetryDelaySeconds) *
+    /// (MaxRetries + 1)</c>. Operators should size the deployment-level
+    /// expectations accordingly; we don't model an aggregate budget in v1.
+    /// </para>
+    ///
+    /// <para>
+    /// <strong>Output variables on retry:</strong> server-side script
+    /// steps don't currently capture <c>Set-OctopusVariable</c> output
+    /// into <c>deployment_output_variables</c> (the <c>##octopus[setVariable]</c>
+    /// lines pass through as log entries verbatim), so there's nothing
+    /// to discard between retry attempts. When server-side output capture
+    /// lands, this is the place to clear the partial output bucket between
+    /// failed attempts.
+    /// </para>
+    /// </summary>
+    private async Task<(bool Ok, bool TimedOut)> RunServerStepWithRetriesAsync(
+        Guid deploymentId,
+        DeploymentStepPlan step,
+        StepSnapshot snapshot,
+        Deployment deployment,
+        KrakenDbContext db,
+        IAuditLog audit,
+        IReadOnlyDictionary<string, string> flatVars,
+        CancellationToken ct)
+    {
+        var maxAttempts = snapshot.MaxRetries < 0 ? 0 : snapshot.MaxRetries;
+        var delaySeconds = snapshot.RetryDelaySeconds < 0 ? 0 : snapshot.RetryDelaySeconds;
+
+        var attempt = 0;
+        while (true)
+        {
+            var (ok, timedOut) = await RunServerStepWithTimeoutAsync(
+                deploymentId, step, snapshot, flatVars, ct).ConfigureAwait(false);
+
+            if (ok)
+            {
+                if (attempt > 0)
+                {
+                    db.DeploymentLogEntries.Add(new DeploymentLogEntry
+                    {
+                        DeploymentId = deployment.Id,
+                        Sequence     = deployment.NextLogSequence++,
+                        Timestamp    = DateTimeOffset.UtcNow,
+                        Level        = "info",
+                        Message      = $"--- Step '{snapshot.Name}' succeeded on attempt " +
+                                       $"{(attempt + 1).ToString(CultureInfo.InvariantCulture)} ---",
+                    });
+                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                }
+                return (Ok: true, TimedOut: false);
+            }
+
+            if (attempt >= maxAttempts)
+            {
+                // Final attempt failed — caller applies Required gate.
+                return (Ok: false, TimedOut: timedOut);
+            }
+
+            // Non-final attempt failed — emit retry marker + audit + delay.
+            attempt++;
+            var msg = delaySeconds > 0
+                ? $"--- Step '{snapshot.Name}' attempt " +
+                  $"{attempt.ToString(CultureInfo.InvariantCulture)} failed; retrying in " +
+                  $"{delaySeconds.ToString(CultureInfo.InvariantCulture)}s " +
+                  $"(attempt {(attempt + 1).ToString(CultureInfo.InvariantCulture)} of " +
+                  $"{(maxAttempts + 1).ToString(CultureInfo.InvariantCulture)}) ---"
+                : $"--- Step '{snapshot.Name}' attempt " +
+                  $"{attempt.ToString(CultureInfo.InvariantCulture)} failed; retrying " +
+                  $"(attempt {(attempt + 1).ToString(CultureInfo.InvariantCulture)} of " +
+                  $"{(maxAttempts + 1).ToString(CultureInfo.InvariantCulture)}) ---";
+            db.DeploymentLogEntries.Add(new DeploymentLogEntry
+            {
+                DeploymentId = deployment.Id,
+                Sequence     = deployment.NextLogSequence++,
+                Timestamp    = DateTimeOffset.UtcNow,
+                Level        = "warning",
+                Message      = msg,
+            });
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            await audit.RecordAsync(
+                AuditEventType.DeploymentStepRetried,
+                subjectType: "Deployment",
+                subjectId:   deployment.Id.ToString(),
+                details:     $"Step={snapshot.Name}, " +
+                             $"Attempt={attempt.ToString(CultureInfo.InvariantCulture)}, " +
+                             $"MaxRetries={maxAttempts.ToString(CultureInfo.InvariantCulture)}, " +
+                             $"RetryDelaySeconds={delaySeconds.ToString(CultureInfo.InvariantCulture)}",
+                ct: ct).ConfigureAwait(false);
+
+            if (delaySeconds > 0)
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds), ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Deployment cancelled during retry-delay sleep — bail
+                    // with the previous attempt's result rather than
+                    // re-entering the loop. The outer ct semantics handle
+                    // the cancellation reporting.
+                    throw;
+                }
+            }
+        }
+    }
 
     /// <summary>
     /// Wraps <see cref="ExecuteServerStepAsync"/> with a per-step timeout
