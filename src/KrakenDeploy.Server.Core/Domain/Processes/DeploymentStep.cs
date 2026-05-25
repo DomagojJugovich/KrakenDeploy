@@ -133,4 +133,37 @@ public class DeploymentStep : Entity
     /// it. Default <see cref="StepStartTrigger.StartAfterPrevious"/>.
     /// </summary>
     public StepStartTrigger StartTrigger { get; set; } = StepStartTrigger.StartAfterPrevious;
+
+    // ── M15 step composition (child steps + ForEach) ──────────────────
+
+    /// <summary>
+    /// M15 — when set, marks this step as a child of another step in the
+    /// same <see cref="DeploymentProcess"/>. Only steps of type
+    /// <see cref="KrakenStepTypes.StepGroup"/> may have children;
+    /// validation in <c>ProcessService.ValidateAsync</c> enforces this.
+    ///
+    /// <para>
+    /// The orchestrator's <c>DeploymentPlanFlattener</c> (M15.2)
+    /// consumes the parent-child tree to produce a flat
+    /// <see cref="Contracts.DeploymentStepPlan"/>[] for the agent —
+    /// children are expanded in <see cref="SortOrder"/>, ForEach groups
+    /// emit one child block per iteration, etc. The agent never learns
+    /// about parent-child structure; it sees a flat list as today.
+    /// </para>
+    ///
+    /// <para>
+    /// Null for top-level steps (the common case). Self-FK with
+    /// <c>ON DELETE CASCADE</c> so deleting a Step Group removes its
+    /// children atomically.
+    /// </para>
+    /// </summary>
+    public Guid? ParentStepId { get; set; }
+
+    /// <summary>Navigation to the parent step (M15). Null for top-level steps.</summary>
+    public DeploymentStep? Parent { get; set; }
+
+    /// <summary>Navigation to child steps (M15). Empty for leaf-type steps
+    /// (validation refuses non-empty children unless <see cref="StepType"/> is
+    /// <see cref="KrakenStepTypes.StepGroup"/>).</summary>
+    public ICollection<DeploymentStep> Children { get; set; } = [];
 }

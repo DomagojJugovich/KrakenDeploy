@@ -73,107 +73,221 @@ public static class OctopusDeploymentProcessImporter
                 continue;
             }
 
-            if (s.Actions.Count > 1)
+            // ── Single-action step → flat ParsedStep ────────────────────
+            // The common case: Octopus's "1 step = 1 action" shape lands
+            // as a leaf step verbatim. Step name dominates the action's
+            // name here (matches the pre-M15 importer output exactly).
+            if (s.Actions.Count == 1)
             {
-                warnings.Add(new(label,
-                    $"Step has {s.Actions.Count} parallel actions; parallel actions are not yet supported — skipped."));
-                continue;
-            }
-
-            var a = s.Actions[0];
-
-            if (string.IsNullOrWhiteSpace(a.ActionType))
-            {
-                warnings.Add(new(label, "Action has no ActionType — skipped."));
-                continue;
-            }
-
-            if (a.IsDisabled)
-            {
-                warnings.Add(new(label,
-                    "Action is disabled in the source process; Kraken does not yet model disabled steps — skipped."));
-                continue;
-            }
-
-            // Target roles come from the step's Properties (Octopus stores them there,
-            // not on the action).
-            var roles = ResolveTargetRoles(s.Properties);
-
-            // Primary package: Kraken's DeploymentStep.PackageId is a real package
-            // logical name. Octopus uses "dummy" as a sentinel on package-less steps
-            // (e.g. an IIS-only configure step). Strip the sentinel — the verbatim
-            // value still lives in Config["Octopus.Action.Package.PackageId"] for
-            // round-trip.
-            var packageId = ResolvePrimaryPackageId(a.Packages);
-
-            // Config: copy Octopus property bag verbatim. No key translation —
-            // the handler reads whichever shape it understands. Octopus emits
-            // sensitive values as JSON objects ({HasValue,NewValue,Hint}); these
-            // are preserved as their JSON-text representation in Config so a
-            // round-trip back to Octopus can re-emit the envelope.
-            var config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            if (a.Properties is not null)
-            {
-                foreach (var (key, element) in a.Properties)
+                var leaf = ParseAction(s, s.Actions[0], label, warnings,
+                    forcedStartTrigger: null);
+                if (leaf is not null)
                 {
-                    config[key] = NormalisePropertyValue(element);
+                    if (!string.IsNullOrWhiteSpace(s.Name))
+                    {
+                        leaf = leaf with { Name = s.Name! };
+                    }
+                    steps.Add(leaf);
+                }
+                continue;
+            }
+
+            // ── Multi-action step → Kraken.StepGroup parent + children ──
+            // M15: Octopus's multi-action shape is parent-with-children;
+            // the importer creates a Kraken.StepGroup parent carrying
+            // step-level metadata (TargetRoles, MaxParallelism for
+            // M-RollingDeployments, future step-level keys) and emits
+            // each action as a child. Octopus's default for multi-action
+            // is parallel-on-same-target, so children 2..N get
+            // StartTrigger=StartWithPrevious. Operators wanting sequential
+            // execution flip the children to StartAfterPrevious in the
+            // editor after import.
+            var children = new List<ParsedStep>(s.Actions.Count);
+            for (var ai = 0; ai < s.Actions.Count; ai++)
+            {
+                // Force StartTrigger on children 2..N to StartWithPrevious
+                // to preserve Octopus's parallel-on-same-target default.
+                var forcedTrigger = ai == 0
+                    ? (StepStartTrigger?)null
+                    : StepStartTrigger.StartWithPrevious;
+                var child = ParseAction(s, s.Actions[ai], $"{label}/action[{ai}]",
+                    warnings, forcedTrigger);
+                if (child is not null)
+                {
+                    children.Add(child);
+                }
+            }
+            if (children.Count == 0)
+            {
+                warnings.Add(new(label,
+                    "Step has multiple actions but every one was unparseable; group skipped."));
+                continue;
+            }
+
+            // Parent's Config carries every step-level property verbatim
+            // — including Octopus.Action.MaxParallelism (reserved for
+            // M-RollingDeployments) and any future step-level keys. The
+            // step-level TargetRoles already resolved separately below.
+            // s.Properties is already-normalised Dictionary<string, string>
+            // (only the action's bag is JsonElement-typed).
+            var parentConfig = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (s.Properties is not null)
+            {
+                foreach (var (key, value) in s.Properties)
+                {
+                    // Octopus.Action.TargetRoles lives in step properties
+                    // by convention; we surface it as TargetRoles on the
+                    // ParsedStep itself, so don't double-store.
+                    if (key.Equals("Octopus.Action.TargetRoles", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    parentConfig[key] = value;
                 }
             }
 
-            // Out-of-scope fields — warn rather than silently drop.
-            if (!string.IsNullOrWhiteSpace(a.WorkerPoolId))
-            {
-                warnings.Add(new(label,
-                    $"Action targets worker pool '{a.WorkerPoolId}'; Kraken does not model worker pools — ignored."));
-            }
-            if (a.Container is not null && !string.IsNullOrWhiteSpace(a.Container.Image))
-            {
-                warnings.Add(new(label,
-                    $"Action runs inside container '{a.Container.Image}'; Kraken does not model container execution — ignored."));
-            }
-            if (a.TenantTags is { Count: > 0 })
-            {
-                warnings.Add(new(label,
-                    $"Action is scoped to tenant tags [{string.Join(", ", a.TenantTags)}]; per-step tenant-tag scoping is not yet propagated by the importer — step imported without scoping."));
-            }
-            if (a.Environments is { Count: > 0 } || a.ExcludedEnvironments is { Count: > 0 } ||
-                a.Channels is { Count: > 0 })
-            {
-                warnings.Add(new(label,
-                    "Action carries Environments / ExcludedEnvironments / Channels scoping; per-step environment/channel scoping is not yet propagated by the importer — step imported without scoping."));
-            }
-
-            // ── M14 step-execution knobs ────────────────────────────────────
-            // Read Octopus's per-step Run Condition + Start Trigger from the
-            // top-level step fields (verified against argosy-process.json).
-            // Action-level IsRequired carries the Required flag. AutoRetry's
-            // MaximumCount lives in the action's Properties bag.
-            // Variable-condition expressions live in the step's Properties bag.
-            var condition = ParseCondition(s.Condition ?? a.Condition);
-            var startTrigger = ParseStartTrigger(s.StartTrigger);
-            var conditionVariableExpression = ResolveStepProperty(
+            var parentRoles = ResolveTargetRoles(s.Properties);
+            // Step-level Run Condition + Start Trigger from the top-level
+            // step fields apply to the group as a whole.
+            var parentCondition = ParseCondition(s.Condition);
+            var parentStartTrigger = ParseStartTrigger(s.StartTrigger);
+            var parentConditionVariableExpression = ResolveStepProperty(
                 s.Properties, "Octopus.Step.ConditionVariableExpression");
-            var maxRetries = ResolveActionRetryMaximumCount(a.Properties);
-            // Octopus action's IsRequired is bool, defaults false. KrakenDeploy
-            // defaults Required to true (preserves pre-M14 semantics where any
-            // step failure aborted). The importer preserves Octopus's value
-            // verbatim so a round-trip stays semantically identical.
-            var required = a.IsRequired;
 
             steps.Add(new ParsedStep(
-                Name:                        string.IsNullOrWhiteSpace(s.Name) ? a.Name ?? label : s.Name!,
-                StepType:                    a.ActionType!,
-                PackageId:                   packageId,
-                TargetRoles:                 roles,
-                Config:                      config,
-                Condition:                   condition,
-                ConditionVariableExpression: conditionVariableExpression,
-                Required:                    required,
-                MaxRetries:                  maxRetries,
-                StartTrigger:                startTrigger));
+                Name:                        string.IsNullOrWhiteSpace(s.Name) ? label : s.Name!,
+                StepType:                    KrakenStepTypes.StepGroup,
+                PackageId:                   string.Empty,
+                TargetRoles:                 parentRoles,
+                Config:                      parentConfig,
+                Condition:                   parentCondition,
+                ConditionVariableExpression: parentConditionVariableExpression,
+                // Step groups themselves are Required by default; the
+                // group's Required flag isn't a thing Octopus models —
+                // it's per-action. Keep the Kraken default.
+                Required:                    true,
+                StartTrigger:                parentStartTrigger,
+                Children:                    children));
+
+            warnings.Add(new(label,
+                $"Step has {s.Actions.Count} actions; imported as a Step Group " +
+                $"with children running in parallel (StartTrigger=StartWithPrevious). " +
+                $"Change children to StartAfterPrevious for sequential execution."));
         }
 
         return new ParsedDeploymentProcess(steps, warnings);
+    }
+
+    /// <summary>
+    /// Parses a single Octopus action into a leaf <see cref="ParsedStep"/>.
+    /// Returns null when the action is unusable (no ActionType, disabled,
+    /// etc.) and emits a warning. <paramref name="forcedStartTrigger"/> lets
+    /// the multi-action path override the action's natural trigger to
+    /// preserve Octopus's parallel-on-same-target default for children 2..N.
+    /// </summary>
+    private static ParsedStep? ParseAction(
+        OctopusStepDto s,
+        OctopusActionDto a,
+        string label,
+        List<ImportDeploymentProcessWarning> warnings,
+        StepStartTrigger? forcedStartTrigger)
+    {
+        if (string.IsNullOrWhiteSpace(a.ActionType))
+        {
+            warnings.Add(new(label, "Action has no ActionType — skipped."));
+            return null;
+        }
+
+        if (a.IsDisabled)
+        {
+            warnings.Add(new(label,
+                "Action is disabled in the source process; Kraken does not yet model disabled steps — skipped."));
+            return null;
+        }
+
+        // Target roles come from the step's Properties (Octopus stores them there,
+        // not on the action).
+        var roles = ResolveTargetRoles(s.Properties);
+
+        // Primary package: Kraken's DeploymentStep.PackageId is a real package
+        // logical name. Octopus uses "dummy" as a sentinel on package-less steps
+        // (e.g. an IIS-only configure step). Strip the sentinel — the verbatim
+        // value still lives in Config["Octopus.Action.Package.PackageId"] for
+        // round-trip.
+        var packageId = ResolvePrimaryPackageId(a.Packages);
+
+        // Config: copy Octopus property bag verbatim. No key translation —
+        // the handler reads whichever shape it understands. Octopus emits
+        // sensitive values as JSON objects ({HasValue,NewValue,Hint}); these
+        // are preserved as their JSON-text representation in Config so a
+        // round-trip back to Octopus can re-emit the envelope.
+        var config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (a.Properties is not null)
+        {
+            foreach (var (key, element) in a.Properties)
+            {
+                config[key] = NormalisePropertyValue(element);
+            }
+        }
+
+        // Out-of-scope fields — warn rather than silently drop.
+        if (!string.IsNullOrWhiteSpace(a.WorkerPoolId))
+        {
+            warnings.Add(new(label,
+                $"Action targets worker pool '{a.WorkerPoolId}'; Kraken does not model worker pools — ignored."));
+        }
+        if (a.Container is not null && !string.IsNullOrWhiteSpace(a.Container.Image))
+        {
+            warnings.Add(new(label,
+                $"Action runs inside container '{a.Container.Image}'; Kraken does not model container execution — ignored."));
+        }
+        if (a.TenantTags is { Count: > 0 })
+        {
+            warnings.Add(new(label,
+                $"Action is scoped to tenant tags [{string.Join(", ", a.TenantTags)}]; per-step tenant-tag scoping is not yet propagated by the importer — step imported without scoping."));
+        }
+        if (a.Environments is { Count: > 0 } || a.ExcludedEnvironments is { Count: > 0 } ||
+            a.Channels is { Count: > 0 })
+        {
+            warnings.Add(new(label,
+                "Action carries Environments / ExcludedEnvironments / Channels scoping; per-step environment/channel scoping is not yet propagated by the importer — step imported without scoping."));
+        }
+
+        // ── M14 step-execution knobs ────────────────────────────────────
+        // Read Octopus's per-step Run Condition + Start Trigger from the
+        // top-level step fields (verified against argosy-process.json).
+        // Action-level IsRequired carries the Required flag. AutoRetry's
+        // MaximumCount lives in the action's Properties bag.
+        // Variable-condition expressions live in the step's Properties bag.
+        var condition = ParseCondition(s.Condition ?? a.Condition);
+        var startTrigger = forcedStartTrigger ?? ParseStartTrigger(s.StartTrigger);
+        var conditionVariableExpression = ResolveStepProperty(
+            s.Properties, "Octopus.Step.ConditionVariableExpression");
+        var maxRetries = ResolveActionRetryMaximumCount(a.Properties);
+        // Octopus action's IsRequired is bool, defaults false. KrakenDeploy
+        // defaults Required to true (preserves pre-M14 semantics where any
+        // step failure aborted). The importer preserves Octopus's value
+        // verbatim so a round-trip stays semantically identical.
+        var required = a.IsRequired;
+
+        // Prefer the action's name for child step (multi-action) so each
+        // child gets its own identifiable name; fall back to step name +
+        // label for the single-action case where step name dominates.
+        var stepName = !string.IsNullOrWhiteSpace(a.Name)
+            ? a.Name!
+            : (string.IsNullOrWhiteSpace(s.Name) ? label : s.Name!);
+
+        return new ParsedStep(
+            Name:                        stepName,
+            StepType:                    a.ActionType!,
+            PackageId:                   packageId,
+            TargetRoles:                 roles,
+            Config:                      config,
+            Condition:                   condition,
+            ConditionVariableExpression: conditionVariableExpression,
+            Required:                    required,
+            MaxRetries:                  maxRetries,
+            StartTrigger:                startTrigger);
     }
 
     // ── helpers ────────────────────────────────────────────────────────────
@@ -349,7 +463,11 @@ public sealed record ParsedDeploymentProcess(
 
 /// <summary>Single parsed step ready for upsert into a Kraken process.
 /// M14 step-execution knobs are appended with defaults so older callers
-/// (and importer paths that don't yet propagate them) continue to compile.</summary>
+/// (and importer paths that don't yet propagate them) continue to compile.
+/// M15 adds <see cref="Children"/>: when an Octopus step carries multiple
+/// actions, the importer emits a parent <see cref="ParsedStep"/> with
+/// <c>StepType = Kraken.StepGroup</c> whose <see cref="Children"/> are
+/// one <see cref="ParsedStep"/> per action.</summary>
 public sealed record ParsedStep(
     string Name,
     string StepType,
@@ -362,7 +480,8 @@ public sealed record ParsedStep(
     int MaxRetries = 0,
     int RetryDelaySeconds = 0,
     int TimeoutSeconds = 0,
-    StepStartTrigger StartTrigger = StepStartTrigger.StartAfterPrevious);
+    StepStartTrigger StartTrigger = StepStartTrigger.StartAfterPrevious,
+    IReadOnlyList<ParsedStep>? Children = null);
 
 /// <summary>Per-step warning surfaced during a deploymentprocess import.</summary>
 public sealed record ImportDeploymentProcessWarning(string StepName, string Message);

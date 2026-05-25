@@ -48,5 +48,17 @@ public class DeploymentStepConfiguration : IEntityTypeConfiguration<DeploymentSt
             .OnDelete(DeleteBehavior.Cascade);
 
         builder.HasIndex(x => new { x.ProcessId, x.SortOrder });
+
+        // M15 — self-FK for parent/child step composition. ON DELETE
+        // CASCADE so deleting a Step Group removes its children atomically.
+        // Filtered index (parent_step_id IS NOT NULL) keeps top-level
+        // steps out of the lookup since most are flat.
+        builder.HasOne(x => x.Parent)
+            .WithMany(p => p.Children)
+            .HasForeignKey(x => x.ParentStepId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        builder.HasIndex(x => x.ParentStepId)
+            .HasFilter("parent_step_id IS NOT NULL");
     }
 }

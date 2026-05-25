@@ -171,8 +171,13 @@ public sealed class OctopusDeploymentProcessImporterTests
     }
 
     [Fact]
-    public void Parse_skips_step_with_parallel_actions_and_warns()
+    public void Parse_imports_parallel_actions_as_a_Kraken_StepGroup()
     {
+        // M15 — what used to be skipped (with a "parallel actions not yet
+        // supported" warning) now imports as a Kraken.StepGroup parent
+        // with one child per action. The detailed shape is pinned in
+        // OctopusImporterM15MultiActionTests; this regression test
+        // just confirms the old "skipped" behaviour is gone.
         const string json = """
         {
           "Steps": [
@@ -188,8 +193,10 @@ public sealed class OctopusDeploymentProcessImporterTests
         """;
 
         var result = OctopusDeploymentProcessImporter.Parse(json);
-        result.Steps.Should().BeEmpty();
-        result.Warnings.Should().ContainSingle(w => w.Message.Contains("parallel"));
+        result.Steps.Should().HaveCount(1);
+        result.Steps[0].StepType.Should().Be("Kraken.StepGroup");
+        result.Steps[0].Children.Should().HaveCount(2);
+        result.Warnings.Should().Contain(w => w.Message.Contains("Step Group"));
     }
 
     [Fact]

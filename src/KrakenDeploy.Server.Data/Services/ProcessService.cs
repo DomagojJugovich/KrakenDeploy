@@ -304,40 +304,114 @@ public class ProcessService(
                 .MaxAsync(ct)
                 .ConfigureAwait(false) ?? -1) + 1;
 
+        var importedCount = 0;
         for (var i = 0; i < parsed.Steps.Count; i++)
         {
             var p = parsed.Steps[i];
-            // D-6: auto-pin each imported step. When no installed package
-            // claims the step type the pin stays null (agent falls back).
-            var pin = await ResolvePinAsync(p.StepType, null, null, ct).ConfigureAwait(false);
-            db.DeploymentSteps.Add(new DeploymentStep
-            {
-                ProcessId                   = process.Id,
-                Name                        = p.Name,
-                StepType                    = p.StepType,
-                PackageId                   = p.PackageId,
-                TargetRoles                 = p.TargetRoles,
-                Config                      = p.Config,
-                SortOrder                   = startSort + i,
-                StepPackageName             = pin?.Name,
-                StepPackageVersion          = pin?.Version,
-                // M14 step-execution knobs from the importer.
-                Condition                   = p.Condition,
-                ConditionVariableExpression = p.ConditionVariableExpression,
-                Required                    = p.Required,
-                MaxRetries                  = p.MaxRetries,
-                RetryDelaySeconds           = p.RetryDelaySeconds,
-                TimeoutSeconds              = p.TimeoutSeconds,
-                StartTrigger                = p.StartTrigger,
-            });
+            importedCount += await AddParsedStepAsync(
+                db, process.Id, parentStepId: null, sortOrder: startSort + i, p, ct)
+                .ConfigureAwait(false);
         }
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         return new ImportDeploymentProcessResult(
-            Imported: parsed.Steps.Count,
+            Imported: importedCount,
             ReplacedExisting: replaced,
             Warnings: parsed.Warnings);
+    }
+
+    /// <summary>
+    /// Recursively materialises a <see cref="ParsedStep"/> (and its children,
+    /// if any) into <see cref="DeploymentStep"/> rows. Children get the
+    /// parent's <see cref="DeploymentStep.Id"/> as their
+    /// <see cref="DeploymentStep.ParentStepId"/> — EF's
+    /// <see cref="Guid.CreateVersion7"/> default on <see cref="Entity"/>
+    /// makes this safe before SaveChanges. Returns the total number of
+    /// rows added (parent + every descendant).
+    /// </summary>
+    private async Task<int> AddParsedStepAsync(
+        KrakenDbContext db,
+        Guid processId,
+        Guid? parentStepId,
+        int sortOrder,
+        ParsedStep p,
+        CancellationToken ct)
+    {
+        // D-6: auto-pin each imported step. When no installed package
+        // claims the step type the pin stays null (agent falls back).
+        var pin = await ResolvePinAsync(p.StepType, null, null, ct).ConfigureAwait(false);
+
+        var step = new DeploymentStep
+        {
+            ProcessId                   = processId,
+            Name                        = p.Name,
+            StepType                    = p.StepType,
+            PackageId                   = p.PackageId,
+            TargetRoles                 = p.TargetRoles,
+            Config                      = p.Config,
+            SortOrder                   = sortOrder,
+            StepPackageName             = pin?.Name,
+            StepPackageVersion          = pin?.Version,
+            // M14 step-execution knobs from the importer.
+            Condition                   = p.Condition,
+            ConditionVariableExpression = p.ConditionVariableExpression,
+            Required                    = p.Required,
+            MaxRetries                  = p.MaxRetries,
+            RetryDelaySeconds           = p.RetryDelaySeconds,
+            TimeoutSeconds              = p.TimeoutSeconds,
+            StartTrigger                = p.StartTrigger,
+            // M15 parent link
+            ParentStepId                = parentStepId,
+        };
+        db.DeploymentSteps.Add(step);
+
+        var added = 1;
+        if (p.Children is { Count: > 0 } children)
+        {
+            for (var ci = 0; ci < children.Count; ci++)
+            {
+                added += await AddParsedStepAsync(
+                    db, processId, parentStepId: step.Id,
+                    sortOrder: ci, p: children[ci], ct).ConfigureAwait(false);
+            }
+        }
+        return added;
+    }
+
+    // ── M15 validation ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// M15 — validates the project's deployment process against the
+    /// structural rules in <see cref="ProcessValidator"/>:
+    /// cycle freedom, parent locality, group-only parenthood, leaf-config
+    /// exclusion on Step Groups. Returns
+    /// <see cref="ProcessValidator.Result.Ok"/> for an empty/clean process.
+    ///
+    /// <para>
+    /// Called by the editor before save (the editor surfaces every error
+    /// at once) and by the orchestrator's flattener as defence in depth
+    /// against corrupted data. Read-only — the validator never mutates
+    /// the steps.
+    /// </para>
+    /// </summary>
+    public async Task<ProcessValidator.Result> ValidateAsync(
+        Guid projectId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct)
+            .ConfigureAwait(false);
+
+        var process = await db.DeploymentProcesses
+            .Include(p => p.Steps)
+            .FirstOrDefaultAsync(p => p.ProjectId == projectId, ct)
+            .ConfigureAwait(false);
+
+        if (process is null)
+        {
+            return ProcessValidator.Result.Ok;
+        }
+
+        return ProcessValidator.Validate(process.Steps);
     }
 
     // ── Private helpers ────────────────────────────────────────────────────

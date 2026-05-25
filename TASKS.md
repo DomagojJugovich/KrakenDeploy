@@ -1733,20 +1733,25 @@ This means the rolling-deployment work, when it eventually lands, doesn't requir
 
 ### Phases
 
-**M15.1 — Schema + importer (half day)**
-- EF migration `AddStepParentLink`: add `parent_step_id` (nullable Guid, self-FK with `ON DELETE CASCADE` so deleting a parent removes its children atomically) + index on `parent_step_id` for "find children of X" queries.
-- `DeploymentStep` gets `ParentStepId Guid?` + nav properties `Parent` and `Children` (ICollection).
-- `StepSnapshot` mirrors `ParentStepId` (the snapshot stays a flat list with the FK preserved; orchestrator reconstructs the tree at deployment time).
-- **Validation rules** in `ProcessService.ValidateAsync`:
-  - Cycle detection (a step cannot be its own ancestor).
-  - Children's `ParentStepId` must reference a step in the same `DeploymentProcess`.
-  - Only `Kraken.StepGroup`-typed steps may have children. Any other step type with non-empty `Children` is rejected.
-  - A `Kraken.StepGroup` step must NOT carry leaf-only Config keys (`Octopus.Action.Script.ScriptBody`, `Octopus.Action.Script.Syntax`, `Octopus.Action.Package.PackageId`, etc.). The catalogue of leaf-only keys lives in a single static list referenced by the validator + the importer.
-- `OctopusDeploymentProcessImporter`: when a source step has `Actions.Count > 1`, replace the existing "skipped" warning with honest parent-child creation:
-  - Parent step: `StepType = "Kraken.StepGroup"`, inherits `Octopus.Action.TargetRoles` from the source step's properties + name from the source step's `Name`. Step-level Octopus properties (including `Octopus.Action.MaxParallelism` for rolling-deployment steps, plus any future step-level keys) are copied verbatim to the parent's Config — preserved for M-RollingDeployments without M15 acting on them.
-  - Children: each Octopus action becomes a child step (existing per-action parse path reused).
-  - **Octopus's default for multi-action steps is parallel-on-same-target**, so children 2..N have `StartTrigger = StartWithPrevious` set on import to preserve runtime behaviour. An import-time warning is emitted per multi-action step explaining the choice: `"Step 'X' had N parallel actions; imported as a Step Group with children running in parallel (StartTrigger=StartWithPrevious). Change to StartAfterPrevious if you want sequential execution."`
-  - Pin via a new test fixture: a real Octopus deploymentprocess JSON with a multi-action step + a rolling-deployment step (with `Octopus.Action.MaxParallelism` set) + assert parent-child round-trip preserves the rolling property in Config for the future milestone to consume.
+**M15.1 — Schema + importer — DONE 2026-05-25**
+
+Landed:
+- Schema: `DeploymentStep.ParentStepId Guid?` + `Parent` / `Children` navigation properties; EF config adds self-FK with `ON DELETE CASCADE` + filtered index `(parent_step_id IS NOT NULL)`. `StepSnapshot.ParentStepId` mirrors the same field on the jsonb snapshot — pre-M15 rows deserialise as null (top-level), matching pre-M15 behaviour.
+- Migration `AddStepParentLink` — generated via `dotnet ef migrations add`, clean Postgres snake_case schema.
+- New `KrakenStepTypes` constants module (Server.Core): the well-known `StepGroup = "Kraken.StepGroup"` marker + the catalogue of leaf-only Config keys (script body, package selectors, IIS / Windows Service / Substitute / Manual keys) referenced by both validator and importer. Single source of truth.
+- New `ProcessValidator` pure helper (Server.Core): accumulates every problem in one pass — cycle detection (DFS over parent chain), parent locality, group-only parenthood (`LeafTypeHasChildren`), leaf-config exclusion on Step Groups (`GroupHasLeafConfig`). 4-variant `ValidationErrorCode` enum so callers (UI, log lines, importer warnings) can switch on a typed category. Empty/null inputs return `Result.Ok` (memoised singleton).
+- `ProcessService.ValidateAsync(projectId)` thin wrapper that loads the process's steps and runs the validator. Read-only — does NOT mutate. Returns `ProcessValidator.Result.Ok` for empty/missing processes.
+- `OctopusDeploymentProcessImporter`: M14.0..3 "parallel actions not yet supported — skipped" warning replaced with honest parent-child creation. Multi-action Octopus steps land as `Kraken.StepGroup` parent + one child per action; children 2..N get `StartTrigger = StartWithPrevious` to preserve Octopus's parallel-on-same-target default. Parent inherits TargetRoles + step-level Octopus properties verbatim — including `Octopus.Action.MaxParallelism` (reserved for M-RollingDeployments). Refactored common per-action parse logic into a `ParseAction` helper; single-action path overrides child's name with step name to keep pre-M15 import output exact.
+- `ParsedStep` record gains `Children: IReadOnlyList<ParsedStep>?` for the tree shape; `ImportDeploymentProcessAsync` walks the tree recursively (`AddParsedStepAsync`), setting `ParentStepId` from the parent's `Id` before SaveChanges (works because `Entity.Id` is `Guid.CreateVersion7()` at construction time).
+- Updated the pre-M15 "Parse_skips_step_with_parallel_actions_and_warns" test to track the new "imported as Step Group" contract.
+
+Tests (+16): `ProcessValidatorTests` (10 in Server.Core.Tests) — empty / flat / leaf-with-children / group-with-leaf-config / unknown-parent / self-cycle / two-step cycle / happy-path / multi-error accumulation / empty-group-is-valid. `OctopusImporterM15MultiActionTests` (6 in Server.Data.Tests) — single-action regression / multi-action → StepGroup / children-StartTrigger-forcing / MaxParallelism preserved on parent / import-time warning / children inherit TargetRoles.
+
+Decisions made during implementation:
+- **No `AddStepAsync` / `UpdateStepAsync` signature change**. `parentStepId` is NOT added as a parameter in M15.1 — that's M15.3 (editor wires parent-child via a dropdown). Importer creates parent-child structures directly via DbContext; the public step-CRUD signatures stay untouched for back-compat with the 30+ existing callers.
+- **Single-action step name precedence preserved**. The pre-M15 importer used step name over action name for single-action steps; the new `ParseAction` helper prefers action name (good for children), and the single-action call site applies an override to keep imports byte-identical. Regression-tested against the existing test pack.
+- **Step Group inherits the step-level Run Condition + Start Trigger**. These are top-level Octopus fields (not per-action), so they apply to the group as a whole — children get their own per-action Condition + the forced StartWithPrevious trigger.
+- **No `ProcessService.AddStepAsync` validation hook yet**. Validation is exposed via `ValidateAsync` for the editor to call before save; AddStepAsync doesn't run it inline (which would force every caller to handle the result). M15.3's editor work will wire this up.
 
 **M15.2 — Orchestrator pre-flatten + ForEach semantics (half day)**
 - New `DeploymentPlanFlattener` (in `Server.Transport`, alongside `DeploymentWorker`). Pure-function transform: `(IReadOnlyList<StepSnapshot>, IReadOnlyDictionary<string,string[]> arrayVars, VariableDictionary scalarVars) → DeploymentStepPlan[]`.

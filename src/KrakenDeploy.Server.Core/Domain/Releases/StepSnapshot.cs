@@ -71,4 +71,21 @@ public sealed class StepSnapshot
 
     /// <summary>M14.4 Start trigger — see <see cref="DeploymentStep.StartTrigger"/>.</summary>
     public StepStartTrigger StartTrigger { get; init; } = StepStartTrigger.StartAfterPrevious;
+
+    /// <summary>
+    /// M15 — parent step ID in the snapshot tree. Frozen at release-cut
+    /// time so subsequent process edits don't reshape the release. Null
+    /// for top-level steps (the common case); set for children of a
+    /// <see cref="KrakenStepTypes.StepGroup"/>-typed parent step.
+    ///
+    /// <para>
+    /// The snapshot stays a flat list — the parent-child relation lives
+    /// in this field. The orchestrator's
+    /// <c>DeploymentPlanFlattener</c> reconstructs the tree at deployment
+    /// time. Pre-M15 snapshots deserialise with this field absent → it
+    /// reads as null and the row behaves as a top-level step, matching
+    /// the runtime they were created under.
+    /// </para>
+    /// </summary>
+    public Guid? ParentStepId { get; init; }
 }
