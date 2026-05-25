@@ -1540,4 +1540,281 @@ User asked for a deeper audit to surface infrastructure that could be reused (or
 - Git as config-as-code source (separate milestone — M-ConfigAsCode if pursued).
 - Let's Encrypt ACME wizard (operators handle TLS via their reverse proxy / load balancer).
 - Telemetry-to-vendor (Octopus uses this for usage analytics; KrakenDeploy doesn't need it — M12 OpenTelemetry export is for operator-controlled targets, not vendor reporting).
+
+---
+
+## M14 — Step Execution Engine Parity (Octopus Process Editor knobs)
+
+**Scoped 2026-05-25** after a question about whether KrakenDeploy supports the per-step controls visible in the Octopus Process Editor (`Start Trigger`, `Run Condition`, `Required`, `Retries`, plus the absent-but-sensible `Timeout`). Codebase survey confirmed: **none of these are modelled today**. `DeploymentStep` carries `TargetRoles` + `Config` only; the orchestrator (`DeploymentWorker.DispatchAsync`) is a strict sequential `foreach` with "stop on first failure". The agent (`DeploymentExecutor.ExecuteAsync`) is the same shape. The features below are pure additions — they don't break any existing process because every new field has a default value that reproduces today's behaviour.
+
+**Rolling deployments are NOT in scope for M14.** They require multi-target-per-deployment, which the current data model (`Deployment.TargetId` singular) doesn't support; that's a separate milestone (M-RollingDeployments) likely larger than this whole one.
+
+### Why this matters
+
+Operators importing existing Octopus processes today silently lose the `Octopus.Step.Condition`, `Octopus.Step.StartTrigger`, and `Octopus.Action.AutoRetry.*` properties. The importer copies the property bag verbatim (`OctopusDeploymentProcessImporter.cs` line 113 onwards) so the values are there in `Config`, but **nothing in the runtime consults them**. That's a quiet correctness gap: a Failure-conditioned cleanup step that's supposed to run on failure currently runs as a normal step and short-circuits the whole deployment if it itself fails. Closing the gap is also what makes Kraken usable as a drop-in replacement for Octopus on real LAUS processes.
+
+### The six features in scope
+
+| # | Feature | Default preserves today's behaviour | Engine impact |
+|---|---|---|---|
+| 1 | Run Condition (Success / Failure / Always) | `Success` | Medium — orchestrator stops returning on first failure; tracks `hasFailed`; evaluates Condition per step |
+| 2 | Required | `true` (every step required) | Small — only matters once Condition exists; non-required failure marks deployment but loop continues |
+| 3 | Retries (`MaxRetries`, `RetryDelaySeconds`) | `0` / `0` | Small — wraps step execution in a retry loop on both sides of the wire |
+| 4 | Per-step Timeout (`TimeoutSeconds`) | `0` = unlimited | Small — `CancellationTokenSource.CancelAfter`; agent already accepts a per-step CT |
+| 5 | Start Trigger / per-step parallel (`StartAfterPrevious` / `StartWithPrevious`) | `StartAfterPrevious` | **Large** — replaces side-based grouping with wave-based; output-variable accumulator races; agent loop becomes parallel |
+| 6 | Variable Run Condition (`Octopus.Step.ConditionVariableExpression`) | n/a | Small — Octostache already evaluates `#{}` expressions; a `bool`-returning evaluator is a thin layer. **Folded into M14.2.**
+
+### Phases
+
+**M14.1 — Schema + storage (half day)**
+- EF migration: add `Condition` (enum: `Success | Failure | Always | Variable` — int column), `ConditionVariableExpression` (text, nullable), `Required` (bool, default true), `MaxRetries` (int, default 0), `RetryDelaySeconds` (int, default 0), `TimeoutSeconds` (int, default 0), `StartTrigger` (enum: `StartAfterPrevious | StartWithPrevious`, default `StartAfterPrevious`) to `deployment_steps`.
+- Mirror the same fields on `StepSnapshot` (jsonb evolves; existing rows deserialise with defaults — `init`-only properties + default values handle this).
+- Extend `DeploymentStepPlan` (`Contracts/DeploymentContracts.cs`) with the six new fields. **Pre-prod policy — no back-compat shims.** Older agents will deserialise the extra fields as defaults; newer agents on older plans will get defaults. Both directions are safe.
+- `ReleaseService.UpdateVariablesAsync` snapshot path: copy the new fields from `DeploymentStep` → `StepSnapshot` (currently does TargetRoles + Config — add the new ones).
+- `OctopusDeploymentProcessImporter`: read **step-level** `Octopus.Step.Condition`, `Octopus.Step.StartTrigger`, `Octopus.Step.ConditionVariableExpression` from `s.Properties` (currently only `Octopus.Action.TargetRoles` is mined); read **action-level** `Octopus.Action.AutoRetry.MaximumCount` from `a.Properties` (already preserved verbatim in `Config`, but also lift into the typed field). **Verify exact property names against an actual Octopus deploymentprocess JSON before committing** — these names are from memory, the importer test pack should pin one canonical fixture.
+- New audit event types: `Deployment.StepSkipped` (Condition didn't match), `Deployment.StepTimedOut`, `Deployment.StepRetried`, `Deployment.StepFailedNonRequired`.
+- `StepFormDialog.razor`: add fields. Behind the existing `ui.show-advanced-step-fields` toggle from M13.F.5 (when that lands; show unconditionally until then with a "Run Condition" / "Required" / "Retries" / "Timeout" section under the existing chrome). Start Trigger gets a parity-warning callout in v1: "Steps with StartWithPrevious run in parallel — output variables captured inside parallel steps are unsupported and may be dropped." (See Risks below for the rationale.)
+
+**M14.2 — Run Condition + Required + Timeout (1 day)**
+- `DeploymentWorker.DispatchAsync`: replace the current `return` on step failure with `hasFailed = true` tracking. After the group loop completes, `Status = hasFailed ? Failed : Succeeded` (or `SucceededWithWarnings` — see Status state machine below).
+- Before each step's execution, evaluate the Condition:
+  - `Success` → run iff `!hasFailed`
+  - `Failure` → run iff `hasFailed`
+  - `Always` → run
+  - `Variable` → run iff Octostache evaluation of `ConditionVariableExpression` returns truthy. **Truthy contract**: case-insensitive `true`, the literal `1`, or `True` after `#{}` expansion. Empty / `false` / `0` / null / unresolved expression = falsy. A failed Octostache expansion (referencing an undefined variable) treats as falsy + writes a warning log + audit `Deployment.VariableConditionUnresolved`. Octostache lives on the server already, so the evaluator is `vars.Evaluate(expression)?.Trim()` + the truthy comparison. Tests cover: truthy values, falsy values, undefined-variable-reference falsy-with-warning, and the case-insensitive contract.
+- **UI labels in `StepFormDialog.razor`** (Octopus parity, verified against Octopus screenshots 2026-05-25 — mirror the wording verbatim for operator familiarity):
+  - Start Trigger picker: `"Run in parallel with the previous step"` / `"Wait for all previous steps to complete, then start"`
+  - Run Condition picker (non-first step): `"Success: only run when previous steps succeed"` / `"Failure: only run when previous steps fail"` / `"Always run"` / `"Variable: only run when the variable expression is true"`
+  - Run Condition picker (FIRST step in the process — `SortOrder == 0` AND no parent OR first child of its parent): the **"Failure" option is hidden** (no prior step could have failed) AND the Success label changes to `"Success: only run when previous steps succeed (or is first step)"`. The orchestrator handles a Failure-conditioned first step correctly anyway (Failure evaluates false → step skipped) so this is purely UX hygiene, but it matches Octopus and prevents operator confusion. If a step is later reordered to first position with Condition already set to Failure, the editor surfaces a warning callout `"This step has Condition=Failure but is now first in the process — it will never run. Change to Success or Always, or move it later in the process."`
+  - The "first step" determination is **scoped to the parent**: a child step at `SortOrder == 0` within a `Kraken.StepGroup` is "first" relative to its siblings, NOT relative to the whole process. Inside a Step Group, the same Failure-hiding logic applies for the group's first child. This stays consistent with how the orchestrator evaluates `hasFailed` (which is per-scope when we eventually want it; for v1 it's per-deployment, but the UI rule already aligns).
+- A skipped step writes a log line + audit event but does NOT change `hasFailed`.
+- `Required` is consulted on FAILURE:
+  - Required + failed → log + audit (`Deployment.StepFailedNonRequired` is the wrong name; should be `Deployment.RequiredStepFailed`) + `return` (short-circuit, same as today).
+  - Not required + failed → log + audit `Deployment.StepFailedNonRequired` + `hasFailed = true`, loop continues.
+- `TimeoutSeconds`: in `ExecuteServerStepAsync` and in the target-group `await tcs.Task`, build a `CancellationTokenSource.CreateLinkedTokenSource(ct)` and `CancelAfter(timeout)` when `TimeoutSeconds > 0`. On timeout: write audit `Deployment.StepTimedOut`, treat as step failure (then Required gate applies).
+- Agent-side: `DeploymentExecutor.ExecuteStepAsync` gets the same per-step CT + CancelAfter logic. The agent must respect the cancellation cleanly (kill long-running script processes; we already pass a `CancellationToken` through `IStepHandler` so this should be a small change at the handler-runner boundary, with the script-running handlers being the visible work).
+- Tests (Server.Data.Tests + a new tests project for the orchestrator if `DeploymentWorker` isn't yet covered — needs check):
+  - "Failure-conditioned step runs only after a non-required step failed"
+  - "Always-conditioned step runs in both success + fail paths"
+  - "Variable-conditioned step honours `#{Octopus.Deployment.Tenant.Id}`-style expressions"
+  - "Required step failure short-circuits; non-required failure does not"
+  - "Step exceeding TimeoutSeconds is killed; deployment fails when Required, continues when not"
+  - "Timeout 0 = unlimited (today's behaviour)"
+
+**M14.3 — Retries (half day)**
+- Wrap the step execution call in a `for (attempt = 0; attempt <= MaxRetries; attempt++)` loop with `await Task.Delay(RetryDelaySeconds * 1000, ct)` between attempts.
+- Output-variable capture from a failed-and-will-retry attempt MUST be discarded — the next attempt sees a clean output bag. Implementation: collect into a temp buffer; merge into `outputsByStep` only on success.
+- Each attempt writes a clear log marker: `"--- Step X attempt N failed: <reason>; retrying in Ys ---"`. Final failure (out of retries) writes the normal step-failed log.
+- Audit `Deployment.StepRetried` per retry attempt (with attempt number).
+- Step types that opt out of retries (Manual Intervention, when it ships): add `[NoRetry]` marker on the runner contract — server-side gate that ignores `MaxRetries > 0` with a warning log + audit `Deployment.StepRetryRefused`.
+- Tests:
+  - "Step succeeds on attempt 3 of 5; final status Succeeded; outputs from attempts 1+2 discarded"
+  - "Step fails all attempts; final status Failed (or hasFailed) depending on Required"
+  - "Retry delay is honoured (timing-tolerant test — `elapsed >= delay * retries * 0.9`)"
+  - "Retries=0 (default) preserves today's no-retry behaviour"
+
+**M14.4 — Start Trigger / per-step parallel (2 days)**
+This is the chunky one. Risks below explain why I'd want to do this *last* and behind a feature toggle.
+- Replace `PartitionIntoGroups` (binary server/target) with `PartitionIntoWaves`. A wave is the first step plus all subsequent steps marked `StartWithPrevious`, until a `StartAfterPrevious` step starts wave N+1.
+- Within a wave: `await Task.WhenAll(wave.Steps.Select(ExecuteOne))`.
+- Wave-level outcome: wave fails if ANY step in it fails AND that step is Required. (Non-required failures inside a wave still set `hasFailed`.) Wave completion → move to next wave.
+- **Within-wave server/target mixing**: v1 refuses this. If a wave contains both server-side and target-side steps, fail validation at the orchestrator with a clear error. Rationale: dispatching a parallel sub-plan to the agent while also running server-side steps creates a 4-way cancellation tree that's painful to get right and there's no compelling use case. Operators who want parallel server+target work split into two single-side parallel groups, run sequentially.
+- **Agent-side**: `DeploymentExecutor` switches from `foreach` to wave-based parallel. The sub-plan contract gains a `Wave` or `StartTrigger` field per step.
+- **Output-variable race posture for v1 — DECIDED 2026-05-25**: `Set-OctopusVariable` inside a `StartWithPrevious` step writes a per-step bucket that is NOT merged into the prior-outputs accumulator until the wave completes. On wave completion, buckets merge in **wave-declaration order** (the order steps appear in `SortOrder`); when two parallel steps wrote the same variable name, **last-writer-wins** by that order. A `Deployment.ParallelOutputCollision` audit event + warning log fires for each collision so operators see which step "lost". **The step editor MUST warn script authors** when the step is `StartWithPrevious`: "Output variables (`Set-OctopusVariable`) captured inside parallel steps may collide with siblings. Use unique variable names per step — collisions resolve last-writer-wins in SortOrder, which is implementation-defined." Documented in `docs/architecture.md`. Rationale for last-writer-wins (vs hard-refuse): operators who genuinely set the SAME variable from two parallel steps almost always have it set to the SAME value (it's the natural fan-out pattern); silently letting it through is more useful than refusing, and the collision audit gives forensics when it isn't.
+- Cancellation semantics: cancelling one step in a wave cancels its siblings too (mark siblings `Skipped`, not `Failed`). Cancellation of the deployment itself cancels the wave's `CancellationTokenSource` cleanly.
+- Tests:
+  - "Two server steps in same wave run concurrently (total time ~ max, not sum — tolerance-aware)"
+  - "Wave succeeds when all steps succeed"
+  - "Required failure in a wave fails the wave + deployment"
+  - "Non-required failure in a wave sets hasFailed but the wave still completes"
+  - "Mixed server+target wave is refused with a clear error"
+  - "Parallel output capture: last-writer-wins + warning audit"
+  - "Cancellation of one sibling cancels the others"
+
+**M14.5 — Status state machine + UI polish (few hours)**
+- Add `DeploymentStatus.SucceededWithWarnings` for "completed successfully but had non-required step failures". UI badge yellow (matches Octopus).
+- Step-level row state on the deployment detail page: Succeeded / Failed / Skipped / TimedOut / Retried(N). Reuse existing `DeploymentLogEntry` table; add a new `DeploymentStepOutcome` aggregate if log-line scraping is too brittle (mild preference for the new table — one row per step per deployment, sorted view).
+- Step editor (`StepFormDialog.razor`): expose the new fields. Group them under an "Execution" section so they don't drown the existing schema-driven body.
+
+### Risks / pre-prod considerations
+
+1. ~~**Output-variable race under parallel waves**~~ — **resolved 2026-05-25**: last-writer-wins by `SortOrder`, with per-collision audit + a prominent UI editor warning on parallel steps. See M14.4 above.
+2. **Agent compatibility window**: pre-prod policy explicitly allows breaking changes — but the gRPC + SignalR pipe is still a place where the agent side can lag the server during a rolling upgrade. Mitigation: nullable / defaulted fields on `DeploymentStepPlan` (already the contract style — see `StepPackageName = null` appended at the end of the record). An old agent ignores new fields and behaves as `StartAfterPrevious` + no retries + no timeout. Acceptable graceful degrade for the upgrade window even though long-term back-compat isn't a goal.
+3. **Cancellation propagation** is exercise-heavy. Today's tree is two-level (deployment CT → step). Adding per-step Timeout + per-wave Sibling-Cancel + retry-attempt CT compounds. Unit test the cancellation matrix explicitly; this is the area where bugs hide.
+4. **DeployRelease child deployments inside a parallel wave** mean two child deployments launched concurrently from one parent. They each get their own `DeploymentId` + their own `DeploymentWorker.DispatchAsync` call (separate fire-and-forget threads). Should "just work" but pin with a test: parent's outputs aren't read from children, but parent's success is gated on both children succeeding.
+5. **Manual Intervention step** (which doesn't exist yet but is the obvious next domain feature) interacts badly with Retries and Timeout. The `[NoRetry]` marker covers retries; Timeout for an Approval step would auto-deny on expiry, which is actually useful — keep Timeout supported there.
+6. **Octopus property-name verification**: I've used `Octopus.Step.Condition`, `Octopus.Step.StartTrigger`, `Octopus.Step.ConditionVariableExpression`, `Octopus.Action.AutoRetry.MaximumCount` from memory. Confirm against a real `deploymentprocess` JSON before M14.1 lands (commit one as `tests/.../fixtures/octopus-process-with-all-knobs.json` and let the importer test pin the mapping).
+7. **Status state machine churn**: adding `SucceededWithWarnings` requires touching the deployment-status badge in ~6 UI surfaces (Releases page, Deployment Detail, Project Dashboard matrix, Tenants page, Audit filters, Hangfire job emission). Audit before M14.5.
+
+### Effort summary
+
+| Phase | Scope | Effort |
+|---|---|---|
+| M14.1 | Schema + storage + importer + UI fields | half day |
+| M14.2 | Run Condition + Required + Timeout | 1 day |
+| M14.3 | Retries | half day |
+| M14.4 | Start Trigger / per-step parallel | 2 days |
+| M14.5 | Status state machine + UI polish | few hours |
+| **Total** | | **~4 days** |
+
+M14.1 through M14.3 are independent of M14.4 and ship value on their own (real Octopus parity gap closed). M14.4 is the one that genuinely changes the engine shape and warrants its own commit + careful test pass. Recommend landing M14.1-3 as one batch and M14.4 as a second.
+
+### Decisions locked 2026-05-25
+
+- **Variable-condition (Phase 6) is folded into M14.2**, not a stretch. Octostache is already on the server; the evaluator is a thin layer. Falsy contract pinned (see M14.2 above).
+- **`SucceededWithWarnings` deployment status is kept** — it signals "deployment completed but a non-required step failed", which is the Octopus parity contract for non-required cleanup steps. It is NOT for the variable-output race (that's `Deployment.ParallelOutputCollision` audit + warning log; deployment status stays `Succeeded`). The 6-UI-surface touch is a known cost worth paying for one-glance operator visibility.
+- **Parallel output capture = last-writer-wins** by `SortOrder`, with per-collision audit. Step editor surfaces a prominent warning on `StartWithPrevious` steps directing authors to use unique variable names per step.
+- **Pre-prod allows breaking changes** — no migrations to back-compat shims; old agents on new servers degrade gracefully (defaults), but agents are expected to upgrade together with the server on real installs.
+
+### Deliberately deferred from M14
+
+- **Rolling deployments** — requires multi-target Deployment row. Separate milestone M-RollingDeployments.
+- **Step-level Channels filter** — feature exists as a domain model (Channels are real); per-step filter not yet wired. Smaller follow-up after M14.
+- **Step-level Tenants filter** — Tenants exist; per-step filter not yet wired. Smaller follow-up after M14.
+- **Worker Pools** — out of LAUS scope (documented as such in the importer's warning list).
+- **Container execution per step** — out of LAUS scope (documented as such in the importer's warning list).
+- **Deployment-level Timeout** — only step-level Timeout in v1. Deployment-level can be derived as `sum(step timeouts)` + a small margin if needed; no domain pressure for an explicit field.
+
+---
+
+## M15 — Step Composition (Child Steps + ForEach)
+
+**Scoped 2026-05-25**, sequenced AFTER M14. The Octopus Process Editor shows parent steps with child actions (and the rolling-deployments doc relies on the same shape). `OctopusDeploymentProcessImporter.cs:77` silently drops any step with multiple actions — every honest Octopus import today loses this information. M15 closes the gap and adds `ForEach` as the first useful parent step type, riding the same child-step machinery.
+
+### Why this matters
+
+- **Honest Octopus imports.** Today's importer warning `"Step has N parallel actions; parallel actions are not yet supported — skipped"` becomes parent-with-children. Operators stop quietly losing process structure on migration.
+- **ForEach loops** are a feature operators use a lot (deploy same package to N environments, run smoke test against N URLs). Today this requires N copies of the step + manual sync — a real maintenance tax.
+- **Foundation for Rolling Deployments** (M-RollingDeployments, separate later milestone). Rolling deployments in Octopus are themselves a parent step type whose children fan out across targets in a window. M15's parent-child machinery is the lever that makes M-RollingDeployments tractable later — not throwaway work.
+
+### Architecture: tree at design-time, flat at runtime
+
+One new nullable column carries the parent-child relation. The orchestrator pre-flattens loops + groups into a flat plan before any partitioning. **The agent never learns about loops or groups** — it sees a flat `DeploymentStepPlan[]` exactly as today.
+
+This means M14's wave-partitioning, Run Condition evaluation, Required gating, Retries, and Timeouts keep operating on the flat list unchanged. Pre-flatten is one composable transformation applied first.
+
+### One marker step type — behaviour is driven by properties, not types
+
+**Corrected 2026-05-25** after a check against Octopus's actual model: Octopus does NOT have a `RollingDeployment` step type, a `ForEach` step type, or a `Group` step type. **Any step in Octopus can have child actions; the step's properties decide what happens with them** — `Octopus.Action.MaxParallelism` for rolling, ForEach properties for looping, plain multi-action for parallel execution on the same target. M15 mirrors that shape:
+
+- **One marker step type**: `Kraken.StepGroup`. The picker offers "Add Step Group" alongside the existing leaf step types. A `Kraken.StepGroup` step has no script body / no package — its Config carries step-level metadata only (Target Roles, ForEach properties, future rolling properties).
+- **Only `Kraken.StepGroup` can have children** in v1. Leaf step types (`Kraken.Script`, `Kraken.IIS`, etc.) cannot. Validation: any step with `Children.Count > 0` must have `StepType = "Kraken.StepGroup"`; any step with `StepType = "Kraken.StepGroup"` must NOT carry leaf-only Config keys (`Octopus.Action.Script.ScriptBody`, package selectors, etc.).
+- **Behaviour comes from the step's Config bag**, not its type. The flattener inspects:
+  - `Octopus.Action.ForEach.Collection` set → loop body over collection.
+  - Neither set → plain container (children run in declared order; per-child `StartTrigger = StartWithPrevious` makes that child parallel with its prior sibling).
+  - `Octopus.Action.MaxParallelism` set → reserved for M-RollingDeployments. M15 reads + preserves the value but doesn't act on it (yet).
+- **Children's execution default is sequential.** Parallel is opt-in via each child's `StartTrigger = StartWithPrevious` (the existing M14.4 mechanism — children inside a group are just steps, partitioned by the same wave logic).
+
+This means the rolling-deployment work, when it eventually lands, doesn't require any new step type — just an orchestrator pass that consumes `Octopus.Action.MaxParallelism` from a `Kraken.StepGroup`'s Config. Same machinery, one additional property.
+
+### Phases
+
+**M15.1 — Schema + importer (half day)**
+- EF migration `AddStepParentLink`: add `parent_step_id` (nullable Guid, self-FK with `ON DELETE CASCADE` so deleting a parent removes its children atomically) + index on `parent_step_id` for "find children of X" queries.
+- `DeploymentStep` gets `ParentStepId Guid?` + nav properties `Parent` and `Children` (ICollection).
+- `StepSnapshot` mirrors `ParentStepId` (the snapshot stays a flat list with the FK preserved; orchestrator reconstructs the tree at deployment time).
+- **Validation rules** in `ProcessService.ValidateAsync`:
+  - Cycle detection (a step cannot be its own ancestor).
+  - Children's `ParentStepId` must reference a step in the same `DeploymentProcess`.
+  - Only `Kraken.StepGroup`-typed steps may have children. Any other step type with non-empty `Children` is rejected.
+  - A `Kraken.StepGroup` step must NOT carry leaf-only Config keys (`Octopus.Action.Script.ScriptBody`, `Octopus.Action.Script.Syntax`, `Octopus.Action.Package.PackageId`, etc.). The catalogue of leaf-only keys lives in a single static list referenced by the validator + the importer.
+- `OctopusDeploymentProcessImporter`: when a source step has `Actions.Count > 1`, replace the existing "skipped" warning with honest parent-child creation:
+  - Parent step: `StepType = "Kraken.StepGroup"`, inherits `Octopus.Action.TargetRoles` from the source step's properties + name from the source step's `Name`. Step-level Octopus properties (including `Octopus.Action.MaxParallelism` for rolling-deployment steps, plus any future step-level keys) are copied verbatim to the parent's Config — preserved for M-RollingDeployments without M15 acting on them.
+  - Children: each Octopus action becomes a child step (existing per-action parse path reused).
+  - **Octopus's default for multi-action steps is parallel-on-same-target**, so children 2..N have `StartTrigger = StartWithPrevious` set on import to preserve runtime behaviour. An import-time warning is emitted per multi-action step explaining the choice: `"Step 'X' had N parallel actions; imported as a Step Group with children running in parallel (StartTrigger=StartWithPrevious). Change to StartAfterPrevious if you want sequential execution."`
+  - Pin via a new test fixture: a real Octopus deploymentprocess JSON with a multi-action step + a rolling-deployment step (with `Octopus.Action.MaxParallelism` set) + assert parent-child round-trip preserves the rolling property in Config for the future milestone to consume.
+
+**M15.2 — Orchestrator pre-flatten + ForEach semantics (half day)**
+- New `DeploymentPlanFlattener` (in `Server.Transport`, alongside `DeploymentWorker`). Pure-function transform: `(IReadOnlyList<StepSnapshot>, IReadOnlyDictionary<string,string[]> arrayVars, VariableDictionary scalarVars) → DeploymentStepPlan[]`.
+- Walk the snapshot tree top-down. Each step with children is a `Kraken.StepGroup`; the flattener inspects its Config to decide behaviour:
+  - **ForEach mode** — `Octopus.Action.ForEach.Collection` is set:
+    - Resolve the collection variable name against `arrayVars` (v1: array variable names only; inline literals + prior-step output deferred).
+    - Empty collection → emit zero plans + audit `Deployment.ForEachEmpty` + log line "ForEach 'X' collection is empty; loop body skipped."
+    - Undefined collection → emit a synthetic failing step (so the Required gate decides whether to short-circuit) with audit `Deployment.ForEachUnresolved` and message `"ForEach references unknown variable 'X'"`.
+    - For each item: recurse into children, injecting `IterationVariable` (default `item`) + `IndexVariable` (default `index`) into the per-step Variables bag.
+  - **Rolling-deployment mode** — `Octopus.Action.MaxParallelism` set: **out of M15 scope**. Reserved for M-RollingDeployments. M15's flattener treats the step as a plain container (children emitted as-is) but preserves the property in audit so it's visible the orchestrator saw it. Avoids a silent ignore.
+  - **Plain container** (no ForEach, no rolling) — emit children in `SortOrder`, parent itself produces no step plan. Children's `StartTrigger` drives any parallel-with-previous behaviour through M14.4's wave partitioner. Default: sequential.
+- **Octostache substitution moves into the flattener** (DECIDED 2026-05-25). The current `DeploymentWorker.SubstituteConfig` call at line 275 (which runs once per snapshot step against the deployment's static variable bag) is replaced by per-emitted-plan substitution inside the flattener. The flattener owns the per-iteration variable bag, so `#{item}` in a child step's `ScriptBody` resolves to that iteration's value, not "always the last item." This is the one piece of M14 plumbing M15 actively reshapes — M14.2's tests for variable expansion need to be rerun against the new pipeline as part of M15.2's tests.
+- **Step naming** — separate internal key from display name:
+  - **Internal accumulator key**: `OriginalName[index]` (always — stable, ASCII-safe, Octopus-compatible). The agent's `outputsByStep` indexes by this.
+  - **Display name** (shown in logs + UI): `OriginalName [var=value]` when `value` is "clean" (length ≤ 40, no newlines/tabs/`]` characters); falls back to `OriginalName [var=#index]` otherwise. Predictable rule — operators looking at logs can tell at-a-glance which item was running.
+  - The flattener emits BOTH (`Plan.Name` = display; `Plan.AccumulatorKey` = internal). Adds one nullable field to `DeploymentStepPlan`; old agents ignore it and behave as today.
+- **Cross-iteration output access** via Octostache:
+  - `#{Octopus.Action[OriginalName][index].Output.X}` — index form, the natural shape to teach in docs.
+  - `#{Octopus.Action[OriginalName [item=staging]].Output.X}` — synthetic-name form, supported because the synthetic name IS a step name in the plan, but ugly.
+- **Nested ForEach** allowed. Inner iteration variable shadows outer (`#{item}` always = innermost). If the outer ForEach used a distinct `IterationVariable` name like `env`, `#{env}` stays accessible inside the inner loop. Matches the "fresh shadowing name per scope" pattern from most programming languages.
+- **Variable expansion ordering**: inner ForEach `Octopus.Action.ForEach.Collection` can reference the outer iteration variable (`#{env}-instances`), so collection resolution happens lazily per outer iteration, not once up-front. Pin with a test.
+- **Parallel ForEach**: `Octopus.Action.ForEach.Parallel = "true"` emits iterations as siblings in the same wave (handed to M14.4's wave partitioner unchanged). Last-writer-wins collision posture from M14.4 applies — synthetic naming means iterations don't collide with each other by default; collisions only happen when scripts explicitly write to the SAME custom variable name across iterations.
+
+**M15.3 — UI: nested rows + ForEach editor (half day)**
+- Process editor (`Pages/Projects/.../Process.razor`): the existing step grid gains a depth column. Child rows indent by depth × 24px, with a connector glyph in the leftmost column. Parent rows show a chevron + "(N children)" suffix.
+- One new entry in the "Add Step" picker: **"Step Group"** (creates a `Kraken.StepGroup`). No "ForEach" or "Rolling Deployment" entries — those are properties of a Step Group, set in its editor.
+- `Kraken.StepGroup` editor: Name, Target Roles, plus an optional "Loop body over collection" panel that turns the group into a ForEach. The panel exposes: collection variable picker (filtered to existing array variables in the project's variable set), `IterationVariable` text input (default `item`), `IndexVariable` text input (default `index`, optional). Inside the panel: a "Iterations run in parallel" checkbox driven by the children's `StartTrigger` (sets all children to `StartWithPrevious` when ticked; a callout explains "Parallel iterations may produce variable collisions — use unique output variable names per iteration").
+- **Reorder UX v1**: drag-reorder works among siblings (existing behaviour preserved). Re-parent via the step edit dialog's new "Parent step" dropdown (None / pick a parent step from the same process). Drag-INTO-row reparenting deferred as polish.
+- Deployment detail page: step rows show iteration suffix via the display name (no schema change needed — `Plan.Name` is what the existing log + step-outcome surfaces already render).
+
+**M15.4 — Tests + docs (half day)**
+- Flattener unit tests (Server.Data.Tests or a new Server.Transport.Tests project — needs check):
+  - `Kraken.Group` emits children in SortOrder; parent emits no plan.
+  - `Kraken.ForEach` over 3-item array emits 3 × N-children plans.
+  - Empty collection → zero plans + `Deployment.ForEachEmpty` audit.
+  - Undefined collection → one synthetic failing plan + `Deployment.ForEachUnresolved` audit.
+  - Nested ForEach: 2 outer × 3 inner = 6 × N-children plans; `#{item}` resolves to innermost; outer iteration variable accessible inside inner.
+  - Lazy collection resolution: inner `Collection = "#{env}-instances"` resolves per outer iteration, not once.
+  - Sequential iteration: outputs from iteration 0 visible in iteration 1 via `Octopus.Action[X][0].Output.Y`.
+  - Parallel iteration: outputs from each iteration stored under distinct accumulator keys (`X[0]`, `X[1]`, …) — no collision without explicit same-name `Set-OctopusVariable`.
+  - Display name "clean" path: `[item=staging]`; fallback path: `[item=#3]` for long / weird values.
+- Importer round-trip test: pin a real Octopus deploymentprocess JSON containing a multi-action step → assert parent-child creation matches.
+- ProcessService validation tests: cycle rejection, cross-process child rejection, non-container-parent rejection.
+- `docs/architecture.md`: new section "Step composition — child steps + ForEach". Lock the synthetic-naming contract, the `OriginalName[index]` Octostache form, the nested ForEach shadowing rule, and the parallel-iteration collision posture.
+
+### Risks / pre-prod considerations
+
+1. **Snapshot deserialisation of pre-M15 releases**: existing `StepSnapshot` rows have no `ParentStepId`. The field defaults to null on deserialisation (System.Text.Json default) → parent = none, behaves as flat list. Test with a release row created before M15 to confirm.
+2. **`SubstituteConfig` ordering vs ForEach**: Octostache substitution today runs at DeploymentWorker.cs:275 over the SnapshotStep's `Config`, before the agent gets the plan. With nested loops + lazy collection resolution, substitution has to happen per-iteration inside the flattener (the iteration variable changes value per iteration). Re-organise so substitution runs INSIDE the flattener with the per-iteration variable bag, not outside it. Without this, `Config["Octopus.Action.Script.ScriptBody"]` containing `#{item}` would all see the same value.
+3. **Cycle detection** is cheap (DFS over the small step set) but needs to be wired in BOTH `ProcessService.ValidateAsync` (design-time) AND the flattener (defence in depth — corrupted data shouldn't crash the worker). Flattener should refuse a corrupted process with a clear deployment-failed message.
+4. **UI reorder safety**: reparenting via the dropdown should refuse to set a step as its own descendant. Validation in the API endpoint; UI dropdown can also pre-filter the descendants of the edited step out of the parent-picker options. Belt-and-braces.
+5. **DeployRelease child deployments inside a ForEach** — each iteration launches a child Deployment. Two iterations means two children running concurrently (in parallel ForEach) or sequentially. Already covered by M14.4's risk #4; no new concern, but worth a test.
+6. **Step-package handlers and iteration**: step packages (M11/D-6) receive the per-step Config + variable bag. As long as the flattener does Octostache substitution + iteration-variable injection BEFORE handing off to the agent, package handlers don't need to be loop-aware. Confirm with a step-package test in M15.4.
+7. **Audit volume**: ForEach over 1000-item arrays would emit ~step-count × 1000 step-level audit events. The existing `audit.purge-enabled` toggle (from M13.F.5 plan) + retention window covers this, but call it out in docs so operators expect the volume.
+
+### Decisions locked 2026-05-25
+
+- **One marker step type `Kraken.StepGroup`** is the only step type that can have children in v1. Leaf step types cannot have children. **Behaviour comes from properties on the step**, not from the step's type — mirrors Octopus's data model (Octopus has no `RollingDeployment` / `ForEach` / `Group` types; it has step-level properties that drive runtime behaviour).
+- **`Octopus.Action.ForEach.Collection`** in a Step Group's Config turns it into a loop. **`Octopus.Action.MaxParallelism`** is reserved for M-RollingDeployments — preserved on import + visible in audit, but not consumed by M15.
+- **Children execute sequentially by default**. Parallel within a group is opt-in via each child's `StartTrigger = StartWithPrevious` — same M14.4 mechanism as top-level steps, no special path.
+- **Pre-flatten at orchestration time**; agent stays flat. Single new column `ParentStepId` on `DeploymentStep` + `StepSnapshot`.
+- **Octostache substitution moves from `DeploymentWorker.SubstituteConfig` (line 275) into the flattener** so per-iteration values resolve correctly. M14's variable-expansion tests are rerun against the new pipeline in M15.2.
+- **Synthetic names** with separate internal key (`OriginalName[index]`, always) and display name (`OriginalName [var=value]` clean / `[var=#index]` fallback at length > 40 or weird-chars).
+- **Cross-iteration access**: `#{Octopus.Action[OriginalName][index].Output.X}` is the documented form. Synthetic-name form works too (same step name).
+- **Nested ForEach allowed** with innermost-variable shadowing. Outer iteration variable stays accessible if it used a distinct name.
+- **Parallel ForEach** reuses M14.4's wave partitioner + last-writer-wins collision rule. Synthetic naming means cross-iteration collisions are rare by construction.
+- **Octopus multi-action import** sets children 2..N to `StartTrigger = StartWithPrevious` to preserve Octopus's parallel-by-default behaviour at the action level. Import-time warning explains the choice.
+- **Empty collection** = no-op (`Deployment.ForEachEmpty` audit). **Undefined collection** = synthetic failing step (`Deployment.ForEachUnresolved` audit) so Required gate decides.
+- **v1 collection source = array variable only**. Inline JSON literal, comma-separated string, prior-step output deferred to a follow-up.
+- **Reorder UX v1**: drag among siblings + edit-dialog parent dropdown. Drag-into-row reparenting deferred as polish.
+
+### Effort summary
+
+| Phase | Scope | Effort |
+|---|---|---|
+| M15.1 | Schema + snapshot + importer | half day |
+| M15.2 | Flattener + ForEach semantics + nested + parallel | half day |
+| M15.3 | UI: nested rows + ForEach editor + reorder | half day |
+| M15.4 | Tests + docs | half day |
+| **Total** | | **~2 days** |
+
+Sequenced AFTER M14. M15's flattener runs BEFORE M14.4's wave partitioner; layering M15 onto a stable M14 keeps each diff reviewable in isolation.
+
+### Deliberately deferred from M15
+
+- **Drag-into-row reparenting** in the process editor — polish for M15.5 or skip until operators ask.
+- **Inline JSON literal collections** (`ForEach.Collection = '["a","b","c"]'`) — array variables cover the v1 use cases.
+- **Comma-separated string collections** — same.
+- **Prior-step output as collection source** (`ForEach.Collection = '#{Octopus.Action[Discover].Output.Items}'`) — needs output-variable typing (array vs scalar) which today is purely string-based. Follow-up.
+- **Rolling deployments** — M-RollingDeployments milestone. Not a new step type — just `Octopus.Action.MaxParallelism` on a `Kraken.StepGroup` driving a target-fan-out pass in the orchestrator. Requires multi-target Deployment row (the structural blocker called out in M14's "deferred" section). M15's machinery is the foundation; M-RollingDeployments adds the property-consumption pass.
+- **Loop control flow** (break / continue / labelled break) — Octopus doesn't have these; YAGNI for v1.
+- **While / Until loops** — same; no Octopus parity pressure.
+
+
 - Multi-node clustering UI.
