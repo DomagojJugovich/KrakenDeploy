@@ -131,16 +131,25 @@ public sealed class PollingServerLink : IServerLink
         await _http.PostAsJsonAsync(url, body, ct).ConfigureAwait(false);
     }
 
-    public Task ReportStepOutputVariablesAsync(
-        Guid deploymentId, string stepName,
-        IReadOnlyDictionary<string, string> outputVariables, CancellationToken ct)
+    public Task ReportStepCompletedAsync(
+        Guid deploymentId,
+        int stepIndex,
+        string stepName,
+        bool success,
+        string? errorMessage,
+        IReadOnlyDictionary<string, string> outputVariables,
+        CancellationToken ct)
     {
         // TODO(polling-transport): expose a REST endpoint so this transport can
-        // forward Set-OctopusVariable captures. SignalR is the primary path
-        // today and already handles this. Until then, output variables are not
-        // reported to the server when an agent runs over the Polling transport,
-        // but they are still merged into subsequent steps within the same run.
-        _ = deploymentId; _ = stepName; _ = outputVariables; _ = ct;
+        // forward the M14.4 per-step boundary (outcome + outputs + per-step
+        // Required attribution). SignalR is the primary path today and already
+        // handles this. Until then, output variables and per-step outcomes are
+        // not reported to the server when an agent runs over the Polling
+        // transport — subsequent steps still see prior outputs in their own
+        // run via the agent-local outputsByStep accumulator, and the server
+        // sees deployment-level success/failure via CompleteDeploymentAsync.
+        _ = deploymentId; _ = stepIndex; _ = stepName; _ = success;
+        _ = errorMessage; _ = outputVariables; _ = ct;
         return Task.CompletedTask;
     }
 

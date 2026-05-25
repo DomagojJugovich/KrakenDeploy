@@ -321,19 +321,48 @@ public sealed class AgentHub(
     }
 
     /// <summary>
-    /// Persists output variables captured during a step via Set-OctopusVariable
-    /// stdout markers. Upsert by (DeploymentId, StepName, Name) so a step that
-    /// reassigns the same variable wins. Output variables are surfaced on the
-    /// deployment detail page and are merged into subsequent steps' variables
-    /// agent-side as <c>Octopus.Action[StepName].Output.X</c>.
+    /// M14.4 — per-step boundary callback from the agent. Persists captured
+    /// output variables (same upsert as the pre-M14.4 path) AND records the
+    /// per-step outcome in <see cref="IPendingSubPlanRegistry"/> so
+    /// <see cref="DeploymentWorker"/> can attribute Required failures to
+    /// the actual failing step inside a parallel wave.
+    ///
+    /// <para>
+    /// The DB shape is unchanged: <c>DeploymentOutputVariable</c> rows
+    /// keyed by (DeploymentId, StepName, Name). Per-step attribution
+    /// lives in the registry's in-memory bag rather than a new table —
+    /// per-step state is only useful within the wave window, the audit
+    /// log already captures forensic detail (Required/non-required
+    /// failures, retries, timeouts), and persisting a per-step status
+    /// column would add migration churn without operator benefit.
+    /// </para>
     /// </summary>
-    public async Task ReportStepOutputVariablesAsync(
-        Guid deploymentId, string stepName, Dictionary<string, string> outputVariables)
+    public async Task ReportStepCompletedAsync(
+        Guid deploymentId,
+        int stepIndex,
+        string stepName,
+        bool success,
+        string? errorMessage,
+        Dictionary<string, string> outputVariables)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stepName);
         ArgumentNullException.ThrowIfNull(outputVariables);
+
+        // Register the per-step outcome with the sub-plan registry FIRST so
+        // even if DB persistence fails, the orchestrator gets attribution
+        // for the wave's per-step Required gate. Late reports for waves
+        // that already resolved are dropped silently inside RecordStepResult.
+        subPlans.RecordStepResult(deploymentId, new SubPlanStepResult(
+            StepIndex:    stepIndex,
+            StepName:     stepName,
+            Success:      success,
+            ErrorMessage: errorMessage,
+            Outputs:      new Dictionary<string, string>(
+                              outputVariables, StringComparer.OrdinalIgnoreCase)));
+
         if (outputVariables.Count == 0)
         {
+            // No outputs to persist; per-step outcome already recorded.
             return;
         }
 
@@ -348,7 +377,7 @@ public sealed class AgentHub(
             // Runbook runs don't currently capture output variables — when they
             // do, route here using a parallel table. Until then, ignore.
             logger.LogDebug(
-                "ReportStepOutputVariables for unknown deployment {Id}; ignored.", deploymentId);
+                "ReportStepCompleted for unknown deployment {Id}; ignored.", deploymentId);
             return;
         }
 
@@ -381,8 +410,9 @@ public sealed class AgentHub(
         await db.SaveChangesAsync().ConfigureAwait(false);
 
         logger.LogInformation(
-            "Captured {Count} output variable(s) for step '{Step}' of deployment {Id}.",
-            outputVariables.Count, stepName, deploymentId);
+            "Step '{Step}' (index {Index}) of deployment {Id} completed: " +
+            "success={Success}, outputs={Count}.",
+            stepName, stepIndex, deploymentId, success, outputVariables.Count);
     }
 
     private static async Task PruneRetentionAsync(

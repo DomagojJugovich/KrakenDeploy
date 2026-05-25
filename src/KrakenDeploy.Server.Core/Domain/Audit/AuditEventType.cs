@@ -117,6 +117,27 @@ public static class AuditEventType
     /// Details: deployment id, step name, expression.</summary>
     public const string DeploymentVariableConditionUnresolved = "Deployment.VariableConditionUnresolved";
 
+    /// <summary>Two or more parallel siblings in the same wave (M14.4 Start
+    /// Trigger = StartWithPrevious) wrote to the same output variable name.
+    /// The winning step is the last in SortOrder; the audit row records
+    /// every (losing step, value) plus the winner so an operator can
+    /// trace which step's value was used for downstream
+    /// <c>Octopus.Action[Step].Output.X</c> references and which was lost.
+    /// Storage stays per-step (no DB collision), so the audit is purely
+    /// informational. Details: deployment id, wave step names, variable
+    /// name, winning step, losing steps.</summary>
+    public const string DeploymentParallelOutputCollision = "Deployment.ParallelOutputCollision";
+
+    /// <summary>A deployment process contained a wave (M14.4 Start Trigger
+    /// chain) mixing server-side and target-side steps. v1 refuses this
+    /// at orchestrator pre-flight — dispatching a parallel sub-plan to
+    /// the agent while also running server-side steps creates a 4-way
+    /// cancellation tree without a compelling use case. Operators split
+    /// such mixed waves into two single-side parallel groups run
+    /// sequentially. Details: deployment id, wave step names, server
+    /// step names, target step names.</summary>
+    public const string DeploymentMixedWaveRefused = "Deployment.MixedWaveRefused";
+
     // ── Maintenance mode (M13.A.3) ───────────────────────────────────────────
     /// <summary>Operator enabled instance-wide maintenance mode.
     /// Details: reason text + who enabled it. Pair with

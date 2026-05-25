@@ -1613,23 +1613,28 @@ Operators importing existing Octopus processes today silently lose the `Octopus.
   - "Retry delay is honoured (timing-tolerant test — `elapsed >= delay * retries * 0.9`)"
   - "Retries=0 (default) preserves today's no-retry behaviour"
 
-**M14.4 — Start Trigger / per-step parallel (2 days)**
-This is the chunky one. Risks below explain why I'd want to do this *last* and behind a feature toggle.
-- Replace `PartitionIntoGroups` (binary server/target) with `PartitionIntoWaves`. A wave is the first step plus all subsequent steps marked `StartWithPrevious`, until a `StartAfterPrevious` step starts wave N+1.
-- Within a wave: `await Task.WhenAll(wave.Steps.Select(ExecuteOne))`.
-- Wave-level outcome: wave fails if ANY step in it fails AND that step is Required. (Non-required failures inside a wave still set `hasFailed`.) Wave completion → move to next wave.
-- **Within-wave server/target mixing**: v1 refuses this. If a wave contains both server-side and target-side steps, fail validation at the orchestrator with a clear error. Rationale: dispatching a parallel sub-plan to the agent while also running server-side steps creates a 4-way cancellation tree that's painful to get right and there's no compelling use case. Operators who want parallel server+target work split into two single-side parallel groups, run sequentially.
-- **Agent-side**: `DeploymentExecutor` switches from `foreach` to wave-based parallel. The sub-plan contract gains a `Wave` or `StartTrigger` field per step.
-- **Output-variable race posture for v1 — DECIDED 2026-05-25**: `Set-OctopusVariable` inside a `StartWithPrevious` step writes a per-step bucket that is NOT merged into the prior-outputs accumulator until the wave completes. On wave completion, buckets merge in **wave-declaration order** (the order steps appear in `SortOrder`); when two parallel steps wrote the same variable name, **last-writer-wins** by that order. A `Deployment.ParallelOutputCollision` audit event + warning log fires for each collision so operators see which step "lost". **The step editor MUST warn script authors** when the step is `StartWithPrevious`: "Output variables (`Set-OctopusVariable`) captured inside parallel steps may collide with siblings. Use unique variable names per step — collisions resolve last-writer-wins in SortOrder, which is implementation-defined." Documented in `docs/architecture.md`. Rationale for last-writer-wins (vs hard-refuse): operators who genuinely set the SAME variable from two parallel steps almost always have it set to the SAME value (it's the natural fan-out pattern); silently letting it through is more useful than refusing, and the collision audit gives forensics when it isn't.
-- Cancellation semantics: cancelling one step in a wave cancels its siblings too (mark siblings `Skipped`, not `Failed`). Cancellation of the deployment itself cancels the wave's `CancellationTokenSource` cleanly.
-- Tests:
-  - "Two server steps in same wave run concurrently (total time ~ max, not sum — tolerance-aware)"
-  - "Wave succeeds when all steps succeed"
-  - "Required failure in a wave fails the wave + deployment"
-  - "Non-required failure in a wave sets hasFailed but the wave still completes"
-  - "Mixed server+target wave is refused with a clear error"
-  - "Parallel output capture: last-writer-wins + warning audit"
-  - "Cancellation of one sibling cancels the others"
+**M14.4 — Start Trigger / per-step parallel (2 days) — DONE 2026-05-25**
+
+Landed:
+- `WavePartitioner` replaces `DeploymentWorker.PartitionIntoGroups`. Wave = first step + all subsequent `StartWithPrevious` steps until next `StartAfterPrevious`. Classified `Server` / `Target` — mixed waves throw `InvalidWaveException` at partition time and the orchestrator catches it, emits `Deployment.MixedWaveRefused` audit + fails the deployment with the offending step names.
+- Server waves: `Task.WhenAll` over per-step server runners. Each step retains its own Run Condition + Required + Retries + Timeout via the M14.2/3 helpers (`RunServerStepWithRetriesAsync` etc.) running concurrently. After the wave settles the orchestrator applies the Required gate per-step (first Required failure short-circuits; non-required failures accumulate `hasFailed`).
+- Target waves: dispatched as a single sub-plan to the agent. Wave timeout / retries = longest across the wave's steps (same semantics as the pre-M14.4 group). Agent runs the sub-plan's steps in `Task.WhenAll`.
+- **Agent contract change**: `IAgentHubServer.ReportStepOutputVariablesAsync` REMOVED, replaced by `ReportStepCompletedAsync(deploymentId, stepIndex, stepName, success, errorMessage, outputs)`. Single per-step boundary call covers outputs + outcome. Pre-prod policy allows the break; only one caller (`DeploymentExecutor`) needed updating. `DirectServerLink` + `PollingServerLink` keep the same TODO stub they had for the old variable-only method.
+- **Per-step Required attribution on target waves**: `PendingSubPlanRegistry` now carries a per-deployment `SubPlanStepResult` bag that `AgentHub.ReportStepCompletedAsync` writes per step. After the wave's `CompleteDeploymentAsync` resolves the TCS, `DeploymentWorker` drains the bag and walks failed steps in arrival order to find the first Required failure (closes M14.2's "any step in the group is Required → whole group treated as Required" pessimism). Falls back to the pre-M14.4 group-level gate when the agent never reported any per-step boundaries (e.g. agent dropped offline before sending any).
+- **Output-variable wave semantics**: agent snapshots the `outputsByStep` accumulator before each wave and runs all wave steps against that frozen snapshot — siblings don't see each other's outputs. Captures merge into the accumulator after the wave (in SortOrder so last-writer-wins is deterministic). Server-side `DeploymentOutputCollisionDetector` runs over the drained per-step buckets and emits one `Deployment.ParallelOutputCollision` audit + warning log line per variable name written by 2+ siblings. The DB shape (`DeploymentOutputVariable` keyed by step name) is unchanged — collision is purely a forensic signal for unqualified-reference paths.
+- **Tests** (Server.Tests, +24): `WavePartitionerTests` (10) cover empty / single / chain / mixed-StartTrigger / first-step-trigger-ignored / Server vs Target classification / DeployRelease classification via mixed-wave / mixed-wave attribution / out-of-order input sort. `DeploymentOutputCollisionDetectorTests` (8) cover no-overlap / single-writer / two-writer / three-writer last-writer / case-insensitive name match / multiple distinct collisions / empty bucket. `PendingSubPlanRegistryStepResultsTests` (5) cover the per-step bag lifecycle: drop on no-register, Register clears prior wave, arrival-order drain, drain clears, TryResolve + Drain happy path.
+
+Decisions made during implementation:
+- **Wire-contract: drop the old method**. `ReportStepOutputVariablesAsync` removed entirely (single caller, pre-prod allows breaking change). The unified `ReportStepCompletedAsync` carries the same outputs payload plus per-step outcome attribution — no need for two parallel call sites.
+- **No sibling cancellation on per-step failure**. Required-failure detection happens AFTER `Task.WhenAll` resolves, not during. The plan body's "cancellation cancels siblings" applies only to deployment-level CT cancellation, not to a step failing while siblings run. Agent and server both let parallel siblings run to completion; the failing step's outcome is captured + attributed afterwards. Rationale: the agent doesn't know `Required` (server-side concept), and cancelling siblings mid-execution to "punish" a non-required failure would lose work.
+- **Wave retry = whole sub-plan re-dispatch** (matches M14.3 target-group behaviour). Per-step attribution lets the Required gate be precise, but retrying just the failed step inside a parallel wave is complex (siblings' side effects already happened); keep whole-wave retry and document the idempotency requirement.
+- **Mixed-wave refusal is at orchestrator pre-flight only** (not design-time in `ProcessService.ValidateAsync`, which doesn't exist yet — see M15 plan). The orchestrator catches `WavePartitioner.InvalidWaveException`, emits the audit, and fails the deployment with a clear error citing the offending step names. UI-side process-editor warning deferred until `ProcessService.ValidateAsync` lands (M15 territory).
+- **`IsServerStep` + `ServerOnlyStepTypes` moved into `WavePartitioner`** (was private in `DeploymentWorker`). Kept `internal` since it's a classifier implementation detail — tests exercise it indirectly through mixed-wave scenarios.
+
+Known gaps (not blocking):
+- Server-side script steps still don't capture `Set-OctopusVariable` output into `DeploymentOutputVariable` rows (the M14.3 retry helper documented this gap). `EmitWaveCollisionsAsync` is wired into the server-wave path so collisions audit fires automatically when server-side output capture lands.
+- Drop-bundle / offline-mode path (`DispatchOfflineDropAsync`) doesn't honour waves — it emits the legacy flat plan + lets the offline executor walk it sequentially. Acceptable since offline mode doesn't have an agent contract for per-step reporting either; parallel waves in offline mode would need a separate design pass.
+- E2E orchestrator tests for "two parallel server steps run concurrently in real wall-clock time" still gated on the larger `DeploymentWorker` test harness that doesn't exist yet (same gap M14.2/3 hit). The unit tests pin the wave-formation contract + collision contract; the integration question is left to dogfooding + the next M14.4-touching change.
 
 **M14.5 — Status state machine + UI polish (few hours)**
 - Add `DeploymentStatus.SucceededWithWarnings` for "completed successfully but had non-required step failures". UI badge yellow (matches Octopus).
@@ -1648,14 +1653,14 @@ This is the chunky one. Risks below explain why I'd want to do this *last* and b
 
 ### Effort summary
 
-| Phase | Scope | Effort |
-|---|---|---|
-| M14.1 | Schema + storage + importer + UI fields | half day |
-| M14.2 | Run Condition + Required + Timeout | 1 day |
-| M14.3 | Retries | half day |
-| M14.4 | Start Trigger / per-step parallel | 2 days |
-| M14.5 | Status state machine + UI polish | few hours |
-| **Total** | | **~4 days** |
+| Phase | Scope | Effort | Status |
+|---|---|---|---|
+| M14.1 | Schema + storage + importer + UI fields | half day | DONE |
+| M14.2 | Run Condition + Required + Timeout | 1 day | DONE |
+| M14.3 | Retries | half day | DONE |
+| M14.4 | Start Trigger / per-step parallel | 2 days | DONE |
+| M14.5 | Status state machine + UI polish | few hours | Pending |
+| **Total** | | **~4 days** | |
 
 M14.1 through M14.3 are independent of M14.4 and ship value on their own (real Octopus parity gap closed). M14.4 is the one that genuinely changes the engine shape and warrants its own commit + careful test pass. Recommend landing M14.1-3 as one batch and M14.4 as a second.
 

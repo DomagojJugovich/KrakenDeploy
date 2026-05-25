@@ -53,47 +53,73 @@ public sealed class DeploymentExecutor(
 
         // Accumulates Set-OctopusVariable captures per step name across the run.
         // Made available to subsequent steps as Octopus.Action[StepName].Output.X.
-        var outputsByStep = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        // M14.4: inside a parallel wave siblings DO NOT see each other's
+        // outputs — we snapshot pre-wave state once, run the wave's steps
+        // against that frozen snapshot, and merge captures into the
+        // accumulator only AFTER the wave completes (in SortOrder, so
+        // last-writer-wins by Index when names collide).
+        var outputsByStep = new Dictionary<string, Dictionary<string, string>>(
+            StringComparer.OrdinalIgnoreCase);
 
         try
         {
-            foreach (var step in plan.Steps.OrderBy(s => s.Index))
+            // ── M14.4 — partition into waves agent-side ─────────────────
+            // The server already pre-flattens waves (one wave per sub-plan
+            // dispatched), but the agent re-walks the trigger field so its
+            // behaviour stays correct if the contract evolves to send
+            // multi-wave sub-plans in the future.
+            var waves = PartitionIntoWaves(plan.Steps);
+
+            string? firstFailureMessage = null;
+            var anyStepFailed = false;
+
+            foreach (var wave in waves)
             {
-                // Build a per-step plan whose Variables include the output vars
-                // captured from prior steps.
-                var stepPlan = AugmentPlanWithPriorOutputs(plan, outputsByStep);
+                // Snapshot prior outputs once before the wave so all siblings
+                // see the same baseline — siblings don't see each other's
+                // captures.
+                var preWavePlan = AugmentPlanWithPriorOutputs(plan, outputsByStep);
 
-                var (success, capturedOutputs) =
-                    await ExecuteStepAsync(stepPlan, step, ct).ConfigureAwait(false);
+                var stepTasks = wave.Select(step =>
+                    RunStepInWaveAsync(plan, preWavePlan, step, ct)).ToArray();
 
-                if (capturedOutputs.Count > 0)
+                var stepOutcomes = await Task.WhenAll(stepTasks).ConfigureAwait(false);
+
+                // Merge captures into accumulator in declared order
+                // (wave order == SortOrder ascending, set in PartitionIntoWaves)
+                // so last-writer-wins by Index for any name overlaps.
+                foreach (var outcome in stepOutcomes)
                 {
-                    outputsByStep[step.Name] = capturedOutputs;
-                    try
+                    if (outcome.CapturedOutputs.Count > 0)
                     {
-                        await serverLink.ReportStepOutputVariablesAsync(
-                            plan.DeploymentId, step.Name, capturedOutputs, ct).ConfigureAwait(false);
+                        outputsByStep[outcome.Step.Name] = outcome.CapturedOutputs;
                     }
-                    catch (Exception ex)
+                    if (!outcome.Success && firstFailureMessage is null)
                     {
-                        logger.LogWarning(ex,
-                            "Failed to report output variables for step '{Step}' of deployment {Id}.",
-                            step.Name, plan.DeploymentId);
+                        firstFailureMessage = $"Step '{outcome.Step.Name}' failed.";
+                    }
+                    if (!outcome.Success)
+                    {
+                        anyStepFailed = true;
                     }
                 }
 
-                if (!success)
+                // If any step in the wave failed, stop dispatching further
+                // waves agent-side. Per-step Required attribution happens
+                // server-side (the orchestrator drained per-step reports
+                // from the registry).
+                if (anyStepFailed)
                 {
-                    await serverLink
-                        .CompleteDeploymentAsync(plan.DeploymentId, false,
-                            $"Step '{step.Name}' failed.", ct)
-                        .ConfigureAwait(false);
-                    return;
+                    break;
                 }
             }
 
             await serverLink
-                .CompleteDeploymentAsync(plan.DeploymentId, true, null, ct)
+                .CompleteDeploymentAsync(
+                    plan.DeploymentId,
+                    success:      !anyStepFailed,
+                    errorMessage: firstFailureMessage,
+                    ct)
                 .ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -118,6 +144,119 @@ public sealed class DeploymentExecutor(
         {
             IsExecuting = false;
         }
+    }
+
+    /// <summary>
+    /// One step's outcome inside a wave. <see cref="Step"/> is kept on the
+    /// record so the wave-merger can index outputs by step name without
+    /// holding a parallel array.
+    /// </summary>
+    private sealed record StepOutcome(
+        DeploymentStepPlan Step,
+        bool Success,
+        Dictionary<string, string> CapturedOutputs);
+
+    /// <summary>
+    /// M14.4 — agent-side wave partitioner. Same algorithm as the server's
+    /// <see cref="Server.Transport.WavePartitioner"/> (kept duplicated so
+    /// the agent stays loosely coupled to the server-side helper; the
+    /// contract field <see cref="DeploymentStepPlan.StartTrigger"/> is
+    /// the source of truth). A wave = first step + all subsequent
+    /// <see cref="StepStartTrigger.StartWithPrevious"/> steps until the
+    /// next <see cref="StepStartTrigger.StartAfterPrevious"/> opens a new
+    /// wave. First step's trigger is ignored.
+    /// </summary>
+    private static List<List<DeploymentStepPlan>> PartitionIntoWaves(
+        DeploymentStepPlan[] steps)
+    {
+        var waves = new List<List<DeploymentStepPlan>>();
+        if (steps.Length == 0)
+        {
+            return waves;
+        }
+
+        var ordered = steps.OrderBy(s => s.Index).ToArray();
+        var current = new List<DeploymentStepPlan> { ordered[0] };
+
+        // StepStartTrigger int values: 0 = StartAfterPrevious, 1 = StartWithPrevious.
+        for (var i = 1; i < ordered.Length; i++)
+        {
+            if (ordered[i].StartTrigger == 1)
+            {
+                current.Add(ordered[i]);
+            }
+            else
+            {
+                waves.Add(current);
+                current = [ordered[i]];
+            }
+        }
+        waves.Add(current);
+        return waves;
+    }
+
+    /// <summary>
+    /// Runs a single step inside a wave, capturing outputs locally then
+    /// reporting the per-step boundary to the server via M14.4's
+    /// <see cref="IServerLink.ReportStepCompletedAsync"/>. Catches handler
+    /// exceptions so one step's failure doesn't tear down sibling
+    /// <c>Task.WhenAll</c> branches.
+    /// </summary>
+    private async Task<StepOutcome> RunStepInWaveAsync(
+        DeploymentPlan basePlan,
+        DeploymentPlan preWavePlan,
+        DeploymentStepPlan step,
+        CancellationToken ct)
+    {
+        bool success;
+        Dictionary<string, string> capturedOutputs;
+        string? errorMessage = null;
+        try
+        {
+            (success, capturedOutputs) =
+                await ExecuteStepAsync(preWavePlan, step, ct).ConfigureAwait(false);
+            if (!success)
+            {
+                errorMessage = $"Step '{step.Name}' failed.";
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Re-throw so Task.WhenAll surfaces cancellation cleanly to the
+            // outer dispatcher; nothing to report per-step (the server's
+            // CT cancel is the source of truth).
+            throw;
+        }
+        catch (Exception ex)
+        {
+            success = false;
+            capturedOutputs = new Dictionary<string, string>(
+                StringComparer.OrdinalIgnoreCase);
+            errorMessage = ex.Message;
+            logger.LogError(ex,
+                "Step '{Step}' threw during wave execution (deployment {Id}).",
+                step.Name, basePlan.DeploymentId);
+        }
+
+        try
+        {
+            await serverLink.ReportStepCompletedAsync(
+                basePlan.DeploymentId,
+                stepIndex:       step.Index,
+                stepName:        step.Name,
+                success:         success,
+                errorMessage:    errorMessage,
+                outputVariables: capturedOutputs,
+                ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Failed to report step completion for '{Step}' of deployment {Id}.",
+                step.Name, basePlan.DeploymentId);
+        }
+
+        return new StepOutcome(step, success, capturedOutputs);
     }
 
     // ── Step execution ─────────────────────────────────────────────────────────

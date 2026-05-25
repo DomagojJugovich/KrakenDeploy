@@ -35,14 +35,21 @@ public interface IServerLink : IAsyncDisposable
         Guid deploymentId, bool success, string? errorMessage, CancellationToken ct);
 
     /// <summary>
-    /// Reports the output variables captured for a step via Octopus-compatible
+    /// M14.4 — reports per-step boundary: success/failure outcome, optional
+    /// error message, and any output variables captured via
     /// <c>Set-OctopusVariable</c> / <c>##octopus[setVariable]</c> markers.
-    /// Server persists them and surfaces them as
-    /// <c>Octopus.Action[StepName].Output.X</c> on the deployment detail page.
+    /// Replaces the pre-M14.4 variable-only reporting (the orchestrator
+    /// now needs per-step attribution to apply the Required gate against
+    /// individual steps inside a parallel wave).
     /// </summary>
-    Task ReportStepOutputVariablesAsync(
-        Guid deploymentId, string stepName,
-        IReadOnlyDictionary<string, string> outputVariables, CancellationToken ct);
+    Task ReportStepCompletedAsync(
+        Guid deploymentId,
+        int stepIndex,
+        string stepName,
+        bool success,
+        string? errorMessage,
+        IReadOnlyDictionary<string, string> outputVariables,
+        CancellationToken ct);
 
     // ── Server → Agent (subscriptions) ────────────────────────────────────
 

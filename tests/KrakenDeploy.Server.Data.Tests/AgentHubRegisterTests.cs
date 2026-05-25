@@ -146,6 +146,12 @@ file sealed class NeverUsedPendingSubPlanRegistry : IPendingSubPlanRegistry
 
     public void Cancel(Guid deploymentId, string reason)
         => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
+
+    public void RecordStepResult(Guid deploymentId, SubPlanStepResult result)
+        => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
+
+    public IReadOnlyList<SubPlanStepResult> DrainStepResults(Guid deploymentId)
+        => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
 }
 
 file sealed class NullUiHubContext : IHubContext<UiHub, IUiHubClient>

@@ -304,106 +304,114 @@ public sealed class DeploymentWorker(
                 Variables: flatVars,
                 ArrayVariables: arrayVars);
 
-            // ── 4. Partition steps into consecutive same-side groups ─────────
-            // Each group is either entirely server-side or entirely target-
-            // side; we run them in declared order, dispatching target groups
-            // to the agent piecewise and awaiting completion before continuing.
-            // This supports any ordering — e.g. target → server → target — by
-            // making multiple round trips with the agent.
-            var groups = PartitionIntoGroups(steps);
+            // ── 4. Partition steps into waves (M14.4) ───────────────────────
+            // A wave = first step + all subsequent StartWithPrevious steps,
+            // until the next StartAfterPrevious opens wave N+1. Each wave is
+            // either entirely server-side or entirely target-side; mixed
+            // waves throw at partition time and we fail the deployment with
+            // a clear MixedWaveRefused audit. Within a wave, steps run
+            // concurrently.
+            var auditLog = scope.ServiceProvider.GetRequiredService<IAuditLog>();
+            List<WavePartitioner.Wave> waves;
+            try
+            {
+                waves = WavePartitioner.Partition(
+                    steps,
+                    triggerByIndex: idx => snapshotSteps[idx].StartTrigger);
+            }
+            catch (WavePartitioner.InvalidWaveException ex)
+            {
+                await auditLog.RecordAsync(
+                    AuditEventType.DeploymentMixedWaveRefused,
+                    subjectType: "Deployment",
+                    subjectId:   deployment.Id.ToString(),
+                    details:     $"Wave=[{string.Join(", ", ex.WaveSteps.Select(s => s.Name))}], " +
+                                 $"ServerSteps=[{string.Join(", ", ex.ServerStepNames)}], " +
+                                 $"TargetSteps=[{string.Join(", ", ex.TargetStepNames)}]",
+                    ct: ct).ConfigureAwait(false);
+                db.DeploymentLogEntries.Add(new DeploymentLogEntry
+                {
+                    DeploymentId = deployment.Id,
+                    Sequence     = logSeq.Next(),
+                    Timestamp    = DateTimeOffset.UtcNow,
+                    Level        = "error",
+                    Message      = ex.Message,
+                });
+                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                await FailAsync(db, deployment, ex.Message, ct).ConfigureAwait(false);
+                return;
+            }
 
             // Transition to Running before doing any work so the UI updates immediately.
             deployment.Status     = DeploymentStatus.Running;
             deployment.StartedUtc = DateTimeOffset.UtcNow;
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
-            var serverStepCount = groups.Where(g => g.IsServer).Sum(g => g.Steps.Length);
-            var targetStepCount = groups.Where(g => !g.IsServer).Sum(g => g.Steps.Length);
+            var serverStepCount = waves
+                .Where(w => w.Kind == WavePartitioner.WaveKind.Server)
+                .Sum(w => w.Steps.Count);
+            var targetStepCount = waves
+                .Where(w => w.Kind == WavePartitioner.WaveKind.Target)
+                .Sum(w => w.Steps.Count);
             logger.LogInformation(
-                "Deployment {DeploymentId}: {Groups} group(s), {ServerSteps} server step(s), " +
+                "Deployment {DeploymentId}: {Waves} wave(s), {ServerSteps} server step(s), " +
                 "{TargetSteps} target step(s), {VarCount} variables.",
-                deploymentId, groups.Count, serverStepCount, targetStepCount, flatVars.Count);
+                deploymentId, waves.Count, serverStepCount, targetStepCount, flatVars.Count);
 
-            // M14.2 — orchestrator now tracks `hasFailed` instead of
-            // returning on first failure. Required steps still short-
-            // circuit; non-required failures flip the flag and the loop
-            // continues so Failure/Always-conditioned cleanup + finalisation
-            // steps still run. The deployment's terminal status reflects
-            // the final state: hasFailed → SucceededWithWarnings.
+            // M14.2 — orchestrator tracks `hasFailed` instead of returning on
+            // first failure. Required steps still short-circuit; non-required
+            // failures flip the flag and the loop continues so Failure / Always-
+            // conditioned cleanup + finalisation steps still run. The
+            // deployment's terminal status reflects the final state:
+            // hasFailed → SucceededWithWarnings.
             var hasFailed = false;
-            var auditLog = scope.ServiceProvider.GetRequiredService<IAuditLog>();
 
-            foreach (var group in groups)
+            foreach (var wave in waves)
             {
-                if (group.IsServer)
+                if (wave.Kind == WavePartitioner.WaveKind.Server)
                 {
-                    // Run each server step in-process. Honours
-                    // "Server on behalf of each deployment target" via the
-                    // role-filter helper. Dispatch by StepType so server-only
-                    // orchestrator steps (e.g. Octopus.DeployRelease) route to
-                    // a dedicated runner instead of the generic script runner.
-                    foreach (var s in group.Steps)
+                    // ── Server wave: parallel per-step (each step keeps its
+                    //    own Condition + Required + Retries + Timeout via the
+                    //    existing M14.2/3 helpers). Task.WhenAll waits for all
+                    //    siblings to complete; Required-failure short-circuit
+                    //    is applied after the wave settles.
+                    var serverOutcomes = await RunServerWaveAsync(
+                        wave, snapshotSteps, hasFailed, varDict, deployment,
+                        db, auditLog, logSeq, flatVars, ct).ConfigureAwait(false);
+
+                    var firstRequiredFailure = serverOutcomes.FirstOrDefault(o =>
+                        !o.Skipped && !o.Ok && snapshotSteps[o.Step.Index].Required);
+                    if (firstRequiredFailure is not null)
                     {
-                        var snapshot = snapshotSteps[s.Index];
+                        await auditLog.RecordAsync(
+                            AuditEventType.DeploymentRequiredStepFailed,
+                            subjectType: "Deployment",
+                            subjectId:   deployment.Id.ToString(),
+                            details:     $"Step={firstRequiredFailure.Step.Name}",
+                            ct: ct).ConfigureAwait(false);
+                        await FailAsync(db, deployment,
+                            $"Required step '{firstRequiredFailure.Step.Name}' failed.", ct)
+                            .ConfigureAwait(false);
+                        return;
+                    }
 
-                        // ── M14.2 Run Condition gate ──────────────────────
-                        var decision = StepConditionEvaluator.Evaluate(
-                            snapshot.Condition,
-                            snapshot.ConditionVariableExpression,
-                            hasFailed,
-                            varDict);
-                        if (decision.Action == StepConditionEvaluator.Action.Skip)
-                        {
-                            await LogAndAuditStepSkippedAsync(
-                                db, auditLog, logSeq, deployment, snapshot, decision, ct)
-                                .ConfigureAwait(false);
-                            continue;
-                        }
-
-                        if (!StepAppliesToTarget(deployment, s))
-                        {
-                            continue;
-                        }
-
-                        // ── M14.2 Per-step Timeout + M14.3 Retries ────────
-                        var (ok, timedOut) = await RunServerStepWithRetriesAsync(
-                            deployment.Id, s, snapshot, deployment, db, auditLog,
-                            logSeq, flatVars, ct).ConfigureAwait(false);
-                        if (timedOut)
-                        {
-                            await LogAndAuditStepTimedOutAsync(
-                                db, auditLog, logSeq, deployment, snapshot, ct).ConfigureAwait(false);
-                        }
-
-                        if (!ok)
-                        {
-                            // ── M14.2 Required gate ──────────────────────
-                            if (snapshot.Required)
-                            {
-                                await auditLog.RecordAsync(
-                                    AuditEventType.DeploymentRequiredStepFailed,
-                                    subjectType: "Deployment",
-                                    subjectId:   deployment.Id.ToString(),
-                                    details:     $"Step={snapshot.Name}",
-                                    ct: ct).ConfigureAwait(false);
-                                await FailAsync(db, deployment,
-                                    $"Required step '{s.Name}' failed.", ct).ConfigureAwait(false);
-                                return;
-                            }
-                            // Non-required failure — log + audit + continue.
-                            await LogAndAuditStepFailedNonRequiredAsync(
-                                db, auditLog, logSeq, deployment, snapshot, ct).ConfigureAwait(false);
-                            hasFailed = true;
-                        }
+                    foreach (var nonReq in serverOutcomes.Where(o =>
+                        !o.Skipped && !o.Ok && !snapshotSteps[o.Step.Index].Required))
+                    {
+                        await LogAndAuditStepFailedNonRequiredAsync(
+                            db, auditLog, logSeq, deployment,
+                            snapshotSteps[nonReq.Step.Index], ct).ConfigureAwait(false);
+                        hasFailed = true;
                     }
                 }
                 else
                 {
-                    // Target group: filter steps by Condition first, then
-                    // send a sub-plan to the agent. Per-group Timeout uses
-                    // the longest TimeoutSeconds across the group's steps.
-                    var stepsToRun = new List<DeploymentStepPlan>(group.Steps.Length);
-                    foreach (var s in group.Steps)
+                    // ── Target wave: filter by Condition, then dispatch as a
+                    //    single sub-plan; the agent runs the wave's steps in
+                    //    parallel. Per-step boundary reports drain from the
+                    //    registry after the wave's CompleteDeploymentAsync.
+                    var stepsToRun = new List<DeploymentStepPlan>(wave.Steps.Count);
+                    foreach (var s in wave.Steps)
                     {
                         var snapshot = snapshotSteps[s.Index];
                         var decision = StepConditionEvaluator.Evaluate(
@@ -423,7 +431,7 @@ public sealed class DeploymentWorker(
 
                     if (stepsToRun.Count == 0)
                     {
-                        continue; // every step in the group was skipped by Condition
+                        continue; // every step in the wave was skipped by Condition
                     }
 
                     var connectionId = registry.GetConnectionId(deployment.TargetId.Value);
@@ -433,149 +441,25 @@ public sealed class DeploymentWorker(
                         return;
                     }
 
-                    var subPlan = plan with { Steps = stepsToRun.ToArray() };
+                    var (waveResult, waveTimedOut, perStepResults) = await DispatchTargetWaveAsync(
+                        plan, stepsToRun, snapshotSteps, deployment, connectionId,
+                        db, auditLog, logSeq, ct).ConfigureAwait(false);
 
-                    // ── M14.2 Group Timeout + M14.3.1 Target-side Retries ─
-                    // Group timeout = longest TimeoutSeconds in the group (0 = unlimited).
-                    // Group retries = longest MaxRetries + matching RetryDelaySeconds.
-                    // Retry semantics: re-dispatches the WHOLE sub-plan to the
-                    // agent on failure. Re-runs every step in the group, not just
-                    // the failed one — per-step attribution needs the wave-aware
-                    // agent contract that M14.4 introduces. Operators relying on
-                    // retries here must ensure their step scripts are idempotent;
-                    // documented in the M14.4 plan + commit body.
-                    var groupTimeoutSeconds = stepsToRun
-                        .Select(p => snapshotSteps[p.Index].TimeoutSeconds)
-                        .DefaultIfEmpty(0)
-                        .Max();
-                    var groupMaxRetries = stepsToRun
-                        .Select(p => snapshotSteps[p.Index].MaxRetries)
-                        .DefaultIfEmpty(0)
-                        .Max();
-                    var groupRetryDelaySeconds = stepsToRun
-                        .Select(p => snapshotSteps[p.Index].RetryDelaySeconds)
-                        .DefaultIfEmpty(0)
-                        .Max();
-                    var groupNamesForAudit = string.Join(", ",
-                        stepsToRun.Select(p => p.Name));
+                    // ── M14.4 Output-variable collision audits ─────────────
+                    // Detect Same-name writes across the wave's parallel
+                    // siblings and emit one audit per collision so operators
+                    // see which step's value "lost" the last-writer-wins
+                    // race in SortOrder. Collision storage is unchanged
+                    // (per-step rows in DeploymentOutputVariable), this is
+                    // purely a forensic signal.
+                    await EmitWaveCollisionsAsync(
+                        perStepResults, stepsToRun, deployment, db, auditLog, logSeq, ct)
+                        .ConfigureAwait(false);
 
-                    SubPlanResult subPlanResult = default!;
-                    var timedOut = false;
-                    var attempt = 0;
-                    while (true)
-                    {
-                        var tcs = new TaskCompletionSource<SubPlanResult>(
-                            TaskCreationOptions.RunContinuationsAsynchronously);
-                        subPlans.Register(deployment.Id, tcs);
-
-                        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                        if (groupTimeoutSeconds > 0)
-                        {
-                            linkedCts.CancelAfter(TimeSpan.FromSeconds(groupTimeoutSeconds));
-                        }
-                        var thisAttemptTimedOut = false;
-
-                        try
-                        {
-                            await agentHub.Clients.Client(connectionId)
-                                .RunDeploymentAsync(subPlan).ConfigureAwait(false);
-
-                            using var ctr = linkedCts.Token.Register(
-                                () => tcs.TrySetCanceled(linkedCts.Token));
-                            try
-                            {
-                                subPlanResult = await tcs.Task.ConfigureAwait(false);
-                            }
-                            catch (OperationCanceledException)
-                            {
-                                // Timeout fired (or external cancel). Distinguish
-                                // by whether the outer ct was cancelled too.
-                                if (!ct.IsCancellationRequested && linkedCts.IsCancellationRequested)
-                                {
-                                    thisAttemptTimedOut = true;
-                                    subPlanResult = new SubPlanResult(
-                                        Success: false,
-                                        ErrorMessage:
-                                            $"Target step group timed out after {groupTimeoutSeconds}s.");
-                                }
-                                else
-                                {
-                                    throw;
-                                }
-                            }
-                        }
-                        finally
-                        {
-                            subPlans.Cancel(deployment.Id, "completed");
-                        }
-
-                        if (subPlanResult.Success)
-                        {
-                            timedOut = false;
-                            if (attempt > 0)
-                            {
-                                db.DeploymentLogEntries.Add(new DeploymentLogEntry
-                                {
-                                    DeploymentId = deployment.Id,
-                                    Sequence     = logSeq.Next(),
-                                    Timestamp    = DateTimeOffset.UtcNow,
-                                    Level        = "info",
-                                    Message      = $"--- Target group [{groupNamesForAudit}] " +
-                                                   $"succeeded on attempt " +
-                                                   $"{(attempt + 1).ToString(CultureInfo.InvariantCulture)} ---",
-                                });
-                                await db.SaveChangesAsync(ct).ConfigureAwait(false);
-                            }
-                            break;
-                        }
-
-                        if (attempt >= groupMaxRetries)
-                        {
-                            // Final attempt failed — fall through to the Required gate.
-                            timedOut = thisAttemptTimedOut;
-                            break;
-                        }
-
-                        // Non-final attempt failed — emit retry marker + audit + delay.
-                        attempt++;
-                        db.DeploymentLogEntries.Add(new DeploymentLogEntry
-                        {
-                            DeploymentId = deployment.Id,
-                            Sequence     = logSeq.Next(),
-                            Timestamp    = DateTimeOffset.UtcNow,
-                            Level        = "warning",
-                            Message      =
-                                $"--- Target group [{groupNamesForAudit}] attempt " +
-                                $"{attempt.ToString(CultureInfo.InvariantCulture)} failed; retrying " +
-                                $"(attempt {(attempt + 1).ToString(CultureInfo.InvariantCulture)} of " +
-                                $"{(groupMaxRetries + 1).ToString(CultureInfo.InvariantCulture)})" +
-                                (groupRetryDelaySeconds > 0
-                                    ? $" in {groupRetryDelaySeconds.ToString(CultureInfo.InvariantCulture)}s ---"
-                                    : " ---"),
-                        });
-                        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-                        await auditLog.RecordAsync(
-                            AuditEventType.DeploymentStepRetried,
-                            subjectType: "Deployment",
-                            subjectId:   deployment.Id.ToString(),
-                            details:     $"TargetGroup=[{groupNamesForAudit}], " +
-                                         $"Attempt={attempt.ToString(CultureInfo.InvariantCulture)}, " +
-                                         $"MaxRetries={groupMaxRetries.ToString(CultureInfo.InvariantCulture)}, " +
-                                         $"RetryDelaySeconds={groupRetryDelaySeconds.ToString(CultureInfo.InvariantCulture)}",
-                            ct: ct).ConfigureAwait(false);
-
-                        if (groupRetryDelaySeconds > 0)
-                        {
-                            await Task.Delay(
-                                TimeSpan.FromSeconds(groupRetryDelaySeconds), ct)
-                                .ConfigureAwait(false);
-                        }
-                    }
-
-                    if (timedOut)
+                    if (waveTimedOut)
                     {
                         // Emit a TimedOut audit for the first step with a
-                        // non-zero TimeoutSeconds in the group (the one the
+                        // non-zero TimeoutSeconds in the wave (the one the
                         // operator most likely configured).
                         var timeoutStep = stepsToRun
                             .Select(p => snapshotSteps[p.Index])
@@ -587,40 +471,80 @@ public sealed class DeploymentWorker(
                         }
                     }
 
-                    if (!subPlanResult.Success)
+                    if (!waveResult.Success)
                     {
-                        // ── M14.2 Required gate at the group level ──────
-                        // If ANY step in the dispatched group is Required,
-                        // the whole sub-plan failure aborts the deployment.
-                        // Conservative: it never continues past a Required
-                        // failure, but may pessimistically abort even when
-                        // the actually-failing step was non-required.
-                        // Per-step attribution narrows this scope and is
-                        // M14.4 work (agent contract reports which step
-                        // in the wave actually failed).
-                        var anyRequired = stepsToRun.Any(p =>
-                            snapshotSteps[p.Index].Required);
-                        if (anyRequired)
+                        // ── M14.4 Per-step Required gate ─────────────────
+                        // Per-step boundary reports tell us EXACTLY which
+                        // steps failed. Required-failure of any one short-
+                        // circuits; non-required failures accumulate
+                        // hasFailed and the deployment continues.
+                        //
+                        // Fallback: when the agent didn't report any per-
+                        // step boundaries (e.g. it dropped offline before
+                        // sending any), we conservatively treat any
+                        // Required step in the wave as failed — same as
+                        // the pre-M14.4 group-level behaviour.
+                        var failedSteps = perStepResults.Where(r => !r.Success).ToList();
+                        DeploymentStepPlan? firstRequiredFailure = null;
+                        if (failedSteps.Count > 0)
+                        {
+                            foreach (var failed in failedSteps)
+                            {
+                                var snap = snapshotSteps[failed.StepIndex];
+                                if (snap.Required)
+                                {
+                                    firstRequiredFailure = stepsToRun
+                                        .FirstOrDefault(p => p.Index == failed.StepIndex);
+                                    break;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // No per-step reports — fall back to the M14.0..3
+                            // group-level pessimistic gate.
+                            firstRequiredFailure = stepsToRun
+                                .FirstOrDefault(p => snapshotSteps[p.Index].Required);
+                        }
+
+                        if (firstRequiredFailure is not null)
                         {
                             await auditLog.RecordAsync(
                                 AuditEventType.DeploymentRequiredStepFailed,
                                 subjectType: "Deployment",
                                 subjectId:   deployment.Id.ToString(),
-                                details:     $"TargetGroup steps=[{string.Join(", ",
-                                                stepsToRun.Select(p => p.Name))}], " +
-                                             $"Error={subPlanResult.ErrorMessage}",
+                                details:     $"Step={firstRequiredFailure.Name}, " +
+                                             $"Error={waveResult.ErrorMessage}",
                                 ct: ct).ConfigureAwait(false);
                             await FailAsync(db, deployment,
-                                subPlanResult.ErrorMessage ?? "Agent reported failure", ct)
+                                waveResult.ErrorMessage ?? "Agent reported failure", ct)
                                 .ConfigureAwait(false);
                             return;
                         }
-                        // Whole group is non-required — record + continue.
-                        foreach (var p in stepsToRun)
+
+                        // No Required failure — record non-required failures
+                        // (for accurate audit detail) and continue.
+                        if (failedSteps.Count > 0)
                         {
-                            await LogAndAuditStepFailedNonRequiredAsync(
-                                db, auditLog, logSeq, deployment, snapshotSteps[p.Index], ct)
-                                .ConfigureAwait(false);
+                            foreach (var failed in failedSteps)
+                            {
+                                await LogAndAuditStepFailedNonRequiredAsync(
+                                    db, auditLog, logSeq, deployment,
+                                    snapshotSteps[failed.StepIndex], ct)
+                                    .ConfigureAwait(false);
+                            }
+                        }
+                        else
+                        {
+                            // Agent didn't report per-step boundaries — flag
+                            // every step in the wave as non-required-failed
+                            // (matches the pre-M14.4 fallback).
+                            foreach (var p in stepsToRun)
+                            {
+                                await LogAndAuditStepFailedNonRequiredAsync(
+                                    db, auditLog, logSeq, deployment,
+                                    snapshotSteps[p.Index], ct).ConfigureAwait(false);
+                            }
                         }
                         hasFailed = true;
                     }
@@ -828,73 +752,9 @@ public sealed class DeploymentWorker(
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// A consecutive run of same-side steps (all server-side or all target-side).
-    /// </summary>
-    private sealed record StepGroup(bool IsServer, DeploymentStepPlan[] Steps);
-
-    /// <summary>
-    /// Partition steps into consecutive same-side groups in declared order.
-    /// E.g. [target, target, server, target] → [Target(2), Server(1), Target(1)].
-    /// </summary>
-    private static List<StepGroup> PartitionIntoGroups(DeploymentStepPlan[] steps)
-    {
-        var groups = new List<StepGroup>();
-        if (steps.Length == 0)
-        {
-            return groups;
-        }
-
-        var ordered = steps.OrderBy(s => s.Index).ToArray();
-        var current = new List<DeploymentStepPlan> { ordered[0] };
-        var currentIsServer = IsServerStep(ordered[0]);
-
-        for (var i = 1; i < ordered.Length; i++)
-        {
-            var s      = ordered[i];
-            var isSrv  = IsServerStep(s);
-            if (isSrv == currentIsServer)
-            {
-                current.Add(s);
-            }
-            else
-            {
-                groups.Add(new StepGroup(currentIsServer, [.. current]));
-                current = [s];
-                currentIsServer = isSrv;
-            }
-        }
-        groups.Add(new StepGroup(currentIsServer, [.. current]));
-        return groups;
-    }
-
-    /// <summary>
-    /// True if the step's config marks it for server-side execution. A step is
-    /// server-side when EITHER the config carries
-    /// <c>Octopus.Action.RunOnServer = "true"</c> (the explicit Octopus marker),
-    /// OR the <see cref="DeploymentStepPlan.StepType"/> is one of the
-    /// intrinsically server-side orchestrator types (<see cref="ServerOnlyStepTypes"/>).
-    /// </summary>
-    private static bool IsServerStep(DeploymentStepPlan step)
-    {
-        if (step.Config.TryGetValue("Octopus.Action.RunOnServer", out var v)
-            && string.Equals(v, "true", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-        return ServerOnlyStepTypes.Contains(step.StepType);
-    }
-
-    /// <summary>
-    /// Step types that always run on the server regardless of the
-    /// <c>Octopus.Action.RunOnServer</c> flag — they coordinate other deployments
-    /// or otherwise have no agent-side meaning.
-    /// </summary>
-    private static readonly HashSet<string> ServerOnlyStepTypes =
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            DeployReleaseStepRunner.StepType,
-        };
+    // M14.4: Partition + IsServerStep moved to WavePartitioner so the wave
+    // walker can be tested in isolation. Use WavePartitioner.IsServerStep
+    // when classifying outside the wave path.
 
     /// <summary>
     /// Dispatches one server-side step to the appropriate runner based on its
@@ -1272,5 +1132,357 @@ public sealed class DeploymentWorker(
             // Audit emission is best-effort — never bubble the failure
             // up into deployment finalisation.
         }
+    }
+
+    // ── M14.4 wave helpers ──────────────────────────────────────────────
+
+    /// <summary>
+    /// One server-side step's outcome inside a wave. <see cref="Skipped"/>
+    /// flags steps that were filtered out by Run Condition or by the
+    /// role-based <c>StepAppliesToTarget</c> gate so the outer loop can
+    /// distinguish "didn't run" from "ran and failed".
+    /// </summary>
+    private sealed record ServerStepOutcome(
+        DeploymentStepPlan Step,
+        bool Skipped,
+        bool Ok,
+        bool TimedOut);
+
+    /// <summary>
+    /// Runs every step in a server-side wave concurrently. Each step retains
+    /// its own Run Condition + Required + Retries + Timeout (the M14.2/3
+    /// helpers operate on a single step and compose cleanly under
+    /// <see cref="Task.WhenAll"/>). Returns the wave's per-step outcomes
+    /// for the caller's Required gate.
+    ///
+    /// <para>
+    /// <strong>Concurrency:</strong> <see cref="KrakenDbContext"/> is NOT
+    /// thread-safe across concurrent operations on the same instance, so
+    /// per-step work that needs to write logs / audit rows uses a fresh
+    /// <see cref="IDbContextFactory{KrakenDbContext}"/>-created context.
+    /// Variables shared across siblings (the wave-level <c>hasFailed</c>,
+    /// the var dictionary) are read-only inside the wave so no contention.
+    /// </para>
+    /// </summary>
+    private async Task<List<ServerStepOutcome>> RunServerWaveAsync(
+        WavePartitioner.Wave wave,
+        StepSnapshot[] snapshotSteps,
+        bool hasFailedAtWaveStart,
+        VariableDictionary varDict,
+        Deployment deployment,
+        KrakenDbContext db,
+        IAuditLog auditLog,
+        LogSequencer logSeq,
+        IReadOnlyDictionary<string, string> flatVars,
+        CancellationToken ct)
+    {
+        // Evaluate Conditions + Role filter sequentially first so skipped-
+        // step logs land in declared order. Surviving steps run in parallel.
+        var toRun = new List<DeploymentStepPlan>(wave.Steps.Count);
+        var skipped = new List<DeploymentStepPlan>(wave.Steps.Count);
+        foreach (var s in wave.Steps)
+        {
+            var snapshot = snapshotSteps[s.Index];
+            var decision = StepConditionEvaluator.Evaluate(
+                snapshot.Condition,
+                snapshot.ConditionVariableExpression,
+                hasFailedAtWaveStart,
+                varDict);
+            if (decision.Action == StepConditionEvaluator.Action.Skip)
+            {
+                await LogAndAuditStepSkippedAsync(
+                    db, auditLog, logSeq, deployment, snapshot, decision, ct)
+                    .ConfigureAwait(false);
+                skipped.Add(s);
+                continue;
+            }
+            if (!StepAppliesToTarget(deployment, s))
+            {
+                skipped.Add(s);
+                continue;
+            }
+            toRun.Add(s);
+        }
+
+        if (toRun.Count == 0)
+        {
+            return skipped.Select(s => new ServerStepOutcome(
+                Step: s, Skipped: true, Ok: true, TimedOut: false)).ToList();
+        }
+
+        // Fire all surviving steps in parallel. Each Task wraps the M14.3
+        // retry helper, which writes its own retry-marker log lines + audit
+        // rows. We pass the SHARED db / logSeq into the retry helper —
+        // safe today because:
+        //   1. LogSequencer is internally locked (M14.3.1).
+        //   2. The DbContext writes happen sequentially inside each helper
+        //      call (each call awaits SaveChangesAsync before returning).
+        //   3. Task.WhenAll resolves after all siblings finish so the worker
+        //      doesn't issue new DbContext calls on the same instance from
+        //      a different thread.
+        // The third point matters: if a runner started a background save we
+        // didn't await, this would break. Today's runners are linear.
+        var stepTasks = toRun.Select(async s =>
+        {
+            var snap = snapshotSteps[s.Index];
+            var (ok, timedOut) = await RunServerStepWithRetriesAsync(
+                deployment.Id, s, snap, deployment, db, auditLog,
+                logSeq, flatVars, ct).ConfigureAwait(false);
+            if (timedOut)
+            {
+                await LogAndAuditStepTimedOutAsync(
+                    db, auditLog, logSeq, deployment, snap, ct).ConfigureAwait(false);
+            }
+            return new ServerStepOutcome(
+                Step: s, Skipped: false, Ok: ok, TimedOut: timedOut);
+        }).ToArray();
+
+        var outcomes = (await Task.WhenAll(stepTasks).ConfigureAwait(false)).ToList();
+        outcomes.AddRange(skipped.Select(s => new ServerStepOutcome(
+            Step: s, Skipped: true, Ok: true, TimedOut: false)));
+        return outcomes;
+    }
+
+    /// <summary>
+    /// Dispatches a target-side wave to the agent as a single sub-plan and
+    /// awaits the agent's <c>CompleteDeploymentAsync</c> via the TCS in
+    /// <see cref="IPendingSubPlanRegistry"/>. Returns the wave outcome
+    /// plus the per-step boundary reports the agent emitted during the
+    /// wave (drained from the registry) so the caller can apply per-step
+    /// Required attribution + collision detection.
+    ///
+    /// <para>
+    /// Wave timeout = longest <see cref="StepSnapshot.TimeoutSeconds"/>
+    /// across the wave's steps (0 = unlimited). Wave retry = longest
+    /// <see cref="StepSnapshot.MaxRetries"/> with matching delay; retries
+    /// re-dispatch the WHOLE sub-plan. Operators relying on wave retries
+    /// MUST ensure step scripts are idempotent — the agent re-runs every
+    /// step in the wave, not just the failed one. Documented in the
+    /// M14.4 plan body.
+    /// </para>
+    /// </summary>
+    private async Task<(SubPlanResult Result, bool TimedOut, IReadOnlyList<SubPlanStepResult> PerStepResults)>
+        DispatchTargetWaveAsync(
+            DeploymentPlan plan,
+            IReadOnlyList<DeploymentStepPlan> stepsToRun,
+            StepSnapshot[] snapshotSteps,
+            Deployment deployment,
+            string connectionId,
+            KrakenDbContext db,
+            IAuditLog auditLog,
+            LogSequencer logSeq,
+            CancellationToken ct)
+    {
+        var waveTimeoutSeconds = stepsToRun
+            .Select(p => snapshotSteps[p.Index].TimeoutSeconds)
+            .DefaultIfEmpty(0)
+            .Max();
+        var waveMaxRetries = stepsToRun
+            .Select(p => snapshotSteps[p.Index].MaxRetries)
+            .DefaultIfEmpty(0)
+            .Max();
+        var waveRetryDelaySeconds = stepsToRun
+            .Select(p => snapshotSteps[p.Index].RetryDelaySeconds)
+            .DefaultIfEmpty(0)
+            .Max();
+        var waveNamesForAudit = string.Join(", ", stepsToRun.Select(p => p.Name));
+
+        var subPlan = plan with { Steps = stepsToRun.ToArray() };
+        SubPlanResult subPlanResult = default!;
+        IReadOnlyList<SubPlanStepResult> lastPerStepResults = [];
+        var timedOut = false;
+        var attempt = 0;
+        while (true)
+        {
+            var tcs = new TaskCompletionSource<SubPlanResult>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            subPlans.Register(deployment.Id, tcs);
+
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            if (waveTimeoutSeconds > 0)
+            {
+                linkedCts.CancelAfter(TimeSpan.FromSeconds(waveTimeoutSeconds));
+            }
+            var thisAttemptTimedOut = false;
+
+            try
+            {
+                await agentHub.Clients.Client(connectionId)
+                    .RunDeploymentAsync(subPlan).ConfigureAwait(false);
+
+                using var ctr = linkedCts.Token.Register(
+                    () => tcs.TrySetCanceled(linkedCts.Token));
+                try
+                {
+                    subPlanResult = await tcs.Task.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Timeout fired (or external cancel). Distinguish by
+                    // whether the outer ct was cancelled too.
+                    if (!ct.IsCancellationRequested && linkedCts.IsCancellationRequested)
+                    {
+                        thisAttemptTimedOut = true;
+                        subPlanResult = new SubPlanResult(
+                            Success: false,
+                            ErrorMessage:
+                                $"Target step wave timed out after {waveTimeoutSeconds}s.");
+                    }
+                    else
+                    {
+                        throw;
+                    }
+                }
+            }
+            finally
+            {
+                // Drain whatever the agent reported THIS attempt and clear the
+                // registry slot. Cancel() also resolves a still-pending TCS
+                // (no-op if already resolved by the agent's CompleteDeployment).
+                lastPerStepResults = subPlans.DrainStepResults(deployment.Id);
+                subPlans.Cancel(deployment.Id, "completed");
+            }
+
+            if (subPlanResult.Success)
+            {
+                timedOut = false;
+                if (attempt > 0)
+                {
+                    db.DeploymentLogEntries.Add(new DeploymentLogEntry
+                    {
+                        DeploymentId = deployment.Id,
+                        Sequence     = logSeq.Next(),
+                        Timestamp    = DateTimeOffset.UtcNow,
+                        Level        = "info",
+                        Message      = $"--- Target wave [{waveNamesForAudit}] " +
+                                       $"succeeded on attempt " +
+                                       $"{(attempt + 1).ToString(CultureInfo.InvariantCulture)} ---",
+                    });
+                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                }
+                break;
+            }
+
+            if (attempt >= waveMaxRetries)
+            {
+                // Final attempt failed — fall through to the Required gate.
+                timedOut = thisAttemptTimedOut;
+                break;
+            }
+
+            // Non-final attempt failed — emit retry marker + audit + delay.
+            attempt++;
+            db.DeploymentLogEntries.Add(new DeploymentLogEntry
+            {
+                DeploymentId = deployment.Id,
+                Sequence     = logSeq.Next(),
+                Timestamp    = DateTimeOffset.UtcNow,
+                Level        = "warning",
+                Message      =
+                    $"--- Target wave [{waveNamesForAudit}] attempt " +
+                    $"{attempt.ToString(CultureInfo.InvariantCulture)} failed; retrying " +
+                    $"(attempt {(attempt + 1).ToString(CultureInfo.InvariantCulture)} of " +
+                    $"{(waveMaxRetries + 1).ToString(CultureInfo.InvariantCulture)})" +
+                    (waveRetryDelaySeconds > 0
+                        ? $" in {waveRetryDelaySeconds.ToString(CultureInfo.InvariantCulture)}s ---"
+                        : " ---"),
+            });
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            await auditLog.RecordAsync(
+                AuditEventType.DeploymentStepRetried,
+                subjectType: "Deployment",
+                subjectId:   deployment.Id.ToString(),
+                details:     $"TargetWave=[{waveNamesForAudit}], " +
+                             $"Attempt={attempt.ToString(CultureInfo.InvariantCulture)}, " +
+                             $"MaxRetries={waveMaxRetries.ToString(CultureInfo.InvariantCulture)}, " +
+                             $"RetryDelaySeconds={waveRetryDelaySeconds.ToString(CultureInfo.InvariantCulture)}",
+                ct: ct).ConfigureAwait(false);
+
+            if (waveRetryDelaySeconds > 0)
+            {
+                await Task.Delay(
+                    TimeSpan.FromSeconds(waveRetryDelaySeconds), ct)
+                    .ConfigureAwait(false);
+            }
+        }
+
+        return (subPlanResult, timedOut, lastPerStepResults);
+    }
+
+    /// <summary>
+    /// M14.4 — emits one <c>Deployment.ParallelOutputCollision</c> audit +
+    /// warning log line per output-variable name written by more than one
+    /// parallel sibling in the same wave. The orchestrator calls this
+    /// after a target wave's per-step boundary reports have drained.
+    /// Server-side waves don't capture <c>Set-OctopusVariable</c> output
+    /// today (the M14.3 retry helper documents this gap), so this
+    /// helper sees no input from server waves.
+    /// </summary>
+    private static async Task EmitWaveCollisionsAsync(
+        IReadOnlyList<SubPlanStepResult> perStepResults,
+        IReadOnlyList<DeploymentStepPlan> waveSteps,
+        Deployment deployment,
+        KrakenDbContext db,
+        IAuditLog auditLog,
+        LogSequencer logSeq,
+        CancellationToken ct)
+    {
+        if (perStepResults.Count == 0)
+        {
+            return;
+        }
+
+        // Build a SortOrder-ordered iteration over the per-step buckets so
+        // last-writer-wins resolves deterministically by StepIndex (==
+        // SortOrder rank in the process).
+        var ordered = perStepResults
+            .Where(r => r.Outputs.Count > 0)
+            .OrderBy(r => r.StepIndex)
+            .Select(r => (r.StepName,
+                          (IReadOnlyDictionary<string, string>)r.Outputs))
+            .ToArray();
+        if (ordered.Length == 0)
+        {
+            return;
+        }
+
+        var collisions = DeploymentOutputCollisionDetector.Detect(ordered);
+        if (collisions.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var c in collisions)
+        {
+            var writersDesc = string.Join(", ",
+                c.Writers.Select(w => $"{w.StepName}={Elide(w.Value)}"));
+            var loserDesc = string.Join(", ",
+                c.Losers.Select(w => $"{w.StepName}={Elide(w.Value)}"));
+
+            db.DeploymentLogEntries.Add(new DeploymentLogEntry
+            {
+                DeploymentId = deployment.Id,
+                Sequence     = logSeq.Next(),
+                Timestamp    = DateTimeOffset.UtcNow,
+                Level        = "warning",
+                Message      = $"Output variable '{c.VariableName}' was set by " +
+                               $"parallel siblings [{writersDesc}]; last-writer-wins " +
+                               $"in SortOrder → {c.Winner.StepName}={Elide(c.Winner.Value)}.",
+            });
+            await auditLog.RecordAsync(
+                AuditEventType.DeploymentParallelOutputCollision,
+                subjectType: "Deployment",
+                subjectId:   deployment.Id.ToString(),
+                details:     $"Variable={c.VariableName}, " +
+                             $"Wave=[{string.Join(", ", waveSteps.Select(p => p.Name))}], " +
+                             $"Winner={c.Winner.StepName}, " +
+                             $"Losers=[{loserDesc}]",
+                ct: ct).ConfigureAwait(false);
+        }
+
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        static string Elide(string v) =>
+            v.Length <= 60 ? v : v[..57] + "...";
     }
 }

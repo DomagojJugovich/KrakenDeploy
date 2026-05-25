@@ -127,13 +127,18 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
             : Task.CompletedTask;
     }
 
-    public Task ReportStepOutputVariablesAsync(
-        Guid deploymentId, string stepName,
-        IReadOnlyDictionary<string, string> outputVariables, CancellationToken ct)
+    public Task ReportStepCompletedAsync(
+        Guid deploymentId,
+        int stepIndex,
+        string stepName,
+        bool success,
+        string? errorMessage,
+        IReadOnlyDictionary<string, string> outputVariables,
+        CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrEmpty(stepName);
         ArgumentNullException.ThrowIfNull(outputVariables);
-        if (outputVariables.Count == 0 || _connection is null)
+        if (_connection is null)
         {
             return Task.CompletedTask;
         }
@@ -145,8 +150,8 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
                       ?? new Dictionary<string, string>(outputVariables, StringComparer.OrdinalIgnoreCase);
 
         return _connection.InvokeAsync(
-            "ReportStepOutputVariablesAsync",
-            deploymentId, stepName, payload, ct);
+            "ReportStepCompletedAsync",
+            deploymentId, stepIndex, stepName, success, errorMessage, payload, ct);
     }
 
     // ── Server → Agent ─────────────────────────────────────────────────────

@@ -30,12 +30,33 @@ public interface IAgentHubServer
     Task CompleteDeploymentAsync(Guid deploymentId, bool success, string? errorMessage);
 
     /// <summary>
-    /// Called after each step that emitted at least one
-    /// <c>Set-OctopusVariable</c> / <c>##octopus[setVariable]</c> marker on stdout.
-    /// The server persists the captured key/value pairs against the deployment
-    /// and step so they appear on the deployment detail page and (later) can be
-    /// referenced from other deployments / runbooks.
+    /// M14.4 — reports the per-step boundary back to the server: success/
+    /// failure outcome, optional error message, and any output variables
+    /// captured via <c>Set-OctopusVariable</c> / <c>##octopus[setVariable]</c>
+    /// markers during the step.
+    ///
+    /// <para>
+    /// Replaces the pre-M14.4 <c>ReportStepOutputVariablesAsync</c>: the
+    /// orchestrator now needs per-step attribution to apply the Required
+    /// gate against individual steps inside a parallel wave (not the
+    /// whole wave conservatively). Server persists outputs upserted by
+    /// <c>(deploymentId, stepName, name)</c> (same shape as before),
+    /// and records the per-step outcome against the pending sub-plan so
+    /// <c>CompleteDeploymentAsync</c> at wave end has full attribution.
+    /// </para>
+    ///
+    /// <para>
+    /// <paramref name="stepIndex"/> is <see cref="DeploymentStepPlan.Index"/>
+    /// — stable across the deployment so the orchestrator can find the
+    /// step's <c>StepSnapshot</c> by index without name-collision risk
+    /// inside ForEach iterations (M15) or duplicate-name authoring.
+    /// </para>
     /// </summary>
-    Task ReportStepOutputVariablesAsync(
-        Guid deploymentId, string stepName, Dictionary<string, string> outputVariables);
+    Task ReportStepCompletedAsync(
+        Guid deploymentId,
+        int stepIndex,
+        string stepName,
+        bool success,
+        string? errorMessage,
+        Dictionary<string, string> outputVariables);
 }
