@@ -118,15 +118,25 @@ public class ReleaseService(
 
             snapshot.Add(new StepSnapshot
             {
-                Name               = step.Name,
-                StepType           = step.StepType,
-                PackageId          = step.PackageId,
-                PackageVersion     = pinned,
-                TargetRoles        = [.. step.TargetRoles],
-                Config             = snapshotConfig,
-                SortOrder          = step.SortOrder,
-                StepPackageName    = snapshotPackageName,
-                StepPackageVersion = snapshotPackageVersion,
+                Name                        = step.Name,
+                StepType                    = step.StepType,
+                PackageId                   = step.PackageId,
+                PackageVersion              = pinned,
+                TargetRoles                 = [.. step.TargetRoles],
+                Config                      = snapshotConfig,
+                SortOrder                   = step.SortOrder,
+                StepPackageName             = snapshotPackageName,
+                StepPackageVersion          = snapshotPackageVersion,
+                // M14: freeze step-execution knobs into the snapshot so
+                // historical releases keep deploying with the semantics
+                // they were cut under.
+                Condition                   = step.Condition,
+                ConditionVariableExpression = step.ConditionVariableExpression,
+                Required                    = step.Required,
+                MaxRetries                  = step.MaxRetries,
+                RetryDelaySeconds           = step.RetryDelaySeconds,
+                TimeoutSeconds              = step.TimeoutSeconds,
+                StartTrigger                = step.StartTrigger,
             });
         }
 

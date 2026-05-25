@@ -29,6 +29,19 @@ public class DeploymentStepConfiguration : IEntityTypeConfiguration<DeploymentSt
         builder.Property(x => x.StepPackageName).HasMaxLength(128);
         builder.Property(x => x.StepPackageVersion).HasMaxLength(64);
 
+        // M14 step-execution knobs. Defaults preserve pre-M14 behaviour:
+        // Success Condition, Required=true, no retries, no timeout, sequential.
+        // The Required default is critical — existing rows backfilled by the
+        // migration must read as "required" so a pre-M14 deployment process
+        // doesn't silently change its failure semantics after the upgrade.
+        builder.Property(x => x.Condition).HasDefaultValue(StepCondition.Success);
+        builder.Property(x => x.ConditionVariableExpression).HasMaxLength(1024);
+        builder.Property(x => x.Required).HasDefaultValue(true);
+        builder.Property(x => x.MaxRetries).HasDefaultValue(0);
+        builder.Property(x => x.RetryDelaySeconds).HasDefaultValue(0);
+        builder.Property(x => x.TimeoutSeconds).HasDefaultValue(0);
+        builder.Property(x => x.StartTrigger).HasDefaultValue(StepStartTrigger.StartAfterPrevious);
+
         builder.HasOne(x => x.Process)
             .WithMany(p => p.Steps)
             .HasForeignKey(x => x.ProcessId)

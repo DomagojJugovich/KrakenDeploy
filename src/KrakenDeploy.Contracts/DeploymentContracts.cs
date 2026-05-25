@@ -45,7 +45,33 @@ public sealed record DeploymentStepPlan(
     /// clients.
     /// </summary>
     string? StepPackageName = null,
-    string? StepPackageVersion = null);
+    string? StepPackageVersion = null,
+    // ── M14 step-execution knobs ─────────────────────────────────────────
+    // Defaulted at the end of the record so older agents (pre-M14)
+    // deserializing a newer plan behave as
+    // "Success Condition / Required=true / no retries / no timeout /
+    // sequential" — same as pre-M14 behaviour. Lets server upgrade
+    // ahead of agent during a rolling deploy without breaking.
+    /// <summary>M14.2 Run Condition — int value of
+    /// <c>KrakenDeploy.Server.Core.Domain.Processes.StepCondition</c>.
+    /// The agent doesn't consume this; the server evaluates it before
+    /// dispatching. Plumbed through the contract so future protocols
+    /// (e.g. agent-side step skip reporting) have the value available.</summary>
+    int Condition = 0,
+    string? ConditionVariableExpression = null,
+    bool Required = true,
+    int MaxRetries = 0,
+    int RetryDelaySeconds = 0,
+    /// <summary>M14.2 Per-step timeout in seconds. <c>0</c> = unlimited.
+    /// Agent-side step runners cancel on this token after the configured
+    /// duration; server-side runners do the same inline.</summary>
+    int TimeoutSeconds = 0,
+    /// <summary>M14.4 Start trigger — int value of
+    /// <c>KrakenDeploy.Server.Core.Domain.Processes.StepStartTrigger</c>.
+    /// The agent doesn't consume this; the server pre-flattens parallel
+    /// waves before sending the plan (so the agent still sees a flat
+    /// sequential list within each sub-plan).</summary>
+    int StartTrigger = 0);
 
 /// <summary>
 /// Sent by the agent to the server when a deployment is triggered.

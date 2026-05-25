@@ -1,3 +1,5 @@
+using KrakenDeploy.Server.Core.Domain.Processes;
+
 namespace KrakenDeploy.Server.Core.Domain.Releases;
 
 /// <summary>
@@ -32,4 +34,41 @@ public sealed class StepSnapshot
     /// </para>
     /// </summary>
     public string? StepPackageVersion { get; init; }
+
+    // ── M14 step-execution knobs (mirror DeploymentStep) ─────────────────
+    // Releases freeze these at cut time so historical reproducibility
+    // survives subsequent edits to the live process. The jsonb shape
+    // adds the new fields with type-default values for old rows — older
+    // snapshots simply read as "Success / Required=true / no retries /
+    // no timeout / sequential", which preserves the runtime they were
+    // created under.
+
+    /// <summary>M14.2 Run Condition — see <see cref="DeploymentStep.Condition"/>.</summary>
+    public StepCondition Condition { get; init; } = StepCondition.Success;
+
+    /// <summary>M14.2 Variable-condition expression — see
+    /// <see cref="DeploymentStep.ConditionVariableExpression"/>.</summary>
+    public string? ConditionVariableExpression { get; init; }
+
+    /// <summary>M14.2 Required — see <see cref="DeploymentStep.Required"/>.
+    /// Defaulted to <c>true</c> on the property; older snapshots without
+    /// this field also surface as <c>true</c> via System.Text.Json's
+    /// "missing property = type default" behaviour ONLY IF the property
+    /// is not init-only with a default. With our default the missing
+    /// key falls back to the property initializer — pre-M14 rows read
+    /// as Required=true, matching the orchestrator's pre-M14 behaviour.
+    /// </summary>
+    public bool Required { get; init; } = true;
+
+    /// <summary>M14.3 Retry count — see <see cref="DeploymentStep.MaxRetries"/>.</summary>
+    public int MaxRetries { get; init; }
+
+    /// <summary>M14.3 Retry delay seconds — see <see cref="DeploymentStep.RetryDelaySeconds"/>.</summary>
+    public int RetryDelaySeconds { get; init; }
+
+    /// <summary>M14.2 Timeout seconds — see <see cref="DeploymentStep.TimeoutSeconds"/>.</summary>
+    public int TimeoutSeconds { get; init; }
+
+    /// <summary>M14.4 Start trigger — see <see cref="DeploymentStep.StartTrigger"/>.</summary>
+    public StepStartTrigger StartTrigger { get; init; } = StepStartTrigger.StartAfterPrevious;
 }

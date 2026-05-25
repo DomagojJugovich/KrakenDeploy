@@ -81,6 +81,42 @@ public static class AuditEventType
     /// duration in minutes + threshold.</summary>
     public const string DeploymentStepSlow         = "DeploymentStep.Slow";
 
+    // ── M14 step-execution events ────────────────────────────────────────────
+    /// <summary>A step was skipped because its Run Condition didn't match
+    /// the current deployment state (e.g. Success-conditioned step after
+    /// a prior failure, Failure-conditioned step in a clean deployment).
+    /// Details: deployment id, step name, condition, reason.</summary>
+    public const string DeploymentStepSkipped         = "Deployment.StepSkipped";
+
+    /// <summary>A step was killed because it exceeded its configured
+    /// <c>TimeoutSeconds</c>. Treated as a step failure subject to the
+    /// step's <c>Required</c> flag (Required → deployment aborts;
+    /// not-Required → loop continues with hasFailed=true).
+    /// Details: deployment id, step name, timeout seconds, elapsed.</summary>
+    public const string DeploymentStepTimedOut        = "Deployment.StepTimedOut";
+
+    /// <summary>A step was retried after a failure. Emitted per retry
+    /// attempt. Details: deployment id, step name, attempt number,
+    /// max retries, retry delay seconds.</summary>
+    public const string DeploymentStepRetried        = "Deployment.StepRetried";
+
+    /// <summary>A Required step failed (after retries, if any).
+    /// Deployment aborts. Details: deployment id, step name, reason.</summary>
+    public const string DeploymentRequiredStepFailed = "Deployment.RequiredStepFailed";
+
+    /// <summary>A non-Required step failed; the deployment continues
+    /// but is marked as having non-required failures (terminal status
+    /// becomes <c>SucceededWithWarnings</c>). Details: deployment id,
+    /// step name, reason.</summary>
+    public const string DeploymentStepFailedNonRequired = "Deployment.StepFailedNonRequired";
+
+    /// <summary>The Variable-Condition expression on a step failed to
+    /// resolve (referenced an undefined variable or returned an unexpected
+    /// non-boolean shape). The step is skipped (falsy fallback) and the
+    /// audit row carries the expression for forensic review.
+    /// Details: deployment id, step name, expression.</summary>
+    public const string DeploymentVariableConditionUnresolved = "Deployment.VariableConditionUnresolved";
+
     // ── Maintenance mode (M13.A.3) ───────────────────────────────────────────
     /// <summary>Operator enabled instance-wide maintenance mode.
     /// Details: reason text + who enabled it. Pair with

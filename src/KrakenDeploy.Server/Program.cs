@@ -1205,7 +1205,8 @@ public static class Program
                 var step = await processSvc.AddStepAsync(
                     projectId, req.Name, req.StepType, req.PackageId,
                     req.TargetRoles, req.Config,
-                    req.StepPackageName, req.StepPackageVersion, ct).ConfigureAwait(false);
+                    req.StepPackageName, req.StepPackageVersion,
+                    knobs: null, ct: ct).ConfigureAwait(false);
                 return Results.Created($"/api/projects/{projectId}/process/steps/{step.Id}", step);
             }).RequirePermission(Permission.ProcessEdit);
 

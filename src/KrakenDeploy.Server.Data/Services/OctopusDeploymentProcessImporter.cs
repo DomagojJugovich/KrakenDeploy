@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Text.Json;
+using KrakenDeploy.Server.Core.Domain.Processes;
 
 namespace KrakenDeploy.Server.Data.Services;
 
@@ -141,12 +143,34 @@ public static class OctopusDeploymentProcessImporter
                     "Action carries Environments / ExcludedEnvironments / Channels scoping; per-step environment/channel scoping is not yet propagated by the importer — step imported without scoping."));
             }
 
+            // ── M14 step-execution knobs ────────────────────────────────────
+            // Read Octopus's per-step Run Condition + Start Trigger from the
+            // top-level step fields (verified against argosy-process.json).
+            // Action-level IsRequired carries the Required flag. AutoRetry's
+            // MaximumCount lives in the action's Properties bag.
+            // Variable-condition expressions live in the step's Properties bag.
+            var condition = ParseCondition(s.Condition ?? a.Condition);
+            var startTrigger = ParseStartTrigger(s.StartTrigger);
+            var conditionVariableExpression = ResolveStepProperty(
+                s.Properties, "Octopus.Step.ConditionVariableExpression");
+            var maxRetries = ResolveActionRetryMaximumCount(a.Properties);
+            // Octopus action's IsRequired is bool, defaults false. KrakenDeploy
+            // defaults Required to true (preserves pre-M14 semantics where any
+            // step failure aborted). The importer preserves Octopus's value
+            // verbatim so a round-trip stays semantically identical.
+            var required = a.IsRequired;
+
             steps.Add(new ParsedStep(
-                Name:        string.IsNullOrWhiteSpace(s.Name) ? a.Name ?? label : s.Name!,
-                StepType:    a.ActionType!,
-                PackageId:   packageId,
-                TargetRoles: roles,
-                Config:      config));
+                Name:                        string.IsNullOrWhiteSpace(s.Name) ? a.Name ?? label : s.Name!,
+                StepType:                    a.ActionType!,
+                PackageId:                   packageId,
+                TargetRoles:                 roles,
+                Config:                      config,
+                Condition:                   condition,
+                ConditionVariableExpression: conditionVariableExpression,
+                Required:                    required,
+                MaxRetries:                  maxRetries,
+                StartTrigger:                startTrigger));
         }
 
         return new ParsedDeploymentProcess(steps, warnings);
@@ -181,6 +205,69 @@ public static class OctopusDeploymentProcessImporter
             _                                     => element.GetRawText(),
         };
 
+    /// <summary>
+    /// Parses Octopus's <c>Condition</c> string ("Success" / "Failure" /
+    /// "Always" / "Variable") into the typed enum. Unknown / null values
+    /// fall back to <see cref="StepCondition.Success"/> — the safe default
+    /// that preserves the most common Octopus semantics.
+    /// </summary>
+    private static StepCondition ParseCondition(string? raw) => raw?.Trim().ToLowerInvariant() switch
+    {
+        "success"  => StepCondition.Success,
+        "failure"  => StepCondition.Failure,
+        "always"   => StepCondition.Always,
+        "variable" => StepCondition.Variable,
+        _          => StepCondition.Success,
+    };
+
+    /// <summary>
+    /// Parses Octopus's <c>StartTrigger</c> string ("StartAfterPrevious" /
+    /// "StartWithPrevious") into the typed enum. Unknown / null values
+    /// fall back to <see cref="StepStartTrigger.StartAfterPrevious"/>.
+    /// </summary>
+    private static StepStartTrigger ParseStartTrigger(string? raw) => raw?.Trim().ToLowerInvariant() switch
+    {
+        "startwithprevious"  => StepStartTrigger.StartWithPrevious,
+        "startafterprevious" => StepStartTrigger.StartAfterPrevious,
+        _                    => StepStartTrigger.StartAfterPrevious,
+    };
+
+    /// <summary>
+    /// Looks up a top-level property on the step's <c>Properties</c> bag.
+    /// Returns null when the key is missing or the value is blank.
+    /// </summary>
+    private static string? ResolveStepProperty(
+        Dictionary<string, string>? properties, string key)
+    {
+        if (properties is null || !properties.TryGetValue(key, out var value))
+        {
+            return null;
+        }
+        return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+
+    /// <summary>
+    /// Resolves the action's auto-retry maximum count from the Octopus
+    /// property bag. Key: <c>Octopus.Action.AutoRetry.MaximumCount</c>
+    /// (integer string). Returns 0 when missing / unparseable — same as
+    /// Octopus's "auto-retry disabled" default.
+    /// </summary>
+    private static int ResolveActionRetryMaximumCount(
+        Dictionary<string, JsonElement>? properties)
+    {
+        if (properties is null
+            || !properties.TryGetValue("Octopus.Action.AutoRetry.MaximumCount", out var element))
+        {
+            return 0;
+        }
+        var raw = NormalisePropertyValue(element);
+        if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n))
+        {
+            return n < 0 ? 0 : n;
+        }
+        return 0;
+    }
+
     private static string ResolvePrimaryPackageId(List<OctopusPackageDto>? packages)
     {
         if (packages is null || packages.Count == 0)
@@ -208,6 +295,10 @@ public static class OctopusDeploymentProcessImporter
         public string? Name { get; init; }
         public Dictionary<string, string>? Properties { get; init; }
         public List<OctopusActionDto>? Actions { get; init; }
+        // M14 step-level fields (verified against argosy-process.json fixture):
+        // top-level on the step JSON, NOT in the Properties bag.
+        public string? Condition { get; init; }
+        public string? StartTrigger { get; init; }
     }
 
     private sealed record OctopusActionDto
@@ -215,6 +306,14 @@ public static class OctopusDeploymentProcessImporter
         public string? Name { get; init; }
         public string? ActionType { get; init; }
         public bool IsDisabled { get; init; }
+        // M14 action-level Required flag. Octopus stores it as IsRequired
+        // on the action (verified against argosy-process.json). Defaults
+        // to false in Octopus; KrakenDeploy preserves the source value.
+        public bool IsRequired { get; init; }
+        // Action-level Condition — Octopus stores per-action conditions on
+        // multi-action steps. Used as a fallback when the step's top-level
+        // Condition is absent.
+        public string? Condition { get; init; }
         public string? WorkerPoolId { get; init; }
         public OctopusContainerDto? Container { get; init; }
         public List<string>? Environments { get; init; }
@@ -248,13 +347,22 @@ public sealed record ParsedDeploymentProcess(
     IReadOnlyList<ParsedStep> Steps,
     IReadOnlyList<ImportDeploymentProcessWarning> Warnings);
 
-/// <summary>Single parsed step ready for upsert into a Kraken process.</summary>
+/// <summary>Single parsed step ready for upsert into a Kraken process.
+/// M14 step-execution knobs are appended with defaults so older callers
+/// (and importer paths that don't yet propagate them) continue to compile.</summary>
 public sealed record ParsedStep(
     string Name,
     string StepType,
     string PackageId,
     List<string> TargetRoles,
-    Dictionary<string, string> Config);
+    Dictionary<string, string> Config,
+    StepCondition Condition = StepCondition.Success,
+    string? ConditionVariableExpression = null,
+    bool Required = true,
+    int MaxRetries = 0,
+    int RetryDelaySeconds = 0,
+    int TimeoutSeconds = 0,
+    StepStartTrigger StartTrigger = StepStartTrigger.StartAfterPrevious);
 
 /// <summary>Per-step warning surfaced during a deploymentprocess import.</summary>
 public sealed record ImportDeploymentProcessWarning(string StepName, string Message);

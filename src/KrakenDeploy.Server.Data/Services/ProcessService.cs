@@ -67,6 +67,7 @@ public class ProcessService(
         Dictionary<string, string> config,
         string? stepPackageName = null,
         string? stepPackageVersion = null,
+        StepExecutionKnobs? knobs = null,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -82,17 +83,25 @@ public class ProcessService(
                 stepType, stepPackageName, stepPackageVersion, ct)
             .ConfigureAwait(false);
 
+        var k = knobs ?? StepExecutionKnobs.Default;
         var step = new DeploymentStep
         {
-            ProcessId          = process.Id,
-            Name               = name,
-            StepType           = stepType,
-            PackageId          = packageId,
-            TargetRoles        = targetRoles,
-            Config             = config,
-            SortOrder          = maxSort + 1,
-            StepPackageName    = pin?.Name,
-            StepPackageVersion = pin?.Version,
+            ProcessId                   = process.Id,
+            Name                        = name,
+            StepType                    = stepType,
+            PackageId                   = packageId,
+            TargetRoles                 = targetRoles,
+            Config                      = config,
+            SortOrder                   = maxSort + 1,
+            StepPackageName             = pin?.Name,
+            StepPackageVersion          = pin?.Version,
+            Condition                   = k.Condition,
+            ConditionVariableExpression = k.ConditionVariableExpression,
+            Required                    = k.Required,
+            MaxRetries                  = k.MaxRetries,
+            RetryDelaySeconds           = k.RetryDelaySeconds,
+            TimeoutSeconds              = k.TimeoutSeconds,
+            StartTrigger                = k.StartTrigger,
         };
 
         db.DeploymentSteps.Add(step);
@@ -114,6 +123,7 @@ public class ProcessService(
         Dictionary<string, string> config,
         string? stepPackageName = null,
         string? stepPackageVersion = null,
+        StepExecutionKnobs? knobs = null,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -132,6 +142,20 @@ public class ProcessService(
         {
             step.StepPackageName    = stepPackageName;
             step.StepPackageVersion = stepPackageVersion;
+        }
+
+        // M14 knobs — null means "leave the row's existing values alone"
+        // (an older caller that doesn't know about these knobs MUST NOT
+        // accidentally reset Required to false or wipe a configured timeout).
+        if (knobs is not null)
+        {
+            step.Condition                   = knobs.Condition;
+            step.ConditionVariableExpression = knobs.ConditionVariableExpression;
+            step.Required                    = knobs.Required;
+            step.MaxRetries                  = knobs.MaxRetries;
+            step.RetryDelaySeconds           = knobs.RetryDelaySeconds;
+            step.TimeoutSeconds              = knobs.TimeoutSeconds;
+            step.StartTrigger                = knobs.StartTrigger;
         }
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
@@ -288,15 +312,23 @@ public class ProcessService(
             var pin = await ResolvePinAsync(p.StepType, null, null, ct).ConfigureAwait(false);
             db.DeploymentSteps.Add(new DeploymentStep
             {
-                ProcessId          = process.Id,
-                Name               = p.Name,
-                StepType           = p.StepType,
-                PackageId          = p.PackageId,
-                TargetRoles        = p.TargetRoles,
-                Config             = p.Config,
-                SortOrder          = startSort + i,
-                StepPackageName    = pin?.Name,
-                StepPackageVersion = pin?.Version,
+                ProcessId                   = process.Id,
+                Name                        = p.Name,
+                StepType                    = p.StepType,
+                PackageId                   = p.PackageId,
+                TargetRoles                 = p.TargetRoles,
+                Config                      = p.Config,
+                SortOrder                   = startSort + i,
+                StepPackageName             = pin?.Name,
+                StepPackageVersion          = pin?.Version,
+                // M14 step-execution knobs from the importer.
+                Condition                   = p.Condition,
+                ConditionVariableExpression = p.ConditionVariableExpression,
+                Required                    = p.Required,
+                MaxRetries                  = p.MaxRetries,
+                RetryDelaySeconds           = p.RetryDelaySeconds,
+                TimeoutSeconds              = p.TimeoutSeconds,
+                StartTrigger                = p.StartTrigger,
             });
         }
 

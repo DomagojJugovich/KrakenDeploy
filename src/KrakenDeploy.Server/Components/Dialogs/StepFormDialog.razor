@@ -4,6 +4,7 @@
 @using KrakenDeploy.Server.Core.Domain.Processes
 @using KrakenDeploy.Server.Core.Domain.StepPackages
 @using KrakenDeploy.Server.Core.Domain.StepTemplates
+@using KrakenDeploy.Server.Data.Services
 
 @inject DialogService Dialog
 @inject ProcessService ProcessSvc
@@ -11,6 +12,7 @@
 @inject StepPackageService StepPackageSvc
 @inject StepPackageResolver StepPackageRes
 @inject NotificationService Notifications
+@inject FeatureFlagService FeatureFlags
 
 @*
     Unified step add/edit dialog. Replaces the legacy script-only StepFormDialog
@@ -150,6 +152,134 @@
                         }
                     </RadzenCard>
                 }
+            </RadzenCard>
+        }
+
+        @* ── Execution knobs (M14) ────────────────────────────────────────── *@
+        @* Gated by the ui.show-advanced-step-fields feature toggle (M13.F.5)
+           — typical operators stick with defaults; sysadmins flip the flag on. *@
+        @if (_showAdvancedFields)
+        {
+            <RadzenCard>
+                <RadzenStack Gap="0.75rem">
+                    <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-0">
+                        Execution
+                    </RadzenText>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                        Per-step run condition, retry policy, timeout, and parallel
+                        execution. These mirror Octopus's Process Editor knobs.
+                    </RadzenText>
+
+                    @* ── Start Trigger ───────────────────────────────────── *@
+                    <RadzenFormField Text="Start Trigger" Variant="Variant.Outlined" Style="width:100%">
+                        <RadzenRadioButtonList @bind-Value="_startTrigger"
+                                               TValue="StepStartTrigger"
+                                               Orientation="Orientation.Vertical">
+                            <Items>
+                                <RadzenRadioButtonListItem
+                                    Text="Wait for all previous steps to complete, then start"
+                                    Value="StepStartTrigger.StartAfterPrevious" />
+                                <RadzenRadioButtonListItem
+                                    Text="Run in parallel with the previous step"
+                                    Value="StepStartTrigger.StartWithPrevious" />
+                            </Items>
+                        </RadzenRadioButtonList>
+                    </RadzenFormField>
+
+                    @* ── Run Condition ───────────────────────────────────── *@
+                    <RadzenFormField Text="Run Condition" Variant="Variant.Outlined" Style="width:100%">
+                        <RadzenRadioButtonList @bind-Value="_condition"
+                                               TValue="StepCondition"
+                                               Orientation="Orientation.Vertical">
+                            <Items>
+                                <RadzenRadioButtonListItem
+                                    Text="@_successConditionLabel"
+                                    Value="StepCondition.Success" />
+                                @if (!_isFirstStep)
+                                {
+                                    <RadzenRadioButtonListItem
+                                        Text="Failure: only run when previous steps fail"
+                                        Value="StepCondition.Failure" />
+                                }
+                                <RadzenRadioButtonListItem
+                                    Text="Always run"
+                                    Value="StepCondition.Always" />
+                                <RadzenRadioButtonListItem
+                                    Text="Variable: only run when the variable expression is true"
+                                    Value="StepCondition.Variable" />
+                            </Items>
+                        </RadzenRadioButtonList>
+                    </RadzenFormField>
+
+                    @* Condition=Variable → show the expression input. The
+                       orchestrator evaluates it via Octostache and treats
+                       truthy ("true"/"1" case-insensitive) as "run". *@
+                    @if (_condition == StepCondition.Variable)
+                    {
+                        <RadzenFormField Text="Condition expression" Variant="Variant.Outlined" Style="width:100%">
+                            <RadzenTextBox @bind-Value="_conditionVariableExpression"
+                                           Style="width:100%"
+                                           Placeholder="#{Octopus.Environment.Name == &quot;Production&quot;}" />
+                        </RadzenFormField>
+                        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                            Octostache expression. Truthy values: <code>true</code>,
+                            <code>1</code> (case-insensitive). Falsy / unresolved
+                            (referenced variable missing) skips the step.
+                        </RadzenText>
+                    }
+
+                    @* Warn when a Failure-conditioned step ended up first — the
+                       orchestrator will never run it. Operator hint to fix. *@
+                    @if (_isFirstStep && _condition == StepCondition.Failure)
+                    {
+                        <RadzenAlert AlertStyle="AlertStyle.Warning" Variant="Variant.Flat"
+                                     Shade="Shade.Lighter" AllowClose="false" Icon="warning">
+                            This step has Condition=Failure but is now first in the
+                            process — it will never run. Change to Success or Always,
+                            or move it later in the process.
+                        </RadzenAlert>
+                    }
+
+                    @* ── Required ───────────────────────────────────────── *@
+                    <RadzenStack Orientation="Orientation.Horizontal"
+                                 AlignItems="AlignItems.Center" Gap="0.75rem">
+                        <RadzenSwitch @bind-Value="_required" />
+                        <RadzenStack Gap="0.1rem">
+                            <RadzenText TextStyle="TextStyle.Body2" class="rz-mb-0">
+                                <strong>Required</strong>
+                            </RadzenText>
+                            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                                When on, a step failure aborts the deployment. When
+                                off, the deployment continues but ends with
+                                <code>SucceededWithWarnings</code> status.
+                            </RadzenText>
+                        </RadzenStack>
+                    </RadzenStack>
+
+                    @* ── Retries + Timeout ──────────────────────────────── *@
+                    <RadzenStack Orientation="Orientation.Horizontal" Gap="1rem">
+                        <RadzenFormField Text="Max retries" Variant="Variant.Outlined" Style="flex:1;">
+                            <RadzenNumeric @bind-Value="_maxRetries"
+                                           Min="0" Max="20" Step="1"
+                                           TValue="int" />
+                        </RadzenFormField>
+                        <RadzenFormField Text="Retry delay (seconds)" Variant="Variant.Outlined" Style="flex:1;">
+                            <RadzenNumeric @bind-Value="_retryDelaySeconds"
+                                           Min="0" Max="3600" Step="5"
+                                           TValue="int" />
+                        </RadzenFormField>
+                        <RadzenFormField Text="Timeout (seconds)" Variant="Variant.Outlined" Style="flex:1;">
+                            <RadzenNumeric @bind-Value="_timeoutSeconds"
+                                           Min="0" Max="86400" Step="60"
+                                           TValue="int" />
+                        </RadzenFormField>
+                    </RadzenStack>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                        Retries = 0 disables. Timeout = 0 means unlimited. Server
+                        kills the step + treats as failure on timeout (subject to
+                        the Required flag).
+                    </RadzenText>
+                </RadzenStack>
             </RadzenCard>
         }
 
@@ -298,9 +428,49 @@
     /// </summary>
     private bool _changelogVisible;
 
+    // ── M14 execution knobs (bound to the Execution card) ────────────────
+    private StepCondition _condition = StepCondition.Success;
+    private string? _conditionVariableExpression;
+    private bool _required = true;
+    private int _maxRetries;
+    private int _retryDelaySeconds;
+    private int _timeoutSeconds;
+    private StepStartTrigger _startTrigger = StepStartTrigger.StartAfterPrevious;
+
+    /// <summary>Gated by M13.F.5 <c>ui.show-advanced-step-fields</c>.
+    /// Resolved in OnParametersSetAsync; defaults false so power-user
+    /// knobs stay hidden for typical operators.</summary>
+    private bool _showAdvancedFields;
+
+    /// <summary>True when this step is first in the process (no prior
+    /// siblings). Used to hide the Failure run-condition option (no
+    /// prior step could have failed) and adjust the Success label.</summary>
+    private bool _isFirstStep;
+
+    /// <summary>Matches Octopus's first-step Success label variant. The
+    /// non-first label drops the "(or is first step)" suffix.</summary>
+    private string _successConditionLabel =>
+        _isFirstStep
+            ? "Success: only run when previous steps succeed (or is first step)"
+            : "Success: only run when previous steps succeed";
+
     protected override async Task OnParametersSetAsync()
     {
         _isEdit = Step is not null;
+
+        // M13.F.5: gate advanced Execution card on the feature flag.
+        _showAdvancedFields = await FeatureFlags
+            .IsEnabledAsync("ui.show-advanced-step-fields")
+            .ConfigureAwait(false);
+
+        // "First step" determination — used by the Run Condition picker
+        // to hide the Failure option + adjust the Success label. On Edit,
+        // SortOrder=0 means first. On Add, the new step goes to the end
+        // of the list, so it's first iff the process is empty (we don't
+        // load the existing step count here — the parent passes ProjectId
+        // but not a "current step count", so we conservatively treat Add
+        // as non-first unless explicitly first by SortOrder).
+        _isFirstStep = Step?.SortOrder == 0;
 
         if (Step is not null)
         {
@@ -311,6 +481,16 @@
             _targetRolesCsv = string.Join(", ", Step.TargetRoles);
             _stepPackageName    = Step.StepPackageName;
             _stepPackageVersion = Step.StepPackageVersion;
+
+            // M14 — hydrate Execution knobs from the existing row.
+            _condition                   = Step.Condition;
+            _conditionVariableExpression = Step.ConditionVariableExpression;
+            _required                    = Step.Required;
+            _maxRetries                  = Step.MaxRetries;
+            _retryDelaySeconds           = Step.RetryDelaySeconds;
+            _timeoutSeconds              = Step.TimeoutSeconds;
+            _startTrigger                = Step.StartTrigger;
+
             await LoadPackageVersionsAsync(Step.StepPackageName).ConfigureAwait(false);
 
             _schema = await ResolveSchemaAsync(Step.StepType).ConfigureAwait(false);
@@ -641,6 +821,21 @@
 
         try
         {
+            // M14: bundle the Execution-card values. When the advanced
+            // fields card is hidden (toggle off) we still pass the knobs
+            // — they're either the row's existing values (Edit) or the
+            // defaults (Add), so the round-trip is non-destructive.
+            var executionKnobs = new StepExecutionKnobs(
+                Condition:                   _condition,
+                ConditionVariableExpression: string.IsNullOrWhiteSpace(_conditionVariableExpression)
+                                                ? null
+                                                : _conditionVariableExpression.Trim(),
+                Required:                    _required,
+                MaxRetries:                  _maxRetries,
+                RetryDelaySeconds:           _retryDelaySeconds,
+                TimeoutSeconds:              _timeoutSeconds,
+                StartTrigger:                _startTrigger);
+
             if (_isEdit && Step is not null)
             {
                 // D-7: pass the explicit pin pair if the user picked a non-null
@@ -648,7 +843,8 @@
                 // already lived on the row — never clears a pin from this UI.
                 await ProcessSvc.UpdateStepAsync(
                     Step.Id, _name, _packageId, roles, config,
-                    _stepPackageName, _stepPackageVersion).ConfigureAwait(false);
+                    _stepPackageName, _stepPackageVersion,
+                    executionKnobs).ConfigureAwait(false);
             }
             else
             {
@@ -664,7 +860,8 @@
                 // ProcessService.AddStepAsync contract honest.
                 await ProcessSvc.AddStepAsync(
                     ProjectId.Value, _name, _stepType, _packageId, roles, config,
-                    _stepPackageName, _stepPackageVersion).ConfigureAwait(false);
+                    _stepPackageName, _stepPackageVersion,
+                    executionKnobs).ConfigureAwait(false);
             }
             Dialog.Close(true);
         }

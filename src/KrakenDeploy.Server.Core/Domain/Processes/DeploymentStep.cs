@@ -69,4 +69,68 @@ public class DeploymentStep : Entity
     /// </para>
     /// </summary>
     public string? StepPackageVersion { get; set; }
+
+    // ── M14 step-execution knobs ─────────────────────────────────────────
+    // M14.1 lands the schema + storage + importer + UI fields. The
+    // orchestrator (DeploymentWorker) starts consulting the fields in
+    // later phases (M14.2 = Condition + Required + Timeout, M14.3 =
+    // Retries, M14.4 = StartTrigger / parallel). Defaults preserve
+    // today's pre-M14 behaviour: Success Condition, Required=true,
+    // no retries, no timeout, sequential.
+
+    /// <summary>
+    /// M14.2 Run Condition: when should this step run based on prior
+    /// outcomes? Default <see cref="StepCondition.Success"/> matches
+    /// pre-M14 behaviour (orchestrator stopped on first failure).
+    /// </summary>
+    public StepCondition Condition { get; set; } = StepCondition.Success;
+
+    /// <summary>
+    /// M14.2 Variable-condition expression — Octostache template
+    /// evaluated when <see cref="Condition"/> is
+    /// <see cref="StepCondition.Variable"/>. Truthy ("true" or "1"
+    /// case-insensitive) → run; falsy or unresolved → skip.
+    /// </summary>
+    public string? ConditionVariableExpression { get; set; }
+
+    /// <summary>
+    /// M14.2 Required: when <c>true</c>, a step failure aborts the
+    /// deployment. When <c>false</c>, a failure marks the deployment
+    /// as having failures but the loop continues — subsequent
+    /// <see cref="StepCondition.Failure"/> / <see cref="StepCondition.Always"/>
+    /// steps still run.
+    /// <para>
+    /// KrakenDeploy default is <c>true</c> (preserves pre-M14 behaviour
+    /// where any step failure aborted). Note: Octopus defaults action
+    /// <c>IsRequired</c> to <c>false</c>; the importer preserves the
+    /// source value, so an imported Octopus process keeps its semantics.
+    /// </para>
+    /// </summary>
+    public bool Required { get; set; } = true;
+
+    /// <summary>
+    /// M14.3 Retry attempt count. Number of additional attempts after
+    /// the first failure. <c>0</c> (default) disables retries.
+    /// </summary>
+    public int MaxRetries { get; set; }
+
+    /// <summary>
+    /// M14.3 Delay between retry attempts, in seconds. Honoured only
+    /// when <see cref="MaxRetries"/> &gt; 0.
+    /// </summary>
+    public int RetryDelaySeconds { get; set; }
+
+    /// <summary>
+    /// M14.2 Per-step timeout in seconds. <c>0</c> (default) = unlimited.
+    /// Applied as a <c>CancellationTokenSource.CancelAfter</c> wrapping
+    /// the step execution. Server-side steps and target-side sub-plans
+    /// both honour the timeout.
+    /// </summary>
+    public int TimeoutSeconds { get; set; }
+
+    /// <summary>
+    /// M14.4 Start Trigger: wait for the previous step or run alongside
+    /// it. Default <see cref="StepStartTrigger.StartAfterPrevious"/>.
+    /// </summary>
+    public StepStartTrigger StartTrigger { get; set; } = StepStartTrigger.StartAfterPrevious;
 }
