@@ -9,6 +9,7 @@
 @inject SignInManager<ApplicationUser> SignInManager
 @inject UserManager<ApplicationUser> UserManager
 @inject IdentityProviderService IdpSvc
+@inject FeatureFlagService FeatureFlags
 @inject NavigationManager Navigation
 @inject ILogger<Login> Logger
 @attribute [AllowAnonymous]
@@ -125,11 +126,23 @@
             ["provision_failed"] = "Account creation failed. Contact an administrator.",
             ["remote_failure"]   = "The identity provider returned an error. Please try again.",
             ["unknown_provider"] = "Unknown identity provider.",
+            ["oidc_disabled"]    = "Single sign-on is currently disabled. Use a local account or contact an administrator.",
         };
 
     protected override async Task OnInitializedAsync()
     {
         Input ??= new();
+
+        // M13.F.5 master kill-switch — when off, hide the OIDC buttons.
+        // The /login/external endpoint refuses the challenge anyway, but
+        // hiding the entry point keeps the UI honest.
+        var oidcAllowed = await FeatureFlags.IsEnabledAsync("security.allow-oidc-sign-in");
+        if (!oidcAllowed)
+        {
+            _oidcProviders = [];
+            return;
+        }
+
         _oidcProviders = (await IdpSvc.GetAllAsync())
             .Where(p => p.IsEnabled)
             .OrderBy(p => p.SortOrder)

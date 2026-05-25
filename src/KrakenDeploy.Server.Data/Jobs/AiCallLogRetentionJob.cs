@@ -1,3 +1,5 @@
+using KrakenDeploy.Server.Core.Domain.Performance;
+using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -33,25 +35,30 @@ namespace KrakenDeploy.Server.Data.Jobs;
 /// </summary>
 public sealed class AiCallLogRetentionJob(
     IDbContextFactory<KrakenDbContext> dbFactory,
+    PerformanceSettingsService performance,
     IConfiguration config,
     TimeProvider time,
     ILogger<AiCallLogRetentionJob> logger)
 {
-    /// <summary>Default retention window applied when no config value is set.</summary>
+    /// <summary>Default retention window applied when nothing else is set.</summary>
     public const int DefaultRetentionDays = 90;
 
-    /// <summary>Configuration key — <c>Retention:AiCallLogDays</c>.</summary>
+    /// <summary>Configuration key — <c>Retention:AiCallLogDays</c>. Kept as
+    /// the bootstrap-before-page-save path; the page-save promotes the
+    /// value into <see cref="PerformanceSettings"/> which then wins.</summary>
     public const string RetentionDaysConfigKey = "Retention:AiCallLogDays";
 
     public async Task ExecuteAsync(CancellationToken ct)
     {
-        var days = config.GetValue<int?>(RetentionDaysConfigKey) ?? DefaultRetentionDays;
+        // ── DB → config → default precedence (same shape as AuditRetentionJob) ──
+        var settings = await performance.GetAsync(ct).ConfigureAwait(false);
+        var days = await ResolveRetentionDaysAsync(settings, ct).ConfigureAwait(false);
 
         if (days <= 0)
         {
             logger.LogInformation(
-                "AiCallLogRetention: skipped — {Key} is {Days} (≤ 0 disables purging).",
-                RetentionDaysConfigKey, days);
+                "AiCallLogRetention: skipped — retention is {Days} (≤ 0 disables purging).",
+                days);
             return;
         }
 
@@ -72,5 +79,26 @@ public sealed class AiCallLogRetentionJob(
                 "AiCallLogRetention: deleted {Count} ai_call_logs rows older than {Days} days.",
                 deleted, days);
         }
+    }
+
+    /// <summary>
+    /// Same precedence rule as <see cref="AuditRetentionJob"/>: DB row wins
+    /// when the operator has saved the Performance page; appsettings is the
+    /// pre-save bootstrap; hardcoded 90 days is the final fallback.
+    /// </summary>
+    private async Task<int> ResolveRetentionDaysAsync(
+        PerformanceSettings settings, CancellationToken ct)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var rowExists = await db.PerformanceSettings
+            .AsNoTracking()
+            .AnyAsync(p => p.Id == PerformanceSettings.SingletonId, ct)
+            .ConfigureAwait(false);
+        if (rowExists)
+        {
+            return settings.AiCallLogRetentionDays;
+        }
+
+        return config.GetValue<int?>(RetentionDaysConfigKey) ?? DefaultRetentionDays;
     }
 }

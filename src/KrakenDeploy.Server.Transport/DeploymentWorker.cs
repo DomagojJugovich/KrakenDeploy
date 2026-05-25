@@ -385,18 +385,28 @@ public sealed class DeploymentWorker(
             }
 
             // All groups succeeded — finalize.
+            DateTimeOffset finalCompletedUtc;
             await using (var finalDb = await scope.ServiceProvider
                 .GetRequiredService<IDbContextFactory<KrakenDbContext>>()
                 .CreateDbContextAsync(ct).ConfigureAwait(false))
             {
                 var d = await finalDb.Deployments.FindAsync([deployment.Id], ct).ConfigureAwait(false);
+                finalCompletedUtc = DateTimeOffset.UtcNow;
                 if (d is not null)
                 {
                     d.Status       = DeploymentStatus.Succeeded;
-                    d.CompletedUtc = DateTimeOffset.UtcNow;
+                    d.CompletedUtc = finalCompletedUtc;
                     await finalDb.SaveChangesAsync(ct).ConfigureAwait(false);
                 }
             }
+
+            // ── Slow-deployment audit (M13.F.3) ──────────────────────────
+            // Emit a Deployment.Slow audit event when the run exceeded
+            // the configured threshold so M13.B.2/3 subscribers can route
+            // a notification (webhook / email / runbook / AI inspection).
+            // Threshold = 0 disables.
+            await EmitSlowDeploymentAuditIfNeededAsync(
+                scope.ServiceProvider, deployment, finalCompletedUtc, ct).ConfigureAwait(false);
 
             logger.LogInformation(
                 "Deployment {Id} completed ({ServerSteps} server step(s), {TargetSteps} target step(s)).",
@@ -705,5 +715,58 @@ public sealed class DeploymentWorker(
         deployment.Status = DeploymentStatus.Failed;
         deployment.CompletedUtc = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Emits the <c>Deployment.Slow</c> audit event when the deployment's
+    /// total runtime exceeded the operator-configured threshold (M13.F.3).
+    /// A non-zero threshold AND a known StartedUtc are required; failure
+    /// to resolve PerformanceSettings is swallowed so an audit-event hiccup
+    /// can never fail an otherwise-successful deployment.
+    /// </summary>
+    private static async Task EmitSlowDeploymentAuditIfNeededAsync(
+        IServiceProvider sp,
+        Deployment deployment,
+        DateTimeOffset completedUtc,
+        CancellationToken ct)
+    {
+        try
+        {
+            if (deployment.StartedUtc is null)
+            {
+                return;
+            }
+
+            var performance = sp.GetRequiredService<
+                KrakenDeploy.Server.Data.Services.PerformanceSettingsService>();
+            var settings = await performance.GetAsync(ct).ConfigureAwait(false);
+            var threshold = settings.SlowDeploymentThresholdMinutes;
+            if (threshold <= 0)
+            {
+                return;
+            }
+
+            var elapsed = completedUtc - deployment.StartedUtc.Value;
+            if (elapsed.TotalMinutes < threshold)
+            {
+                return;
+            }
+
+            var audit = sp.GetRequiredService<IAuditLog>();
+            await audit.RecordAsync(
+                AuditEventType.DeploymentSlow,
+                subjectType: "Deployment",
+                subjectId:   deployment.Id.ToString(),
+                details:     string.Format(
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    "DurationMinutes={0:F1}, ThresholdMinutes={1}, ReleaseId={2}",
+                    elapsed.TotalMinutes, threshold, deployment.ReleaseId),
+                ct: ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Audit emission is best-effort — never bubble the failure
+            // up into deployment finalisation.
+        }
     }
 }

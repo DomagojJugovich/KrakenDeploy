@@ -39,17 +39,27 @@ public sealed record FeatureDescriptor(
 /// in a stable order.</summary>
 public static class FeatureGroups
 {
+    public const string Security   = "Security";
     public const string Feeds      = "Feeds";
     public const string Steps      = "Steps";
     public const string Onboarding = "Onboarding";
+    public const string Retention  = "Retention";
+    public const string Ui         = "UI";
     public const string Help       = "Help";
 
-    /// <summary>Display-order of groups on the features page.</summary>
+    /// <summary>Display-order of groups on the features page. Security
+    /// goes first — operators scanning the page during incident response
+    /// want to find the OIDC kill-switch + stack-trace toggle without
+    /// scrolling. Retention sits next to its dedicated card on the
+    /// Performance page (cross-link in the UI).</summary>
     public static readonly IReadOnlyList<string> DisplayOrder =
     [
+        Security,
         Feeds,
         Steps,
         Onboarding,
+        Retention,
+        Ui,
         Help,
     ];
 }

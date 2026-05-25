@@ -1,0 +1,112 @@
+using KrakenDeploy.Server.Core.Domain.Common;
+
+namespace KrakenDeploy.Server.Core.Domain.Performance;
+
+/// <summary>
+/// Singleton-row table holding instance-wide performance + retention knobs
+/// surfaced on the <c>/configuration/performance</c> page (M13.F.3).
+///
+/// <para>
+/// Three knob categories:
+/// <list type="bullet">
+///   <item><b>Hangfire worker count</b> — direct CPU/memory dial.
+///         <see cref="HangfireWorkerCount"/> replaces the hardcoded
+///         <c>options.WorkerCount = 4</c> in <c>Program.cs</c>. Read at
+///         startup; the server must be restarted for a change to take
+///         effect (Hangfire's worker count is a builder-time setting).</item>
+///   <item><b>Slow-deployment thresholds</b> — when a deployment / step
+///         exceeds the threshold, an audit event is emitted that operators
+///         can subscribe to (M13.B.2/3) and route to webhook / email /
+///         runbook / AI inspection.</item>
+///   <item><b>Retention windows</b> — promoted from
+///         <c>appsettings.json</c>-only to UI-editable values. DB wins when
+///         set; the existing config keys
+///         <c>Retention:AuditLogDays</c> + <c>Retention:AiCallLogDays</c>
+///         act as the first-run bootstrap defaults before any operator has
+///         touched the Performance page.</item>
+/// </list>
+/// </para>
+///
+/// <para>
+/// Same singleton pattern as <c>SmtpSettings</c> / <c>BackupSettings</c> /
+/// <c>MaintenanceSettings</c>: fixed <see cref="SingletonId"/>, single row,
+/// service caches the snapshot in-memory + invalidates on write.
+/// </para>
+/// </summary>
+public class PerformanceSettings : AuditableEntity
+{
+    /// <summary>Fixed singleton id — same pattern the other settings rows use.</summary>
+    public static readonly Guid SingletonId =
+        new("00000000-0000-0000-0001-000000000005");
+
+    // ── Hangfire ──────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Worker-thread count for the Hangfire server. Default 4 matches the
+    /// previous hardcoded value. Operators on larger boxes raise this to
+    /// 8-12 when the job queue starts backing up. Set at startup;
+    /// requires a restart for changes to take effect.
+    /// </summary>
+    public int HangfireWorkerCount { get; set; } = DefaultHangfireWorkerCount;
+
+    /// <summary>Bootstrap default applied when no row exists yet.</summary>
+    public const int DefaultHangfireWorkerCount = 4;
+
+    // ── Slow-deployment audit thresholds ──────────────────────────────────
+
+    /// <summary>
+    /// Threshold for emitting the <c>Deployment.Slow</c> audit event.
+    /// When a deployment's total runtime (<c>CompletedUtc - StartedUtc</c>)
+    /// exceeds this many minutes, the audit is written so operators
+    /// subscribed to the event can route a notification.
+    /// <para>
+    /// Zero (or negative) disables the audit. Default 30 minutes — fits
+    /// the "this deployment is taking unusually long" intuition without
+    /// firing on routine multi-stage releases.
+    /// </para>
+    /// </summary>
+    public int SlowDeploymentThresholdMinutes { get; set; } = DefaultSlowDeploymentThresholdMinutes;
+
+    public const int DefaultSlowDeploymentThresholdMinutes = 30;
+
+    /// <summary>
+    /// Threshold for emitting the <c>DeploymentStep.Slow</c> audit event.
+    /// When a single step exceeds this many minutes, the audit fires for
+    /// that step. Default 10 minutes.
+    /// <para>
+    /// <strong>v1 limitation:</strong> only server-side steps are timed
+    /// inside the orchestrator today; target-side per-step timing needs
+    /// the agent to report step boundaries, which is a follow-up
+    /// contract change. The threshold is still honoured for server steps.
+    /// </para>
+    /// </summary>
+    public int SlowStepThresholdMinutes { get; set; } = DefaultSlowStepThresholdMinutes;
+
+    public const int DefaultSlowStepThresholdMinutes = 10;
+
+    // ── Retention windows (promoted from appsettings to UI) ──────────────
+
+    /// <summary>
+    /// How many days of <c>audit_entries</c> to keep. <c>AuditRetentionJob</c>
+    /// reads this value (falling back to <c>Retention:AuditLogDays</c> in
+    /// appsettings.json, then to 365). Zero disables the purge.
+    /// <para>
+    /// Honours the M13.F.5 <c>audit.purge-enabled</c> kill-switch as well:
+    /// even with a non-zero day-count, the job short-circuits when the
+    /// feature flag is off — operators can pause GDPR retention without
+    /// losing the configured value.
+    /// </para>
+    /// </summary>
+    public int AuditLogRetentionDays { get; set; } = DefaultAuditLogRetentionDays;
+
+    public const int DefaultAuditLogRetentionDays = 365;
+
+    /// <summary>
+    /// How many days of <c>ai_call_logs</c> to keep. Same precedence as
+    /// <see cref="AuditLogRetentionDays"/>: DB wins, then
+    /// <c>Retention:AiCallLogDays</c> appsettings, then 90.
+    /// </summary>
+    public int AiCallLogRetentionDays { get; set; } = DefaultAiCallLogRetentionDays;
+
+    public const int DefaultAiCallLogRetentionDays = 90;
+}

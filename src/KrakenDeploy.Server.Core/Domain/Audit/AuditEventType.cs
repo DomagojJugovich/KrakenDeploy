@@ -60,6 +60,27 @@ public static class AuditEventType
     /// readers can spot deviations at a glance).</summary>
     public const string FeatureFlagUpdated      = "Feature.Updated";
 
+    // ── Performance settings (M13.F.3) ───────────────────────────────────────
+    /// <summary>Operator changed instance-wide performance / retention knobs
+    /// on <c>/configuration/performance</c>. Details: each changed field
+    /// with old → new value, comma-separated. Operators reviewing the
+    /// audit log can see a clear chronology of "who tuned what when".</summary>
+    public const string PerformanceSettingsUpdated = "Performance.SettingsUpdated";
+
+    /// <summary>A deployment exceeded the configured
+    /// <c>SlowDeploymentThresholdMinutes</c> window. Emitted at deployment
+    /// finalization. Subscribable via M13.B.2/3 — operators route to
+    /// webhook / email / runbook / AI inspection. Details: deployment id +
+    /// duration in minutes + threshold.</summary>
+    public const string DeploymentSlow             = "Deployment.Slow";
+
+    /// <summary>A single step exceeded the configured
+    /// <c>SlowStepThresholdMinutes</c> window. v1 fires for server-side
+    /// steps only; target-side per-step timing needs an agent contract
+    /// change for per-step boundaries. Details: deployment id + step name +
+    /// duration in minutes + threshold.</summary>
+    public const string DeploymentStepSlow         = "DeploymentStep.Slow";
+
     // ── Maintenance mode (M13.A.3) ───────────────────────────────────────────
     /// <summary>Operator enabled instance-wide maintenance mode.
     /// Details: reason text + who enabled it. Pair with

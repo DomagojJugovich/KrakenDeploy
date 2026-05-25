@@ -339,12 +339,17 @@ public static class Program
             .UsePostgreSqlStorage(opt =>
                 opt.UseNpgsqlConnection(connectionString)));
 
+        // Hangfire worker count — read from PerformanceSettings (M13.F.3).
+        // Hangfire's WorkerCount is a builder-time setting; changes from the
+        // /configuration/performance page take effect on next server restart.
+        // We resolve via a temp scope here because the DI container isn't
+        // built yet; a DB failure (first-run / migration pending) falls back
+        // to the hardcoded default so startup still succeeds.
+        var workerCount = ResolveHangfireWorkerCount(builder);
         builder.Services.AddHangfireServer(options =>
         {
-            // Keep worker count low — our jobs are lightweight DB operations,
-            // not CPU-bound.  Raise if the queue starts backing up.
-            options.WorkerCount = 4;
-            options.ServerName = $"kraken:{Environment.MachineName}";
+            options.WorkerCount = workerCount;
+            options.ServerName  = $"kraken:{Environment.MachineName}";
         });
 
         // ── HttpClient for outbound calls ────────────────────────────────────
@@ -466,8 +471,20 @@ public static class Program
             string provider,
             string? returnUrl,
             HttpContext http,
-            IAuthenticationSchemeProvider schemeProvider) =>
+            IAuthenticationSchemeProvider schemeProvider,
+            KrakenDeploy.Server.Data.Services.FeatureFlagService featureFlags) =>
         {
+            // M13.F.5 master kill-switch — when OFF, refuse the challenge
+            // even if the scheme exists. Local accounts still work; this
+            // is the incident-response lever for "an IdP misconfig is
+            // locking everyone out, let me sign in with the bootstrap
+            // admin and fix it."
+            var oidcAllowed = await featureFlags.IsEnabledAsync("security.allow-oidc-sign-in");
+            if (!oidcAllowed)
+            {
+                return Results.Redirect("/login?error=oidc_disabled");
+            }
+
             var scheme = await schemeProvider.GetSchemeAsync(provider);
             if (scheme is null || !provider.StartsWith("oidc_", StringComparison.Ordinal))
             {
@@ -2443,5 +2460,50 @@ public static class Program
         }
 
         return dir;
+    }
+
+    /// <summary>
+    /// Reads <see cref="KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings.HangfireWorkerCount"/>
+    /// from the DB before the DI container is fully built. Falls back to
+    /// the hardcoded default on any failure (first-run, migrations pending,
+    /// DB unreachable) so startup never blocks on this knob.
+    /// </summary>
+    private static int ResolveHangfireWorkerCount(WebApplicationBuilder builder)
+    {
+        var connectionString = builder.Configuration.GetConnectionString("Default");
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            return KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings.DefaultHangfireWorkerCount;
+        }
+
+        try
+        {
+            var options = new DbContextOptionsBuilder<KrakenDbContext>()
+                .UseNpgsql(connectionString)
+                .UseSnakeCaseNamingConvention()
+                .Options;
+
+            // Pass-through ISpaceContext: PerformanceSettings is system-wide,
+            // not Space-scoped, so the SpaceScopingInterceptor doesn't apply.
+            // Use DefaultSpaceContext so the constructor's contract is satisfied.
+            using var db = new KrakenDbContext(
+                options,
+                new KrakenDeploy.Server.Data.Spaces.DefaultSpaceContext());
+
+            var row = db.PerformanceSettings
+                .AsNoTracking()
+                .FirstOrDefault(p => p.Id ==
+                    KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings.SingletonId);
+
+            return row?.HangfireWorkerCount
+                ?? KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings.DefaultHangfireWorkerCount;
+        }
+        catch
+        {
+            // First-run, migrations pending, or DB unreachable — fall back.
+            // Logging here is awkward (ILogger isn't built yet); the
+            // hardcoded default preserves previous behaviour.
+            return KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings.DefaultHangfireWorkerCount;
+        }
     }
 }

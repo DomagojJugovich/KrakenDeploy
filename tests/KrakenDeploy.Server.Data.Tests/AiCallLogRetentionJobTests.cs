@@ -2,6 +2,7 @@ using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Ai;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Data.Jobs;
+using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -22,6 +23,10 @@ public sealed class AiCallLogRetentionJobTests(PostgresFixture postgres)
     {
         await using var db = postgres.CreateContext();
         await db.AiCallLogs.IgnoreQueryFilters().ExecuteDeleteAsync();
+        // Reset the singleton row so the appsettings fallback path is
+        // exercised by default (the DB-wins path is exercised by a
+        // dedicated test below).
+        await db.PerformanceSettings.ExecuteDeleteAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -96,6 +101,37 @@ public sealed class AiCallLogRetentionJobTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task Honours_DB_setting_when_PerformanceSettings_row_exists()
+    {
+        // Operator visited /configuration/performance and set the retention
+        // window to 5 days. The DB row WINS over appsettings — if a
+        // contributor accidentally swaps the precedence, this test breaks.
+        var time = TimeProvider.System;
+        await SeedAsync(time, daysAgo: 6, "older-than-5");
+        await SeedAsync(time, daysAgo: 3, "fresher-than-5");
+
+        await using (var db = postgres.CreateContext())
+        {
+            db.PerformanceSettings.Add(new KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings
+            {
+                Id                     = KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings.SingletonId,
+                AiCallLogRetentionDays = 5,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // Appsettings says 999 (a value that would keep everything) — but
+        // the DB-backed 5 must win.
+        await NewJob(time, retentionDays: "999").ExecuteAsync(CancellationToken.None);
+
+        await using var verify = postgres.CreateContext();
+        var survivors = await verify.AiCallLogs.IgnoreQueryFilters().ToListAsync();
+        survivors.Should().ContainSingle("DB-backed 5-day window applies, " +
+            "the 6-day-old row is purged; the appsettings value is overridden");
+        survivors[0].Feature.Should().Be("fresher-than-5");
+    }
+
+    [Fact]
     public async Task Cross_space_purge_runs_through_IgnoreQueryFilters()
     {
         // Pins the contract that retention purges across ALL Spaces, not
@@ -130,8 +166,14 @@ public sealed class AiCallLogRetentionJobTests(PostgresFixture postgres)
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(configValues)
             .Build();
+        // PerformanceSettingsService points at the same fixture; with no
+        // PerformanceSettings row seeded the job falls back to appsettings,
+        // which is the path the existing tests assert. The DB-wins path is
+        // covered by Honours_DB_setting_when_PerformanceSettings_row_exists.
+        var performance = new PerformanceSettingsService(postgres, time);
         return new AiCallLogRetentionJob(
             postgres,
+            performance,
             config,
             time,
             NullLogger<AiCallLogRetentionJob>.Instance);

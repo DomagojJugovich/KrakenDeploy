@@ -18,6 +18,29 @@ public sealed class BuiltInFeatureCatalog : IFeatureCatalog
 {
     public IReadOnlyList<FeatureDescriptor> All { get; } =
     [
+        // ── Security ───────────────────────────────────────────────────
+        new("security.allow-oidc-sign-in",
+            FeatureGroups.Security,
+            "Allow OIDC sign-in",
+            "Master kill-switch for every configured Identity Provider. " +
+            "When off, the login page hides the 'Sign in with X' buttons " +
+            "and the /login/external challenge endpoint refuses with 503. " +
+            "Local accounts continue to work. Useful during incident " +
+            "response when an IdP misconfiguration is locking everyone " +
+            "out — flip off, sign in with the bootstrap admin, fix the IdP, " +
+            "flip back on.",
+            DefaultEnabled: true),
+
+        new("security.show-error-stack-traces",
+            FeatureGroups.Security,
+            "Show error stack traces in UI",
+            "When on, the global Blazor error boundary and API exception " +
+            "responses include the full stack trace. Off in production — " +
+            "stack traces can leak internal paths, dependency versions, " +
+            "and DB column names that aid attackers building a model of " +
+            "the system. On in dev/staging where the trade-off flips.",
+            DefaultEnabled: false),
+
         // ── Feeds ──────────────────────────────────────────────────────
         new("feeds.step-template-catalog",
             FeatureGroups.Feeds,
@@ -54,6 +77,28 @@ public sealed class BuiltInFeatureCatalog : IFeatureCatalog
             "non-empty; this toggle is for operators who prefer the banner stays " +
             "hidden even during initial setup.",
             DefaultEnabled: true),
+
+        // ── Retention ──────────────────────────────────────────────────
+        new("audit.purge-enabled",
+            FeatureGroups.Retention,
+            "Enable audit-log retention purge",
+            "Master kill-switch for the nightly AuditRetentionJob. When off, " +
+            "the job short-circuits regardless of the configured retention " +
+            "window — operators can pause GDPR retention temporarily " +
+            "(e.g. during a regulatory investigation that needs older rows " +
+            "preserved) without losing the configured day count. Default ON.",
+            DefaultEnabled: true),
+
+        // ── UI ─────────────────────────────────────────────────────────
+        new("ui.show-advanced-step-fields",
+            FeatureGroups.Ui,
+            "Show advanced step-editor fields",
+            "Power-user fields in the step editor: raw JSON config, " +
+            "Run-on-server toggle, Run Condition / Required / Retries / " +
+            "Timeout (those land in M14). Off-by-default keeps the editor " +
+            "approachable for typical operators; sysadmins flip on for " +
+            "fine-grained control.",
+            DefaultEnabled: false),
 
         // ── Help ───────────────────────────────────────────────────────
         new("help.external-docs-links",

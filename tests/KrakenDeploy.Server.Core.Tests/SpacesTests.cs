@@ -120,6 +120,9 @@ public sealed class SpacesTests
             // Singleton flag for instance-wide maintenance (M13.A.3) —
             // server-wide; one row per instance, no Space partition.
             "MaintenanceSettings",
+            // Singleton row for instance-wide performance + retention
+            // knobs (M13.F.3) — server-wide tuning dials; not per-Space.
+            "PerformanceSettings",
         };
 
         var assembly = typeof(Project).Assembly;

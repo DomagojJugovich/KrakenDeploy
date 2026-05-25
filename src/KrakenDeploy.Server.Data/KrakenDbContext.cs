@@ -77,6 +77,8 @@ public class KrakenDbContext(
         => Set<KrakenDeploy.Server.Core.Domain.Subscriptions.EmailDigestOutboxEntry>();
     public DbSet<KrakenDeploy.Server.Core.Domain.Maintenance.MaintenanceSettings> MaintenanceSettings
         => Set<KrakenDeploy.Server.Core.Domain.Maintenance.MaintenanceSettings>();
+    public DbSet<KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings> PerformanceSettings
+        => Set<KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings>();
     public DbSet<Tenant> Tenants => Set<Tenant>();
     public DbSet<TagSet> TagSets => Set<TagSet>();
     public DbSet<TenantTag> TenantTags => Set<TenantTag>();

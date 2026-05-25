@@ -134,6 +134,10 @@ public static class ServiceCollectionExtensions
         // shared across requests; the middleware hits GetStateAsync on
         // every non-exempt write request.
         services.AddSingleton<MaintenanceModeService>();
+        // Performance + retention knobs (M13.F.3) — singleton so the
+        // 30 s cache is shared across consumers (Hangfire jobs, the
+        // DeploymentWorker, the page itself).
+        services.AddSingleton<PerformanceSettingsService>();
         // Helper recurring jobs call to short-circuit during maintenance.
         services.AddScoped<MaintenancePause>();
         services.AddScoped<EventSubscriptionService>();
