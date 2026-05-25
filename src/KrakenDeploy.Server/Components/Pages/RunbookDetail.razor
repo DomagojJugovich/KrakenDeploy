@@ -510,11 +510,12 @@
 
     private static BadgeStyle RunStatusStyle(DeploymentStatus status) => status switch
     {
-        DeploymentStatus.Succeeded => BadgeStyle.Success,
-        DeploymentStatus.Failed    => BadgeStyle.Danger,
-        DeploymentStatus.Running   => BadgeStyle.Info,
-        DeploymentStatus.Queued    => BadgeStyle.Warning,
-        _                          => BadgeStyle.Light,
+        DeploymentStatus.Succeeded             => BadgeStyle.Success,
+        DeploymentStatus.SucceededWithWarnings => BadgeStyle.Warning,
+        DeploymentStatus.Failed                => BadgeStyle.Danger,
+        DeploymentStatus.Running               => BadgeStyle.Info,
+        DeploymentStatus.Queued                => BadgeStyle.Warning,
+        _                                      => BadgeStyle.Light,
     };
 
     private static string LevelClass(string level) => level switch

@@ -106,6 +106,79 @@ else
 
     <RadzenTabs>
         <Tabs>
+            <RadzenTabsItem Text=@($"Steps ({_stepOutcomes.Count})") Icon="checklist">
+                @if (_stepOutcomes.Count == 0)
+                {
+                    <RadzenText class="rz-color-secondary rz-mt-4">
+                        No step outcomes recorded yet. The Steps tab populates as the
+                        orchestrator finishes each step's terminal attempt.
+                    </RadzenText>
+                }
+                else
+                {
+                    <RadzenDataGrid Data="@_stepOutcomes" TItem="DeploymentStepOutcome"
+                                    AllowSorting="false" AllowColumnResize="true"
+                                    class="rz-mt-3">
+                        <Columns>
+                            <RadzenDataGridColumn TItem="DeploymentStepOutcome"
+                                                  Property="StepIndex" Title="#" Width="60px">
+                                <Template Context="o">@(o.StepIndex + 1)</Template>
+                            </RadzenDataGridColumn>
+                            <RadzenDataGridColumn TItem="DeploymentStepOutcome"
+                                                  Property="StepName" Title="Step" Width="240px">
+                                <Template Context="o">
+                                    <strong>@o.StepName</strong>
+                                    @if (o.AttemptCount > 1)
+                                    {
+                                        <span class="rz-color-secondary rz-text-body2 rz-ml-2">
+                                            (retried @(o.AttemptCount - 1)×)
+                                        </span>
+                                    }
+                                </Template>
+                            </RadzenDataGridColumn>
+                            <RadzenDataGridColumn TItem="DeploymentStepOutcome"
+                                                  Property="Outcome" Title="Outcome" Width="140px">
+                                <Template Context="o">
+                                    <RadzenBadge Text="@o.Outcome.ToString()"
+                                                 BadgeStyle="@OutcomeStyle(o.Outcome)" />
+                                </Template>
+                            </RadzenDataGridColumn>
+                            <RadzenDataGridColumn TItem="DeploymentStepOutcome"
+                                                  Title="Side" Width="80px">
+                                <Template Context="o">
+                                    @(o.IsServerSide ? "Server" : "Target")
+                                </Template>
+                            </RadzenDataGridColumn>
+                            <RadzenDataGridColumn TItem="DeploymentStepOutcome"
+                                                  Property="Required" Title="Required" Width="100px">
+                                <Template Context="o">
+                                    @if (o.Required)
+                                    {
+                                        <RadzenBadge Text="Required" BadgeStyle="BadgeStyle.Light" />
+                                    }
+                                    else
+                                    {
+                                        <span class="rz-color-secondary">optional</span>
+                                    }
+                                </Template>
+                            </RadzenDataGridColumn>
+                            <RadzenDataGridColumn TItem="DeploymentStepOutcome"
+                                                  Title="Duration" Width="100px">
+                                <Template Context="o">@FormatStepDuration(o)</Template>
+                            </RadzenDataGridColumn>
+                            <RadzenDataGridColumn TItem="DeploymentStepOutcome"
+                                                  Property="ErrorMessage" Title="Detail">
+                                <Template Context="o">
+                                    <span class="rz-color-secondary">
+                                        @(o.ErrorMessage ?? "—")
+                                    </span>
+                                </Template>
+                            </RadzenDataGridColumn>
+                        </Columns>
+                    </RadzenDataGrid>
+                }
+            </RadzenTabsItem>
+
             <RadzenTabsItem Text="Log" Icon="terminal">
                 <div style="font-family: monospace; font-size: 0.85rem; background: #1e1e1e; color: #d4d4d4;
                              padding: 1rem; border-radius: 4px; max-height: 600px; overflow-y: auto;">
@@ -260,6 +333,7 @@ else
     private Deployment? Deployment { get; set; }
     private List<DeploymentArtifact> _artifacts = [];
     private List<DeploymentOutputVariable> _outputVariables = [];
+    private List<DeploymentStepOutcome> _stepOutcomes = [];
 
     // Offline result upload
     private IBrowserFile? _resultFile;
@@ -272,6 +346,7 @@ else
         {
             _artifacts = await ArtifactSvc.GetByDeploymentAsync(Id);
             _outputVariables = await DeploymentSvc.GetOutputVariablesAsync(Id);
+            _stepOutcomes = await DeploymentSvc.GetStepOutcomesAsync(Id);
         }
     }
 
@@ -299,6 +374,7 @@ else
             {
                 _artifacts = await ArtifactSvc.GetByDeploymentAsync(Id);
                 _outputVariables = await DeploymentSvc.GetOutputVariablesAsync(Id);
+                _stepOutcomes = await DeploymentSvc.GetStepOutcomesAsync(Id);
             }
             _resultFile = null;
 
@@ -363,13 +439,35 @@ else
 
     private static BadgeStyle StatusStyle(DeploymentStatus status) => status switch
     {
-        DeploymentStatus.Succeeded        => BadgeStyle.Success,
-        DeploymentStatus.Failed           => BadgeStyle.Danger,
-        DeploymentStatus.Running          => BadgeStyle.Info,
-        DeploymentStatus.Queued           => BadgeStyle.Warning,
-        DeploymentStatus.PendingOfflineResult => BadgeStyle.Warning,
-        _                                 => BadgeStyle.Light,
+        DeploymentStatus.Succeeded             => BadgeStyle.Success,
+        DeploymentStatus.SucceededWithWarnings => BadgeStyle.Warning,
+        DeploymentStatus.Failed                => BadgeStyle.Danger,
+        DeploymentStatus.Running               => BadgeStyle.Info,
+        DeploymentStatus.Queued                => BadgeStyle.Warning,
+        DeploymentStatus.PendingOfflineResult  => BadgeStyle.Warning,
+        _                                      => BadgeStyle.Light,
     };
+
+    private static BadgeStyle OutcomeStyle(StepOutcomeKind o) => o switch
+    {
+        StepOutcomeKind.Succeeded => BadgeStyle.Success,
+        StepOutcomeKind.Failed    => BadgeStyle.Danger,
+        StepOutcomeKind.TimedOut  => BadgeStyle.Danger,
+        StepOutcomeKind.Skipped   => BadgeStyle.Light,
+        _                         => BadgeStyle.Light,
+    };
+
+    private static string FormatStepDuration(DeploymentStepOutcome o)
+    {
+        if (o.StartedUtc is null) { return "—"; }
+        var dur = o.CompletedUtc - o.StartedUtc.Value;
+        if (dur.TotalSeconds < 1) { return "<1s"; }
+        return dur.TotalHours >= 1
+            ? $"{(int)dur.TotalHours}h {dur.Minutes}m {dur.Seconds}s"
+            : dur.TotalMinutes >= 1
+                ? $"{dur.Minutes}m {dur.Seconds}s"
+                : $"{dur.Seconds}s";
+    }
 
     private static bool IsImage(string contentType) =>
         contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase);

@@ -59,6 +59,9 @@ public sealed class SpacesTests
             "DeploymentLogEntry",
             "DeploymentArtifact",
             "DeploymentOutputVariable",
+            // M14.5 — per-step outcome aggregate; same reasoning as
+            // DeploymentOutputVariable, scope inherits via DeploymentId.
+            "DeploymentStepOutcome",
             "LifecyclePhase",
             "DeploymentProcess",
             "DeploymentStep",

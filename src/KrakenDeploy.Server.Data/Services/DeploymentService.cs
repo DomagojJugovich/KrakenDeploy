@@ -134,6 +134,22 @@ public class DeploymentService(
     }
 
     /// <summary>
+    /// M14.5 — returns the terminal per-step outcomes captured during a
+    /// deployment, ordered by <see cref="DeploymentStepOutcome.StepIndex"/>
+    /// (== SortOrder rank in the process). Powers the deployment detail
+    /// page's Steps tab.
+    /// </summary>
+    public async Task<List<DeploymentStepOutcome>> GetStepOutcomesAsync(
+        Guid deploymentId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.DeploymentStepOutcomes
+            .Where(o => o.DeploymentId == deploymentId)
+            .OrderBy(o => o.StepIndex)
+            .ToListAsync(ct);
+    }
+
+    /// <summary>
     /// Builds a Tenant × Environment matrix of the latest deployment per cell
     /// for the given project. Returns every connected tenant and every space
     /// environment regardless of whether any deployment exists yet — empty

@@ -47,11 +47,12 @@
 
     private static BadgeStyle StatusStyle(DeploymentStatus status) => status switch
     {
-        DeploymentStatus.Succeeded            => BadgeStyle.Success,
-        DeploymentStatus.Failed               => BadgeStyle.Danger,
-        DeploymentStatus.Running              => BadgeStyle.Info,
-        DeploymentStatus.Queued               => BadgeStyle.Warning,
-        DeploymentStatus.PendingOfflineResult => BadgeStyle.Warning,
-        _                                     => BadgeStyle.Light,
+        DeploymentStatus.Succeeded             => BadgeStyle.Success,
+        DeploymentStatus.SucceededWithWarnings => BadgeStyle.Warning,
+        DeploymentStatus.Failed                => BadgeStyle.Danger,
+        DeploymentStatus.Running               => BadgeStyle.Info,
+        DeploymentStatus.Queued                => BadgeStyle.Warning,
+        DeploymentStatus.PendingOfflineResult  => BadgeStyle.Warning,
+        _                                      => BadgeStyle.Light,
     };
 }

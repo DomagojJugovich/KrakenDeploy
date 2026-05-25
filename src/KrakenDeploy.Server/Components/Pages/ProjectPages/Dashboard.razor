@@ -254,21 +254,23 @@
 
     private static string StatusIcon(DeploymentStatus s) => s switch
     {
-        DeploymentStatus.Succeeded            => "check",
-        DeploymentStatus.Failed               => "close",
-        DeploymentStatus.Cancelled            => "block",
-        DeploymentStatus.Running              => "play_arrow",
-        DeploymentStatus.Queued               => "schedule",
-        DeploymentStatus.PendingOfflineResult => "hourglass_empty",
-        _                                      => "help",
+        DeploymentStatus.Succeeded             => "check",
+        DeploymentStatus.SucceededWithWarnings => "warning_amber",
+        DeploymentStatus.Failed                => "close",
+        DeploymentStatus.Cancelled             => "block",
+        DeploymentStatus.Running               => "play_arrow",
+        DeploymentStatus.Queued                => "schedule",
+        DeploymentStatus.PendingOfflineResult  => "hourglass_empty",
+        _                                       => "help",
     };
 
     private static string StatusClass(DeploymentStatus s) => s switch
     {
-        DeploymentStatus.Succeeded            => "kraken-matrix-status kraken-matrix-status--ok",
-        DeploymentStatus.Failed               => "kraken-matrix-status kraken-matrix-status--err",
-        DeploymentStatus.Cancelled            => "kraken-matrix-status kraken-matrix-status--cancelled",
-        DeploymentStatus.Running              => "kraken-matrix-status kraken-matrix-status--running",
-        _                                      => "kraken-matrix-status kraken-matrix-status--pending",
+        DeploymentStatus.Succeeded             => "kraken-matrix-status kraken-matrix-status--ok",
+        DeploymentStatus.SucceededWithWarnings => "kraken-matrix-status kraken-matrix-status--warn",
+        DeploymentStatus.Failed                => "kraken-matrix-status kraken-matrix-status--err",
+        DeploymentStatus.Cancelled             => "kraken-matrix-status kraken-matrix-status--cancelled",
+        DeploymentStatus.Running               => "kraken-matrix-status kraken-matrix-status--running",
+        _                                       => "kraken-matrix-status kraken-matrix-status--pending",
     };
 }

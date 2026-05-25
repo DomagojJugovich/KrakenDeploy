@@ -1636,10 +1636,29 @@ Known gaps (not blocking):
 - Drop-bundle / offline-mode path (`DispatchOfflineDropAsync`) doesn't honour waves — it emits the legacy flat plan + lets the offline executor walk it sequentially. Acceptable since offline mode doesn't have an agent contract for per-step reporting either; parallel waves in offline mode would need a separate design pass.
 - E2E orchestrator tests for "two parallel server steps run concurrently in real wall-clock time" still gated on the larger `DeploymentWorker` test harness that doesn't exist yet (same gap M14.2/3 hit). The unit tests pin the wave-formation contract + collision contract; the integration question is left to dogfooding + the next M14.4-touching change.
 
-**M14.5 — Status state machine + UI polish (few hours)**
-- Add `DeploymentStatus.SucceededWithWarnings` for "completed successfully but had non-required step failures". UI badge yellow (matches Octopus).
-- Step-level row state on the deployment detail page: Succeeded / Failed / Skipped / TimedOut / Retried(N). Reuse existing `DeploymentLogEntry` table; add a new `DeploymentStepOutcome` aggregate if log-line scraping is too brittle (mild preference for the new table — one row per step per deployment, sorted view).
-- Step editor (`StepFormDialog.razor`): expose the new fields. Group them under an "Execution" section so they don't drown the existing schema-driven body.
+**M14.5 — Status state machine + UI polish — DONE 2026-05-25**
+
+Landed:
+- Badge sweep: `SucceededWithWarnings` now resolves to yellow (`BadgeStyle.Warning`) on `Deployments.razor`, `DeploymentDetail.razor`, `RunbookDetail.razor` (instead of fall-through grey `BadgeStyle.Light`), plus a `--warn` Material-amber row in `kraken-matrix-status` for the project dashboard matrix. The 6-surface count from risk #7 was high — `TenantDetail` + `Audit filters` don't reference `DeploymentStatus`, so the actual sweep is 4 places.
+- `DeploymentStepOutcome` aggregate: new EF entity (`Server.Core/Domain/Deployments/DeploymentStepOutcome.cs`) with composite unique index on (DeploymentId, StepIndex). Carries `StepOutcomeKind { Succeeded, Failed, Skipped, TimedOut }`, `AttemptCount` (retries summary), `ErrorMessage`, `StartedUtc` / `CompletedUtc`, plus `IsServerSide` + `Required` snapshots so the Steps tab survives process edits.
+- Migration `20260525151705_AddDeploymentStepOutcomes` — generated via `dotnet ef migrations add`, clean Postgres snake_case schema, cascade delete from `deployments`.
+- Orchestrator write points: `DeploymentWorker.UpsertStepOutcomeAsync` upsert helper drives writes from (1) `RunServerWaveAsync` Condition + role-filter skip paths (`Skipped` with reason), (2) the parallel server-runner branch after `Task.WhenAll` settles (`Succeeded` / `Failed` / `TimedOut` with AttemptCount + StartedUtc flowed up from the M14.3 retry helper), (3) target-wave Condition skip path, (4) target-wave per-step drained results (`Succeeded` / `Failed` from agent's `ReportStepCompletedAsync`), (5) target-wave fallback for steps the agent never reported on (`TimedOut` / `Failed` per wave-result), (6) `MixedWaveRefused` catch (`Skipped` for every step in the refused wave, with `IsServerSide` from the classifier).
+- `RunServerStepWithRetriesAsync` extended return tuple: `(Ok, TimedOut, AttemptCount, StartedUtc)` so outcome rows carry accurate retry counts + per-step start times. `ServerStepOutcome` private record threads these through `RunServerWaveAsync`.
+- `DeploymentService.GetStepOutcomesAsync` reads the rows ordered by `StepIndex` for the Steps tab.
+- DeploymentDetail "Steps" tab: prepended before the existing Log tab. Renders one row per step with outcome badge, retried count, Side chip (Server/Target), Required chip, duration, and detail / error message. Empty-state message for in-flight deployments before any step finishes. `_stepOutcomes` reloads after offline-result upload alongside artifacts + output variables.
+- Step editor (`StepFormDialog.razor`): "Execution" section already shipped in M14.1 (Condition / Required / MaxRetries / Timeout / StartTrigger grouped under one card behind the existing advanced-fields toggle). No additional editor work needed in M14.5.
+
+Decisions made during implementation:
+- **No agent-side outcome writes**. Agent's `ReportStepCompletedAsync` stays focused on per-step boundary reporting via the registry bag (per M14.4). Orchestrator centralises ALL outcome-table writes so per-step `Required` lookup, `IsServerSide` classification, and timing all come from one place. Trade-off: target-side per-step start/finish timestamps are approximated as the wave's dispatch + drain times; per-step boundaries would need a contract extension. Documented as a follow-up.
+- **Upsert by (DeploymentId, StepIndex)**, not blind insert. Wave-level target retries re-dispatch the whole sub-plan; the agent reports each step again per attempt. The upsert keeps a single row per step reflecting the final attempt's outcome.
+- **Skipped outcomes are written for role-filtered steps too**, even though the orchestrator doesn't audit those (no `StepSkipped` event for role filters). Steps tab is the operator's "what happened to my step" view; an empty row is worse than "Skipped: role filter mismatch".
+- **No dedicated persistence tests**. Existing `DeploymentOutputVariable` follows the same pattern with no dedicated test; full-graph `Deployment` seeding isn't an established fixture pattern in the test base. EF schema is generated by tooling. Spaces-test exclusion list updated (`DeploymentStepOutcome` added — scope inherits via `DeploymentId`).
+- **Badge sweep skipped two surfaces from the original risk #7 list**: `TenantDetail` doesn't show deployment status, and `Audit filters` work on `AuditEventType` strings, not `DeploymentStatus`. Actual touch surface = 4.
+
+Known follow-ups (not blocking):
+- Per-step timestamps for target-side steps remain wave-granularity. A future agent contract extension (carrying `StartedUtc` + `CompletedUtc` per step in `ReportStepCompletedAsync`) closes this.
+- Step name immutability: the entity captures the step name at execution time. If a step is renamed after the deployment lands, the outcome row shows the old name — intentional (preserves historical accuracy) but worth noting if the Steps tab gets a "jump to step editor" deep link later.
+- Live updates: the Steps tab loads once via `OnInitializedAsync`. Real-time push (via `UiHub`) would need a new SignalR message — out of scope for the badge polish, deferred.
 
 ### Risks / pre-prod considerations
 
@@ -1659,7 +1678,7 @@ Known gaps (not blocking):
 | M14.2 | Run Condition + Required + Timeout | 1 day | DONE |
 | M14.3 | Retries | half day | DONE |
 | M14.4 | Start Trigger / per-step parallel | 2 days | DONE |
-| M14.5 | Status state machine + UI polish | few hours | Pending |
+| M14.5 | Status state machine + UI polish | few hours | DONE |
 | **Total** | | **~4 days** | |
 
 M14.1 through M14.3 are independent of M14.4 and ship value on their own (real Octopus parity gap closed). M14.4 is the one that genuinely changes the engine shape and warrants its own commit + careful test pass. Recommend landing M14.1-3 as one batch and M14.4 as a second.

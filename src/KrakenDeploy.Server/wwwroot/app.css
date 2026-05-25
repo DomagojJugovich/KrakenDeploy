@@ -427,6 +427,7 @@ html, body {
 }
 
 .kraken-matrix-status--ok        { background: #43a047; }
+.kraken-matrix-status--warn      { background: #f9a825; }
 .kraken-matrix-status--err       { background: #e53935; }
 .kraken-matrix-status--cancelled { background: #757575; }
 .kraken-matrix-status--running   { background: #1e88e5; }

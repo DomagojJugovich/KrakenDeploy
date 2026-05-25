@@ -337,6 +337,25 @@ public sealed class DeploymentWorker(
                     Level        = "error",
                     Message      = ex.Message,
                 });
+                // M14.5 — record Skipped outcomes for the refused wave's
+                // steps so the Steps tab shows "Skipped: mixed wave"
+                // instead of an empty section. Per-step IsServerSide
+                // mirrors the classifier so the tab's Side chip is
+                // still accurate.
+                var refusedAt = DateTimeOffset.UtcNow;
+                foreach (var refused in ex.WaveSteps)
+                {
+                    var snap = snapshotSteps[refused.Index];
+                    await UpsertStepOutcomeAsync(
+                        db, deployment.Id, refused.Index, snap.Name,
+                        StepOutcomeKind.Skipped, attemptCount: 0,
+                        errorMessage: "Wave refused as server+target mixed; " +
+                                      "split into two single-side waves.",
+                        startedUtc:   null,
+                        completedUtc: refusedAt,
+                        isServerSide: WavePartitioner.IsServerStep(refused),
+                        required:     snap.Required, ct).ConfigureAwait(false);
+                }
                 await db.SaveChangesAsync(ct).ConfigureAwait(false);
                 await FailAsync(db, deployment, ex.Message, ct).ConfigureAwait(false);
                 return;
@@ -424,6 +443,17 @@ public sealed class DeploymentWorker(
                             await LogAndAuditStepSkippedAsync(
                                 db, auditLog, logSeq, deployment, snapshot, decision, ct)
                                 .ConfigureAwait(false);
+                            // M14.5 — record Skipped outcome so the Steps tab
+                            // shows the reason instead of an empty row.
+                            await UpsertStepOutcomeAsync(
+                                db, deployment.Id, s.Index, snapshot.Name,
+                                StepOutcomeKind.Skipped, attemptCount: 0,
+                                errorMessage: decision.Reason,
+                                startedUtc:   null,
+                                completedUtc: DateTimeOffset.UtcNow,
+                                isServerSide: false,
+                                required:     snapshot.Required, ct).ConfigureAwait(false);
+                            await db.SaveChangesAsync(ct).ConfigureAwait(false);
                             continue;
                         }
                         stepsToRun.Add(s);
@@ -441,9 +471,64 @@ public sealed class DeploymentWorker(
                         return;
                     }
 
+                    var waveStartedUtc = DateTimeOffset.UtcNow;
                     var (waveResult, waveTimedOut, perStepResults) = await DispatchTargetWaveAsync(
                         plan, stepsToRun, snapshotSteps, deployment, connectionId,
                         db, auditLog, logSeq, ct).ConfigureAwait(false);
+
+                    // ── M14.5 — record target-wave per-step outcomes ──────
+                    // The agent reported per-step boundaries during the wave;
+                    // we drained them above. Record one outcome row per
+                    // reported step (Succeeded / Failed / TimedOut). Wave
+                    // start/finish times are the best we have today —
+                    // per-step boundary timestamps would need a contract
+                    // extension; documented as a follow-up.
+                    var waveCompletedUtc = DateTimeOffset.UtcNow;
+                    var reportedIndices = new HashSet<int>();
+                    foreach (var r in perStepResults)
+                    {
+                        var snap = snapshotSteps[r.StepIndex];
+                        var kind = r.Success ? StepOutcomeKind.Succeeded
+                                              : StepOutcomeKind.Failed;
+                        await UpsertStepOutcomeAsync(
+                            db, deployment.Id, r.StepIndex, snap.Name,
+                            kind, attemptCount: 1,
+                            errorMessage: r.Success ? null : r.ErrorMessage,
+                            startedUtc:   waveStartedUtc,
+                            completedUtc: waveCompletedUtc,
+                            isServerSide: false,
+                            required:     snap.Required, ct).ConfigureAwait(false);
+                        reportedIndices.Add(r.StepIndex);
+                    }
+
+                    // For steps the agent never reported on (e.g. wave timed
+                    // out before they completed, or agent dropped offline),
+                    // record TimedOut if the wave timed out, otherwise Failed
+                    // with the wave error so the Steps tab shows something.
+                    foreach (var p in stepsToRun)
+                    {
+                        if (reportedIndices.Contains(p.Index))
+                        {
+                            continue;
+                        }
+                        var snap = snapshotSteps[p.Index];
+                        var kind = waveTimedOut
+                            ? StepOutcomeKind.TimedOut
+                            : (waveResult.Success
+                                ? StepOutcomeKind.Succeeded
+                                : StepOutcomeKind.Failed);
+                        await UpsertStepOutcomeAsync(
+                            db, deployment.Id, p.Index, snap.Name,
+                            kind, attemptCount: 1,
+                            errorMessage: kind == StepOutcomeKind.Succeeded ? null
+                                          : waveResult.ErrorMessage
+                                            ?? "Agent did not report step completion.",
+                            startedUtc:   waveStartedUtc,
+                            completedUtc: waveCompletedUtc,
+                            isServerSide: false,
+                            required:     snap.Required, ct).ConfigureAwait(false);
+                    }
+                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
                     // ── M14.4 Output-variable collision audits ─────────────
                     // Detect Same-name writes across the wave's parallel
@@ -867,19 +952,23 @@ public sealed class DeploymentWorker(
     /// failed attempts.
     /// </para>
     /// </summary>
-    private async Task<(bool Ok, bool TimedOut)> RunServerStepWithRetriesAsync(
-        Guid deploymentId,
-        DeploymentStepPlan step,
-        StepSnapshot snapshot,
-        Deployment deployment,
-        KrakenDbContext db,
-        IAuditLog audit,
-        LogSequencer logSeq,
-        IReadOnlyDictionary<string, string> flatVars,
-        CancellationToken ct)
+    private async Task<(bool Ok, bool TimedOut, int AttemptCount, DateTimeOffset StartedUtc)>
+        RunServerStepWithRetriesAsync(
+            Guid deploymentId,
+            DeploymentStepPlan step,
+            StepSnapshot snapshot,
+            Deployment deployment,
+            KrakenDbContext db,
+            IAuditLog audit,
+            LogSequencer logSeq,
+            IReadOnlyDictionary<string, string> flatVars,
+            CancellationToken ct)
     {
         var maxAttempts = snapshot.MaxRetries < 0 ? 0 : snapshot.MaxRetries;
         var delaySeconds = snapshot.RetryDelaySeconds < 0 ? 0 : snapshot.RetryDelaySeconds;
+        // M14.5 — capture start time at first attempt so the outcome row
+        // carries an accurate StartedUtc the Steps tab can show duration from.
+        var startedUtc = DateTimeOffset.UtcNow;
 
         var attempt = 0;
         while (true)
@@ -902,13 +991,13 @@ public sealed class DeploymentWorker(
                     });
                     await db.SaveChangesAsync(ct).ConfigureAwait(false);
                 }
-                return (Ok: true, TimedOut: false);
+                return (Ok: true, TimedOut: false, AttemptCount: attempt + 1, StartedUtc: startedUtc);
             }
 
             if (attempt >= maxAttempts)
             {
                 // Final attempt failed — caller applies Required gate.
-                return (Ok: false, TimedOut: timedOut);
+                return (Ok: false, TimedOut: timedOut, AttemptCount: attempt + 1, StartedUtc: startedUtc);
             }
 
             // Non-final attempt failed — emit retry marker + audit + delay.
@@ -1141,12 +1230,22 @@ public sealed class DeploymentWorker(
     /// flags steps that were filtered out by Run Condition or by the
     /// role-based <c>StepAppliesToTarget</c> gate so the outer loop can
     /// distinguish "didn't run" from "ran and failed".
+    ///
+    /// <para>
+    /// M14.5: <see cref="AttemptCount"/> and <see cref="StartedUtc"/>
+    /// flow from <see cref="RunServerStepWithRetriesAsync"/> so the
+    /// orchestrator can populate <see cref="DeploymentStepOutcome"/>
+    /// rows with accurate timing + retry counts. <see cref="StartedUtc"/>
+    /// is null when the step was skipped (it never started).
+    /// </para>
     /// </summary>
     private sealed record ServerStepOutcome(
         DeploymentStepPlan Step,
         bool Skipped,
         bool Ok,
-        bool TimedOut);
+        bool TimedOut,
+        int AttemptCount,
+        DateTimeOffset? StartedUtc);
 
     /// <summary>
     /// Runs every step in a server-side wave concurrently. Each step retains
@@ -1193,11 +1292,33 @@ public sealed class DeploymentWorker(
                 await LogAndAuditStepSkippedAsync(
                     db, auditLog, logSeq, deployment, snapshot, decision, ct)
                     .ConfigureAwait(false);
+                // M14.5 — record the Skipped outcome so the Steps tab shows
+                // "Skipped: <reason>" instead of leaving an empty row.
+                await UpsertStepOutcomeAsync(
+                    db, deployment.Id, s.Index, snapshot.Name,
+                    StepOutcomeKind.Skipped, attemptCount: 0,
+                    errorMessage: decision.Reason,
+                    startedUtc:   null,
+                    completedUtc: DateTimeOffset.UtcNow,
+                    isServerSide: true,
+                    required:     snapshot.Required, ct).ConfigureAwait(false);
                 skipped.Add(s);
                 continue;
             }
             if (!StepAppliesToTarget(deployment, s))
             {
+                // Role-filtered skip — no audit row, the M14.0..3 path
+                // didn't audit these either (they're not a user-visible
+                // skip). Still record an outcome so the Steps tab shows
+                // them with a clear "Skipped: role filter" reason.
+                await UpsertStepOutcomeAsync(
+                    db, deployment.Id, s.Index, snapshot.Name,
+                    StepOutcomeKind.Skipped, attemptCount: 0,
+                    errorMessage: "Step roles don't overlap deployment target's roles.",
+                    startedUtc:   null,
+                    completedUtc: DateTimeOffset.UtcNow,
+                    isServerSide: true,
+                    required:     snapshot.Required, ct).ConfigureAwait(false);
                 skipped.Add(s);
                 continue;
             }
@@ -1207,7 +1328,8 @@ public sealed class DeploymentWorker(
         if (toRun.Count == 0)
         {
             return skipped.Select(s => new ServerStepOutcome(
-                Step: s, Skipped: true, Ok: true, TimedOut: false)).ToList();
+                Step: s, Skipped: true, Ok: true, TimedOut: false,
+                AttemptCount: 0, StartedUtc: null)).ToList();
         }
 
         // Fire all surviving steps in parallel. Each Task wraps the M14.3
@@ -1225,21 +1347,58 @@ public sealed class DeploymentWorker(
         var stepTasks = toRun.Select(async s =>
         {
             var snap = snapshotSteps[s.Index];
-            var (ok, timedOut) = await RunServerStepWithRetriesAsync(
-                deployment.Id, s, snap, deployment, db, auditLog,
-                logSeq, flatVars, ct).ConfigureAwait(false);
+            var (ok, timedOut, attemptCount, startedUtc) =
+                await RunServerStepWithRetriesAsync(
+                    deployment.Id, s, snap, deployment, db, auditLog,
+                    logSeq, flatVars, ct).ConfigureAwait(false);
             if (timedOut)
             {
                 await LogAndAuditStepTimedOutAsync(
                     db, auditLog, logSeq, deployment, snap, ct).ConfigureAwait(false);
             }
             return new ServerStepOutcome(
-                Step: s, Skipped: false, Ok: ok, TimedOut: timedOut);
+                Step:         s,
+                Skipped:      false,
+                Ok:           ok,
+                TimedOut:     timedOut,
+                AttemptCount: attemptCount,
+                StartedUtc:   startedUtc);
         }).ToArray();
 
         var outcomes = (await Task.WhenAll(stepTasks).ConfigureAwait(false)).ToList();
+
+        // M14.5 — record terminal outcomes for the steps that actually
+        // ran (skipped steps already got their outcome row from the
+        // pre-loop filter above). Save flushes everything together with
+        // the wave's existing log + audit rows in the next SaveChanges.
+        var completedUtc = DateTimeOffset.UtcNow;
+        foreach (var o in outcomes)
+        {
+            if (o.Skipped)
+            {
+                continue;
+            }
+            var snap = snapshotSteps[o.Step.Index];
+            var kind = o.TimedOut ? StepOutcomeKind.TimedOut
+                     : o.Ok      ? StepOutcomeKind.Succeeded
+                                 : StepOutcomeKind.Failed;
+            await UpsertStepOutcomeAsync(
+                db, deployment.Id, o.Step.Index, snap.Name,
+                kind, o.AttemptCount,
+                errorMessage: o.Ok ? null
+                              : o.TimedOut
+                                  ? $"Step exceeded TimeoutSeconds={snap.TimeoutSeconds.ToString(CultureInfo.InvariantCulture)}."
+                                  : "Step handler returned failure.",
+                startedUtc:   o.StartedUtc,
+                completedUtc: completedUtc,
+                isServerSide: true,
+                required:     snap.Required, ct).ConfigureAwait(false);
+        }
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
         outcomes.AddRange(skipped.Select(s => new ServerStepOutcome(
-            Step: s, Skipped: true, Ok: true, TimedOut: false)));
+            Step: s, Skipped: true, Ok: true, TimedOut: false,
+            AttemptCount: 0, StartedUtc: null)));
         return outcomes;
     }
 
@@ -1484,5 +1643,67 @@ public sealed class DeploymentWorker(
 
         static string Elide(string v) =>
             v.Length <= 60 ? v : v[..57] + "...";
+    }
+
+    // ── M14.5 step-outcome aggregate ────────────────────────────────────
+
+    /// <summary>
+    /// M14.5 — upsert a <see cref="DeploymentStepOutcome"/> row keyed by
+    /// (DeploymentId, StepIndex). Wave-level target retries re-dispatch the
+    /// whole sub-plan so a step's outcome can be reported multiple times;
+    /// the upsert keeps a single row per step reflecting the final attempt.
+    ///
+    /// <para>
+    /// Caller is responsible for <c>SaveChangesAsync</c> — the helper
+    /// queues the insert/update on the shared context without flushing,
+    /// matching the rest of the orchestrator's write pattern (audit + log
+    /// rows accumulate then flush together).
+    /// </para>
+    /// </summary>
+    private static async Task UpsertStepOutcomeAsync(
+        KrakenDbContext db,
+        Guid deploymentId,
+        int stepIndex,
+        string stepName,
+        StepOutcomeKind outcome,
+        int attemptCount,
+        string? errorMessage,
+        DateTimeOffset? startedUtc,
+        DateTimeOffset completedUtc,
+        bool isServerSide,
+        bool required,
+        CancellationToken ct)
+    {
+        var existing = await db.DeploymentStepOutcomes
+            .FirstOrDefaultAsync(o =>
+                o.DeploymentId == deploymentId && o.StepIndex == stepIndex, ct)
+            .ConfigureAwait(false);
+
+        if (existing is not null)
+        {
+            existing.StepName      = stepName;
+            existing.Outcome       = outcome;
+            existing.AttemptCount  = attemptCount;
+            existing.ErrorMessage  = errorMessage;
+            existing.StartedUtc    = startedUtc;
+            existing.CompletedUtc  = completedUtc;
+            existing.IsServerSide  = isServerSide;
+            existing.Required      = required;
+            return;
+        }
+
+        db.DeploymentStepOutcomes.Add(new DeploymentStepOutcome
+        {
+            DeploymentId = deploymentId,
+            StepIndex    = stepIndex,
+            StepName     = stepName,
+            Outcome      = outcome,
+            AttemptCount = attemptCount,
+            ErrorMessage = errorMessage,
+            StartedUtc   = startedUtc,
+            CompletedUtc = completedUtc,
+            IsServerSide = isServerSide,
+            Required     = required,
+        });
     }
 }
