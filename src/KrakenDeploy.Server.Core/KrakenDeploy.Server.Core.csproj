@@ -6,4 +6,11 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- M14.2: StepConditionEvaluator uses Octostache to evaluate
+         Variable-condition expressions (#{...} truthy/falsy). Same
+         engine the orchestrator already uses for Config substitution. -->
+    <PackageReference Include="Octostache" />
+  </ItemGroup>
+
 </Project>

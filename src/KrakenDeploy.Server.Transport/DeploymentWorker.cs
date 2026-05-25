@@ -1,8 +1,11 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Threading.Channels;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Core.Domain.Processes;
+using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
@@ -316,6 +319,15 @@ public sealed class DeploymentWorker(
                 "{TargetSteps} target step(s), {VarCount} variables.",
                 deploymentId, groups.Count, serverStepCount, targetStepCount, flatVars.Count);
 
+            // M14.2 — orchestrator now tracks `hasFailed` instead of
+            // returning on first failure. Required steps still short-
+            // circuit; non-required failures flip the flag and the loop
+            // continues so Failure/Always-conditioned cleanup + finalisation
+            // steps still run. The deployment's terminal status reflects
+            // the final state: hasFailed → SucceededWithWarnings.
+            var hasFailed = false;
+            var auditLog = scope.ServiceProvider.GetRequiredService<IAuditLog>();
+
             foreach (var group in groups)
             {
                 if (group.IsServer)
@@ -327,25 +339,88 @@ public sealed class DeploymentWorker(
                     // a dedicated runner instead of the generic script runner.
                     foreach (var s in group.Steps)
                     {
+                        var snapshot = snapshotSteps[s.Index];
+
+                        // ── M14.2 Run Condition gate ──────────────────────
+                        var decision = StepConditionEvaluator.Evaluate(
+                            snapshot.Condition,
+                            snapshot.ConditionVariableExpression,
+                            hasFailed,
+                            varDict);
+                        if (decision.Action == StepConditionEvaluator.Action.Skip)
+                        {
+                            await LogAndAuditStepSkippedAsync(
+                                db, auditLog, deployment, snapshot, decision, ct)
+                                .ConfigureAwait(false);
+                            continue;
+                        }
+
                         if (!StepAppliesToTarget(deployment, s))
                         {
                             continue;
                         }
 
-                        var ok = await ExecuteServerStepAsync(deployment.Id, s, flatVars, ct)
+                        // ── M14.2 Per-step Timeout ───────────────────────
+                        var (ok, timedOut) = await RunServerStepWithTimeoutAsync(
+                            deployment.Id, s, snapshot, flatVars, ct)
                             .ConfigureAwait(false);
+                        if (timedOut)
+                        {
+                            await LogAndAuditStepTimedOutAsync(
+                                db, auditLog, deployment, snapshot, ct).ConfigureAwait(false);
+                        }
+
                         if (!ok)
                         {
-                            await FailAsync(db, deployment,
-                                $"Server-side step '{s.Name}' failed.", ct).ConfigureAwait(false);
-                            return;
+                            // ── M14.2 Required gate ──────────────────────
+                            if (snapshot.Required)
+                            {
+                                await auditLog.RecordAsync(
+                                    AuditEventType.DeploymentRequiredStepFailed,
+                                    subjectType: "Deployment",
+                                    subjectId:   deployment.Id.ToString(),
+                                    details:     $"Step={snapshot.Name}",
+                                    ct: ct).ConfigureAwait(false);
+                                await FailAsync(db, deployment,
+                                    $"Required step '{s.Name}' failed.", ct).ConfigureAwait(false);
+                                return;
+                            }
+                            // Non-required failure — log + audit + continue.
+                            await LogAndAuditStepFailedNonRequiredAsync(
+                                db, auditLog, deployment, snapshot, ct).ConfigureAwait(false);
+                            hasFailed = true;
                         }
                     }
                 }
                 else
                 {
-                    // Target group: send a sub-plan to the agent and await its
-                    // completion before moving on.
+                    // Target group: filter steps by Condition first, then
+                    // send a sub-plan to the agent. Per-group Timeout uses
+                    // the longest TimeoutSeconds across the group's steps.
+                    var stepsToRun = new List<DeploymentStepPlan>(group.Steps.Length);
+                    foreach (var s in group.Steps)
+                    {
+                        var snapshot = snapshotSteps[s.Index];
+                        var decision = StepConditionEvaluator.Evaluate(
+                            snapshot.Condition,
+                            snapshot.ConditionVariableExpression,
+                            hasFailed,
+                            varDict);
+                        if (decision.Action == StepConditionEvaluator.Action.Skip)
+                        {
+                            await LogAndAuditStepSkippedAsync(
+                                db, auditLog, deployment, snapshot, decision, ct)
+                                .ConfigureAwait(false);
+                            continue;
+                        }
+                        stepsToRun.Add(s);
+                    }
+
+                    if (stepsToRun.Count == 0)
+                    {
+                        continue; // every step in the group was skipped by Condition
+                    }
+
                     var connectionId = registry.GetConnectionId(deployment.TargetId.Value);
                     if (connectionId is null)
                     {
@@ -353,38 +428,124 @@ public sealed class DeploymentWorker(
                         return;
                     }
 
-                    var subPlan = plan with { Steps = group.Steps };
+                    var subPlan = plan with { Steps = stepsToRun.ToArray() };
+
+                    // ── M14.2 Group Timeout ──────────────────────────────
+                    // Use the longest per-step timeout in the group. 0 = unlimited.
+                    var groupTimeoutSeconds = stepsToRun
+                        .Select(p => snapshotSteps[p.Index].TimeoutSeconds)
+                        .DefaultIfEmpty(0)
+                        .Max();
 
                     var tcs = new TaskCompletionSource<SubPlanResult>(
                         TaskCreationOptions.RunContinuationsAsynchronously);
                     subPlans.Register(deployment.Id, tcs);
 
                     SubPlanResult subPlanResult;
+                    var timedOut = false;
+                    using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    if (groupTimeoutSeconds > 0)
+                    {
+                        linkedCts.CancelAfter(TimeSpan.FromSeconds(groupTimeoutSeconds));
+                    }
+
                     try
                     {
                         await agentHub.Clients.Client(connectionId)
                             .RunDeploymentAsync(subPlan).ConfigureAwait(false);
 
-                        using var ctr = ct.Register(
-                            () => tcs.TrySetCanceled(ct));
-                        subPlanResult = await tcs.Task.ConfigureAwait(false);
+                        using var ctr = linkedCts.Token.Register(
+                            () => tcs.TrySetCanceled(linkedCts.Token));
+                        try
+                        {
+                            subPlanResult = await tcs.Task.ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            // Timeout fired (or external cancel). Distinguish
+                            // by whether the outer ct was cancelled too.
+                            if (!ct.IsCancellationRequested && linkedCts.IsCancellationRequested)
+                            {
+                                timedOut = true;
+                                subPlanResult = new SubPlanResult(
+                                    Success: false,
+                                    ErrorMessage:
+                                        $"Target step group timed out after {groupTimeoutSeconds}s.");
+                            }
+                            else
+                            {
+                                throw;
+                            }
+                        }
                     }
                     finally
                     {
                         subPlans.Cancel(deployment.Id, "completed");
                     }
 
+                    if (timedOut)
+                    {
+                        // Emit a TimedOut audit for the first step with a
+                        // non-zero TimeoutSeconds in the group (the one the
+                        // operator most likely configured).
+                        var timeoutStep = stepsToRun
+                            .Select(p => snapshotSteps[p.Index])
+                            .FirstOrDefault(snap => snap.TimeoutSeconds > 0);
+                        if (timeoutStep is not null)
+                        {
+                            await LogAndAuditStepTimedOutAsync(
+                                db, auditLog, deployment, timeoutStep, ct).ConfigureAwait(false);
+                        }
+                    }
+
                     if (!subPlanResult.Success)
                     {
-                        await FailAsync(db, deployment,
-                            subPlanResult.ErrorMessage ?? "Agent reported failure", ct)
-                            .ConfigureAwait(false);
-                        return;
+                        // ── M14.2 Required gate at the group level ──────
+                        // If ANY step in the dispatched group is Required,
+                        // the whole sub-plan failure aborts the deployment.
+                        // The simplification is conservative: it never
+                        // continues past a Required failure, but may
+                        // pessimistically abort even when the actually-
+                        // failing step was non-required. Per-step attribution
+                        // needs an agent contract change (M14.4-adjacent)
+                        // for the agent to report which step failed.
+                        var anyRequired = stepsToRun.Any(p =>
+                            snapshotSteps[p.Index].Required);
+                        if (anyRequired)
+                        {
+                            await auditLog.RecordAsync(
+                                AuditEventType.DeploymentRequiredStepFailed,
+                                subjectType: "Deployment",
+                                subjectId:   deployment.Id.ToString(),
+                                details:     $"TargetGroup steps=[{string.Join(", ",
+                                                stepsToRun.Select(p => p.Name))}], " +
+                                             $"Error={subPlanResult.ErrorMessage}",
+                                ct: ct).ConfigureAwait(false);
+                            await FailAsync(db, deployment,
+                                subPlanResult.ErrorMessage ?? "Agent reported failure", ct)
+                                .ConfigureAwait(false);
+                            return;
+                        }
+                        // Whole group is non-required — record + continue.
+                        foreach (var p in stepsToRun)
+                        {
+                            await LogAndAuditStepFailedNonRequiredAsync(
+                                db, auditLog, deployment, snapshotSteps[p.Index], ct)
+                                .ConfigureAwait(false);
+                        }
+                        hasFailed = true;
                     }
                 }
             }
 
-            // All groups succeeded — finalize.
+            // ── M14.2 Finalisation ──────────────────────────────────────
+            // hasFailed = true means at least one non-required step failed
+            // along the way; the deployment terminates as
+            // SucceededWithWarnings (Octopus's yellow-badge state) rather
+            // than the pristine Succeeded.
+            var terminalStatus = hasFailed
+                ? DeploymentStatus.SucceededWithWarnings
+                : DeploymentStatus.Succeeded;
             DateTimeOffset finalCompletedUtc;
             await using (var finalDb = await scope.ServiceProvider
                 .GetRequiredService<IDbContextFactory<KrakenDbContext>>()
@@ -394,7 +555,7 @@ public sealed class DeploymentWorker(
                 finalCompletedUtc = DateTimeOffset.UtcNow;
                 if (d is not null)
                 {
-                    d.Status       = DeploymentStatus.Succeeded;
+                    d.Status       = terminalStatus;
                     d.CompletedUtc = finalCompletedUtc;
                     await finalDb.SaveChangesAsync(ct).ConfigureAwait(false);
                 }
@@ -715,6 +876,129 @@ public sealed class DeploymentWorker(
         deployment.Status = DeploymentStatus.Failed;
         deployment.CompletedUtc = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
+    // ── M14.2 helpers ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Wraps <see cref="ExecuteServerStepAsync"/> with a per-step timeout
+    /// from <see cref="StepSnapshot.TimeoutSeconds"/>. Returns
+    /// <c>(ok, timedOut)</c> so the caller can distinguish a runner-side
+    /// failure from a timeout-induced cancellation.
+    /// <para>
+    /// <c>TimeoutSeconds = 0</c> means unlimited — short-circuits without
+    /// allocating the linked CTS.
+    /// </para>
+    /// </summary>
+    private async Task<(bool Ok, bool TimedOut)> RunServerStepWithTimeoutAsync(
+        Guid deploymentId,
+        DeploymentStepPlan step,
+        StepSnapshot snapshot,
+        IReadOnlyDictionary<string, string> flatVars,
+        CancellationToken ct)
+    {
+        if (snapshot.TimeoutSeconds <= 0)
+        {
+            var ok = await ExecuteServerStepAsync(deploymentId, step, flatVars, ct)
+                .ConfigureAwait(false);
+            return (ok, false);
+        }
+
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        linkedCts.CancelAfter(TimeSpan.FromSeconds(snapshot.TimeoutSeconds));
+        try
+        {
+            var ok = await ExecuteServerStepAsync(
+                deploymentId, step, flatVars, linkedCts.Token).ConfigureAwait(false);
+            return (ok, false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Distinguish per-step timeout from a deployment-level cancellation.
+            if (!ct.IsCancellationRequested && linkedCts.IsCancellationRequested)
+            {
+                return (Ok: false, TimedOut: true);
+            }
+            throw;
+        }
+    }
+
+    private static async Task LogAndAuditStepSkippedAsync(
+        KrakenDbContext db, IAuditLog audit,
+        Deployment deployment, StepSnapshot snapshot,
+        StepConditionEvaluator.Decision decision,
+        CancellationToken ct)
+    {
+        db.DeploymentLogEntries.Add(new DeploymentLogEntry
+        {
+            DeploymentId = deployment.Id,
+            Sequence     = deployment.NextLogSequence++,
+            Timestamp    = DateTimeOffset.UtcNow,
+            Level        = "info",
+            Message      = $"--- Step '{snapshot.Name}' skipped: {decision.Reason} ---",
+        });
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        // Variable conditions get a dedicated audit type so operators can
+        // filter for "deployments where the expression didn't resolve."
+        // Other skips share the StepSkipped event type.
+        var eventType = decision.Reason.Contains("unresolved", StringComparison.Ordinal)
+            ? AuditEventType.DeploymentVariableConditionUnresolved
+            : AuditEventType.DeploymentStepSkipped;
+        await audit.RecordAsync(
+            eventType,
+            subjectType: "Deployment",
+            subjectId:   deployment.Id.ToString(),
+            details:     $"Step={snapshot.Name}, Reason={decision.Reason}",
+            ct: ct).ConfigureAwait(false);
+    }
+
+    private static async Task LogAndAuditStepTimedOutAsync(
+        KrakenDbContext db, IAuditLog audit,
+        Deployment deployment, StepSnapshot snapshot,
+        CancellationToken ct)
+    {
+        var msg = $"--- Step '{snapshot.Name}' timed out after " +
+                  $"{snapshot.TimeoutSeconds.ToString(CultureInfo.InvariantCulture)}s ---";
+        db.DeploymentLogEntries.Add(new DeploymentLogEntry
+        {
+            DeploymentId = deployment.Id,
+            Sequence     = deployment.NextLogSequence++,
+            Timestamp    = DateTimeOffset.UtcNow,
+            Level        = "error",
+            Message      = msg,
+        });
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await audit.RecordAsync(
+            AuditEventType.DeploymentStepTimedOut,
+            subjectType: "Deployment",
+            subjectId:   deployment.Id.ToString(),
+            details:     $"Step={snapshot.Name}, " +
+                         $"TimeoutSeconds={snapshot.TimeoutSeconds.ToString(CultureInfo.InvariantCulture)}",
+            ct: ct).ConfigureAwait(false);
+    }
+
+    private static async Task LogAndAuditStepFailedNonRequiredAsync(
+        KrakenDbContext db, IAuditLog audit,
+        Deployment deployment, StepSnapshot snapshot,
+        CancellationToken ct)
+    {
+        db.DeploymentLogEntries.Add(new DeploymentLogEntry
+        {
+            DeploymentId = deployment.Id,
+            Sequence     = deployment.NextLogSequence++,
+            Timestamp    = DateTimeOffset.UtcNow,
+            Level        = "warning",
+            Message      = $"--- Step '{snapshot.Name}' failed (not required) — " +
+                           "deployment continues ---",
+        });
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await audit.RecordAsync(
+            AuditEventType.DeploymentStepFailedNonRequired,
+            subjectType: "Deployment",
+            subjectId:   deployment.Id.ToString(),
+            details:     $"Step={snapshot.Name}",
+            ct: ct).ConfigureAwait(false);
     }
 
     /// <summary>
