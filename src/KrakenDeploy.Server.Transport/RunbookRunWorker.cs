@@ -133,27 +133,50 @@ public sealed class RunbookRunWorker(
                 varDict[name] = value;
             }
 
-            // ── Build plan ───────────────────────────────────────────────────
-            var steps = run.ProcessSnapshot
+            // ── Build plan via M15.2 flattener ────────────────────────────────
+            // The flattener walks the (potentially tree-shaped) snapshot,
+            // expanding Step Groups + ForEach iterations, with Octostache
+            // substitution applied per emitted plan. Mirrors the
+            // DeploymentWorker path. Pre-M15 runbook snapshots are flat
+            // (every step's ParentStepId is null → flattener walks them
+            // as top-level steps, behaviour identical to pre-flattener).
+            var snapshotSteps = run.ProcessSnapshot
                 .OrderBy(s => s.SortOrder)
-                .Select((s, i) => new DeploymentStepPlan(
-                    Index: i,
-                    Name: s.Name,
-                    StepType: s.StepType,
-                    PackageId: s.PackageId,
-                    PackageVersion: s.PackageVersion,
-                    Config: SubstituteConfig(s.Config, varDict),
-                    TargetRoles: s.TargetRoles,
-                    ReferencedPackages: null,
-                    StepPackageName: s.StepPackageName,
-                    StepPackageVersion: s.StepPackageVersion))
                 .ToArray();
+
+            var flatten = DeploymentPlanFlattener.Flatten(
+                snapshotSteps, arrayVars, varDict);
+
+            // Process flatten warnings — for runbooks we don't have the
+            // full audit + log infrastructure the orchestrator does, but
+            // we still log at the appropriate level so operators see what
+            // happened in the run's log stream.
+            foreach (var w in flatten.Warnings)
+            {
+                var level = w.Kind == DeploymentPlanFlattener.WarningKind.ForEachEmpty
+                    ? Microsoft.Extensions.Logging.LogLevel.Information
+                    : Microsoft.Extensions.Logging.LogLevel.Error;
+                logger.Log(level,
+                    "Runbook {RunId} flatten warning [{Kind}] for step '{Step}': {Detail}",
+                    run.Id, w.Kind, w.Source.Name, w.Detail);
+
+                // ForEachUnresolved + Required parent → fail the run.
+                // Mirrors the DeploymentWorker Required gate.
+                if (w.Kind == DeploymentPlanFlattener.WarningKind.ForEachUnresolved
+                    && w.Source.Required)
+                {
+                    await FailAsync(db, run,
+                        $"Required ForEach step '{w.Source.Name}' could not " +
+                        $"resolve its collection: {w.Detail}", ct).ConfigureAwait(false);
+                    return;
+                }
+            }
 
             // The plan uses RunbookRun.Id as DeploymentId — AgentHub resolves both tables.
             var plan = new DeploymentPlan(
                 DeploymentId: run.Id,
                 EnvironmentName: run.Environment.Name,
-                Steps: steps,
+                Steps: flatten.Plans,
                 Variables: flatVars,
                 ArrayVariables: arrayVars);
 
@@ -183,17 +206,9 @@ public sealed class RunbookRunWorker(
         }
     }
 
-    private static Dictionary<string, string> SubstituteConfig(
-        Dictionary<string, string> config, VariableDictionary vars)
-    {
-        if (config.Count == 0)
-        {
-            return config;
-        }
-        return config.ToDictionary(
-            kv => kv.Key,
-            kv => vars.Evaluate(kv.Value) ?? kv.Value);
-    }
+    // M15.2 follow-up: SubstituteConfig moved into DeploymentPlanFlattener
+    // so per-iteration variable values resolve correctly. The flattener
+    // owns the per-ForEach-iteration variable bag.
 
     private static async Task FailAsync(
         KrakenDbContext db, Core.Domain.Runbooks.RunbookRun run, string reason, CancellationToken ct)

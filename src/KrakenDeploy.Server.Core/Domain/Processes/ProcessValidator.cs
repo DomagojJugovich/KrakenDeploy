@@ -76,13 +76,15 @@ public static class ProcessValidator
     /// Errors are accumulated; the validator does NOT short-circuit on
     /// the first error so the editor can surface all problems at once.
     /// </summary>
-    public static Result Validate(IEnumerable<DeploymentStep> stepsEnumerable)
+    public static Result Validate(IEnumerable<IComposableStep> stepsEnumerable)
     {
         ArgumentNullException.ThrowIfNull(stepsEnumerable);
 
         // Materialise once — the validator does two passes (per-step
         // checks + cycle DFS) and the typical input is already a list.
-        var steps = stepsEnumerable as IReadOnlyCollection<DeploymentStep>
+        // IEnumerable<DeploymentStep> + IEnumerable<RunbookStep> both
+        // pass through covariantly thanks to IComposableStep.
+        var steps = stepsEnumerable as IReadOnlyCollection<IComposableStep>
                     ?? [.. stepsEnumerable];
         if (steps.Count == 0)
         {

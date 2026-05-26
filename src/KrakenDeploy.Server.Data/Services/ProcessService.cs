@@ -201,18 +201,6 @@ public class ProcessService(
         return step;
     }
 
-    /// <summary>
-    /// M15 — wrapper for the optional parent-reassignment parameter on
-    /// <see cref="UpdateStepAsync"/>. A bare <c>Guid?</c> couldn't
-    /// distinguish "leave the parent alone" from "make this step a
-    /// top-level step (null parent)". Callers pass
-    /// <see cref="To(Guid?)"/> when they want to change the parent and
-    /// <c>null</c> (the default) when they want to leave it alone.
-    /// </summary>
-    public sealed record UpdateParent(Guid? NewParentStepId)
-    {
-        public static UpdateParent To(Guid? parentStepId) => new(parentStepId);
-    }
 
     /// <summary>
     /// Resolves the pin: explicit (name, version) wins; otherwise asks the

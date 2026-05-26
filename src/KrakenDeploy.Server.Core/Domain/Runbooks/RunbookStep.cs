@@ -1,4 +1,5 @@
 using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Processes;
 
 namespace KrakenDeploy.Server.Core.Domain.Runbooks;
 
@@ -7,7 +8,7 @@ namespace KrakenDeploy.Server.Core.Domain.Runbooks;
 /// <c>DeploymentStep</c> but is FK'd to a runbook process instead of a
 /// deployment process, keeping runbook steps independently versioned.
 /// </summary>
-public class RunbookStep : Entity
+public class RunbookStep : Entity, IComposableStep
 {
     public Guid ProcessId { get; set; }
     public RunbookProcess Process { get; set; } = null!;
@@ -36,4 +37,28 @@ public class RunbookStep : Entity
     /// <see cref="Processes.DeploymentStep.StepPackageVersion"/>.
     /// </summary>
     public string? StepPackageVersion { get; set; }
+
+    // ── M15 step composition (child steps + ForEach) ──────────────────
+
+    /// <summary>
+    /// M15 — when set, marks this step as a child of another step in
+    /// the same <see cref="RunbookProcess"/>. Only steps of type
+    /// <see cref="KrakenStepTypes.StepGroup"/> may have children;
+    /// validation in <c>RunbookService.ValidateAsync</c> enforces this.
+    ///
+    /// <para>
+    /// Mirrors <see cref="Processes.DeploymentStep.ParentStepId"/>. The
+    /// runbook run worker pre-flattens the tree at dispatch time via
+    /// <c>DeploymentPlanFlattener</c> so the agent receives a flat plan
+    /// just as today; ForEach iteration + cross-step output references
+    /// work via the same machinery as deployment processes.
+    /// </para>
+    /// </summary>
+    public Guid? ParentStepId { get; set; }
+
+    /// <summary>Navigation to the parent step (M15). Null for top-level steps.</summary>
+    public RunbookStep? Parent { get; set; }
+
+    /// <summary>Navigation to child steps (M15). Empty for leaf-type steps.</summary>
+    public ICollection<RunbookStep> Children { get; set; } = [];
 }

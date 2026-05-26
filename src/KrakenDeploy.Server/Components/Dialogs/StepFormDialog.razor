@@ -1170,7 +1170,7 @@
                 // different parent. Same-parent saves leave the FK untouched
                 // to avoid spurious modified rows + audit churn.
                 var parentUpdate = _selectedParentStepId != Step.ParentStepId
-                    ? ProcessService.UpdateParent.To(_selectedParentStepId)
+                    ? UpdateParent.To(_selectedParentStepId)
                     : null;
                 await ProcessSvc.UpdateStepAsync(
                     Step.Id, _name, _packageId, roles, config,

@@ -1,5 +1,6 @@
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Processes;
+using KrakenDeploy.Server.Core.Domain.Runbooks;
 
 namespace KrakenDeploy.Server.Core.Tests;
 
@@ -147,6 +148,57 @@ public sealed class ProcessValidatorTests
 
         result.IsValid.Should().BeTrue();
     }
+
+    // ── M15 follow-up: validator works for RunbookStep too ─────────────
+
+    [Fact]
+    public void Validator_works_for_RunbookStep_via_IComposableStep()
+    {
+        // The same validator + the same rules apply to runbook step
+        // composition. Pin the cross-entity contract: RunbookStep
+        // implements IComposableStep, so IEnumerable<RunbookStep>
+        // passes covariantly to Validate.
+        var group = NewRunbookLeaf("My runbook group",
+            stepType: KrakenStepTypes.StepGroup);
+        var c1 = NewRunbookLeaf("Child 1", parentId: group.Id);
+        var c2 = NewRunbookLeaf("Child 2", parentId: group.Id);
+
+        var result = ProcessValidator.Validate([group, c1, c2]);
+
+        result.IsValid.Should().BeTrue(
+            "the validator must accept the same happy-path tree on " +
+            "RunbookStep that it accepts on DeploymentStep");
+    }
+
+    [Fact]
+    public void Validator_rejects_RunbookStep_leaf_with_children()
+    {
+        // The LeafTypeHasChildren rule applies symmetrically — a runbook
+        // leaf step (Kraken.Script) cannot have child steps either.
+        var parent = NewRunbookLeaf("Bad parent", stepType: "Kraken.Script");
+        var child  = NewRunbookLeaf("Orphan child", parentId: parent.Id);
+
+        var result = ProcessValidator.Validate([parent, child]);
+
+        result.Errors.Should().ContainSingle(e =>
+            e.Code == ProcessValidator.ValidationErrorCode.LeafTypeHasChildren
+            && e.StepId == parent.Id);
+    }
+
+    private static RunbookStep NewRunbookLeaf(
+        string name,
+        string stepType = "Kraken.Script",
+        Guid? parentId = null) => new()
+    {
+        Id           = Guid.CreateVersion7(),
+        Name         = name,
+        StepType     = stepType,
+        PackageId    = "",
+        ProcessId    = Guid.NewGuid(),
+        ParentStepId = parentId,
+        Config       = [],
+        TargetRoles  = [],
+    };
 
     // ── helper ─────────────────────────────────────────────────────────
 

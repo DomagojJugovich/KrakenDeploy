@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
 using Microsoft.EntityFrameworkCore;
@@ -119,14 +120,16 @@ public class RunbookService(
         Dictionary<string, string> config,
         string? stepPackageName = null,
         string? stepPackageVersion = null,
+        Guid? parentStepId = null,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var process = await GetOrCreateProcessAsync(db, runbookId, ct).ConfigureAwait(false);
 
-        var maxOrder = process.Steps.Count > 0
-            ? process.Steps.Max(s => s.SortOrder)
-            : -1;
+        // M15 — SortOrder is scoped to siblings (per-parent). Top-level
+        // steps share one numbering; children of each group share their own.
+        var siblings = process.Steps.Where(s => s.ParentStepId == parentStepId).ToList();
+        var maxOrder = siblings.Count > 0 ? siblings.Max(s => s.SortOrder) : -1;
 
         var pin = await ResolvePinAsync(
                 stepType, stepPackageName, stepPackageVersion, ct)
@@ -143,10 +146,17 @@ public class RunbookService(
             SortOrder          = maxOrder + 1,
             StepPackageName    = pin?.Name,
             StepPackageVersion = pin?.Version,
+            ParentStepId       = parentStepId,
         };
 
         db.RunbookSteps.Add(step);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        // M15 — structural validation as defence in depth. Mirrors
+        // ProcessService.EnsureValidAsync: throws ProcessValidationException
+        // when the tree violates an invariant.
+        await EnsureValidAsync(db, process.Id, ct).ConfigureAwait(false);
+
         return step;
     }
 
@@ -159,6 +169,7 @@ public class RunbookService(
         Dictionary<string, string> config,
         string? stepPackageName = null,
         string? stepPackageVersion = null,
+        UpdateParent? updateParent = null,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -180,8 +191,39 @@ public class RunbookService(
             step.StepPackageVersion = stepPackageVersion;
         }
 
+        // M15 — parent reassignment. UpdateParent wrapper distinguishes
+        // "don't touch" (default null) from "reparent to top-level (null)".
+        if (updateParent is not null)
+        {
+            step.ParentStepId = updateParent.NewParentStepId;
+        }
+
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        await EnsureValidAsync(db, step.ProcessId, ct).ConfigureAwait(false);
+
         return step;
+    }
+
+    /// <summary>
+    /// M15 — runs <see cref="ProcessValidator"/> against the current state
+    /// of the runbook process's steps + throws <see cref="ProcessValidationException"/>
+    /// when any rule is broken. Mirrors <c>ProcessService.EnsureValidAsync</c>.
+    /// The validator works on <see cref="IComposableStep"/>, so the same
+    /// rules apply to both deployment processes and runbooks.
+    /// </summary>
+    private static async Task EnsureValidAsync(
+        KrakenDbContext db, Guid processId, CancellationToken ct)
+    {
+        var steps = await db.RunbookSteps
+            .Where(s => s.ProcessId == processId)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        var result = ProcessValidator.Validate(steps);
+        if (!result.IsValid)
+        {
+            throw new ProcessValidationException(result);
+        }
     }
 
     /// <summary>
@@ -257,12 +299,13 @@ public class RunbookService(
             .OrderBy(s => s.SortOrder)
             .Select(s => new StepSnapshot
             {
-                // M15 — freeze the step's Id so the flattener can match
-                // parent-child links. Runbooks don't yet support step
-                // composition (no ParentStepId on RunbookStep), so the
-                // snapshot's ParentStepId stays null and the flattener
-                // walks them as flat top-level steps.
+                // M15 — freeze the step's Id + parent link so the flattener
+                // can walk the tree at run time. Runbooks support step
+                // composition as of the M15 follow-up commit (ParentStepId
+                // is now on RunbookStep + RunbookRunWorker pre-flattens
+                // the tree via DeploymentPlanFlattener).
                 Id                 = s.Id,
+                ParentStepId       = s.ParentStepId,
                 Name               = s.Name,
                 StepType           = s.StepType,
                 PackageId          = s.PackageId,

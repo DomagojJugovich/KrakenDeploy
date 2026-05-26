@@ -2304,7 +2304,7 @@ public static class Program
             {
                 var step = await runbookSvc.AddStepAsync(
                     runbookId, req.Name, req.StepType, req.PackageId, req.TargetRoles, req.Config,
-                    req.StepPackageName, req.StepPackageVersion, ct)
+                    req.StepPackageName, req.StepPackageVersion, ct: ct)
                     .ConfigureAwait(false);
                 return Results.Created($"/api/runbooks/{runbookId}/steps/{step.Id}", step);
             }).RequirePermission(Permission.RunbookEdit);
@@ -2314,7 +2314,7 @@ public static class Program
             {
                 var step = await runbookSvc.UpdateStepAsync(
                     stepId, req.Name, req.StepType, req.PackageId, req.TargetRoles, req.Config,
-                    req.StepPackageName, req.StepPackageVersion, ct)
+                    req.StepPackageName, req.StepPackageVersion, ct: ct)
                     .ConfigureAwait(false);
                 return step is null ? Results.NotFound() : Results.Ok(step);
             }).RequirePermission(Permission.RunbookEdit);

@@ -19,7 +19,7 @@ namespace KrakenDeploy.Server.Core.Domain.Processes;
 /// </list>
 /// </para>
 /// </summary>
-public class DeploymentStep : Entity
+public class DeploymentStep : Entity, IComposableStep
 {
     public Guid ProcessId { get; set; }
     public DeploymentProcess Process { get; set; } = null!;
