@@ -59,6 +59,16 @@ public sealed class DeploymentWorker(
         }
     }
 
+    /// <summary>
+    /// Test-only entry point exposing the dispatch loop so the orchestrator
+    /// can be driven from <c>OrchestratorTestHarness</c> without spinning
+    /// up the BackgroundService + Channel<Guid> queue. Production code
+    /// reaches this method through <see cref="ExecuteAsync"/>'s
+    /// fire-and-forget — DO NOT call directly from production paths.
+    /// </summary>
+    internal Task DispatchForTestAsync(Guid deploymentId, CancellationToken ct)
+        => DispatchAsync(deploymentId, ct);
+
     private async Task DispatchAsync(Guid deploymentId, CancellationToken ct)
     {
         await using var scope = scopeFactory.CreateAsyncScope();

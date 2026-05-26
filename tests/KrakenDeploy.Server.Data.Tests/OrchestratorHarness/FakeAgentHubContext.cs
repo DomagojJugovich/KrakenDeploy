@@ -1,0 +1,183 @@
+using System.Collections.Concurrent;
+using KrakenDeploy.Contracts;
+using KrakenDeploy.Server.Transport;
+using Microsoft.AspNetCore.SignalR;
+
+namespace KrakenDeploy.Server.Data.Tests.OrchestratorHarness;
+
+/// <summary>
+/// Pluggable response a <see cref="FakeAgent"/> returns for a step
+/// dispatched by the orchestrator. Mirrors what the real agent would
+/// stream back via <c>AgentHub.ReportStepCompletedAsync</c> +
+/// <c>AgentHub.CompleteDeploymentAsync</c> at the end of the wave.
+/// </summary>
+public sealed record FakeStepResponse(
+    bool Success,
+    string? ErrorMessage = null,
+    IReadOnlyDictionary<string, string>? Outputs = null)
+{
+    public static FakeStepResponse Ok { get; } = new(Success: true);
+    public static FakeStepResponse Fail(string reason) => new(Success: false, ErrorMessage: reason);
+}
+
+/// <summary>
+/// One configured fake agent. The orchestrator dispatches sub-plans to a
+/// connection id; the harness routes that to the matching agent via the
+/// shared <see cref="IAgentConnectionRegistry"/>. Per-step responses are
+/// keyed by step name with a default fallback for steps with no explicit
+/// rule.
+/// <para>
+/// <strong>Synchronous simulation</strong>: when the orchestrator calls
+/// <c>RunDeploymentAsync</c>, the agent walks the wave's steps inline,
+/// records per-step boundaries via <see cref="IPendingSubPlanRegistry.RecordStepResult"/>,
+/// and resolves the TCS via <see cref="IPendingSubPlanRegistry.TryResolve"/>
+/// before <c>RunDeploymentAsync</c> returns. The orchestrator's
+/// <c>await tcs.Task</c> then resolves immediately — no Task.Delay games
+/// needed.
+/// </para>
+/// </summary>
+public sealed class FakeAgent
+{
+    public Guid TargetId { get; init; }
+    public required string ConnectionId { get; init; }
+
+    /// <summary>Per-step-name override. First match wins; falls back to
+    /// <see cref="DefaultResponse"/>.</summary>
+    public Dictionary<string, FakeStepResponse> StepResponses { get; init; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public FakeStepResponse DefaultResponse { get; set; } = FakeStepResponse.Ok;
+
+    /// <summary>When non-null, the agent goes "offline" after this many wave
+    /// dispatches (the harness removes its registry entry). Lets tests cover
+    /// mid-deployment offline drop-outs.</summary>
+    public int? GoOfflineAfterWaves { get; set; }
+
+    internal int WaveCount;
+
+    public FakeStepResponse ResponseFor(string stepName)
+        => StepResponses.TryGetValue(stepName, out var r) ? r : DefaultResponse;
+}
+
+/// <summary>
+/// Fake <see cref="IHubContext{THub, T}"/> for orchestrator E2E tests.
+/// Returns a <see cref="FakeAgentClient"/> per <c>Client(connectionId)</c>
+/// call; the client simulates the agent's per-step boundary reports +
+/// final completion against the shared
+/// <see cref="IPendingSubPlanRegistry"/>.
+/// </summary>
+internal sealed class FakeAgentHubContext : IHubContext<AgentHub, IAgentHubClient>
+{
+    private readonly FakeHubClients _clients;
+
+    public FakeAgentHubContext(
+        IPendingSubPlanRegistry subPlans,
+        IAgentConnectionRegistry connectionRegistry,
+        ConcurrentDictionary<Guid, FakeAgent> agentsByTargetId)
+    {
+        _clients = new FakeHubClients(subPlans, connectionRegistry, agentsByTargetId);
+    }
+
+    public IHubClients<IAgentHubClient> Clients => _clients;
+    public IGroupManager Groups => throw new NotSupportedException(
+        "FakeAgentHubContext: groups aren't used by the orchestrator's dispatch path.");
+}
+
+internal sealed class FakeHubClients(
+    IPendingSubPlanRegistry subPlans,
+    IAgentConnectionRegistry connectionRegistry,
+    ConcurrentDictionary<Guid, FakeAgent> agentsByTargetId)
+    : IHubClients<IAgentHubClient>
+{
+    public IAgentHubClient All => throw NotUsed();
+    public IAgentHubClient AllExcept(IReadOnlyList<string> excluded) => throw NotUsed();
+
+    public IAgentHubClient Client(string connectionId)
+    {
+        // Caller asked for a connection id; the orchestrator's offline-
+        // detection path SHOULD have caught a missing one before calling
+        // Client(), so reaching here with an unknown id means a harness
+        // misconfiguration — fail loud so tests don't pass on a typo.
+        var targetId = connectionRegistry.GetTargetId(connectionId)
+            ?? throw new InvalidOperationException(
+                $"FakeAgentHubContext: no fake agent registered for connection '{connectionId}'.");
+        if (!agentsByTargetId.TryGetValue(targetId, out var agent))
+        {
+            throw new InvalidOperationException(
+                $"FakeAgentHubContext: connection {connectionId} maps to target " +
+                $"{targetId} but no FakeAgent is configured for that target.");
+        }
+        return new FakeAgentClient(agent, subPlans, connectionRegistry);
+    }
+
+    public IAgentHubClient Clients(IReadOnlyList<string> connectionIds) => throw NotUsed();
+    public IAgentHubClient Group(string groupName) => throw NotUsed();
+    public IAgentHubClient GroupExcept(string groupName, IReadOnlyList<string> excluded) => throw NotUsed();
+    public IAgentHubClient Groups(IEnumerable<string> groupNames) => throw NotUsed();
+    public IAgentHubClient Groups(IReadOnlyList<string> groupNames) => throw NotUsed();
+    public IAgentHubClient User(string userId) => throw NotUsed();
+    public IAgentHubClient Users(IEnumerable<string> userIds) => throw NotUsed();
+    public IAgentHubClient Users(IReadOnlyList<string> userIds) => throw NotUsed();
+
+    private static NotSupportedException NotUsed()
+        => new("FakeAgentHubContext: orchestrator only uses Clients.Client(connectionId).");
+}
+
+/// <summary>
+/// The per-connection client the orchestrator calls
+/// <see cref="IAgentHubClient.RunDeploymentAsync"/> on. Simulates the agent
+/// inline: walks the plan's steps, calls RecordStepResult per step, then
+/// TryResolve with the aggregate outcome. Synchronous wrt the orchestrator's
+/// pending TCS so <c>await tcs.Task</c> resolves immediately.
+/// </summary>
+internal sealed class FakeAgentClient(
+    FakeAgent agent,
+    IPendingSubPlanRegistry subPlans,
+    IAgentConnectionRegistry connectionRegistry)
+    : IAgentHubClient
+{
+    public Task PingAsync() => Task.CompletedTask;
+
+    public Task RunDeploymentAsync(DeploymentPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+
+        // Per-step boundary reports — order matches plan.Steps so the
+        // orchestrator's drain order matches what the real agent emits.
+        var allSuccess = true;
+        string? firstError = null;
+        foreach (var step in plan.Steps)
+        {
+            var response = agent.ResponseFor(step.Name);
+            subPlans.RecordStepResult(
+                plan.DeploymentId, agent.TargetId,
+                new SubPlanStepResult(
+                    StepIndex:    step.Index,
+                    StepName:     step.Name,
+                    Success:      response.Success,
+                    ErrorMessage: response.ErrorMessage,
+                    Outputs:      response.Outputs is null
+                        ? new Dictionary<string, string>()
+                        : new Dictionary<string, string>(response.Outputs, StringComparer.OrdinalIgnoreCase)));
+            if (!response.Success)
+            {
+                allSuccess = false;
+                firstError ??= response.ErrorMessage ?? $"Step '{step.Name}' reported failure.";
+            }
+        }
+
+        subPlans.TryResolve(
+            plan.DeploymentId, agent.TargetId,
+            new SubPlanResult(allSuccess, firstError));
+
+        // Optional offline-after-N-waves simulation: agent drops its
+        // connection after THIS wave. The orchestrator's next wave will
+        // see the target as offline and trigger Phase 3's drop-out.
+        agent.WaveCount++;
+        if (agent.GoOfflineAfterWaves is { } n && agent.WaveCount >= n)
+        {
+            connectionRegistry.TryRemove(agent.ConnectionId, out _);
+        }
+
+        return Task.CompletedTask;
+    }
+}

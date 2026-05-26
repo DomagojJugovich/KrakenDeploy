@@ -20,4 +20,12 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- Test harness needs to drive DeploymentWorker.DispatchAsync directly
+         (bypassing the BackgroundService + Channel<Guid> queue) to keep
+         orchestrator E2E tests deterministic. The internal seam is one
+         method (DispatchForTestAsync) so the surface stays narrow. -->
+    <InternalsVisibleTo Include="KrakenDeploy.Server.Data.Tests" />
+  </ItemGroup>
+
 </Project>
