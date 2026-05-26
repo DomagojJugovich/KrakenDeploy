@@ -575,40 +575,17 @@ public sealed class DeploymentExecutor(
     // ── Output-variable plumbing ───────────────────────────────────────────────
 
     /// <summary>
-    /// Returns a copy of the plan with <c>Octopus.Action[StepKey].Output.X</c>
-    /// keys merged into <see cref="DeploymentPlan.Variables"/> for every
-    /// previously-completed step's captured output variables.
-    ///
-    /// <para>
-    /// M15.2: <c>StepKey</c> is the step's
-    /// <see cref="DeploymentStepPlan.AccumulatorKey"/> when set (ForEach
-    /// iterations use a stable synthetic key like <c>"Deploy[0]"</c>),
-    /// otherwise the display <see cref="DeploymentStepPlan.Name"/>. The
-    /// caller writes into <paramref name="outputsByStep"/> with the same
-    /// key so Octostache references like
-    /// <c>#{Octopus.Action[Deploy[0]].Output.Foo}</c> resolve correctly.
-    /// </para>
+    /// M15.2 + follow-up — delegates to
+    /// <see cref="OutputVariableAccumulator.AugmentPlanWithPriorOutputs"/>.
+    /// The accumulator was extracted from this file so the cross-iteration
+    /// reference contract can be unit-tested without spinning up the full
+    /// executor; this wrapper preserves the original call site for the
+    /// per-wave snapshot path.
     /// </summary>
     private static DeploymentPlan AugmentPlanWithPriorOutputs(
         DeploymentPlan basePlan,
         Dictionary<string, Dictionary<string, string>> outputsByStep)
-    {
-        if (outputsByStep.Count == 0)
-        {
-            return basePlan;
-        }
-
-        var merged = new Dictionary<string, string>(basePlan.Variables, StringComparer.OrdinalIgnoreCase);
-        foreach (var (stepName, outputs) in outputsByStep)
-        {
-            foreach (var (name, value) in outputs)
-            {
-                merged[$"Octopus.Action[{stepName}].Output.{name}"] = value;
-            }
-        }
-
-        return basePlan with { Variables = merged };
-    }
+        => OutputVariableAccumulator.AugmentPlanWithPriorOutputs(basePlan, outputsByStep);
 
     // ── Artifact collection ────────────────────────────────────────────────────
 

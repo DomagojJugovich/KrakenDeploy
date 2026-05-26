@@ -13,6 +13,7 @@
 @inject StepPackageResolver StepPackageRes
 @inject NotificationService Notifications
 @inject FeatureFlagService FeatureFlags
+@inject VariableService VariableSvc
 
 @*
     Unified step add/edit dialog. Replaces the legacy script-only StepFormDialog
@@ -305,10 +306,24 @@
 
                     <RadzenFormField Text="Collection variable name"
                                      Variant="Variant.Outlined" Style="width:100%">
-                        <RadzenTextBox @bind-Value="_foreachCollection"
-                                       Style="width:100%"
-                                       Placeholder="e.g. envs (must be an array variable in the project)" />
+                        @* M15 follow-up — autocomplete over the project's
+                           StringArray variables. Operators pick a known
+                           array OR type a template expression (e.g.
+                           "#{env}-instances") for nested-ForEach lazy
+                           resolution. Free-text always accepted; missing
+                           names are caught at deployment dispatch via
+                           Deployment.ForEachUnresolved. *@
+                        <RadzenAutoComplete @bind-Value="_foreachCollection"
+                                            Data="@_arrayVariableNames"
+                                            Style="width:100%"
+                                            Placeholder="@AutocompletePlaceholder" />
                     </RadzenFormField>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                        Pick a <code>StringArray</code> project variable, or type a
+                        template expression (e.g. <code>#{env}-instances</code>)
+                        for nested ForEach. Missing names fail the deployment
+                        with a <code>Deployment.ForEachUnresolved</code> audit.
+                    </RadzenText>
 
                     @if (!string.IsNullOrWhiteSpace(_foreachCollection))
                     {
@@ -591,6 +606,18 @@
     /// Octopus.Action.ForEach.Parallel = "true" in Config.</summary>
     private bool _foreachParallel;
 
+    /// <summary>
+    /// M15 follow-up — names of every <c>StringArray</c> variable in the
+    /// project's variable set. Powers the autocomplete on the Collection
+    /// field. Loaded once per dialog open via
+    /// <see cref="VariableService.GetVariablesAsync"/> filtered to
+    /// <c>Type == "StringArray"</c>. Empty if the project has no
+    /// array variables defined yet — the autocomplete still accepts
+    /// free-text (operators can type a templated expression like
+    /// <c>#{env}-instances</c> for nested ForEach lazy resolution).
+    /// </summary>
+    private List<string> _arrayVariableNames = [];
+
     protected override async Task OnParametersSetAsync()
     {
         _isEdit = Step is not null;
@@ -744,6 +771,33 @@
         else
         {
             _selectedParentStepId = ParentStepId;
+        }
+
+        // M15 follow-up — load array variable names for the ForEach
+        // collection autocomplete. Only needed when editing a Step Group
+        // or adding one; everything else hides the panel. The lookup
+        // tolerates a missing project id (no autocomplete suggestions
+        // but the free-text input still works).
+        if (_isStepGroup)
+        {
+            var projectIdForVars = ProjectId;
+            if (projectIdForVars is null && Step is not null)
+            {
+                var process = await ProcessSvc
+                    .GetProcessByIdAsync(Step.ProcessId).ConfigureAwait(false);
+                projectIdForVars = process?.ProjectId;
+            }
+            if (projectIdForVars is not null)
+            {
+                var allVars = await VariableSvc
+                    .GetVariablesAsync(projectIdForVars.Value).ConfigureAwait(false);
+                _arrayVariableNames = allVars
+                    .Where(v => string.Equals(v.Type, "StringArray",
+                                              StringComparison.OrdinalIgnoreCase))
+                    .Select(v => v.Name)
+                    .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
         }
     }
 
@@ -1189,6 +1243,18 @@
     ];
 
     private sealed record ParentOption(Guid? Value, string Label);
+
+    /// <summary>
+    /// M15 follow-up — placeholder text for the ForEach Collection
+    /// autocomplete. Hints at available array vars when the project
+    /// has any; falls back to a generic prompt otherwise.
+    /// </summary>
+    private string AutocompletePlaceholder => _arrayVariableNames.Count switch
+    {
+        0   => "e.g. envs (no array variables in this project yet — type a name or template)",
+        1   => $"e.g. {_arrayVariableNames[0]}",
+        _   => $"e.g. {_arrayVariableNames[0]} ({_arrayVariableNames.Count} array variables in this project)",
+    };
 
     private sealed class PackageRefRow
     {
