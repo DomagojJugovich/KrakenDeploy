@@ -1867,7 +1867,17 @@ Sequenced AFTER M14. M15's flattener runs BEFORE M14.4's wave partitioner; layer
   - `SpacesTests` excluded list updated (scope inherits via DeploymentId).
   - Zero behavior change: suite stays at 863 green.
 
-  **Phase 1b — Orchestrator fan-out (TODO)**: rewrite `DeploymentWorker.DispatchAsync` + `RunbookRunWorker` to walk `deployment.Targets`. Variable resolution moves inside the per-target loop. Target-side waves dispatch sub-plan per target in parallel (no rate limit). Helpers that read `deployment.Target` directly (`DropBundleService`, `OfflineResultService`, `DeployReleaseStepRunner`, `OctopusSystemVariablesBuilder`) need rewiring to per-target.
+  **Phase 1b — Orchestrator fan-out, DONE 2026-05-26**:
+  - `DeploymentWorker.DispatchAsync` rewritten: walks `deployment.Targets` (with fallback to legacy `Deployment.Target` for joinless rows). Per-target `TargetDispatchContext` (var bag + flat vars + array vars + flattener + plan + steps + snapshot lookup) built by `BuildTargetDispatchContextAsync`. Server waves run ONCE using the canonical (first target's) bag; target waves fan out via `Task.WhenAll` over `deployment.Targets`, each with its per-target sub-plan + variable bag (new helper `DispatchTargetWaveAcrossTargetsAsync`).
+  - `PendingSubPlanRegistry` slot key widened to `(deploymentId, targetId)`. `AgentHub.CompleteDeploymentAsync` + `AgentHub.ReportStepCompletedAsync` extract the target id from the connection's `NameIdentifier` claim and pass it through — no wire-contract change to the agent. New `HasSlot` query on the registry interface; multi-target slot isolation pinned by 3 new tests in `PendingSubPlanRegistryMultiTargetTests`.
+  - `DispatchTargetWaveAsync` signature gains `Guid targetId` so registry slot is per-(deployment, target). `UpsertStepOutcomeAsync` calls inside the new fan-out helper pass the per-target id so per-(target, step) outcome rows land in `deployment_step_outcomes`.
+  - **Required gate**: first Required failure on ANY target aborts the whole deployment (conservative; per-target drop-out is Phase 3). Cancellation: peers keep running until they settle naturally — we don't pre-emptively cancel.
+  - **Server-wave machine context**: uses canonical (first) target's variable bag for system + machine vars; role filter goes through `StepAppliesToTarget` against the legacy `deployment.Target`. Server steps run ONCE regardless of target count — they're deployment-scoped (DeployRelease cascade, manual interventions) so single-execution semantics preserved.
+  - **DeployRelease cascade target-set inheritance**: child deployment inherits parent's FULL target set. `DeploymentService.CreateAsync` gained optional `additionalTargetIds` parameter; `DeployReleaseStepRunner` reads `parent.Targets` (via `.Include`) and threads the additional ids through. Validates every additional target exists before insert.
+  - **Offline drop**: single-target by design — Phase 1b refuses multi-target offline drops with a clear failure reason. Polish item if operator demand surfaces.
+  - **Output variables**: still keyed by `(DeploymentId, StepName, Name)` — cross-target same-step writes resolve last-writer-wins. Phase 3 polish.
+  - **`RunbookRunWorker`**: not in scope. `RunbookRun` data model is still single-target (no join entity). Future M-RunbookRun-Rolling milestone would need a parallel Phase 1a groundwork commit.
+  - Suite: 386 + 225 + 122 + 133 = **866 green** (+3 new multi-target slot tests on top of the 863 baseline).
 
   **Phase 2 — Rolling window (TODO)**: orchestrator consumes `Octopus.Action.MaxParallelism` on `Kraken.StepGroup`; per-batch dispatch + audit. `StepFormDialog` Step Group editor gains a Max parallelism input.
 

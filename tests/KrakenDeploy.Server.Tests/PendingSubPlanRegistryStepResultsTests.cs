@@ -9,9 +9,19 @@ namespace KrakenDeploy.Server.Tests;
 /// sub-plan completion to apply per-step Required attribution + collision
 /// audits. Pin: late reports (no in-flight sub-plan) are dropped, Register
 /// clears the previous wave's bag, Drain returns arrival-order.
+///
+/// <para>
+/// M-RollingDeployments Phase 1b: the registry's slot key widened to
+/// <c>(deploymentId, targetId)</c>. These tests use a single canonical
+/// <see cref="TargetId"/> so the M14.4 semantics still hold for the
+/// single-target dispatch path; <see cref="PendingSubPlanRegistryMultiTargetTests"/>
+/// covers the multi-target slot isolation.
+/// </para>
 /// </summary>
 public sealed class PendingSubPlanRegistryStepResultsTests
 {
+    private static readonly Guid TargetId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
     [Fact]
     public void RecordStepResult_without_Register_is_dropped()
     {
@@ -21,9 +31,9 @@ public sealed class PendingSubPlanRegistryStepResultsTests
         var registry = new PendingSubPlanRegistry();
         var deploymentId = Guid.NewGuid();
 
-        registry.RecordStepResult(deploymentId, MakeResult(0, "ghost", true));
+        registry.RecordStepResult(deploymentId, TargetId, MakeResult(0, "ghost", true));
 
-        registry.DrainStepResults(deploymentId).Should().BeEmpty();
+        registry.DrainStepResults(deploymentId, TargetId).Should().BeEmpty();
     }
 
     [Fact]
@@ -34,15 +44,15 @@ public sealed class PendingSubPlanRegistryStepResultsTests
 
         // First wave: register, record one result, never drain.
         var firstTcs = new TaskCompletionSource<SubPlanResult>();
-        registry.Register(deploymentId, firstTcs);
-        registry.RecordStepResult(deploymentId, MakeResult(0, "first", true));
+        registry.Register(deploymentId, TargetId, firstTcs);
+        registry.RecordStepResult(deploymentId, TargetId, MakeResult(0, "first", true));
 
         // Second wave: re-register. The bag should be clean even though
         // the first wave's result was never drained.
         var secondTcs = new TaskCompletionSource<SubPlanResult>();
-        registry.Register(deploymentId, secondTcs);
+        registry.Register(deploymentId, TargetId, secondTcs);
 
-        registry.DrainStepResults(deploymentId).Should().BeEmpty();
+        registry.DrainStepResults(deploymentId, TargetId).Should().BeEmpty();
     }
 
     [Fact]
@@ -51,13 +61,13 @@ public sealed class PendingSubPlanRegistryStepResultsTests
         var registry = new PendingSubPlanRegistry();
         var deploymentId = Guid.NewGuid();
         var tcs = new TaskCompletionSource<SubPlanResult>();
-        registry.Register(deploymentId, tcs);
+        registry.Register(deploymentId, TargetId, tcs);
 
-        registry.RecordStepResult(deploymentId, MakeResult(2, "C", true));
-        registry.RecordStepResult(deploymentId, MakeResult(0, "A", false));
-        registry.RecordStepResult(deploymentId, MakeResult(1, "B", true));
+        registry.RecordStepResult(deploymentId, TargetId, MakeResult(2, "C", true));
+        registry.RecordStepResult(deploymentId, TargetId, MakeResult(0, "A", false));
+        registry.RecordStepResult(deploymentId, TargetId, MakeResult(1, "B", true));
 
-        var drained = registry.DrainStepResults(deploymentId);
+        var drained = registry.DrainStepResults(deploymentId, TargetId);
 
         // Arrival order — not StepIndex order. The orchestrator does its
         // own ordering (by StepIndex) where it needs SortOrder semantics
@@ -71,12 +81,12 @@ public sealed class PendingSubPlanRegistryStepResultsTests
         var registry = new PendingSubPlanRegistry();
         var deploymentId = Guid.NewGuid();
         var tcs = new TaskCompletionSource<SubPlanResult>();
-        registry.Register(deploymentId, tcs);
+        registry.Register(deploymentId, TargetId, tcs);
 
-        registry.RecordStepResult(deploymentId, MakeResult(0, "A", true));
+        registry.RecordStepResult(deploymentId, TargetId, MakeResult(0, "A", true));
 
-        registry.DrainStepResults(deploymentId).Should().HaveCount(1);
-        registry.DrainStepResults(deploymentId).Should().BeEmpty();
+        registry.DrainStepResults(deploymentId, TargetId).Should().HaveCount(1);
+        registry.DrainStepResults(deploymentId, TargetId).Should().BeEmpty();
     }
 
     [Fact]
@@ -88,15 +98,15 @@ public sealed class PendingSubPlanRegistryStepResultsTests
         var registry = new PendingSubPlanRegistry();
         var deploymentId = Guid.NewGuid();
         var tcs = new TaskCompletionSource<SubPlanResult>();
-        registry.Register(deploymentId, tcs);
+        registry.Register(deploymentId, TargetId, tcs);
 
-        registry.RecordStepResult(deploymentId, MakeResult(0, "A", true));
-        registry.RecordStepResult(deploymentId, MakeResult(1, "B", false));
+        registry.RecordStepResult(deploymentId, TargetId, MakeResult(0, "A", true));
+        registry.RecordStepResult(deploymentId, TargetId, MakeResult(1, "B", false));
 
-        registry.TryResolve(deploymentId, new SubPlanResult(false, "B failed"))
+        registry.TryResolve(deploymentId, TargetId, new SubPlanResult(false, "B failed"))
             .Should().BeTrue();
 
-        var drained = registry.DrainStepResults(deploymentId);
+        var drained = registry.DrainStepResults(deploymentId, TargetId);
         drained.Should().HaveCount(2);
         drained[1].Success.Should().BeFalse();
     }

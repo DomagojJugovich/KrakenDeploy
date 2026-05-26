@@ -245,14 +245,26 @@ public sealed class AgentHub(
         Guid deploymentId, bool success, string? errorMessage)
     {
         // If this is a sub-plan completion (the worker is mid-orchestration
-        // for a mixed-side process), resolve the pending TCS and stop here —
+        // for a multi-target or mixed-side process), resolve the pending TCS
+        // keyed by (deploymentId, this connection's target id) and stop here —
         // DeploymentWorker will finalize the deployment status once every
-        // group has completed.
-        if (subPlans.TryResolve(deploymentId, new SubPlanResult(success, errorMessage)))
+        // wave / target has completed.
+        //
+        // M-RollingDeployments Phase 1b: slot key is (deployment, target);
+        // the target id comes from the connection's NameIdentifier claim, so
+        // no wire-contract change. Pre-1b single-target dispatch is reached
+        // through the same path (the orchestrator registers under the same
+        // single target id).
+        var connectionTargetId = GetTargetId();
+        if (connectionTargetId is not null
+            && subPlans.TryResolve(
+                deploymentId, connectionTargetId.Value,
+                new SubPlanResult(success, errorMessage)))
         {
             logger.LogDebug(
-                "Sub-plan complete for deployment {Id} (success={Success}); orchestrator will continue.",
-                deploymentId, success);
+                "Sub-plan complete for deployment {Id} target {Target} (success={Success}); " +
+                "orchestrator will continue.",
+                deploymentId, connectionTargetId.Value, success);
             return;
         }
 
@@ -352,13 +364,23 @@ public sealed class AgentHub(
         // even if DB persistence fails, the orchestrator gets attribution
         // for the wave's per-step Required gate. Late reports for waves
         // that already resolved are dropped silently inside RecordStepResult.
-        subPlans.RecordStepResult(deploymentId, new SubPlanStepResult(
-            StepIndex:    stepIndex,
-            StepName:     stepName,
-            Success:      success,
-            ErrorMessage: errorMessage,
-            Outputs:      new Dictionary<string, string>(
-                              outputVariables, StringComparer.OrdinalIgnoreCase)));
+        //
+        // M-RollingDeployments Phase 1b: slot key is (deployment, this
+        // connection's target id). The target id comes from the connection's
+        // NameIdentifier claim — no wire-contract change.
+        var connectionTargetId = GetTargetId();
+        if (connectionTargetId is not null)
+        {
+            subPlans.RecordStepResult(
+                deploymentId, connectionTargetId.Value,
+                new SubPlanStepResult(
+                    StepIndex:    stepIndex,
+                    StepName:     stepName,
+                    Success:      success,
+                    ErrorMessage: errorMessage,
+                    Outputs:      new Dictionary<string, string>(
+                                      outputVariables, StringComparer.OrdinalIgnoreCase)));
+        }
 
         if (outputVariables.Count == 0)
         {

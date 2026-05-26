@@ -138,19 +138,22 @@ file sealed class NeverUsedScopeFactory : IServiceScopeFactory
 
 file sealed class NeverUsedPendingSubPlanRegistry : IPendingSubPlanRegistry
 {
-    public void Register(Guid deploymentId, TaskCompletionSource<SubPlanResult> tcs)
+    public void Register(Guid deploymentId, Guid targetId, TaskCompletionSource<SubPlanResult> tcs)
         => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
 
-    public bool TryResolve(Guid deploymentId, SubPlanResult result)
+    public bool TryResolve(Guid deploymentId, Guid targetId, SubPlanResult result)
         => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
 
-    public void Cancel(Guid deploymentId, string reason)
+    public void Cancel(Guid deploymentId, Guid targetId, string reason)
         => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
 
-    public void RecordStepResult(Guid deploymentId, SubPlanStepResult result)
+    public void RecordStepResult(Guid deploymentId, Guid targetId, SubPlanStepResult result)
         => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
 
-    public IReadOnlyList<SubPlanStepResult> DrainStepResults(Guid deploymentId)
+    public IReadOnlyList<SubPlanStepResult> DrainStepResults(Guid deploymentId, Guid targetId)
+        => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
+
+    public bool HasSlot(Guid deploymentId, Guid targetId)
         => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
 }
 

@@ -117,9 +117,16 @@ public sealed class DeployReleaseStepRunner(
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
-        // ── Resolve the parent deployment to find environment + target ────────
+        // ── Resolve the parent deployment to find environment + target set ──
+        // M-RollingDeployments Phase 1b: include the join collection so the
+        // child cascade inherits the parent's FULL target set (not just the
+        // legacy single TargetId). Operator-facing semantic: if you cascade
+        // from a multi-target parent, the child runs against the same set
+        // of targets — preserving the "release X to environment Y" intent
+        // across the cascade boundary.
         var parent = await db.Deployments
             .AsNoTracking()
+            .Include(d => d.Targets)
             .FirstOrDefaultAsync(d => d.Id == parentDeploymentId, ct)
             .ConfigureAwait(false);
         if (parent is null)
@@ -135,6 +142,13 @@ public sealed class DeployReleaseStepRunner(
                 .ConfigureAwait(false);
             return false;
         }
+
+        // Build the additional target id set from the join collection
+        // (excluding the primary TargetId which CreateAsync re-adds).
+        var parentAdditionalTargetIds = parent.Targets
+            .Select(a => a.TargetId)
+            .Where(id => id != parent.TargetId.Value)
+            .ToList();
 
         // ── Resolve the child project (Guid -> Slug -> Name) ────────────────
         var childProject = await ResolveProjectAsync(db, projectIdRef, parent.SpaceId, ct)
@@ -187,12 +201,13 @@ public sealed class DeployReleaseStepRunner(
         try
         {
             child = await deploymentService.CreateAsync(
-                releaseId: latestRelease.Id,
-                environmentId: parent.EnvironmentId,
-                targetId: parent.TargetId.Value,
-                tenantId: parent.TenantId,
-                scheduledFor: null,
-                ct: ct).ConfigureAwait(false);
+                releaseId:           latestRelease.Id,
+                environmentId:       parent.EnvironmentId,
+                targetId:            parent.TargetId.Value,
+                tenantId:            parent.TenantId,
+                scheduledFor:        null,
+                additionalTargetIds: parentAdditionalTargetIds,
+                ct:                  ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

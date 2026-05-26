@@ -74,6 +74,8 @@ public sealed class DeploymentWorker(
                     .ThenInclude(r => r.Project)
                 .Include(d => d.Environment)
                 .Include(d => d.Target)
+                .Include(d => d.Targets)
+                    .ThenInclude(a => a.Target!)
                 .Include(d => d.Tenant)
                 .FirstOrDefaultAsync(d => d.Id == deploymentId, ct)
                 .ConfigureAwait(false);
@@ -85,11 +87,29 @@ public sealed class DeploymentWorker(
             }
 
             // M14.3.1 — serialise log-sequence allocation. Single-threaded
-            // today; M14.4's wave-parallel execution shares this carrier
-            // across concurrent step paths within the same deployment.
+            // until M14.4 introduced wave-parallel step execution; M-RollingDeployments
+            // Phase 1b adds per-target parallel fan-out on top, so multiple
+            // target waves write log entries concurrently through the same
+            // sequencer.
             var logSeq = new LogSequencer(deployment);
 
-            if (deployment.TargetId is null)
+            // ── M-RollingDeployments Phase 1b — resolve the target SET ──
+            // The join collection is the source of truth post-Phase 1a.
+            // Legacy single-target deployments still set deployment.Target +
+            // deployment.TargetId; Phase 1a's migration backfilled the join
+            // so reading deployment.Targets covers both shapes. Fallback
+            // path: a deployment row whose join was deleted by hand still
+            // dispatches single-target via the legacy nav.
+            var targets = deployment.Targets
+                .Where(a => a.Target is not null)
+                .Select(a => a.Target!)
+                .ToList();
+            if (targets.Count == 0 && deployment.Target is not null)
+            {
+                targets.Add(deployment.Target);
+            }
+
+            if (deployment.TargetId is null && targets.Count == 0)
             {
                 await FailAsync(db, deployment, "No target assigned to deployment.", ct)
                     .ConfigureAwait(false);
@@ -155,8 +175,24 @@ public sealed class DeploymentWorker(
             }
 
             // ── Offline drop path ───────────────────────────────────────────
+            // Single-target by design — the bundle is a physical artifact
+            // for a specific machine. Phase 1b refuses multi-target offline
+            // drops; the per-machine bundle multiplication is a polish item
+            // (no operator demand surfaced yet, and the offline-drop
+            // workflow's manual delivery channel makes it an odd fit for
+            // fan-out semantics anyway).
             if (deployment.Target?.TransportMode == TransportMode.OfflineDrop)
             {
+                if (targets.Count > 1)
+                {
+                    await FailAsync(db, deployment,
+                        "Offline-drop deployments must target a single machine. " +
+                        "This deployment has multiple targets in its assignment set; " +
+                        "either remove the extra targets or switch the primary " +
+                        "target's TransportMode away from OfflineDrop.", ct)
+                        .ConfigureAwait(false);
+                    return;
+                }
                 await DispatchOfflineDropAsync(scope.ServiceProvider, db, deployment, ct)
                     .ConfigureAwait(false);
                 return;
@@ -200,122 +236,50 @@ public sealed class DeploymentWorker(
                 return;
             }
 
-            var targetRoles = deployment.Target?.Roles ?? [];
-            var rawVars = await variableService.ResolveFromSnapshotAsync(
-                deployment.Release.VariableSnapshot,
-                deployment.EnvironmentId,
-                deployment.TargetId,
-                targetRoles,
-                deployment.TenantId,
-                ct).ConfigureAwait(false);
-
-            // ── 2. Build Octostache dictionary ───────────────────────────────
-            // Scalar (String + Sensitive) variables go straight into Octostache.
-            // StringArray variables are expanded as both VarName (comma-joined)
-            // and VarName[0], VarName[1], … for indexed / #{each} access.
-            var varDict = new VariableDictionary();
-
-            // Octopus-compatible system variables (Octopus.Project.Name, Octopus.Release.Number, …).
-            var systemVars = OctopusSystemVariablesBuilder.BuildForDeployment(
-                deployment,
-                deployment.Release,
-                deployment.Release.Project,
-                deployment.Environment,
-                deployment.Target,
-                deployment.Tenant,
-                deployment.Release.ProcessSnapshot,
-                serverBaseUrl);
-
-            var flatVars = new Dictionary<string, string>(systemVars, StringComparer.OrdinalIgnoreCase);
-            foreach (var (k, val) in systemVars)
-            {
-                varDict[k] = val;
-            }
-
-            var arrayVars = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-
-            foreach (var (name, value) in rawVars)
-            {
-                if (value.StartsWith('['))
-                {
-                    // StringArray: try to parse as JSON array.
-                    try
-                    {
-                        var items = JsonSerializer.Deserialize<string[]>(value) ?? [];
-                        arrayVars[name] = items;
-
-                        // Comma-joined for $OctopusParameters back-compat and Octostache #{VarName}.
-                        var joined = string.Join(", ", items);
-                        flatVars[name] = joined;
-                        varDict[name] = joined;
-
-                        // Indexed access for #{VarName[0]}, #{each x in VarName}.
-                        for (var i = 0; i < items.Length; i++)
-                        {
-                            varDict[$"{name}[{i.ToString(System.Globalization.CultureInfo.InvariantCulture)}]"] = items[i];
-                        }
-
-                        continue;
-                    }
-                    catch (JsonException)
-                    {
-                        // Not valid JSON — treat as plain string.
-                    }
-                }
-
-                flatVars[name] = value;
-                varDict[name] = value;
-            }
-
-            // ── 3. Flatten the snapshot tree (M15.2) ─────────────────────────
-            // DeploymentPlanFlattener walks the parent-child snapshot tree
-            // and emits a flat DeploymentStepPlan[] ready for the wave
-            // partitioner. Handles M15 Step Groups + ForEach expansion +
-            // per-iteration Octostache substitution. The orchestrator's
-            // pre-M15.2 inline SubstituteConfig loop is now inside the
-            // flattener (per-iteration variable bag).
+            // ── 1. Build per-target dispatch contexts ───────────────────────
+            // M-RollingDeployments Phase 1b: variable resolution + Octostache
+            // dictionary + system-variables + flatten + plan all live INSIDE
+            // a per-target loop because:
+            //   * Octopus.Machine.* keys are target-specific (id, name, roles)
+            //   * variable resolution scopes on (env, target, roles, tenant)
+            //   * Octostache substitution inside a step's Config (e.g.
+            //     `#{Octopus.Machine.Name}` baked into a script body) must
+            //     resolve to the right target's value at dispatch time
+            // The structural wave layout is identical across targets (same
+            // snapshot tree, same partition keys) so the orchestrator walks
+            // ONE canonical wave list and indexes per-target contexts by
+            // target id for the actual dispatch.
             var dbFactory = scope.ServiceProvider
                 .GetRequiredService<IDbContextFactory<KrakenDbContext>>();
+            var auditLog = scope.ServiceProvider.GetRequiredService<IAuditLog>();
 
             var snapshotSteps = deployment.Release.ProcessSnapshot
                 .OrderBy(s => s.SortOrder)
                 .ToArray();
 
-            var flatten = DeploymentPlanFlattener.Flatten(
-                snapshotSteps, arrayVars, varDict);
-            var steps = flatten.Plans;
-            var snapshotByPlanIndex = flatten.SnapshotByPlanIndex;
-
-            // ── 3.b. Resolve referenced packages per emitted plan ──────────
-            // PackageReferenceResolver is async + DB-backed so it can't run
-            // inside the pure-function flattener. Walk the flat plans and
-            // overlay ReferencedPackages where needed.
-            for (var i = 0; i < steps.Length; i++)
+            var contexts = new Dictionary<Guid, TargetDispatchContext>(targets.Count);
+            TargetDispatchContext? canonical = null;
+            foreach (var target in targets)
             {
-                var referenced = await PackageReferenceResolver
-                    .ResolveAsync((Dictionary<string, string>)steps[i].Config,
-                                  dbFactory, logger, ct)
-                    .ConfigureAwait(false);
-                if (referenced.Count > 0)
-                {
-                    steps[i] = steps[i] with { ReferencedPackages = referenced };
-                }
+                var ctx = await BuildTargetDispatchContextAsync(
+                    deployment, target, snapshotSteps, variableService,
+                    serverBaseUrl, dbFactory, ct).ConfigureAwait(false);
+                contexts[target.Id] = ctx;
+                canonical ??= ctx;
             }
 
-            var plan = new DeploymentPlan(
-                DeploymentId: deployment.Id,
-                EnvironmentName: deployment.Environment.Name,
-                Steps: steps,
-                Variables: flatVars,
-                ArrayVariables: arrayVars);
+            // Defensive: targets.Count > 0 was checked above (FailAsync
+            // returns earlier) so canonical is always set. Null-forgive
+            // operator is safe.
+            var canonicalCtx = canonical!;
 
-            // ── 3.c. Process flatten-time warnings (M15.2) ─────────────────
-            // ForEach groups that resolved to empty / undefined collections
-            // surface as warnings here; the orchestrator emits the audit
-            // + writes a Skipped outcome for the group + applies the
-            // Required gate (Unresolved + Required → abort the deployment).
-            var auditLog = scope.ServiceProvider.GetRequiredService<IAuditLog>();
-            foreach (var w in flatten.Warnings)
+            // ── 2. Process flatten warnings (M15.2) ─────────────────────────
+            // Warnings are snapshot-driven (ForEach collection resolution +
+            // Required check). The collection-resolution input is a snapshot
+            // array variable, not a machine variable, so warnings are
+            // identical across all per-target flatten results — emit once
+            // from the canonical context.
+            foreach (var w in canonicalCtx.Flatten.Warnings)
             {
                 var eventType = w.Kind switch
                 {
@@ -357,19 +321,18 @@ public sealed class DeploymentWorker(
                 }
             }
 
-            // ── 4. Partition steps into waves (M14.4) ───────────────────────
-            // A wave = first step + all subsequent StartWithPrevious steps,
-            // until the next StartAfterPrevious opens wave N+1. Each wave is
-            // either entirely server-side or entirely target-side; mixed
-            // waves throw at partition time and we fail the deployment with
-            // a clear MixedWaveRefused audit. Within a wave, steps run
-            // concurrently.
+            // ── 3. Partition canonical steps into waves (M14.4) ─────────────
+            // The wave structure is purely a function of the (snapshot,
+            // StartTrigger) tuple — neither input varies across targets —
+            // so partitioning the canonical step list is enough. The
+            // per-target step lists are structurally identical; only the
+            // Config substitutions inside the steps differ.
             List<WavePartitioner.Wave> waves;
             try
             {
                 waves = WavePartitioner.Partition(
-                    steps,
-                    triggerByIndex: idx => snapshotByPlanIndex[idx].StartTrigger);
+                    canonicalCtx.Steps,
+                    triggerByIndex: idx => canonicalCtx.SnapshotByPlanIndex[idx].StartTrigger);
             }
             catch (WavePartitioner.InvalidWaveException ex)
             {
@@ -393,11 +356,13 @@ public sealed class DeploymentWorker(
                 // steps so the Steps tab shows "Skipped: mixed wave"
                 // instead of an empty section. Per-step IsServerSide
                 // mirrors the classifier so the tab's Side chip is
-                // still accurate.
+                // still accurate. Multi-target: outcomes are keyed by
+                // (deployment, step, target=null) — the refusal is
+                // deployment-scoped, not per-target.
                 var refusedAt = DateTimeOffset.UtcNow;
                 foreach (var refused in ex.WaveSteps)
                 {
-                    var snap = snapshotByPlanIndex[refused.Index];
+                    var snap = canonicalCtx.SnapshotByPlanIndex[refused.Index];
                     await UpsertStepOutcomeAsync(
                         db, deployment.Id, refused.Index, snap.Name,
                         StepOutcomeKind.Skipped, attemptCount: 0,
@@ -425,9 +390,11 @@ public sealed class DeploymentWorker(
                 .Where(w => w.Kind == WavePartitioner.WaveKind.Target)
                 .Sum(w => w.Steps.Count);
             logger.LogInformation(
-                "Deployment {DeploymentId}: {Waves} wave(s), {ServerSteps} server step(s), " +
-                "{TargetSteps} target step(s), {VarCount} variables.",
-                deploymentId, waves.Count, serverStepCount, targetStepCount, flatVars.Count);
+                "Deployment {DeploymentId}: {Targets} target(s), {Waves} wave(s), " +
+                "{ServerSteps} server step(s), {TargetSteps} target step(s), " +
+                "{VarCount} variables (canonical bag).",
+                deploymentId, targets.Count, waves.Count, serverStepCount, targetStepCount,
+                canonicalCtx.FlatVars.Count);
 
             // M14.2 — orchestrator tracks `hasFailed` instead of returning on
             // first failure. Required steps still short-circuit; non-required
@@ -441,17 +408,24 @@ public sealed class DeploymentWorker(
             {
                 if (wave.Kind == WavePartitioner.WaveKind.Server)
                 {
-                    // ── Server wave: parallel per-step (each step keeps its
-                    //    own Condition + Required + Retries + Timeout via the
-                    //    existing M14.2/3 helpers). Task.WhenAll waits for all
-                    //    siblings to complete; Required-failure short-circuit
-                    //    is applied after the wave settles.
+                    // ── Server wave ─────────────────────────────────────
+                    // M-RollingDeployments Phase 1b: server waves run ONCE,
+                    // using the canonical (== first) target's variable bag
+                    // for system + machine vars and the legacy
+                    // deployment.Target for the role filter
+                    // (StepAppliesToTarget). Server steps are deployment-
+                    // scoped — DeployRelease cascade, manual interventions,
+                    // … — so we deliberately preserve the single-execution
+                    // semantic. Operators authoring server steps in a
+                    // multi-target deployment see the canonical target's
+                    // machine context (same as today's single-target).
                     var serverOutcomes = await RunServerWaveAsync(
-                        wave, snapshotByPlanIndex, hasFailed, varDict, deployment,
-                        db, auditLog, logSeq, flatVars, ct).ConfigureAwait(false);
+                        wave, canonicalCtx.SnapshotByPlanIndex, hasFailed,
+                        canonicalCtx.VarDict, deployment, db, auditLog, logSeq,
+                        canonicalCtx.FlatVars, ct).ConfigureAwait(false);
 
                     var firstRequiredFailure = serverOutcomes.FirstOrDefault(o =>
-                        !o.Skipped && !o.Ok && snapshotByPlanIndex[o.Step.Index].Required);
+                        !o.Skipped && !o.Ok && canonicalCtx.SnapshotByPlanIndex[o.Step.Index].Required);
                     if (firstRequiredFailure is not null)
                     {
                         await auditLog.RecordAsync(
@@ -467,222 +441,61 @@ public sealed class DeploymentWorker(
                     }
 
                     foreach (var nonReq in serverOutcomes.Where(o =>
-                        !o.Skipped && !o.Ok && !snapshotByPlanIndex[o.Step.Index].Required))
+                        !o.Skipped && !o.Ok && !canonicalCtx.SnapshotByPlanIndex[o.Step.Index].Required))
                     {
                         await LogAndAuditStepFailedNonRequiredAsync(
                             db, auditLog, logSeq, deployment,
-                            snapshotByPlanIndex[nonReq.Step.Index], ct).ConfigureAwait(false);
+                            canonicalCtx.SnapshotByPlanIndex[nonReq.Step.Index], ct).ConfigureAwait(false);
                         hasFailed = true;
                     }
                 }
                 else
                 {
-                    // ── Target wave: filter by Condition, then dispatch as a
-                    //    single sub-plan; the agent runs the wave's steps in
-                    //    parallel. Per-step boundary reports drain from the
-                    //    registry after the wave's CompleteDeploymentAsync.
-                    var stepsToRun = new List<DeploymentStepPlan>(wave.Steps.Count);
-                    foreach (var s in wave.Steps)
-                    {
-                        var snapshot = snapshotByPlanIndex[s.Index];
-                        var decision = StepConditionEvaluator.Evaluate(
-                            snapshot.Condition,
-                            snapshot.ConditionVariableExpression,
-                            hasFailed,
-                            varDict);
-                        if (decision.Action == StepConditionEvaluator.Action.Skip)
-                        {
-                            await LogAndAuditStepSkippedAsync(
-                                db, auditLog, logSeq, deployment, snapshot, decision, ct)
-                                .ConfigureAwait(false);
-                            // M14.5 — record Skipped outcome so the Steps tab
-                            // shows the reason instead of an empty row.
-                            await UpsertStepOutcomeAsync(
-                                db, deployment.Id, s.Index, snapshot.Name,
-                                StepOutcomeKind.Skipped, attemptCount: 0,
-                                errorMessage: decision.Reason,
-                                startedUtc:   null,
-                                completedUtc: DateTimeOffset.UtcNow,
-                                isServerSide: false,
-                                required:     snapshot.Required, ct).ConfigureAwait(false);
-                            await db.SaveChangesAsync(ct).ConfigureAwait(false);
-                            continue;
-                        }
-                        stepsToRun.Add(s);
-                    }
+                    // ── Target wave: fan out per target ─────────────────
+                    // Every target dispatches its own sub-plan in parallel,
+                    // each with its per-target variable bag. The agent runs
+                    // the wave's steps in parallel (M14.4 per-step boundary
+                    // reports) and reports back to its target-specific
+                    // registry slot. After Task.WhenAll: persist per-(target,
+                    // step) outcomes, emit per-target collision audits, then
+                    // apply the cross-target Required gate (first Required
+                    // failure on ANY target aborts the deployment —
+                    // conservative Phase 1b; per-target drop-out is Phase 3).
+                    var targetWaveResult = await DispatchTargetWaveAcrossTargetsAsync(
+                        wave, targets, contexts, hasFailed, deployment,
+                        db, auditLog, logSeq, ct).ConfigureAwait(false);
 
-                    if (stepsToRun.Count == 0)
+                    // Target offline → fail the whole deployment. We could
+                    // mark the offline target as failed-non-required and
+                    // continue, but Phase 1b is "any blocker stops the run"
+                    // for symmetry with the Required gate; per-target drop-
+                    // out is Phase 3.
+                    if (targetWaveResult.OfflineTarget is not null)
                     {
-                        continue; // every step in the wave was skipped by Condition
-                    }
-
-                    var connectionId = registry.GetConnectionId(deployment.TargetId.Value);
-                    if (connectionId is null)
-                    {
-                        await FailAsync(db, deployment, "Target is offline.", ct).ConfigureAwait(false);
+                        await FailAsync(db, deployment,
+                            $"Target '{targetWaveResult.OfflineTarget.Name}' is offline.", ct)
+                            .ConfigureAwait(false);
                         return;
                     }
 
-                    var waveStartedUtc = DateTimeOffset.UtcNow;
-                    var (waveResult, waveTimedOut, perStepResults) = await DispatchTargetWaveAsync(
-                        plan, stepsToRun, snapshotByPlanIndex, deployment, connectionId,
-                        db, auditLog, logSeq, ct).ConfigureAwait(false);
-
-                    // ── M14.5 — record target-wave per-step outcomes ──────
-                    // The agent reported per-step boundaries during the wave;
-                    // we drained them above. Record one outcome row per
-                    // reported step (Succeeded / Failed / TimedOut). Wave
-                    // start/finish times are the best we have today —
-                    // per-step boundary timestamps would need a contract
-                    // extension; documented as a follow-up.
-                    var waveCompletedUtc = DateTimeOffset.UtcNow;
-                    var reportedIndices = new HashSet<int>();
-                    foreach (var r in perStepResults)
+                    if (targetWaveResult.AbortedRequired is not null)
                     {
-                        var snap = snapshotByPlanIndex[r.StepIndex];
-                        var kind = r.Success ? StepOutcomeKind.Succeeded
-                                              : StepOutcomeKind.Failed;
-                        await UpsertStepOutcomeAsync(
-                            db, deployment.Id, r.StepIndex, snap.Name,
-                            kind, attemptCount: 1,
-                            errorMessage: r.Success ? null : r.ErrorMessage,
-                            startedUtc:   waveStartedUtc,
-                            completedUtc: waveCompletedUtc,
-                            isServerSide: false,
-                            required:     snap.Required, ct).ConfigureAwait(false);
-                        reportedIndices.Add(r.StepIndex);
+                        var (ctx, stepName, error) = targetWaveResult.AbortedRequired.Value;
+                        await auditLog.RecordAsync(
+                            AuditEventType.DeploymentRequiredStepFailed,
+                            subjectType: "Deployment",
+                            subjectId:   deployment.Id.ToString(),
+                            details:     $"Target={ctx.Target.Name}, Step={stepName}, " +
+                                         $"Error={error}",
+                            ct: ct).ConfigureAwait(false);
+                        await FailAsync(db, deployment,
+                            error ?? $"Required step '{stepName}' failed on target '{ctx.Target.Name}'.", ct)
+                            .ConfigureAwait(false);
+                        return;
                     }
 
-                    // For steps the agent never reported on (e.g. wave timed
-                    // out before they completed, or agent dropped offline),
-                    // record TimedOut if the wave timed out, otherwise Failed
-                    // with the wave error so the Steps tab shows something.
-                    foreach (var p in stepsToRun)
+                    if (targetWaveResult.HasFailedNonRequired)
                     {
-                        if (reportedIndices.Contains(p.Index))
-                        {
-                            continue;
-                        }
-                        var snap = snapshotByPlanIndex[p.Index];
-                        var kind = waveTimedOut
-                            ? StepOutcomeKind.TimedOut
-                            : (waveResult.Success
-                                ? StepOutcomeKind.Succeeded
-                                : StepOutcomeKind.Failed);
-                        await UpsertStepOutcomeAsync(
-                            db, deployment.Id, p.Index, snap.Name,
-                            kind, attemptCount: 1,
-                            errorMessage: kind == StepOutcomeKind.Succeeded ? null
-                                          : waveResult.ErrorMessage
-                                            ?? "Agent did not report step completion.",
-                            startedUtc:   waveStartedUtc,
-                            completedUtc: waveCompletedUtc,
-                            isServerSide: false,
-                            required:     snap.Required, ct).ConfigureAwait(false);
-                    }
-                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
-
-                    // ── M14.4 Output-variable collision audits ─────────────
-                    // Detect Same-name writes across the wave's parallel
-                    // siblings and emit one audit per collision so operators
-                    // see which step's value "lost" the last-writer-wins
-                    // race in SortOrder. Collision storage is unchanged
-                    // (per-step rows in DeploymentOutputVariable), this is
-                    // purely a forensic signal.
-                    await EmitWaveCollisionsAsync(
-                        perStepResults, stepsToRun, deployment, db, auditLog, logSeq, ct)
-                        .ConfigureAwait(false);
-
-                    if (waveTimedOut)
-                    {
-                        // Emit a TimedOut audit for the first step with a
-                        // non-zero TimeoutSeconds in the wave (the one the
-                        // operator most likely configured).
-                        var timeoutStep = stepsToRun
-                            .Select(p => snapshotByPlanIndex[p.Index])
-                            .FirstOrDefault(snap => snap.TimeoutSeconds > 0);
-                        if (timeoutStep is not null)
-                        {
-                            await LogAndAuditStepTimedOutAsync(
-                                db, auditLog, logSeq, deployment, timeoutStep, ct).ConfigureAwait(false);
-                        }
-                    }
-
-                    if (!waveResult.Success)
-                    {
-                        // ── M14.4 Per-step Required gate ─────────────────
-                        // Per-step boundary reports tell us EXACTLY which
-                        // steps failed. Required-failure of any one short-
-                        // circuits; non-required failures accumulate
-                        // hasFailed and the deployment continues.
-                        //
-                        // Fallback: when the agent didn't report any per-
-                        // step boundaries (e.g. it dropped offline before
-                        // sending any), we conservatively treat any
-                        // Required step in the wave as failed — same as
-                        // the pre-M14.4 group-level behaviour.
-                        var failedSteps = perStepResults.Where(r => !r.Success).ToList();
-                        DeploymentStepPlan? firstRequiredFailure = null;
-                        if (failedSteps.Count > 0)
-                        {
-                            foreach (var failed in failedSteps)
-                            {
-                                var snap = snapshotByPlanIndex[failed.StepIndex];
-                                if (snap.Required)
-                                {
-                                    firstRequiredFailure = stepsToRun
-                                        .FirstOrDefault(p => p.Index == failed.StepIndex);
-                                    break;
-                                }
-                            }
-                        }
-                        else
-                        {
-                            // No per-step reports — fall back to the M14.0..3
-                            // group-level pessimistic gate.
-                            firstRequiredFailure = stepsToRun
-                                .FirstOrDefault(p => snapshotByPlanIndex[p.Index].Required);
-                        }
-
-                        if (firstRequiredFailure is not null)
-                        {
-                            await auditLog.RecordAsync(
-                                AuditEventType.DeploymentRequiredStepFailed,
-                                subjectType: "Deployment",
-                                subjectId:   deployment.Id.ToString(),
-                                details:     $"Step={firstRequiredFailure.Name}, " +
-                                             $"Error={waveResult.ErrorMessage}",
-                                ct: ct).ConfigureAwait(false);
-                            await FailAsync(db, deployment,
-                                waveResult.ErrorMessage ?? "Agent reported failure", ct)
-                                .ConfigureAwait(false);
-                            return;
-                        }
-
-                        // No Required failure — record non-required failures
-                        // (for accurate audit detail) and continue.
-                        if (failedSteps.Count > 0)
-                        {
-                            foreach (var failed in failedSteps)
-                            {
-                                await LogAndAuditStepFailedNonRequiredAsync(
-                                    db, auditLog, logSeq, deployment,
-                                    snapshotByPlanIndex[failed.StepIndex], ct)
-                                    .ConfigureAwait(false);
-                            }
-                        }
-                        else
-                        {
-                            // Agent didn't report per-step boundaries — flag
-                            // every step in the wave as non-required-failed
-                            // (matches the pre-M14.4 fallback).
-                            foreach (var p in stepsToRun)
-                            {
-                                await LogAndAuditStepFailedNonRequiredAsync(
-                                    db, auditLog, logSeq, deployment,
-                                    snapshotByPlanIndex[p.Index], ct).ConfigureAwait(false);
-                            }
-                        }
                         hasFailed = true;
                     }
                 }
@@ -1460,6 +1273,7 @@ public sealed class DeploymentWorker(
             IReadOnlyList<DeploymentStepPlan> stepsToRun,
             StepSnapshot[] snapshotSteps,
             Deployment deployment,
+            Guid targetId,
             string connectionId,
             KrakenDbContext db,
             IAuditLog auditLog,
@@ -1489,7 +1303,7 @@ public sealed class DeploymentWorker(
         {
             var tcs = new TaskCompletionSource<SubPlanResult>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
-            subPlans.Register(deployment.Id, tcs);
+            subPlans.Register(deployment.Id, targetId, tcs);
 
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             if (waveTimeoutSeconds > 0)
@@ -1532,8 +1346,8 @@ public sealed class DeploymentWorker(
                 // Drain whatever the agent reported THIS attempt and clear the
                 // registry slot. Cancel() also resolves a still-pending TCS
                 // (no-op if already resolved by the agent's CompleteDeployment).
-                lastPerStepResults = subPlans.DrainStepResults(deployment.Id);
-                subPlans.Cancel(deployment.Id, "completed");
+                lastPerStepResults = subPlans.DrainStepResults(deployment.Id, targetId);
+                subPlans.Cancel(deployment.Id, targetId, "completed");
             }
 
             if (subPlanResult.Success)
@@ -1754,5 +1568,415 @@ public sealed class DeploymentWorker(
             Required     = required,
             TargetId     = targetId,
         });
+    }
+
+    // ── M-RollingDeployments Phase 1b: per-target dispatch context ──────
+
+    /// <summary>
+    /// Per-target dispatch state assembled before the wave loop runs.
+    /// Holds the target-scoped variable bag + the flatten result + the
+    /// plan envelope the agent receives + the per-plan-index snapshot
+    /// lookup the orchestrator uses on the wave-dispatch hot path.
+    ///
+    /// <para>
+    /// Built once per target by <see cref="BuildTargetDispatchContextAsync"/>
+    /// and indexed by target id in the orchestrator. Server waves use the
+    /// canonical (== first) target's context as their machine context;
+    /// target waves index by the wave's target id.
+    /// </para>
+    /// </summary>
+    private sealed record TargetDispatchContext(
+        DeploymentTarget Target,
+        VariableDictionary VarDict,
+        IReadOnlyDictionary<string, string> FlatVars,
+        IReadOnlyDictionary<string, string[]> ArrayVars,
+        DeploymentPlan Plan,
+        DeploymentStepPlan[] Steps,
+        StepSnapshot[] SnapshotByPlanIndex,
+        DeploymentPlanFlattener.FlattenResult Flatten);
+
+    /// <summary>
+    /// Resolves project variables for a single target, builds the Octostache
+    /// dictionary + system variables, runs the M15.2 flattener with the
+    /// per-target variable bag (so any per-target Octostache substitutions
+    /// inside step Configs resolve to that target's value), then overlays
+    /// referenced-package resolution. The structural waves layout is
+    /// snapshot-driven and therefore identical across targets — only the
+    /// substituted Configs differ.
+    /// </summary>
+    private async Task<TargetDispatchContext> BuildTargetDispatchContextAsync(
+        Deployment deployment,
+        DeploymentTarget target,
+        IReadOnlyList<StepSnapshot> snapshotSteps,
+        VariableService variableService,
+        string? serverBaseUrl,
+        IDbContextFactory<KrakenDbContext> dbFactory,
+        CancellationToken ct)
+    {
+        var rawVars = await variableService.ResolveFromSnapshotAsync(
+            deployment.Release.VariableSnapshot,
+            deployment.EnvironmentId,
+            target.Id,
+            target.Roles,
+            deployment.TenantId,
+            ct).ConfigureAwait(false);
+
+        var varDict = new VariableDictionary();
+
+        var systemVars = OctopusSystemVariablesBuilder.BuildForDeployment(
+            deployment,
+            deployment.Release,
+            deployment.Release.Project,
+            deployment.Environment,
+            target,
+            deployment.Tenant,
+            deployment.Release.ProcessSnapshot,
+            serverBaseUrl);
+
+        var flatVars = new Dictionary<string, string>(systemVars, StringComparer.OrdinalIgnoreCase);
+        foreach (var (k, val) in systemVars)
+        {
+            varDict[k] = val;
+        }
+
+        var arrayVars = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (name, value) in rawVars)
+        {
+            if (value.StartsWith('['))
+            {
+                // StringArray: try to parse as JSON array.
+                try
+                {
+                    var items = JsonSerializer.Deserialize<string[]>(value) ?? [];
+                    arrayVars[name] = items;
+
+                    var joined = string.Join(", ", items);
+                    flatVars[name] = joined;
+                    varDict[name] = joined;
+
+                    for (var i = 0; i < items.Length; i++)
+                    {
+                        varDict[$"{name}[{i.ToString(CultureInfo.InvariantCulture)}]"] = items[i];
+                    }
+
+                    continue;
+                }
+                catch (JsonException)
+                {
+                    // Not valid JSON — treat as plain string.
+                }
+            }
+
+            flatVars[name] = value;
+            varDict[name] = value;
+        }
+
+        var flatten = DeploymentPlanFlattener.Flatten(
+            snapshotSteps, arrayVars, varDict);
+        var steps = flatten.Plans;
+        var snapshotByPlanIndex = flatten.SnapshotByPlanIndex;
+
+        // PackageReferenceResolver is async + DB-backed so it can't run
+        // inside the pure-function flattener. Overlay per emitted plan.
+        for (var i = 0; i < steps.Length; i++)
+        {
+            var referenced = await PackageReferenceResolver
+                .ResolveAsync((Dictionary<string, string>)steps[i].Config,
+                              dbFactory, logger, ct)
+                .ConfigureAwait(false);
+            if (referenced.Count > 0)
+            {
+                steps[i] = steps[i] with { ReferencedPackages = referenced };
+            }
+        }
+
+        var plan = new DeploymentPlan(
+            DeploymentId:    deployment.Id,
+            EnvironmentName: deployment.Environment.Name,
+            Steps:           steps,
+            Variables:       flatVars,
+            ArrayVariables:  arrayVars);
+
+        return new TargetDispatchContext(
+            Target:              target,
+            VarDict:             varDict,
+            FlatVars:            flatVars,
+            ArrayVars:           arrayVars,
+            Plan:                plan,
+            Steps:               steps,
+            SnapshotByPlanIndex: snapshotByPlanIndex,
+            Flatten:             flatten);
+    }
+
+    /// <summary>
+    /// M-RollingDeployments Phase 1b — outcome of fanning out one target
+    /// wave across all targets. Aggregates per-target completion enough
+    /// for the orchestrator to apply the cross-target Required gate +
+    /// accumulate non-required failures.
+    /// </summary>
+    private sealed record TargetWaveAggregateResult(
+        DeploymentTarget? OfflineTarget,
+        (TargetDispatchContext Ctx, string StepName, string? Error)? AbortedRequired,
+        bool HasFailedNonRequired);
+
+    /// <summary>
+    /// Fans out a single target wave across <paramref name="targets"/> in
+    /// parallel. Each target dispatches its own sub-plan (with its
+    /// per-target variable bag) and the agent runs the wave's steps in
+    /// parallel; per-step boundary reports drain into the registry slot
+    /// keyed by (deployment, target).
+    ///
+    /// <para>
+    /// After Task.WhenAll the orchestrator:
+    /// <list type="number">
+    ///   <item>Persists per-(target, step) outcome rows + non-required /
+    ///         timeout audits per target.</item>
+    ///   <item>Runs the collision detector per target.</item>
+    ///   <item>Applies the Required gate: first Required failure on any
+    ///         target trips <see cref="TargetWaveAggregateResult.AbortedRequired"/>
+    ///         and the caller fails the whole deployment.</item>
+    /// </list>
+    /// </para>
+    ///
+    /// <para>
+    /// Cancellation: when one target's wave returns failure, peers keep
+    /// running until they settle naturally — we don't pre-emptively cancel
+    /// the others to avoid leaving half-completed state behind. Required
+    /// gating is applied AFTER WhenAll resolves; the conservative Phase 1b
+    /// semantic is "any Required failure on any target aborts" but we
+    /// don't kill in-flight peers.
+    /// </para>
+    /// </summary>
+    private async Task<TargetWaveAggregateResult> DispatchTargetWaveAcrossTargetsAsync(
+        WavePartitioner.Wave wave,
+        List<DeploymentTarget> targets,
+        IReadOnlyDictionary<Guid, TargetDispatchContext> contexts,
+        bool hasFailedAtWaveStart,
+        Deployment deployment,
+        KrakenDbContext db,
+        IAuditLog auditLog,
+        LogSequencer logSeq,
+        CancellationToken ct)
+    {
+        // ── Per-target Condition + role filter ─────────────────────────
+        // Skipped outcomes are recorded inline so the Steps tab carries
+        // the reason; surviving step lists feed the parallel dispatch.
+        var dispatchPlan = new List<(TargetDispatchContext Ctx, List<DeploymentStepPlan> Steps)>(
+            targets.Count);
+        DeploymentTarget? offlineTarget = null;
+        foreach (var target in targets)
+        {
+            var ctx = contexts[target.Id];
+            var stepsToRun = new List<DeploymentStepPlan>(wave.Steps.Count);
+            foreach (var s in wave.Steps)
+            {
+                var snapshot = ctx.SnapshotByPlanIndex[s.Index];
+                var decision = StepConditionEvaluator.Evaluate(
+                    snapshot.Condition,
+                    snapshot.ConditionVariableExpression,
+                    hasFailedAtWaveStart,
+                    ctx.VarDict);
+                if (decision.Action == StepConditionEvaluator.Action.Skip)
+                {
+                    await LogAndAuditStepSkippedAsync(
+                        db, auditLog, logSeq, deployment, snapshot, decision, ct)
+                        .ConfigureAwait(false);
+                    await UpsertStepOutcomeAsync(
+                        db, deployment.Id, s.Index, snapshot.Name,
+                        StepOutcomeKind.Skipped, attemptCount: 0,
+                        errorMessage: decision.Reason,
+                        startedUtc:   null,
+                        completedUtc: DateTimeOffset.UtcNow,
+                        isServerSide: false,
+                        required:     snapshot.Required, ct,
+                        targetId:     target.Id).ConfigureAwait(false);
+                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                    continue;
+                }
+                stepsToRun.Add(s);
+            }
+
+            if (stepsToRun.Count == 0)
+            {
+                continue;
+            }
+
+            var connectionId = registry.GetConnectionId(target.Id);
+            if (connectionId is null)
+            {
+                offlineTarget = target;
+                // We still want to record offline-failure outcomes for the
+                // skipped target's steps so the Steps tab shows a row;
+                // those are written below before we return.
+                continue;
+            }
+
+            dispatchPlan.Add((ctx, stepsToRun));
+        }
+
+        if (offlineTarget is not null)
+        {
+            return new TargetWaveAggregateResult(
+                OfflineTarget:        offlineTarget,
+                AbortedRequired:      null,
+                HasFailedNonRequired: false);
+        }
+
+        if (dispatchPlan.Count == 0)
+        {
+            // Every target's wave was fully skipped by Condition; nothing to dispatch.
+            return new TargetWaveAggregateResult(null, null, false);
+        }
+
+        // ── Fan-out ────────────────────────────────────────────────────
+        var waveStartedUtc = DateTimeOffset.UtcNow;
+        var dispatchTasks = dispatchPlan.Select(async tuple =>
+        {
+            var (ctx, stepsToRun) = tuple;
+            var connectionId = registry.GetConnectionId(ctx.Target.Id)!;
+            var (waveResult, waveTimedOut, perStepResults) = await DispatchTargetWaveAsync(
+                ctx.Plan, stepsToRun, ctx.SnapshotByPlanIndex, deployment,
+                ctx.Target.Id, connectionId, db, auditLog, logSeq, ct)
+                .ConfigureAwait(false);
+            return (ctx, stepsToRun, waveResult, waveTimedOut, perStepResults);
+        }).ToArray();
+
+        var perTargetOutcomes = await Task.WhenAll(dispatchTasks).ConfigureAwait(false);
+        var waveCompletedUtc = DateTimeOffset.UtcNow;
+
+        // ── Persist per-(target, step) outcomes + audits ───────────────
+        // We do this OUTSIDE the parallel Task.WhenAll so we can use the
+        // single shared db context safely (DbContext isn't thread-safe).
+        var hasFailedNonRequired = false;
+        (TargetDispatchContext Ctx, string StepName, string? Error)? firstRequiredFailure = null;
+
+        foreach (var (ctx, stepsToRun, waveResult, waveTimedOut, perStepResults) in perTargetOutcomes)
+        {
+            var reportedIndices = new HashSet<int>();
+            foreach (var r in perStepResults)
+            {
+                var snap = ctx.SnapshotByPlanIndex[r.StepIndex];
+                var kind = r.Success ? StepOutcomeKind.Succeeded
+                                      : StepOutcomeKind.Failed;
+                await UpsertStepOutcomeAsync(
+                    db, deployment.Id, r.StepIndex, snap.Name,
+                    kind, attemptCount: 1,
+                    errorMessage: r.Success ? null : r.ErrorMessage,
+                    startedUtc:   waveStartedUtc,
+                    completedUtc: waveCompletedUtc,
+                    isServerSide: false,
+                    required:     snap.Required, ct,
+                    targetId:     ctx.Target.Id).ConfigureAwait(false);
+                reportedIndices.Add(r.StepIndex);
+            }
+
+            foreach (var p in stepsToRun)
+            {
+                if (reportedIndices.Contains(p.Index))
+                {
+                    continue;
+                }
+                var snap = ctx.SnapshotByPlanIndex[p.Index];
+                var kind = waveTimedOut
+                    ? StepOutcomeKind.TimedOut
+                    : (waveResult.Success
+                        ? StepOutcomeKind.Succeeded
+                        : StepOutcomeKind.Failed);
+                await UpsertStepOutcomeAsync(
+                    db, deployment.Id, p.Index, snap.Name,
+                    kind, attemptCount: 1,
+                    errorMessage: kind == StepOutcomeKind.Succeeded ? null
+                                  : waveResult.ErrorMessage
+                                    ?? "Agent did not report step completion.",
+                    startedUtc:   waveStartedUtc,
+                    completedUtc: waveCompletedUtc,
+                    isServerSide: false,
+                    required:     snap.Required, ct,
+                    targetId:     ctx.Target.Id).ConfigureAwait(false);
+            }
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+            // Collision audits per target (output-variable scope is per
+            // (DeploymentId, StepName, Name) in Phase 1b — see commit body
+            // for why cross-target collisions aren't audited yet).
+            await EmitWaveCollisionsAsync(
+                perStepResults, stepsToRun, deployment, db, auditLog, logSeq, ct)
+                .ConfigureAwait(false);
+
+            if (waveTimedOut)
+            {
+                var timeoutStep = stepsToRun
+                    .Select(p => ctx.SnapshotByPlanIndex[p.Index])
+                    .FirstOrDefault(snap => snap.TimeoutSeconds > 0);
+                if (timeoutStep is not null)
+                {
+                    await LogAndAuditStepTimedOutAsync(
+                        db, auditLog, logSeq, deployment, timeoutStep, ct).ConfigureAwait(false);
+                }
+            }
+
+            if (!waveResult.Success)
+            {
+                // Per-step Required gate (per target). First Required
+                // failure on ANY target tripping ends the deployment.
+                var failedSteps = perStepResults.Where(r => !r.Success).ToList();
+                DeploymentStepPlan? thisTargetRequiredFailure = null;
+                if (failedSteps.Count > 0)
+                {
+                    foreach (var failed in failedSteps)
+                    {
+                        var snap = ctx.SnapshotByPlanIndex[failed.StepIndex];
+                        if (snap.Required)
+                        {
+                            thisTargetRequiredFailure = stepsToRun
+                                .FirstOrDefault(p => p.Index == failed.StepIndex);
+                            break;
+                        }
+                    }
+                }
+                else
+                {
+                    // No per-step boundary reports — group-level pessimistic
+                    // fallback (matches M14.0..3 behaviour).
+                    thisTargetRequiredFailure = stepsToRun
+                        .FirstOrDefault(p => ctx.SnapshotByPlanIndex[p.Index].Required);
+                }
+
+                if (thisTargetRequiredFailure is not null && firstRequiredFailure is null)
+                {
+                    firstRequiredFailure = (ctx, thisTargetRequiredFailure.Name,
+                        waveResult.ErrorMessage);
+                    continue;
+                }
+
+                // Non-required failures: record audits + flip hasFailed.
+                if (failedSteps.Count > 0)
+                {
+                    foreach (var failed in failedSteps)
+                    {
+                        await LogAndAuditStepFailedNonRequiredAsync(
+                            db, auditLog, logSeq, deployment,
+                            ctx.SnapshotByPlanIndex[failed.StepIndex], ct)
+                            .ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    foreach (var p in stepsToRun)
+                    {
+                        await LogAndAuditStepFailedNonRequiredAsync(
+                            db, auditLog, logSeq, deployment,
+                            ctx.SnapshotByPlanIndex[p.Index], ct).ConfigureAwait(false);
+                    }
+                }
+                hasFailedNonRequired = true;
+            }
+        }
+
+        return new TargetWaveAggregateResult(
+            OfflineTarget:        null,
+            AbortedRequired:      firstRequiredFailure,
+            HasFailedNonRequired: hasFailedNonRequired);
     }
 }

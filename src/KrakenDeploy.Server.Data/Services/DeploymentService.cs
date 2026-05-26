@@ -22,6 +22,19 @@ public class DeploymentService(
     /// is persisted but NOT dispatched — the Hangfire
     /// <c>ScheduledDeploymentDispatchJob</c> picks it up when the time arrives.
     /// Enforces the lifecycle gate if the release has a channel with a lifecycle.
+    ///
+    /// <para>
+    /// M-RollingDeployments Phase 1b: <paramref name="additionalTargetIds"/>
+    /// extends the deployment's target set beyond the legacy
+    /// <paramref name="targetId"/>. When provided, the deployment dispatches
+    /// against the union (primary + additional) — the orchestrator walks the
+    /// <c>Deployment.Targets</c> join collection. The legacy
+    /// <paramref name="targetId"/> stays the source of truth for code paths
+    /// that haven't been upgraded yet (offline-drop, role-filter on server
+    /// waves) and is also seeded into the join collection. Pass <c>null</c>
+    /// or an empty list (the default) for single-target deployments —
+    /// existing callers are unchanged.
+    /// </para>
     /// </summary>
     public async Task<Deployment> CreateAsync(
         Guid releaseId,
@@ -29,6 +42,7 @@ public class DeploymentService(
         Guid targetId,
         Guid? tenantId = null,
         DateTimeOffset? scheduledFor = null,
+        IReadOnlyCollection<Guid>? additionalTargetIds = null,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -58,6 +72,39 @@ public class DeploymentService(
             }
         }
 
+        // ── M-RollingDeployments Phase 1b — build the target id set ─────
+        // Primary targetId is always part of the set (the legacy column +
+        // first join row). Additional ids extend it; duplicates are
+        // de-duplicated. Distinct against the primary so adding it twice
+        // is a no-op.
+        var targetIds = new List<Guid> { targetId };
+        if (additionalTargetIds is not null)
+        {
+            foreach (var id in additionalTargetIds)
+            {
+                if (id != targetId && !targetIds.Contains(id))
+                {
+                    targetIds.Add(id);
+                }
+            }
+        }
+        if (targetIds.Count > 1)
+        {
+            // Validate every additional target exists in the same Space
+            // BEFORE inserting the deployment so we don't leave a half-
+            // created multi-target deployment if an id is bogus.
+            var existing = await db.DeploymentTargets
+                .Where(t => targetIds.Contains(t.Id))
+                .Select(t => t.Id)
+                .ToListAsync(ct).ConfigureAwait(false);
+            var missing = targetIds.Where(id => !existing.Contains(id)).ToList();
+            if (missing.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"Target(s) not found: {string.Join(", ", missing)}.");
+            }
+        }
+
         // Enforce lifecycle phase gate (throws if gate not satisfied).
         await EnforceLifecycleGateAsync(db, releaseId, environmentId, tenantId, ct).ConfigureAwait(false);
 
@@ -72,6 +119,21 @@ public class DeploymentService(
         };
 
         db.Deployments.Add(deployment);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        // Seed the M-RollingDeployments join collection. The legacy
+        // TargetId column is also kept in sync above for code paths that
+        // haven't been upgraded yet.
+        var now = time.GetUtcNow();
+        foreach (var id in targetIds)
+        {
+            db.DeploymentTargetAssignments.Add(new DeploymentTargetAssignment
+            {
+                DeploymentId = deployment.Id,
+                TargetId     = id,
+                AddedUtc     = now,
+            });
+        }
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         // Dispatch immediately unless the caller requested a future start time.
