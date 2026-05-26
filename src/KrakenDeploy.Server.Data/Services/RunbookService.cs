@@ -193,9 +193,21 @@ public class RunbookService(
 
         // M15 — parent reassignment. UpdateParent wrapper distinguishes
         // "don't touch" (default null) from "reparent to top-level (null)".
-        if (updateParent is not null)
+        // Drag-into-row follow-up: reassign SortOrder to be last among the
+        // new siblings when the parent actually changes, matching the
+        // "drop = append to end" UX convention.
+        if (updateParent is not null
+            && step.ParentStepId != updateParent.NewParentStepId)
         {
             step.ParentStepId = updateParent.NewParentStepId;
+            var newSiblings = await db.RunbookSteps
+                .Where(s => s.ProcessId == step.ProcessId
+                            && s.ParentStepId == updateParent.NewParentStepId
+                            && s.Id != step.Id)
+                .ToListAsync(ct).ConfigureAwait(false);
+            step.SortOrder = newSiblings.Count == 0
+                ? 0
+                : newSiblings.Max(s => s.SortOrder) + 1;
         }
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);

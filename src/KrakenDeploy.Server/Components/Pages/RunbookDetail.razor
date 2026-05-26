@@ -3,6 +3,7 @@
 @using KrakenDeploy.Contracts.Steps
 @using KrakenDeploy.Server.Core.Domain.Deployments
 @using KrakenDeploy.Server.Core.Domain.Environments
+@using KrakenDeploy.Server.Core.Domain.Processes
 @using KrakenDeploy.Server.Core.Domain.Runbooks
 @using KrakenDeploy.Server.Core.Domain.Targets
 @using KrakenDeploy.Server.Data.Services
@@ -81,7 +82,20 @@
         @* ── Steps tab ────────────────────────────────────────────────────────── *@
         <RadzenTabsItem Text="Steps" Icon="list">
             <div class="rz-mt-3">
-                <div class="rz-display-flex rz-justify-content-end rz-mb-3">
+                <div class="rz-display-flex rz-justify-content-end rz-mb-3" style="gap:0.5rem">
+                    @* M15 follow-up — Add Step Group lets operators
+                       create a Kraken.StepGroup container in the runbook.
+                       Today this is the only way to author groups via the
+                       runbook editor (the full StepFormDialog migration
+                       is a separate follow-up). Group creates with a
+                       default name + empty Config; operators use the
+                       existing Edit form to rename. ForEach configuration
+                       remains API-only for now. *@
+                    <RadzenButton Text="Add Step Group" Icon="folder_open"
+                                  Size="ButtonSize.Small"
+                                  ButtonStyle="ButtonStyle.Light"
+                                  Click="@AddStepGroupAsync"
+                                  title="Add a Kraken.StepGroup container — drag steps into it to make them children." />
                     <RadzenButton Text="Add Step" Icon="add_circle_outline" Size="ButtonSize.Small"
                                   ButtonStyle="ButtonStyle.Secondary"
                                   Click="@(() => { _addStepOpen = true; ResetStepForm(); })" />
@@ -139,14 +153,41 @@
                 }
                 else
                 {
-                    @foreach (var (step, si) in _steps.Select((s, i) => (s, i)))
+                    @foreach (var step in _steps)
                     {
+                        var depth = DepthOf(step);
+                        var numbering = NumberingOf(step);
+                        var childCount = ChildCountOf(step);
+                        var isGroup = IsStepGroup(step);
+                        <div draggable="true"
+                             class="@DragRowCssClass(step)"
+                             style="@($"margin-left:{(depth * 24).ToString(System.Globalization.CultureInfo.InvariantCulture)}px;")"
+                             @ondragstart="@(() => OnDragStart(step))"
+                             @ondragover="@(() => OnDragOver(step))"
+                             @ondragover:preventDefault="true"
+                             @ondrop="@(() => OnDropOnStepAsync(step))"
+                             @ondragend="@(_ => OnDragEnd())">
                         <RadzenCard class="rz-mb-2">
                             <div class="rz-display-flex rz-align-items-center" style="gap:0.75rem">
-                                <RadzenBadge Text="@((si + 1).ToString())" BadgeStyle="BadgeStyle.Light"
+                                <RadzenBadge Text="@numbering" BadgeStyle="BadgeStyle.Light"
                                              style="min-width:2rem;text-align:center" />
+                                <RadzenIcon Icon="@(isGroup ? "folder" : "list_alt")"
+                                            Style="opacity:0.7;" />
                                 <div style="flex:1">
-                                    <RadzenText TextStyle="TextStyle.Subtitle2" style="margin:0">@step.Name</RadzenText>
+                                    <RadzenText TextStyle="TextStyle.Subtitle2" style="margin:0">
+                                        @if (isGroup)
+                                        {
+                                            <RadzenIcon Icon="expand_more"
+                                                        Style="font-size:1rem;vertical-align:middle;opacity:0.6;" />
+                                        }
+                                        @step.Name
+                                        @if (isGroup)
+                                        {
+                                            <span class="rz-color-secondary rz-text-body2 rz-ml-2">
+                                                (@childCount child@(childCount == 1 ? "" : "ren"))
+                                            </span>
+                                        }
+                                    </RadzenText>
                                     <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary" style="margin:0">
                                         @step.StepType
                                         @if (!string.IsNullOrEmpty(step.PackageId))
@@ -160,12 +201,39 @@
                                                   title="Edit"
                                                   Click="@(() => BeginEditStep(step))" />
                                     <RadzenButton Icon="delete" Size="ButtonSize.Small" Variant="Variant.Text"
-                                                  ButtonStyle="ButtonStyle.Danger" title="Delete"
+                                                  ButtonStyle="ButtonStyle.Danger"
+                                                  title="@(isGroup && childCount > 0
+                                                          ? $"Delete (removes {childCount} child step(s) too)"
+                                                          : "Delete")"
                                                   Click="@(async () => await DeleteStepAsync(step))" />
                                 </RadzenStack>
                             </div>
                         </RadzenCard>
+                        </div>
                     }
+
+                    @* M15 follow-up — top-level drop zone. Drag any child
+                       step here to reparent it back to top-level. *@
+                    <div class="@TopLevelDropZoneCss"
+                         @ondragover="OnDragOverTopLevel"
+                         @ondragover:preventDefault="true"
+                         @ondrop="OnDropOnTopLevelAsync"
+                         @ondragend="@(_ => OnDragEnd())">
+                        @if (_draggingStepId is not null)
+                        {
+                            <RadzenIcon Icon="output" Style="vertical-align:middle;margin-right:6px;" />
+                            <text>Drop here to move to top-level</text>
+                        }
+                        else
+                        {
+                            <RadzenText TextStyle="TextStyle.Caption"
+                                        class="rz-color-secondary">
+                                Drag a step row to reparent. Drop on a Step
+                                Group to make it a child; drop on this strip
+                                to send it back to top-level.
+                            </RadzenText>
+                        }
+                    </div>
                 }
             </div>
         </RadzenTabsItem>
@@ -242,6 +310,16 @@
 
     private Runbook? _runbook;
     private List<RunbookStep> _steps = [];
+    // M15 follow-up — tree sidecar maps (same shape as Process.razor).
+    private Dictionary<Guid, int> _depthByStepId = [];
+    private Dictionary<Guid, string> _numberingByStepId = [];
+    private Dictionary<Guid, int> _childCountByStepId = [];
+    private Dictionary<Guid, HashSet<Guid>> _descendantsByStepId = [];
+    // Drag state.
+    private Guid? _draggingStepId;
+    private Guid? _dropTargetStepId;
+    private bool _dropTargetIsTopLevel;
+
     private List<RunbookRun> _runs = [];
     private List<DeploymentEnvironment> _environments = [];
     private List<DeploymentTarget> _targets = [];
@@ -289,9 +367,51 @@
 
         if (_runbook?.Process?.Steps is not null)
         {
-            _steps = [.. _runbook.Process.Steps.OrderBy(s => s.SortOrder)];
+            BuildStepTree(_runbook.Process.Steps);
         }
     }
+
+    /// <summary>
+    /// M15 follow-up — DFS over the flat step list via shared
+    /// <see cref="StepTreeBuilder"/>. Same logic Process.razor uses.
+    /// </summary>
+    private void BuildStepTree(IEnumerable<RunbookStep> rawSteps)
+    {
+        var view = StepTreeBuilder.Build(rawSteps.OrderBy(s => s.SortOrder));
+        _steps = [.. view.OrderedSteps];
+        _depthByStepId = view.DepthByStepId.ToDictionary(kv => kv.Key, kv => kv.Value);
+        _numberingByStepId = view.NumberingByStepId.ToDictionary(kv => kv.Key, kv => kv.Value);
+        _childCountByStepId = view.ChildCountByStepId.ToDictionary(kv => kv.Key, kv => kv.Value);
+        _descendantsByStepId = view.DescendantsByStepId.ToDictionary(kv => kv.Key, kv => kv.Value);
+    }
+
+    /// <summary>
+    /// Re-loads + re-builds the tree from the database. Use after any
+    /// mutation (add / delete / reparent) so the UI reflects the new
+    /// shape — including server-side SortOrder reassignment on reparent.
+    /// </summary>
+    private async Task ReloadStepsAsync()
+    {
+        _runbook = await RunbookSvc.GetAsync(Id);
+        if (_runbook?.Process?.Steps is not null)
+        {
+            BuildStepTree(_runbook.Process.Steps);
+        }
+    }
+
+    private int DepthOf(RunbookStep step)
+        => _depthByStepId.TryGetValue(step.Id, out var d) ? d : 0;
+
+    private string NumberingOf(RunbookStep step)
+        => _numberingByStepId.TryGetValue(step.Id, out var n)
+            ? n
+            : (_steps.IndexOf(step) + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    private int ChildCountOf(RunbookStep step)
+        => _childCountByStepId.TryGetValue(step.Id, out var c) ? c : 0;
+
+    private bool IsStepGroup(RunbookStep step)
+        => string.Equals(step.StepType, "Kraken.StepGroup", StringComparison.OrdinalIgnoreCase);
 
     // ── Step management ────────────────────────────────────────────────────────
 
@@ -339,9 +459,11 @@
                 [],
                 config);
 
-            _steps.Add(step);
             _addStepOpen = false;
             ResetStepForm();
+            // M15 follow-up — re-load so the tree view picks up the new
+            // step in DFS order (rather than just appending).
+            await ReloadStepsAsync();
             Notify.Notify(new NotificationMessage
             {
                 Severity = NotificationSeverity.Success,
@@ -380,16 +502,10 @@
                 [],
                 config);
 
-            if (step is not null)
-            {
-                var idx = _steps.FindIndex(s => s.Id == step.Id);
-                if (idx >= 0)
-                {
-                    _steps[idx] = step;
-                }
-            }
-
             CancelStepEdit();
+            // M15 follow-up — re-load so the tree view re-renders with the
+            // updated name / config (and any cascade impact from reparent).
+            await ReloadStepsAsync();
             Notify.Notify(new NotificationMessage
             {
                 Severity = NotificationSeverity.Success,
@@ -414,7 +530,9 @@
         var deleted = await RunbookSvc.DeleteStepAsync(step.Id);
         if (deleted)
         {
-            _steps.Remove(step);
+            // M15 follow-up — re-load so the tree view drops the row + any
+            // cascade-deleted children disappear.
+            await ReloadStepsAsync();
             Notify.Notify(new NotificationMessage
             {
                 Severity = NotificationSeverity.Info,
@@ -538,4 +656,160 @@
             ? $"{(int)dur.TotalHours}h {dur.Minutes}m {dur.Seconds}s"
             : $"{dur.Minutes}m {dur.Seconds}s";
     }
+
+    // ── M15 follow-up: Step Group creation + drag-into-row ─────────────
+
+    /// <summary>
+    /// Creates a Kraken.StepGroup container with a default name. The
+    /// operator can then drag existing steps into it, or rename the
+    /// group via the existing Edit form. The full ForEach panel +
+    /// StepFormDialog migration for the runbook editor remains a
+    /// separate follow-up; today the runbook editor supports group
+    /// creation + reparenting but not ForEach property authoring (use
+    /// the API for that).
+    /// </summary>
+    private async Task AddStepGroupAsync()
+    {
+        try
+        {
+            await RunbookSvc.AddStepAsync(
+                Id,
+                name:       "Step Group",
+                stepType:   "Kraken.StepGroup",
+                packageId:  "",
+                targetRoles: [],
+                config:     [],
+                parentStepId: null);
+            await ReloadStepsAsync();
+            Notify.Notify(NotificationSeverity.Success, "Group added",
+                "Drag steps into it to make them children.", 3500);
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error,
+                "Couldn't add Step Group", ex.Message, 6000);
+        }
+    }
+
+    private void OnDragStart(RunbookStep step)
+    {
+        _draggingStepId = step.Id;
+        _dropTargetStepId = null;
+        _dropTargetIsTopLevel = false;
+    }
+
+    private void OnDragOver(RunbookStep step)
+    {
+        if (_draggingStepId is null) { return; }
+        _dropTargetIsTopLevel = false;
+        _dropTargetStepId = IsValidDropTarget(_draggingStepId.Value, step.Id, step)
+            ? step.Id
+            : null;
+    }
+
+    private void OnDragOverTopLevel()
+    {
+        if (_draggingStepId is null) { return; }
+        _dropTargetStepId = null;
+        _dropTargetIsTopLevel = true;
+    }
+
+    private async Task OnDropOnStepAsync(RunbookStep target)
+    {
+        var sourceId = _draggingStepId;
+        ClearDragState();
+        if (sourceId is null) { return; }
+
+        if (!IsValidDropTarget(sourceId.Value, target.Id, target))
+        {
+            return;
+        }
+
+        var source = _steps.FirstOrDefault(s => s.Id == sourceId.Value);
+        if (source is null) { return; }
+
+        await ReparentAsync(source, newParentId: target.Id);
+    }
+
+    private async Task OnDropOnTopLevelAsync()
+    {
+        var sourceId = _draggingStepId;
+        ClearDragState();
+        if (sourceId is null) { return; }
+        var source = _steps.FirstOrDefault(s => s.Id == sourceId.Value);
+        if (source is null) { return; }
+        if (source.ParentStepId is null) { return; }
+
+        await ReparentAsync(source, newParentId: null);
+    }
+
+    private void OnDragEnd() => ClearDragState();
+
+    private void ClearDragState()
+    {
+        _draggingStepId = null;
+        _dropTargetStepId = null;
+        _dropTargetIsTopLevel = false;
+    }
+
+    private bool IsValidDropTarget(Guid sourceId, Guid targetId, RunbookStep target)
+    {
+        if (sourceId == targetId) { return false; }
+        if (!IsStepGroup(target)) { return false; }
+        if (_descendantsByStepId.TryGetValue(sourceId, out var kids)
+            && kids.Contains(targetId))
+        {
+            return false;
+        }
+        var source = _steps.FirstOrDefault(s => s.Id == sourceId);
+        if (source?.ParentStepId == targetId) { return false; }
+        return true;
+    }
+
+    private async Task ReparentAsync(RunbookStep source, Guid? newParentId)
+    {
+        try
+        {
+            await RunbookSvc.UpdateStepAsync(
+                source.Id, source.Name, source.StepType, source.PackageId,
+                source.TargetRoles, source.Config,
+                stepPackageName:    source.StepPackageName,
+                stepPackageVersion: source.StepPackageVersion,
+                updateParent:       UpdateParent.To(newParentId));
+            await ReloadStepsAsync();
+            Notify.Notify(NotificationSeverity.Success, "Moved",
+                newParentId is null
+                    ? $"Step '{source.Name}' moved to top-level."
+                    : $"Step '{source.Name}' moved into its new parent.",
+                3000);
+        }
+        catch (ProcessValidationException ex)
+        {
+            Notify.Notify(NotificationSeverity.Error,
+                "Move refused", ex.Message, 6000);
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error,
+                "Move failed", ex.Message, 6000);
+        }
+    }
+
+    private string DragRowCssClass(RunbookStep step)
+    {
+        var cls = "kraken-step-card-wrap";
+        if (_draggingStepId == step.Id)
+        {
+            cls += " kraken-step-card-wrap--dragging";
+        }
+        else if (_dropTargetStepId == step.Id)
+        {
+            cls += " kraken-step-card-wrap--drop-target";
+        }
+        return cls;
+    }
+
+    private string TopLevelDropZoneCss => _dropTargetIsTopLevel
+        ? "kraken-step-droptarget kraken-step-droptarget--active"
+        : "kraken-step-droptarget";
 }

@@ -1793,7 +1793,7 @@ Landed:
 - Deployment detail Steps tab: already renders `Plan.Name` for each outcome — for ForEach iterations the display name includes `[item=…]` (M15.2 synthetic naming), so the tab naturally shows iteration suffixes with no extra schema change.
 
 Decisions made during implementation:
-- **No drag-into-row reparenting** in v1 (matches plan). Reparent goes through the edit dialog's dropdown only. Drag-among-siblings stays as the M14 button-based up/down arrows.
+- ~~**No drag-into-row reparenting** in v1~~ **Resolved 2026-05-26 in the drag-into-row follow-up commit** — Process.razor + RunbookDetail.razor both support drag-into-row reparenting. Drag any row, drop onto a `Kraken.StepGroup` to make it a child, or drop onto the dedicated top-level zone to send it back to root. Cycle prevention filters out the dragged step's own descendants as drop targets. Server-side `UpdateStepAsync` reassigns `SortOrder` to last-among-new-siblings so dropped steps land at the end of their new parent's children list. Shared `StepTreeBuilder` extracted to `Server.Core` so both editors use the same tree-flattening logic.
 - **In-dialog Parent dropdown only on Edit**; Add takes parent from the picker's pre-fill via the `ParentStepId` parameter. Avoids duplicating the parent picker on two surfaces.
 - **`UpdateParent` is a wrapper record**, not a `Guid?` parameter, because nullable can't distinguish "don't touch" from "reparent to top-level (null)". The wrapper makes the call site explicit.
 - ~~**Collection variable input is a free-text textbox**, not a filtered dropdown over array variables.~~ **Resolved 2026-05-26 in M15 follow-ups commit** — `RadzenAutoComplete` over the project's `StringArray` variables. Free-text still accepted for templated expressions (`#{env}-instances` etc.). `StepFormDialog` injects `VariableService` + looks up project id via `ProcessSvc.GetProcessByIdAsync` on Edit path.
@@ -1852,7 +1852,7 @@ Sequenced AFTER M14. M15's flattener runs BEFORE M14.4's wave partitioner; layer
 
 ### Deliberately deferred from M15
 
-- **Drag-into-row reparenting** in the process editor — polish for M15.5 or skip until operators ask.
+- ~~**Drag-into-row reparenting** in the process editor — polish for M15.5 or skip until operators ask.~~ **Resolved 2026-05-26**, see M15.3 / M15 follow-ups commit (`StepTreeBuilder` shared helper + drag handlers on Process.razor + RunbookDetail.razor + per-parent SortOrder reassignment).
 - **Inline JSON literal collections** (`ForEach.Collection = '["a","b","c"]'`) — array variables cover the v1 use cases.
 - **Comma-separated string collections** — same.
 - **Prior-step output as collection source** (`ForEach.Collection = '#{Octopus.Action[Discover].Output.Items}'`) — needs output-variable typing (array vs scalar) which today is purely string-based. Follow-up.

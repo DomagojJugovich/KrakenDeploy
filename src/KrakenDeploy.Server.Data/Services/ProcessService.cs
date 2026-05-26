@@ -187,9 +187,24 @@ public class ProcessService(
         // Guid? parameter) because a bare nullable can't distinguish
         // "don't touch" from "reparent to top-level (null)". UpdateParent.None
         // means "don't touch"; UpdateParent.To(parentStepId) sets it.
-        if (updateParent is not null)
+        //
+        // M15 follow-up: when the parent actually changes, reassign
+        // SortOrder to be last among the new siblings. Matches the
+        // drag-into-row "drop = append to end of new parent's children"
+        // convention. Without this, a step keeps its old SortOrder
+        // which might collide / sort awkwardly in the new sibling group.
+        if (updateParent is not null
+            && step.ParentStepId != updateParent.NewParentStepId)
         {
             step.ParentStepId = updateParent.NewParentStepId;
+            var newSiblings = await db.DeploymentSteps
+                .Where(s => s.ProcessId == step.ProcessId
+                            && s.ParentStepId == updateParent.NewParentStepId
+                            && s.Id != step.Id)
+                .ToListAsync(ct).ConfigureAwait(false);
+            step.SortOrder = newSiblings.Count == 0
+                ? 0
+                : newSiblings.Max(s => s.SortOrder) + 1;
         }
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);

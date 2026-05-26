@@ -89,8 +89,19 @@
                     var numbering = NumberingOf(step);
                     var childCount = ChildCountOf(step);
                     var isGroup = IsStepGroup(step);
-                    <RadzenCard class="kraken-step-card rz-mb-2"
-                                style="@($"margin-left:{(depth * 24).ToString(System.Globalization.CultureInfo.InvariantCulture)}px;")">
+                    @* M15 follow-up: wrap row in a draggable div. RadzenCard
+                       doesn't reliably forward the draggable attribute
+                       through its render tree, so the wrapping div carries
+                       the drag handlers + the visual highlight class. *@
+                    <div draggable="true"
+                         class="@DragRowCssClass(step)"
+                         style="@($"margin-left:{(depth * 24).ToString(System.Globalization.CultureInfo.InvariantCulture)}px;")"
+                         @ondragstart="@(() => OnDragStart(step))"
+                         @ondragover="@(() => OnDragOver(step))"
+                         @ondragover:preventDefault="true"
+                         @ondrop="@(() => OnDropOnStepAsync(step))"
+                         @ondragend="@(_ => OnDragEnd())">
+                    <RadzenCard class="kraken-step-card-inner">
                         <RadzenStack Orientation="Orientation.Horizontal"
                                      AlignItems="AlignItems.Start" Gap="1rem">
                             <div class="kraken-step-number"
@@ -236,7 +247,34 @@
                             </RadzenStack>
                         </RadzenStack>
                     </RadzenCard>
+                    </div>
                 }
+
+                @* M15 follow-up — top-level drop zone: drag any child here
+                   to make it a top-level step. Visible-but-subtle when no
+                   drag is in progress; highlights when the cursor hovers. *@
+                <RequirePermission Permission="Permission.ProcessEdit">
+                    <div class="@TopLevelDropZoneCss"
+                         @ondragover="OnDragOverTopLevel"
+                         @ondragover:preventDefault="true"
+                         @ondrop="OnDropOnTopLevelAsync"
+                         @ondragend="@(_ => OnDragEnd())">
+                        @if (_draggingStepId is not null)
+                        {
+                            <RadzenIcon Icon="output" Style="vertical-align:middle;margin-right:6px;" />
+                            <text>Drop here to move to top-level</text>
+                        }
+                        else
+                        {
+                            <RadzenText TextStyle="TextStyle.Caption"
+                                        class="rz-color-secondary">
+                                Drag a step row to reparent. Drop on a Step
+                                Group to make it a child; drop on this strip
+                                to send it back to top-level.
+                            </RadzenText>
+                        }
+                    </div>
+                </RequirePermission>
             }
         </div>
 
@@ -324,6 +362,22 @@
     private Dictionary<Guid, int> _depthByStepId = [];
     private Dictionary<Guid, string> _numberingByStepId = [];
     private Dictionary<Guid, int> _childCountByStepId = [];
+    /// <summary>M15 follow-up — per-step descendant ids, used by the
+    /// drag UX to forbid drops on the source's own children (cycle
+    /// prevention). Populated from <see cref="StepTreeBuilder"/>.</summary>
+    private Dictionary<Guid, HashSet<Guid>> _descendantsByStepId = [];
+
+    /// <summary>M15 follow-up drag state — the step currently being
+    /// dragged. Null when no drag is in progress.</summary>
+    private Guid? _draggingStepId;
+    /// <summary>M15 follow-up drag state — the step the cursor is
+    /// currently hovering over for the drop highlight.</summary>
+    private Guid? _dropTargetStepId;
+    /// <summary>M15 follow-up drag state — true while the cursor is
+    /// over the top-level drop zone (sets the same highlight class on
+    /// that strip).</summary>
+    private bool _dropTargetIsTopLevel;
+
     private Lifecycle? _lifecycle;
     private bool _loaded;
     private string? _loadError;
@@ -381,49 +435,21 @@
     }
 
     /// <summary>
-    /// M15 — DFS over the flat step list (parent-child links via
-    /// <see cref="DeploymentStep.ParentStepId"/>) to produce a render
-    /// order where each parent is immediately followed by its children.
-    /// Sidecar maps carry the depth, dotted numbering (1, 1.1, 1.2, 2, …),
-    /// and child counts the template uses for indent + chevron + "(N children)".
+    /// M15 — delegates to the shared <see cref="StepTreeBuilder"/>
+    /// (extracted in the drag-into-row follow-up so the runbook editor
+    /// can use the same tree-flattening logic). Caller passes a list
+    /// pre-sorted by SortOrder; builder returns the DFS-ordered list +
+    /// sidecar maps including descendants (used by the drag UX to
+    /// forbid drops on the source's own children).
     /// </summary>
     private void BuildStepTree(IEnumerable<DeploymentStep> rawSteps)
     {
-        var bySortOrder = rawSteps.OrderBy(s => s.SortOrder).ToList();
-        var byParent = bySortOrder
-            .GroupBy(s => s.ParentStepId ?? Guid.Empty)
-            .ToDictionary(g => g.Key, g => g.ToList());
-
-        _steps = new List<DeploymentStep>(bySortOrder.Count);
-        _depthByStepId = [];
-        _numberingByStepId = [];
-        _childCountByStepId = bySortOrder
-            .Where(s => s.ParentStepId is not null)
-            .GroupBy(s => s.ParentStepId!.Value)
-            .ToDictionary(g => g.Key, g => g.Count());
-
-        void Walk(IReadOnlyList<DeploymentStep> siblings, int depth, string prefix)
-        {
-            for (var i = 0; i < siblings.Count; i++)
-            {
-                var s = siblings[i];
-                var number = string.IsNullOrEmpty(prefix)
-                    ? (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture)
-                    : $"{prefix}.{(i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture)}";
-                _steps.Add(s);
-                _depthByStepId[s.Id] = depth;
-                _numberingByStepId[s.Id] = number;
-                if (byParent.TryGetValue(s.Id, out var kids) && kids.Count > 0)
-                {
-                    Walk(kids, depth + 1, number);
-                }
-            }
-        }
-
-        if (byParent.TryGetValue(Guid.Empty, out var topLevel))
-        {
-            Walk(topLevel, 0, "");
-        }
+        var view = StepTreeBuilder.Build(rawSteps.OrderBy(s => s.SortOrder));
+        _steps = [.. view.OrderedSteps];
+        _depthByStepId = view.DepthByStepId.ToDictionary(kv => kv.Key, kv => kv.Value);
+        _numberingByStepId = view.NumberingByStepId.ToDictionary(kv => kv.Key, kv => kv.Value);
+        _childCountByStepId = view.ChildCountByStepId.ToDictionary(kv => kv.Key, kv => kv.Value);
+        _descendantsByStepId = view.DescendantsByStepId.ToDictionary(kv => kv.Key, kv => kv.Value);
     }
 
     private int DepthOf(DeploymentStep step)
@@ -627,6 +653,167 @@
         await ProcessSvc.MoveStepAsync(stepId, direction);
         await ReloadStepsAsync();
     }
+
+    // ── M15 follow-up: drag-into-row reparenting ───────────────────────
+
+    /// <summary>
+    /// Begins a drag for <paramref name="step"/>. Records the source step
+    /// id so subsequent dragover / drop can validate the drop target.
+    /// Called on the row's <c>@ondragstart</c>.
+    /// </summary>
+    private void OnDragStart(DeploymentStep step)
+    {
+        _draggingStepId = step.Id;
+        _dropTargetStepId = null;
+        _dropTargetIsTopLevel = false;
+    }
+
+    /// <summary>
+    /// Highlights <paramref name="step"/> as the current drop target if it
+    /// is a valid destination (a Kraken.StepGroup, not the dragged step
+    /// itself, not a descendant of the dragged step). Otherwise clears
+    /// the highlight. Called on the row's <c>@ondragover</c>.
+    /// </summary>
+    private void OnDragOver(DeploymentStep step)
+    {
+        if (_draggingStepId is null) { return; }
+        _dropTargetIsTopLevel = false;
+        _dropTargetStepId = IsValidDropTarget(_draggingStepId.Value, step.Id, step)
+            ? step.Id
+            : null;
+    }
+
+    /// <summary>
+    /// Highlights the top-level drop zone so the operator can drag a
+    /// child step back to the root of the process.
+    /// </summary>
+    private void OnDragOverTopLevel()
+    {
+        if (_draggingStepId is null) { return; }
+        _dropTargetStepId = null;
+        _dropTargetIsTopLevel = true;
+    }
+
+    /// <summary>
+    /// Commits the drop: reparents the dragged step to
+    /// <paramref name="target"/> via <see cref="ProcessService.UpdateStepAsync"/>
+    /// with an <see cref="UpdateParent"/>. Re-loads the step list so the
+    /// tree view reflects the new structure.
+    /// </summary>
+    private async Task OnDropOnStepAsync(DeploymentStep target)
+    {
+        var sourceId = _draggingStepId;
+        ClearDragState();
+        if (sourceId is null) { return; }
+
+        if (!IsValidDropTarget(sourceId.Value, target.Id, target))
+        {
+            return; // silent no-op; the highlight already told the user
+        }
+
+        var source = _steps.FirstOrDefault(s => s.Id == sourceId.Value);
+        if (source is null) { return; }
+
+        await ReparentAsync(source, newParentId: target.Id);
+    }
+
+    /// <summary>
+    /// Commits a drop onto the top-level drop zone: clears the dragged
+    /// step's parent (makes it a top-level step).
+    /// </summary>
+    private async Task OnDropOnTopLevelAsync()
+    {
+        var sourceId = _draggingStepId;
+        ClearDragState();
+        if (sourceId is null) { return; }
+
+        var source = _steps.FirstOrDefault(s => s.Id == sourceId.Value);
+        if (source is null) { return; }
+        if (source.ParentStepId is null) { return; } // already top-level
+
+        await ReparentAsync(source, newParentId: null);
+    }
+
+    private void OnDragEnd()
+    {
+        ClearDragState();
+    }
+
+    private void ClearDragState()
+    {
+        _draggingStepId = null;
+        _dropTargetStepId = null;
+        _dropTargetIsTopLevel = false;
+    }
+
+    /// <summary>
+    /// True iff <paramref name="targetId"/> is a valid drop destination
+    /// for the step identified by <paramref name="sourceId"/>: a
+    /// Kraken.StepGroup, not the dragged step itself, not a descendant
+    /// of the dragged step (cycle prevention), and not already the
+    /// dragged step's current parent (no-op).
+    /// </summary>
+    private bool IsValidDropTarget(Guid sourceId, Guid targetId, DeploymentStep target)
+    {
+        if (sourceId == targetId) { return false; }
+        if (!IsStepGroup(target)) { return false; }
+        if (_descendantsByStepId.TryGetValue(sourceId, out var kids)
+            && kids.Contains(targetId))
+        {
+            return false;
+        }
+        var source = _steps.FirstOrDefault(s => s.Id == sourceId);
+        if (source?.ParentStepId == targetId) { return false; }
+        return true;
+    }
+
+    private async Task ReparentAsync(DeploymentStep source, Guid? newParentId)
+    {
+        try
+        {
+            await ProcessSvc.UpdateStepAsync(
+                source.Id, source.Name, source.PackageId,
+                source.TargetRoles, source.Config,
+                stepPackageName:    source.StepPackageName,
+                stepPackageVersion: source.StepPackageVersion,
+                knobs:              null,
+                updateParent:       UpdateParent.To(newParentId));
+            await ReloadStepsAsync();
+            Notifications.Notify(NotificationSeverity.Success, "Moved",
+                newParentId is null
+                    ? $"Step '{source.Name}' moved to top-level."
+                    : $"Step '{source.Name}' moved into its new parent.",
+                3000);
+        }
+        catch (ProcessValidationException ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error,
+                "Move refused", ex.Message, 6000);
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error,
+                "Move failed", ex.Message, 6000);
+        }
+    }
+
+    private string DragRowCssClass(DeploymentStep step)
+    {
+        var cls = "kraken-step-card-wrap rz-mb-2";
+        if (_draggingStepId == step.Id)
+        {
+            cls += " kraken-step-card-wrap--dragging";
+        }
+        else if (_dropTargetStepId == step.Id)
+        {
+            cls += " kraken-step-card-wrap--drop-target";
+        }
+        return cls;
+    }
+
+    private string TopLevelDropZoneCss => _dropTargetIsTopLevel
+        ? "kraken-step-droptarget kraken-step-droptarget--active"
+        : "kraken-step-droptarget";
 
     private async Task DeleteAsync(DeploymentStep step)
     {

@@ -433,6 +433,51 @@ html, body {
 .kraken-matrix-status--running   { background: #1e88e5; }
 .kraken-matrix-status--pending   { background: #fb8c00; }
 
+/* ── M15 follow-up: drag-into-row reparenting (Process + RunbookDetail) ─── */
+
+/* Wrapping div around each draggable step row. The cursor change cues
+   the operator that the row is draggable. */
+.kraken-step-card-wrap {
+    cursor: move;
+    transition: opacity 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Source row while it's being dragged — fades to signal "you're moving
+   this one". */
+.kraken-step-card-wrap--dragging {
+    opacity: 0.45;
+}
+
+/* Drop target highlight — a teal outline + subtle background tint so
+   the operator clearly sees where the drop will land. Only applied to
+   Step Group rows (the validator-filtered set). */
+.kraken-step-card-wrap--drop-target > .rz-card,
+.kraken-step-card-wrap--drop-target {
+    box-shadow: 0 0 0 2px var(--rz-primary, #1e88e5);
+    background-color: rgba(30, 136, 229, 0.06);
+}
+
+/* Top-level drop strip at the bottom of the step list. Always visible
+   but de-emphasised when no drag is in progress; the active variant
+   highlights when the cursor is over it during a drag. */
+.kraken-step-droptarget {
+    margin-top: 0.75rem;
+    padding: 0.75rem 1rem;
+    border: 2px dashed var(--rz-base-300, #d0d0d0);
+    border-radius: 4px;
+    text-align: center;
+    color: var(--rz-text-tertiary-color, rgba(0, 0, 0, 0.55));
+    font-size: 0.875rem;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.kraken-step-droptarget--active {
+    border-color: var(--rz-primary, #1e88e5);
+    background-color: rgba(30, 136, 229, 0.06);
+    color: var(--rz-primary, #1e88e5);
+    font-weight: 500;
+}
+
 /* ── Variables editor ────────────────────────────────────────────────────── */
 
 .kraken-var-value {
