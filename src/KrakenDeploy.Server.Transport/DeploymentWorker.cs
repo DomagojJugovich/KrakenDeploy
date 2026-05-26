@@ -410,7 +410,18 @@ public sealed class DeploymentWorker(
             // conditioned cleanup + finalisation steps still run. The
             // deployment's terminal status reflects the final state:
             // hasFailed → SucceededWithWarnings.
+            //
+            // M-RollingDeployments Phase 3 — `aliveTargets` tracks which
+            // targets are still eligible for the next wave. A Required
+            // failure OR an offline drop on target X removes X from this
+            // list; subsequent waves run only against the survivors. When
+            // every target has dropped, the deployment fails ("no progress
+            // possible"); when some survived, it terminates as
+            // SucceededWithWarnings even if all waves' agent-side calls
+            // returned cleanly for the survivors.
             var hasFailed = false;
+            var aliveTargets = new List<DeploymentTarget>(targets);
+            var droppedTargets = new List<DroppedTargetInfo>();
 
             foreach (var wave in waves)
             {
@@ -469,53 +480,68 @@ public sealed class DeploymentWorker(
                     // apply the cross-target Required gate (first Required
                     // failure on ANY target aborts the deployment —
                     // conservative Phase 1b; per-target drop-out is Phase 3).
+                    // Phase 3 — dispatch the wave against the CURRENTLY-alive
+                    // targets. Returns drop-outs (per-target Required failures
+                    // + agent-offline at dispatch time); the caller removes
+                    // them from aliveTargets and continues.
                     var targetWaveResult = await DispatchTargetWaveAcrossTargetsAsync(
-                        wave, targets, contexts, canonicalCtx.SnapshotByPlanIndex,
+                        wave, aliveTargets, contexts, canonicalCtx.SnapshotByPlanIndex,
                         snapshotById, hasFailed, deployment,
                         db, auditLog, logSeq, ct).ConfigureAwait(false);
 
-                    // Target offline → fail the whole deployment. We could
-                    // mark the offline target as failed-non-required and
-                    // continue, but Phase 1b is "any blocker stops the run"
-                    // for symmetry with the Required gate; per-target drop-
-                    // out is Phase 3.
-                    if (targetWaveResult.OfflineTarget is not null)
+                    foreach (var dropped in targetWaveResult.DroppedTargets)
                     {
-                        await FailAsync(db, deployment,
-                            $"Target '{targetWaveResult.OfflineTarget.Name}' is offline.", ct)
-                            .ConfigureAwait(false);
-                        return;
-                    }
-
-                    if (targetWaveResult.AbortedRequired is not null)
-                    {
-                        var (ctx, stepName, error) = targetWaveResult.AbortedRequired.Value;
-                        await auditLog.RecordAsync(
-                            AuditEventType.DeploymentRequiredStepFailed,
-                            subjectType: "Deployment",
-                            subjectId:   deployment.Id.ToString(),
-                            details:     $"Target={ctx.Target.Name}, Step={stepName}, " +
-                                         $"Error={error}",
-                            ct: ct).ConfigureAwait(false);
-                        await FailAsync(db, deployment,
-                            error ?? $"Required step '{stepName}' failed on target '{ctx.Target.Name}'.", ct)
-                            .ConfigureAwait(false);
-                        return;
+                        await EmitTargetDroppedAsync(
+                            db, auditLog, logSeq, deployment, dropped,
+                            wave, ct).ConfigureAwait(false);
+                        aliveTargets.Remove(dropped.Target);
+                        droppedTargets.Add(dropped);
                     }
 
                     if (targetWaveResult.HasFailedNonRequired)
                     {
                         hasFailed = true;
                     }
+
+                    if (aliveTargets.Count == 0)
+                    {
+                        // No survivors — the deployment can't progress.
+                        // Audit the Required-step-failed signal at the
+                        // deployment level too so the existing dashboards
+                        // (which read DeploymentRequiredStepFailed) still
+                        // light up; drop-out audits are richer but the
+                        // legacy signal stays compatible.
+                        var lastDrop = droppedTargets.LastOrDefault();
+                        await auditLog.RecordAsync(
+                            AuditEventType.DeploymentRequiredStepFailed,
+                            subjectType: "Deployment",
+                            subjectId:   deployment.Id.ToString(),
+                            details:     $"AllTargetsDropped={droppedTargets.Count}, " +
+                                         $"LastDrop=Target={lastDrop?.Target.Name}/" +
+                                         $"Reason={lastDrop?.Reason}/" +
+                                         $"Step={lastDrop?.StepName}",
+                            ct: ct).ConfigureAwait(false);
+                        await FailAsync(db, deployment,
+                            $"All {droppedTargets.Count.ToString(CultureInfo.InvariantCulture)} target(s) " +
+                            "dropped out (Required step failure or agent offline). " +
+                            "Deployment cannot continue without any surviving targets.", ct)
+                            .ConfigureAwait(false);
+                        return;
+                    }
                 }
             }
 
-            // ── M14.2 Finalisation ──────────────────────────────────────
+            // ── M14.2 + Phase 3 finalisation ────────────────────────────
             // hasFailed = true means at least one non-required step failed
             // along the way; the deployment terminates as
             // SucceededWithWarnings (Octopus's yellow-badge state) rather
             // than the pristine Succeeded.
-            var terminalStatus = hasFailed
+            // Phase 3 — droppedTargets non-empty ALSO yields
+            // SucceededWithWarnings, even if every surviving target's
+            // remaining steps all succeeded cleanly. Partial success is
+            // visible in the terminal status without needing to scrape
+            // audit rows.
+            var terminalStatus = (hasFailed || droppedTargets.Count > 0)
                 ? DeploymentStatus.SucceededWithWarnings
                 : DeploymentStatus.Succeeded;
             DateTimeOffset finalCompletedUtc;
@@ -540,6 +566,16 @@ public sealed class DeploymentWorker(
             // Threshold = 0 disables.
             await EmitSlowDeploymentAuditIfNeededAsync(
                 scope.ServiceProvider, deployment, finalCompletedUtc, ct).ConfigureAwait(false);
+
+            // ── Phase 3 — per-target slow audit ──────────────────────────
+            // Each target's effective duration (max CompletedUtc − min
+            // StartedUtc across its DeploymentStepOutcome rows) is
+            // compared against the same threshold; one
+            // Deployment.TargetSlow audit per slow target. Operators can
+            // pinpoint which specific machine slowed a multi-target run,
+            // even when the deployment as a whole stayed under threshold.
+            await EmitTargetSlowAuditsIfNeededAsync(
+                scope.ServiceProvider, deployment, ct).ConfigureAwait(false);
 
             logger.LogInformation(
                 "Deployment {Id} completed ({ServerSteps} server step(s), {TargetSteps} target step(s)).",
@@ -1077,6 +1113,149 @@ public sealed class DeploymentWorker(
             // Audit emission is best-effort — never bubble the failure
             // up into deployment finalisation.
         }
+    }
+
+    /// <summary>
+    /// M-RollingDeployments Phase 3 — emits one
+    /// <see cref="AuditEventType.DeploymentTargetSlow"/> per target whose
+    /// effective duration (max <c>CompletedUtc</c> − min <c>StartedUtc</c>
+    /// across its <see cref="DeploymentStepOutcome"/> rows) exceeded
+    /// <c>SlowDeploymentThresholdMinutes</c>. Lets operators pinpoint
+    /// which specific machine slowed a multi-target run, even when the
+    /// deployment as a whole stayed under threshold (single straggler
+    /// drowned out by faster peers).
+    /// <para>
+    /// Skips silently on any DB / lookup hiccup — slow-audit emission is
+    /// best-effort and must never fail an otherwise-successful deployment.
+    /// </para>
+    /// </summary>
+    private static async Task EmitTargetSlowAuditsIfNeededAsync(
+        IServiceProvider sp,
+        Deployment deployment,
+        CancellationToken ct)
+    {
+        try
+        {
+            var performance = sp.GetRequiredService<
+                KrakenDeploy.Server.Data.Services.PerformanceSettingsService>();
+            var settings = await performance.GetAsync(ct).ConfigureAwait(false);
+            var threshold = settings.SlowDeploymentThresholdMinutes;
+            if (threshold <= 0)
+            {
+                return;
+            }
+
+            await using var db = await sp
+                .GetRequiredService<IDbContextFactory<KrakenDbContext>>()
+                .CreateDbContextAsync(ct).ConfigureAwait(false);
+
+            var rows = await db.DeploymentStepOutcomes
+                .Where(o => o.DeploymentId == deployment.Id
+                            && o.TargetId != null
+                            && o.StartedUtc != null)
+                .Select(o => new { o.TargetId, o.StartedUtc, o.CompletedUtc })
+                .ToListAsync(ct).ConfigureAwait(false);
+            if (rows.Count == 0)
+            {
+                return;
+            }
+
+            var perTarget = rows
+                .GroupBy(r => r.TargetId!.Value)
+                .Select(g => new
+                {
+                    TargetId = g.Key,
+                    Start    = g.Min(r => r.StartedUtc!.Value),
+                    End      = g.Max(r => r.CompletedUtc),
+                })
+                .Where(t => (t.End - t.Start).TotalMinutes >= threshold)
+                .ToList();
+            if (perTarget.Count == 0)
+            {
+                return;
+            }
+
+            // Resolve target names so the audit detail is operator-friendly.
+            var slowTargetIds = perTarget.Select(t => t.TargetId).ToList();
+            var nameById = await db.DeploymentTargets
+                .Where(t => slowTargetIds.Contains(t.Id))
+                .Select(t => new { t.Id, t.Name })
+                .ToDictionaryAsync(t => t.Id, t => t.Name, ct).ConfigureAwait(false);
+
+            var audit = sp.GetRequiredService<IAuditLog>();
+            foreach (var t in perTarget)
+            {
+                var duration = (t.End - t.Start).TotalMinutes;
+                var name = nameById.GetValueOrDefault(t.TargetId, t.TargetId.ToString());
+                await audit.RecordAsync(
+                    AuditEventType.DeploymentTargetSlow,
+                    subjectType: "Deployment",
+                    subjectId:   deployment.Id.ToString(),
+                    details:     string.Format(
+                        CultureInfo.InvariantCulture,
+                        "TargetId={0}, Target={1}, DurationMinutes={2:F1}, ThresholdMinutes={3}",
+                        t.TargetId, name, duration, threshold),
+                    ct: ct).ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+            // Best-effort, same policy as EmitSlowDeploymentAuditIfNeededAsync.
+        }
+    }
+
+    /// <summary>
+    /// M-RollingDeployments Phase 3 — emits the audit + log row for a
+    /// target drop-out. Centralised so the orchestrator's two callsites
+    /// (Required-step failure inside a batch + agent-offline at dispatch
+    /// time) emit identical event shapes; downstream subscribers
+    /// (M13.B.2/3 notifications) can route on
+    /// <see cref="AuditEventType.DeploymentTargetDropped"/> consistently.
+    /// </summary>
+    private async Task EmitTargetDroppedAsync(
+        KrakenDbContext db,
+        IAuditLog auditLog,
+        LogSequencer logSeq,
+        Deployment deployment,
+        DroppedTargetInfo dropped,
+        WavePartitioner.Wave wave,
+        CancellationToken ct)
+    {
+        var waveNames = string.Join(", ", wave.Steps.Select(s => s.Name));
+        var reasonText = dropped.Reason switch
+        {
+            DropReason.RequiredStepFailed
+                => $"Required step '{dropped.StepName}' failed",
+            DropReason.AgentOffline => "agent offline at dispatch",
+            _                       => "unknown",
+        };
+
+        db.DeploymentLogEntries.Add(new DeploymentLogEntry
+        {
+            DeploymentId = deployment.Id,
+            Sequence     = logSeq.Next(),
+            Timestamp    = DateTimeOffset.UtcNow,
+            Level        = "warning",
+            Message      = $"--- Target '{dropped.Target.Name}' dropped out: " +
+                           $"{reasonText}{(dropped.Error is null ? "" : $" — {dropped.Error}")} ---",
+        });
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        await auditLog.RecordAsync(
+            AuditEventType.DeploymentTargetDropped,
+            subjectType: "Deployment",
+            subjectId:   deployment.Id.ToString(),
+            details:     $"TargetId={dropped.Target.Id}, " +
+                         $"Target={dropped.Target.Name}, " +
+                         $"Reason={dropped.Reason}, " +
+                         $"Step={dropped.StepName ?? "(none)"}, " +
+                         $"Wave=[{waveNames}], " +
+                         $"Error={dropped.Error ?? "(none)"}",
+            ct: ct).ConfigureAwait(false);
+
+        logger.LogInformation(
+            "Deployment {DeploymentId}: target {TargetId} ({TargetName}) dropped — {Reason}",
+            deployment.Id, dropped.Target.Id, dropped.Target.Name, dropped.Reason);
     }
 
     // ── M14.4 wave helpers ──────────────────────────────────────────────
@@ -1719,15 +1898,48 @@ public sealed class DeploymentWorker(
     }
 
     /// <summary>
-    /// M-RollingDeployments Phase 1b — outcome of fanning out one target
-    /// wave across all targets. Aggregates per-target completion enough
-    /// for the orchestrator to apply the cross-target Required gate +
-    /// accumulate non-required failures.
+    /// M-RollingDeployments Phase 1b/3 — outcome of fanning out one target
+    /// wave across the currently-alive targets. Aggregates per-target
+    /// completion enough for the orchestrator to apply per-target drop-out
+    /// + non-required failure accumulation.
+    /// <para>
+    /// Phase 3 swap: <c>DroppedTargets</c> replaces the single
+    /// <c>AbortedRequired</c> tuple. Each target with a Required failure
+    /// OR an offline-mid-wave outage is now a separate drop-out entry;
+    /// the orchestrator removes those targets from <c>aliveTargets</c> and
+    /// keeps running with the survivors. The deployment fails ONLY when
+    /// every alive target has dropped.
+    /// </para>
     /// </summary>
     private sealed record TargetWaveAggregateResult(
-        DeploymentTarget? OfflineTarget,
-        (TargetDispatchContext Ctx, string StepName, string? Error)? AbortedRequired,
+        IReadOnlyList<DroppedTargetInfo> DroppedTargets,
         bool HasFailedNonRequired);
+
+    /// <summary>
+    /// One target that dropped out of subsequent waves. Carries enough
+    /// detail for the operator-facing audit row + the deployment log
+    /// summary the orchestrator emits at drop-out time.
+    /// </summary>
+    private sealed record DroppedTargetInfo(
+        DeploymentTarget Target,
+        DropReason Reason,
+        string? StepName,
+        string? Error);
+
+    private enum DropReason
+    {
+        /// <summary>A Required step failed on this target inside the
+        /// current wave. The agent's per-step boundary report identifies
+        /// which step; the M14.0..3 group-level pessimistic fallback is
+        /// still in play when the agent didn't report per-step.</summary>
+        RequiredStepFailed,
+
+        /// <summary>The target's agent went offline between dispatches
+        /// (the SignalR registry has no connection id for it). The wave's
+        /// pre-flight check catches this BEFORE any RPC; the target
+        /// drops + the deployment continues with the rest.</summary>
+        AgentOffline,
+    }
 
     /// <summary>
     /// Fans out a single target wave across <paramref name="targets"/> in
@@ -1773,9 +1985,13 @@ public sealed class DeploymentWorker(
         // ── Per-target Condition + role filter ─────────────────────────
         // Skipped outcomes are recorded inline so the Steps tab carries
         // the reason; surviving step lists feed the parallel dispatch.
+        //
+        // Phase 3: offline targets are collected as drop-outs (rather than
+        // aborting the whole deployment). The caller removes them from
+        // aliveTargets and continues with the rest.
         var dispatchPlan = new List<(TargetDispatchContext Ctx, List<DeploymentStepPlan> Steps)>(
             targets.Count);
-        DeploymentTarget? offlineTarget = null;
+        var droppedTargets = new List<DroppedTargetInfo>();
         foreach (var target in targets)
         {
             var ctx = contexts[target.Id];
@@ -1816,28 +2032,44 @@ public sealed class DeploymentWorker(
             var connectionId = registry.GetConnectionId(target.Id);
             if (connectionId is null)
             {
-                offlineTarget = target;
-                // We still want to record offline-failure outcomes for the
-                // skipped target's steps so the Steps tab shows a row;
-                // those are written below before we return.
+                // Phase 3 — record an offline drop-out (instead of aborting).
+                // Steps tab gets one Failed outcome per remaining step so
+                // operators can see "this target dropped at wave X".
+                var offlineAt = DateTimeOffset.UtcNow;
+                foreach (var p in stepsToRun)
+                {
+                    var snap = ctx.SnapshotByPlanIndex[p.Index];
+                    await UpsertStepOutcomeAsync(
+                        db, deployment.Id, p.Index, snap.Name,
+                        StepOutcomeKind.Failed, attemptCount: 0,
+                        errorMessage: "Target agent offline at dispatch time.",
+                        startedUtc:   null,
+                        completedUtc: offlineAt,
+                        isServerSide: false,
+                        required:     snap.Required, ct,
+                        targetId:     target.Id).ConfigureAwait(false);
+                }
+                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                droppedTargets.Add(new DroppedTargetInfo(
+                    Target:   target,
+                    Reason:   DropReason.AgentOffline,
+                    StepName: null,
+                    Error:    "Target agent offline at dispatch time."));
                 continue;
             }
 
             dispatchPlan.Add((ctx, stepsToRun));
         }
 
-        if (offlineTarget is not null)
-        {
-            return new TargetWaveAggregateResult(
-                OfflineTarget:        offlineTarget,
-                AbortedRequired:      null,
-                HasFailedNonRequired: false);
-        }
-
         if (dispatchPlan.Count == 0)
         {
-            // Every target's wave was fully skipped by Condition; nothing to dispatch.
-            return new TargetWaveAggregateResult(null, null, false);
+            // Every alive target was either fully Condition-skipped or
+            // dropped offline. Return whatever drop-outs we accumulated;
+            // the outer loop applies them to aliveTargets + fails the
+            // deployment when the set goes empty.
+            return new TargetWaveAggregateResult(
+                DroppedTargets:       droppedTargets,
+                HasFailedNonRequired: false);
         }
 
         // ── M-RollingDeployments Phase 2 — resolve effective MaxParallelism ──
@@ -1863,7 +2095,6 @@ public sealed class DeploymentWorker(
         var batchingActive = batches.Count > 1 && rollingGroupName is not null;
 
         var hasFailedNonRequired = false;
-        (TargetDispatchContext Ctx, string StepName, string? Error)? firstRequiredFailure = null;
 
         for (var batchIdx = 0; batchIdx < batches.Count; batchIdx++)
         {
@@ -1903,6 +2134,18 @@ public sealed class DeploymentWorker(
             var batchOutcome = await DispatchOneBatchAsync(
                 batch, deployment, db, auditLog, logSeq, ct).ConfigureAwait(false);
 
+            // Phase 3 — accumulate drop-outs from this batch into the
+            // wave's aggregate; subsequent batches still run (a failed
+            // target in batch K is local to that target, not a halt
+            // signal for batches K+1..end). Operators who want canary
+            // semantics across batches can rely on per-target drop-out
+            // emptying aliveTargets if every batch's targets fail.
+            droppedTargets.AddRange(batchOutcome.DroppedTargets);
+            if (batchOutcome.HasFailedNonRequired)
+            {
+                hasFailedNonRequired = true;
+            }
+
             if (batchingActive)
             {
                 var failedTargetNames = string.Join(", ", batchOutcome.FailedTargets);
@@ -1913,43 +2156,32 @@ public sealed class DeploymentWorker(
                     details:     $"RollingGroup={rollingGroupName}, " +
                                  $"Batch={(batchIdx + 1).ToString(CultureInfo.InvariantCulture)}/" +
                                  $"{batches.Count.ToString(CultureInfo.InvariantCulture)}, " +
-                                 $"Success={(batchOutcome.RequiredFailure is null
+                                 $"Success={(batchOutcome.DroppedTargets.Count == 0
                                                ? "true" : "false")}, " +
                                  $"FailedTargets=[{failedTargetNames}]",
                     ct: ct).ConfigureAwait(false);
             }
-
-            if (batchOutcome.RequiredFailure is not null)
-            {
-                firstRequiredFailure = batchOutcome.RequiredFailure;
-                // Canary-ish gate: a Required failure inside this batch
-                // stops subsequent batches (matches the standard Required
-                // gate's "stop the deployment" semantic, but the failing
-                // batch's peers in the same batch DO finish — we await
-                // them above).
-                break;
-            }
-            if (batchOutcome.HasFailedNonRequired)
-            {
-                hasFailedNonRequired = true;
-            }
         }
 
         return new TargetWaveAggregateResult(
-            OfflineTarget:        null,
-            AbortedRequired:      firstRequiredFailure,
+            DroppedTargets:       droppedTargets,
             HasFailedNonRequired: hasFailedNonRequired);
     }
 
     /// <summary>
     /// One rolling-batch's worth of (target, stepsToRun) tuples — the
     /// existing per-target dispatch loop, factored out so the outer
-    /// batched dispatch can call it once per batch. Pre-1b code path
-    /// is reachable by passing the whole un-chunked list as a single
-    /// batch.
+    /// batched dispatch can call it once per batch.
+    /// <para>
+    /// Phase 3: <see cref="DroppedTargets"/> replaces the singular
+    /// <c>RequiredFailure</c>. Every target that hit a Required step
+    /// failure inside this batch is recorded as a drop-out; the caller
+    /// removes those from the surviving target set and continues with
+    /// the rest.
+    /// </para>
     /// </summary>
     private sealed record BatchOutcome(
-        (TargetDispatchContext Ctx, string StepName, string? Error)? RequiredFailure,
+        IReadOnlyList<DroppedTargetInfo> DroppedTargets,
         bool HasFailedNonRequired,
         IReadOnlyList<string> FailedTargets);
 
@@ -1977,7 +2209,7 @@ public sealed class DeploymentWorker(
         var waveCompletedUtc = DateTimeOffset.UtcNow;
 
         var hasFailedNonRequired = false;
-        (TargetDispatchContext Ctx, string StepName, string? Error)? firstRequiredFailure = null;
+        var droppedTargets = new List<DroppedTargetInfo>();
         var failedTargets = new List<string>();
 
         foreach (var (ctx, stepsToRun, waveResult, waveTimedOut, perStepResults) in perTargetOutcomes)
@@ -2046,6 +2278,12 @@ public sealed class DeploymentWorker(
             {
                 failedTargets.Add(ctx.Target.Name);
 
+                // Phase 3 — identify whether ANY step failure on this
+                // target was Required. If so, the target drops out of
+                // subsequent waves. Required attribution comes from the
+                // per-step boundary reports; M14.0..3 group-level
+                // pessimistic fallback applies when no per-step report
+                // landed.
                 var failedSteps = perStepResults.Where(r => !r.Success).ToList();
                 DeploymentStepPlan? thisTargetRequiredFailure = null;
                 if (failedSteps.Count > 0)
@@ -2067,10 +2305,13 @@ public sealed class DeploymentWorker(
                         .FirstOrDefault(p => ctx.SnapshotByPlanIndex[p.Index].Required);
                 }
 
-                if (thisTargetRequiredFailure is not null && firstRequiredFailure is null)
+                if (thisTargetRequiredFailure is not null)
                 {
-                    firstRequiredFailure = (ctx, thisTargetRequiredFailure.Name,
-                        waveResult.ErrorMessage);
+                    droppedTargets.Add(new DroppedTargetInfo(
+                        Target:   ctx.Target,
+                        Reason:   DropReason.RequiredStepFailed,
+                        StepName: thisTargetRequiredFailure.Name,
+                        Error:    waveResult.ErrorMessage));
                     continue;
                 }
 
@@ -2098,7 +2339,7 @@ public sealed class DeploymentWorker(
         }
 
         return new BatchOutcome(
-            RequiredFailure:      firstRequiredFailure,
+            DroppedTargets:       droppedTargets,
             HasFailedNonRequired: hasFailedNonRequired,
             FailedTargets:        failedTargets);
     }

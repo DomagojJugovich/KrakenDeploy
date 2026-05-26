@@ -171,10 +171,15 @@ public class DeploymentService(
     public async Task<Deployment?> GetAsync(Guid id, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
+        // M-RollingDeployments Phase 3 — include the multi-target join so
+        // the deployment-detail page can render the target set + map per-
+        // outcome TargetIds to human-readable names without a second
+        // round-trip.
         return await db.Deployments
             .Include(d => d.Release).ThenInclude(r => r.Project)
             .Include(d => d.Environment)
             .Include(d => d.Target)
+            .Include(d => d.Targets).ThenInclude(a => a.Target!)
             .Include(d => d.LogEntries.OrderBy(l => l.Sequence))
             .FirstOrDefaultAsync(d => d.Id == id, ct);
     }

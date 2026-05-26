@@ -172,6 +172,32 @@ public static class AuditEventType
     /// flag, failed target names (if any).</summary>
     public const string DeploymentRollingBatchCompleted = "Deployment.RollingBatchCompleted";
 
+    /// <summary>M-RollingDeployments Phase 3 — a target drops out of
+    /// subsequent waves because its current wave hit a Required step
+    /// failure OR the agent dropped offline. Other alive targets keep
+    /// running; only when ALL targets have dropped does the deployment
+    /// transition to <see cref="DeploymentStatus.Failed"/>. When SOME
+    /// targets dropped but others succeeded, the deployment terminates
+    /// as <see cref="DeploymentStatus.SucceededWithWarnings"/> — the
+    /// audit row preserves which target dropped and why so partial
+    /// success is forensically reviewable.
+    /// Details: deployment id, target name, target id, drop reason
+    /// (Required step name or "offline"), wave step names, error message.</summary>
+    public const string DeploymentTargetDropped = "Deployment.TargetDropped";
+
+    /// <summary>M-RollingDeployments Phase 3 — per-target dimension of
+    /// <see cref="DeploymentSlow"/>. Emitted at deployment finalisation
+    /// for every target whose effective duration
+    /// (max <c>CompletedUtc</c> − min <c>StartedUtc</c> across its
+    /// <see cref="DeploymentStepOutcome"/> rows) exceeded the
+    /// <c>SlowDeploymentThresholdMinutes</c> window. Lets operators
+    /// pinpoint which specific machine slowed a multi-target run, even
+    /// if the deployment as a whole stayed under threshold (when only
+    /// one target straggled).
+    /// Details: deployment id, target id, target name, duration in
+    /// minutes, threshold in minutes.</summary>
+    public const string DeploymentTargetSlow = "Deployment.TargetSlow";
+
     // ── Maintenance mode (M13.A.3) ───────────────────────────────────────────
     /// <summary>Operator enabled instance-wide maintenance mode.
     /// Details: reason text + who enabled it. Pair with

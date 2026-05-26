@@ -36,8 +36,8 @@ else
             <span class="rz-color-secondary">Environment</span>
             <span>@(Deployment.Environment?.Name ?? "—")</span>
 
-            <span class="rz-color-secondary">Target</span>
-            <span>@(Deployment.Target?.Name ?? "—")</span>
+            <span class="rz-color-secondary">Target@(MultiTargetCount > 1 ? "s" : "")</span>
+            <span>@TargetSummary</span>
             <span class="rz-color-secondary">Started</span>
             <span>@(Deployment.StartedUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—")</span>
 
@@ -147,6 +147,24 @@ else
                                                   Title="Side" Width="80px">
                                 <Template Context="o">
                                     @(o.IsServerSide ? "Server" : "Target")
+                                </Template>
+                            </RadzenDataGridColumn>
+                            @* M-RollingDeployments Phase 3 — Target column.
+                               Shows the per-(step, target) attribution from
+                               the widened DeploymentStepOutcome key. Server-
+                               side steps + pre-Phase-1a outcomes have a null
+                               TargetId and render "—". *@
+                            <RadzenDataGridColumn TItem="DeploymentStepOutcome"
+                                                  Title="Target" Width="140px">
+                                <Template Context="o">
+                                    @if (o.TargetId is { } tid)
+                                    {
+                                        <span class="rz-text-body2">@(TargetNameOf(tid))</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="rz-color-secondary">—</span>
+                                    }
                                 </Template>
                             </RadzenDataGridColumn>
                             <RadzenDataGridColumn TItem="DeploymentStepOutcome"
@@ -436,6 +454,60 @@ else
 
     private string DownloadUrl(Guid artifactId)
         => $"/api/deployments/{Id}/artifacts/{artifactId}/download";
+
+    // ── M-RollingDeployments Phase 3 — multi-target rendering helpers ────
+    //
+    // The deployment-detail page now has to surface BOTH the legacy single-
+    // target field (Deployment.Target — kept by the orchestrator for back-
+    // compat) AND the multi-target join (Deployment.Targets — populated
+    // by Phase 1a's migration + Phase 1b's CreateAsync extension). The
+    // helpers below reconcile the two so single-target deployments render
+    // identically to pre-Phase-1a and multi-target deployments get a clean
+    // "N targets" summary in the header + per-row target names in the
+    // Steps tab.
+
+    private int MultiTargetCount => Deployment?.Targets?.Count ?? 0;
+
+    private string TargetSummary
+    {
+        get
+        {
+            if (Deployment is null) { return "—"; }
+            var fromJoin = Deployment.Targets
+                ?.Where(a => a.Target is not null)
+                .Select(a => a.Target!.Name)
+                .ToList() ?? [];
+            if (fromJoin.Count == 0)
+            {
+                return Deployment.Target?.Name ?? "—";
+            }
+            if (fromJoin.Count == 1)
+            {
+                return fromJoin[0];
+            }
+            // Multi-target: short list with "N targets" prefix for at-a-
+            // glance scan, full names follow so operators can read which
+            // machines are in scope without expanding anything.
+            return $"{fromJoin.Count} targets: {string.Join(", ", fromJoin)}";
+        }
+    }
+
+    private string TargetNameOf(Guid targetId)
+    {
+        if (Deployment is null) { return targetId.ToString()[..8]; }
+        var fromJoin = Deployment.Targets
+            ?.FirstOrDefault(a => a.TargetId == targetId)
+            ?.Target?.Name;
+        if (!string.IsNullOrEmpty(fromJoin)) { return fromJoin; }
+        // Fallback to legacy Deployment.Target when the row's TargetId
+        // matches it (single-target deployment whose Targets join row was
+        // somehow stripped post-migration — defensive).
+        if (Deployment.Target is not null && Deployment.Target.Id == targetId)
+        {
+            return Deployment.Target.Name;
+        }
+        return targetId.ToString()[..8];
+    }
 
     private static BadgeStyle StatusStyle(DeploymentStatus status) => status switch
     {
