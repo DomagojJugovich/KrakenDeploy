@@ -92,7 +92,13 @@ public sealed class DeploymentExecutor(
                 {
                     if (outcome.CapturedOutputs.Count > 0)
                     {
-                        outputsByStep[outcome.Step.Name] = outcome.CapturedOutputs;
+                        // M15.2: key by AccumulatorKey (ForEach-iteration
+                        // synthetic name like "Deploy[0]") when set. Falls
+                        // back to step.Name for non-iteration steps + pre-M15
+                        // plans. Octostache references resolve to the same
+                        // key on the server side.
+                        var accKey = outcome.Step.AccumulatorKey ?? outcome.Step.Name;
+                        outputsByStep[accKey] = outcome.CapturedOutputs;
                     }
                     if (!outcome.Success && firstFailureMessage is null)
                     {
@@ -238,12 +244,19 @@ public sealed class DeploymentExecutor(
                 step.Name, basePlan.DeploymentId);
         }
 
+        // M15.2 — report by AccumulatorKey when set (ForEach iterations).
+        // Falls back to step.Name for non-iteration steps + pre-M15 plans
+        // where AccumulatorKey is null. The accumulator key is what the
+        // server stores against the output variables so cross-iteration
+        // Octostache references via #{Octopus.Action[Deploy[0]].Output.X}
+        // resolve correctly.
+        var reportingKey = step.AccumulatorKey ?? step.Name;
         try
         {
             await serverLink.ReportStepCompletedAsync(
                 basePlan.DeploymentId,
                 stepIndex:       step.Index,
-                stepName:        step.Name,
+                stepName:        reportingKey,
                 success:         success,
                 errorMessage:    errorMessage,
                 outputVariables: capturedOutputs,
@@ -253,7 +266,7 @@ public sealed class DeploymentExecutor(
         {
             logger.LogWarning(ex,
                 "Failed to report step completion for '{Step}' of deployment {Id}.",
-                step.Name, basePlan.DeploymentId);
+                reportingKey, basePlan.DeploymentId);
         }
 
         return new StepOutcome(step, success, capturedOutputs);
@@ -562,9 +575,19 @@ public sealed class DeploymentExecutor(
     // ── Output-variable plumbing ───────────────────────────────────────────────
 
     /// <summary>
-    /// Returns a copy of the plan with <c>Octopus.Action[StepName].Output.X</c>
+    /// Returns a copy of the plan with <c>Octopus.Action[StepKey].Output.X</c>
     /// keys merged into <see cref="DeploymentPlan.Variables"/> for every
     /// previously-completed step's captured output variables.
+    ///
+    /// <para>
+    /// M15.2: <c>StepKey</c> is the step's
+    /// <see cref="DeploymentStepPlan.AccumulatorKey"/> when set (ForEach
+    /// iterations use a stable synthetic key like <c>"Deploy[0]"</c>),
+    /// otherwise the display <see cref="DeploymentStepPlan.Name"/>. The
+    /// caller writes into <paramref name="outputsByStep"/> with the same
+    /// key so Octostache references like
+    /// <c>#{Octopus.Action[Deploy[0]].Output.Foo}</c> resolve correctly.
+    /// </para>
     /// </summary>
     private static DeploymentPlan AugmentPlanWithPriorOutputs(
         DeploymentPlan basePlan,

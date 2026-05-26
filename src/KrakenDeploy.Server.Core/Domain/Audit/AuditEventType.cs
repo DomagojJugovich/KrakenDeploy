@@ -138,6 +138,21 @@ public static class AuditEventType
     /// step names, target step names.</summary>
     public const string DeploymentMixedWaveRefused = "Deployment.MixedWaveRefused";
 
+    /// <summary>M15 — a ForEach-mode Step Group's collection variable
+    /// resolved to an empty array, so the loop body emitted zero plans.
+    /// Operators see this as a no-op step group in the Steps tab; the
+    /// audit row preserves the variable name + step name for forensic
+    /// review. Details: deployment id, step group name, collection
+    /// variable name.</summary>
+    public const string DeploymentForEachEmpty = "Deployment.ForEachEmpty";
+
+    /// <summary>M15 — a ForEach-mode Step Group's collection variable
+    /// could not be resolved (referenced an undefined array variable).
+    /// The flattener emits a synthetic failing plan so the Required gate
+    /// decides whether the missing collection aborts the deployment.
+    /// Details: deployment id, step group name, collection expression.</summary>
+    public const string DeploymentForEachUnresolved = "Deployment.ForEachUnresolved";
+
     // ── Maintenance mode (M13.A.3) ───────────────────────────────────────────
     /// <summary>Operator enabled instance-wide maintenance mode.
     /// Details: reason text + who enabled it. Pair with

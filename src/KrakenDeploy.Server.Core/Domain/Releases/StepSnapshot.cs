@@ -8,6 +8,17 @@ namespace KrakenDeploy.Server.Core.Domain.Releases;
 /// </summary>
 public sealed class StepSnapshot
 {
+    /// <summary>
+    /// M15 — frozen at snapshot time as the corresponding
+    /// <see cref="Processes.DeploymentStep.Id"/>. Lets
+    /// <see cref="ParentStepId"/> form parent-child links inside the
+    /// snapshot tree. Pre-M15 snapshots (where this field wasn't set
+    /// at cut time) deserialise as <see cref="Guid.Empty"/>, which
+    /// cannot be referenced as a parent — so old snapshots behave as
+    /// flat lists, matching the runtime they were cut under.
+    /// </summary>
+    public Guid Id { get; init; }
+
     public string Name { get; init; } = string.Empty;
     public string StepType { get; init; } = string.Empty;
     public string PackageId { get; init; } = string.Empty;

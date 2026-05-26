@@ -71,7 +71,22 @@ public sealed record DeploymentStepPlan(
     /// The agent doesn't consume this; the server pre-flattens parallel
     /// waves before sending the plan (so the agent still sees a flat
     /// sequential list within each sub-plan).</summary>
-    int StartTrigger = 0);
+    int StartTrigger = 0,
+    /// <summary>M15 — internal accumulator key for output-variable
+    /// reporting. For regular steps this equals <see cref="Name"/>; for
+    /// ForEach iterations it is the stable synthetic key
+    /// <c>OriginalName[index]</c> (e.g. <c>Deploy[0]</c>, <c>Deploy[1]</c>)
+    /// so cross-iteration output references via Octostache
+    /// <c>#{Octopus.Action[Deploy[0]].Output.X}</c> resolve correctly.
+    /// <para>
+    /// The agent uses <c>AccumulatorKey ?? Name</c> when reporting
+    /// outputs back to the server via
+    /// <c>IAgentHubServer.ReportStepCompletedAsync</c>, so older
+    /// (pre-M15) agents that don't read this field still produce
+    /// usable output-by-step-name rows. The display name (<see cref="Name"/>)
+    /// stays the human-readable form for logs + Steps tab UI.
+    /// </para></summary>
+    string? AccumulatorKey = null);
 
 /// <summary>
 /// Sent by the agent to the server when a deployment is triggered.

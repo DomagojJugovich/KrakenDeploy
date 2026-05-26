@@ -237,6 +237,87 @@ Reproducibility: `ReleaseService.CreateAsync` calls `PinReferencedPackagesAsync`
 | A new agent transport | Implement `IServerLink` in `KrakenDeploy.Agent.Transport`. Existing impls: `SignalRServerLink` (reverse-tunnel), `DirectServerLink` (LAN), `PollingServerLink` (restricted networks). |
 | A new background job | Add to Hangfire setup in `Program.cs` (`RecurringJob.AddOrUpdate(...)`). Existing jobs in `KrakenDeploy.Server/Services/RecurringJobs/`. |
 
+## Step composition — child steps + ForEach (M15)
+
+A deployment process is a **tree** at design time and a **flat list** at runtime. The design-time tree lets a single Step Group own multiple children, and a ForEach group expand into one iteration per array-variable item. The runtime sees a flat `DeploymentStepPlan[]` exactly as before; the M14.4 wave partitioner, Run Condition gates, Required gates, Retries, and Timeouts all operate on the flat list unchanged.
+
+### One marker step type
+
+`Kraken.StepGroup` is the only step type that can have children. Leaf step types (`Kraken.Script`, `Kraken.IIS`, …) cannot — validation in `ProcessService.ValidateAsync` refuses non-empty `Children` on a leaf-typed step. A Step Group's behaviour is driven by its **Config bag**, not its type:
+
+| Config key | Mode | Notes |
+|---|---|---|
+| `Octopus.Action.ForEach.Collection` set | ForEach loop | Children re-emitted once per array-variable item. |
+| `Octopus.Action.MaxParallelism` set | Rolling deployment | Reserved for M-RollingDeployments. M15 preserves the value but treats the group as a plain container. |
+| Neither set | Plain container | Children run sequentially in `SortOrder`; per-child `StartTrigger = StartWithPrevious` opts a child into parallel-with-previous through M14.4's wave partitioner. |
+
+A Step Group must NOT carry leaf-only Config keys (`Octopus.Action.Script.ScriptBody`, package selectors, IIS / Windows Service / Substitute / Manual keys, etc.). The catalogue lives in `KrakenStepTypes.LeafOnlyConfigKeys` and is referenced by both the validator and the importer.
+
+### `DeploymentPlanFlattener` — tree at design-time, flat at runtime
+
+`DeploymentPlanFlattener.Flatten(snapshotSteps, arrayVars, scalarVars)` runs at deployment dispatch (before M14.4's wave partitioner). Pure-function — no DB / no IO. Returns `(Plans, SnapshotByPlanIndex, Warnings)`:
+
+- `Plans[]` — flat `DeploymentStepPlan[]` ready for the wave partitioner.
+- `SnapshotByPlanIndex[]` — maps each emitted plan back to the snapshot it was derived from. The orchestrator reads it everywhere it used to index a flat snapshot array directly. Multiple ForEach plans can share a snapshot.
+- `Warnings[]` — the orchestrator translates each into an audit + log line + Required-gate decision.
+
+Octostache substitution moves into the flattener (replaces `DeploymentWorker.SubstituteConfig`) so per-iteration variable values resolve correctly — `#{item}` in a child's `ScriptBody` reads the current iteration's value, not "always the last item."
+
+### Synthetic naming for ForEach iterations
+
+| | Form | Use |
+|---|---|---|
+| `DeploymentStepPlan.AccumulatorKey` | `OriginalName[index]` (always, e.g. `Deploy[0]`, `Deploy[1]`) | Internal key for output-variable reporting + Octostache cross-iteration references. Agent reports outputs against this key. |
+| `DeploymentStepPlan.Name` | `OriginalName [var=value]` (clean) / `OriginalName [var=#index]` (fallback) | Display name on the deployment log, the Steps tab, and audit details. |
+
+"Clean" = `value` ≤ 40 chars, no newlines / tabs / `]`. Operators reading logs identify which iteration is running at a glance; the fallback form keeps long / weird values from breaking layout.
+
+### Cross-iteration output access
+
+```text
+#{Octopus.Action[Deploy[0]].Output.X}        — synthetic-key form (M15 documented)
+#{Octopus.Action[Deploy [item=staging]].Output.X}  — display-name form (works incidentally)
+```
+
+The synthetic key is the supported form; the display-name form happens to work because the synthetic name *is* a step name in the plan, but the long form makes templates ugly.
+
+### Nested ForEach
+
+Allowed. Inner iteration variable shadows the outer (`#{item}` always refers to the innermost). If the outer ForEach used a distinct `IterationVariable` like `env`, `#{env}` stays accessible inside the inner loop.
+
+Inner ForEach's `Collection` can reference the outer iteration variable (e.g. `Collection = "#{env}-instances"`); the flattener resolves the inner collection **lazily** per outer iteration so each outer pass sees the right inner collection.
+
+### Parallel ForEach
+
+`Octopus.Action.ForEach.Parallel = "true"` on the Step Group makes iterations siblings in the same M14.4 wave. The flattener emits the first child of iterations 1..N with `StartTrigger = StartWithPrevious` so the wave partitioner groups them together. M14.4's last-writer-wins collision rule + audit applies — synthetic naming means cross-iteration collisions are rare by construction (each iteration's outputs live under a distinct accumulator key), but explicit same-name `Set-OctopusVariable` calls across iterations still surface as `Deployment.ParallelOutputCollision` warnings.
+
+### Empty / undefined collections
+
+| | Effect | Audit |
+|---|---|---|
+| Empty collection (`envs = []`) | Group emits zero plans — operators see a no-op in the Steps tab. | `Deployment.ForEachEmpty` |
+| Undefined collection (variable doesn't exist) | Group emits zero plans + a `ForEachUnresolved` warning. The orchestrator applies the group's `Required` flag — Required → abort the deployment, non-required → continue with `hasFailed`. | `Deployment.ForEachUnresolved` |
+
+### Validation rules (`ProcessValidator`)
+
+| Rule | Code |
+|---|---|
+| Cycle freedom (a step cannot be its own ancestor). DFS over the `ParentStepId` chain. | `Cycle` |
+| Parent locality (`ParentStepId` references a step in the same process). | `UnknownParent` |
+| Group-only parenthood (only `Kraken.StepGroup`-typed steps may have children). | `LeafTypeHasChildren` |
+| Leaf-config exclusion (a Step Group must NOT carry leaf-only Config keys). | `GroupHasLeafConfig` |
+
+The validator accumulates every error in one pass so the editor can surface them all at once. Called by the editor before save AND by the flattener as defence in depth (corrupted data fails the deployment with a clear message rather than throwing mid-walk).
+
+### Octopus import (multi-action steps)
+
+Pre-M15, the importer skipped any Octopus step with `Actions.Count > 1` with a "parallel actions not yet supported" warning — silently dropping real process structure. M15.1 imports the same structure honestly as a Step Group:
+
+- Parent: `StepType = "Kraken.StepGroup"`, inherits step-level `TargetRoles` + step-level Octopus properties verbatim (including `Octopus.Action.MaxParallelism` for the future M-RollingDeployments milestone).
+- Children: one per Octopus action. Children 2..N get `StartTrigger = StartWithPrevious` because Octopus's default for multi-action steps is parallel-on-same-target. Operators wanting sequential children flip them to `StartAfterPrevious` in the editor after import.
+
+An import-time warning explains the choice: *"Step 'X' has N actions; imported as a Step Group with children running in parallel (StartTrigger=StartWithPrevious). Change children to StartAfterPrevious for sequential execution."*
+
 ## Spaces and tenancy
 
 `ISpaceScoped` is a marker interface; every top-level aggregate carries `SpaceId`. `KrakenDbContext` applies a global query filter so all reads are auto-scoped to the current Space (resolved from the `kraken-active-space` cookie via `HttpSpaceContext`). Multi-space is supported in code but invisible in the UI when only the Default Space exists. Tenants are project-level — a project lists its tenants, deployments can be tenant-scoped (`Deployment.TenantId`), and tenant variables compose into the resolved variable set per deployment.

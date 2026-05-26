@@ -257,6 +257,12 @@ public class RunbookService(
             .OrderBy(s => s.SortOrder)
             .Select(s => new StepSnapshot
             {
+                // M15 — freeze the step's Id so the flattener can match
+                // parent-child links. Runbooks don't yet support step
+                // composition (no ParentStepId on RunbookStep), so the
+                // snapshot's ParentStepId stays null and the flattener
+                // walks them as flat top-level steps.
+                Id                 = s.Id,
                 Name               = s.Name,
                 StepType           = s.StepType,
                 PackageId          = s.PackageId,

@@ -118,6 +118,10 @@ public class ReleaseService(
 
             snapshot.Add(new StepSnapshot
             {
+                // M15: freeze the step's Id + parent link so the snapshot
+                // tree can be walked at deploy time by DeploymentPlanFlattener.
+                Id                          = step.Id,
+                ParentStepId                = step.ParentStepId,
                 Name                        = step.Name,
                 StepType                    = step.StepType,
                 PackageId                   = step.PackageId,

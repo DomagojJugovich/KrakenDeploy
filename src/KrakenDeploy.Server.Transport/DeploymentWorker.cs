@@ -267,8 +267,13 @@ public sealed class DeploymentWorker(
                 varDict[name] = value;
             }
 
-            // ── 3. Build steps with Octostache substitution applied + resolve
-            //       referenced packages (Octopus.Action.Package.PackageReferences).
+            // ── 3. Flatten the snapshot tree (M15.2) ─────────────────────────
+            // DeploymentPlanFlattener walks the parent-child snapshot tree
+            // and emits a flat DeploymentStepPlan[] ready for the wave
+            // partitioner. Handles M15 Step Groups + ForEach expansion +
+            // per-iteration Octostache substitution. The orchestrator's
+            // pre-M15.2 inline SubstituteConfig loop is now inside the
+            // flattener (per-iteration variable bag).
             var dbFactory = scope.ServiceProvider
                 .GetRequiredService<IDbContextFactory<KrakenDbContext>>();
 
@@ -276,25 +281,25 @@ public sealed class DeploymentWorker(
                 .OrderBy(s => s.SortOrder)
                 .ToArray();
 
-            var steps = new DeploymentStepPlan[snapshotSteps.Length];
-            for (var i = 0; i < snapshotSteps.Length; i++)
+            var flatten = DeploymentPlanFlattener.Flatten(
+                snapshotSteps, arrayVars, varDict);
+            var steps = flatten.Plans;
+            var snapshotByPlanIndex = flatten.SnapshotByPlanIndex;
+
+            // ── 3.b. Resolve referenced packages per emitted plan ──────────
+            // PackageReferenceResolver is async + DB-backed so it can't run
+            // inside the pure-function flattener. Walk the flat plans and
+            // overlay ReferencedPackages where needed.
+            for (var i = 0; i < steps.Length; i++)
             {
-                var s = snapshotSteps[i];
-                var substitutedConfig = SubstituteConfig(s.Config, varDict);
                 var referenced = await PackageReferenceResolver
-                    .ResolveAsync(substitutedConfig, dbFactory, logger, ct)
+                    .ResolveAsync((Dictionary<string, string>)steps[i].Config,
+                                  dbFactory, logger, ct)
                     .ConfigureAwait(false);
-                steps[i] = new DeploymentStepPlan(
-                    Index: i,
-                    Name: s.Name,
-                    StepType: s.StepType,
-                    PackageId: s.PackageId,
-                    PackageVersion: s.PackageVersion,
-                    Config: substitutedConfig,
-                    TargetRoles: s.TargetRoles,
-                    ReferencedPackages: referenced.Count > 0 ? referenced : null,
-                    StepPackageName: s.StepPackageName,
-                    StepPackageVersion: s.StepPackageVersion);
+                if (referenced.Count > 0)
+                {
+                    steps[i] = steps[i] with { ReferencedPackages = referenced };
+                }
             }
 
             var plan = new DeploymentPlan(
@@ -304,6 +309,54 @@ public sealed class DeploymentWorker(
                 Variables: flatVars,
                 ArrayVariables: arrayVars);
 
+            // ── 3.c. Process flatten-time warnings (M15.2) ─────────────────
+            // ForEach groups that resolved to empty / undefined collections
+            // surface as warnings here; the orchestrator emits the audit
+            // + writes a Skipped outcome for the group + applies the
+            // Required gate (Unresolved + Required → abort the deployment).
+            var auditLog = scope.ServiceProvider.GetRequiredService<IAuditLog>();
+            foreach (var w in flatten.Warnings)
+            {
+                var eventType = w.Kind switch
+                {
+                    DeploymentPlanFlattener.WarningKind.ForEachEmpty
+                        => AuditEventType.DeploymentForEachEmpty,
+                    DeploymentPlanFlattener.WarningKind.ForEachUnresolved
+                        => AuditEventType.DeploymentForEachUnresolved,
+                    _ => AuditEventType.DeploymentForEachEmpty,
+                };
+                db.DeploymentLogEntries.Add(new DeploymentLogEntry
+                {
+                    DeploymentId = deployment.Id,
+                    Sequence     = logSeq.Next(),
+                    Timestamp    = DateTimeOffset.UtcNow,
+                    Level        = w.Kind == DeploymentPlanFlattener.WarningKind.ForEachEmpty
+                                       ? "info" : "error",
+                    Message      = $"--- {w.Source.Name}: {w.Detail} ---",
+                });
+                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                await auditLog.RecordAsync(
+                    eventType,
+                    subjectType: "Deployment",
+                    subjectId:   deployment.Id.ToString(),
+                    details:     $"Step={w.Source.Name}, " +
+                                 $"Collection={w.CollectionExpression}, " +
+                                 $"Detail={w.Detail}",
+                    ct: ct).ConfigureAwait(false);
+
+                // Unresolved + Required → abort here. Empty / non-required
+                // Unresolved → continue (group is a no-op).
+                if (w.Kind == DeploymentPlanFlattener.WarningKind.ForEachUnresolved
+                    && w.Source.Required)
+                {
+                    await FailAsync(db, deployment,
+                        $"Required ForEach step '{w.Source.Name}' could not " +
+                        $"resolve its collection: {w.Detail}", ct)
+                        .ConfigureAwait(false);
+                    return;
+                }
+            }
+
             // ── 4. Partition steps into waves (M14.4) ───────────────────────
             // A wave = first step + all subsequent StartWithPrevious steps,
             // until the next StartAfterPrevious opens wave N+1. Each wave is
@@ -311,13 +364,12 @@ public sealed class DeploymentWorker(
             // waves throw at partition time and we fail the deployment with
             // a clear MixedWaveRefused audit. Within a wave, steps run
             // concurrently.
-            var auditLog = scope.ServiceProvider.GetRequiredService<IAuditLog>();
             List<WavePartitioner.Wave> waves;
             try
             {
                 waves = WavePartitioner.Partition(
                     steps,
-                    triggerByIndex: idx => snapshotSteps[idx].StartTrigger);
+                    triggerByIndex: idx => snapshotByPlanIndex[idx].StartTrigger);
             }
             catch (WavePartitioner.InvalidWaveException ex)
             {
@@ -345,7 +397,7 @@ public sealed class DeploymentWorker(
                 var refusedAt = DateTimeOffset.UtcNow;
                 foreach (var refused in ex.WaveSteps)
                 {
-                    var snap = snapshotSteps[refused.Index];
+                    var snap = snapshotByPlanIndex[refused.Index];
                     await UpsertStepOutcomeAsync(
                         db, deployment.Id, refused.Index, snap.Name,
                         StepOutcomeKind.Skipped, attemptCount: 0,
@@ -395,11 +447,11 @@ public sealed class DeploymentWorker(
                     //    siblings to complete; Required-failure short-circuit
                     //    is applied after the wave settles.
                     var serverOutcomes = await RunServerWaveAsync(
-                        wave, snapshotSteps, hasFailed, varDict, deployment,
+                        wave, snapshotByPlanIndex, hasFailed, varDict, deployment,
                         db, auditLog, logSeq, flatVars, ct).ConfigureAwait(false);
 
                     var firstRequiredFailure = serverOutcomes.FirstOrDefault(o =>
-                        !o.Skipped && !o.Ok && snapshotSteps[o.Step.Index].Required);
+                        !o.Skipped && !o.Ok && snapshotByPlanIndex[o.Step.Index].Required);
                     if (firstRequiredFailure is not null)
                     {
                         await auditLog.RecordAsync(
@@ -415,11 +467,11 @@ public sealed class DeploymentWorker(
                     }
 
                     foreach (var nonReq in serverOutcomes.Where(o =>
-                        !o.Skipped && !o.Ok && !snapshotSteps[o.Step.Index].Required))
+                        !o.Skipped && !o.Ok && !snapshotByPlanIndex[o.Step.Index].Required))
                     {
                         await LogAndAuditStepFailedNonRequiredAsync(
                             db, auditLog, logSeq, deployment,
-                            snapshotSteps[nonReq.Step.Index], ct).ConfigureAwait(false);
+                            snapshotByPlanIndex[nonReq.Step.Index], ct).ConfigureAwait(false);
                         hasFailed = true;
                     }
                 }
@@ -432,7 +484,7 @@ public sealed class DeploymentWorker(
                     var stepsToRun = new List<DeploymentStepPlan>(wave.Steps.Count);
                     foreach (var s in wave.Steps)
                     {
-                        var snapshot = snapshotSteps[s.Index];
+                        var snapshot = snapshotByPlanIndex[s.Index];
                         var decision = StepConditionEvaluator.Evaluate(
                             snapshot.Condition,
                             snapshot.ConditionVariableExpression,
@@ -473,7 +525,7 @@ public sealed class DeploymentWorker(
 
                     var waveStartedUtc = DateTimeOffset.UtcNow;
                     var (waveResult, waveTimedOut, perStepResults) = await DispatchTargetWaveAsync(
-                        plan, stepsToRun, snapshotSteps, deployment, connectionId,
+                        plan, stepsToRun, snapshotByPlanIndex, deployment, connectionId,
                         db, auditLog, logSeq, ct).ConfigureAwait(false);
 
                     // ── M14.5 — record target-wave per-step outcomes ──────
@@ -487,7 +539,7 @@ public sealed class DeploymentWorker(
                     var reportedIndices = new HashSet<int>();
                     foreach (var r in perStepResults)
                     {
-                        var snap = snapshotSteps[r.StepIndex];
+                        var snap = snapshotByPlanIndex[r.StepIndex];
                         var kind = r.Success ? StepOutcomeKind.Succeeded
                                               : StepOutcomeKind.Failed;
                         await UpsertStepOutcomeAsync(
@@ -511,7 +563,7 @@ public sealed class DeploymentWorker(
                         {
                             continue;
                         }
-                        var snap = snapshotSteps[p.Index];
+                        var snap = snapshotByPlanIndex[p.Index];
                         var kind = waveTimedOut
                             ? StepOutcomeKind.TimedOut
                             : (waveResult.Success
@@ -547,7 +599,7 @@ public sealed class DeploymentWorker(
                         // non-zero TimeoutSeconds in the wave (the one the
                         // operator most likely configured).
                         var timeoutStep = stepsToRun
-                            .Select(p => snapshotSteps[p.Index])
+                            .Select(p => snapshotByPlanIndex[p.Index])
                             .FirstOrDefault(snap => snap.TimeoutSeconds > 0);
                         if (timeoutStep is not null)
                         {
@@ -575,7 +627,7 @@ public sealed class DeploymentWorker(
                         {
                             foreach (var failed in failedSteps)
                             {
-                                var snap = snapshotSteps[failed.StepIndex];
+                                var snap = snapshotByPlanIndex[failed.StepIndex];
                                 if (snap.Required)
                                 {
                                     firstRequiredFailure = stepsToRun
@@ -589,7 +641,7 @@ public sealed class DeploymentWorker(
                             // No per-step reports — fall back to the M14.0..3
                             // group-level pessimistic gate.
                             firstRequiredFailure = stepsToRun
-                                .FirstOrDefault(p => snapshotSteps[p.Index].Required);
+                                .FirstOrDefault(p => snapshotByPlanIndex[p.Index].Required);
                         }
 
                         if (firstRequiredFailure is not null)
@@ -615,7 +667,7 @@ public sealed class DeploymentWorker(
                             {
                                 await LogAndAuditStepFailedNonRequiredAsync(
                                     db, auditLog, logSeq, deployment,
-                                    snapshotSteps[failed.StepIndex], ct)
+                                    snapshotByPlanIndex[failed.StepIndex], ct)
                                     .ConfigureAwait(false);
                             }
                         }
@@ -628,7 +680,7 @@ public sealed class DeploymentWorker(
                             {
                                 await LogAndAuditStepFailedNonRequiredAsync(
                                     db, auditLog, logSeq, deployment,
-                                    snapshotSteps[p.Index], ct).ConfigureAwait(false);
+                                    snapshotByPlanIndex[p.Index], ct).ConfigureAwait(false);
                             }
                         }
                         hasFailed = true;
@@ -882,27 +934,9 @@ public sealed class DeploymentWorker(
             targetRoles.Contains(r, StringComparer.OrdinalIgnoreCase));
     }
 
-    /// <summary>
-    /// Applies Octostache variable substitution to all values in a step's Config dictionary.
-    /// Keys are never substituted (they are well-known step-type contract strings).
-    /// </summary>
-    private static Dictionary<string, string> SubstituteConfig(
-        Dictionary<string, string> config,
-        VariableDictionary vars)
-    {
-        if (config.Count == 0)
-        {
-            return config;
-        }
-
-        return config.ToDictionary(
-            kv => kv.Key,
-            kv =>
-            {
-                var evaluated = vars.Evaluate(kv.Value);
-                return evaluated ?? kv.Value;
-            });
-    }
+    // M15.2: SubstituteConfig moved into DeploymentPlanFlattener so it
+    // can run per-ForEach-iteration with the right variable bag. The
+    // orchestrator no longer pre-substitutes the snapshot's Config.
 
     private static async Task FailAsync(
         KrakenDbContext db, Deployment deployment, string reason, CancellationToken ct)
