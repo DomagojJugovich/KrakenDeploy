@@ -87,6 +87,26 @@ public class DeploymentStepOutcome : Entity
     /// without re-joining the release snapshot, and so historical
     /// outcomes survive process edits.</summary>
     public bool Required { get; set; }
+
+    /// <summary>
+    /// M-RollingDeployments groundwork — the target this outcome belongs
+    /// to. Pre-multi-target every deployment ran against exactly one
+    /// target, so a (DeploymentId, StepIndex) tuple uniquely identified
+    /// an outcome row. With multi-target dispatch, the same step runs
+    /// once per target, so the tuple becomes (DeploymentId, StepIndex,
+    /// TargetId).
+    ///
+    /// <para>
+    /// Nullable for two reasons: (a) backfill compatibility — the
+    /// migration sets this to the parent deployment's
+    /// <c>Deployment.TargetId</c> for existing rows, but offline /
+    /// drop-bundle deployments may have null TargetId; (b) server-side
+    /// steps that aren't bound to a specific target (no
+    /// <c>TargetRoles</c>) can leave it null since they run once per
+    /// deployment regardless of the target set.
+    /// </para>
+    /// </summary>
+    public Guid? TargetId { get; set; }
 }
 
 /// <summary>

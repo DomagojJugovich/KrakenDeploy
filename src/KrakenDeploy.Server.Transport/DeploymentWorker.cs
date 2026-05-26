@@ -1683,9 +1683,19 @@ public sealed class DeploymentWorker(
 
     /// <summary>
     /// M14.5 — upsert a <see cref="DeploymentStepOutcome"/> row keyed by
-    /// (DeploymentId, StepIndex). Wave-level target retries re-dispatch the
-    /// whole sub-plan so a step's outcome can be reported multiple times;
-    /// the upsert keeps a single row per step reflecting the final attempt.
+    /// (DeploymentId, StepIndex, TargetId). Wave-level target retries
+    /// re-dispatch the whole sub-plan so a step's outcome can be
+    /// reported multiple times; the upsert keeps a single row per
+    /// step-per-target reflecting the final attempt.
+    ///
+    /// <para>
+    /// M-RollingDeployments groundwork: the key now includes
+    /// <paramref name="targetId"/> so multi-target dispatch writes one
+    /// outcome row per target per step. <paramref name="targetId"/>
+    /// stays null on this commit (the orchestrator still single-targets
+    /// every dispatch); Phase 1b's orchestrator rewrite starts passing
+    /// the real target id.
+    /// </para>
     ///
     /// <para>
     /// Caller is responsible for <c>SaveChangesAsync</c> — the helper
@@ -1706,11 +1716,14 @@ public sealed class DeploymentWorker(
         DateTimeOffset completedUtc,
         bool isServerSide,
         bool required,
-        CancellationToken ct)
+        CancellationToken ct,
+        Guid? targetId = null)
     {
         var existing = await db.DeploymentStepOutcomes
             .FirstOrDefaultAsync(o =>
-                o.DeploymentId == deploymentId && o.StepIndex == stepIndex, ct)
+                o.DeploymentId == deploymentId
+                && o.StepIndex == stepIndex
+                && o.TargetId == targetId, ct)
             .ConfigureAwait(false);
 
         if (existing is not null)
@@ -1723,6 +1736,7 @@ public sealed class DeploymentWorker(
             existing.CompletedUtc  = completedUtc;
             existing.IsServerSide  = isServerSide;
             existing.Required      = required;
+            existing.TargetId      = targetId;
             return;
         }
 
@@ -1738,6 +1752,7 @@ public sealed class DeploymentWorker(
             CompletedUtc = completedUtc,
             IsServerSide = isServerSide,
             Required     = required,
+            TargetId     = targetId,
         });
     }
 }

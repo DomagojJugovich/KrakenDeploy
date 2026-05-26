@@ -16,6 +16,24 @@ public class Deployment : AuditableEntity, ISpaceScoped
     public DeploymentEnvironment Environment { get; set; } = null!;
     public Guid? TargetId { get; set; }
     public DeploymentTarget? Target { get; set; }
+
+    /// <summary>
+    /// M-RollingDeployments groundwork — the deployment's target SET.
+    /// Pre-this-milestone every deployment had exactly one target (via
+    /// <see cref="TargetId"/>); the join entity lifts that constraint
+    /// so multi-target deployments become possible. The upgrade
+    /// migration backfills one row per existing
+    /// <see cref="TargetId"/>; new code can populate the collection
+    /// for multi-target dispatch when the orchestrator rewrite lands.
+    /// <para>
+    /// During the transition (this commit), the legacy
+    /// <see cref="TargetId"/> + <see cref="Target"/> nav stay the
+    /// source of truth for the orchestrator + every existing
+    /// per-target code path. Reading from the join collection is
+    /// safe but not yet exercised on the dispatch hot path.
+    /// </para>
+    /// </summary>
+    public ICollection<DeploymentTargetAssignment> Targets { get; set; } = [];
     public Guid? TenantId { get; set; }
     public Tenant? Tenant { get; set; }
     public DeploymentStatus Status { get; set; } = DeploymentStatus.Queued;

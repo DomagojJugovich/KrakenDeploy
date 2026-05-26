@@ -28,6 +28,7 @@ public sealed class DeploymentStepOutcomeConfiguration
         builder.Property(x => x.CompletedUtc).IsRequired();
         builder.Property(x => x.IsServerSide).IsRequired();
         builder.Property(x => x.Required).IsRequired();
+        builder.Property(x => x.TargetId);
 
         builder.HasOne(x => x.Deployment)
             .WithMany()
@@ -36,8 +37,17 @@ public sealed class DeploymentStepOutcomeConfiguration
 
         // Primary read pattern: "give me every step's outcome for this
         // deployment, in step order" — the Steps tab on the deployment
-        // detail page. The composite index serves both that scan and
-        // the upsert-by-natural-key path.
-        builder.HasIndex(x => new { x.DeploymentId, x.StepIndex }).IsUnique();
+        // detail page. The composite unique index serves both that scan
+        // and the upsert-by-natural-key path.
+        //
+        // M-RollingDeployments groundwork: index widens to include
+        // TargetId so multi-target dispatch can write one outcome row
+        // per (deployment, step, target). NULL TargetId distinguishes
+        // server-side steps that aren't bound to a specific target.
+        // Postgres treats NULL as distinct in unique indexes by default,
+        // so two rows with (Dep=X, Step=Y, Target=NULL) would collide
+        // only if both are server-side server-once steps — which is
+        // the intended semantic.
+        builder.HasIndex(x => new { x.DeploymentId, x.StepIndex, x.TargetId }).IsUnique();
     }
 }

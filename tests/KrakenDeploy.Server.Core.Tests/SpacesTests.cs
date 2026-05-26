@@ -62,6 +62,10 @@ public sealed class SpacesTests
             // M14.5 — per-step outcome aggregate; same reasoning as
             // DeploymentOutputVariable, scope inherits via DeploymentId.
             "DeploymentStepOutcome",
+            // M-RollingDeployments groundwork — join row between a
+            // Deployment and its targets. Scope inherits via DeploymentId,
+            // same reasoning as the other Deployment-keyed aggregates.
+            "DeploymentTargetAssignment",
             "LifecyclePhase",
             "DeploymentProcess",
             "DeploymentStep",

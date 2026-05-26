@@ -1857,6 +1857,21 @@ Sequenced AFTER M14. M15's flattener runs BEFORE M14.4's wave partitioner; layer
 - **Comma-separated string collections** — same.
 - **Prior-step output as collection source** (`ForEach.Collection = '#{Octopus.Action[Discover].Output.Items}'`) — needs output-variable typing (array vs scalar) which today is purely string-based. Follow-up.
 - **Rolling deployments** — M-RollingDeployments milestone. Not a new step type — just `Octopus.Action.MaxParallelism` on a `Kraken.StepGroup` driving a target-fan-out pass in the orchestrator. Requires multi-target Deployment row (the structural blocker called out in M14's "deferred" section). M15's machinery is the foundation; M-RollingDeployments adds the property-consumption pass.
+
+  **Phase 1a — Groundwork, DONE 2026-05-26**:
+  - `DeploymentTargetAssignment` join entity in Server.Core (composite PK on `(DeploymentId, TargetId)`, table `deployment_target_assignments`). Named to avoid colliding with the existing `Targets.DeploymentTarget` machine entity.
+  - `Deployment.Targets ICollection` nav alongside the legacy `Deployment.TargetId` (kept operational during transition — every existing code path still reads `TargetId` exactly as today).
+  - `DeploymentStepOutcome.TargetId Guid?` added; unique index widens to `(DeploymentId, StepIndex, TargetId)` so multi-target dispatch can write one outcome per target per step.
+  - Migration `AddRollingDeploymentGroundwork` with backfill: INSERT into `deployment_target_assignments` from every existing `Deployment.TargetId`; UPDATE outcomes' `target_id` from the parent deployment's `TargetId`.
+  - `UpsertStepOutcomeAsync` signature gains optional `targetId` parameter (defaults null — current single-target path passes null implicitly). Phase 1b will start populating it.
+  - `SpacesTests` excluded list updated (scope inherits via DeploymentId).
+  - Zero behavior change: suite stays at 863 green.
+
+  **Phase 1b — Orchestrator fan-out (TODO)**: rewrite `DeploymentWorker.DispatchAsync` + `RunbookRunWorker` to walk `deployment.Targets`. Variable resolution moves inside the per-target loop. Target-side waves dispatch sub-plan per target in parallel (no rate limit). Helpers that read `deployment.Target` directly (`DropBundleService`, `OfflineResultService`, `DeployReleaseStepRunner`, `OctopusSystemVariablesBuilder`) need rewiring to per-target.
+
+  **Phase 2 — Rolling window (TODO)**: orchestrator consumes `Octopus.Action.MaxParallelism` on `Kraken.StepGroup`; per-batch dispatch + audit. `StepFormDialog` Step Group editor gains a Max parallelism input.
+
+  **Phase 3 — Polish (TODO)**: per-target Required gate (failed target X drops out of subsequent batches), Steps tab UI shows per-target outcomes, `Deployment.Slow` audit per-target vs per-deployment.
 - **Loop control flow** (break / continue / labelled break) — Octopus doesn't have these; YAGNI for v1.
 - **While / Until loops** — same; no Octopus parity pressure.
 
