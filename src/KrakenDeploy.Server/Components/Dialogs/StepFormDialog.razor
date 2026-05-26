@@ -1,3 +1,4 @@
+@using System.Globalization
 @using System.Text.Json
 @using KrakenDeploy.Contracts.Steps
 @using KrakenDeploy.Server.Components.Shared
@@ -329,6 +330,33 @@
                         with a <code>Deployment.ForEachUnresolved</code> audit.
                     </RadzenText>
 
+                    @* M-RollingDeployments Phase 2 — rolling-window cap.
+                       Lives inside the Step Group card alongside ForEach
+                       because both are step-group-scoped properties. Empty
+                       input = no cap (the resolver treats null / <=0 /
+                       garbage as "no batching" so a typo can't accidentally
+                       serialise the deployment to one-at-a-time). *@
+                    <RadzenStack Gap="0.25rem">
+                        <RadzenFormField Text="Max parallelism (rolling window)"
+                                         Variant="Variant.Outlined" Style="width:100%">
+                            <RadzenNumeric @bind-Value="_maxParallelism"
+                                           TValue="int?"
+                                           Min="1" Max="1000"
+                                           Placeholder="No cap"
+                                           Style="width:100%" />
+                        </RadzenFormField>
+                        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                            When set, the orchestrator dispatches each
+                            target-side wave inside this group to at most
+                            this many targets at a time; subsequent batches
+                            run after each batch settles (concurrency cap,
+                            not full Octopus canary semantics — a Required
+                            failure inside a batch stops later batches).
+                            Blank / 0 = fan out to every target at once
+                            (Phase 1b default).
+                        </RadzenText>
+                    </RadzenStack>
+
                     @if (!string.IsNullOrWhiteSpace(_foreachCollection))
                     {
                         <RadzenStack Orientation="Orientation.Horizontal" Gap="1rem">
@@ -632,6 +660,22 @@
     private bool _foreachParallel;
 
     /// <summary>
+    /// M-RollingDeployments Phase 2 — rolling-window cap on a
+    /// <c>Kraken.StepGroup</c>. When set to a positive integer, the
+    /// orchestrator batches the group's target-side waves to at most
+    /// N targets at a time per wave; subsequent batches run after each
+    /// batch settles. 0 / blank = no cap (the deployment's full target
+    /// set fans out at once, Phase 1b behaviour).
+    /// <para>
+    /// Bound to a nullable int so the input distinguishes "not set"
+    /// (blank field, no Config key) from "explicitly zero" (which is
+    /// nonsense and treated as "no cap" by the resolver). Imported
+    /// Octopus rolling-deployment steps land here verbatim.
+    /// </para>
+    /// </summary>
+    private int? _maxParallelism;
+
+    /// <summary>
     /// M15 follow-up — names of every <c>StringArray</c> variable in the
     /// project's variable set. Powers the autocomplete on the Collection
     /// field. Loaded once per dialog open via
@@ -789,6 +833,21 @@
             }
             _foreachParallel = sourceConfig.TryGetValue("Octopus.Action.ForEach.Parallel", out var par)
                 && string.Equals(par?.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+
+            // M-RollingDeployments Phase 2 — hydrate Octopus.Action.MaxParallelism.
+            // Blank / missing / non-numeric / <=0 all surface as null in the
+            // UI (matches the resolver's "no cap" interpretation — input
+            // and runtime agree on what null means).
+            if (sourceConfig.TryGetValue("Octopus.Action.MaxParallelism", out var rawMax)
+                && int.TryParse(rawMax, NumberStyles.Integer, CultureInfo.InvariantCulture, out var max)
+                && max > 0)
+            {
+                _maxParallelism = max;
+            }
+            else
+            {
+                _maxParallelism = null;
+            }
         }
 
         // Add path: take ParentStepId from the picker's pre-fill.
@@ -1148,6 +1207,21 @@
                 config.Remove("Octopus.Action.ForEach.IterationVariable");
                 config.Remove("Octopus.Action.ForEach.IndexVariable");
                 config.Remove("Octopus.Action.ForEach.Parallel");
+            }
+
+            // M-RollingDeployments Phase 2 — write/strip Max parallelism.
+            // Blank input (null) or non-positive value → strip the key so
+            // the snapshot doesn't carry a no-op cap; positive value →
+            // write with InvariantCulture so the importer / resolver both
+            // read it back consistently across cultures.
+            if (_maxParallelism is > 0)
+            {
+                config["Octopus.Action.MaxParallelism"] =
+                    _maxParallelism.Value.ToString(CultureInfo.InvariantCulture);
+            }
+            else
+            {
+                config.Remove("Octopus.Action.MaxParallelism");
             }
         }
 

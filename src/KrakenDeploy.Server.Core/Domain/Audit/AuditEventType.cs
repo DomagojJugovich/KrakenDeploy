@@ -153,6 +153,25 @@ public static class AuditEventType
     /// Details: deployment id, step group name, collection expression.</summary>
     public const string DeploymentForEachUnresolved = "Deployment.ForEachUnresolved";
 
+    /// <summary>M-RollingDeployments Phase 2 — emitted when a target wave's
+    /// fan-out is batched by the rolling window
+    /// (<c>Octopus.Action.MaxParallelism</c> on a <c>Kraken.StepGroup</c>
+    /// ancestor). One audit per batch start so operators can trace which
+    /// subset of targets received this slice of the dispatch.
+    /// Details: deployment id, rolling group name, batch index (1-based),
+    /// total batches, batch target names, wave step names.</summary>
+    public const string DeploymentRollingBatchStarted = "Deployment.RollingBatchStarted";
+
+    /// <summary>M-RollingDeployments Phase 2 — emitted when a rolling-batch
+    /// dispatch settles (success OR failure). Pair with
+    /// <see cref="DeploymentRollingBatchStarted"/> for "open + close"
+    /// timeline reconstruction. Required failures inside the batch ALSO
+    /// trip <see cref="DeploymentRequiredStepFailed"/>; this row just
+    /// records the batch's terminal state.
+    /// Details: deployment id, rolling group name, batch index, success
+    /// flag, failed target names (if any).</summary>
+    public const string DeploymentRollingBatchCompleted = "Deployment.RollingBatchCompleted";
+
     // ── Maintenance mode (M13.A.3) ───────────────────────────────────────────
     /// <summary>Operator enabled instance-wide maintenance mode.
     /// Details: reason text + who enabled it. Pair with

@@ -257,6 +257,14 @@ public sealed class DeploymentWorker(
                 .OrderBy(s => s.SortOrder)
                 .ToArray();
 
+            // M-RollingDeployments Phase 2 — index the FULL snapshot (not
+            // just emitted plans) so RollingWindowResolver can walk parent
+            // step chains. Container Kraken.StepGroup rows aren't in the
+            // flat plan list, but they ARE in the snapshot.
+            var snapshotById = snapshotSteps
+                .Where(s => s.Id != Guid.Empty)
+                .ToDictionary(s => s.Id);
+
             var contexts = new Dictionary<Guid, TargetDispatchContext>(targets.Count);
             TargetDispatchContext? canonical = null;
             foreach (var target in targets)
@@ -462,7 +470,8 @@ public sealed class DeploymentWorker(
                     // failure on ANY target aborts the deployment —
                     // conservative Phase 1b; per-target drop-out is Phase 3).
                     var targetWaveResult = await DispatchTargetWaveAcrossTargetsAsync(
-                        wave, targets, contexts, hasFailed, deployment,
+                        wave, targets, contexts, canonicalCtx.SnapshotByPlanIndex,
+                        snapshotById, hasFailed, deployment,
                         db, auditLog, logSeq, ct).ConfigureAwait(false);
 
                     // Target offline → fail the whole deployment. We could
@@ -1752,6 +1761,8 @@ public sealed class DeploymentWorker(
         WavePartitioner.Wave wave,
         List<DeploymentTarget> targets,
         IReadOnlyDictionary<Guid, TargetDispatchContext> contexts,
+        StepSnapshot[] canonicalSnapshotByPlanIndex,
+        IReadOnlyDictionary<Guid, StepSnapshot> snapshotById,
         bool hasFailedAtWaveStart,
         Deployment deployment,
         KrakenDbContext db,
@@ -1829,9 +1840,129 @@ public sealed class DeploymentWorker(
             return new TargetWaveAggregateResult(null, null, false);
         }
 
-        // ── Fan-out ────────────────────────────────────────────────────
+        // ── M-RollingDeployments Phase 2 — resolve effective MaxParallelism ──
+        // The cap comes from a Kraken.StepGroup ancestor's
+        // `Octopus.Action.MaxParallelism`. When every step in the wave shares
+        // a single rolling ancestor with a parseable positive cap, the
+        // resolver returns it; otherwise null (no batching). See
+        // RollingWindowResolver for the precise semantic + edge cases.
+        var maxParallelism = RollingWindowResolver.ResolveWaveMaxParallelism(
+            wave.Steps, canonicalSnapshotByPlanIndex, snapshotById);
+        var rollingGroupName = maxParallelism is null ? null
+            : RollingWindowResolver.ResolveWaveRollingGroupName(
+                wave.Steps, canonicalSnapshotByPlanIndex, snapshotById);
+
+        var batches = maxParallelism is null
+            ? [dispatchPlan]
+            : RollingWindowResolver.Chunk(dispatchPlan, maxParallelism.Value);
+
+        // Batching is only operator-visible when we ACTUALLY split — a cap
+        // that meets or exceeds the dispatch count silently degrades to a
+        // single batch + no audit (operators don't get noise for a cap that
+        // didn't fire).
+        var batchingActive = batches.Count > 1 && rollingGroupName is not null;
+
+        var hasFailedNonRequired = false;
+        (TargetDispatchContext Ctx, string StepName, string? Error)? firstRequiredFailure = null;
+
+        for (var batchIdx = 0; batchIdx < batches.Count; batchIdx++)
+        {
+            var batch = batches[batchIdx];
+
+            if (batchingActive)
+            {
+                var batchTargets = string.Join(", ", batch.Select(t => t.Ctx.Target.Name));
+                var waveNames = string.Join(", ", wave.Steps.Select(s => s.Name));
+                await auditLog.RecordAsync(
+                    AuditEventType.DeploymentRollingBatchStarted,
+                    subjectType: "Deployment",
+                    subjectId:   deployment.Id.ToString(),
+                    details:     $"RollingGroup={rollingGroupName}, " +
+                                 $"Batch={(batchIdx + 1).ToString(CultureInfo.InvariantCulture)}/" +
+                                 $"{batches.Count.ToString(CultureInfo.InvariantCulture)}, " +
+                                 $"BatchSize={batch.Count.ToString(CultureInfo.InvariantCulture)}, " +
+                                 $"MaxParallelism={maxParallelism!.Value.ToString(CultureInfo.InvariantCulture)}, " +
+                                 $"Targets=[{batchTargets}], " +
+                                 $"Wave=[{waveNames}]",
+                    ct: ct).ConfigureAwait(false);
+                db.DeploymentLogEntries.Add(new DeploymentLogEntry
+                {
+                    DeploymentId = deployment.Id,
+                    Sequence     = logSeq.Next(),
+                    Timestamp    = DateTimeOffset.UtcNow,
+                    Level        = "info",
+                    Message      = $"--- Rolling batch " +
+                                   $"{(batchIdx + 1).ToString(CultureInfo.InvariantCulture)} of " +
+                                   $"{batches.Count.ToString(CultureInfo.InvariantCulture)} for " +
+                                   $"'{rollingGroupName}' (window={maxParallelism!.Value}): " +
+                                   $"[{batchTargets}] ---",
+                });
+                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            }
+
+            var batchOutcome = await DispatchOneBatchAsync(
+                batch, deployment, db, auditLog, logSeq, ct).ConfigureAwait(false);
+
+            if (batchingActive)
+            {
+                var failedTargetNames = string.Join(", ", batchOutcome.FailedTargets);
+                await auditLog.RecordAsync(
+                    AuditEventType.DeploymentRollingBatchCompleted,
+                    subjectType: "Deployment",
+                    subjectId:   deployment.Id.ToString(),
+                    details:     $"RollingGroup={rollingGroupName}, " +
+                                 $"Batch={(batchIdx + 1).ToString(CultureInfo.InvariantCulture)}/" +
+                                 $"{batches.Count.ToString(CultureInfo.InvariantCulture)}, " +
+                                 $"Success={(batchOutcome.RequiredFailure is null
+                                               ? "true" : "false")}, " +
+                                 $"FailedTargets=[{failedTargetNames}]",
+                    ct: ct).ConfigureAwait(false);
+            }
+
+            if (batchOutcome.RequiredFailure is not null)
+            {
+                firstRequiredFailure = batchOutcome.RequiredFailure;
+                // Canary-ish gate: a Required failure inside this batch
+                // stops subsequent batches (matches the standard Required
+                // gate's "stop the deployment" semantic, but the failing
+                // batch's peers in the same batch DO finish — we await
+                // them above).
+                break;
+            }
+            if (batchOutcome.HasFailedNonRequired)
+            {
+                hasFailedNonRequired = true;
+            }
+        }
+
+        return new TargetWaveAggregateResult(
+            OfflineTarget:        null,
+            AbortedRequired:      firstRequiredFailure,
+            HasFailedNonRequired: hasFailedNonRequired);
+    }
+
+    /// <summary>
+    /// One rolling-batch's worth of (target, stepsToRun) tuples — the
+    /// existing per-target dispatch loop, factored out so the outer
+    /// batched dispatch can call it once per batch. Pre-1b code path
+    /// is reachable by passing the whole un-chunked list as a single
+    /// batch.
+    /// </summary>
+    private sealed record BatchOutcome(
+        (TargetDispatchContext Ctx, string StepName, string? Error)? RequiredFailure,
+        bool HasFailedNonRequired,
+        IReadOnlyList<string> FailedTargets);
+
+    private async Task<BatchOutcome> DispatchOneBatchAsync(
+        IReadOnlyList<(TargetDispatchContext Ctx, List<DeploymentStepPlan> Steps)> batch,
+        Deployment deployment,
+        KrakenDbContext db,
+        IAuditLog auditLog,
+        LogSequencer logSeq,
+        CancellationToken ct)
+    {
         var waveStartedUtc = DateTimeOffset.UtcNow;
-        var dispatchTasks = dispatchPlan.Select(async tuple =>
+        var dispatchTasks = batch.Select(async tuple =>
         {
             var (ctx, stepsToRun) = tuple;
             var connectionId = registry.GetConnectionId(ctx.Target.Id)!;
@@ -1845,11 +1976,9 @@ public sealed class DeploymentWorker(
         var perTargetOutcomes = await Task.WhenAll(dispatchTasks).ConfigureAwait(false);
         var waveCompletedUtc = DateTimeOffset.UtcNow;
 
-        // ── Persist per-(target, step) outcomes + audits ───────────────
-        // We do this OUTSIDE the parallel Task.WhenAll so we can use the
-        // single shared db context safely (DbContext isn't thread-safe).
         var hasFailedNonRequired = false;
         (TargetDispatchContext Ctx, string StepName, string? Error)? firstRequiredFailure = null;
+        var failedTargets = new List<string>();
 
         foreach (var (ctx, stepsToRun, waveResult, waveTimedOut, perStepResults) in perTargetOutcomes)
         {
@@ -1897,9 +2026,6 @@ public sealed class DeploymentWorker(
             }
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
-            // Collision audits per target (output-variable scope is per
-            // (DeploymentId, StepName, Name) in Phase 1b — see commit body
-            // for why cross-target collisions aren't audited yet).
             await EmitWaveCollisionsAsync(
                 perStepResults, stepsToRun, deployment, db, auditLog, logSeq, ct)
                 .ConfigureAwait(false);
@@ -1918,8 +2044,8 @@ public sealed class DeploymentWorker(
 
             if (!waveResult.Success)
             {
-                // Per-step Required gate (per target). First Required
-                // failure on ANY target tripping ends the deployment.
+                failedTargets.Add(ctx.Target.Name);
+
                 var failedSteps = perStepResults.Where(r => !r.Success).ToList();
                 DeploymentStepPlan? thisTargetRequiredFailure = null;
                 if (failedSteps.Count > 0)
@@ -1937,8 +2063,6 @@ public sealed class DeploymentWorker(
                 }
                 else
                 {
-                    // No per-step boundary reports — group-level pessimistic
-                    // fallback (matches M14.0..3 behaviour).
                     thisTargetRequiredFailure = stepsToRun
                         .FirstOrDefault(p => ctx.SnapshotByPlanIndex[p.Index].Required);
                 }
@@ -1950,7 +2074,6 @@ public sealed class DeploymentWorker(
                     continue;
                 }
 
-                // Non-required failures: record audits + flip hasFailed.
                 if (failedSteps.Count > 0)
                 {
                     foreach (var failed in failedSteps)
@@ -1974,9 +2097,9 @@ public sealed class DeploymentWorker(
             }
         }
 
-        return new TargetWaveAggregateResult(
-            OfflineTarget:        null,
-            AbortedRequired:      firstRequiredFailure,
-            HasFailedNonRequired: hasFailedNonRequired);
+        return new BatchOutcome(
+            RequiredFailure:      firstRequiredFailure,
+            HasFailedNonRequired: hasFailedNonRequired,
+            FailedTargets:        failedTargets);
     }
 }
