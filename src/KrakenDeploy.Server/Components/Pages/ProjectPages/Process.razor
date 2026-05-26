@@ -85,18 +85,63 @@
                 {
                     var step = _steps[i];
                     var index = i;
-                    <RadzenCard class="kraken-step-card rz-mb-2">
+                    var depth = DepthOf(step);
+                    var numbering = NumberingOf(step);
+                    var childCount = ChildCountOf(step);
+                    var isGroup = IsStepGroup(step);
+                    <RadzenCard class="kraken-step-card rz-mb-2"
+                                style="@($"margin-left:{(depth * 24).ToString(System.Globalization.CultureInfo.InvariantCulture)}px;")">
                         <RadzenStack Orientation="Orientation.Horizontal"
                                      AlignItems="AlignItems.Start" Gap="1rem">
-                            <div class="kraken-step-number">@(index + 1)</div>
+                            <div class="kraken-step-number"
+                                 title="@(depth > 0 ? "Child of a Step Group" : "Top-level step")">
+                                @numbering
+                            </div>
                             <div class="kraken-step-icon">
-                                <RadzenIcon Icon="inventory_2" />
+                                <RadzenIcon Icon="@(isGroup ? "folder" : "inventory_2")" />
                             </div>
                             <div class="kraken-step-body">
                                 <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H3"
                                             class="rz-mb-1">
+                                    @if (isGroup)
+                                    {
+                                        <RadzenIcon Icon="expand_more"
+                                                    Style="font-size:1rem;vertical-align:middle;opacity:0.6;" />
+                                    }
                                     @step.Name
+                                    @if (isGroup)
+                                    {
+                                        <span class="rz-color-secondary rz-text-body2 rz-ml-2">
+                                            (@childCount child@(childCount == 1 ? "" : "ren"))
+                                        </span>
+                                    }
                                 </RadzenText>
+                                @if (isGroup)
+                                {
+                                    @* Step Group body — show ForEach properties if set. *@
+                                    @if (step.Config.TryGetValue("Octopus.Action.ForEach.Collection", out var foreachVar)
+                                         && !string.IsNullOrWhiteSpace(foreachVar))
+                                    {
+                                        <RadzenText TextStyle="TextStyle.Body2"
+                                                    class="rz-color-secondary rz-mb-2">
+                                            ForEach over <code>#{@foreachVar}</code>
+                                            @if (step.Config.TryGetValue("Octopus.Action.ForEach.Parallel", out var parallel)
+                                                 && string.Equals(parallel, "true", StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                <text> — iterations run in parallel</text>
+                                            }
+                                        </RadzenText>
+                                    }
+                                    else
+                                    {
+                                        <RadzenText TextStyle="TextStyle.Body2"
+                                                    class="rz-color-secondary rz-mb-2">
+                                            Step Group — children run sequentially
+                                        </RadzenText>
+                                    }
+                                }
+                                else
+                                {
                                 <RadzenText TextStyle="TextStyle.Body2"
                                             class="rz-color-secondary rz-mb-2">
                                     Deploy package
@@ -111,6 +156,7 @@
                                         <text>with the tags</text>
                                     }
                                 </RadzenText>
+                                }
                                 @if (step.TargetRoles.Count > 0)
                                 {
                                     <RadzenStack Orientation="Orientation.Horizontal"
@@ -152,18 +198,28 @@
                             </div>
                             <RadzenStack Orientation="Orientation.Horizontal" Gap="0.25rem">
                                 <RequirePermission Permission="Permission.ProcessEdit">
+                                    @* M15 — Move buttons disable per sibling-group edges
+                                       (not the global step list edges). *@
                                     <RadzenButton Icon="arrow_upward"
                                                   ButtonStyle="ButtonStyle.Light"
                                                   Size="ButtonSize.ExtraSmall"
-                                                  Disabled="@(index == 0)"
+                                                  Disabled="@(IsFirstSibling(step))"
                                                   Click="@(() => MoveAsync(step.Id, -1))"
                                                   title="Move up" />
                                     <RadzenButton Icon="arrow_downward"
                                                   ButtonStyle="ButtonStyle.Light"
                                                   Size="ButtonSize.ExtraSmall"
-                                                  Disabled="@(index == _steps.Count - 1)"
+                                                  Disabled="@(IsLastSibling(step))"
                                                   Click="@(() => MoveAsync(step.Id, 1))"
                                                   title="Move down" />
+                                    @if (isGroup)
+                                    {
+                                        <RadzenButton Icon="add_circle_outline"
+                                                      ButtonStyle="ButtonStyle.Light"
+                                                      Size="ButtonSize.ExtraSmall"
+                                                      Click="@(() => OpenAddChildStepAsync(step))"
+                                                      title="Add child step" />
+                                    }
                                     <RadzenButton Icon="edit"
                                                   ButtonStyle="ButtonStyle.Light"
                                                   Size="ButtonSize.ExtraSmall"
@@ -173,7 +229,9 @@
                                                   ButtonStyle="ButtonStyle.Danger"
                                                   Size="ButtonSize.ExtraSmall"
                                                   Click="@(() => DeleteAsync(step))"
-                                                  title="Delete" />
+                                                  title="@(isGroup && childCount > 0
+                                                          ? $"Delete (removes {childCount} child step(s) too)"
+                                                          : "Delete")" />
                                 </RequirePermission>
                             </RadzenStack>
                         </RadzenStack>
@@ -258,7 +316,14 @@
     [Parameter] public string Slug { get; set; } = "";
 
     private Project? _project;
+    // M15 — _steps is the DFS-ordered list of every step in the process
+    // (parent immediately followed by its children, then back to the next
+    // top-level step). Sidecar maps carry depth + dotted numbering +
+    // child counts so the template doesn't recompute them per render.
     private List<DeploymentStep> _steps = [];
+    private Dictionary<Guid, int> _depthByStepId = [];
+    private Dictionary<Guid, string> _numberingByStepId = [];
+    private Dictionary<Guid, int> _childCountByStepId = [];
     private Lifecycle? _lifecycle;
     private bool _loaded;
     private string? _loadError;
@@ -289,7 +354,7 @@
             }
 
             var process = await ProcessSvc.GetAsync(_project.Id);
-            _steps = process?.Steps.OrderBy(s => s.SortOrder).ToList() ?? [];
+            BuildStepTree(process?.Steps ?? []);
             await ReloadLatestInstalledMapAsync();
 
             if (_project.LifecycleId is { } lifecycleId)
@@ -311,8 +376,93 @@
     {
         if (_project is null) return;
         var process = await ProcessSvc.GetAsync(_project.Id);
-        _steps = process?.Steps.OrderBy(s => s.SortOrder).ToList() ?? [];
+        BuildStepTree(process?.Steps ?? []);
         await ReloadLatestInstalledMapAsync();
+    }
+
+    /// <summary>
+    /// M15 — DFS over the flat step list (parent-child links via
+    /// <see cref="DeploymentStep.ParentStepId"/>) to produce a render
+    /// order where each parent is immediately followed by its children.
+    /// Sidecar maps carry the depth, dotted numbering (1, 1.1, 1.2, 2, …),
+    /// and child counts the template uses for indent + chevron + "(N children)".
+    /// </summary>
+    private void BuildStepTree(IEnumerable<DeploymentStep> rawSteps)
+    {
+        var bySortOrder = rawSteps.OrderBy(s => s.SortOrder).ToList();
+        var byParent = bySortOrder
+            .GroupBy(s => s.ParentStepId ?? Guid.Empty)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
+        _steps = new List<DeploymentStep>(bySortOrder.Count);
+        _depthByStepId = [];
+        _numberingByStepId = [];
+        _childCountByStepId = bySortOrder
+            .Where(s => s.ParentStepId is not null)
+            .GroupBy(s => s.ParentStepId!.Value)
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        void Walk(IReadOnlyList<DeploymentStep> siblings, int depth, string prefix)
+        {
+            for (var i = 0; i < siblings.Count; i++)
+            {
+                var s = siblings[i];
+                var number = string.IsNullOrEmpty(prefix)
+                    ? (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    : $"{prefix}.{(i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+                _steps.Add(s);
+                _depthByStepId[s.Id] = depth;
+                _numberingByStepId[s.Id] = number;
+                if (byParent.TryGetValue(s.Id, out var kids) && kids.Count > 0)
+                {
+                    Walk(kids, depth + 1, number);
+                }
+            }
+        }
+
+        if (byParent.TryGetValue(Guid.Empty, out var topLevel))
+        {
+            Walk(topLevel, 0, "");
+        }
+    }
+
+    private int DepthOf(DeploymentStep step)
+        => _depthByStepId.TryGetValue(step.Id, out var d) ? d : 0;
+
+    private string NumberingOf(DeploymentStep step)
+        => _numberingByStepId.TryGetValue(step.Id, out var n)
+            ? n
+            : (_steps.IndexOf(step) + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    private int ChildCountOf(DeploymentStep step)
+        => _childCountByStepId.TryGetValue(step.Id, out var c) ? c : 0;
+
+    private bool IsStepGroup(DeploymentStep step)
+        => string.Equals(step.StepType, "Kraken.StepGroup", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// M15 — true when <paramref name="step"/> has no sibling above it
+    /// (lowest SortOrder among steps with the same <see cref="DeploymentStep.ParentStepId"/>).
+    /// Drives the "Move up" button's Disabled state — siblings are scoped
+    /// to the same parent so top-level steps can't move past each other's
+    /// boundary into a Step Group's children list.
+    /// </summary>
+    private bool IsFirstSibling(DeploymentStep step)
+    {
+        var siblings = _steps
+            .Where(s => s.ParentStepId == step.ParentStepId)
+            .OrderBy(s => s.SortOrder)
+            .ToList();
+        return siblings.Count > 0 && siblings[0].Id == step.Id;
+    }
+
+    private bool IsLastSibling(DeploymentStep step)
+    {
+        var siblings = _steps
+            .Where(s => s.ParentStepId == step.ParentStepId)
+            .OrderBy(s => s.SortOrder)
+            .ToList();
+        return siblings.Count > 0 && siblings[^1].Id == step.Id;
     }
 
     /// <summary>
@@ -368,7 +518,17 @@
         }
     }
 
-    private async Task OpenAddStepAsync()
+    private Task OpenAddStepAsync() => OpenAddStepCoreAsync(parentStepId: null);
+
+    /// <summary>
+    /// M15 — opens the "Add Step" picker pre-filled with a parent step
+    /// id, so the new step lands as a child of the given Step Group.
+    /// Used by the per-row "+Add child step" button on group rows.
+    /// </summary>
+    private Task OpenAddChildStepAsync(DeploymentStep groupStep)
+        => OpenAddStepCoreAsync(parentStepId: groupStep.Id);
+
+    private async Task OpenAddStepCoreAsync(Guid? parentStepId)
     {
         if (_project is null) return;
 
@@ -383,6 +543,26 @@
             return; // user cancelled
         }
 
+        // ── M15 — "Step Group" picker choice ─────────────────────────────────
+        if (result.IsStepGroup)
+        {
+            var groupResult = await Dialog.OpenAsync<StepFormDialog>(
+                "Add Step Group",
+                new Dictionary<string, object?>
+                {
+                    [nameof(StepFormDialog.ProjectId)]    = _project.Id,
+                    [nameof(StepFormDialog.ActionType)]   = "Kraken.StepGroup",
+                    [nameof(StepFormDialog.ParentStepId)] = parentStepId,
+                },
+                new DialogOptions { Width = "720px", CloseDialogOnOverlayClick = false });
+
+            if (groupResult is true)
+            {
+                await ReloadStepsAsync();
+            }
+            return;
+        }
+
         // Blank script step → unified dialog with the built-in Kraken.Script schema.
         if (result.IsBlankScriptStep)
         {
@@ -390,8 +570,9 @@
                 "Add Step",
                 new Dictionary<string, object?>
                 {
-                    [nameof(StepFormDialog.ProjectId)]  = _project.Id,
-                    [nameof(StepFormDialog.ActionType)] = "Kraken.Script",
+                    [nameof(StepFormDialog.ProjectId)]    = _project.Id,
+                    [nameof(StepFormDialog.ActionType)]   = "Kraken.Script",
+                    [nameof(StepFormDialog.ParentStepId)] = parentStepId,
                 },
                 new DialogOptions { Width = "720px", CloseDialogOnOverlayClick = false });
 
@@ -411,8 +592,9 @@
             $"Add Step — {template.Name}",
             new Dictionary<string, object?>
             {
-                [nameof(StepFormDialog.ProjectId)] = _project.Id,
-                [nameof(StepFormDialog.Template)]  = template,
+                [nameof(StepFormDialog.ProjectId)]    = _project.Id,
+                [nameof(StepFormDialog.Template)]     = template,
+                [nameof(StepFormDialog.ParentStepId)] = parentStepId,
             },
             new DialogOptions { Width = "720px", CloseDialogOnOverlayClick = false });
 
@@ -448,8 +630,16 @@
 
     private async Task DeleteAsync(DeploymentStep step)
     {
+        // M15 — Step Group deletion cascades through the parent_step_id FK,
+        // so we warn explicitly when removing a parent that has children.
+        var kids = ChildCountOf(step);
+        var message = kids > 0
+            ? $"Delete '{step.Name}' AND its {kids} child step(s)? " +
+              "Children are removed via cascade — this cannot be undone."
+            : $"Delete step '{step.Name}'? This cannot be undone.";
+
         var confirmed = await Dialog.Confirm(
-            $"Delete step '{step.Name}'? This cannot be undone.",
+            message,
             "Confirm Delete",
             new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
 

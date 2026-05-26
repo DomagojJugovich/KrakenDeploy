@@ -40,6 +40,19 @@ public class ProcessService(
             .FirstOrDefaultAsync(p => p.ProjectId == projectId, ct);
     }
 
+    /// <summary>M15 — Returns the process by its own ID (not the project's).
+    /// Used by the editor to load every step in the process so the
+    /// "Parent step" dropdown can filter out the edited step's
+    /// descendants. Returns null when no process matches.</summary>
+    public async Task<DeploymentProcess?> GetProcessByIdAsync(
+        Guid processId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.DeploymentProcesses
+            .Include(p => p.Steps.OrderBy(s => s.SortOrder))
+            .FirstOrDefaultAsync(p => p.Id == processId, ct);
+    }
+
     // ── Steps ──────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -68,13 +81,16 @@ public class ProcessService(
         string? stepPackageName = null,
         string? stepPackageVersion = null,
         StepExecutionKnobs? knobs = null,
+        Guid? parentStepId = null,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var process = await GetOrCreateCoreAsync(db, projectId, ct).ConfigureAwait(false);
 
+        // M15 — SortOrder is scoped to siblings (per-parent). Top-level
+        // steps share one numbering; children of each group share their own.
         var maxSort = await db.DeploymentSteps
-            .Where(s => s.ProcessId == process.Id)
+            .Where(s => s.ProcessId == process.Id && s.ParentStepId == parentStepId)
             .Select(s => (int?)s.SortOrder)
             .MaxAsync(ct)
             .ConfigureAwait(false) ?? -1;
@@ -102,10 +118,18 @@ public class ProcessService(
             RetryDelaySeconds           = k.RetryDelaySeconds,
             TimeoutSeconds              = k.TimeoutSeconds,
             StartTrigger                = k.StartTrigger,
+            ParentStepId                = parentStepId,
         };
 
         db.DeploymentSteps.Add(step);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        // M15 — run the structural validator after the row lands. If
+        // validation fails (cycle, leaf-with-children, group-with-leaf-config),
+        // throw so the editor's catch can surface the errors. The caller
+        // can re-load the process to roll the UI back to its prior state.
+        await EnsureValidAsync(db, process.Id, ct).ConfigureAwait(false);
+
         return step;
     }
 
@@ -124,6 +148,7 @@ public class ProcessService(
         string? stepPackageName = null,
         string? stepPackageVersion = null,
         StepExecutionKnobs? knobs = null,
+        UpdateParent? updateParent = null,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -158,8 +183,35 @@ public class ProcessService(
             step.StartTrigger                = knobs.StartTrigger;
         }
 
+        // M15 — parent reassignment. We need a wrapper type (not just a
+        // Guid? parameter) because a bare nullable can't distinguish
+        // "don't touch" from "reparent to top-level (null)". UpdateParent.None
+        // means "don't touch"; UpdateParent.To(parentStepId) sets it.
+        if (updateParent is not null)
+        {
+            step.ParentStepId = updateParent.NewParentStepId;
+        }
+
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        // M15 — structural validation as defence in depth. Same pattern as
+        // AddStepAsync: throw if the resulting tree violates an invariant.
+        await EnsureValidAsync(db, step.ProcessId, ct).ConfigureAwait(false);
+
         return step;
+    }
+
+    /// <summary>
+    /// M15 — wrapper for the optional parent-reassignment parameter on
+    /// <see cref="UpdateStepAsync"/>. A bare <c>Guid?</c> couldn't
+    /// distinguish "leave the parent alone" from "make this step a
+    /// top-level step (null parent)". Callers pass
+    /// <see cref="To(Guid?)"/> when they want to change the parent and
+    /// <c>null</c> (the default) when they want to leave it alone.
+    /// </summary>
+    public sealed record UpdateParent(Guid? NewParentStepId)
+    {
+        public static UpdateParent To(Guid? parentStepId) => new(parentStepId);
     }
 
     /// <summary>
@@ -202,8 +254,13 @@ public class ProcessService(
             return false;
         }
 
+        // M15 — siblings are scoped to the same ParentStepId. A child can
+        // only move within its parent's children list; a top-level step
+        // can only move among other top-level steps. Reparenting is a
+        // separate operation (see UpdateStepAsync's UpdateParent).
         var siblings = await db.DeploymentSteps
-            .Where(s => s.ProcessId == step.ProcessId)
+            .Where(s => s.ProcessId == step.ProcessId
+                        && s.ParentStepId == step.ParentStepId)
             .OrderBy(s => s.SortOrder)
             .ToListAsync(ct)
             .ConfigureAwait(false);
@@ -416,6 +473,27 @@ public class ProcessService(
 
     // ── Private helpers ────────────────────────────────────────────────────
 
+    /// <summary>
+    /// M15 — runs <see cref="ProcessValidator"/> against the current state
+    /// of the process's steps + throws when any rule is broken. Called by
+    /// <see cref="AddStepAsync"/> and <see cref="UpdateStepAsync"/> after
+    /// SaveChanges so callers see the error before the UI re-renders. The
+    /// editor surfaces the message inline + reverts its local state.
+    /// </summary>
+    private static async Task EnsureValidAsync(
+        KrakenDbContext db, Guid processId, CancellationToken ct)
+    {
+        var steps = await db.DeploymentSteps
+            .Where(s => s.ProcessId == processId)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        var result = ProcessValidator.Validate(steps);
+        if (!result.IsValid)
+        {
+            throw new ProcessValidationException(result);
+        }
+    }
+
     private static async Task<DeploymentProcess> GetOrCreateCoreAsync(
         KrakenDbContext db, Guid projectId, CancellationToken ct)
     {
@@ -441,3 +519,30 @@ public sealed record ImportDeploymentProcessResult(
     int Imported,
     int ReplacedExisting,
     IReadOnlyList<ImportDeploymentProcessWarning> Warnings);
+
+/// <summary>
+/// M15 — thrown by <see cref="ProcessService.AddStepAsync"/> /
+/// <see cref="ProcessService.UpdateStepAsync"/> when the post-save state
+/// of the process violates a <see cref="ProcessValidator"/> rule. The
+/// row write has already happened by the time this throws; the caller
+/// (typically the editor) should re-read the process and surface the
+/// errors to the operator. <see cref="Result"/> carries the full list of
+/// errors so the UI can show them all at once.
+/// </summary>
+public sealed class ProcessValidationException(ProcessValidator.Result result)
+    : InvalidOperationException(BuildMessage(result))
+{
+    public ProcessValidator.Result Result { get; } = result;
+
+    private static string BuildMessage(ProcessValidator.Result r)
+    {
+        ArgumentNullException.ThrowIfNull(r);
+        return r.Errors.Count switch
+        {
+            0 => "Process validation passed.",
+            1 => $"Process validation failed: {r.Errors[0].Message}",
+            _ => $"Process validation failed with {r.Errors.Count} error(s): " +
+                 string.Join(" | ", r.Errors.Select(e => e.Message)),
+        };
+    }
+}

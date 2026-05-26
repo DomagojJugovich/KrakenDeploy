@@ -1777,27 +1777,38 @@ Suite: Data 386 + Core 223 + Server 119 (was 105 + 14 new) + Agent 128 = 856 gre
 
 `docs/architecture.md` updated with the M15 "Step composition" section pinning the marker step type, Config-driven behaviour, flattener output shape, synthetic naming contract, cross-iteration access form, nested + parallel ForEach rules, empty/undefined semantics, validation rules, and the Octopus multi-action import shape.
 
-**M15.3 — UI: nested rows + ForEach editor (half day)**
-- Process editor (`Pages/Projects/.../Process.razor`): the existing step grid gains a depth column. Child rows indent by depth × 24px, with a connector glyph in the leftmost column. Parent rows show a chevron + "(N children)" suffix.
-- One new entry in the "Add Step" picker: **"Step Group"** (creates a `Kraken.StepGroup`). No "ForEach" or "Rolling Deployment" entries — those are properties of a Step Group, set in its editor.
-- `Kraken.StepGroup` editor: Name, Target Roles, plus an optional "Loop body over collection" panel that turns the group into a ForEach. The panel exposes: collection variable picker (filtered to existing array variables in the project's variable set), `IterationVariable` text input (default `item`), `IndexVariable` text input (default `index`, optional). Inside the panel: a "Iterations run in parallel" checkbox driven by the children's `StartTrigger` (sets all children to `StartWithPrevious` when ticked; a callout explains "Parallel iterations may produce variable collisions — use unique output variable names per iteration").
-- **Reorder UX v1**: drag-reorder works among siblings (existing behaviour preserved). Re-parent via the step edit dialog's new "Parent step" dropdown (None / pick a parent step from the same process). Drag-INTO-row reparenting deferred as polish.
-- Deployment detail page: step rows show iteration suffix via the display name (no schema change needed — `Plan.Name` is what the existing log + step-outcome surfaces already render).
+**M15.3 — UI: nested rows + ForEach editor — DONE 2026-05-26**
 
-**M15.4 — Tests + docs (half day)**
-- Flattener unit tests (Server.Data.Tests or a new Server.Transport.Tests project — needs check):
-  - `Kraken.Group` emits children in SortOrder; parent emits no plan.
-  - `Kraken.ForEach` over 3-item array emits 3 × N-children plans.
-  - Empty collection → zero plans + `Deployment.ForEachEmpty` audit.
-  - Undefined collection → one synthetic failing plan + `Deployment.ForEachUnresolved` audit.
-  - Nested ForEach: 2 outer × 3 inner = 6 × N-children plans; `#{item}` resolves to innermost; outer iteration variable accessible inside inner.
-  - Lazy collection resolution: inner `Collection = "#{env}-instances"` resolves per outer iteration, not once.
-  - Sequential iteration: outputs from iteration 0 visible in iteration 1 via `Octopus.Action[X][0].Output.Y`.
-  - Parallel iteration: outputs from each iteration stored under distinct accumulator keys (`X[0]`, `X[1]`, …) — no collision without explicit same-name `Set-OctopusVariable`.
-  - Display name "clean" path: `[item=staging]`; fallback path: `[item=#3]` for long / weird values.
-- Importer round-trip test: pin a real Octopus deploymentprocess JSON containing a multi-action step → assert parent-child creation matches.
-- ProcessService validation tests: cycle rejection, cross-process child rejection, non-container-parent rejection.
-- `docs/architecture.md`: new section "Step composition — child steps + ForEach". Lock the synthetic-naming contract, the `OriginalName[index]` Octostache form, the nested ForEach shadowing rule, and the parallel-iteration collision posture.
+Landed:
+- Process editor (`Process.razor`): step list renders as a tree via `BuildStepTree` (DFS over the flat `_steps` list using `ParentStepId`). Sidecar maps carry depth + dotted numbering (`1`, `1.1`, `1.2`, `2`, …) + child counts. Child rows indent by `depth × 24px`; parent rows (Kraken.StepGroup) show a folder icon + chevron + "(N children)" suffix + a ForEach summary line ("ForEach over `#{envs}` — iterations run in parallel") or "Step Group — children run sequentially". Per-row "Move up/down" buttons now scope to siblings (same `ParentStepId`) so a child can't move past its group boundary; a new "+Add child step" button on group rows opens the picker with `parentStepId` pre-filled. Delete confirmation warns when removing a parent with children ("Delete 'X' AND its N child step(s)? Children are removed via cascade").
+- `ChooseStepTemplateDialog`: new "Step Group" sentinel card alongside the blank-script entry. Featured + always visible in the Installed filter. Returns `ChooseStepTemplateResult.Group`. The caller in Process.razor handles `IsStepGroup` by opening `StepFormDialog` with `ActionType=Kraken.StepGroup`.
+- `StepFormDialog`: new `[Parameter] Guid? ParentStepId` for picker pre-fill on Add. Detects `_isStepGroup` and:
+  - Bypasses the no-schema warning (groups have no schema).
+  - Renders a "Loop body over collection" panel: collection variable name input, IterationVariable (default `item`) + IndexVariable (default `index`) text inputs, "Iterations run in parallel" RadzenSwitch with an info callout about collisions.
+  - On save: writes `Octopus.Action.ForEach.Collection` / `IterationVariable` / `IndexVariable` / `Parallel` keys into Config when a collection is set; strips all ForEach keys when disabled.
+  - Suppresses the schema-driven `StepUiSchemaForm` body; the step-package pin card + referenced-packages card already self-hide for groups (no pin / not a script type).
+- Edit-path "Parent step" dropdown: reads candidate parents via `ProcessService.GetProcessByIdAsync` + filters out the step's descendants (DFS) to prevent cycles. "None (top-level)" sentinel + each Kraken.StepGroup in SortOrder. Save flow passes `ProcessService.UpdateParent.To(...)` only when the user actually changed it (avoids spurious modified rows).
+- `ProcessService.AddStepAsync` + `UpdateStepAsync` now accept `parentStepId` (Add) / `UpdateParent` wrapper (Update). The wrapper distinguishes "don't touch" (default null) from "reparent to top-level" (`UpdateParent.To(null)`). Per-parent `SortOrder` scoping so a new child gets the right next index inside its group. Both methods call `EnsureValidAsync` after save — throws `ProcessValidationException` with every validator error if the resulting tree is invalid; `StepFormDialog` catches and surfaces them inline.
+- `MoveStepAsync` siblings now scoped to same `ParentStepId` (was global within ProcessId, which would have let M14 reorder break group boundaries).
+- Deployment detail Steps tab: already renders `Plan.Name` for each outcome — for ForEach iterations the display name includes `[item=…]` (M15.2 synthetic naming), so the tab naturally shows iteration suffixes with no extra schema change.
+
+Decisions made during implementation:
+- **No drag-into-row reparenting** in v1 (matches plan). Reparent goes through the edit dialog's dropdown only. Drag-among-siblings stays as the M14 button-based up/down arrows.
+- **In-dialog Parent dropdown only on Edit**; Add takes parent from the picker's pre-fill via the `ParentStepId` parameter. Avoids duplicating the parent picker on two surfaces.
+- **`UpdateParent` is a wrapper record**, not a `Guid?` parameter, because nullable can't distinguish "don't touch" from "reparent to top-level (null)". The wrapper makes the call site explicit.
+- **Collection variable input is a free-text textbox**, not a filtered dropdown over array variables. The plan body suggested a filtered picker; the implementation defers to a follow-up because the project's variable set isn't loaded by the dialog today + the validation catches obvious typos at deployment dispatch (`Deployment.ForEachUnresolved` audit). Worth a tighter UX pass when project-variable loading lands cheaply.
+- **Sibling-aware Move buttons** fix a latent M14 issue: `MoveStepAsync` previously treated every step in the process as a sibling, which would let an operator move a child past its group's boundary into the wrong scope. Fixed in this commit because the UI is the operator-visible surface.
+- **No dedicated UI tests** — the editor's behaviour is exercised through the existing service-layer tests (`ProcessValidatorTests`, importer tests) plus the validator hook on save. Razor component tests aren't an established fixture pattern in this project yet (matches the M14.5 Steps-tab call).
+
+**M15.4 — Tests + docs — FOLDED into M15.1 + M15.2**
+
+The originally-scoped M15.4 work landed alongside M15.1 / M15.2 rather than as a separate commit:
+- Flattener unit tests (10 of the 14 in `DeploymentPlanFlattenerTests`): empty / flat pass-through / plain container / 3-item ForEach / empty + undefined collection warnings / iteration + index variable substitution / nested ForEach shadowing / lazy collection resolution / parallel + sequential ForEach StartTrigger / display name fallback / pre-M15 Guid.Empty legacy. Shipped with M15.2.
+- Importer round-trip tests (6 in `OctopusImporterM15MultiActionTests`): single-action regression / multi-action → StepGroup parent shape / StartTrigger forcing on children 2..N / MaxParallelism preserved / import-time warning / TargetRoles inheritance. Shipped with M15.1.
+- ProcessService validation tests (10 in `ProcessValidatorTests`): empty / flat / leaf-with-children / group-with-leaf-config / unknown-parent / self-cycle / two-step cycle / happy-path / multi-error / empty-group-is-valid. Shipped with M15.1.
+- `docs/architecture.md` "Step composition" section pinning marker step type + Config-driven behaviour + flattener shape + synthetic naming + cross-iteration access form + nested + parallel rules + validation rules + Octopus multi-action import shape. Shipped with M15.2.
+
+The "Sequential iteration: outputs from iteration 0 visible in iteration 1" test from the original list is partially covered by the synthetic-naming + Octostache substitution tests; an explicit end-to-end test for cross-iteration `Octopus.Action[X][0].Output.Y` reference would need a worker-level fixture that doesn't exist yet (same gap M14.2/3/4 hit). Left as a follow-up worth noting when the worker harness lands.
 
 ### Risks / pre-prod considerations
 

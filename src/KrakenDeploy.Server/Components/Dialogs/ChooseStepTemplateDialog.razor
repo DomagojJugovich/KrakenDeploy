@@ -191,6 +191,25 @@
             IsBlank        = true,
         });
 
+        // M15 — Sentinel: Step Group. The one marker step type that can
+        // have children. Operators pick this to author a multi-action
+        // block OR to wrap a ForEach loop (loop properties set on the
+        // group's editor body, not from this picker).
+        _cards.Add(new Card
+        {
+            Key            = "blank:stepgroup",
+            Title          = "Step Group",
+            Subtitle       = "Kraken.StepGroup",
+            Description    = "Container for child steps. Add a ForEach loop, " +
+                             "or run multiple actions in parallel on the same target.",
+            Icon           = "folder",
+            ButtonLabel    = "Add Group",
+            ButtonIcon     = "add",
+            Category       = "control",
+            IsFeatured     = true,
+            IsStepGroup    = true,
+        });
+
         // Installed templates — Featured = those tagged BuiltIn.
         foreach (var t in _installed)
         {
@@ -237,7 +256,7 @@
         }
 
         _featuredCount  = _cards.Count(c => c.IsFeatured);
-        _installedCount = _cards.Count(c => c.IsInstalled || c.IsBlank);
+        _installedCount = _cards.Count(c => c.IsInstalled || c.IsBlank || c.IsStepGroup);
         _communityCount = _cards.Count(c => c.CommunityEntry is not null);
 
         // Build big-bucket counts across the whole card set.
@@ -263,7 +282,7 @@
         q = _currentBucket switch
         {
             "Featured"  => q.Where(c => c.IsFeatured),
-            "Installed" => q.Where(c => c.IsInstalled || c.IsBlank),
+            "Installed" => q.Where(c => c.IsInstalled || c.IsBlank || c.IsStepGroup),
             null        => q,
             _           => q.Where(c =>
                 StepTemplateCategoryMap.GetBigBucket(c.Category)
@@ -282,6 +301,7 @@
 
         return q.OrderByDescending(c => c.IsFeatured)
                 .ThenByDescending(c => c.IsBlank)
+                .ThenByDescending(c => c.IsStepGroup)
                 .ThenBy(c => c.Title);
     }
 
@@ -293,6 +313,12 @@
             if (card.IsBlank)
             {
                 Dialog.Close(ChooseStepTemplateResult.Blank);
+                return;
+            }
+
+            if (card.IsStepGroup)
+            {
+                Dialog.Close(ChooseStepTemplateResult.Group);
                 return;
             }
 
@@ -337,6 +363,7 @@
         public bool IsInstalled { get; init; }
         public bool IsBuiltIn { get; init; }
         public bool IsBlank { get; init; }
+        public bool IsStepGroup { get; init; }
         public StepTemplate? InstalledTemplate { get; init; }
         public StepTemplateCatalogEntry? CommunityEntry { get; init; }
     }

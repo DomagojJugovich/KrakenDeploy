@@ -8,6 +8,10 @@ namespace KrakenDeploy.Server.Components.Dialogs;
 /// <list type="bullet">
 ///   <item><see cref="IsBlankScriptStep"/> = user picked the "Run a Script"
 ///         sentinel; open the existing script-step form.</item>
+///   <item><see cref="IsStepGroup"/> = user picked the "Step Group" sentinel
+///         (M15). Opens the form with <c>ActionType = "Kraken.StepGroup"</c>
+///         which renders the group-specific editor body (Target Roles +
+///         optional ForEach panel).</item>
 ///   <item><see cref="Template"/> is non-null = user picked an installed
 ///         template (which may have been just-now installed from the
 ///         community catalog); use its <c>ActionType</c> and seed
@@ -15,10 +19,15 @@ namespace KrakenDeploy.Server.Components.Dialogs;
 /// </list>
 /// A null return value from the dialog means the user cancelled.
 /// </summary>
-public sealed record ChooseStepTemplateResult(bool IsBlankScriptStep, StepTemplate? Template)
+public sealed record ChooseStepTemplateResult(
+    bool IsBlankScriptStep,
+    bool IsStepGroup,
+    StepTemplate? Template)
 {
-    public static ChooseStepTemplateResult Blank { get; } = new(true, null);
+    public static ChooseStepTemplateResult Blank { get; } = new(true, false, null);
+
+    public static ChooseStepTemplateResult Group { get; } = new(false, true, null);
 
     public static ChooseStepTemplateResult FromTemplate(StepTemplate template) =>
-        new(false, template);
+        new(false, false, template);
 }

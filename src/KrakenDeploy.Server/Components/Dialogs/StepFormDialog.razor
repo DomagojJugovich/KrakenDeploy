@@ -45,7 +45,10 @@
 <div style="min-width:640px; padding:0.25rem 0;">
     <RadzenStack Gap="1rem">
 
-        @if (_schema is null)
+        @* M15 — Kraken.StepGroup has no schema (it's a container). Skip
+           the no-schema warning and render the group-specific body
+           (Target Roles + optional ForEach panel). *@
+        @if (_schema is null && !_isStepGroup)
         {
             <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
                 <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-1">
@@ -283,8 +286,110 @@
             </RadzenCard>
         }
 
+        @* M15 — Step Group body: optional ForEach panel.
+           Renders ONLY when the step is a Kraken.StepGroup; the schema-
+           driven body below is suppressed for groups. *@
+        @if (_isStepGroup)
+        {
+            <RadzenCard>
+                <RadzenStack Gap="0.75rem">
+                    <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-0">
+                        Loop body over collection
+                    </RadzenText>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                        Turn this Step Group into a ForEach loop. Each iteration
+                        re-emits every child step with <code>#{item}</code> +
+                        <code>#{index}</code> bound to the current value. Leave
+                        the collection blank to keep it a plain container.
+                    </RadzenText>
+
+                    <RadzenFormField Text="Collection variable name"
+                                     Variant="Variant.Outlined" Style="width:100%">
+                        <RadzenTextBox @bind-Value="_foreachCollection"
+                                       Style="width:100%"
+                                       Placeholder="e.g. envs (must be an array variable in the project)" />
+                    </RadzenFormField>
+
+                    @if (!string.IsNullOrWhiteSpace(_foreachCollection))
+                    {
+                        <RadzenStack Orientation="Orientation.Horizontal" Gap="1rem">
+                            <RadzenFormField Text="Iteration variable name"
+                                             Variant="Variant.Outlined" Style="flex:1;">
+                                <RadzenTextBox @bind-Value="_foreachIterationVariable"
+                                               Placeholder="item" />
+                            </RadzenFormField>
+                            <RadzenFormField Text="Index variable name"
+                                             Variant="Variant.Outlined" Style="flex:1;">
+                                <RadzenTextBox @bind-Value="_foreachIndexVariable"
+                                               Placeholder="index" />
+                            </RadzenFormField>
+                        </RadzenStack>
+
+                        <RadzenStack Orientation="Orientation.Horizontal"
+                                     AlignItems="AlignItems.Center" Gap="0.75rem">
+                            <RadzenSwitch @bind-Value="_foreachParallel" />
+                            <RadzenStack Gap="0.1rem">
+                                <RadzenText TextStyle="TextStyle.Body2" class="rz-mb-0">
+                                    <strong>Iterations run in parallel</strong>
+                                </RadzenText>
+                                <RadzenText TextStyle="TextStyle.Caption"
+                                            class="rz-color-secondary">
+                                    All iterations dispatch together as one wave.
+                                    Last-writer-wins applies if two iterations
+                                    write the same output variable — use unique
+                                    names per iteration.
+                                </RadzenText>
+                            </RadzenStack>
+                        </RadzenStack>
+
+                        @if (_foreachParallel)
+                        {
+                            <RadzenAlert AlertStyle="AlertStyle.Info"
+                                         Variant="Variant.Flat" Shade="Shade.Lighter"
+                                         AllowClose="false">
+                                Parallel iterations may produce variable
+                                collisions. Use unique output variable names
+                                per iteration; an audit row fires for any
+                                collision (deployment status stays Succeeded).
+                            </RadzenAlert>
+                        }
+                    }
+                </RadzenStack>
+            </RadzenCard>
+        }
+
+        @* M15 — Parent step dropdown (Edit path only). Lets the operator
+           reparent an existing step to another Step Group (or back to
+           top-level via the "None" option). Add path uses the picker's
+           pre-fill via the ParentStepId parameter; no in-dialog dropdown. *@
+        @if (_isEdit && _availableParents.Count > 0)
+        {
+            <RadzenCard>
+                <RadzenStack Gap="0.5rem">
+                    <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-0">
+                        Parent step
+                    </RadzenText>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                        Move this step into a Step Group's children list, or
+                        back to top-level. The step's own descendants are
+                        hidden from the choices to prevent cycles.
+                    </RadzenText>
+                    <RadzenDropDown @bind-Value="_selectedParentStepId"
+                                    TValue="Guid?"
+                                    Data="@ParentOptions"
+                                    TextProperty="Label"
+                                    ValueProperty="Value"
+                                    AllowClear="false"
+                                    Style="width:100%" />
+                </RadzenStack>
+            </RadzenCard>
+        }
+
         @* ── Schema-driven config body ────────────────────────────────────── *@
-        <StepUiSchemaForm Schema="@_schema" Values="@_values" />
+        @if (!_isStepGroup)
+        {
+            <StepUiSchemaForm Schema="@_schema" Values="@_values" />
+        }
 
         @* ── Referenced packages grid — script types only ─────────────────── *@
         @if (IsScriptStepType(_stepType))
@@ -388,6 +493,13 @@
     /// </summary>
     [Parameter] public string? ActionType { get; set; }
 
+    /// <summary>
+    /// M15 — Add path. When set, the new step is created as a child of
+    /// the given Step Group. Ignored on Edit (use the in-dialog
+    /// "Parent step" dropdown). Null = top-level step.
+    /// </summary>
+    [Parameter] public Guid? ParentStepId { get; set; }
+
     private string _name           = "";
     private string _packageId      = "";
     private string _targetRolesCsv = "";
@@ -453,6 +565,31 @@
         _isFirstStep
             ? "Success: only run when previous steps succeed (or is first step)"
             : "Success: only run when previous steps succeed";
+
+    // ── M15 step composition (Step Group + ForEach + parent dropdown) ────
+    /// <summary>True when this step is a Kraken.StepGroup — render the
+    /// group-specific body (no schema, optional ForEach panel) instead of
+    /// the schema-driven form.</summary>
+    private bool _isStepGroup;
+    /// <summary>The selected parent step on Edit. Mirrors Step.ParentStepId
+    /// at load time; written back via ProcessService.UpdateParent on Save.
+    /// Null = top-level (no parent).</summary>
+    private Guid? _selectedParentStepId;
+    /// <summary>Candidate parents for the "Parent step" dropdown — every
+    /// Kraken.StepGroup in the same process EXCEPT the step's own
+    /// descendants (filtered to prevent cycles). Loaded on Edit.</summary>
+    private List<DeploymentStep> _availableParents = [];
+    /// <summary>ForEach collection variable name (binds to
+    /// Octopus.Action.ForEach.Collection in Config). Empty = plain
+    /// container.</summary>
+    private string _foreachCollection = "";
+    /// <summary>ForEach iteration variable name. Defaults to "item".</summary>
+    private string _foreachIterationVariable = "item";
+    /// <summary>ForEach index variable name. Defaults to "index".</summary>
+    private string _foreachIndexVariable = "index";
+    /// <summary>"Iterations run in parallel" checkbox. Sets
+    /// Octopus.Action.ForEach.Parallel = "true" in Config.</summary>
+    private bool _foreachParallel;
 
     protected override async Task OnParametersSetAsync()
     {
@@ -570,6 +707,96 @@
                 }
             }
         }
+
+        // ── M15 hydration ───────────────────────────────────────────────
+        _isStepGroup = string.Equals(_stepType, "Kraken.StepGroup",
+            StringComparison.OrdinalIgnoreCase);
+
+        if (_isStepGroup)
+        {
+            // Hydrate ForEach fields from Config (Edit path) or leave at
+            // defaults (Add path).
+            var sourceConfig = Step?.Config ?? new Dictionary<string, string>();
+            if (sourceConfig.TryGetValue("Octopus.Action.ForEach.Collection", out var coll))
+            {
+                _foreachCollection = coll;
+            }
+            if (sourceConfig.TryGetValue("Octopus.Action.ForEach.IterationVariable", out var iter))
+            {
+                _foreachIterationVariable = iter;
+            }
+            if (sourceConfig.TryGetValue("Octopus.Action.ForEach.IndexVariable", out var idx))
+            {
+                _foreachIndexVariable = idx;
+            }
+            _foreachParallel = sourceConfig.TryGetValue("Octopus.Action.ForEach.Parallel", out var par)
+                && string.Equals(par?.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Add path: take ParentStepId from the picker's pre-fill.
+        // Edit path: load it from the existing row + populate the
+        // "Parent step" dropdown's candidate list.
+        if (Step is not null)
+        {
+            _selectedParentStepId = Step.ParentStepId;
+            await LoadAvailableParentsAsync(Step).ConfigureAwait(false);
+        }
+        else
+        {
+            _selectedParentStepId = ParentStepId;
+        }
+    }
+
+    /// <summary>
+    /// M15 — loads the list of candidate parents for the "Parent step"
+    /// dropdown. Returns every Kraken.StepGroup in the same process
+    /// EXCEPT the step's own descendants (DFS walk) so the user can't
+    /// accidentally introduce a cycle. The defensive
+    /// <see cref="ProcessValidator"/> catches the cycle case server-side
+    /// too, but filtering up front gives a cleaner UX.
+    /// </summary>
+    private async Task LoadAvailableParentsAsync(DeploymentStep editing)
+    {
+        // Resolve the project id via the step's process; we can't reach
+        // the editor's parent component cleanly from a dialog. The
+        // ProcessService doesn't expose "get process by step id" directly
+        // — workaround: load by project id once it's known. For the edit
+        // path we DON'T have ProjectId set (the editor takes Step only),
+        // so we instead walk the existing process via a service method.
+        // Quickest path: query DeploymentSteps for ProcessId == editing.ProcessId.
+        var process = await ProcessSvc
+            .GetProcessByIdAsync(editing.ProcessId)
+            .ConfigureAwait(false);
+        if (process is null)
+        {
+            _availableParents = [];
+            return;
+        }
+
+        // Build the set of descendants (step itself + any descendant) to
+        // exclude. DFS over ParentStepId chains.
+        var descendants = new HashSet<Guid> { editing.Id };
+        bool changed;
+        do
+        {
+            changed = false;
+            foreach (var s in process.Steps)
+            {
+                if (s.ParentStepId is { } p
+                    && descendants.Contains(p)
+                    && descendants.Add(s.Id))
+                {
+                    changed = true;
+                }
+            }
+        } while (changed);
+
+        _availableParents = process.Steps
+            .Where(s => string.Equals(s.StepType, "Kraken.StepGroup",
+                                      StringComparison.OrdinalIgnoreCase))
+            .Where(s => !descendants.Contains(s.Id))
+            .OrderBy(s => s.SortOrder)
+            .ToList();
     }
 
     /// <summary>
@@ -765,19 +992,25 @@
             _errors.Add("Name is required.");
         }
 
-        if (_schema is null)
+        // M15 — Step Groups don't have a schema (they're a container).
+        // Skip the schema-required guard + schema-validator pass; the
+        // group form has its own minimal validation.
+        if (!_isStepGroup)
         {
-            _errors.Add("No schema is available for this step type.");
-            return;
-        }
+            if (_schema is null)
+            {
+                _errors.Add("No schema is available for this step type.");
+                return;
+            }
 
-        // Schema validator — handles per-field required, enum membership,
-        // length / pattern / numeric range.
-        var snapshot = new Dictionary<string, string>(_values, StringComparer.Ordinal);
-        var schemaErrors = StepUiSchemaValidator.Validate(_schema, snapshot);
-        foreach (var e in schemaErrors)
-        {
-            _errors.Add(e.Message);
+            // Schema validator — handles per-field required, enum membership,
+            // length / pattern / numeric range.
+            var snapshot = new Dictionary<string, string>(_values, StringComparer.Ordinal);
+            var schemaErrors = StepUiSchemaValidator.Validate(_schema, snapshot);
+            foreach (var e in schemaErrors)
+            {
+                _errors.Add(e.Message);
+            }
         }
 
         if (_errors.Count > 0)
@@ -792,6 +1025,43 @@
         // (for script types). Later assignments win.
         var config = new Dictionary<string, string>(_extraConfigKeys, StringComparer.Ordinal);
         foreach (var (k, v) in _values) { config[k] = v; }
+
+        // M15 — Step Group save path: write the ForEach properties into
+        // Config (or strip them if the loop was disabled). Leaf-only
+        // Config keys must not leak into a Step Group; the validator
+        // catches it server-side but we filter here defensively too.
+        if (_isStepGroup)
+        {
+            if (!string.IsNullOrWhiteSpace(_foreachCollection))
+            {
+                config["Octopus.Action.ForEach.Collection"] = _foreachCollection.Trim();
+                config["Octopus.Action.ForEach.IterationVariable"] =
+                    string.IsNullOrWhiteSpace(_foreachIterationVariable)
+                        ? "item"
+                        : _foreachIterationVariable.Trim();
+                config["Octopus.Action.ForEach.IndexVariable"] =
+                    string.IsNullOrWhiteSpace(_foreachIndexVariable)
+                        ? "index"
+                        : _foreachIndexVariable.Trim();
+                if (_foreachParallel)
+                {
+                    config["Octopus.Action.ForEach.Parallel"] = "true";
+                }
+                else
+                {
+                    config.Remove("Octopus.Action.ForEach.Parallel");
+                }
+            }
+            else
+            {
+                // Disabling the loop — strip every ForEach key so the
+                // group reverts to a plain container.
+                config.Remove("Octopus.Action.ForEach.Collection");
+                config.Remove("Octopus.Action.ForEach.IterationVariable");
+                config.Remove("Octopus.Action.ForEach.IndexVariable");
+                config.Remove("Octopus.Action.ForEach.Parallel");
+            }
+        }
 
         if (IsScriptStepType(_stepType))
         {
@@ -841,10 +1111,18 @@
                 // D-7: pass the explicit pin pair if the user picked a non-null
                 // pair. If both are null, UpdateStepAsync keeps whatever pin
                 // already lived on the row — never clears a pin from this UI.
+                //
+                // M15: only pass UpdateParent when the user actually picked a
+                // different parent. Same-parent saves leave the FK untouched
+                // to avoid spurious modified rows + audit churn.
+                var parentUpdate = _selectedParentStepId != Step.ParentStepId
+                    ? ProcessService.UpdateParent.To(_selectedParentStepId)
+                    : null;
                 await ProcessSvc.UpdateStepAsync(
                     Step.Id, _name, _packageId, roles, config,
                     _stepPackageName, _stepPackageVersion,
-                    executionKnobs).ConfigureAwait(false);
+                    executionKnobs,
+                    parentUpdate).ConfigureAwait(false);
             }
             else
             {
@@ -858,12 +1136,25 @@
                 // When _stepPackageName is null the service falls back to its
                 // own auto-resolve via the StepPackageResolver — keeping the
                 // ProcessService.AddStepAsync contract honest.
+                // M15: pass the picker's pre-filled parent so the new step
+                // lands inside a Step Group when "+Add child" launched the form.
                 await ProcessSvc.AddStepAsync(
                     ProjectId.Value, _name, _stepType, _packageId, roles, config,
                     _stepPackageName, _stepPackageVersion,
-                    executionKnobs).ConfigureAwait(false);
+                    executionKnobs,
+                    parentStepId: _selectedParentStepId).ConfigureAwait(false);
             }
             Dialog.Close(true);
+        }
+        catch (ProcessValidationException ex)
+        {
+            // M15 — surface every validator error inline; the editor's
+            // top-of-form banner renders them.
+            foreach (var err in ex.Result.Errors)
+            {
+                _errors.Add(err.Message);
+            }
+            StateHasChanged();
         }
         catch (InvalidOperationException ex)
         {
@@ -884,6 +1175,20 @@
         return [.. raw.Split(',',
             StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
     }
+
+    /// <summary>
+    /// M15 — flattened list of choices for the "Parent step" dropdown.
+    /// First entry is the "None" sentinel that puts the step back at
+    /// top-level; subsequent entries are Kraken.StepGroup steps in
+    /// SortOrder. The step's own descendants are filtered out by
+    /// <see cref="LoadAvailableParentsAsync"/> upstream.
+    /// </summary>
+    private List<ParentOption> ParentOptions => [
+        new ParentOption(null, "None (top-level)"),
+        .. _availableParents.Select(g => new ParentOption(g.Id, g.Name)),
+    ];
+
+    private sealed record ParentOption(Guid? Value, string Label);
 
     private sealed class PackageRefRow
     {
