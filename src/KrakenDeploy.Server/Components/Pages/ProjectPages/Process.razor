@@ -576,6 +576,7 @@
                 "Add Step Group",
                 new Dictionary<string, object?>
                 {
+                    [nameof(StepFormDialog.Host)]         = (IStepEditingHost)ProcessSvc,
                     [nameof(StepFormDialog.ProjectId)]    = _project.Id,
                     [nameof(StepFormDialog.ActionType)]   = "Kraken.StepGroup",
                     [nameof(StepFormDialog.ParentStepId)] = parentStepId,
@@ -596,6 +597,7 @@
                 "Add Step",
                 new Dictionary<string, object?>
                 {
+                    [nameof(StepFormDialog.Host)]         = (IStepEditingHost)ProcessSvc,
                     [nameof(StepFormDialog.ProjectId)]    = _project.Id,
                     [nameof(StepFormDialog.ActionType)]   = "Kraken.Script",
                     [nameof(StepFormDialog.ParentStepId)] = parentStepId,
@@ -618,6 +620,7 @@
             $"Add Step — {template.Name}",
             new Dictionary<string, object?>
             {
+                [nameof(StepFormDialog.Host)]         = (IStepEditingHost)ProcessSvc,
                 [nameof(StepFormDialog.ProjectId)]    = _project.Id,
                 [nameof(StepFormDialog.Template)]     = template,
                 [nameof(StepFormDialog.ParentStepId)] = parentStepId,
@@ -639,7 +642,11 @@
         // "no schema available" notice with a Close button.
         var result = await Dialog.OpenAsync<StepFormDialog>(
             $"Edit Step — {step.Name}",
-            new Dictionary<string, object?> { [nameof(StepFormDialog.Step)] = step },
+            new Dictionary<string, object?>
+            {
+                [nameof(StepFormDialog.Host)] = (IStepEditingHost)ProcessSvc,
+                [nameof(StepFormDialog.Step)] = step,
+            },
             new DialogOptions { Width = "720px", CloseDialogOnOverlayClick = false });
 
         if (result is true)

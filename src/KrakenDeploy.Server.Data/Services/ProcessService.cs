@@ -16,7 +16,70 @@ namespace KrakenDeploy.Server.Data.Services;
 public class ProcessService(
     IDbContextFactory<KrakenDbContext> dbFactory,
     StepPackageResolver? stepPackageResolver = null)
+    : IStepEditingHost
 {
+    // ── IStepEditingHost ───────────────────────────────────────────────
+    // Process editor supports the full M14 execution-knobs surface; the
+    // adapters below thin-wrap the existing AddStepAsync / UpdateStepAsync
+    // methods so the StepFormDialog can talk to either editor through one
+    // interface.
+
+    bool IStepEditingHost.SupportsExecutionKnobs => true;
+
+    async Task<Guid> IStepEditingHost.AddStepAsync(
+        Guid containerId, string name, string stepType, string packageId,
+        List<string> targetRoles, Dictionary<string, string> config,
+        string? stepPackageName, string? stepPackageVersion,
+        StepExecutionKnobs? knobs, Guid? parentStepId,
+        CancellationToken ct)
+    {
+        var step = await AddStepAsync(
+            containerId, name, stepType, packageId, targetRoles, config,
+            stepPackageName, stepPackageVersion, knobs, parentStepId, ct)
+            .ConfigureAwait(false);
+        return step.Id;
+    }
+
+    async Task IStepEditingHost.UpdateStepAsync(
+        Guid stepId, string name, string packageId,
+        List<string> targetRoles, Dictionary<string, string> config,
+        string? stepPackageName, string? stepPackageVersion,
+        StepExecutionKnobs? knobs, UpdateParent? updateParent,
+        CancellationToken ct)
+    {
+        await UpdateStepAsync(
+            stepId, name, packageId, targetRoles, config,
+            stepPackageName, stepPackageVersion, knobs, updateParent, ct)
+            .ConfigureAwait(false);
+    }
+
+    async Task<IReadOnlyList<IComposableStep>> IStepEditingHost.GetProcessStepsAsync(
+        Guid processId, CancellationToken ct)
+    {
+        var process = await GetProcessByIdAsync(processId, ct).ConfigureAwait(false);
+        return process is null
+            ? []
+            : [.. process.Steps];
+    }
+
+    async Task<Guid?> IStepEditingHost.ResolveProjectIdAsync(
+        Guid? containerId, Guid? processId, CancellationToken ct)
+    {
+        // Container id on the process editor IS the project id; just
+        // bounce it back. On Edit we walk via the process row to find
+        // the owning project.
+        if (containerId is not null)
+        {
+            return containerId;
+        }
+        if (processId is null)
+        {
+            return null;
+        }
+        var process = await GetProcessByIdAsync(processId.Value, ct).ConfigureAwait(false);
+        return process?.ProjectId;
+    }
+
 
     // ── Get / create ───────────────────────────────────────────────────────
 

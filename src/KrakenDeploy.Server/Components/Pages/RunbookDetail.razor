@@ -1,6 +1,7 @@
 @page "/runbooks/{Id:guid}"
 @attribute [Authorize]
 @using KrakenDeploy.Contracts.Steps
+@using KrakenDeploy.Server.Components.Dialogs
 @using KrakenDeploy.Server.Core.Domain.Deployments
 @using KrakenDeploy.Server.Core.Domain.Environments
 @using KrakenDeploy.Server.Core.Domain.Processes
@@ -12,6 +13,7 @@
 @inject TargetService TargetSvc
 @inject NavigationManager Nav
 @inject NotificationService Notify
+@inject DialogService Dialog
 
 <PageTitle>@(_runbook?.Name ?? "Runbook") - KrakenDeploy</PageTitle>
 
@@ -83,67 +85,15 @@
         <RadzenTabsItem Text="Steps" Icon="list">
             <div class="rz-mt-3">
                 <div class="rz-display-flex rz-justify-content-end rz-mb-3" style="gap:0.5rem">
-                    @* M15 follow-up — Add Step Group lets operators
-                       create a Kraken.StepGroup container in the runbook.
-                       Today this is the only way to author groups via the
-                       runbook editor (the full StepFormDialog migration
-                       is a separate follow-up). Group creates with a
-                       default name + empty Config; operators use the
-                       existing Edit form to rename. ForEach configuration
-                       remains API-only for now. *@
-                    <RadzenButton Text="Add Step Group" Icon="folder_open"
-                                  Size="ButtonSize.Small"
-                                  ButtonStyle="ButtonStyle.Light"
-                                  Click="@AddStepGroupAsync"
-                                  title="Add a Kraken.StepGroup container — drag steps into it to make them children." />
+                    @* M15 follow-up — unified StepFormDialog flow (was an
+                       inline form pre-migration). Add Step opens the same
+                       picker the process editor uses; the picker's
+                       result drives which dialog opens (blank script,
+                       Step Group, or template-backed step). *@
                     <RadzenButton Text="Add Step" Icon="add_circle_outline" Size="ButtonSize.Small"
-                                  ButtonStyle="ButtonStyle.Secondary"
-                                  Click="@(() => { _addStepOpen = true; ResetStepForm(); })" />
+                                  ButtonStyle="ButtonStyle.Primary"
+                                  Click="@OpenAddStepAsync" />
                 </div>
-
-                @if (_addStepOpen || _editingStepId.HasValue)
-                {
-                    <RadzenCard class="rz-mb-3" style="border-left:4px solid var(--rz-info)">
-                        <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">
-                            @(_editingStepId.HasValue ? "Edit Step" : "New Step")
-                        </RadzenText>
-                        <RadzenRow Gap="1rem" class="rz-mb-3">
-                            <RadzenColumn Size="4">
-                                <RadzenFormField Text="Name" style="width:100%">
-                                    <RadzenTextBox @bind-Value="_stepName" Placeholder="Run cleanup" style="width:100%" />
-                                </RadzenFormField>
-                            </RadzenColumn>
-                            <RadzenColumn Size="4">
-                                <RadzenFormField Text="Step Type" style="width:100%">
-                                    <RadzenDropDown TValue="string"
-                                                    Data="@_stepTypes"
-                                                    @bind-Value="_stepType"
-                                                    style="width:100%" />
-                                </RadzenFormField>
-                            </RadzenColumn>
-                            <RadzenColumn Size="4">
-                                <RadzenFormField Text="Package ID (optional)" style="width:100%">
-                                    <RadzenTextBox @bind-Value="_stepPackageId" style="width:100%" />
-                                </RadzenFormField>
-                            </RadzenColumn>
-                        </RadzenRow>
-                        <RadzenFormField Text="Script Body" class="rz-mb-3" style="width:100%">
-                            <RadzenTextArea @bind-Value="_stepScript" Rows="6" style="width:100%;font-family:monospace" />
-                        </RadzenFormField>
-                        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
-                            @if (_editingStepId.HasValue)
-                            {
-                                <RadzenButton Text="Save" ButtonStyle="ButtonStyle.Primary" Click="@SaveStepAsync" />
-                            }
-                            else
-                            {
-                                <RadzenButton Text="Add" ButtonStyle="ButtonStyle.Primary" Click="@AddStepAsync" />
-                            }
-                            <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
-                                          Click="@CancelStepEdit" />
-                        </RadzenStack>
-                    </RadzenCard>
-                }
 
                 @if (_steps.Count == 0)
                 {
@@ -197,9 +147,16 @@
                                     </RadzenText>
                                 </div>
                                 <RadzenStack Orientation="Orientation.Horizontal" Gap="0.25rem">
+                                    @if (isGroup)
+                                    {
+                                        <RadzenButton Icon="add_circle_outline"
+                                                      Size="ButtonSize.Small" Variant="Variant.Text"
+                                                      title="Add child step"
+                                                      Click="@(() => OpenAddChildStepAsync(step))" />
+                                    }
                                     <RadzenButton Icon="edit" Size="ButtonSize.Small" Variant="Variant.Text"
                                                   title="Edit"
-                                                  Click="@(() => BeginEditStep(step))" />
+                                                  Click="@(() => OpenEditStepAsync(step))" />
                                     <RadzenButton Icon="delete" Size="ButtonSize.Small" Variant="Variant.Text"
                                                   ButtonStyle="ButtonStyle.Danger"
                                                   title="@(isGroup && childCount > 0
@@ -332,25 +289,16 @@
     private Guid? _triggerEnvId;
     private Guid? _triggerTargetId;
 
-    // step editing
-    private bool _addStepOpen;
-    private Guid? _editingStepId;
-    private string _stepName = "";
-    private string _stepType = "Kraken.Script";
-    private string _stepPackageId = "";
-    private string _stepScript = "";
+    // M15 follow-up — step editing migrated to the shared StepFormDialog
+    // flow. The inline form / _stepName / _stepType / _stepPackageId /
+    // _stepScript / _stepTypes fields are gone; the dialog handles all
+    // step authoring through the same code path the process editor uses
+    // (schema-driven body, Step Group editor with ForEach panel, parent
+    // dropdown, step-package version pin, validator catch).
 
     // run log viewer
     private RunbookRun? _selectedRun;
     private List<RunbookRunLogEntry> _selectedRunLogs = [];
-
-    private static readonly string[] _stepTypes =
-    [
-        "Kraken.Script",
-        "Octopus.Script",
-        "Octopus.SubstituteVariables",
-        "Octopus.JsonConfigurationVariables",
-    ];
 
     protected override async Task OnInitializedAsync()
     {
@@ -413,116 +361,91 @@
     private bool IsStepGroup(RunbookStep step)
         => string.Equals(step.StepType, "Kraken.StepGroup", StringComparison.OrdinalIgnoreCase);
 
-    // ── Step management ────────────────────────────────────────────────────────
+    // ── Step management (M15 follow-up — unified StepFormDialog flow) ─
 
-    private void ResetStepForm()
-    {
-        _stepName      = "";
-        _stepType      = "Kraken.Script";
-        _stepPackageId = "";
-        _stepScript    = "";
-        _editingStepId = null;
-    }
+    private Task OpenAddStepAsync() => OpenAddStepCoreAsync(parentStepId: null);
 
-    private void BeginEditStep(RunbookStep step)
-    {
-        _editingStepId = step.Id;
-        _stepName      = step.Name;
-        _stepType      = step.StepType;
-        _stepPackageId = step.PackageId;
-        _stepScript    = step.Config.TryGetValue(KrakenScriptConfigKeys.ScriptBody, out var sb) ? sb : "";
-        _addStepOpen   = false;
-    }
+    private Task OpenAddChildStepAsync(RunbookStep groupStep)
+        => OpenAddStepCoreAsync(parentStepId: groupStep.Id);
 
-    private void CancelStepEdit()
+    /// <summary>
+    /// Opens the ChooseStepTemplateDialog picker + the appropriate
+    /// StepFormDialog flow. Mirrors Process.razor's OpenAddStepCoreAsync
+    /// pattern; the host is the runbook service so the dialog persists
+    /// against runbook steps.
+    /// </summary>
+    private async Task OpenAddStepCoreAsync(Guid? parentStepId)
     {
-        _addStepOpen   = false;
-        _editingStepId = null;
-        ResetStepForm();
-    }
+        var choice = await Dialog.OpenAsync<ChooseStepTemplateDialog>(
+            "Choose Step Template",
+            new Dictionary<string, object?>(),
+            new DialogOptions { Width = "1000px", CloseDialogOnOverlayClick = false });
 
-    private async Task AddStepAsync()
-    {
-        if (string.IsNullOrWhiteSpace(_stepName))
+        if (choice is not ChooseStepTemplateResult result) { return; }
+
+        if (result.IsStepGroup)
         {
+            var groupResult = await Dialog.OpenAsync<StepFormDialog>(
+                "Add Step Group",
+                new Dictionary<string, object?>
+                {
+                    [nameof(StepFormDialog.Host)]         = (IStepEditingHost)RunbookSvc,
+                    [nameof(StepFormDialog.ProjectId)]    = Id, // runbook id, host resolves project id from it
+                    [nameof(StepFormDialog.ActionType)]   = "Kraken.StepGroup",
+                    [nameof(StepFormDialog.ParentStepId)] = parentStepId,
+                },
+                new DialogOptions { Width = "720px", CloseDialogOnOverlayClick = false });
+
+            if (groupResult is true) { await ReloadStepsAsync(); }
             return;
         }
 
-        try
+        if (result.IsBlankScriptStep)
         {
-            var config = BuildConfig();
-            var step = await RunbookSvc.AddStepAsync(
-                Id,
-                _stepName.Trim(),
-                _stepType,
-                _stepPackageId.Trim(),
-                [],
-                config);
+            var formResult = await Dialog.OpenAsync<StepFormDialog>(
+                "Add Step",
+                new Dictionary<string, object?>
+                {
+                    [nameof(StepFormDialog.Host)]         = (IStepEditingHost)RunbookSvc,
+                    [nameof(StepFormDialog.ProjectId)]    = Id,
+                    [nameof(StepFormDialog.ActionType)]   = "Kraken.Script",
+                    [nameof(StepFormDialog.ParentStepId)] = parentStepId,
+                },
+                new DialogOptions { Width = "720px", CloseDialogOnOverlayClick = false });
 
-            _addStepOpen = false;
-            ResetStepForm();
-            // M15 follow-up — re-load so the tree view picks up the new
-            // step in DFS order (rather than just appending).
-            await ReloadStepsAsync();
-            Notify.Notify(new NotificationMessage
-            {
-                Severity = NotificationSeverity.Success,
-                Summary  = "Step added",
-                Detail   = step.Name,
-                Duration = 3000,
-            });
-        }
-        catch (InvalidOperationException ex)
-        {
-            Notify.Notify(new NotificationMessage
-            {
-                Severity = NotificationSeverity.Error,
-                Summary  = "Error",
-                Detail   = ex.Message,
-                Duration = 5000,
-            });
-        }
-    }
-
-    private async Task SaveStepAsync()
-    {
-        if (!_editingStepId.HasValue || string.IsNullOrWhiteSpace(_stepName))
-        {
+            if (formResult is true) { await ReloadStepsAsync(); }
             return;
         }
 
-        try
-        {
-            var config = BuildConfig();
-            var step = await RunbookSvc.UpdateStepAsync(
-                _editingStepId.Value,
-                _stepName.Trim(),
-                _stepType,
-                _stepPackageId.Trim(),
-                [],
-                config);
+        var template = result.Template;
+        if (template is null) { return; }
 
-            CancelStepEdit();
-            // M15 follow-up — re-load so the tree view re-renders with the
-            // updated name / config (and any cascade impact from reparent).
-            await ReloadStepsAsync();
-            Notify.Notify(new NotificationMessage
+        var templatedResult = await Dialog.OpenAsync<StepFormDialog>(
+            $"Add Step — {template.Name}",
+            new Dictionary<string, object?>
             {
-                Severity = NotificationSeverity.Success,
-                Summary  = "Step updated",
-                Duration = 3000,
-            });
-        }
-        catch (InvalidOperationException ex)
-        {
-            Notify.Notify(new NotificationMessage
+                [nameof(StepFormDialog.Host)]         = (IStepEditingHost)RunbookSvc,
+                [nameof(StepFormDialog.ProjectId)]    = Id,
+                [nameof(StepFormDialog.Template)]     = template,
+                [nameof(StepFormDialog.ParentStepId)] = parentStepId,
+            },
+            new DialogOptions { Width = "720px", CloseDialogOnOverlayClick = false });
+
+        if (templatedResult is true) { await ReloadStepsAsync(); }
+    }
+
+    private async Task OpenEditStepAsync(RunbookStep step)
+    {
+        var result = await Dialog.OpenAsync<StepFormDialog>(
+            $"Edit Step — {step.Name}",
+            new Dictionary<string, object?>
             {
-                Severity = NotificationSeverity.Error,
-                Summary  = "Error",
-                Detail   = ex.Message,
-                Duration = 5000,
-            });
-        }
+                [nameof(StepFormDialog.Host)] = (IStepEditingHost)RunbookSvc,
+                [nameof(StepFormDialog.Step)] = step,
+            },
+            new DialogOptions { Width = "720px", CloseDialogOnOverlayClick = false });
+
+        if (result is true) { await ReloadStepsAsync(); }
     }
 
     private async Task DeleteStepAsync(RunbookStep step)
@@ -530,8 +453,6 @@
         var deleted = await RunbookSvc.DeleteStepAsync(step.Id);
         if (deleted)
         {
-            // M15 follow-up — re-load so the tree view drops the row + any
-            // cascade-deleted children disappear.
             await ReloadStepsAsync();
             Notify.Notify(new NotificationMessage
             {
@@ -541,17 +462,6 @@
                 Duration = 3000,
             });
         }
-    }
-
-    private Dictionary<string, string> BuildConfig()
-    {
-        var cfg = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (!string.IsNullOrWhiteSpace(_stepScript))
-        {
-            cfg[KrakenScriptConfigKeys.ScriptBody] = _stepScript;
-        }
-
-        return cfg;
     }
 
     // ── Trigger ────────────────────────────────────────────────────────────────
@@ -657,39 +567,12 @@
             : $"{dur.Minutes}m {dur.Seconds}s";
     }
 
-    // ── M15 follow-up: Step Group creation + drag-into-row ─────────────
-
-    /// <summary>
-    /// Creates a Kraken.StepGroup container with a default name. The
-    /// operator can then drag existing steps into it, or rename the
-    /// group via the existing Edit form. The full ForEach panel +
-    /// StepFormDialog migration for the runbook editor remains a
-    /// separate follow-up; today the runbook editor supports group
-    /// creation + reparenting but not ForEach property authoring (use
-    /// the API for that).
-    /// </summary>
-    private async Task AddStepGroupAsync()
-    {
-        try
-        {
-            await RunbookSvc.AddStepAsync(
-                Id,
-                name:       "Step Group",
-                stepType:   "Kraken.StepGroup",
-                packageId:  "",
-                targetRoles: [],
-                config:     [],
-                parentStepId: null);
-            await ReloadStepsAsync();
-            Notify.Notify(NotificationSeverity.Success, "Group added",
-                "Drag steps into it to make them children.", 3500);
-        }
-        catch (Exception ex)
-        {
-            Notify.Notify(NotificationSeverity.Error,
-                "Couldn't add Step Group", ex.Message, 6000);
-        }
-    }
+    // ── M15 follow-up: drag-into-row reparenting ───────────────────────
+    //
+    // Step Group creation moved to the unified StepFormDialog flow
+    // (OpenAddStepCoreAsync → ChooseStepTemplateDialog → "Step Group"
+    // sentinel → StepFormDialog). The standalone AddStepGroupAsync
+    // helper that used to live here is gone.
 
     private void OnDragStart(RunbookStep step)
     {

@@ -32,8 +32,90 @@ public class RunbookService(
     IDbContextFactory<KrakenDbContext> dbFactory,
     RunbookRunChannel runbookQueue,
     StepPackageResolver? stepPackageResolver = null)
-    : IRunbookTrigger
+    : IRunbookTrigger, IStepEditingHost
 {
+    // ── IStepEditingHost ───────────────────────────────────────────────
+    // Runbook steps don't carry M14 execution knobs, so SupportsExecutionKnobs
+    // is false and the knobs parameter on the adapter calls is silently
+    // discarded (StepExecutionKnobs has no place to land on RunbookStep).
+    // The unified StepFormDialog hides its Execution card on the runbook
+    // editor based on this flag.
+
+    bool IStepEditingHost.SupportsExecutionKnobs => false;
+
+    async Task<Guid> IStepEditingHost.AddStepAsync(
+        Guid containerId, string name, string stepType, string packageId,
+        List<string> targetRoles, Dictionary<string, string> config,
+        string? stepPackageName, string? stepPackageVersion,
+        StepExecutionKnobs? knobs, Guid? parentStepId,
+        CancellationToken ct)
+    {
+        _ = knobs; // runbooks have no M14 execution knobs; intentionally dropped
+        var step = await AddStepAsync(
+            containerId, name, stepType, packageId, targetRoles, config,
+            stepPackageName, stepPackageVersion, parentStepId, ct)
+            .ConfigureAwait(false);
+        return step.Id;
+    }
+
+    async Task IStepEditingHost.UpdateStepAsync(
+        Guid stepId, string name, string packageId,
+        List<string> targetRoles, Dictionary<string, string> config,
+        string? stepPackageName, string? stepPackageVersion,
+        StepExecutionKnobs? knobs, UpdateParent? updateParent,
+        CancellationToken ct)
+    {
+        _ = knobs; // runbooks have no M14 execution knobs; intentionally dropped
+        // RunbookService.UpdateStepAsync requires a stepType — the editor
+        // doesn't let operators change the type after creation, so we
+        // re-read the existing step's type rather than ask the caller for
+        // a value the dialog wouldn't supply.
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var existing = await db.RunbookSteps.FindAsync(new object?[] { stepId }, ct)
+            .ConfigureAwait(false);
+        if (existing is null) { return; }
+
+        await UpdateStepAsync(
+            stepId, name, existing.StepType, packageId, targetRoles, config,
+            stepPackageName, stepPackageVersion, updateParent, ct)
+            .ConfigureAwait(false);
+    }
+
+    async Task<IReadOnlyList<IComposableStep>> IStepEditingHost.GetProcessStepsAsync(
+        Guid processId, CancellationToken ct)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var steps = await db.RunbookSteps
+            .Where(s => s.ProcessId == processId)
+            .OrderBy(s => s.SortOrder)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        return [.. steps];
+    }
+
+    async Task<Guid?> IStepEditingHost.ResolveProjectIdAsync(
+        Guid? containerId, Guid? processId, CancellationToken ct)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        // Container id on the runbook editor = runbook id; resolve to
+        // ProjectId via the Runbook row.
+        if (containerId is not null)
+        {
+            var runbook = await db.Runbooks
+                .FirstOrDefaultAsync(r => r.Id == containerId.Value, ct)
+                .ConfigureAwait(false);
+            return runbook?.ProjectId;
+        }
+        if (processId is null) { return null; }
+
+        // Edit path: walk RunbookProcess → Runbook → ProjectId.
+        var process = await db.RunbookProcesses
+            .Include(p => p.Runbook)
+            .FirstOrDefaultAsync(p => p.Id == processId.Value, ct)
+            .ConfigureAwait(false);
+        return process?.Runbook?.ProjectId;
+    }
+
     // ── Runbook CRUD ───────────────────────────────────────────────────────────
 
     public async Task<List<Runbook>> GetAllAsync(Guid projectId, CancellationToken ct = default)

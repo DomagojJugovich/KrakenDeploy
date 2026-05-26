@@ -7,7 +7,6 @@
 @using KrakenDeploy.Server.Data.Services
 
 @inject DialogService Dialog
-@inject ProcessService ProcessSvc
 @inject StepTemplateService TemplateSvc
 @inject StepPackageService StepPackageSvc
 @inject StepPackageResolver StepPackageRes
@@ -160,9 +159,14 @@
         }
 
         @* ── Execution knobs (M14) ────────────────────────────────────────── *@
-        @* Gated by the ui.show-advanced-step-fields feature toggle (M13.F.5)
-           — typical operators stick with defaults; sysadmins flip the flag on. *@
-        @if (_showAdvancedFields)
+        @* Gated by:
+           1. The ui.show-advanced-step-fields feature toggle (M13.F.5)
+              — typical operators stick with defaults; sysadmins flip
+              the flag on.
+           2. Host.SupportsExecutionKnobs — runbook step entities don't
+              carry the M14 fields at all, so the card hides regardless
+              of the feature toggle when the host is the runbook editor. *@
+        @if (_showAdvancedFields && (Host?.SupportsExecutionKnobs ?? true))
         {
             <RadzenCard>
                 <RadzenStack Gap="0.75rem">
@@ -489,11 +493,30 @@
 </div>
 
 @code {
-    /// <summary>Required for Add: the project the step is added to.</summary>
+    /// <summary>
+    /// M15 follow-up — the editing host. Routes save / lookup calls to
+    /// the right service: process editor passes <see cref="ProcessService"/>,
+    /// runbook editor passes <see cref="RunbookService"/>. Required.
+    /// </summary>
+    [Parameter] public IStepEditingHost? Host { get; set; }
+
+    /// <summary>
+    /// Required for Add: the container ID the step is added to. For the
+    /// process editor this is the project id; for the runbook editor it's
+    /// the runbook id. The host resolves the rest (project id for
+    /// variable lookup, snapshot tree for parent dropdown, etc.).
+    /// </summary>
     [Parameter] public Guid? ProjectId { get; set; }
 
-    /// <summary>Required for Edit: the existing step row.</summary>
-    [Parameter] public DeploymentStep? Step { get; set; }
+    /// <summary>
+    /// Required for Edit: the existing step row. Accepts either
+    /// <see cref="Processes.DeploymentStep"/> or
+    /// <see cref="Runbooks.RunbookStep"/> — both implement
+    /// <see cref="IComposableStep"/>. M14 execution-knob hydration is
+    /// gated on the concrete type since runbook steps don't carry those
+    /// fields.
+    /// </summary>
+    [Parameter] public IComposableStep? Step { get; set; }
 
     /// <summary>
     /// Optional. Add path with a template — the schema is derived from the
@@ -592,8 +615,10 @@
     private Guid? _selectedParentStepId;
     /// <summary>Candidate parents for the "Parent step" dropdown — every
     /// Kraken.StepGroup in the same process EXCEPT the step's own
-    /// descendants (filtered to prevent cycles). Loaded on Edit.</summary>
-    private List<DeploymentStep> _availableParents = [];
+    /// descendants (filtered to prevent cycles). Loaded on Edit.
+    /// Typed as <see cref="IComposableStep"/> so the dialog works for
+    /// both deployment-process and runbook editors.</summary>
+    private List<IComposableStep> _availableParents = [];
     /// <summary>ForEach collection variable name (binds to
     /// Octopus.Action.ForEach.Collection in Config). Empty = plain
     /// container.</summary>
@@ -646,14 +671,20 @@
             _stepPackageName    = Step.StepPackageName;
             _stepPackageVersion = Step.StepPackageVersion;
 
-            // M14 — hydrate Execution knobs from the existing row.
-            _condition                   = Step.Condition;
-            _conditionVariableExpression = Step.ConditionVariableExpression;
-            _required                    = Step.Required;
-            _maxRetries                  = Step.MaxRetries;
-            _retryDelaySeconds           = Step.RetryDelaySeconds;
-            _timeoutSeconds              = Step.TimeoutSeconds;
-            _startTrigger                = Step.StartTrigger;
+            // M14 — hydrate Execution knobs ONLY when editing a
+            // DeploymentStep (process editor). RunbookStep doesn't carry
+            // these fields; the runbook editor hides the Execution card
+            // entirely via Host.SupportsExecutionKnobs.
+            if (Step is DeploymentStep dStep)
+            {
+                _condition                   = dStep.Condition;
+                _conditionVariableExpression = dStep.ConditionVariableExpression;
+                _required                    = dStep.Required;
+                _maxRetries                  = dStep.MaxRetries;
+                _retryDelaySeconds           = dStep.RetryDelaySeconds;
+                _timeoutSeconds              = dStep.TimeoutSeconds;
+                _startTrigger                = dStep.StartTrigger;
+            }
 
             await LoadPackageVersionsAsync(Step.StepPackageName).ConfigureAwait(false);
 
@@ -775,18 +806,17 @@
 
         // M15 follow-up — load array variable names for the ForEach
         // collection autocomplete. Only needed when editing a Step Group
-        // or adding one; everything else hides the panel. The lookup
-        // tolerates a missing project id (no autocomplete suggestions
-        // but the free-text input still works).
-        if (_isStepGroup)
+        // or adding one; everything else hides the panel. The host
+        // resolves the project id (process editor: containerId IS the
+        // project id; runbook editor: containerId is the runbook id +
+        // walks via Runbook.ProjectId). Lookup tolerates a missing host
+        // / project (no autocomplete suggestions; free-text still works).
+        if (_isStepGroup && Host is not null)
         {
-            var projectIdForVars = ProjectId;
-            if (projectIdForVars is null && Step is not null)
-            {
-                var process = await ProcessSvc
-                    .GetProcessByIdAsync(Step.ProcessId).ConfigureAwait(false);
-                projectIdForVars = process?.ProjectId;
-            }
+            var projectIdForVars = await Host.ResolveProjectIdAsync(
+                containerId: ProjectId,
+                processId:   Step?.ProcessId,
+                ct:          default).ConfigureAwait(false);
             if (projectIdForVars is not null)
             {
                 var allVars = await VariableSvc
@@ -808,20 +838,24 @@
     /// accidentally introduce a cycle. The defensive
     /// <see cref="ProcessValidator"/> catches the cycle case server-side
     /// too, but filtering up front gives a cleaner UX.
+    ///
+    /// <para>
+    /// M15 follow-up: uses <see cref="IStepEditingHost.GetProcessStepsAsync"/>
+    /// so the same logic works for runbook step composition.
+    /// </para>
     /// </summary>
-    private async Task LoadAvailableParentsAsync(DeploymentStep editing)
+    private async Task LoadAvailableParentsAsync(IComposableStep editing)
     {
-        // Resolve the project id via the step's process; we can't reach
-        // the editor's parent component cleanly from a dialog. The
-        // ProcessService doesn't expose "get process by step id" directly
-        // — workaround: load by project id once it's known. For the edit
-        // path we DON'T have ProjectId set (the editor takes Step only),
-        // so we instead walk the existing process via a service method.
-        // Quickest path: query DeploymentSteps for ProcessId == editing.ProcessId.
-        var process = await ProcessSvc
-            .GetProcessByIdAsync(editing.ProcessId)
+        if (Host is null)
+        {
+            _availableParents = [];
+            return;
+        }
+
+        var siblings = await Host
+            .GetProcessStepsAsync(editing.ProcessId, default)
             .ConfigureAwait(false);
-        if (process is null)
+        if (siblings.Count == 0)
         {
             _availableParents = [];
             return;
@@ -834,7 +868,7 @@
         do
         {
             changed = false;
-            foreach (var s in process.Steps)
+            foreach (var s in siblings)
             {
                 if (s.ParentStepId is { } p
                     && descendants.Contains(p)
@@ -845,8 +879,8 @@
             }
         } while (changed);
 
-        _availableParents = process.Steps
-            .Where(s => string.Equals(s.StepType, "Kraken.StepGroup",
+        _availableParents = siblings
+            .Where(s => string.Equals(s.StepType, KrakenStepTypes.StepGroup,
                                       StringComparison.OrdinalIgnoreCase))
             .Where(s => !descendants.Contains(s.Id))
             .OrderBy(s => s.SortOrder)
@@ -1160,6 +1194,13 @@
                 TimeoutSeconds:              _timeoutSeconds,
                 StartTrigger:                _startTrigger);
 
+            if (Host is null)
+            {
+                _errors.Add("Missing editing host — cannot save the step.");
+                StateHasChanged();
+                return;
+            }
+
             if (_isEdit && Step is not null)
             {
                 // D-7: pass the explicit pin pair if the user picked a non-null
@@ -1172,11 +1213,12 @@
                 var parentUpdate = _selectedParentStepId != Step.ParentStepId
                     ? UpdateParent.To(_selectedParentStepId)
                     : null;
-                await ProcessSvc.UpdateStepAsync(
+                await Host.UpdateStepAsync(
                     Step.Id, _name, _packageId, roles, config,
                     _stepPackageName, _stepPackageVersion,
                     executionKnobs,
-                    parentUpdate).ConfigureAwait(false);
+                    parentUpdate,
+                    default).ConfigureAwait(false);
             }
             else
             {
@@ -1187,16 +1229,17 @@
                     return;
                 }
                 // D-7: pass the auto-resolved (or user-picked) pin pair.
-                // When _stepPackageName is null the service falls back to its
+                // When _stepPackageName is null the host falls back to its
                 // own auto-resolve via the StepPackageResolver — keeping the
-                // ProcessService.AddStepAsync contract honest.
+                // contract honest.
                 // M15: pass the picker's pre-filled parent so the new step
                 // lands inside a Step Group when "+Add child" launched the form.
-                await ProcessSvc.AddStepAsync(
+                await Host.AddStepAsync(
                     ProjectId.Value, _name, _stepType, _packageId, roles, config,
                     _stepPackageName, _stepPackageVersion,
                     executionKnobs,
-                    parentStepId: _selectedParentStepId).ConfigureAwait(false);
+                    parentStepId: _selectedParentStepId,
+                    ct: default).ConfigureAwait(false);
             }
             Dialog.Close(true);
         }

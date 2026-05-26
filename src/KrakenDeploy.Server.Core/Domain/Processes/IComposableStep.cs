@@ -45,4 +45,30 @@ public interface IComposableStep
     /// <summary>Configuration bag. The validator inspects keys (not values)
     /// to detect leaf-only keys on Step Groups.</summary>
     Dictionary<string, string> Config { get; }
+
+    /// <summary>The owning process or runbook-process row. Used by the
+    /// editor to look up sibling candidates for the Parent dropdown.</summary>
+    Guid ProcessId { get; }
+
+    /// <summary>Logical package ID that this step deploys (may be empty
+    /// for steps that don't consume a package — IIS-only configure steps,
+    /// runbook script steps, Step Groups).</summary>
+    string PackageId { get; }
+
+    /// <summary>Roles filter — only targets whose roles overlap this list
+    /// run the step. Empty = run on every target.</summary>
+    List<string> TargetRoles { get; }
+
+    /// <summary>Phase D-6 pinned step-package name. <c>null</c> when no
+    /// installed package claims the step type.</summary>
+    string? StepPackageName { get; }
+
+    /// <summary>Phase D-6 pinned step-package version. Paired with
+    /// <see cref="StepPackageName"/>; both null or both set.</summary>
+    string? StepPackageVersion { get; }
+
+    /// <summary>Zero-based execution order within the step's parent
+    /// (top-level steps share one numbering; children of each group
+    /// share their own).</summary>
+    int SortOrder { get; }
 }
