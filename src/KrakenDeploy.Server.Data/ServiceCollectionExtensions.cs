@@ -8,6 +8,7 @@ using KrakenDeploy.Server.Data.Identity;
 using KrakenDeploy.Server.Data.Interceptors;
 using KrakenDeploy.Server.Data.Jobs;
 using KrakenDeploy.Server.Data.Services;
+using KrakenDeploy.Server.Data.Services.Ai.Curators;
 using KrakenDeploy.Server.Data.Spaces;
 using KrakenDeploy.Server.Data.Storage;
 using Microsoft.AspNetCore.Identity;
@@ -100,6 +101,13 @@ public static class ServiceCollectionExtensions
         // read-only path optimised for the LLM-call hot loop (no masking,
         // no audit overhead). This service handles update + masking + reveal.
         services.AddScoped<Services.Ai.SpaceAiSettingsService>();
+
+        // M11.B — AI context builders + step-config curators. The shared
+        // kernel consumed by both the MCP server (Tools / Resources) and
+        // the M11.C diagnosis job. Curators are singletons (stateless pure
+        // functions); the registry + builders sit alongside.
+        services.AddStepConfigCurators();
+        services.AddScoped<Services.Ai.ContextBuilders.ProcessContextBuilder>();
         services.AddScoped<TenantService>();
         services.AddScoped<LifecycleService>();
         services.AddScoped<ChannelService>();
