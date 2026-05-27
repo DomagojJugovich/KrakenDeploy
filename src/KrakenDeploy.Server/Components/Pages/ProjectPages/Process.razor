@@ -13,6 +13,7 @@
 @inject DialogService Dialog
 @inject NotificationService Notifications
 @inject NavigationManager Nav
+@inject KrakenDeploy.Server.Data.Services.Ai.SpaceAiSettingsService AiSettingsSvc
 
 <ProjectShell Slug="@Slug">
     <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
@@ -31,6 +32,12 @@
                               Click="OpenImportDeploymentProcessAsync" />
             </RequirePermission>
             <RequirePermission Permission="Permission.ProcessEdit">
+                @if (_assistantEnabled)
+                {
+                    <RadzenButton Text="Suggest from package" Icon="auto_awesome"
+                                  ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                                  Click="OpenSuggestProcessAsync" />
+                }
                 <RadzenButton Text="Add Step" Icon="add_circle_outline"
                               ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
                               Click="OpenAddStepAsync" />
@@ -381,6 +388,7 @@
     private Lifecycle? _lifecycle;
     private bool _loaded;
     private string? _loadError;
+    private bool _assistantEnabled;
 
     /// <summary>
     /// Cache of (package name → highest installed semver) used to render the
@@ -414,6 +422,18 @@
             if (_project.LifecycleId is { } lifecycleId)
             {
                 _lifecycle = await LifecycleSvc.GetAsync(lifecycleId);
+            }
+
+            // M11.D — show the "Suggest from package" button only when the
+            // per-Space process assistant is enabled.
+            try
+            {
+                var aiSettings = await AiSettingsSvc.GetAsync();
+                _assistantEnabled = aiSettings.AssistantEnabled;
+            }
+            catch
+            {
+                _assistantEnabled = false;
             }
         }
         catch (Exception ex)
@@ -540,6 +560,31 @@
                 Summary = "Imported",
                 Detail = "Deployment process imported successfully.",
                 Duration = 4000,
+            });
+        }
+    }
+
+    private async Task OpenSuggestProcessAsync()
+    {
+        if (_project is null) return;
+
+        var result = await Dialog.OpenAsync<SuggestProcessDialog>(
+            "Suggest process from package",
+            new Dictionary<string, object?>
+            {
+                [nameof(SuggestProcessDialog.ProjectId)] = _project.Id,
+            },
+            new DialogOptions { Width = "720px", CloseDialogOnOverlayClick = false });
+
+        if (result is true)
+        {
+            await ReloadStepsAsync();
+            Notifications.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Success,
+                Summary = "Steps added",
+                Detail = "Suggested steps were created. Edit each step's config to finish.",
+                Duration = 5000,
             });
         }
     }

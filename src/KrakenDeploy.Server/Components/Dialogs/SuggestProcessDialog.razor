@@ -1,0 +1,202 @@
+@using KrakenDeploy.Ai
+@using KrakenDeploy.Server.Data.Services
+@using KrakenDeploy.Server.Data.Services.Ai.Assistant
+@inject ProcessAssistantService AssistantSvc
+@inject PackageService PackageSvc
+@inject ProcessService ProcessSvc
+@inject DialogService DialogService
+
+<RadzenStack Gap="1rem">
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+        Pick a package and let the assistant inspect its layout to propose a
+        starter process. Review the suggestions, untick anything you don't
+        want, then create the steps — you can edit each step's config
+        afterwards in the normal editor.
+    </RadzenText>
+
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="1rem">
+        <RadzenFormField Text="Package" Variant="Variant.Outlined" Style="flex:2;">
+            <RadzenDropDown @bind-Value="_packageId" Data="@_packageIds"
+                            Change="@OnPackageChangedAsync" AllowClear="false"
+                            Style="width:100%" />
+        </RadzenFormField>
+        <RadzenFormField Text="Version" Variant="Variant.Outlined" Style="flex:1;">
+            <RadzenDropDown @bind-Value="_version" Data="@_versions"
+                            AllowClear="false" Style="width:100%" />
+        </RadzenFormField>
+    </RadzenStack>
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" Shade="Shade.Lighter" AllowClose="false">
+            @_error
+        </RadzenAlert>
+    }
+
+    @if (_result is not null)
+    {
+        <RadzenCard>
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-mb-2">
+                <RadzenIcon Icon="neurology" Style="vertical-align:middle;margin-right:4px;" />
+                @_result.OverallRationale
+            </RadzenText>
+
+            @if (_suggestions.Count == 0)
+            {
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                    The assistant didn't find a clear process shape for this package.
+                </RadzenText>
+            }
+            else
+            {
+                <RadzenStack Gap="0.5rem">
+                    @foreach (var s in _suggestions)
+                    {
+                        <RadzenStack Orientation="Orientation.Horizontal"
+                                     AlignItems="AlignItems.Start" Gap="0.5rem">
+                            <RadzenCheckBox @bind-Value="s.Include" TValue="bool" />
+                            <RadzenStack Gap="0.1rem">
+                                <RadzenText TextStyle="TextStyle.Body1" class="rz-mb-0">
+                                    <strong>@s.Step.Name</strong>
+                                    <code class="rz-ml-2">@s.Step.StepType</code>
+                                </RadzenText>
+                                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                                    @s.Step.Rationale
+                                </RadzenText>
+                            </RadzenStack>
+                        </RadzenStack>
+                    }
+                </RadzenStack>
+            }
+        </RadzenCard>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End" Gap="0.5rem">
+        <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => DialogService.Close(false))" />
+        @if (_result is null)
+        {
+            <RadzenButton Text="Suggest" ButtonStyle="ButtonStyle.Primary" Icon="auto_awesome"
+                          IsBusy="@_busy" Disabled="@string.IsNullOrEmpty(_version)"
+                          Click="@SuggestAsync" />
+        }
+        else if (_suggestions.Any(s => s.Include))
+        {
+            <RadzenButton Text="@($"Create {_suggestions.Count(s => s.Include)} step(s)")"
+                          ButtonStyle="ButtonStyle.Success" Icon="playlist_add"
+                          IsBusy="@_busy" Click="@CreateAsync" />
+        }
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    [Parameter, EditorRequired] public Guid ProjectId { get; set; }
+
+    private List<string> _packageIds = [];
+    private List<string> _versions = [];
+    private string? _packageId;
+    private string? _version;
+    private string _error = string.Empty;
+    private bool _busy;
+    private StepSuggestionResult? _result;
+    private readonly List<SuggestionRow> _suggestions = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        var summaries = await PackageSvc.GetSummariesAsync();
+        _packageIds = summaries.Select(s => s.PackageId).OrderBy(p => p).ToList();
+        if (_packageIds.Count > 0)
+        {
+            _packageId = _packageIds[0];
+            await OnPackageChangedAsync(_packageId);
+        }
+    }
+
+    private async Task OnPackageChangedAsync(object? value)
+    {
+        _result = null;
+        _suggestions.Clear();
+        _error = string.Empty;
+        _packageId = value as string;
+        _versions = [];
+        _version = null;
+        if (!string.IsNullOrEmpty(_packageId))
+        {
+            var versions = await PackageSvc.GetVersionsAsync(_packageId);
+            _versions = versions.Select(v => v.Version).ToList();
+            _version = _versions.FirstOrDefault();
+        }
+    }
+
+    private async Task SuggestAsync()
+    {
+        if (string.IsNullOrEmpty(_packageId) || string.IsNullOrEmpty(_version)) { return; }
+        _error = string.Empty;
+        _busy = true;
+        try
+        {
+            _result = await AssistantSvc.SuggestStepsAsync(_packageId, _version);
+            _suggestions.Clear();
+            if (_result is not null)
+            {
+                _suggestions.AddRange(_result.Steps.Select(s => new SuggestionRow(s)));
+            }
+            else
+            {
+                _error = "Package not found.";
+            }
+        }
+        catch (KrakenAiDisabledException)
+        {
+            _error = "AI is disabled for this Space — enable a provider in Configuration → AI Settings.";
+        }
+        catch (KrakenAiFeatureDisabledException)
+        {
+            _error = "The process assistant is disabled — enable it in Configuration → AI Settings.";
+        }
+        catch (KrakenAiBudgetExceededException ex)
+        {
+            _error = $"AI budget exceeded: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            _error = $"Suggestion failed: {ex.Message}";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task CreateAsync()
+    {
+        _busy = true;
+        try
+        {
+            var created = 0;
+            foreach (var row in _suggestions.Where(s => s.Include))
+            {
+                await ProcessSvc.AddStepAsync(
+                    projectId:   ProjectId,
+                    name:        row.Step.Name,
+                    stepType:    row.Step.StepType,
+                    packageId:   "",
+                    targetRoles: [],
+                    config:      new Dictionary<string, string>());
+                created++;
+            }
+            DialogService.Close(created > 0);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to create steps: {ex.Message}";
+            _busy = false;
+        }
+    }
+
+    private sealed class SuggestionRow(SuggestedStep step)
+    {
+        public SuggestedStep Step { get; } = step;
+        public bool Include { get; set; } = true;
+    }
+}
