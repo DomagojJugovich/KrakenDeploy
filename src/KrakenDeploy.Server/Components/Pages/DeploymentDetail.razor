@@ -1,5 +1,7 @@
 @page "/deployments/{Id:guid}"
 @attribute [Authorize]
+@using System.Text.Json
+@using KrakenDeploy.Server.Core.Domain.Ai
 @using KrakenDeploy.Server.Core.Domain.Deployments
 @using KrakenDeploy.Server.Data.Services
 @inject DeploymentService DeploymentSvc
@@ -100,6 +102,62 @@ else
                 <RadzenButton Text="Download Bundle" Icon="download"
                               Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Light"
                               Click="@(() => Nav.NavigateTo($"/api/deployments/{Id}/drop-bundle", forceLoad: true))" />
+            </RadzenStack>
+        </RadzenCard>
+    }
+
+    @* M11.C — AI Analysis card. Renders above the tabs only when a
+       diagnosis row exists (a started deployment that failed + AI was
+       enabled). Low-confidence diagnoses carry a "verify yourself" footer. *@
+    @if (_diagnosis is not null)
+    {
+        <RadzenCard class="rz-mb-4" style="border-left:4px solid var(--rz-info);">
+            <RadzenStack Gap="0.75rem">
+                <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenIcon Icon="neurology" />
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-0">AI Analysis</RadzenText>
+                    <RadzenBadge Text="@($"Confidence: {_diagnosis.Confidence}")"
+                                 BadgeStyle="@ConfidenceStyle(_diagnosis.Confidence)" />
+                </RadzenStack>
+
+                <div>
+                    <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-1">Probable cause</RadzenText>
+                    <RadzenText TextStyle="TextStyle.Body1">@_diagnosis.ProbableCause</RadzenText>
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(_diagnosis.SuggestedFix))
+                {
+                    <div>
+                        <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-1">Suggested fix</RadzenText>
+                        <RadzenText TextStyle="TextStyle.Body1">@_diagnosis.SuggestedFix</RadzenText>
+                    </div>
+                }
+
+                @if (_relevantLogLines.Count > 0)
+                {
+                    <div>
+                        <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-1">Relevant log lines</RadzenText>
+                        <ul style="margin:0; padding-left:1.2rem;">
+                            @foreach (var line in _relevantLogLines)
+                            {
+                                <li>
+                                    <span class="rz-color-secondary">#@line.Sequence</span>
+                                    <span style="font-family: var(--rz-mono-font, monospace); font-size:0.85rem;">
+                                        @line.Text
+                                    </span>
+                                </li>
+                            }
+                        </ul>
+                    </div>
+                }
+
+                @if (_diagnosis.Confidence == DiagnosisConfidence.Low)
+                {
+                    <RadzenAlert AlertStyle="AlertStyle.Warning" Variant="Variant.Flat"
+                                 Shade="Shade.Lighter" AllowClose="false" class="rz-mb-0">
+                        Low-confidence AI guess — verify against the log before acting on it.
+                    </RadzenAlert>
+                }
             </RadzenStack>
         </RadzenCard>
     }
@@ -353,6 +411,10 @@ else
     private List<DeploymentOutputVariable> _outputVariables = [];
     private List<DeploymentStepOutcome> _stepOutcomes = [];
 
+    // M11.C — AI diagnosis + its parsed relevant-log-lines.
+    private DeploymentDiagnosis? _diagnosis;
+    private List<DiagnosisLogLineView> _relevantLogLines = [];
+
     // Offline result upload
     private IBrowserFile? _resultFile;
     private bool _uploading;
@@ -365,8 +427,38 @@ else
             _artifacts = await ArtifactSvc.GetByDeploymentAsync(Id);
             _outputVariables = await DeploymentSvc.GetOutputVariablesAsync(Id);
             _stepOutcomes = await DeploymentSvc.GetStepOutcomesAsync(Id);
+            await LoadDiagnosisAsync();
         }
     }
+
+    private async Task LoadDiagnosisAsync()
+    {
+        _diagnosis = await DeploymentSvc.GetDiagnosisAsync(Id);
+        _relevantLogLines = [];
+        if (_diagnosis is not null && !string.IsNullOrWhiteSpace(_diagnosis.RelevantLogLinesJson))
+        {
+            try
+            {
+                _relevantLogLines = JsonSerializer.Deserialize<List<DiagnosisLogLineView>>(
+                    _diagnosis.RelevantLogLinesJson,
+                    new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? [];
+            }
+            catch (JsonException)
+            {
+                // Malformed blob — show the rest of the card without the lines.
+                _relevantLogLines = [];
+            }
+        }
+    }
+
+    private sealed record DiagnosisLogLineView(int Sequence, string Text);
+
+    private static BadgeStyle ConfidenceStyle(DiagnosisConfidence c) => c switch
+    {
+        DiagnosisConfidence.High   => BadgeStyle.Success,
+        DiagnosisConfidence.Medium => BadgeStyle.Info,
+        _                          => BadgeStyle.Warning,
+    };
 
     private void OnResultFileSelected(InputFileChangeEventArgs e)
     {

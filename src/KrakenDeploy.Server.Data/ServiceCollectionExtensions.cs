@@ -112,6 +112,13 @@ public static class ServiceCollectionExtensions
         services.AddScoped<Services.Ai.ContextBuilders.TargetHealthBuilder>();
         services.AddScoped<Services.Ai.ContextBuilders.ReleaseContextBuilder>();
         services.AddScoped<Services.Ai.ContextBuilders.DeploymentDiffBuilder>();
+
+        // M11.C — autonomous failure diagnosis: context assembler + service.
+        // The service is best-effort (AI-unavailable never affects deployment
+        // status); it's invoked by the DeploymentDiagnosisWorker off the
+        // diagnosis channel.
+        services.AddScoped<Services.Ai.Diagnosis.DiagnosisContextAssembler>();
+        services.AddScoped<Services.Ai.Diagnosis.DeploymentDiagnosisService>();
         services.AddScoped<TenantService>();
         services.AddScoped<LifecycleService>();
         services.AddScoped<ChannelService>();

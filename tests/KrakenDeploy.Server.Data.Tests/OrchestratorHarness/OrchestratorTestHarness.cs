@@ -121,8 +121,18 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             deployReleaseRunner:   _services.GetRequiredService<DeployReleaseStepRunner>(),
             subPlans:              _subPlans,
             scopeFactory:          _services.GetRequiredService<IServiceScopeFactory>(),
+            // M11.C diagnosis channel — the harness doesn't run the diagnosis
+            // worker, so FailAsync's writes just accumulate harmlessly on this
+            // unbounded channel. DiagnosisChannel exposes the written ids for
+            // tests that want to assert the trigger fired.
+            diagnosisChannel:      DiagnosisChannel,
             logger:                NullLogger<DeploymentWorker>.Instance);
     }
+
+    /// <summary>The diagnosis channel the worker writes failed-deployment ids
+    /// to. Tests can drain <c>DiagnosisChannel.Reader</c> to assert the
+    /// trigger fired (or didn't) for a given failure path.</summary>
+    public DeploymentDiagnosisChannel DiagnosisChannel { get; } = new();
 
     // ── Seeding helpers ─────────────────────────────────────────────────────
 

@@ -185,6 +185,19 @@ public class DeploymentService(
     }
 
     /// <summary>
+    /// M11.C — the AI diagnosis for a deployment, or null when none has been
+    /// produced (AI disabled, diagnosis still running, or the deployment
+    /// succeeded). Powers the "AI Analysis" card on the detail page.
+    /// </summary>
+    public async Task<KrakenDeploy.Server.Core.Domain.Ai.DeploymentDiagnosis?> GetDiagnosisAsync(
+        Guid deploymentId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.DeploymentDiagnoses
+            .FirstOrDefaultAsync(x => x.DeploymentId == deploymentId, ct);
+    }
+
+    /// <summary>
     /// Returns all output variables captured during a deployment via
     /// <c>Set-OctopusVariable</c> / <c>##octopus[setVariable]</c> markers,
     /// ordered by step capture order and then variable name.

@@ -268,6 +268,12 @@ public static class Program
         builder.Services.AddSingleton<DeployReleaseStepRunner>();
         builder.Services.AddSingleton<IPendingSubPlanRegistry, PendingSubPlanRegistry>();
 
+        // M11.C — autonomous failure diagnosis. The orchestrator drops failed
+        // (started) deployment ids on the channel; the worker drains it +
+        // runs the best-effort AI diagnosis off the deployment hot path.
+        builder.Services.AddSingleton<DeploymentDiagnosisChannel>();
+        builder.Services.AddHostedService<DeploymentDiagnosisWorker>();
+
         // ── M11.B — Model Context Protocol server ────────────────────────────
         // Mounts an in-process MCP server (Streamable HTTP transport) on
         // /mcp. Reuses the existing ApiKey auth scheme; per-Space

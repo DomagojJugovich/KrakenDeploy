@@ -142,6 +142,29 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
         outcomes.Should().OnlyContain(o => o.Outcome == StepOutcomeKind.Failed);
     }
 
+    // ── M11.C — failed started deployment enqueues a diagnosis ──────────────
+
+    [Fact]
+    public async Task Failed_started_deployment_enqueues_an_AI_diagnosis()
+    {
+        // FailAsync writes the deployment id to the diagnosis channel only
+        // for deployments that actually started (StartedUtc set when the
+        // orchestrator transitions to Running). A started→failed run should
+        // enqueue exactly one diagnosis request.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var (deploymentId, targets) = await SeedAsync(harness,
+            stepNames: ["deploy"],
+            targetNames: ["A"]);
+        harness.ConnectFakeAgent(targets[0]).DefaultResponse = FakeStepResponse.Fail("boom");
+
+        await harness.RunDeploymentAsync(deploymentId);
+
+        (await harness.GetDeploymentAsync(deploymentId)).Status.Should().Be(DeploymentStatus.Failed);
+        harness.DiagnosisChannel.Reader.TryRead(out var enqueued).Should().BeTrue(
+            because: "a started deployment that failed should queue an AI diagnosis");
+        enqueued.Should().Be(deploymentId);
+    }
+
     // ── Phase 1b — non-required failure → SucceededWithWarnings ─────────────
 
     [Fact]

@@ -47,6 +47,7 @@ public sealed class DeploymentWorker(
     DeployReleaseStepRunner deployReleaseRunner,
     IPendingSubPlanRegistry subPlans,
     IServiceScopeFactory scopeFactory,
+    DeploymentDiagnosisChannel diagnosisChannel,
     ILogger<DeploymentWorker> logger)
     : BackgroundService
 {
@@ -806,12 +807,23 @@ public sealed class DeploymentWorker(
     // can run per-ForEach-iteration with the right variable bag. The
     // orchestrator no longer pre-substitutes the snapshot's Config.
 
-    private static async Task FailAsync(
+    private async Task FailAsync(
         KrakenDbContext db, Deployment deployment, string reason, CancellationToken ct)
     {
         deployment.Status = DeploymentStatus.Failed;
         deployment.CompletedUtc = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        // M11.C — queue an AI diagnosis, but only for deployments that
+        // actually started executing. Pre-flight refusals (no target, no
+        // variable snapshot, blocked by freeze, agent offline at dispatch)
+        // set Failed before StartedUtc is stamped; diagnosing "it never ran"
+        // wastes AI budget + produces no useful analysis. Best-effort
+        // TryWrite on an unbounded channel — never blocks finalisation.
+        if (deployment.StartedUtc is not null)
+        {
+            diagnosisChannel.Writer.TryWrite(deployment.Id);
+        }
     }
 
     // ── M14.2 + M14.3 helpers ────────────────────────────────────────────
