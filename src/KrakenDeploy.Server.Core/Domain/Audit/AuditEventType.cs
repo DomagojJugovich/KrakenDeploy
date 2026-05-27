@@ -198,6 +198,21 @@ public static class AuditEventType
     /// minutes, threshold in minutes.</summary>
     public const string DeploymentTargetSlow = "Deployment.TargetSlow";
 
+    // ── MCP server (M11.B) ───────────────────────────────────────────────────
+    /// <summary>M11.B — an MCP client read a <c>kraken://</c> resource.
+    /// One row per resource read so the forensic trail shows which AI
+    /// client (via the API key's principal) pulled which deployment /
+    /// process / config content. Subject is the resource URI.
+    /// Details: resource URI + a short outcome note (ok / not-found).</summary>
+    public const string McpResourceRead = "Mcp.ResourceRead";
+
+    /// <summary>M11.B — an MCP client invoked a tool. One row per tool
+    /// call. Mutating tools (e.g. retry_deployment) ALSO write their
+    /// domain audit event; this row captures the MCP entry point.
+    /// Subject is the tool name. Details: tool name + arguments summary
+    /// + a short outcome note.</summary>
+    public const string McpToolInvoked = "Mcp.ToolInvoked";
+
     // ── Maintenance mode (M13.A.3) ───────────────────────────────────────────
     /// <summary>Operator enabled instance-wide maintenance mode.
     /// Details: reason text + who enabled it. Pair with
