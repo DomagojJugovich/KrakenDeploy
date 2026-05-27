@@ -119,6 +119,11 @@ public static class ServiceCollectionExtensions
         // diagnosis channel.
         services.AddScoped<Services.Ai.Diagnosis.DiagnosisContextAssembler>();
         services.AddScoped<Services.Ai.Diagnosis.DeploymentDiagnosisService>();
+
+        // M11.D — process-builder assistant (step suggester, field
+        // explanations, script-editor streaming). All under
+        // KrakenAiFeature.Assistant.
+        services.AddScoped<Services.Ai.Assistant.ProcessAssistantService>();
         services.AddScoped<TenantService>();
         services.AddScoped<LifecycleService>();
         services.AddScoped<ChannelService>();
