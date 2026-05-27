@@ -14,6 +14,8 @@
 @inject NotificationService Notifications
 @inject FeatureFlagService FeatureFlags
 @inject VariableService VariableSvc
+@inject KrakenDeploy.Server.Data.Services.Ai.SpaceAiSettingsService AiSettingsSvc
+@inject KrakenDeploy.Server.Data.Services.Ai.Assistant.ProcessAssistantService AssistantSvc
 
 @*
     Unified step add/edit dialog. Replaces the legacy script-only StepFormDialog
@@ -438,6 +440,46 @@
             <StepUiSchemaForm Schema="@_schema" Values="@_values" />
         }
 
+        @* ── M11.D.3 — Explain a field (process assistant) ─────────────────
+           Spec called for a per-field AI icon; the schema body is rendered
+           by a manual RenderTreeBuilder in StepUiSchemaForm, so a single
+           field-picker block here delivers the same capability without
+           threading icons through that builder. Shown only when the
+           per-Space assistant is enabled and the step has schema fields. *@
+        @if (_assistantEnabled && !_isStepGroup && _schema is not null && _schema.Properties.Count > 0)
+        {
+            <RadzenCard>
+                <RadzenStack Gap="0.5rem">
+                    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                                 AlignItems="AlignItems.Center">
+                        <RadzenIcon Icon="help" />
+                        <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-0">
+                            Explain a field
+                        </RadzenText>
+                    </RadzenStack>
+                    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                                 AlignItems="AlignItems.Center">
+                        <RadzenDropDown @bind-Value="_explainFieldKey"
+                                        Data="@_schema.Properties.Keys"
+                                        AllowClear="false" Style="flex:1;"
+                                        Placeholder="Pick a field…" />
+                        <RadzenButton Text="Explain" Icon="auto_awesome"
+                                      ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                                      IsBusy="@_explainBusy"
+                                      Disabled="@string.IsNullOrEmpty(_explainFieldKey)"
+                                      Click="@ExplainFieldAsync" />
+                    </RadzenStack>
+                    @if (!string.IsNullOrWhiteSpace(_explainText))
+                    {
+                        <RadzenAlert AlertStyle="AlertStyle.Info" Variant="Variant.Flat"
+                                     Shade="Shade.Lighter" AllowClose="false" class="rz-mb-0">
+                            @_explainText
+                        </RadzenAlert>
+                    }
+                </RadzenStack>
+            </RadzenCard>
+        }
+
         @* ── Referenced packages grid — script types only ─────────────────── *@
         @if (IsScriptStepType(_stepType))
         {
@@ -658,6 +700,14 @@
     /// <summary>"Iterations run in parallel" checkbox. Sets
     /// Octopus.Action.ForEach.Parallel = "true" in Config.</summary>
     private bool _foreachParallel;
+
+    // ── M11.D.3 — field-explanation assistant ────────────────────────────
+    private bool _assistantEnabled;
+    private string? _explainFieldKey;
+    private string _explainText = "";
+    private bool _explainBusy;
+    // Per-dialog cache: explaining the same field twice doesn't re-call the LLM.
+    private readonly Dictionary<string, string> _explainCache = new(StringComparer.Ordinal);
 
     /// <summary>
     /// M-RollingDeployments Phase 2 — rolling-window cap on a
@@ -887,6 +937,66 @@
                     .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
                     .ToList();
             }
+        }
+
+        // M11.D.3 — show the field-explanation assistant only when the
+        // per-Space process assistant is enabled. Fail-closed on error.
+        try
+        {
+            var aiSettings = await AiSettingsSvc.GetAsync().ConfigureAwait(false);
+            _assistantEnabled = aiSettings.AssistantEnabled;
+        }
+        catch
+        {
+            _assistantEnabled = false;
+        }
+    }
+
+    /// <summary>
+    /// M11.D.3 — asks the process assistant to explain the selected step-
+    /// config field. Caches per dialog session so re-picking the same field
+    /// doesn't re-call the LLM. AI-unavailable surfaces inline.
+    /// </summary>
+    private async Task ExplainFieldAsync()
+    {
+        if (string.IsNullOrEmpty(_explainFieldKey) || _schema is null) { return; }
+
+        if (_explainCache.TryGetValue(_explainFieldKey, out var cached))
+        {
+            _explainText = cached;
+            return;
+        }
+
+        _explainBusy = true;
+        _explainText = "";
+        try
+        {
+            _schema.Properties.TryGetValue(_explainFieldKey, out var field);
+            var text = await AssistantSvc.ExplainFieldAsync(
+                _stepType, _explainFieldKey, field?.Label, field?.HelpText)
+                .ConfigureAwait(false);
+            _explainCache[_explainFieldKey] = text;
+            _explainText = text;
+        }
+        catch (KrakenDeploy.Ai.KrakenAiDisabledException)
+        {
+            _explainText = "AI is disabled for this Space — enable a provider in Configuration → AI Settings.";
+        }
+        catch (KrakenDeploy.Ai.KrakenAiFeatureDisabledException)
+        {
+            _explainText = "The process assistant is disabled — enable it in Configuration → AI Settings.";
+        }
+        catch (KrakenDeploy.Ai.KrakenAiBudgetExceededException ex)
+        {
+            _explainText = $"AI budget exceeded: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            _explainText = $"Explanation failed: {ex.Message}";
+        }
+        finally
+        {
+            _explainBusy = false;
         }
     }
 
