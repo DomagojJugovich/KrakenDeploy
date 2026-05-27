@@ -61,6 +61,8 @@ public class KrakenDbContext(
     public DbSet<AiCallLog> AiCallLogs => Set<AiCallLog>();
     public DbSet<SpaceAiSettings> SpaceAiSettings => Set<SpaceAiSettings>();
     public DbSet<DeploymentDiagnosis> DeploymentDiagnoses => Set<DeploymentDiagnosis>();
+    public DbSet<AdhocSession> AdhocSessions => Set<AdhocSession>();
+    public DbSet<AdhocIteration> AdhocIterations => Set<AdhocIteration>();
     public DbSet<KrakenDeploy.Server.Core.Domain.Notifications.SmtpSettings> SmtpSettings
         => Set<KrakenDeploy.Server.Core.Domain.Notifications.SmtpSettings>();
     public DbSet<KrakenDeploy.Server.Core.Domain.Features.FeatureFlag> FeatureFlags

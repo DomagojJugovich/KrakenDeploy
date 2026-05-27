@@ -262,6 +262,17 @@ public enum Permission
     /// </summary>
     BypassMaintenance      = 1800,
 
+    // ── Ad-hoc agent actions (1900–1999; Phase M11.E) ───────────────────────
+
+    /// <summary>
+    /// Create + approve ad-hoc agent-action sessions (M11.E.5). Single-approver
+    /// rule (locked): this permission + Space membership is sufficient to
+    /// approve an iteration's signed script for execution against the session's
+    /// frozen target set. The two-person rule is deferred behind a feature flag
+    /// (M11.E.11) — revisit if production incidents motivate it.
+    /// </summary>
+    AdhocActionsExecute    = 1900,
+
     // ── Reserved blocks for future entities ─────────────────────────────────
     // Add when the matching domain entity ships. Keeps the enum stable so
     // existing roles don't have their permission-set IDs renumbered.

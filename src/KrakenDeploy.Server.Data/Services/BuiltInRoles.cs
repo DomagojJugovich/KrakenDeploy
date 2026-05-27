@@ -92,6 +92,9 @@ internal static class BuiltInRoles
         // API key (own keys only — admin needs ApiKeyViewAll/DeleteAll)
         Permission.ApiKeyView, Permission.ApiKeyCreate,
         Permission.ApiKeyEdit, Permission.ApiKeyDelete,
+        // Ad-hoc agent actions (M11.E) — full Space admin can drive them;
+        // the feature is additionally gated by the per-Space AdhocEnabled flag.
+        Permission.AdhocActionsExecute,
     ];
 
     private static readonly Permission[] ProjectDeployerPermissions =
@@ -315,6 +318,12 @@ internal static class BuiltInRoles
         // SystemManager runs the maintenance work itself — pause window
         // exists to keep normal users out, not to gate the operator.
         Permission.BypassMaintenance,
+
+        // ── Ad-hoc agent actions (M11.E) ────────────────────────────────
+        // Delegated admins can drive ad-hoc actions; still gated by the
+        // per-Space AdhocEnabled flag + AI budget + the per-iteration
+        // approval + signing pipeline.
+        Permission.AdhocActionsExecute,
     ];
 
     // ── Built-in role definitions (declared LAST — depends on permission sets above) ─

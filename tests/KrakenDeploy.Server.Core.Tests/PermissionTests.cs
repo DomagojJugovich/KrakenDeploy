@@ -153,6 +153,8 @@ public sealed class PermissionTests
     [InlineData(Permission.SubscriptionManage,       1701)]
     // Maintenance mode (M13.A.3)
     [InlineData(Permission.BypassMaintenance,        1800)]
+    // Ad-hoc agent actions (M11.E)
+    [InlineData(Permission.AdhocActionsExecute,      1900)]
     public void Permission_integer_values_are_stable(Permission perm, int expectedValue)
     {
         ((int)perm).Should().Be(expectedValue,
@@ -176,7 +178,7 @@ public sealed class PermissionTests
 
         // Count from the [Theory]/[InlineData] entries above. If you add new
         // ones, bump this number.
-        const int expectedCoverage = 115;
+        const int expectedCoverage = 116;
 
         allMembers.Should().Be(expectedCoverage,
             "the stability theory must cover every Permission member; " +
