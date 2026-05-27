@@ -3,6 +3,7 @@ using System.Text;
 using Hangfire;
 using Hangfire.PostgreSql;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Mcp;
 using KrakenDeploy.Server.Auth;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Licensing;
@@ -267,6 +268,14 @@ public static class Program
         builder.Services.AddSingleton<DeployReleaseStepRunner>();
         builder.Services.AddSingleton<IPendingSubPlanRegistry, PendingSubPlanRegistry>();
 
+        // ── M11.B — Model Context Protocol server ────────────────────────────
+        // Mounts an in-process MCP server (Streamable HTTP transport) on
+        // /mcp. Reuses the existing ApiKey auth scheme; per-Space
+        // McpEnabled flag (on SpaceAiSettings) gates traffic. Tools and
+        // Resources are discovered by attribute scan over KrakenDeploy.Mcp,
+        // so adding new ones is a code-only change — no DI bookkeeping.
+        builder.Services.AddKrakenMcp();
+
         // ── Agent auto-update settings ────────────────────────────────────────
         builder.Services.Configure<AgentUpdateSettings>(
             builder.Configuration.GetSection("AgentUpdate"));
@@ -436,6 +445,13 @@ public static class Program
 
         app.UseAuthentication();
         app.UseAuthorization();
+
+        // M11.B — per-Space MCP-enabled gate. Path-scoped to /mcp so other
+        // endpoints sharing the API key (the /api/* surface) keep working
+        // when MCP is off. Mounted AFTER UseAuthorization so unauthorised
+        // callers never hit the gate (they 401 first); short-circuits with
+        // 403 + a clear JSON body when McpEnabled is off for the Space.
+        app.UseKrakenMcpEnabledGate();
         app.UseAntiforgery();
 
         // Maintenance gate (M13.A.3) — MUST be after auth so the
@@ -502,6 +518,11 @@ public static class Program
 
         app.MapHub<AgentHub>("/hubs/agent");
         app.MapHub<UiHub>("/hubs/ui");
+
+        // M11.B — MCP Streamable HTTP transport. The endpoint itself
+        // requires authentication via the existing ApiKey scheme; the
+        // per-Space McpEnabled gate runs in middleware above.
+        app.MapKrakenMcp();
         app.MapGrpcService<GrpcPackageDeliveryService>();
         app.MapGrpcService<GrpcStepPackageDeliveryService>();
         app.MapGrpcService<GrpcArtifactUploadService>();

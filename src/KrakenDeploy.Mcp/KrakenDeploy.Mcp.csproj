@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- ASP.NET Core hosting + endpoint mapping for the /mcp surface. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Official MCP C# SDK, co-maintained Microsoft + Anthropic.
+         The .AspNetCore package layers MapMcp() endpoint extensions on
+         top of the core protocol implementation. -->
+    <PackageReference Include="ModelContextProtocol" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Server.Data for the per-Space MCP-enabled flag + the service layer
+         that Tools / Resources will call into via the shared AI context
+         builders (which themselves live in KrakenDeploy.Ai — added in a
+         later commit alongside Resources). -->
+    <ProjectReference Include="..\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
+    <ProjectReference Include="..\KrakenDeploy.Server.Core\KrakenDeploy.Server.Core.csproj" />
+    <ProjectReference Include="..\KrakenDeploy.Server.Data\KrakenDeploy.Server.Data.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The gate middleware's static enable-flag cache exposes a
+         ClearCacheForTest() seam so flag-toggle tests take effect
+         immediately. Narrow internal surface. -->
+    <InternalsVisibleTo Include="KrakenDeploy.Server.Data.Tests" />
+  </ItemGroup>
+
+</Project>

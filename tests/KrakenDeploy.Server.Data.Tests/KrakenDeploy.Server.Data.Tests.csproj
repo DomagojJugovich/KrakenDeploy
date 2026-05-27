@@ -33,6 +33,7 @@
     <ProjectReference Include="..\..\src\KrakenDeploy.Server.Core\KrakenDeploy.Server.Core.csproj" />
     <ProjectReference Include="..\..\src\KrakenDeploy.Server.Data\KrakenDeploy.Server.Data.csproj" />
     <ProjectReference Include="..\..\src\KrakenDeploy.Server.Transport\KrakenDeploy.Server.Transport.csproj" />
+    <ProjectReference Include="..\..\src\KrakenDeploy.Mcp\KrakenDeploy.Mcp.csproj" />
   </ItemGroup>
 
   <ItemGroup>
