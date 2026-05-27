@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>kraken-mcp</AssemblyName>
+    <RootNamespace>KrakenDeploy.Mcp.Cli</RootNamespace>
+    <!-- Self-contained single-file publish per platform produces one
+         dependency-free binary an operator drops next to their Claude
+         Desktop / Cursor / Copilot Chat config. Publish with e.g.:
+           dotnet publish -r win-x64 -c Release
+           dotnet publish -r linux-x64 -c Release
+           dotnet publish -r osx-arm64 -c Release
+         (RID supplied at publish time, not pinned here, so the same
+         project builds for every target.) -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Client + stdio transports only — no server hosting / DI needed
+         for a transparent JSON-RPC pump. -->
+    <PackageReference Include="ModelContextProtocol.Core" />
+  </ItemGroup>
+
+</Project>

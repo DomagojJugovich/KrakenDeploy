@@ -131,6 +131,10 @@
          server. Used by M11.B (MCP server). -->
     <PackageVersion Include="ModelContextProtocol" Version="1.3.0" />
     <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="1.3.0" />
+    <!-- Core only (client + stdio transports, no hosting/DI). Used by the
+         standalone kraken-mcp stdio↔HTTP proxy exe (M11.B.4) so its
+         single-file binary stays minimal. -->
+    <PackageVersion Include="ModelContextProtocol.Core" Version="1.3.0" />
   </ItemGroup>
 
 </Project>
