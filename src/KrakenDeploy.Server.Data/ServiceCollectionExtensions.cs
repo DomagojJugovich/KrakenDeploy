@@ -108,6 +108,10 @@ public static class ServiceCollectionExtensions
         // functions); the registry + builders sit alongside.
         services.AddStepConfigCurators();
         services.AddScoped<Services.Ai.ContextBuilders.ProcessContextBuilder>();
+        services.AddScoped<Services.Ai.ContextBuilders.DeploymentContextBuilder>();
+        services.AddScoped<Services.Ai.ContextBuilders.TargetHealthBuilder>();
+        services.AddScoped<Services.Ai.ContextBuilders.ReleaseContextBuilder>();
+        services.AddScoped<Services.Ai.ContextBuilders.DeploymentDiffBuilder>();
         services.AddScoped<TenantService>();
         services.AddScoped<LifecycleService>();
         services.AddScoped<ChannelService>();
