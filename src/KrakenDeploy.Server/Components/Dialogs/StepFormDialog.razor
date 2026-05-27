@@ -539,6 +539,59 @@
             </RadzenCard>
         }
 
+        @* ── M11.D.2 — script assistant (streaming) ────────────────────────
+           Script step types only, and only when the per-Space assistant is
+           enabled. Explicit "Generate" rather than debounced-on-keystroke —
+           predictable + no wasted LLM calls per keystroke. Streams the
+           model's response chunk-by-chunk; "Use as script body" drops the
+           result into the script field. *@
+        @if (_assistantEnabled && IsScriptStepType(_stepType))
+        {
+            <RadzenCard>
+                <RadzenStack Gap="0.5rem">
+                    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                                 AlignItems="AlignItems.Center">
+                        <RadzenIcon Icon="auto_awesome" />
+                        <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-0">
+                            Script assistant
+                        </RadzenText>
+                    </RadzenStack>
+                    <RadzenFormField Text="Describe what the script should do"
+                                     Variant="Variant.Outlined" Style="width:100%">
+                        <RadzenTextArea @bind-Value="_scriptRequest" Rows="2" Style="width:100%"
+                                        Placeholder="e.g. stop the Argosy service, back up its config, then restart it" />
+                    </RadzenFormField>
+                    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+                        <RadzenButton Text="Generate" Icon="auto_awesome"
+                                      ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                                      IsBusy="@_scriptBusy"
+                                      Disabled="@string.IsNullOrWhiteSpace(_scriptRequest)"
+                                      Click="@GenerateScriptAsync" />
+                        @if (!string.IsNullOrEmpty(_scriptSuggestion) && !_scriptBusy)
+                        {
+                            <RadzenButton Text="Use as script body" Icon="content_paste_go"
+                                          ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                                          Click="@UseSuggestedScript" />
+                        }
+                    </RadzenStack>
+                    @if (!string.IsNullOrEmpty(_scriptSuggestion))
+                    {
+                        <pre style="margin:0; white-space:pre-wrap; word-break:break-word;
+                                    background:#1e1e1e; color:#d4d4d4; padding:0.75rem;
+                                    border-radius:4px; max-height:320px; overflow-y:auto;
+                                    font-family:var(--rz-mono-font, monospace); font-size:0.85rem;">@_scriptSuggestion</pre>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(_scriptError))
+                    {
+                        <RadzenAlert AlertStyle="AlertStyle.Warning" Variant="Variant.Flat"
+                                     Shade="Shade.Lighter" AllowClose="false" class="rz-mb-0">
+                            @_scriptError
+                        </RadzenAlert>
+                    }
+                </RadzenStack>
+            </RadzenCard>
+        }
+
         @if (_errors.Count > 0)
         {
             <RadzenAlert AlertStyle="AlertStyle.Danger" Shade="Shade.Lighter" ShowIcon="true">
@@ -708,6 +761,12 @@
     private bool _explainBusy;
     // Per-dialog cache: explaining the same field twice doesn't re-call the LLM.
     private readonly Dictionary<string, string> _explainCache = new(StringComparer.Ordinal);
+
+    // ── M11.D.2 — script assistant (streaming) ───────────────────────────
+    private string _scriptRequest = "";
+    private string _scriptSuggestion = "";
+    private string _scriptError = "";
+    private bool _scriptBusy;
 
     /// <summary>
     /// M-RollingDeployments Phase 2 — rolling-window cap on a
@@ -997,6 +1056,60 @@
         finally
         {
             _explainBusy = false;
+        }
+    }
+
+    /// <summary>
+    /// M11.D.2 — streams a script suggestion from the assistant, appending
+    /// each chunk to the output area for "typing" feedback. AI-unavailable
+    /// surfaces inline.
+    /// </summary>
+    private async Task GenerateScriptAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_scriptRequest)) { return; }
+        _scriptBusy = true;
+        _scriptSuggestion = "";
+        _scriptError = "";
+        try
+        {
+            var current = _values.GetValueOrDefault(KrakenScriptConfigKeys.ScriptBody);
+            var contextNote = $"KrakenDeploy script step (type {_stepType}).";
+            await foreach (var chunk in AssistantSvc.StreamScriptSuggestionAsync(
+                _scriptRequest, current, contextNote))
+            {
+                _scriptSuggestion += chunk;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (KrakenDeploy.Ai.KrakenAiDisabledException)
+        {
+            _scriptError = "AI is disabled for this Space — enable a provider in Configuration → AI Settings.";
+        }
+        catch (KrakenDeploy.Ai.KrakenAiFeatureDisabledException)
+        {
+            _scriptError = "The process assistant is disabled — enable it in Configuration → AI Settings.";
+        }
+        catch (KrakenDeploy.Ai.KrakenAiBudgetExceededException ex)
+        {
+            _scriptError = $"AI budget exceeded: {ex.Message}";
+        }
+        catch (Exception ex)
+        {
+            _scriptError = $"Script generation failed: {ex.Message}";
+        }
+        finally
+        {
+            _scriptBusy = false;
+        }
+    }
+
+    /// <summary>Drops the streamed suggestion into the script-body field so
+    /// the schema form picks it up. The operator can still edit before save.</summary>
+    private void UseSuggestedScript()
+    {
+        if (!string.IsNullOrEmpty(_scriptSuggestion))
+        {
+            _values[KrakenScriptConfigKeys.ScriptBody] = _scriptSuggestion;
         }
     }
 
