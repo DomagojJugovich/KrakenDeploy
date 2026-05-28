@@ -126,6 +126,9 @@
     <!-- Official Anthropic .NET SDK; exposes .AsIChatClient(model) for
          the Microsoft.Extensions.AI abstraction. -->
     <PackageVersion Include="Anthropic" Version="12.22.0" />
+    <!-- M11.E.3 — PowerShell AST parser (System.Management.Automation.Language.Parser)
+         for the ad-hoc static-analysis gate. 7.6.x targets net10.0. -->
+    <PackageVersion Include="System.Management.Automation" Version="7.6.2" />
     <!-- Official MCP C# SDK — co-maintained Microsoft + Anthropic.
          Server-side packages, in-process MCP host inside the Kraken
          server. Used by M11.B (MCP server). -->
