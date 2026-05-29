@@ -120,8 +120,9 @@ public sealed class AdhocDispatcherTests
             SessionWithTargets(online, offline), SignedIteration(), CancellationToken.None);
 
         results.Should().HaveCount(2);
-        results.Where(r => r.AgentError is not null).Should().ContainSingle(
+        results.Where(r => r.Result.AgentError is not null).Should().ContainSingle(
             "the offline target gets an immediate AgentError; the online target reports cleanly");
+        results.Single(r => r.Result.AgentError is not null).TargetId.Should().Be(offline);
         pusher.PushedConnections.Should().ContainSingle().And.Contain("conn-online");
     }
 
@@ -150,10 +151,11 @@ public sealed class AdhocDispatcherTests
         results.Should().HaveCount(2);
         results.Should().AllSatisfy(r =>
         {
-            r.SessionId.Should().Be(session.Id);
-            r.IterNumber.Should().Be(iteration.IterNumber);
-            r.Success.Should().BeTrue();
+            r.Result.SessionId.Should().Be(session.Id);
+            r.Result.IterNumber.Should().Be(iteration.IterNumber);
+            r.Result.Success.Should().BeTrue();
         });
+        results.Select(r => r.TargetId).Should().BeEquivalentTo(new[] { a, b });
     }
 
     [Fact]
@@ -170,7 +172,8 @@ public sealed class AdhocDispatcherTests
             SessionWithTargets(t), SignedIteration(), CancellationToken.None);
 
         results.Should().ContainSingle();
-        results[0].AgentError.Should().NotBeNull().And.Contain("Push failed");
+        results[0].TargetId.Should().Be(t);
+        results[0].Result.AgentError.Should().NotBeNull().And.Contain("Push failed");
     }
 
     [Fact]

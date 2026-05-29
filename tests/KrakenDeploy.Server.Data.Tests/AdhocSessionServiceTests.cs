@@ -420,18 +420,17 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
     /// verdict + state-machine without hitting a real agent.</summary>
     private sealed class FakeAdhocDispatcher : IAdhocDispatcher
     {
-        public Task<IReadOnlyList<AdhocScriptResult>> DispatchAsync(
+        public Task<IReadOnlyList<AdhocPerTargetResult>> DispatchAsync(
             AdhocSession session, AdhocIteration iteration,
             CancellationToken ct, TimeSpan? timeout = null)
         {
             var ids = JsonSerializer.Deserialize<List<Guid>>(session.FrozenTargetSetJson) ?? [];
             var results = ids
-                .Select(id => new AdhocScriptResult(
+                .Select(id => new AdhocPerTargetResult(id, new AdhocScriptResult(
                     session.Id, iteration.IterNumber, ExitCode: 0,
-                    Stdout: $"ok on {id:N}", Stderr: "", AgentError: null))
-                .Cast<AdhocScriptResult>()
+                    Stdout: $"ok on {id:N}", Stderr: "", AgentError: null)))
                 .ToList();
-            return Task.FromResult<IReadOnlyList<AdhocScriptResult>>(results);
+            return Task.FromResult<IReadOnlyList<AdhocPerTargetResult>>(results);
         }
     }
 

@@ -259,8 +259,10 @@ public sealed class AdhocSessionService(
         iter.Status      = AdhocIterationStatus.Completed;
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
-        // Verdict (M11.E.13).
-        var verdictResult = await verdict.EvaluateAsync(session, iter, results, ct).ConfigureAwait(false);
+        // Verdict (M11.E.13). The verdict service takes the wire-shape
+        // AdhocScriptResult list — unwrap the server-side projection.
+        var wireResults = results.Select(r => r.Result).ToList();
+        var verdictResult = await verdict.EvaluateAsync(session, iter, wireResults, ct).ConfigureAwait(false);
         iter.Verdict   = AdhocVerdictService.ParseVerdict(verdictResult.Verdict);
         iter.Narrative = Trim(verdictResult.Narrative, 4000);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
@@ -309,6 +311,34 @@ public sealed class AdhocSessionService(
     public Task StopSessionAsync(Guid sessionId, string byDisplay, CancellationToken ct)
         => CloseSessionAsync(sessionId, AdhocSessionStatus.OperatorStopped, byDisplay,
             AuditEventType.AdhocSessionStopped, "operator-stopped", ct);
+
+    // ── Queries (for the /adhoc UI page) ────────────────────────────────────
+
+    /// <summary>Newest-first list of this Space's sessions, with iteration
+    /// counts attached for the list page's per-row summary.</summary>
+    public async Task<IReadOnlyList<AdhocSessionListItem>> ListSessionsAsync(CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var rows = await db.AdhocSessions
+            .OrderByDescending(s => s.CreatedUtc)
+            .Select(s => new AdhocSessionListItem(
+                s.Id, s.Prompt, s.Mode, s.Status, s.CreatedByDisplay,
+                s.CreatedUtc, s.Iterations.Count, s.MaxIterations))
+            .ToListAsync(ct).ConfigureAwait(false);
+        return rows;
+    }
+
+    /// <summary>Full session aggregate (with iterations) for the detail page.
+    /// Returns <c>null</c> when the session id is unknown or out of the
+    /// caller's Space scope (the query filter blocks cross-Space reads).</summary>
+    public async Task<AdhocSession?> GetSessionAsync(Guid sessionId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.AdhocSessions
+            .Include(s => s.Iterations)
+            .FirstOrDefaultAsync(s => s.Id == sessionId, ct)
+            .ConfigureAwait(false);
+    }
 
     // ── Internals ───────────────────────────────────────────────────────────
 
@@ -513,6 +543,17 @@ public sealed class AdhocSessionService(
     private static string Trim(string s, int max)
         => s.Length <= max ? s : s[..max];
 }
+
+/// <summary>Compact projection used by the sessions list page.</summary>
+public sealed record AdhocSessionListItem(
+    Guid Id,
+    string Prompt,
+    AdhocMode Mode,
+    AdhocSessionStatus Status,
+    string CreatedByDisplay,
+    DateTimeOffset CreatedUtc,
+    int IterationCount,
+    int MaxIterations);
 
 /// <summary>Outcome returned by <see cref="AdhocSessionService.ApproveIterationAsync"/>.</summary>
 public sealed record AdhocApprovalOutcome(

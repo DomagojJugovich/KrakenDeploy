@@ -1,0 +1,125 @@
+@page "/adhoc"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "perm:AdhocActionsExecute")]
+
+@using KrakenDeploy.Server.Core.Domain.Ai
+@using KrakenDeploy.Server.Core.Domain.Security
+@using KrakenDeploy.Server.Data.Services.Ai
+@using KrakenDeploy.Server.Transport
+
+@inject AdhocSessionService AdhocSvc
+@inject SpaceAiSettingsService AiSettings
+@inject NavigationManager Nav
+@inject DialogService Dialog
+
+<PageTitle>Ad-hoc agent actions — KrakenDeploy</PageTitle>
+
+<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+             Gap="1rem" class="rz-mb-2" Style="flex-wrap:wrap">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">
+        Ad-hoc agent actions
+    </RadzenText>
+    @if (_adhocEnabled)
+    {
+        <RequirePermission Permission="Permission.AdhocActionsExecute">
+            <RadzenButton Icon="add_circle_outline" Text="New session"
+                          ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                          Click="OpenCreateAsync" />
+        </RequirePermission>
+    }
+</RadzenStack>
+
+<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+    Type a natural-language request; the LLM proposes a PowerShell script, the
+    static-analysis gate vets it, you approve, the server signs it, and the
+    agent verifies + runs it on every target in the session's frozen set.
+    On partial failure the LLM may propose one more script per turn, capped
+    per session. The target set + mode lock at session creation and never
+    change. (M11.E)
+</RadzenText>
+
+@if (!_adhocEnabled)
+{
+    <RadzenAlert AlertStyle="AlertStyle.Info" Shade="Shade.Lighter" AllowClose="false">
+        Ad-hoc agent actions are <strong>disabled</strong> for this Space.
+        Enable on <a href="/settings/ai">AI Settings</a>.
+    </RadzenAlert>
+}
+else
+{
+    <RadzenDataGrid Data="@_sessions" TItem="AdhocSessionListItem"
+                    AllowPaging="true" PageSize="25" AllowSorting="true"
+                    EmptyText="No ad-hoc sessions yet.">
+        <Columns>
+            <RadzenDataGridColumn TItem="AdhocSessionListItem" Title="Prompt">
+                <Template Context="s">
+                    <RadzenStack Gap="0.1rem">
+                        <RadzenLink Path="@($"/adhoc/{s.Id}")" Text="@Truncate(s.Prompt, 80)" />
+                        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                            @s.CreatedByDisplay · @s.CreatedUtc.LocalDateTime.ToString("yyyy-MM-dd HH:mm")
+                        </RadzenText>
+                    </RadzenStack>
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="AdhocSessionListItem" Property="Mode" Title="Mode" Width="120px">
+                <Template Context="s">
+                    <RadzenBadge IsPill="true"
+                                 BadgeStyle="@(s.Mode == AdhocMode.Mutating ? BadgeStyle.Warning : BadgeStyle.Secondary)"
+                                 Text="@s.Mode.ToString()" />
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="AdhocSessionListItem" Property="Status" Title="Status" Width="160px">
+                <Template Context="s">
+                    <RadzenBadge IsPill="true"
+                                 BadgeStyle="@StatusBadgeStyle(s.Status)"
+                                 Text="@s.Status.ToString()" />
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="AdhocSessionListItem" Title="Iterations" Width="120px">
+                <Template Context="s">
+                    @s.IterationCount / @s.MaxIterations
+                </Template>
+            </RadzenDataGridColumn>
+        </Columns>
+    </RadzenDataGrid>
+}
+
+@code {
+    private IReadOnlyList<AdhocSessionListItem> _sessions = [];
+    private bool _adhocEnabled;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var settings = await AiSettings.GetAsync();
+        _adhocEnabled = settings.AdhocEnabled;
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+        => _sessions = await AdhocSvc.ListSessionsAsync();
+
+    private async Task OpenCreateAsync()
+    {
+        var result = await Dialog.OpenAsync<NewAdhocSessionDialog>(
+            "New ad-hoc session",
+            options: new DialogOptions { Width = "640px" });
+
+        if (result is Guid sessionId)
+        {
+            Nav.NavigateTo($"/adhoc/{sessionId}");
+        }
+    }
+
+    private static string Truncate(string s, int max)
+        => s.Length <= max ? s : s[..max] + "…";
+
+    private static BadgeStyle StatusBadgeStyle(AdhocSessionStatus status) => status switch
+    {
+        AdhocSessionStatus.Active          => BadgeStyle.Info,
+        AdhocSessionStatus.Closed          => BadgeStyle.Success,
+        AdhocSessionStatus.CapReached      => BadgeStyle.Warning,
+        AdhocSessionStatus.BudgetExceeded  => BadgeStyle.Warning,
+        AdhocSessionStatus.OperatorStopped => BadgeStyle.Secondary,
+        _                                  => BadgeStyle.Light,
+    };
+}

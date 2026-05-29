@@ -1,0 +1,334 @@
+@page "/adhoc/{Id:guid}"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "perm:AdhocActionsExecute")]
+
+@using System.Security.Claims
+@using System.Text.Json
+@using KrakenDeploy.Contracts.Adhoc
+@using KrakenDeploy.Server.Core.Domain.Ai
+@using KrakenDeploy.Server.Core.Domain.Security
+@using KrakenDeploy.Server.Core.Domain.Targets
+@using KrakenDeploy.Server.Data
+@using KrakenDeploy.Server.Transport
+@using Microsoft.EntityFrameworkCore
+
+@inject AdhocSessionService Adhoc
+@inject IDbContextFactory<KrakenDbContext> DbFactory
+@inject AuthenticationStateProvider AuthState
+@inject NavigationManager Nav
+@inject DialogService Dialog
+@inject NotificationService Notify
+
+<PageTitle>Ad-hoc session — KrakenDeploy</PageTitle>
+
+@if (_session is null)
+{
+    <RadzenAlert AlertStyle="AlertStyle.Warning" Shade="Shade.Lighter" AllowClose="false">
+        Session not found or out of Space scope.
+    </RadzenAlert>
+}
+else
+{
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                 Gap="0.75rem" class="rz-mb-2" Style="flex-wrap:wrap">
+        <RadzenLink Path="/adhoc" Icon="arrow_back" Text="All sessions" />
+        <RadzenText TextStyle="TextStyle.H6" TagName="TagName.H1" class="rz-mb-0">
+            Ad-hoc session
+        </RadzenText>
+        <RadzenBadge IsPill="true" Text="@_session.Status.ToString()"
+                     BadgeStyle="@StatusBadgeStyle(_session.Status)" />
+        <RadzenBadge IsPill="true" Text="@_session.Mode.ToString()"
+                     BadgeStyle="@(_session.Mode == AdhocMode.Mutating ? BadgeStyle.Warning : BadgeStyle.Secondary)" />
+        <div style="flex:1"></div>
+        @if (_session.Status == AdhocSessionStatus.Active)
+        {
+            <RadzenButton Icon="check_circle_outline" Text="Mark resolved"
+                          ButtonStyle="ButtonStyle.Success" Size="ButtonSize.Small"
+                          Click="MarkResolvedAsync" />
+            <RadzenButton Icon="stop_circle" Text="Stop session"
+                          ButtonStyle="ButtonStyle.Secondary" Size="ButtonSize.Small"
+                          Click="StopAsync" />
+        }
+    </RadzenStack>
+
+    @* ── Session header ─────────────────────────────────────────────────── *@
+    <RadzenCard class="rz-mb-4">
+        <RadzenStack Gap="0.5rem">
+            <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-0">
+                Operator request
+            </RadzenText>
+            <RadzenText TextStyle="TextStyle.Body1" Style="white-space: pre-wrap;">
+                @_session.Prompt
+            </RadzenText>
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                Created by @_session.CreatedByDisplay on
+                @_session.CreatedUtc.LocalDateTime.ToString("yyyy-MM-dd HH:mm")
+                · cap @_session.Iterations.Count / @_session.MaxIterations iterations
+            </RadzenText>
+            <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mt-2 rz-mb-0">
+                Frozen target set (@_targets.Count) — immutable
+            </RadzenText>
+            <div>
+                @foreach (var t in _targets)
+                {
+                    <RadzenBadge Text="@t.Name" BadgeStyle="BadgeStyle.Light"
+                                 IsPill="true" Style="margin-right:0.25rem;margin-bottom:0.25rem;" />
+                }
+                @if (_targets.Count == 0)
+                {
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                        (targets resolved at session creation; one or more no longer exist)
+                    </RadzenText>
+                }
+            </div>
+            @if (_session.Status == AdhocSessionStatus.Active && !_hasPendingIter && _session.Iterations.Count == 0)
+            {
+                <RadzenButton Icon="auto_awesome" Text="Generate first script"
+                              ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                              Click="GenerateFirstAsync" IsBusy="@_generating"
+                              Style="align-self:flex-start; margin-top:0.5rem;" />
+            }
+        </RadzenStack>
+    </RadzenCard>
+
+    @* ── Iterations (card tree, M11.E.16) ──────────────────────────────── *@
+    <RadzenStack Gap="0.75rem">
+        @foreach (var iter in _session.Iterations.OrderBy(i => i.IterNumber))
+        {
+            <RadzenCard>
+                <RadzenStack Gap="0.5rem">
+                    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                                 Gap="0.5rem" Style="flex-wrap:wrap">
+                        <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-0">
+                            Iteration @iter.IterNumber
+                        </RadzenText>
+                        <RadzenBadge IsPill="true" Text="@iter.Status.ToString()"
+                                     BadgeStyle="@IterStatusBadge(iter.Status)" />
+                        @if (iter.Verdict != AdhocVerdict.Pending)
+                        {
+                            <RadzenBadge IsPill="true" Text="@iter.Verdict.ToString()"
+                                         BadgeStyle="@VerdictBadge(iter.Verdict)" />
+                        }
+                        <div style="flex:1"></div>
+                        @if (iter.Status == AdhocIterationStatus.PendingApproval
+                             && _session.Status == AdhocSessionStatus.Active)
+                        {
+                            <RadzenButton Icon="check_circle" Text="Approve / Reject"
+                                          ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                                          Click="@(() => OpenApprovalAsync(iter))" />
+                        }
+                    </RadzenStack>
+
+                    @if (!string.IsNullOrEmpty(iter.Description))
+                    {
+                        <RadzenText TextStyle="TextStyle.Body2"><strong>What it does:</strong> @iter.Description</RadzenText>
+                    }
+                    @if (!string.IsNullOrEmpty(iter.RiskAssessment))
+                    {
+                        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                            <strong>Risk:</strong> @iter.RiskAssessment
+                        </RadzenText>
+                    }
+
+                    <pre style="background:#f5f5f5;padding:0.5rem;border-radius:4px;
+                                font-family: ui-monospace, Consolas, monospace; font-size: 0.85rem;
+                                max-height: 320px; overflow:auto; white-space: pre-wrap;"><code>@iter.GeneratedScript</code></pre>
+
+                    @if (iter.Status == AdhocIterationStatus.Completed)
+                    {
+                        var rows = ParseResults(iter.ResultsJson);
+                        <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-0">
+                            Per-target results
+                        </RadzenText>
+                        <RadzenDataGrid Data="@rows" TItem="ResultRow"
+                                        AllowPaging="false" Density="Density.Compact"
+                                        EmptyText="No results recorded.">
+                            <Columns>
+                                <RadzenDataGridColumn TItem="ResultRow" Title="Target">
+                                    <Template Context="r">@TargetName(r.TargetId)</Template>
+                                </RadzenDataGridColumn>
+                                <RadzenDataGridColumn TItem="ResultRow" Title="Exit" Width="80px">
+                                    <Template Context="r">
+                                        <RadzenBadge IsPill="true" Text="@r.ExitCode.ToString()"
+                                                     BadgeStyle="@(r.ExitCode == 0 && r.AgentError is null ? BadgeStyle.Success : BadgeStyle.Danger)" />
+                                    </Template>
+                                </RadzenDataGridColumn>
+                                <RadzenDataGridColumn TItem="ResultRow" Title="Stdout">
+                                    <Template Context="r">
+                                        <pre style="margin:0;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace;font-size:0.8rem;">@Truncate(r.Stdout, 600)</pre>
+                                    </Template>
+                                </RadzenDataGridColumn>
+                                <RadzenDataGridColumn TItem="ResultRow" Title="Stderr / Agent error">
+                                    <Template Context="r">
+                                        @if (!string.IsNullOrEmpty(r.AgentError))
+                                        {
+                                            <RadzenText TextStyle="TextStyle.Caption" Style="color:#b00020;">@r.AgentError</RadzenText>
+                                        }
+                                        else if (!string.IsNullOrEmpty(r.Stderr))
+                                        {
+                                            <pre style="margin:0;white-space:pre-wrap;color:#b00020;font-family:ui-monospace,Consolas,monospace;font-size:0.8rem;">@Truncate(r.Stderr, 600)</pre>
+                                        }
+                                    </Template>
+                                </RadzenDataGridColumn>
+                            </Columns>
+                        </RadzenDataGrid>
+
+                        @if (!string.IsNullOrEmpty(iter.Narrative))
+                        {
+                            <RadzenAlert AlertStyle="AlertStyle.Info" Shade="Shade.Lighter" AllowClose="false">
+                                <strong>LLM narrative:</strong> @iter.Narrative
+                            </RadzenAlert>
+                        }
+                    }
+
+                    @if (iter.ApprovedByUserId is not null)
+                    {
+                        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                            Approved by @iter.ApprovedByDisplay on
+                            @iter.ApprovedAtUtc?.LocalDateTime.ToString("yyyy-MM-dd HH:mm")
+                        </RadzenText>
+                    }
+                </RadzenStack>
+            </RadzenCard>
+        }
+    </RadzenStack>
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private AdhocSession? _session;
+    private List<DeploymentTarget> _targets = [];
+    private bool _generating;
+    private bool _hasPendingIter
+        => _session?.Iterations.Any(i => i.Status == AdhocIterationStatus.PendingApproval) ?? false;
+
+    protected override async Task OnParametersSetAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _session = await Adhoc.GetSessionAsync(Id);
+        if (_session is null) { return; }
+
+        var ids = JsonSerializer.Deserialize<List<Guid>>(_session.FrozenTargetSetJson) ?? [];
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _targets = await db.DeploymentTargets
+            .Where(t => ids.Contains(t.Id))
+            .OrderBy(t => t.Name)
+            .AsNoTracking()
+            .ToListAsync();
+    }
+
+    private async Task GenerateFirstAsync()
+    {
+        _generating = true;
+        try
+        {
+            await Adhoc.GenerateFirstIterationAsync(Id, default);
+            await ReloadAsync();
+        }
+        catch (AdhocGateRejectedException ex)
+        {
+            Notify.Notify(NotificationSeverity.Error, "Gate rejected",
+                ex.Result.Summary, 8000);
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error, "Generation failed", ex.Message, 8000);
+        }
+        finally
+        {
+            _generating = false;
+        }
+    }
+
+    private async Task OpenApprovalAsync(AdhocIteration iter)
+    {
+        var result = await Dialog.OpenAsync<ApproveAdhocIterationDialog>(
+            $"Iteration {iter.IterNumber} — approve / reject",
+            new Dictionary<string, object?>
+            {
+                [nameof(ApproveAdhocIterationDialog.Session)]     = _session!,
+                [nameof(ApproveAdhocIterationDialog.Iteration)]   = iter,
+                [nameof(ApproveAdhocIterationDialog.TargetCount)] = _targets.Count,
+            },
+            new DialogOptions { Width = "820px" });
+
+        if (result is true)
+        {
+            await ReloadAsync();
+        }
+    }
+
+    private async Task MarkResolvedAsync()
+    {
+        var state = await AuthState.GetAuthenticationStateAsync();
+        var display = state.User.Identity?.Name ?? "unknown";
+        await Adhoc.MarkResolvedAsync(Id, display, default);
+        await ReloadAsync();
+    }
+
+    private async Task StopAsync()
+    {
+        var state = await AuthState.GetAuthenticationStateAsync();
+        var display = state.User.Identity?.Name ?? "unknown";
+        await Adhoc.StopSessionAsync(Id, display, default);
+        await ReloadAsync();
+    }
+
+    private string TargetName(Guid targetId)
+        => _targets.FirstOrDefault(t => t.Id == targetId)?.Name ?? targetId.ToString("N")[..8];
+
+    private static string Truncate(string s, int max)
+        => s is null ? "" : (s.Length <= max ? s : s[..max] + "…");
+
+    private static BadgeStyle StatusBadgeStyle(AdhocSessionStatus status) => status switch
+    {
+        AdhocSessionStatus.Active          => BadgeStyle.Info,
+        AdhocSessionStatus.Closed          => BadgeStyle.Success,
+        AdhocSessionStatus.CapReached      => BadgeStyle.Warning,
+        AdhocSessionStatus.BudgetExceeded  => BadgeStyle.Warning,
+        AdhocSessionStatus.OperatorStopped => BadgeStyle.Secondary,
+        _                                  => BadgeStyle.Light,
+    };
+
+    private static BadgeStyle IterStatusBadge(AdhocIterationStatus s) => s switch
+    {
+        AdhocIterationStatus.PendingApproval => BadgeStyle.Info,
+        AdhocIterationStatus.Approved        => BadgeStyle.Primary,
+        AdhocIterationStatus.Rejected        => BadgeStyle.Light,
+        AdhocIterationStatus.Executing       => BadgeStyle.Warning,
+        AdhocIterationStatus.Completed       => BadgeStyle.Success,
+        _                                    => BadgeStyle.Light,
+    };
+
+    private static BadgeStyle VerdictBadge(AdhocVerdict v) => v switch
+    {
+        AdhocVerdict.AllSucceeded   => BadgeStyle.Success,
+        AdhocVerdict.NoFixAvailable => BadgeStyle.Warning,
+        AdhocVerdict.ProposeFix     => BadgeStyle.Info,
+        _                           => BadgeStyle.Light,
+    };
+
+    private static List<ResultRow> ParseResults(string json)
+    {
+        try
+        {
+            var items = JsonSerializer.Deserialize<List<AdhocPerTargetResult>>(json,
+                new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? [];
+            return items.Select(r => new ResultRow(
+                TargetId:   r.TargetId,
+                ExitCode:   r.Result.ExitCode,
+                Stdout:     r.Result.Stdout,
+                Stderr:     r.Result.Stderr,
+                AgentError: r.Result.AgentError)).ToList();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private sealed record ResultRow(
+        Guid TargetId, int ExitCode, string Stdout, string Stderr, string? AgentError);
+}

@@ -1,0 +1,179 @@
+@using System.Security.Claims
+@using KrakenDeploy.Server.Core.Domain.Ai
+@using KrakenDeploy.Server.Transport
+
+@inject AdhocSessionService Adhoc
+@inject AuthenticationStateProvider AuthState
+@inject DialogService Dialog
+@inject NotificationService Notify
+
+@*
+    M11.E.4 — operator-approval dialog. Three buttons:
+      • Approve (no edit) — signs the LLM's script verbatim.
+      • Edit and approve — operator's edited script becomes the FINAL form;
+        the gate (M11.E.15c) re-runs on the edit.
+      • Reject — iteration stays Rejected; session stays Active.
+    The frozen target set + mode + risk assessment are read-only context —
+    the operator can't change them here (M11.E.15a/b).
+*@
+
+<RadzenStack Gap="1rem" Style="min-width: 720px;">
+    <RadzenAlert AlertStyle="@(Iteration.RequiresMutation ? AlertStyle.Warning : AlertStyle.Info)"
+                 Shade="Shade.Lighter" AllowClose="false">
+        <RadzenStack Gap="0.25rem">
+            <RadzenText TextStyle="TextStyle.Body2">
+                <strong>Mode:</strong> @Session.Mode
+                @if (Iteration.RequiresMutation && Session.Mode == AdhocMode.Mutating)
+                {
+                    <span> — this script will change state on @TargetCount target(s).</span>
+                }
+            </RadzenText>
+            <RadzenText TextStyle="TextStyle.Body2">
+                <strong>Iteration:</strong> @Iteration.IterNumber of @Session.MaxIterations
+            </RadzenText>
+        </RadzenStack>
+    </RadzenAlert>
+
+    @if (!string.IsNullOrEmpty(Iteration.Description))
+    {
+        <RadzenText TextStyle="TextStyle.Body1"><strong>What it does:</strong> @Iteration.Description</RadzenText>
+    }
+    @if (!string.IsNullOrEmpty(Iteration.RiskAssessment))
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            <strong>Risk:</strong> @Iteration.RiskAssessment
+        </RadzenText>
+    }
+    @if (!string.IsNullOrEmpty(Iteration.ExpectedOutputShape))
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            <strong>Expected output:</strong> @Iteration.ExpectedOutputShape
+        </RadzenText>
+    }
+
+    @if (_editing)
+    {
+        <RadzenFormField Text="Edit script (will be re-gated before signing)" Variant="Variant.Outlined">
+            <RadzenTextArea @bind-Value="_editedScript" Rows="14"
+                            Style="width:100%; font-family: ui-monospace, Consolas, monospace; font-size: 0.85rem;" />
+        </RadzenFormField>
+    }
+    else
+    {
+        <pre style="background:#f5f5f5;padding:0.75rem;border-radius:4px;
+                    font-family: ui-monospace, Consolas, monospace; font-size: 0.85rem;
+                    max-height: 400px; overflow:auto; white-space: pre-wrap;"><code>@Iteration.GeneratedScript</code></pre>
+    }
+
+    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+        Frozen target set: @TargetCount target(s). The script runs on each target;
+        results stream back. The set is immutable for the session.
+    </RadzenText>
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" Shade="Shade.Lighter" AllowClose="false">
+            @_error
+        </RadzenAlert>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.SpaceBetween" Gap="0.5rem">
+        <RadzenButton Text="Reject" ButtonStyle="ButtonStyle.Danger" Icon="block"
+                      Click="RejectAsync" Disabled="@_busy" />
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+            <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                          Click="@(() => Dialog.Close(false))" Disabled="@_busy" />
+            @if (_editing)
+            {
+                <RadzenButton Text="Discard edit" ButtonStyle="ButtonStyle.Light" Icon="undo"
+                              Click="@(() => { _editing = false; _editedScript = Iteration.GeneratedScript; })"
+                              Disabled="@_busy" />
+            }
+            else
+            {
+                <RadzenButton Text="Edit and approve" ButtonStyle="ButtonStyle.Light" Icon="edit"
+                              Click="@(() => _editing = true)" Disabled="@_busy" />
+            }
+            <RadzenButton Text="Approve" ButtonStyle="ButtonStyle.Primary" Icon="check_circle"
+                          Click="ApproveAsync" IsBusy="@_busy" />
+        </RadzenStack>
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    [Parameter, EditorRequired] public AdhocSession Session { get; set; } = default!;
+    [Parameter, EditorRequired] public AdhocIteration Iteration { get; set; } = default!;
+    [Parameter] public int TargetCount { get; set; }
+
+    private bool _editing;
+    private string _editedScript = string.Empty;
+    private string? _error;
+    private bool _busy;
+
+    protected override void OnParametersSet()
+    {
+        _editedScript = Iteration.GeneratedScript;
+    }
+
+    private async Task ApproveAsync()
+    {
+        _error = null;
+        _busy = true;
+        try
+        {
+            var state = await AuthState.GetAuthenticationStateAsync();
+            var userIdRaw = state.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var userId = Guid.TryParse(userIdRaw, out var u) ? u : Guid.Empty;
+            var display = state.User.Identity?.Name ?? "unknown";
+
+            var edited = _editing && _editedScript != Iteration.GeneratedScript
+                ? _editedScript
+                : null;
+
+            var outcome = await Adhoc.ApproveIterationAsync(
+                Session.Id, Iteration.Id, userId, display, edited, default);
+
+            Notify.Notify(NotificationSeverity.Success, "Approved",
+                $"Verdict: {outcome.Verdict}.", 4000);
+            Dialog.Close(true);
+        }
+        catch (AdhocGateRejectedException ex)
+        {
+            _error = $"Gate rejected: {ex.Result.Summary}";
+            Notify.Notify(NotificationSeverity.Error, "Gate rejected",
+                ex.Result.Summary, 8000);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Approval failed: {ex.Message}";
+            Notify.Notify(NotificationSeverity.Error, "Failed", ex.Message, 8000);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RejectAsync()
+    {
+        _error = null;
+        _busy = true;
+        try
+        {
+            var state = await AuthState.GetAuthenticationStateAsync();
+            var display = state.User.Identity?.Name ?? "unknown";
+            await Adhoc.RejectIterationAsync(Session.Id, Iteration.Id, display, default);
+            Notify.Notify(NotificationSeverity.Info, "Rejected",
+                "Iteration marked rejected.", 4000);
+            Dialog.Close(true);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Reject failed: {ex.Message}";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

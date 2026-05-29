@@ -1,0 +1,130 @@
+@using System.Security.Claims
+@using KrakenDeploy.Server.Core.Domain.Ai
+@using KrakenDeploy.Server.Core.Domain.Targets
+@using KrakenDeploy.Server.Data
+@using KrakenDeploy.Server.Transport
+@using Microsoft.EntityFrameworkCore
+
+@inject AdhocSessionService Adhoc
+@inject IDbContextFactory<KrakenDbContext> DbFactory
+@inject AuthenticationStateProvider AuthState
+@inject DialogService Dialog
+@inject NotificationService Notify
+
+@*
+    M11.E.1 / M11.E.9 — "New ad-hoc session" dialog. The frozen target set is
+    chosen HERE (immutable for the session's lifetime per M11.E.15a) — the
+    detail page never shows a target selector. Mode is also chosen here and
+    cannot be changed later (M11.E.15b).
+*@
+
+<RadzenStack Gap="1rem">
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+        Type what you want to find out or change, pick the exact targets it
+        runs on, and choose the mode. The target set + mode lock for the
+        session's lifetime — operators wanting a different scope start a fresh
+        session (M11.E.15a/b).
+    </RadzenText>
+
+    <RadzenFormField Text="What do you want to do?" Variant="Variant.Outlined">
+        <RadzenTextArea @bind-Value="_prompt" Rows="4" MaxLength="8000"
+                        Style="width:100%; font-family: inherit;"
+                        Placeholder="e.g. List the top 5 services by memory on each web target" />
+    </RadzenFormField>
+
+    <RadzenFormField Text="Mode" Variant="Variant.Outlined">
+        <RadzenDropDown @bind-Value="_mode" Data="@_modeOptions"
+                        TextProperty="Label" ValueProperty="Value"
+                        Style="width:100%" AllowClear="false" />
+    </RadzenFormField>
+
+    <RadzenFormField Text="Targets (frozen for the session's lifetime)" Variant="Variant.Outlined">
+        <RadzenDropDown @bind-Value="_selectedTargetIds" Data="@_targets"
+                        TextProperty="Name" ValueProperty="Id"
+                        Multiple="true" AllowClear="true" AllowFiltering="true"
+                        Placeholder="Pick at least one target"
+                        Style="width:100%" />
+    </RadzenFormField>
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" Shade="Shade.Lighter" AllowClose="false">
+            @_error
+        </RadzenAlert>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End" Gap="0.5rem">
+        <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => Dialog.Close(null))" Disabled="@_busy" />
+        <RadzenButton Text="Create session" ButtonStyle="ButtonStyle.Primary"
+                      Icon="auto_awesome" Click="CreateAsync"
+                      IsBusy="@_busy" />
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    private string _prompt = string.Empty;
+    private AdhocMode _mode = AdhocMode.Readonly;
+    private IEnumerable<Guid> _selectedTargetIds = [];
+    private List<DeploymentTarget> _targets = [];
+    private string? _error;
+    private bool _busy;
+
+    // Tuple-source for the mode dropdown (Radzen needs a Data + TextProperty).
+    private sealed record ModeOption(AdhocMode Value, string Label);
+    private readonly ModeOption[] _modeOptions =
+    [
+        new(AdhocMode.Readonly, "Readonly — Get-/Test-/Measure-* only"),
+        new(AdhocMode.Mutating, "Mutating — state-changing commands allowed"),
+    ];
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        _targets = await db.DeploymentTargets
+            .Where(t => t.Status != TargetStatus.Offline) // hide offline by default; user can still pick
+            .OrderBy(t => t.Name)
+            .AsNoTracking()
+            .ToListAsync();
+    }
+
+    private async Task CreateAsync()
+    {
+        _error = null;
+
+        if (string.IsNullOrWhiteSpace(_prompt))
+        {
+            _error = "Prompt is required.";
+            return;
+        }
+        var ids = _selectedTargetIds?.ToList() ?? [];
+        if (ids.Count == 0)
+        {
+            _error = "Pick at least one target.";
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            var state = await AuthState.GetAuthenticationStateAsync();
+            var userIdRaw = state.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var userId = Guid.TryParse(userIdRaw, out var u) ? u : Guid.Empty;
+            var display = state.User.Identity?.Name ?? "unknown";
+
+            var sessionId = await Adhoc.CreateSessionAsync(
+                _prompt, _mode, ids, userId, display, default);
+
+            Dialog.Close(sessionId);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to create session: {ex.Message}";
+            Notify.Notify(NotificationSeverity.Error, "Create failed", ex.Message, 6000);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

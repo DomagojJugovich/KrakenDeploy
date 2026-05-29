@@ -32,10 +32,20 @@ namespace KrakenDeploy.Server.Transport;
 public interface IAdhocDispatcher
 {
     /// <summary>See <see cref="AdhocDispatcher.DispatchAsync"/>.</summary>
-    Task<IReadOnlyList<AdhocScriptResult>> DispatchAsync(
+    Task<IReadOnlyList<AdhocPerTargetResult>> DispatchAsync(
         AdhocSession session, AdhocIteration iteration,
         CancellationToken ct, TimeSpan? timeout = null);
 }
+
+/// <summary>
+/// Server-side projection — pairs the wire-level <see cref="AdhocScriptResult"/>
+/// with the target id the dispatcher routed it to. The wire payload doesn't
+/// carry the target id (the hub recovers it from the connection's
+/// <c>NameIdentifier</c> claim), but the persisted <c>ResultsJson</c> on the
+/// iteration MUST carry it so the /adhoc UI can render "which target said
+/// what" and the iteration-verdict LLM can attribute outcomes per target.
+/// </summary>
+public sealed record AdhocPerTargetResult(Guid TargetId, AdhocScriptResult Result);
 
 public sealed class AdhocDispatcher(
     IAgentConnectionRegistry connections,
@@ -58,7 +68,7 @@ public sealed class AdhocDispatcher(
     /// <see cref="AdhocIteration.ScriptSignature"/> via the signing service —
     /// the dispatcher only routes; it does not sign.
     /// </summary>
-    public async Task<IReadOnlyList<AdhocScriptResult>> DispatchAsync(
+    public async Task<IReadOnlyList<AdhocPerTargetResult>> DispatchAsync(
         AdhocSession session,
         AdhocIteration iteration,
         CancellationToken ct,
@@ -92,7 +102,7 @@ public sealed class AdhocDispatcher(
             Signature:  iteration.ScriptSignature!);
 
         var effectiveTimeout = timeout ?? DefaultTimeout;
-        var tasks = new List<Task<AdhocScriptResult>>(targetIds.Count);
+        var tasks = new List<Task<AdhocPerTargetResult>>(targetIds.Count);
         foreach (var targetId in targetIds)
         {
             tasks.Add(DispatchToTargetAsync(
@@ -104,7 +114,7 @@ public sealed class AdhocDispatcher(
         return results;
     }
 
-    private async Task<AdhocScriptResult> DispatchToTargetAsync(
+    private async Task<AdhocPerTargetResult> DispatchToTargetAsync(
         Guid sessionId, int iterNumber, Guid targetId,
         AdhocScriptCommand command, TimeSpan timeout, CancellationToken ct)
     {
@@ -116,13 +126,13 @@ public sealed class AdhocDispatcher(
                 "AdhocDispatcher: target {TargetId} for session {SessionId} iter {Iter} " +
                 "has no live connection; reporting agent-offline.",
                 targetId, sessionId, iterNumber);
-            return new AdhocScriptResult(
+            return new AdhocPerTargetResult(targetId, new AdhocScriptResult(
                 SessionId:  sessionId,
                 IterNumber: iterNumber,
                 ExitCode:   -1,
                 Stdout:     string.Empty,
                 Stderr:     string.Empty,
-                AgentError: "Agent offline at dispatch.");
+                AgentError: "Agent offline at dispatch."));
         }
 
         var tcs = new TaskCompletionSource<AdhocScriptResult>(
@@ -140,7 +150,8 @@ public sealed class AdhocDispatcher(
                 () => pending.Cancel(
                     sessionId, iterNumber, targetId,
                     "Adhoc script timed out before the agent reported back."));
-            return await tcs.Task.ConfigureAwait(false);
+            var wireResult = await tcs.Task.ConfigureAwait(false);
+            return new AdhocPerTargetResult(targetId, wireResult);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -152,7 +163,8 @@ public sealed class AdhocDispatcher(
                 "session {SessionId} iter {Iter}.", targetId, sessionId, iterNumber);
             pending.Cancel(sessionId, iterNumber, targetId,
                 $"Push failed: {ex.Message}");
-            return await tcs.Task.ConfigureAwait(false);
+            var wireResult = await tcs.Task.ConfigureAwait(false);
+            return new AdhocPerTargetResult(targetId, wireResult);
         }
     }
 
