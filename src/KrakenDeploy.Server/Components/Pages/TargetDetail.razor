@@ -47,7 +47,25 @@ else
             <span>@(Target.Roles.Count > 0 ? string.Join(", ", Target.Roles) : "—")</span>
             <span class="rz-color-secondary">Last Seen</span>
             <span>@(Target.LastSeenUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "never")</span>
+
+            <span class="rz-color-secondary">Risk level</span>
+            <span><RadzenBadge Text="@Target.RiskLevel.ToString()" BadgeStyle="@RiskBadge(Target.RiskLevel)" /></span>
         </div>
+
+        <RequirePermission Permission="Permission.MachineEdit">
+            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                         Gap="0.75rem" class="rz-mt-3">
+                <RadzenLabel Text="Set risk level" />
+                <RadzenDropDown TValue="TargetRiskLevel" @bind-Value="_riskLevel"
+                                Data="@_riskLevels" Style="width:180px;" />
+                <RadzenButton Text="Save" Icon="save" Size="ButtonSize.Small"
+                              ButtonStyle="ButtonStyle.Primary" IsBusy="_savingRisk"
+                              Click="SaveRiskAsync" />
+                <span class="rz-text-caption rz-color-secondary-light">
+                    Production triggers the louder ad-hoc approval banner and (where enabled) the two-person rule.
+                </span>
+            </RadzenStack>
+        </RequirePermission>
     </RadzenCard>
 
     @* ── Offline Drop Config ────────────────────────────────────────── *@
@@ -215,6 +233,11 @@ else
     private string _fileSharePassword = "";
     private bool _saving;
 
+    // Risk level editing state
+    private TargetRiskLevel _riskLevel;
+    private bool _savingRisk;
+    private readonly TargetRiskLevel[] _riskLevels = Enum.GetValues<TargetRiskLevel>();
+
     private readonly List<object> _deliveryChannels =
     [
         new { Text = "Manual (download from UI)", Value = OfflineDropDeliveryChannel.Manual },
@@ -226,6 +249,10 @@ else
     protected override async Task OnInitializedAsync()
     {
         Target = await TargetSvc.GetAsync(Id);
+        if (Target is not null)
+        {
+            _riskLevel = Target.RiskLevel;
+        }
         if (Target?.OfflineDropConfig is not null)
         {
             LoadConfigState(Target.OfflineDropConfig);
@@ -327,6 +354,44 @@ else
             _saving = false;
         }
     }
+
+    private async Task SaveRiskAsync()
+    {
+        if (Target is null) { return; }
+        _savingRisk = true;
+        try
+        {
+            Target.RiskLevel = _riskLevel;
+            await TargetSvc.UpdateAsync(Target);
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Success,
+                Summary = "Risk level saved",
+                Duration = 3000,
+            });
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary = "Save failed",
+                Detail = ex.Message,
+                Duration = 5000,
+            });
+        }
+        finally
+        {
+            _savingRisk = false;
+        }
+    }
+
+    private static BadgeStyle RiskBadge(TargetRiskLevel risk) => risk switch
+    {
+        TargetRiskLevel.Production  => BadgeStyle.Danger,
+        TargetRiskLevel.Staging     => BadgeStyle.Warning,
+        _                           => BadgeStyle.Info,
+    };
 
     private static BadgeStyle StatusBadge(TargetStatus s) => s switch
     {

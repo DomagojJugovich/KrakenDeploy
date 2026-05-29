@@ -45,6 +45,12 @@
                 </span>
             </Template>
         </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="DeploymentTarget" Property="RiskLevel" Title="Risk"
+                              Width="110px">
+            <Template Context="t">
+                <RadzenBadge Text="@t.RiskLevel.ToString()" BadgeStyle="@RiskBadgeStyle(t.RiskLevel)" />
+            </Template>
+        </RadzenDataGridColumn>
         <RadzenDataGridColumn TItem="DeploymentTarget" Property="MachineName" Title="Hostname"
                               Width="160px" />
         <RadzenDataGridColumn TItem="DeploymentTarget" Property="OperatingSystem" Title="OS"
@@ -149,6 +155,13 @@
         TargetStatus.Disabled     => BadgeStyle.Warning,
         TargetStatus.ShuttingDown => BadgeStyle.Warning,
         _                         => BadgeStyle.Light,
+    };
+
+    private static BadgeStyle RiskBadgeStyle(TargetRiskLevel risk) => risk switch
+    {
+        TargetRiskLevel.Production  => BadgeStyle.Danger,
+        TargetRiskLevel.Staging     => BadgeStyle.Warning,
+        _                           => BadgeStyle.Info,
     };
 
     private static string LastSeenTitle(DateTimeOffset? dt)

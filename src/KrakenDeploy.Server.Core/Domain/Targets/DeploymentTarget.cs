@@ -14,6 +14,16 @@ public class DeploymentTarget : AuditableEntity, ISpaceScoped
     public string? OperatingSystem { get; set; }
     public string? AgentVersion { get; set; }
     public List<string> Roles { get; set; } = [];
+
+    /// <summary>
+    /// Operator-assigned risk classification (M11.E.11). Cannot be inferred —
+    /// see <see cref="TargetRiskLevel"/>. Defaults to
+    /// <see cref="TargetRiskLevel.Production"/> (fail-safe). Consumed by the
+    /// ad-hoc approval policy, which takes the MAX risk across a session's
+    /// frozen target set.
+    /// </summary>
+    public TargetRiskLevel RiskLevel { get; set; } = TargetRiskLevel.Production;
+
     public TransportMode TransportMode { get; set; } = TransportMode.Reverse;
     public string? RegistrationKeyHash { get; set; }
     public DateTimeOffset? RegistrationTokenExpiresUtc { get; set; }

@@ -32,6 +32,21 @@ public class DeploymentTargetConfiguration : IEntityTypeConfiguration<Deployment
 
         builder.Property(x => x.TransportMode).IsRequired().HasConversion<int>();
 
+        // Risk classification (M11.E.11). Default Production (fail-safe) so the
+        // DB-default backfills existing rows to highest-risk until classified.
+        // HasSentinel(Production) is REQUIRED alongside HasDefaultValue: without
+        // it EF treats the CLR-default enum value Development(0) as "not set" and
+        // lets the store default overwrite it, so Development would never persist.
+        // With the sentinel set to Production, EF only omits the value when it
+        // equals Production (→ store default applies), and always writes
+        // Development/Staging.
+        builder.Property(x => x.RiskLevel)
+            .IsRequired()
+            .HasConversion<int>()
+            .HasDefaultValue(TargetRiskLevel.Production)
+            .HasSentinel(TargetRiskLevel.Production);
+        builder.HasIndex(x => x.RiskLevel);
+
         builder.Property(x => x.AutoUpdateEnabled).IsRequired().HasDefaultValue(true);
 
         builder.Property(x => x.RegistrationKeyHash).HasMaxLength(128);
