@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Approved |
-| **Version** | 1.1 (M11.E) |
+| **Version** | 1.2 (M11.E) |
 | **Last updated** | 2026-05-29 |
 | **Applies to** | KrakenDeploy server `/adhoc` page + `/mcp` `run_adhoc_action` tool, agent verify-then-run pipeline |
 | **Technologies** | .NET 10, `System.Management.Automation` 7.6 (PowerShell AST parser), `RSA-SHA256` signing, SignalR control plane, Radzen Blazor UI |
@@ -95,12 +95,22 @@ not "policies we hope to follow". Each row maps to where the invariant lives.
 
 Honesty up front. The AST gate is one layer of defence, not the only one.
 
-1. **Direct .NET API abuse via type literals.** `[System.IO.File]::Delete($p)`,
-   `[System.Net.WebClient]`, `[System.Reflection.Assembly]::Load(…)` —
-   these are `InvokeMemberExpressionAst` on `TypeExpressionAst`, not
-   `CommandAst`. A future strict-mode could allowlist a small set of safe
-   types; v1 does not. **Mitigation:** mandatory operator approval per
-   iteration; signing; mode immutability; frozen target set.
+1. **Direct .NET API abuse via type literals — now blocked (both modes).**
+   `[System.IO.File]::Delete($p)`, `[System.Net.WebClient]::new().DownloadString(…)`,
+   `[System.Reflection.Assembly]::Load(…)`, `[scriptblock]::Create(…)`,
+   `([wmiclass]'Win32_Process').Create(…)`, `New-Object System.Net.WebClient`
+   are member-expressions over a `TypeExpressionAst`/`TypeConstraintAst` (or a
+   `New-Object` string argument), not `CommandAst`. The gate now walks every
+   type reference + `New-Object` type argument and rejects a curated blocklist
+   of types/namespaces (file I/O, network egress, reflection/code-loading,
+   process control, WMI/ADSI, registry, in-process code exec) plus the
+   dangerous type accelerators. Readonly mode additionally rejects destructive
+   instance/static method calls (`.Kill()`, `.Delete()`, `.Terminate()`).
+   **Residual:** instance methods on a runtime-typed variable beyond that
+   curated verb set (receiver type unknown to static analysis), and a fully
+   obfuscated type name resolved at runtime from a string (the literal never
+   appears in the AST). **Mitigation for the residual:** mandatory operator
+   approval per iteration; signing; mode immutability; frozen target set.
 2. **File / registry writes whose path is a runtime variable.** Static
    analysis can flag literal `HKLM:\…` paths; it can't flag
    `Set-ItemProperty -Path $userInput`. **Mitigation:** same defence-in-
@@ -238,7 +248,6 @@ These are the high-risk patterns whose ABSENCE is intentional:
   light up when that field ships; the field itself is deferred.
 - **Two-person approval rule** (M11.E.11) — single-approver is locked
   for v1.
-- **Strict static-method allowlist** — see §2 limitation #1.
 
 ---
 

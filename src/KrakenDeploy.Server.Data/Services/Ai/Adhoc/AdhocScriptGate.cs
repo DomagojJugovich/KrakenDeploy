@@ -31,16 +31,29 @@ namespace KrakenDeploy.Server.Data.Services.Ai.Adhoc;
 /// <c>iex</c>, call operator on a non-literal) whose target can't be resolved
 /// statically.</para>
 ///
-/// <para><strong>Documented limitations (not statically enforceable).</strong>
-/// AST command-allowlisting does NOT prevent (a) direct .NET API abuse via
-/// type literals (e.g. <c>[System.IO.File]::Delete($p)</c>,
-/// <c>[System.Net.WebClient]</c>) — these are member-expressions, not commands;
-/// nor (b) file/registry writes whose path is a runtime variable rather than a
-/// literal. The residual risk is covered by the defense-in-depth layers that
-/// the gate sits inside: mandatory operator approval per iteration (M11.E.5),
-/// server signing + agent-side signature verification (M11.E.6), the frozen
-/// immutable target set (M11.E.15a), and mode immutability (M11.E.15b). The
-/// gate is the first filter, not the only one.</para>
+/// <para><strong>Dangerous .NET type references (both modes).</strong> The
+/// command allowlist alone can't see direct .NET access — <c>[System.IO.File]::Delete($p)</c>,
+/// <c>[System.Net.WebClient]::new().DownloadString(…)</c>,
+/// <c>[System.Reflection.Assembly]::Load(…)</c> are member-expressions over a
+/// <see cref="TypeExpressionAst"/>, not <see cref="CommandAst"/>. The gate also
+/// walks every type reference (literals, casts, <c>::</c> static calls) and the
+/// <c>New-Object</c> type argument and rejects a curated blocklist of types /
+/// namespaces that enable file I/O, network egress, reflection / code-loading,
+/// process control, WMI / directory-services method-invocation, or the registry
+/// — in BOTH modes (egress + RCE are out of scope even for a mutating session).
+/// Readonly mode additionally bans clearly destructive instance/static method
+/// calls (<c>.Kill()</c>, <c>.Delete()</c>, <c>.Terminate()</c>).</para>
+///
+/// <para><strong>Documented residual limitations.</strong> Still NOT statically
+/// enforceable: (a) instance methods on a runtime-typed variable beyond the
+/// curated readonly destructive-verb set (the receiver's static type is unknown);
+/// (b) file/registry writes whose path is a runtime variable rather than a
+/// literal; (c) a fully obfuscated type name resolved at runtime from a string
+/// (the literal type never appears in the AST). The residual risk is covered by
+/// the defense-in-depth layers that the gate sits inside: mandatory operator
+/// approval per iteration (M11.E.5), server signing + agent-side signature
+/// verification (M11.E.6), the frozen immutable target set (M11.E.15a), and mode
+/// immutability (M11.E.15b). The gate is the first filter, not the only one.</para>
 /// </summary>
 public static class AdhocScriptGate
 {
@@ -150,6 +163,70 @@ public static class AdhocScriptGate
          "ContainerId", "HostName", "SSHTransport"];
 
     /// <summary>
+    /// .NET type / namespace prefixes forbidden in BOTH modes (file I/O, network
+    /// egress, reflection + dynamic code loading, process control, WMI /
+    /// directory-services method invocation, registry, in-process code exec).
+    /// Matched with a namespace-boundary prefix test, so <c>System.IO.File</c>
+    /// matches <c>System.IO.File</c> and any nested type but NOT
+    /// <c>System.IO.FileInfo</c> (listed separately). PowerShell lets you omit
+    /// the leading <c>System.</c>, so the matcher tests both forms. Deliberately
+    /// does NOT block <c>System.Math</c>/<c>System.String</c>/<c>System.Convert</c>/
+    /// <c>System.DateTime</c>/<c>System.Environment</c> (read-only helpers common
+    /// in diagnostics).
+    /// </summary>
+    private static readonly string[] DangerousTypePrefixes =
+    [
+        // File I/O — direct FS access bypasses the cmdlet allowlist.
+        "System.IO.File", "System.IO.Directory",
+        "System.IO.FileInfo", "System.IO.DirectoryInfo",
+        "System.IO.FileStream", "System.IO.StreamWriter", "System.IO.StreamReader",
+        "System.IO.BinaryWriter", "System.IO.BinaryReader",
+        "System.IO.FileSystemWatcher", "System.IO.Compression",
+        // Network egress / exfil.
+        "System.Net.WebClient", "System.Net.WebRequest", "System.Net.HttpWebRequest",
+        "System.Net.FtpWebRequest", "System.Net.HttpListener",
+        "System.Net.Http", "System.Net.Sockets", "System.Net.Mail",
+        // Reflection / dynamic code loading + activation.
+        "System.Reflection", "System.Activator", "System.AppDomain",
+        "System.Runtime.InteropServices", "System.Runtime.CompilerServices",
+        "System.Runtime.Loader",
+        // Process / shell control.
+        "System.Diagnostics.Process", "System.Diagnostics.ProcessStartInfo",
+        // In-process code execution.
+        "System.Management.Automation.ScriptBlock",
+        "System.Management.Automation.PowerShell",
+        // WMI + directory services (method-invocation RCE: Win32_Process.Create, …).
+        "System.Management.ManagementClass", "System.Management.ManagementObject",
+        "System.DirectoryServices",
+        // Registry.
+        "Microsoft.Win32.Registry", "Microsoft.Win32.RegistryKey",
+    ];
+
+    /// <summary>
+    /// Dangerous PowerShell type accelerators — single-token names the parser
+    /// leaves unexpanded (the full type is resolved at runtime), so the prefix
+    /// matcher above never sees them. Matched by exact (case-insensitive) name.
+    /// </summary>
+    private static readonly HashSet<string> DangerousTypeAccelerators =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "scriptblock",   // System.Management.Automation.ScriptBlock — [scriptblock]::Create($s)
+            "powershell",    // System.Management.Automation.PowerShell  — [powershell]::Create()
+            "wmiclass", "wmi", "wmisearcher",       // System.Management.* — ([wmiclass]'Win32_Process').Create(…)
+            "adsi", "adsisearcher",                 // System.DirectoryServices.*
+        };
+
+    /// <summary>
+    /// Method names that are unambiguously state-changing and therefore banned in
+    /// readonly mode when called on ANY receiver (e.g. <c>(Get-Process)[0].Kill()</c>,
+    /// <c>$file.Delete()</c>, <c>([wmi]…).Terminate()</c>). Kept deliberately small
+    /// — only verbs with essentially no legitimate use in a read-only diagnostic —
+    /// so false positives are negligible.
+    /// </summary>
+    private static readonly HashSet<string> ReadonlyForbiddenMethodNames =
+        new(StringComparer.OrdinalIgnoreCase) { "Kill", "Delete", "Terminate" };
+
+    /// <summary>
     /// Analyses <paramref name="script"/> for the given <paramref name="mode"/>.
     /// Never throws on script content — a script that fails to parse is
     /// reported as a (rejecting) <see cref="AdhocViolationKind.ParseError"/>.
@@ -225,6 +302,50 @@ public static class AdhocScriptGate
             CheckMutatingForbidden(cmd, name, rawName, line, violations);
         }
 
+        // ── Dangerous .NET type references (BOTH modes) ─────────────────────
+        // Closes the type-literal hole: [System.IO.File]::Delete($p),
+        // [System.Net.WebClient]::new().DownloadString(…),
+        // [System.Reflection.Assembly]::Load(…) are member-expressions over a
+        // TypeExpressionAst (or a cast's TypeConstraintAst) — NOT CommandAst —
+        // so the command walk above never sees them.
+        foreach (var typeRef in ast.FindAll(IsTypeReferenceNode, searchNestedScriptBlocks: true))
+        {
+            var typeName = TypeNameOf(typeRef);
+            if (IsDangerousType(typeName))
+            {
+                violations.Add(new AdhocScriptViolation(
+                    AdhocViolationKind.DangerousTypeReference,
+                    $"Type '[{typeName}]' is forbidden — direct .NET access to file I/O, " +
+                    "network egress, reflection / code-loading, process control, WMI, or " +
+                    "the registry bypasses the cmdlet allowlist and is never permitted in " +
+                    "an ad-hoc script.",
+                    CommandName: null,
+                    typeRef.Extent.StartLineNumber));
+            }
+        }
+
+        // ── Readonly: ban clearly destructive method calls ──────────────────
+        // (Get-Process)[0].Kill(), $file.Delete(), ([wmi]…).Terminate() — the
+        // receiver's static type can't be resolved, so we match the verb itself.
+        if (mode == AdhocMode.Readonly)
+        {
+            foreach (var invoke in ast
+                .FindAll(n => n is InvokeMemberExpressionAst, searchNestedScriptBlocks: true)
+                .Cast<InvokeMemberExpressionAst>())
+            {
+                if (invoke.Member is StringConstantExpressionAst m
+                    && ReadonlyForbiddenMethodNames.Contains(m.Value))
+                {
+                    violations.Add(new AdhocScriptViolation(
+                        AdhocViolationKind.ModeEscalation,
+                        $"Method call '.{m.Value}(...)' is a state-changing operation and " +
+                        "is not allowed in a readonly session.",
+                        CommandName: null,
+                        invoke.Extent.StartLineNumber));
+                }
+            }
+        }
+
         return new AdhocScriptGateResult(violations.Count == 0, violations);
     }
 
@@ -260,6 +381,24 @@ public static class AdhocScriptGate
             };
             violations.Add(new AdhocScriptViolation(
                 kind, $"'{rawName}' ({name}) is forbidden.", rawName, line));
+            return;
+        }
+
+        // New-Object instantiating a dangerous type — the cast-free path to the
+        // same .NET primitives the type-reference walk blocks (the type name is a
+        // string argument here, not a TypeExpressionAst).
+        if (name.Equals("New-Object", StringComparison.OrdinalIgnoreCase))
+        {
+            var typeArg = ExtractNewObjectTypeName(cmd);
+            if (IsDangerousType(typeArg))
+            {
+                violations.Add(new AdhocScriptViolation(
+                    AdhocViolationKind.DangerousTypeReference,
+                    $"'New-Object {typeArg}' is forbidden — instantiating this .NET type " +
+                    "enables file I/O, network egress, reflection, process control, WMI, " +
+                    "or registry access outside the cmdlet allowlist.",
+                    rawName, line));
+            }
             return;
         }
 
@@ -353,6 +492,93 @@ public static class AdhocScriptGate
         }
         return false;
     }
+
+    private static bool IsTypeReferenceNode(Ast node)
+        => node is TypeExpressionAst or TypeConstraintAst;
+
+    private static string? TypeNameOf(Ast node) => node switch
+    {
+        TypeExpressionAst t => t.TypeName?.FullName,
+        TypeConstraintAst c => c.TypeName?.FullName,
+        _ => null,
+    };
+
+    /// <summary>
+    /// True when <paramref name="typeName"/> (a PowerShell type name as written
+    /// in the script) refers to a forbidden .NET type / namespace or accelerator.
+    /// </summary>
+    private static bool IsDangerousType(string? typeName)
+    {
+        if (string.IsNullOrWhiteSpace(typeName)) { return false; }
+        var name = typeName.Trim();
+
+        if (DangerousTypeAccelerators.Contains(name)) { return true; }
+
+        // PowerShell lets you omit the leading "System." namespace, so test both
+        // the literal form and a System-qualified form.
+        var systemQualified = name.StartsWith("System.", StringComparison.OrdinalIgnoreCase)
+            ? name
+            : "System." + name;
+
+        foreach (var prefix in DangerousTypePrefixes)
+        {
+            if (StartsWithTypePrefix(name, prefix)
+                || StartsWithTypePrefix(systemQualified, prefix))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Namespace-boundary prefix test: <c>System.IO.File</c> matches
+    /// <c>System.IO.File</c> and <c>System.IO.File.Nested</c> but NOT
+    /// <c>System.IO.FileInfo</c>.
+    /// </summary>
+    private static bool StartsWithTypePrefix(string typeName, string prefix)
+        => typeName.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+           && (typeName.Length == prefix.Length || typeName[prefix.Length] == '.');
+
+    /// <summary>
+    /// Extracts the type name from a <c>New-Object</c> command — the named
+    /// <c>-TypeName</c> value (inline or as the following element) or, failing
+    /// that, the first positional string argument (skipping other parameters and
+    /// their values). Returns <c>null</c> when no static type name is present.
+    /// </summary>
+    private static string? ExtractNewObjectTypeName(CommandAst cmd)
+    {
+        var elements = cmd.CommandElements;
+
+        // Named: -TypeName <value>.
+        for (var i = 1; i < elements.Count; i++)
+        {
+            if (elements[i] is CommandParameterAst p
+                && "TypeName".StartsWith(p.ParameterName, StringComparison.OrdinalIgnoreCase)
+                && p.ParameterName.Length >= 1)
+            {
+                if (p.Argument is StringConstantExpressionAst inline) { return inline.Value; }
+                if (i + 1 < elements.Count
+                    && elements[i + 1] is StringConstantExpressionAst next)
+                {
+                    return next.Value;
+                }
+            }
+        }
+
+        // Positional: New-Object <TypeName> [ArgumentList]. Skip parameters and
+        // the value element a no-inline-argument parameter consumes.
+        for (var i = 1; i < elements.Count; i++)
+        {
+            if (elements[i] is CommandParameterAst p)
+            {
+                if (p.Argument is null) { i++; }
+                continue;
+            }
+            if (elements[i] is StringConstantExpressionAst s) { return s.Value; }
+        }
+        return null;
+    }
 }
 
 /// <summary>Outcome of <see cref="AdhocScriptGate.Analyze"/>.</summary>
@@ -405,4 +631,12 @@ public enum AdhocViolationKind
 
     /// <summary>A registry write.</summary>
     RegistryWrite,
+
+    /// <summary>
+    /// A reference to a forbidden .NET type (file I/O, network egress,
+    /// reflection / code-loading, process control, WMI, registry) via a type
+    /// literal, cast, <c>::</c> static call, or <c>New-Object</c> — bypasses the
+    /// cmdlet allowlist. Forbidden in both modes.
+    /// </summary>
+    DangerousTypeReference,
 }

