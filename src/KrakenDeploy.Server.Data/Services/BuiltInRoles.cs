@@ -92,9 +92,11 @@ internal static class BuiltInRoles
         // API key (own keys only — admin needs ApiKeyViewAll/DeleteAll)
         Permission.ApiKeyView, Permission.ApiKeyCreate,
         Permission.ApiKeyEdit, Permission.ApiKeyDelete,
-        // Ad-hoc agent actions (M11.E) — full Space admin can drive them;
-        // the feature is additionally gated by the per-Space AdhocEnabled flag.
-        Permission.AdhocActionsExecute,
+        // NOTE: Permission.AdhocActionsExecute (M11.E) is deliberately NOT
+        // granted here. Running AI-authored PowerShell on live targets is a
+        // "danger-zone" capability — it must be granted explicitly via a
+        // dedicated role assignment, not ride along with general Space
+        // administration. See docs/adhoc-actions.md (RBAC).
     ];
 
     private static readonly Permission[] ProjectDeployerPermissions =
@@ -217,11 +219,14 @@ internal static class BuiltInRoles
     /// delegate to a junior admin.
     /// </para>
     /// <para>
-    /// What System Manager CANNOT do: anything we tag with a new
+    /// What System Manager CANNOT do: (1) anything we tag with a new
     /// "danger zone" permission added AFTER this release without
-    /// updating <see cref="SystemManagerPermissions"/>. That's the safety
-    /// property — operators reviewing the role on a future release see
-    /// exactly which new permissions need a conscious grant decision.
+    /// updating <see cref="SystemManagerPermissions"/> — that's the safety
+    /// property, operators reviewing the role on a future release see
+    /// exactly which new permissions need a conscious grant decision; and
+    /// (2) <see cref="Permission.AdhocActionsExecute"/> — running AI-authored
+    /// PowerShell on live targets is excluded by the same reasoning as
+    /// AdministerSystem and must be granted explicitly via a dedicated role.
     /// </para>
     /// </summary>
     private static readonly Permission[] SystemManagerPermissions =
@@ -320,10 +325,12 @@ internal static class BuiltInRoles
         Permission.BypassMaintenance,
 
         // ── Ad-hoc agent actions (M11.E) ────────────────────────────────
-        // Delegated admins can drive ad-hoc actions; still gated by the
-        // per-Space AdhocEnabled flag + AI budget + the per-iteration
-        // approval + signing pipeline.
-        Permission.AdhocActionsExecute,
+        // NOTE: Permission.AdhocActionsExecute is deliberately EXCLUDED, the
+        // same way AdministerSystem is. Running AI-authored PowerShell on live
+        // targets is the single highest-blast-radius capability in the product;
+        // even the delegated-admin tier must NOT gain it implicitly. Operators
+        // grant it through an explicit, dedicated role assignment so the
+        // decision is conscious and auditable. See docs/adhoc-actions.md (RBAC).
     ];
 
     // ── Built-in role definitions (declared LAST — depends on permission sets above) ─
@@ -341,10 +348,11 @@ internal static class BuiltInRoles
             "operator might delegate to a junior admin — manage users, " +
             "teams, roles, IdPs, edit the license, manage every Space's " +
             "projects + variables + step packages, read cross-Space audit. " +
-            "EXCLUDES AdministerSystem (the god-mode catch-all) so future " +
-            "high-risk permissions (encryption master-key rotation, signing-" +
-            "key revocation) require an explicit grant decision when they " +
-            "ship — they're not auto-granted by virtue of holding this role.",
+            "EXCLUDES AdministerSystem (the god-mode catch-all) and " +
+            "AdhocActionsExecute (AI-authored script execution on live " +
+            "targets) so these high-risk capabilities — plus any future " +
+            "danger-zone permission — require an explicit grant decision and " +
+            "are not auto-granted by virtue of holding this role.",
             permissions: SystemManagerPermissions,
             isSystemOnly: true),
 

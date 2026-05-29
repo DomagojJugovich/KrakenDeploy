@@ -70,25 +70,48 @@ public sealed class BuiltInRolesTests
     }
 
     [Fact]
-    public void SystemManager_covers_every_explicit_permission_except_AdministerSystem()
+    public void SystemManager_covers_every_explicit_permission_except_danger_zone()
     {
         // The contract: SystemManager is "everything that exists in the
-        // Permission enum today, EXCEPT god-mode". If a new Permission is
-        // added to the enum and this test fails, the operator is now
-        // forced to make an explicit decision about whether SystemManager
+        // Permission enum today, EXCEPT the danger-zone set". If a new
+        // Permission is added to the enum and this test fails, the operator is
+        // now forced to make an explicit decision about whether SystemManager
         // should automatically gain it — that's the safety property.
+        //
+        // Danger-zone exclusions (must be granted via an explicit, dedicated
+        // role assignment, never implicitly by the delegated-admin tier):
+        //   - AdministerSystem    : the god-mode catch-all.
+        //   - AdhocActionsExecute : runs AI-authored PowerShell on live targets.
         var sysManager = BuiltInRoles.All.Single(r => r.Id == BuiltInRoles.SystemManagerId);
 
         var allPermissions      = Enum.GetValues<Permission>();
         var expectedPermissions = allPermissions
-            .Except([Permission.AdministerSystem])
+            .Except([Permission.AdministerSystem, Permission.AdhocActionsExecute])
             .ToHashSet();
 
         sysManager.Permissions.Should().BeEquivalentTo(expectedPermissions,
-            "SystemManager covers every explicit permission except " +
-            "AdministerSystem. If you added a Permission and this fails, " +
-            "decide explicitly whether SystemManager should hold it, then " +
-            "update either SystemManagerPermissions or this test's exclusion list");
+            "SystemManager covers every explicit permission except the " +
+            "danger-zone set (AdministerSystem, AdhocActionsExecute). If you " +
+            "added a Permission and this fails, decide explicitly whether " +
+            "SystemManager should hold it, then update either " +
+            "SystemManagerPermissions or this test's exclusion list");
+    }
+
+    [Fact]
+    public void Neither_SystemManager_nor_SpaceManager_carry_AdhocActionsExecute()
+    {
+        // M11.E security decision: AI-authored script execution on live targets
+        // is a danger-zone capability. It must NOT ride along with the
+        // management roles — only an explicit, dedicated role assignment (or
+        // the AdministerSystem god-mode implication) grants it. Loosening this
+        // re-widens the blast radius the single-approver rule is meant to bound.
+        var sysManager   = BuiltInRoles.All.Single(r => r.Id == BuiltInRoles.SystemManagerId);
+        var spaceManager = BuiltInRoles.All.Single(r => r.Id == BuiltInRoles.SpaceManagerId);
+
+        sysManager.Permissions.Should().NotContain(Permission.AdhocActionsExecute,
+            "the delegated-admin tier must not gain ad-hoc execution implicitly");
+        spaceManager.Permissions.Should().NotContain(Permission.AdhocActionsExecute,
+            "Space administration must not gain ad-hoc execution implicitly");
     }
 
     [Fact]
