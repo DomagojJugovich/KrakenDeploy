@@ -107,6 +107,7 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
             TimeProvider.System,
             new NullUiHubContext(),
             new NeverUsedPendingSubPlanRegistry(),
+            new NeverUsedPendingAdhocRegistry(),
             NullLogger<AgentHub>.Instance);
 
         hub.Context = new FakeHubCallerContext(targetId);
@@ -155,6 +156,20 @@ file sealed class NeverUsedPendingSubPlanRegistry : IPendingSubPlanRegistry
 
     public bool HasSlot(Guid deploymentId, Guid targetId)
         => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
+}
+
+file sealed class NeverUsedPendingAdhocRegistry : IPendingAdhocRegistry
+{
+    public void Register(Guid sessionId, int iterNumber, Guid targetId,
+        TaskCompletionSource<KrakenDeploy.Contracts.Adhoc.AdhocScriptResult> tcs)
+        => throw new NotSupportedException("IPendingAdhocRegistry is not used by RegisterAsync.");
+
+    public bool TryResolve(Guid sessionId, int iterNumber, Guid targetId,
+        KrakenDeploy.Contracts.Adhoc.AdhocScriptResult result)
+        => throw new NotSupportedException("IPendingAdhocRegistry is not used by RegisterAsync.");
+
+    public void Cancel(Guid sessionId, int iterNumber, Guid targetId, string reason)
+        => throw new NotSupportedException("IPendingAdhocRegistry is not used by RegisterAsync.");
 }
 
 file sealed class NullUiHubContext : IHubContext<UiHub, IUiHubClient>

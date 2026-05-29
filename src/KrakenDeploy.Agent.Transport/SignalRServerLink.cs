@@ -1,4 +1,5 @@
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Contracts.Adhoc;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
 
@@ -17,6 +18,7 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
 
     // Handlers registered before StartAsync; wired onto _connection in StartAsync.
     private readonly List<Func<DeploymentPlan, Task>> _deploymentHandlers = [];
+    private readonly List<Func<AdhocScriptCommand, Task>> _adhocHandlers = [];
 
     // ── IServerLink ────────────────────────────────────────────────────────
 
@@ -70,6 +72,10 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
         foreach (var handler in _deploymentHandlers)
         {
             _connection.On<DeploymentPlan>("RunDeploymentAsync", handler);
+        }
+        foreach (var handler in _adhocHandlers)
+        {
+            _connection.On<AdhocScriptCommand>("RunAdhocScriptAsync", handler);
         }
 
         await _connection.StartAsync(ct).ConfigureAwait(false);
@@ -154,6 +160,14 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
             deploymentId, stepIndex, stepName, success, errorMessage, payload, ct);
     }
 
+    public Task ReportAdhocResultAsync(AdhocScriptResult result, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        return _connection is not null
+            ? _connection.InvokeAsync("ReportAdhocResultAsync", result, ct)
+            : Task.CompletedTask;
+    }
+
     // ── Server → Agent ─────────────────────────────────────────────────────
 
     public void OnRunDeployment(Func<DeploymentPlan, Task> handler)
@@ -163,6 +177,13 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
 
         // If already connected (e.g. re-wiring after reconnect), register immediately.
         _connection?.On<DeploymentPlan>("RunDeploymentAsync", handler);
+    }
+
+    public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        _adhocHandlers.Add(handler);
+        _connection?.On<AdhocScriptCommand>("RunAdhocScriptAsync", handler);
     }
 
     // ── IAsyncDisposable ───────────────────────────────────────────────────

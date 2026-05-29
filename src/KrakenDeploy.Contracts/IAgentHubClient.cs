@@ -1,3 +1,5 @@
+using KrakenDeploy.Contracts.Adhoc;
+
 namespace KrakenDeploy.Contracts;
 
 /// <summary>
@@ -17,4 +19,17 @@ public interface IAgentHubClient
     /// <see cref="IAgentHubServer.CompleteDeploymentAsync"/>.
     /// </summary>
     Task RunDeploymentAsync(DeploymentPlan plan);
+
+    /// <summary>
+    /// M11.E.7 — instructs the agent to verify and run an operator-approved
+    /// ad-hoc script. The agent MUST verify
+    /// <see cref="AdhocScriptCommand.Signature"/> via
+    /// <see cref="AdhocScriptSigner.Verify"/> against its configured
+    /// <c>Adhoc:TrustedPublicKey</c> BEFORE executing; on signature mismatch
+    /// the agent refuses to run and reports the failure via
+    /// <see cref="IAgentHubServer.ReportAdhocResultAsync"/>. The script runs
+    /// once on this target only; the server fans the same command out to
+    /// every target in the session's frozen set in parallel.
+    /// </summary>
+    Task RunAdhocScriptAsync(AdhocScriptCommand command);
 }

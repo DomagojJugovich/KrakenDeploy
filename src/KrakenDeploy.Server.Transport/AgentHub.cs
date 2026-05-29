@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Contracts.Adhoc;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data;
 using Microsoft.AspNetCore.Authorization;
@@ -25,6 +26,7 @@ public sealed class AgentHub(
     TimeProvider timeProvider,
     IHubContext<UiHub, IUiHubClient> uiHub,
     IPendingSubPlanRegistry subPlans,
+    IPendingAdhocRegistry adhocPending,
     ILogger<AgentHub> logger)
     : Hub<IAgentHubClient>, IAgentHubServer
 {
@@ -435,6 +437,38 @@ public sealed class AgentHub(
             "Step '{Step}' (index {Index}) of deployment {Id} completed: " +
             "success={Success}, outputs={Count}.",
             stepName, stepIndex, deploymentId, success, outputVariables.Count);
+    }
+
+    /// <summary>
+    /// M11.E.7 — the agent's per-target adhoc-script outcome callback. The
+    /// hub resolves the connection's target id from its NameIdentifier claim
+    /// and routes the result to the matching slot in
+    /// <see cref="IPendingAdhocRegistry"/>. Late reports for a slot that has
+    /// already been cancelled (timeout / cleanup) are dropped silently — the
+    /// dispatcher's TCS has already resolved with an AgentError.
+    /// </summary>
+    public Task ReportAdhocResultAsync(AdhocScriptResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+
+        var connectionTargetId = GetTargetId();
+        if (connectionTargetId is null)
+        {
+            logger.LogWarning(
+                "ReportAdhocResult from connection {ConnectionId} with no valid " +
+                "NameIdentifier claim; dropping.", Context.ConnectionId);
+            return Task.CompletedTask;
+        }
+
+        if (!adhocPending.TryResolve(
+                result.SessionId, result.IterNumber, connectionTargetId.Value, result))
+        {
+            logger.LogDebug(
+                "ReportAdhocResult for session {SessionId} iter {Iter} target {Target} " +
+                "arrived after the slot was cancelled / unknown; dropping.",
+                result.SessionId, result.IterNumber, connectionTargetId.Value);
+        }
+        return Task.CompletedTask;
     }
 
     private static async Task PruneRetentionAsync(

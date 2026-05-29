@@ -21,5 +21,10 @@
   <ItemGroup>
     <ProjectReference Include="..\KrakenDeploy.Agent.Transport\KrakenDeploy.Agent.Transport.csproj" />
     <ProjectReference Include="..\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
+    <!-- M11.E.7 — AdhocScriptExecutor reuses ScriptRunner directly (rather
+         than going through the step-package loader) because ad-hoc actions
+         don't have a step package and the executor needs the raw process
+         exit code in its per-target result. -->
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.Common\KrakenDeploy.Steps.Common.csproj" />
   </ItemGroup>
 </Project>

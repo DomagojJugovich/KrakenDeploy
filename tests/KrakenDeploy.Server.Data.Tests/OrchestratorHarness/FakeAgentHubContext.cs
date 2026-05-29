@@ -137,6 +137,14 @@ internal sealed class FakeAgentClient(
 {
     public Task PingAsync() => Task.CompletedTask;
 
+    public Task RunAdhocScriptAsync(KrakenDeploy.Contracts.Adhoc.AdhocScriptCommand command)
+    {
+        // The orchestrator-harness covers deployments only; adhoc dispatch is
+        // exercised by AdhocDispatcherTests with its own fake pusher.
+        ArgumentNullException.ThrowIfNull(command);
+        return Task.CompletedTask;
+    }
+
     public Task RunDeploymentAsync(DeploymentPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);

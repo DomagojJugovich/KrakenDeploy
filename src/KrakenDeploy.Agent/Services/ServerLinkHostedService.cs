@@ -1,3 +1,4 @@
+using KrakenDeploy.Agent.Adhoc;
 using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.Deployment;
 using KrakenDeploy.Agent.Identity;
@@ -20,6 +21,7 @@ public sealed class ServerLinkHostedService(
     AgentContext context,
     IServerLink serverLink,
     DeploymentExecutor deploymentExecutor,
+    AdhocScriptExecutor adhocExecutor,
     MachineInfoCollector machineCollector,
     IOptions<ServerOptions> serverOptions,
     IOptions<AgentConfig> agentConfig,
@@ -49,6 +51,12 @@ public sealed class ServerLinkHostedService(
             // RunDeploymentAsync messages can arrive before the handler is wired.
             serverLink.OnRunDeployment(plan =>
                 Task.Run(() => deploymentExecutor.ExecuteAsync(plan), stoppingToken));
+
+            // M11.E.7 — same gate-before-open contract for ad-hoc commands.
+            // The executor is fail-closed: refuses on signature mismatch /
+            // missing public key, always reports back to the dispatcher.
+            serverLink.OnRunAdhocScript(cmd =>
+                Task.Run(() => adhocExecutor.HandleAsync(cmd), stoppingToken));
 
             await serverLink
                 .StartAsync(serverUrl, identity.AgentToken, stoppingToken)

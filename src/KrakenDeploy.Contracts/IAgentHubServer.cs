@@ -1,3 +1,5 @@
+using KrakenDeploy.Contracts.Adhoc;
+
 namespace KrakenDeploy.Contracts;
 
 /// <summary>
@@ -59,4 +61,17 @@ public interface IAgentHubServer
         bool success,
         string? errorMessage,
         Dictionary<string, string> outputVariables);
+
+    /// <summary>
+    /// M11.E.7 — reports an ad-hoc script's per-target outcome back to the
+    /// server. Called once per target after the agent has either run the
+    /// signed script (<see cref="AdhocScriptResult.AgentError"/> = null) or
+    /// refused to run it (signature mismatch, missing public key, runtime
+    /// exception). The server resolves the target id from this connection's
+    /// <c>NameIdentifier</c> claim, looks up the matching
+    /// <see cref="AdhocScriptCommand.SessionId"/> /
+    /// <see cref="AdhocScriptCommand.IterNumber"/> slot in the pending-adhoc
+    /// registry, and resolves the dispatcher's awaiting TCS.
+    /// </summary>
+    Task ReportAdhocResultAsync(AdhocScriptResult result);
 }

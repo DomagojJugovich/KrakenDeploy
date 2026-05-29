@@ -44,6 +44,28 @@ public sealed class ScriptRunner
         CancellationToken ct,
         string? powerShellEdition = null)
     {
+        var exit = await RunAndReturnExitCodeAsync(
+            scriptBody, syntax, workingDirectory,
+            environmentVariables, onOutput, ct, powerShellEdition).ConfigureAwait(false);
+        return exit == 0;
+    }
+
+    /// <summary>
+    /// M11.E.7 — same as <see cref="RunAsync"/> but returns the process exit
+    /// code rather than collapsing it to a bool. The ad-hoc-action executor
+    /// needs the raw code in its per-target result so the iteration-verdict
+    /// LLM can reason about specific exit values (non-zero from a Get-* probe
+    /// is treated differently from a service-restart failure).
+    /// </summary>
+    public async Task<int> RunAndReturnExitCodeAsync(
+        string scriptBody,
+        string syntax,
+        string workingDirectory,
+        IReadOnlyDictionary<string, string> environmentVariables,
+        Func<string, string, Task> onOutput,
+        CancellationToken ct,
+        string? powerShellEdition = null)
+    {
         var scriptFile = WriteScriptFile(scriptBody, syntax);
         try
         {
@@ -71,7 +93,7 @@ public sealed class ScriptRunner
         return path;
     }
 
-    private async Task<bool> ExecuteAsync(
+    private async Task<int> ExecuteAsync(
         string scriptFile,
         string syntax,
         string? powerShellEdition,
@@ -121,7 +143,7 @@ public sealed class ScriptRunner
 
         var exitCode = process.ExitCode;
         _logger.LogDebug("Script exited with code {ExitCode}.", exitCode);
-        return exitCode == 0;
+        return exitCode;
     }
 
     private static (string exe, string args) BuildCommand(

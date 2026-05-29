@@ -4,6 +4,7 @@ using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Json;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Contracts.Adhoc;
 
 namespace KrakenDeploy.Agent.Transport;
 
@@ -151,6 +152,24 @@ public sealed class PollingServerLink : IServerLink
         _ = deploymentId; _ = stepIndex; _ = stepName; _ = success;
         _ = errorMessage; _ = outputVariables; _ = ct;
         return Task.CompletedTask;
+    }
+
+    public Task ReportAdhocResultAsync(AdhocScriptResult result, CancellationToken ct)
+    {
+        // TODO(polling-transport): expose a REST endpoint that accepts the
+        // M11.E.7 adhoc result and routes it to the server's pending-adhoc
+        // registry. SignalR is the primary path; Polling adhoc execution is
+        // not supported until this endpoint lands.
+        _ = result; _ = ct;
+        return Task.CompletedTask;
+    }
+
+    public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler)
+    {
+        // TODO(polling-transport): include AdhocScriptCommand in the polling
+        // response payload (alongside DeploymentPlan) and fire the registered
+        // handler. Until then, adhoc commands are delivered only over SignalR.
+        ArgumentNullException.ThrowIfNull(handler);
     }
 
     public ValueTask DisposeAsync()

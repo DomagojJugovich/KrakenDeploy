@@ -1,4 +1,5 @@
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Contracts.Adhoc;
 
 namespace KrakenDeploy.Agent.Transport;
 
@@ -51,6 +52,15 @@ public interface IServerLink : IAsyncDisposable
         IReadOnlyDictionary<string, string> outputVariables,
         CancellationToken ct);
 
+    /// <summary>
+    /// M11.E.7 — reports an ad-hoc script's outcome (or refusal) back to the
+    /// server. Always called exactly once per <see cref="OnRunAdhocScript"/>
+    /// invocation, even on the agent's refuse-to-run paths (signature mismatch,
+    /// missing key, …) — the server's TCS slot is waiting and must always be
+    /// resolved.
+    /// </summary>
+    Task ReportAdhocResultAsync(AdhocScriptResult result, CancellationToken ct);
+
     // ── Server → Agent (subscriptions) ────────────────────────────────────
 
     /// <summary>
@@ -59,4 +69,11 @@ public interface IServerLink : IAsyncDisposable
     /// before the connection is opened.
     /// </summary>
     void OnRunDeployment(Func<DeploymentPlan, Task> handler);
+
+    /// <summary>
+    /// M11.E.7 — registers a handler for the <c>RunAdhocScriptAsync</c>
+    /// server-push message. Must be called before <see cref="StartAsync"/>.
+    /// The handler MUST verify the signature before executing the script.
+    /// </summary>
+    void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler);
 }

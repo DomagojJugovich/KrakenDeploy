@@ -267,6 +267,10 @@ public static class Program
         builder.Services.AddSingleton<ServerScriptStepRunner>();
         builder.Services.AddSingleton<DeployReleaseStepRunner>();
         builder.Services.AddSingleton<IPendingSubPlanRegistry, PendingSubPlanRegistry>();
+        // M11.E.7 — per-target adhoc-script dispatch + result collation.
+        builder.Services.AddSingleton<IPendingAdhocRegistry, PendingAdhocRegistry>();
+        builder.Services.AddSingleton<IAdhocAgentPusher, HubContextAdhocAgentPusher>();
+        builder.Services.AddSingleton<AdhocDispatcher>();
 
         // M11.C — autonomous failure diagnosis. The orchestrator drops failed
         // (started) deployment ids on the channel; the worker drains it +

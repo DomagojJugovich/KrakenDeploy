@@ -145,6 +145,10 @@ static async Task<int> RunAsync(string[] args)
 
     // ── Scoped/Transient services ────────────────────────────────────────
     builder.Services.AddTransient<DeploymentExecutor>();
+    // M11.E.7 — fail-closed verify-then-run handler for adhoc agent actions.
+    builder.Services.AddSingleton<KrakenDeploy.Agent.Adhoc.IAdhocScriptInvoker,
+        KrakenDeploy.Agent.Adhoc.ScriptRunnerInvoker>();
+    builder.Services.AddTransient<KrakenDeploy.Agent.Adhoc.AdhocScriptExecutor>();
 
     // ── Hosted services — registered in start-up order ───────────────────
     // 1. RegistrationHostedService populates AgentContext.

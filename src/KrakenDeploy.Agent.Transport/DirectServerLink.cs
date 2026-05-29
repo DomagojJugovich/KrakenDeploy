@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Contracts.Adhoc;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -148,6 +149,25 @@ public sealed class DirectServerLink : IServerLink
         _ = deploymentId; _ = stepIndex; _ = stepName; _ = success;
         _ = errorMessage; _ = outputVariables; _ = ct;
         return Task.CompletedTask;
+    }
+
+    public Task ReportAdhocResultAsync(AdhocScriptResult result, CancellationToken ct)
+    {
+        // TODO(direct-transport): expose a REST endpoint that POSTs the
+        // M11.E.7 per-target adhoc result back to the server. SignalR is the
+        // primary path; Direct adhoc-script execution is not supported until
+        // this endpoint lands.
+        _ = result; _ = ct;
+        return Task.CompletedTask;
+    }
+
+    public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler)
+    {
+        // TODO(direct-transport): add a POST /api/agent/adhoc endpoint that
+        // deserialises an AdhocScriptCommand and fires the registered handler
+        // (mirror the RunDeployment shape). Until then, adhoc commands are
+        // delivered only over SignalR.
+        ArgumentNullException.ThrowIfNull(handler);
     }
 
     public async ValueTask DisposeAsync()

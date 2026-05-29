@@ -59,6 +59,8 @@ public sealed class SpacesTests
             "DeploymentLogEntry",
             "DeploymentArtifact",
             "DeploymentOutputVariable",
+            // M11.E.12 — child of AdhocSession; scope inherits via SessionId.
+            "AdhocIteration",
             // M14.5 — per-step outcome aggregate; same reasoning as
             // DeploymentOutputVariable, scope inherits via DeploymentId.
             "DeploymentStepOutcome",
