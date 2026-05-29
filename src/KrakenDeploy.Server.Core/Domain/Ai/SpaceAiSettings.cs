@@ -92,6 +92,17 @@ public class SpaceAiSettings : AuditableEntity, ISpaceScoped
     /// </summary>
     public int AdhocMaxIterations { get; set; } = 5;
 
+    /// <summary>
+    /// M11.E.11 — when <c>true</c>, an ad-hoc iteration that meets the high-risk
+    /// trigger (a <see cref="AdhocMode.Mutating"/> session OR any
+    /// <see cref="Targets.TargetRiskLevel.Production"/> target in the frozen set)
+    /// requires a SECOND, distinct approver before the server signs + dispatches.
+    /// The second approver must differ from the first approver AND from the
+    /// session creator. Off by default — single-approver is the v1 lock; this is
+    /// the per-Space opt-in to dual control (SaaS-tunable like the other knobs).
+    /// </summary>
+    public bool AdhocTwoPersonApproval { get; set; }
+
     /// <summary>M11.D — process-builder UI assistant.</summary>
     public bool AssistantEnabled { get; set; }
 }

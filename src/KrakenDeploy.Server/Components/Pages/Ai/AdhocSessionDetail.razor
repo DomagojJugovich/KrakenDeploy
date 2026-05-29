@@ -39,6 +39,8 @@ else
                      BadgeStyle="@StatusBadgeStyle(_session.Status)" />
         <RadzenBadge IsPill="true" Text="@_session.Mode.ToString()"
                      BadgeStyle="@(_session.Mode == AdhocMode.Mutating ? BadgeStyle.Warning : BadgeStyle.Secondary)" />
+        <RadzenBadge IsPill="true" Text="@($"Risk: {_effectiveRisk}")"
+                     BadgeStyle="@RiskBadge(_effectiveRisk)" />
         <div style="flex:1"></div>
         @if (_session.Status == AdhocSessionStatus.Active)
         {
@@ -110,10 +112,12 @@ else
                                          BadgeStyle="@VerdictBadge(iter.Verdict)" />
                         }
                         <div style="flex:1"></div>
-                        @if (iter.Status == AdhocIterationStatus.PendingApproval
+                        @if ((iter.Status is AdhocIterationStatus.PendingApproval
+                                  or AdhocIterationStatus.PendingSecondApproval)
                              && _session.Status == AdhocSessionStatus.Active)
                         {
-                            <RadzenButton Icon="check_circle" Text="Approve / Reject"
+                            <RadzenButton Icon="check_circle"
+                                          Text="@(iter.Status == AdhocIterationStatus.PendingSecondApproval ? "Second approval" : "Approve / Reject")"
                                           ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
                                           Click="@(() => OpenApprovalAsync(iter))" />
                         }
@@ -181,10 +185,18 @@ else
                         }
                     }
 
+                    @if (iter.FirstApprovedByUserId is not null)
+                    {
+                        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                            First approved by @iter.FirstApprovedByDisplay on
+                            @iter.FirstApprovedAtUtc?.LocalDateTime.ToString("yyyy-MM-dd HH:mm")
+                        </RadzenText>
+                    }
                     @if (iter.ApprovedByUserId is not null)
                     {
                         <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
-                            Approved by @iter.ApprovedByDisplay on
+                            @(iter.FirstApprovedByUserId is not null ? "Second approved" : "Approved")
+                            by @iter.ApprovedByDisplay on
                             @iter.ApprovedAtUtc?.LocalDateTime.ToString("yyyy-MM-dd HH:mm")
                         </RadzenText>
                     }
@@ -199,6 +211,7 @@ else
 
     private AdhocSession? _session;
     private List<DeploymentTarget> _targets = [];
+    private TargetRiskLevel _effectiveRisk = TargetRiskLevel.Development;
     private bool _generating;
     private bool _hasPendingIter
         => _session?.Iterations.Any(i => i.Status == AdhocIterationStatus.PendingApproval) ?? false;
@@ -217,6 +230,8 @@ else
             .OrderBy(t => t.Name)
             .AsNoTracking()
             .ToListAsync();
+
+        _effectiveRisk = await Adhoc.GetEffectiveRiskAsync(Id);
     }
 
     private async Task GenerateFirstAsync()
@@ -248,9 +263,10 @@ else
             $"Iteration {iter.IterNumber} — approve / reject",
             new Dictionary<string, object?>
             {
-                [nameof(ApproveAdhocIterationDialog.Session)]     = _session!,
-                [nameof(ApproveAdhocIterationDialog.Iteration)]   = iter,
-                [nameof(ApproveAdhocIterationDialog.TargetCount)] = _targets.Count,
+                [nameof(ApproveAdhocIterationDialog.Session)]       = _session!,
+                [nameof(ApproveAdhocIterationDialog.Iteration)]     = iter,
+                [nameof(ApproveAdhocIterationDialog.TargetCount)]   = _targets.Count,
+                [nameof(ApproveAdhocIterationDialog.EffectiveRisk)] = _effectiveRisk,
             },
             new DialogOptions { Width = "820px" });
 
@@ -294,12 +310,20 @@ else
 
     private static BadgeStyle IterStatusBadge(AdhocIterationStatus s) => s switch
     {
-        AdhocIterationStatus.PendingApproval => BadgeStyle.Info,
-        AdhocIterationStatus.Approved        => BadgeStyle.Primary,
-        AdhocIterationStatus.Rejected        => BadgeStyle.Light,
-        AdhocIterationStatus.Executing       => BadgeStyle.Warning,
-        AdhocIterationStatus.Completed       => BadgeStyle.Success,
-        _                                    => BadgeStyle.Light,
+        AdhocIterationStatus.PendingApproval       => BadgeStyle.Info,
+        AdhocIterationStatus.PendingSecondApproval => BadgeStyle.Warning,
+        AdhocIterationStatus.Approved              => BadgeStyle.Primary,
+        AdhocIterationStatus.Rejected              => BadgeStyle.Light,
+        AdhocIterationStatus.Executing             => BadgeStyle.Warning,
+        AdhocIterationStatus.Completed             => BadgeStyle.Success,
+        _                                          => BadgeStyle.Light,
+    };
+
+    private static BadgeStyle RiskBadge(TargetRiskLevel risk) => risk switch
+    {
+        TargetRiskLevel.Production  => BadgeStyle.Danger,
+        TargetRiskLevel.Staging     => BadgeStyle.Warning,
+        _                           => BadgeStyle.Info,
     };
 
     private static BadgeStyle VerdictBadge(AdhocVerdict v) => v switch

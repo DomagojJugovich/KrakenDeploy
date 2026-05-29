@@ -73,8 +73,23 @@ public class AdhocIteration : Entity
     /// approval time. Null until approved.</summary>
     public string? ApprovedByDisplay { get; set; }
 
-    /// <summary>UTC approval timestamp. Null until approved.</summary>
+    /// <summary>UTC approval timestamp. Null until approved. In two-person
+    /// mode this is the SECOND (final) approval; see the First* fields.</summary>
     public DateTimeOffset? ApprovedAtUtc { get; set; }
+
+    // ── Two-person approval (M11.E.11) ──────────────────────────────────────
+
+    /// <summary>First approver's user id, set when a two-person-required
+    /// iteration records the first of two approvals (status →
+    /// <see cref="AdhocIterationStatus.PendingSecondApproval"/>). Null in
+    /// single-approver mode.</summary>
+    public Guid? FirstApprovedByUserId { get; set; }
+
+    /// <summary>Denormalised display name of the first approver.</summary>
+    public string? FirstApprovedByDisplay { get; set; }
+
+    /// <summary>UTC timestamp of the first approval.</summary>
+    public DateTimeOffset? FirstApprovedAtUtc { get; set; }
 
     // ── Execution results (M11.E.7) ─────────────────────────────────────────
 
@@ -127,6 +142,11 @@ public enum AdhocIterationStatus
 
     /// <summary>All targets reported back; results + verdict recorded.</summary>
     Completed = 4,
+
+    /// <summary>Two-person mode (M11.E.11): the first of two approvals was
+    /// recorded; awaiting a second, distinct approver before the script is
+    /// signed + dispatched.</summary>
+    PendingSecondApproval = 5,
 }
 
 /// <summary>

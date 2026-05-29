@@ -255,6 +255,16 @@
                             The cap is frozen onto a session when it is created — changing it
                             here only affects sessions started afterwards.
                         </RadzenText>
+
+                        <RadzenCheckBox @bind-Value="_form.AdhocTwoPersonApproval"
+                                        TValue="bool"
+                                        Disabled="@(!_canManage)" />
+                        <label class="rz-checkbox-label" style="margin-left: -1rem;">
+                            Require <strong>two-person approval</strong> <em>(M11.E.11)</em> for
+                            high-risk iterations — a mutating session, or any Production-risk
+                            target in the frozen set. The second approver must differ from the
+                            first approver and from the session creator.
+                        </label>
                     }
 
                     <RadzenCheckBox @bind-Value="_form.AssistantEnabled"
@@ -393,6 +403,7 @@
                 McpEnabled        = _form.McpEnabled,
                 AdhocEnabled      = _form.AdhocEnabled,
                 AdhocMaxIterations = _form.AdhocMaxIterations,
+                AdhocTwoPersonApproval = _form.AdhocTwoPersonApproval,
                 AssistantEnabled  = _form.AssistantEnabled,
             };
             _loaded = await SettingsSvc.UpdateAsync(req);
@@ -526,6 +537,7 @@
         public bool    McpEnabled        { get; set; }
         public bool    AdhocEnabled      { get; set; }
         public int     AdhocMaxIterations { get; set; } = 5;
+        public bool    AdhocTwoPersonApproval { get; set; }
         public bool    AssistantEnabled  { get; set; }
 
         public static FormState FromDto(SpaceAiSettingsDto dto) => new()
@@ -540,6 +552,7 @@
             McpEnabled        = dto.McpEnabled,
             AdhocEnabled      = dto.AdhocEnabled,
             AdhocMaxIterations = dto.AdhocMaxIterations,
+            AdhocTwoPersonApproval = dto.AdhocTwoPersonApproval,
             AssistantEnabled  = dto.AssistantEnabled,
         };
     }

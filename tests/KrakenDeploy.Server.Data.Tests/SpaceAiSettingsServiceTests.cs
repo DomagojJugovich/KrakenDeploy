@@ -40,6 +40,8 @@ public sealed class SpaceAiSettingsServiceTests(PostgresFixture postgres)
         dto.DiagnosisEnabled.Should().BeFalse();
         dto.AdhocMaxIterations.Should().Be(5,
             "the default-shaped DTO must report the documented default cap");
+        dto.AdhocTwoPersonApproval.Should().BeFalse(
+            "two-person approval is opt-in; default off");
     }
 
     [Fact]
@@ -153,14 +155,17 @@ public sealed class SpaceAiSettingsServiceTests(PostgresFixture postgres)
         var svc = NewSvc();
         await svc.UpdateAsync(new UpdateSpaceAiSettingsRequest
         {
-            Provider           = KrakenAiProviderValue.Anthropic,
-            AdhocEnabled       = true,
-            AdhocMaxIterations = 8,
+            Provider               = KrakenAiProviderValue.Anthropic,
+            AdhocEnabled           = true,
+            AdhocMaxIterations     = 8,
+            AdhocTwoPersonApproval = true,
         });
 
         var dto = await svc.GetAsync();
         dto.AdhocMaxIterations.Should().Be(8,
             "the per-Space cap must survive the write/read round-trip");
+        dto.AdhocTwoPersonApproval.Should().BeTrue(
+            "the two-person opt-in must survive the write/read round-trip");
     }
 
     [Theory]

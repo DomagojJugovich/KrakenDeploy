@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Approved |
-| **Version** | 1.2 (M11.E) |
+| **Version** | 1.3 (M11.E) |
 | **Last updated** | 2026-05-29 |
 | **Applies to** | KrakenDeploy server `/adhoc` page + `/mcp` `run_adhoc_action` tool, agent verify-then-run pipeline |
 | **Technologies** | .NET 10, `System.Management.Automation` 7.6 (PowerShell AST parser), `RSA-SHA256` signing, SignalR control plane, Radzen Blazor UI |
@@ -87,7 +87,8 @@ not "policies we hope to follow". Each row maps to where the invariant lives.
 | **Mode immutability** — a `Readonly` session can never run a `Mutating` script. | The operator's risk choice at session-creation time is final; an LLM-proposed fix can't quietly escalate. | `AdhocScriptGate.Analyze(_, AdhocMode.Readonly)` rejects anything not on the Get-/Test-/Measure-* allowlist (plus a curated safe-utility set). Re-runs on every iteration. M11.E.15b. |
 | **Gate on every iteration** — the operator-approved final form of every iteration's script goes through the AST gate. | An operator might edit the script before approving; a proposed-fix script is a fresh attack surface. | `AdhocSessionService.GenerateFirstIterationAsync` + `ApproveIterationAsync` + the proposed-fix branch in `AdvanceAfterVerdictAsync` — all call `AdhocScriptGate.Analyze`. M11.E.15c. |
 | **Signing on every iteration** — every approval signs the *exact* script bytes; the agent re-verifies. | The agent never trusts a script payload, only the signature gate. Tampering anywhere on the path breaks verification. | `AdhocScriptSigner.Sign` (server), `AdhocScriptSigner.Verify` (agent's `AdhocScriptExecutor`). Canonical input includes a schema version + the (`SessionId`, `IterNumber`, script bytes) tuple — replays across sessions or turns fail. M11.E.6 / M11.E.15e. |
-| **Single-approver permission gate** — `Permission.AdhocActionsExecute` + Space membership. | Single-approver matches the deployment-execute model already in production; two-person rule deferred behind a feature flag (M11.E.11) until production incidents motivate it. | `[Authorize(Policy = "perm:AdhocActionsExecute")]` on `/adhoc` pages; `EnsureAuthorisedAsync` in `AdhocTools` for MCP. M11.E.5. |
+| **Approver permission gate** — `Permission.AdhocActionsExecute` + Space membership. Single-approver by default; **two-person** is a per-Space opt-in (M11.E.11). | Single-approver matches the deployment-execute model; high-risk Spaces can require dual control. | `[Authorize(Policy = "perm:AdhocActionsExecute")]` on `/adhoc` pages; `EnsureAuthorisedAsync` in `AdhocTools` for MCP. M11.E.5. |
+| **Two-person approval (opt-in)** — when `SpaceAiSettings.AdhocTwoPersonApproval` is on AND the iteration is high-risk (Mutating session OR any Production-risk target in the frozen set), signing+dispatch require a SECOND, distinct approver. | Dual control for the highest-blast-radius actions, without forcing it on every Space. | `AdhocSessionService.ApproveIterationAsync`: first approval → `PendingSecondApproval` (no sign/dispatch); second must differ from the first approver AND the session creator. Risk = MAX over the frozen targets' current `RiskLevel` (deleted/unresolvable target ⇒ Production, fail-safe). M11.E.11. |
 | **Iteration cap** — per-Space (default 5, bounded 1–20); auto-closes with `Status = CapReached` and a "manual intervention required" log entry. | Stops a runaway loop if the LLM keeps proposing broken scripts; SaaS-tunable so each Space bounds its own blast radius + AI spend. | `AdhocSession.MaxIterations` is frozen at session creation from the current Space's `SpaceAiSettings.AdhocMaxIterations` (fallback `Ai:Adhoc:MaxIterationsPerSession`, then 5). `AdhocSessionService.AdvanceAfterVerdictAsync` checks before opening iter N+1. M11.E.14. |
 | **Agent fail-closed verification** — missing public key, malformed PEM, signature mismatch, dynamic command invocation → refuse, report `AgentError`, do NOT execute. | The gate is the script's first filter; the signature is the script's last. The agent is the last line of defence. | `AdhocScriptExecutor.HandleAsync` — three explicit fail-closed branches, each reports back so the dispatcher's TCS resolves. |
 
@@ -133,6 +134,8 @@ Honesty up front. The AST gate is one layer of defence, not the only one.
 | `SpaceAiSettings.AdhocMaxIterations` | per-Space row in `space_ai_settings` (UI: **Configuration → AI Settings**) | integer 1–20 | **Primary** iteration-cap source (default 5). Frozen onto each session at creation, so edits only affect later sessions. Validated 1–20 at the API boundary. |
 | `Ai:Adhoc:MaxIterationsPerSession` | server | positive integer | Deployment-wide **fallback** used only when a Space has no `space_ai_settings` row at all. Hard default 5 when unset. |
 | `SpaceAiSettings.AdhocEnabled` | per-Space row in `space_ai_settings` (UI: **Configuration → AI Settings**) | bool | Off by default. Disabling hides the **New session** CTA and surfaces an "Ad-hoc actions are disabled for this Space" banner. |
+| `SpaceAiSettings.AdhocTwoPersonApproval` | per-Space row in `space_ai_settings` (UI: **Configuration → AI Settings**) | bool | Off by default. When on, high-risk iterations (Mutating OR a Production target) require a second, distinct approver before sign+dispatch. |
+| `DeploymentTarget.RiskLevel` | per-target column `deployment_targets.risk_level` (UI: **target detail page**, MachineEdit) | `{Development,Staging,Production}` | Operator-set; **default Production** (fail-safe, backfilled). Drives the louder approval banner + the two-person trigger (session risk = MAX over the frozen set). |
 | `KrakenAiFeature.Adhoc` budget bucket | implicit | — | Every LLM call (generation + verdict) attributes to this bucket via the M11.A wrapper; budget overflow → `BudgetExceeded` typed exception → 503 to the UI / MCP caller. |
 
 ### Key generation example (operator runbook)
@@ -172,9 +175,16 @@ operator who needs it creates a custom role carrying only `AdhocActionsExecute`
 exclusion is also enforced on upgrade — any deployment that previously
 seeded the permission onto a built-in role has it revoked on next start.
 
-The single-approver rule is locked for v1 (M11.E.5). A two-person rule
-is deferred behind a feature flag (M11.E.11) — revisit if production
-incidents motivate it.
+Single-approver is the default. **Two-person approval (M11.E.11)** is a
+per-Space opt-in (`SpaceAiSettings.AdhocTwoPersonApproval`): when on, an
+iteration that is high-risk — a `Mutating` session OR a frozen target set whose
+**maximum** `RiskLevel` is `Production` — needs a second, distinct approver
+before the server signs + dispatches. The second approver must differ from the
+first approver and from the session creator; the script can't be edited at
+second approval (it would invalidate the first review). Effective risk is
+recomputed at each approval from the targets' current classifications, so a
+mid-session reclassification tightens the next approval. A since-deleted or
+unresolvable target counts as `Production` (fail-safe).
 
 ---
 
@@ -243,12 +253,6 @@ These are the high-risk patterns whose ABSENCE is intentional:
   script per iteration runs on the full frozen set. If the operator
   needs different actions on different subsets, they start separate
   sessions with narrower target selectors.
-- **`RiskLevel ∈ {Dev, Staging, Production}` on targets** (M11.E.11) —
-  the louder-warning-on-production-mutating banner is structured to
-  light up when that field ships; the field itself is deferred.
-- **Two-person approval rule** (M11.E.11) — single-approver is locked
-  for v1.
-
 **Future-work — revise the reflection/assembly-load block.** The current
 dangerous-type blocklist rejects all of `System.Reflection` (and `Add-Type`),
 which over-blocks legitimate reflection use (much functionality is only

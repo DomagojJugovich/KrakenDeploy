@@ -339,9 +339,143 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
             "deployment-wide config fallback");
     }
 
+    // ── Two-person approval (M11.E.11) ───────────────────────────────────────
+
+    [Fact]
+    public async Task TwoPerson_mutating_requires_two_distinct_approvers()
+    {
+        var target = await SeedTargetAsync("web-01");
+        await EnableTwoPersonAsync();
+        var harness = NewHarness();
+        var creator = Guid.NewGuid();
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "do x", AdhocMode.Mutating, [target.Id], creator, "creator@laus.hr", default);
+        var iterId = await harness.Service.GenerateFirstIterationAsync(sessionId, default);
+
+        // First approval by user A → awaits a second approver; nothing dispatched.
+        var userA = Guid.NewGuid();
+        var first = await harness.Service.ApproveIterationAsync(
+            sessionId, iterId, userA, "a@laus.hr", null, default);
+        first.AwaitingSecondApproval.Should().BeTrue();
+        first.SessionStatus.Should().Be(AdhocSessionStatus.Active);
+
+        await using (var db = postgres.CreateContext())
+        {
+            var it = await db.AdhocIterations.SingleAsync(i => i.Id == iterId);
+            it.Status.Should().Be(AdhocIterationStatus.PendingSecondApproval);
+            it.ScriptSignature.Should().BeNull("the script is not signed until the second approval");
+            it.FirstApprovedByUserId.Should().Be(userA);
+        }
+
+        // Second approval by a distinct user B → signs, dispatches, completes.
+        var userB = Guid.NewGuid();
+        var second = await harness.Service.ApproveIterationAsync(
+            sessionId, iterId, userB, "b@laus.hr", null, default);
+        second.AwaitingSecondApproval.Should().BeFalse();
+        second.Verdict.Should().Be(AdhocVerdict.AllSucceeded);
+
+        await using (var db = postgres.CreateContext())
+        {
+            var it = await db.AdhocIterations.SingleAsync(i => i.Id == iterId);
+            it.Status.Should().Be(AdhocIterationStatus.Completed);
+            it.ScriptSignature.Should().NotBeNullOrEmpty();
+            it.ApprovedByUserId.Should().Be(userB);
+        }
+    }
+
+    [Fact]
+    public async Task TwoPerson_second_approver_must_differ_from_first()
+    {
+        var target = await SeedTargetAsync("web-01");
+        await EnableTwoPersonAsync();
+        var harness = NewHarness();
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "x", AdhocMode.Mutating, [target.Id], Guid.NewGuid(), "creator", default);
+        var iterId = await harness.Service.GenerateFirstIterationAsync(sessionId, default);
+        var userA = Guid.NewGuid();
+        await harness.Service.ApproveIterationAsync(sessionId, iterId, userA, "a", null, default);
+
+        var act = async () => await harness.Service.ApproveIterationAsync(
+            sessionId, iterId, userA, "a", null, default);
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*different person*");
+    }
+
+    [Fact]
+    public async Task TwoPerson_second_approver_must_not_be_creator()
+    {
+        var target = await SeedTargetAsync("web-01");
+        await EnableTwoPersonAsync();
+        var harness = NewHarness();
+        var creator = Guid.NewGuid();
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "x", AdhocMode.Mutating, [target.Id], creator, "creator", default);
+        var iterId = await harness.Service.GenerateFirstIterationAsync(sessionId, default);
+        await harness.Service.ApproveIterationAsync(sessionId, iterId, Guid.NewGuid(), "a", null, default);
+
+        var act = async () => await harness.Service.ApproveIterationAsync(
+            sessionId, iterId, creator, "creator", null, default);
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*creator*");
+    }
+
+    [Fact]
+    public async Task TwoPerson_readonly_nonprod_stays_single_approver()
+    {
+        var target = await SeedTargetAsync("web-01", TargetRiskLevel.Development);
+        await EnableTwoPersonAsync();
+        var harness = NewHarness();
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "list", AdhocMode.Readonly, [target.Id], Guid.NewGuid(), "creator", default);
+        var iterId = await harness.Service.GenerateFirstIterationAsync(sessionId, default);
+
+        var outcome = await harness.Service.ApproveIterationAsync(
+            sessionId, iterId, Guid.NewGuid(), "a", null, default);
+        outcome.AwaitingSecondApproval.Should().BeFalse(
+            "readonly + non-Production doesn't meet the two-person trigger");
+        outcome.Verdict.Should().Be(AdhocVerdict.AllSucceeded);
+    }
+
+    [Fact]
+    public async Task TwoPerson_readonly_production_target_requires_two_person()
+    {
+        var dev  = await SeedTargetAsync("dev-01",  TargetRiskLevel.Development);
+        var prod = await SeedTargetAsync("prod-01", TargetRiskLevel.Production);
+        await EnableTwoPersonAsync();
+        var harness = NewHarness();
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "list", AdhocMode.Readonly, [dev.Id, prod.Id], Guid.NewGuid(), "creator", default);
+        var iterId = await harness.Service.GenerateFirstIterationAsync(sessionId, default);
+
+        var first = await harness.Service.ApproveIterationAsync(
+            sessionId, iterId, Guid.NewGuid(), "a", null, default);
+        first.AwaitingSecondApproval.Should().BeTrue(
+            "one Production target makes the session's max risk Production → two-person even in readonly");
+    }
+
+    [Fact]
+    public async Task GetEffectiveRisk_is_max_across_frozen_targets()
+    {
+        var dev  = await SeedTargetAsync("dev",  TargetRiskLevel.Development);
+        var prod = await SeedTargetAsync("prod", TargetRiskLevel.Production);
+        var harness = NewHarness();
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "x", AdhocMode.Readonly, [dev.Id, prod.Id], Guid.NewGuid(), "c", default);
+
+        (await harness.Service.GetEffectiveRiskAsync(sessionId))
+            .Should().Be(TargetRiskLevel.Production);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
-    private async Task<DeploymentTarget> SeedTargetAsync(string name)
+    private async Task<DeploymentTarget> SeedTargetAsync(
+        string name, TargetRiskLevel risk = TargetRiskLevel.Development)
     {
         await using var db = postgres.CreateContext();
         var t = new DeploymentTarget
@@ -350,10 +484,24 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
             OperatingSystem = "Windows Server 2022",
             Roles = ["web"],
             Status = TargetStatus.Online,
+            RiskLevel = risk,
         };
         db.DeploymentTargets.Add(t);
         await db.SaveChangesAsync();
         return t;
+    }
+
+    private async Task EnableTwoPersonAsync()
+    {
+        await using var db = postgres.CreateContext();
+        db.SpaceAiSettings.Add(new SpaceAiSettings
+        {
+            SpaceId                = WellKnown.DefaultSpaceId,
+            Provider               = KrakenAiProviderValue.Anthropic,
+            AdhocEnabled           = true,
+            AdhocTwoPersonApproval = true,
+        });
+        await db.SaveChangesAsync();
     }
 
     private async Task SeedSpaceAdhocMaxIterationsAsync(int value)

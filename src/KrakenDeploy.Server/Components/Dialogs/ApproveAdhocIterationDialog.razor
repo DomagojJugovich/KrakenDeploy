@@ -1,5 +1,6 @@
 @using System.Security.Claims
 @using KrakenDeploy.Server.Core.Domain.Ai
+@using KrakenDeploy.Server.Core.Domain.Targets
 @using KrakenDeploy.Server.Transport
 
 @inject AdhocSessionService Adhoc
@@ -33,6 +34,24 @@
             </RadzenText>
         </RadzenStack>
     </RadzenAlert>
+
+    @if (EffectiveRisk == TargetRiskLevel.Production)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" Shade="Shade.Lighter" AllowClose="false">
+            <strong>Production risk.</strong> The frozen target set includes a
+            Production-classified target — review the script with extra care.
+        </RadzenAlert>
+    }
+
+    @if (Iteration.Status == AdhocIterationStatus.PendingSecondApproval)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" Shade="Shade.Lighter" AllowClose="false">
+            <strong>Second approval required.</strong> First approved by
+            @Iteration.FirstApprovedByDisplay@(Iteration.FirstApprovedAtUtc is { } t
+                ? $" on {t.LocalDateTime:yyyy-MM-dd HH:mm}" : "").
+            You must be a different person from both the first approver and the session creator.
+        </RadzenAlert>
+    }
 
     @if (!string.IsNullOrEmpty(Iteration.Description))
     {
@@ -94,7 +113,8 @@
                 <RadzenButton Text="Edit and approve" ButtonStyle="ButtonStyle.Light" Icon="edit"
                               Click="@(() => _editing = true)" Disabled="@_busy" />
             }
-            <RadzenButton Text="Approve" ButtonStyle="ButtonStyle.Primary" Icon="check_circle"
+            <RadzenButton Text="@(Iteration.Status == AdhocIterationStatus.PendingSecondApproval ? "Approve (2nd)" : "Approve")"
+                          ButtonStyle="ButtonStyle.Primary" Icon="check_circle"
                           Click="ApproveAsync" IsBusy="@_busy" />
         </RadzenStack>
     </RadzenStack>
@@ -104,6 +124,10 @@
     [Parameter, EditorRequired] public AdhocSession Session { get; set; } = default!;
     [Parameter, EditorRequired] public AdhocIteration Iteration { get; set; } = default!;
     [Parameter] public int TargetCount { get; set; }
+
+    /// <summary>Max risk across the session's frozen target set — drives the
+    /// louder Production banner. Defaults low so an omitted value never over-warns.</summary>
+    [Parameter] public TargetRiskLevel EffectiveRisk { get; set; } = TargetRiskLevel.Development;
 
     private bool _editing;
     private string _editedScript = string.Empty;
@@ -133,8 +157,16 @@
             var outcome = await Adhoc.ApproveIterationAsync(
                 Session.Id, Iteration.Id, userId, display, edited, default);
 
-            Notify.Notify(NotificationSeverity.Success, "Approved",
-                $"Verdict: {outcome.Verdict}.", 4000);
+            if (outcome.AwaitingSecondApproval)
+            {
+                Notify.Notify(NotificationSeverity.Info, "First approval recorded",
+                    "A second, distinct approver is required before this runs.", 5000);
+            }
+            else
+            {
+                Notify.Notify(NotificationSeverity.Success, "Approved",
+                    $"Verdict: {outcome.Verdict}.", 4000);
+            }
             Dialog.Close(true);
         }
         catch (AdhocGateRejectedException ex)

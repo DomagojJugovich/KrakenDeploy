@@ -57,6 +57,7 @@ public sealed class SpaceAiSettingsService(
                 McpEnabled        = row.McpEnabled,
                 AdhocEnabled      = row.AdhocEnabled,
                 AdhocMaxIterations = row.AdhocMaxIterations,
+                AdhocTwoPersonApproval = row.AdhocTwoPersonApproval,
                 AssistantEnabled  = row.AssistantEnabled,
             };
     }
@@ -95,6 +96,7 @@ public sealed class SpaceAiSettingsService(
         row.McpEnabled        = request.McpEnabled;
         row.AdhocEnabled      = request.AdhocEnabled;
         row.AdhocMaxIterations = request.AdhocMaxIterations;
+        row.AdhocTwoPersonApproval = request.AdhocTwoPersonApproval;
         row.AssistantEnabled  = request.AssistantEnabled;
 
         if (request.ApiKey == ApiKeyClearSentinel)
@@ -254,6 +256,8 @@ public sealed record SpaceAiSettingsDto
     public bool AdhocEnabled { get; init; }
     /// <summary>M11.E per-Space ad-hoc iteration cap. Defaults to 5.</summary>
     public int AdhocMaxIterations { get; init; } = 5;
+    /// <summary>M11.E.11 per-Space two-person approval opt-in. Defaults to false.</summary>
+    public bool AdhocTwoPersonApproval { get; init; }
     public bool AssistantEnabled { get; init; }
 }
 
@@ -279,6 +283,8 @@ public sealed record UpdateSpaceAiSettingsRequest
     /// Defaults to 5 so callers that don't set it preserve current behaviour.
     /// </summary>
     public int AdhocMaxIterations { get; init; } = 5;
+    /// <summary>M11.E.11 per-Space two-person approval opt-in. Defaults to false.</summary>
+    public bool AdhocTwoPersonApproval { get; init; }
     public bool AssistantEnabled { get; init; }
 }
 

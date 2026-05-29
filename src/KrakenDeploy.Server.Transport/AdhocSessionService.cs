@@ -186,10 +186,19 @@ public sealed class AdhocSessionService(
     }
 
     /// <summary>
-    /// Operator-approval path: re-gates, signs, dispatches, persists results,
-    /// runs the verdict LLM, and advances the session. Idempotent on a
-    /// terminal iteration (already Completed/Rejected) — throws so the UI
-    /// double-click can't double-dispatch.
+    /// Operator-approval path: re-gates, then either records the FIRST of two
+    /// approvals (M11.E.11 two-person mode, when required) and stops, or — for a
+    /// single-approver session or the SECOND approval — signs, dispatches,
+    /// persists results, runs the verdict LLM, and advances the session.
+    /// <para>
+    /// Two-person is required when the Space has
+    /// <c>SpaceAiSettings.AdhocTwoPersonApproval</c> on AND the session is
+    /// Mutating OR its frozen target set contains a Production-risk target
+    /// (max-risk, evaluated fresh against targets' current classifications). The
+    /// second approver MUST differ from the first approver and from the session
+    /// creator. Edits are only allowed at first approval — the second approver
+    /// vets the exact script the first one approved.
+    /// </para>
     /// </summary>
     public async Task<AdhocApprovalOutcome> ApproveIterationAsync(
         Guid sessionId,
@@ -207,22 +216,32 @@ public sealed class AdhocSessionService(
             ?? throw new InvalidOperationException(
                 $"Iteration {iterationId} not found in session {sessionId}.");
 
-        if (iter.Status != AdhocIterationStatus.PendingApproval)
+        if (iter.Status is not (AdhocIterationStatus.PendingApproval
+                                or AdhocIterationStatus.PendingSecondApproval))
         {
             throw new InvalidOperationException(
                 $"Iteration {iter.IterNumber} of session {sessionId} is " +
-                $"{iter.Status}; only PendingApproval iterations can be approved.");
+                $"{iter.Status}; only PendingApproval / PendingSecondApproval " +
+                "iterations can be approved.");
         }
 
-        // Operator edit replaces the LLM-generated script — the gate runs
-        // against the FINAL form, not the original.
+        // Operator edit replaces the LLM-generated script — but only at FIRST
+        // approval; the second approver must vet the exact text the first
+        // approver saw, so an edit there would invalidate the first approval.
         if (!string.IsNullOrEmpty(editedScript))
         {
+            if (iter.Status != AdhocIterationStatus.PendingApproval)
+            {
+                throw new InvalidOperationException(
+                    "The script cannot be edited at second approval — that would " +
+                    "invalidate the first approver's review.");
+            }
             iter.GeneratedScript = editedScript;
         }
 
         // Re-gate (M11.E.15c). The gate is the security contract — applies to
-        // every iteration's final script, regardless of who wrote it.
+        // every iteration's final script, on every approval, regardless of who
+        // wrote it.
         var gate = AdhocScriptGate.Analyze(iter.GeneratedScript, session.Mode);
         if (!gate.IsAllowed)
         {
@@ -235,9 +254,53 @@ public sealed class AdhocSessionService(
             throw new AdhocGateRejectedException(gate);
         }
 
-        // Sign (M11.E.6) and stamp approval.
+        // Two-person policy (M11.E.11), evaluated fresh at each approval so a
+        // mid-session reclassification or flag change takes effect immediately.
+        var requiresTwoPerson = await RequiresTwoPersonAsync(db, session, ct).ConfigureAwait(false);
+
+        if (requiresTwoPerson && iter.Status == AdhocIterationStatus.PendingApproval)
+        {
+            // Record the first approval and stop — no signing, no dispatch.
+            iter.FirstApprovedByUserId  = approvedByUserId;
+            iter.FirstApprovedByDisplay = approvedByDisplay;
+            iter.FirstApprovedAtUtc     = clock.GetUtcNow();
+            iter.Status                 = AdhocIterationStatus.PendingSecondApproval;
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+            await auditLog.RecordAsync(
+                AuditEventType.AdhocIterationApproved,
+                subjectType: "AdhocSession",
+                subjectId:   session.Id.ToString(),
+                details:     $"Iter={iter.IterNumber}, Stage=FirstApproval, By={approvedByDisplay}",
+                ct: ct).ConfigureAwait(false);
+
+            return new AdhocApprovalOutcome(
+                SessionStatus: session.Status,
+                NextIterationId: null,
+                Verdict: AdhocVerdict.Pending,
+                AwaitingSecondApproval: true);
+        }
+
+        // Final approval — single-approver session, or the SECOND of two.
+        // Enforce distinctness for the second approval.
+        if (iter.Status == AdhocIterationStatus.PendingSecondApproval)
+        {
+            if (approvedByUserId == iter.FirstApprovedByUserId)
+            {
+                throw new InvalidOperationException(
+                    "The second approver must be a different person from the first approver.");
+            }
+            if (approvedByUserId == session.CreatedByUserId)
+            {
+                throw new InvalidOperationException(
+                    "The second approver must not be the session creator.");
+            }
+        }
+
+        // Sign (M11.E.6) and stamp the final approval.
         var sig = AdhocScriptSigner.Sign(
             session.Id, iter.IterNumber, iter.GeneratedScript, signingKey.GetPrivateKey());
+        var stage = iter.FirstApprovedByUserId is null ? "Approval" : "SecondApproval";
         iter.ScriptSignature   = sig;
         iter.ApprovedByUserId  = approvedByUserId;
         iter.ApprovedByDisplay = approvedByDisplay;
@@ -249,7 +312,7 @@ public sealed class AdhocSessionService(
             AuditEventType.AdhocIterationApproved,
             subjectType: "AdhocSession",
             subjectId:   session.Id.ToString(),
-            details:     $"Iter={iter.IterNumber}, ApprovedBy={approvedByDisplay}",
+            details:     $"Iter={iter.IterNumber}, Stage={stage}, ApprovedBy={approvedByDisplay}",
             ct: ct).ConfigureAwait(false);
 
         // Dispatch (M11.E.7).
@@ -287,11 +350,13 @@ public sealed class AdhocSessionService(
         var iter = session.Iterations.SingleOrDefault(i => i.Id == iterationId)
             ?? throw new InvalidOperationException(
                 $"Iteration {iterationId} not found in session {sessionId}.");
-        if (iter.Status != AdhocIterationStatus.PendingApproval)
+        if (iter.Status is not (AdhocIterationStatus.PendingApproval
+                                or AdhocIterationStatus.PendingSecondApproval))
         {
             throw new InvalidOperationException(
                 $"Iteration {iter.IterNumber} of session {sessionId} is " +
-                $"{iter.Status}; only PendingApproval iterations can be rejected.");
+                $"{iter.Status}; only PendingApproval / PendingSecondApproval " +
+                "iterations can be rejected.");
         }
 
         iter.Status = AdhocIterationStatus.Rejected;
@@ -534,6 +599,66 @@ public sealed class AdhocSessionService(
             .ToListAsync(ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// True when this approval must be two-person (M11.E.11): the Space has the
+    /// opt-in on AND the session is Mutating OR its frozen target set's max risk
+    /// is Production. Evaluated fresh per approval.
+    /// </summary>
+    private static async Task<bool> RequiresTwoPersonAsync(
+        KrakenDbContext db, AdhocSession session, CancellationToken ct)
+    {
+        var enabled = await db.SpaceAiSettings
+            .AsNoTracking()
+            .Select(s => (bool?)s.AdhocTwoPersonApproval)
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false) ?? false;
+        if (!enabled) { return false; }
+        if (session.Mode == AdhocMode.Mutating) { return true; }
+
+        var maxRisk = await ComputeMaxRiskAsync(db, session, ct).ConfigureAwait(false);
+        return maxRisk == TargetRiskLevel.Production;
+    }
+
+    /// <summary>
+    /// Effective risk of a session = the MAXIMUM <see cref="TargetRiskLevel"/>
+    /// across its frozen target set (one Production box makes the whole session
+    /// Production-risk). A since-deleted / unresolvable target counts as
+    /// Production (fail-safe), as does an empty set.
+    /// </summary>
+    private static async Task<TargetRiskLevel> ComputeMaxRiskAsync(
+        KrakenDbContext db, AdhocSession session, CancellationToken ct)
+    {
+        var ids = JsonSerializer.Deserialize<List<Guid>>(session.FrozenTargetSetJson) ?? [];
+        if (ids.Count == 0) { return TargetRiskLevel.Production; }
+
+        var levels = await db.DeploymentTargets
+            .Where(t => ids.Contains(t.Id))
+            .Select(t => t.RiskLevel)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        // Any frozen target that can no longer be resolved counts as Production.
+        if (levels.Count < ids.Count) { return TargetRiskLevel.Production; }
+        return levels.Count == 0 ? TargetRiskLevel.Production : levels.Max();
+    }
+
+    /// <summary>
+    /// Effective (max) risk across the session's frozen target set, for UI
+    /// display (louder approval banner on Production). A since-deleted target
+    /// counts as Production (fail-safe).
+    /// </summary>
+    public async Task<TargetRiskLevel> GetEffectiveRiskAsync(Guid sessionId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var session = await db.AdhocSessions
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == sessionId, ct)
+            .ConfigureAwait(false);
+        return session is null
+            ? TargetRiskLevel.Production
+            : await ComputeMaxRiskAsync(db, session, ct).ConfigureAwait(false);
+    }
+
     private async Task<int> ReadMaxIterationsAsync(KrakenDbContext db, CancellationToken ct)
     {
         // Per-Space override wins (SaaS — every Space tunes its own cap). The
@@ -568,10 +693,15 @@ public sealed record AdhocSessionListItem(
     int MaxIterations);
 
 /// <summary>Outcome returned by <see cref="AdhocSessionService.ApproveIterationAsync"/>.</summary>
+/// <param name="AwaitingSecondApproval">M11.E.11 — true when this call recorded
+/// the FIRST of two required approvals; the iteration is now
+/// <see cref="AdhocIterationStatus.PendingSecondApproval"/> and nothing has been
+/// signed or dispatched yet. A second, distinct approver must approve.</param>
 public sealed record AdhocApprovalOutcome(
     AdhocSessionStatus SessionStatus,
     Guid? NextIterationId,
-    AdhocVerdict Verdict);
+    AdhocVerdict Verdict,
+    bool AwaitingSecondApproval = false);
 
 /// <summary>
 /// Thrown by <see cref="AdhocSessionService"/> when the static-analysis gate

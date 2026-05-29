@@ -40,5 +40,8 @@ public class SpaceAiSettingsConfiguration : IEntityTypeConfiguration<SpaceAiSett
         // M11.E ad-hoc iteration cap. DB default backfills pre-existing rows
         // to 5 so the column can be NOT NULL without a data migration.
         builder.Property(x => x.AdhocMaxIterations).HasDefaultValue(5);
+
+        // M11.E.11 two-person approval opt-in. Default false (single-approver).
+        builder.Property(x => x.AdhocTwoPersonApproval).HasDefaultValue(false);
     }
 }
