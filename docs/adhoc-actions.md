@@ -249,6 +249,18 @@ These are the high-risk patterns whose ABSENCE is intentional:
 - **Two-person approval rule** (M11.E.11) — single-approver is locked
   for v1.
 
+**Future-work — revise the reflection/assembly-load block.** The current
+dangerous-type blocklist rejects all of `System.Reflection` (and `Add-Type`),
+which over-blocks legitimate reflection use (much functionality is only
+reachable via `[Reflection.Assembly]::Load*`). Planned revision: switch from a
+flat type block to an **argument-shape** rule that distinguishes the RCE
+overload `Assembly.Load($bytes)`/`Load($stream)` (non-literal argument → block)
+from a named/literal load `Assembly.Load('System.Web')`/`LoadWithPartialName`/
+`LoadFrom('literal')` (`StringConstantExpressionAst` argument → allow), most
+likely mutating-mode-only, leaning on the operator-approval + signing layers.
+Same heuristic for `[Activator]::CreateInstance`. Loosens the gate, so gated
+behind STOP-AND-ASK.
+
 ---
 
 ## 8. References
