@@ -240,6 +240,23 @@
                         PowerShell run on selected targets.
                     </label>
 
+                    @if (_form.AdhocEnabled)
+                    {
+                        <RadzenFormField Text="Max fix-iterations per session (1–20)"
+                                         Variant="Variant.Outlined"
+                                         Style="max-width: 360px;">
+                            <RadzenNumeric @bind-Value="_form.AdhocMaxIterations"
+                                           Min="1" Max="20" Step="1"
+                                           Disabled="@(!_canManage)" />
+                        </RadzenFormField>
+                        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-0">
+                            Each iteration is a full LLM round-trip plus a dispatch against the
+                            frozen target set, so this bounds both blast radius and AI spend.
+                            The cap is frozen onto a session when it is created — changing it
+                            here only affects sessions started afterwards.
+                        </RadzenText>
+                    }
+
                     <RadzenCheckBox @bind-Value="_form.AssistantEnabled"
                                     TValue="bool"
                                     Disabled="@(!_canManage)" />
@@ -375,6 +392,7 @@
                 DiagnosisEnabled  = _form.DiagnosisEnabled,
                 McpEnabled        = _form.McpEnabled,
                 AdhocEnabled      = _form.AdhocEnabled,
+                AdhocMaxIterations = _form.AdhocMaxIterations,
                 AssistantEnabled  = _form.AssistantEnabled,
             };
             _loaded = await SettingsSvc.UpdateAsync(req);
@@ -507,6 +525,7 @@
         public bool    DiagnosisEnabled  { get; set; }
         public bool    McpEnabled        { get; set; }
         public bool    AdhocEnabled      { get; set; }
+        public int     AdhocMaxIterations { get; set; } = 5;
         public bool    AssistantEnabled  { get; set; }
 
         public static FormState FromDto(SpaceAiSettingsDto dto) => new()
@@ -520,6 +539,7 @@
             DiagnosisEnabled  = dto.DiagnosisEnabled,
             McpEnabled        = dto.McpEnabled,
             AdhocEnabled      = dto.AdhocEnabled,
+            AdhocMaxIterations = dto.AdhocMaxIterations,
             AssistantEnabled  = dto.AssistantEnabled,
         };
     }

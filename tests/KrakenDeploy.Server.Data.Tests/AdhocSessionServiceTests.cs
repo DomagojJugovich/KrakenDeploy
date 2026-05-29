@@ -34,6 +34,9 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
         await using var db = postgres.CreateContext();
         await db.AdhocSessions.IgnoreQueryFilters().ExecuteDeleteAsync();
         await db.DeploymentTargets.IgnoreQueryFilters().ExecuteDeleteAsync();
+        // Per-Space AI settings row drives the iteration cap — clear it so a
+        // seeded override in one test can't leak into the config-fallback tests.
+        await db.SpaceAiSettings.IgnoreQueryFilters().ExecuteDeleteAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -316,6 +319,26 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
         await act.Should().ThrowAsync<ArgumentException>();
     }
 
+    [Fact]
+    public async Task CreateSession_uses_per_Space_AdhocMaxIterations_over_config()
+    {
+        var target = await SeedTargetAsync("web-01");
+        // Per-Space setting says 3; deployment-wide config says 9 — the
+        // per-Space value must win (SaaS: every Space tunes its own cap).
+        await SeedSpaceAdhocMaxIterationsAsync(3);
+        var harness = NewHarness(maxIterations: 9);
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "audit", AdhocMode.Readonly,
+            [target.Id], Guid.NewGuid(), "ops@laus.hr", default);
+
+        await using var db = postgres.CreateContext();
+        var session = await db.AdhocSessions.SingleAsync(s => s.Id == sessionId);
+        session.MaxIterations.Should().Be(3,
+            "the per-Space SpaceAiSettings.AdhocMaxIterations overrides the " +
+            "deployment-wide config fallback");
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private async Task<DeploymentTarget> SeedTargetAsync(string name)
@@ -331,6 +354,19 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
         db.DeploymentTargets.Add(t);
         await db.SaveChangesAsync();
         return t;
+    }
+
+    private async Task SeedSpaceAdhocMaxIterationsAsync(int value)
+    {
+        await using var db = postgres.CreateContext();
+        db.SpaceAiSettings.Add(new SpaceAiSettings
+        {
+            SpaceId            = WellKnown.DefaultSpaceId,
+            Provider           = KrakenAiProviderValue.Anthropic,
+            AdhocEnabled       = true,
+            AdhocMaxIterations = value,
+        });
+        await db.SaveChangesAsync();
     }
 
     private sealed record Harness(AdhocSessionService Service);

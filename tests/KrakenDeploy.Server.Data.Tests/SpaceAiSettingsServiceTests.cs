@@ -38,6 +38,8 @@ public sealed class SpaceAiSettingsServiceTests(PostgresFixture postgres)
         dto.HasApiKey.Should().BeFalse();
         dto.ApiKeyMasked.Should().BeNull();
         dto.DiagnosisEnabled.Should().BeFalse();
+        dto.AdhocMaxIterations.Should().Be(5,
+            "the default-shaped DTO must report the documented default cap");
     }
 
     [Fact]
@@ -143,6 +145,38 @@ public sealed class SpaceAiSettingsServiceTests(PostgresFixture postgres)
         secondMask.Should().NotBe(firstMask,
             "new ciphertext → new suffix; operators see 'key was changed'");
         (await svc.RevealApiKeyAsync()).Should().Be("second-different-key");
+    }
+
+    [Fact]
+    public async Task UpdateAsync_persists_AdhocMaxIterations_round_trip()
+    {
+        var svc = NewSvc();
+        await svc.UpdateAsync(new UpdateSpaceAiSettingsRequest
+        {
+            Provider           = KrakenAiProviderValue.Anthropic,
+            AdhocEnabled       = true,
+            AdhocMaxIterations = 8,
+        });
+
+        var dto = await svc.GetAsync();
+        dto.AdhocMaxIterations.Should().Be(8,
+            "the per-Space cap must survive the write/read round-trip");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(21)]
+    public async Task UpdateAsync_rejects_out_of_range_AdhocMaxIterations(int value)
+    {
+        var svc = NewSvc();
+        var act = () => svc.UpdateAsync(new UpdateSpaceAiSettingsRequest
+        {
+            Provider           = KrakenAiProviderValue.Anthropic,
+            AdhocMaxIterations = value,
+        });
+        await act.Should().ThrowAsync<ArgumentException>()
+            .WithMessage("*AdhocMaxIterations*");
     }
 
     [Fact]

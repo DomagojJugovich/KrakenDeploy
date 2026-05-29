@@ -36,5 +36,9 @@ public class SpaceAiSettingsConfiguration : IEntityTypeConfiguration<SpaceAiSett
         // shouldn't carry sub-cent precision but the type matches so
         // arithmetic doesn't round-trip awkwardly.
         builder.Property(x => x.BudgetUsdPerMonth).HasColumnType("numeric(12, 6)");
+
+        // M11.E ad-hoc iteration cap. DB default backfills pre-existing rows
+        // to 5 so the column can be NOT NULL without a data migration.
+        builder.Property(x => x.AdhocMaxIterations).HasDefaultValue(5);
     }
 }

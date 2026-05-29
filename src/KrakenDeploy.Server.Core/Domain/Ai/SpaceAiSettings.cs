@@ -80,6 +80,18 @@ public class SpaceAiSettings : AuditableEntity, ISpaceScoped
     /// <summary>M11.E — ad-hoc agent actions feature.</summary>
     public bool AdhocEnabled { get; set; }
 
+    /// <summary>
+    /// M11.E — per-Space cap on the operator-approved fix-iteration loop for
+    /// an ad-hoc session. Each iteration is a full LLM round-trip + dispatch +
+    /// verdict, so this bounds both blast radius and AI spend. SaaS-tunable
+    /// per Space; defaults to 5. The orchestrator
+    /// (<c>AdhocSessionService.CreateSessionAsync</c>) reads this value at
+    /// session creation and freezes it onto the session row, so changing it
+    /// only affects sessions started afterwards. Bounded 1..20 at the API
+    /// boundary.
+    /// </summary>
+    public int AdhocMaxIterations { get; set; } = 5;
+
     /// <summary>M11.D — process-builder UI assistant.</summary>
     public bool AssistantEnabled { get; set; }
 }

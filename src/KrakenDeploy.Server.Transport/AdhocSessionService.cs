@@ -17,8 +17,10 @@ namespace KrakenDeploy.Server.Transport;
 /// <list type="number">
 ///   <item><see cref="CreateSessionAsync"/> — resolves the operator's target
 ///         selector ONCE into the immutable <c>FrozenTargetSetJson</c>
-///         (M11.E.15a) and reads the per-session iteration cap from
-///         <c>Ai:Adhoc:MaxIterationsPerSession</c> (default 5, M11.E.14).</item>
+///         (M11.E.15a) and freezes the per-session iteration cap from the
+///         per-Space <c>SpaceAiSettings.AdhocMaxIterations</c> setting,
+///         falling back to <c>Ai:Adhoc:MaxIterationsPerSession</c> then 5
+///         (M11.E.14).</item>
 ///   <item><see cref="GenerateFirstIterationAsync"/> — invokes the LLM
 ///         generation pipeline, runs the static-analysis gate (M11.E.3), and
 ///         persists the proposed script as an <see cref="AdhocIteration"/> in
@@ -71,9 +73,10 @@ public sealed class AdhocSessionService(
 
     /// <summary>
     /// Resolves <paramref name="targetIds"/> into the immutable frozen set,
-    /// reads the iteration cap from config (default 5), and persists the
-    /// session in <see cref="AdhocSessionStatus.Active"/>. Returns the new
-    /// session id.
+    /// freezes the iteration cap from the current Space's
+    /// <c>SpaceAiSettings.AdhocMaxIterations</c> (fallback config, then 5),
+    /// and persists the session in <see cref="AdhocSessionStatus.Active"/>.
+    /// Returns the new session id.
     /// </summary>
     public async Task<Guid> CreateSessionAsync(
         string prompt,
@@ -95,9 +98,9 @@ public sealed class AdhocSessionService(
                 nameof(targetIds));
         }
 
-        var maxIterations = ReadMaxIterations();
-
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var maxIterations = await ReadMaxIterationsAsync(db, ct).ConfigureAwait(false);
+
         var session = new AdhocSession
         {
             Prompt              = prompt,
@@ -531,12 +534,21 @@ public sealed class AdhocSessionService(
             .ToListAsync(ct).ConfigureAwait(false);
     }
 
-    private int ReadMaxIterations()
+    private async Task<int> ReadMaxIterationsAsync(KrakenDbContext db, CancellationToken ct)
     {
-        if (int.TryParse(config[MaxIterationsConfigKey], out var v) && v > 0)
-        {
-            return v;
-        }
+        // Per-Space override wins (SaaS — every Space tunes its own cap). The
+        // SpaceAiSettings row is space-filtered by the global query filter, so
+        // FirstOrDefault returns the current Space's row (or null when a Space
+        // has never configured AI). Fall back to the deployment-wide config
+        // default, then a hard default of 5.
+        var perSpace = await db.SpaceAiSettings
+            .AsNoTracking()
+            .Select(s => (int?)s.AdhocMaxIterations)
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false);
+        if (perSpace is > 0) { return perSpace.Value; }
+
+        if (int.TryParse(config[MaxIterationsConfigKey], out var v) && v > 0) { return v; }
         return 5;
     }
 

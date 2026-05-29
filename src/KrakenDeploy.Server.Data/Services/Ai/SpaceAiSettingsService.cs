@@ -56,6 +56,7 @@ public sealed class SpaceAiSettingsService(
                 DiagnosisEnabled  = row.DiagnosisEnabled,
                 McpEnabled        = row.McpEnabled,
                 AdhocEnabled      = row.AdhocEnabled,
+                AdhocMaxIterations = row.AdhocMaxIterations,
                 AssistantEnabled  = row.AssistantEnabled,
             };
     }
@@ -93,6 +94,7 @@ public sealed class SpaceAiSettingsService(
         row.DiagnosisEnabled  = request.DiagnosisEnabled;
         row.McpEnabled        = request.McpEnabled;
         row.AdhocEnabled      = request.AdhocEnabled;
+        row.AdhocMaxIterations = request.AdhocMaxIterations;
         row.AssistantEnabled  = request.AssistantEnabled;
 
         if (request.ApiKey == ApiKeyClearSentinel)
@@ -193,6 +195,14 @@ public sealed class SpaceAiSettingsService(
                 nameof(request));
         }
 
+        if (request.AdhocMaxIterations is < 1 or > 20)
+        {
+            throw new ArgumentException(
+                "AdhocMaxIterations must be between 1 and 20 — each iteration is " +
+                "a full LLM round-trip plus a dispatch against live targets.",
+                nameof(request));
+        }
+
         // Provider-specific BaseUrl requirement is enforced by the client
         // factory at AI-call time (KrakenAiClientFactory). We don't
         // duplicate that check here so the source of truth stays single.
@@ -242,6 +252,8 @@ public sealed record SpaceAiSettingsDto
     public bool DiagnosisEnabled { get; init; }
     public bool McpEnabled { get; init; }
     public bool AdhocEnabled { get; init; }
+    /// <summary>M11.E per-Space ad-hoc iteration cap. Defaults to 5.</summary>
+    public int AdhocMaxIterations { get; init; } = 5;
     public bool AssistantEnabled { get; init; }
 }
 
@@ -262,6 +274,11 @@ public sealed record UpdateSpaceAiSettingsRequest
     public bool DiagnosisEnabled { get; init; }
     public bool McpEnabled { get; init; }
     public bool AdhocEnabled { get; init; }
+    /// <summary>
+    /// M11.E per-Space ad-hoc iteration cap. Bounded 1..20 (validated).
+    /// Defaults to 5 so callers that don't set it preserve current behaviour.
+    /// </summary>
+    public int AdhocMaxIterations { get; init; } = 5;
     public bool AssistantEnabled { get; init; }
 }
 

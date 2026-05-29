@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Approved |
-| **Version** | 1.0 (M11.E) |
+| **Version** | 1.1 (M11.E) |
 | **Last updated** | 2026-05-29 |
 | **Applies to** | KrakenDeploy server `/adhoc` page + `/mcp` `run_adhoc_action` tool, agent verify-then-run pipeline |
 | **Technologies** | .NET 10, `System.Management.Automation` 7.6 (PowerShell AST parser), `RSA-SHA256` signing, SignalR control plane, Radzen Blazor UI |
@@ -88,7 +88,7 @@ not "policies we hope to follow". Each row maps to where the invariant lives.
 | **Gate on every iteration** — the operator-approved final form of every iteration's script goes through the AST gate. | An operator might edit the script before approving; a proposed-fix script is a fresh attack surface. | `AdhocSessionService.GenerateFirstIterationAsync` + `ApproveIterationAsync` + the proposed-fix branch in `AdvanceAfterVerdictAsync` — all call `AdhocScriptGate.Analyze`. M11.E.15c. |
 | **Signing on every iteration** — every approval signs the *exact* script bytes; the agent re-verifies. | The agent never trusts a script payload, only the signature gate. Tampering anywhere on the path breaks verification. | `AdhocScriptSigner.Sign` (server), `AdhocScriptSigner.Verify` (agent's `AdhocScriptExecutor`). Canonical input includes a schema version + the (`SessionId`, `IterNumber`, script bytes) tuple — replays across sessions or turns fail. M11.E.6 / M11.E.15e. |
 | **Single-approver permission gate** — `Permission.AdhocActionsExecute` + Space membership. | Single-approver matches the deployment-execute model already in production; two-person rule deferred behind a feature flag (M11.E.11) until production incidents motivate it. | `[Authorize(Policy = "perm:AdhocActionsExecute")]` on `/adhoc` pages; `EnsureAuthorisedAsync` in `AdhocTools` for MCP. M11.E.5. |
-| **Iteration cap** — default 5; auto-closes with `Status = CapReached` and a "manual intervention required" log entry. | Stops a runaway loop if the LLM keeps proposing broken scripts. | `AdhocSession.MaxIterations` (per-row, defaulted from `Ai:Adhoc:MaxIterationsPerSession` global config; the column is in place for a future per-Space override). `AdhocSessionService.AdvanceAfterVerdictAsync` checks before opening iter N+1. M11.E.14. |
+| **Iteration cap** — per-Space (default 5, bounded 1–20); auto-closes with `Status = CapReached` and a "manual intervention required" log entry. | Stops a runaway loop if the LLM keeps proposing broken scripts; SaaS-tunable so each Space bounds its own blast radius + AI spend. | `AdhocSession.MaxIterations` is frozen at session creation from the current Space's `SpaceAiSettings.AdhocMaxIterations` (fallback `Ai:Adhoc:MaxIterationsPerSession`, then 5). `AdhocSessionService.AdvanceAfterVerdictAsync` checks before opening iter N+1. M11.E.14. |
 | **Agent fail-closed verification** — missing public key, malformed PEM, signature mismatch, dynamic command invocation → refuse, report `AgentError`, do NOT execute. | The gate is the script's first filter; the signature is the script's last. The agent is the last line of defence. | `AdhocScriptExecutor.HandleAsync` — three explicit fail-closed branches, each reports back so the dispatcher's TCS resolves. |
 
 ### What the gate explicitly does NOT guarantee
@@ -120,7 +120,8 @@ Honesty up front. The AST gate is one layer of defence, not the only one.
 |---|---|---|---|
 | `Adhoc:SigningKey` | server `appsettings.json` / env / KeyVault | RSA private key, inline PEM **or** a path to a `.pem` file | Required to sign any approved iteration. Missing → `AdhocFeatureUnavailableException(SigningKeyMissing)` on first approval. **Separate from `StepPackages:SigningKey`** — rotation cadence + custody can differ. |
 | `Adhoc:TrustedPublicKey` | agent `appsettings.json` | RSA public key, inline PEM **or** path | Required on each agent for ad-hoc execution. Missing → agent refuses + reports an `AgentError`. |
-| `Ai:Adhoc:MaxIterationsPerSession` | server | positive integer | Defaults to 5. Currently a global server setting; a per-Space override on `SpaceAiSettings` is a documented follow-up. |
+| `SpaceAiSettings.AdhocMaxIterations` | per-Space row in `space_ai_settings` (UI: **Configuration → AI Settings**) | integer 1–20 | **Primary** iteration-cap source (default 5). Frozen onto each session at creation, so edits only affect later sessions. Validated 1–20 at the API boundary. |
+| `Ai:Adhoc:MaxIterationsPerSession` | server | positive integer | Deployment-wide **fallback** used only when a Space has no `space_ai_settings` row at all. Hard default 5 when unset. |
 | `SpaceAiSettings.AdhocEnabled` | per-Space row in `space_ai_settings` (UI: **Configuration → AI Settings**) | bool | Off by default. Disabling hides the **New session** CTA and surfaces an "Ad-hoc actions are disabled for this Space" banner. |
 | `KrakenAiFeature.Adhoc` budget bucket | implicit | — | Every LLM call (generation + verdict) attributes to this bucket via the M11.A wrapper; budget overflow → `BudgetExceeded` typed exception → 503 to the UI / MCP caller. |
 
@@ -148,7 +149,18 @@ openssl rsa -in adhoc-signing.pem -pubout -out adhoc-trusted.pem
 
 | Permission | Block | Granted to | Purpose |
 |---|---|---|---|
-| `AdhocActionsExecute` | `1900` | Built-in **System Manager** + **Space Manager** roles; admins grant explicitly to other operator teams. | Required to create a session, generate iterations, approve / reject / stop / mark-resolved. The same permission applies to the UI and the MCP `run_adhoc_action` tool. |
+| `AdhocActionsExecute` | `1900` | **No built-in role** — must be granted explicitly via a dedicated role assignment. (The `System Administrator` god-mode role implies it, like every permission.) | Required to create a session, generate iterations, approve / reject / stop / mark-resolved. The same permission applies to the UI and the MCP `run_adhoc_action` tool. |
+
+**Danger-zone, explicit-grant only.** `AdhocActionsExecute` is deliberately
+withheld from the `Space Manager` and `System Manager` built-in roles — the
+same treatment `AdministerSystem` gets. Running AI-authored PowerShell on
+live targets is the single highest-blast-radius capability in the product,
+so it must not ride along with general Space or delegated administration. An
+operator who needs it creates a custom role carrying only `AdhocActionsExecute`
+(scoped to the relevant Space) and assigns it to a named team. The
+`BuiltInRbacSeeder` re-syncs role permission sets on every startup, so this
+exclusion is also enforced on upgrade — any deployment that previously
+seeded the permission onto a built-in role has it revoked on next start.
 
 The single-approver rule is locked for v1 (M11.E.5). A two-person rule
 is deferred behind a feature flag (M11.E.11) — revisit if production
@@ -221,10 +233,6 @@ These are the high-risk patterns whose ABSENCE is intentional:
   script per iteration runs on the full frozen set. If the operator
   needs different actions on different subsets, they start separate
   sessions with narrower target selectors.
-- **Per-Space override of the iteration cap** — currently global via
-  `Ai:Adhoc:MaxIterationsPerSession`. The per-row `MaxIterations`
-  column is in place; the per-Space surface (column on
-  `SpaceAiSettings` + UI control) is a future enhancement.
 - **`RiskLevel ∈ {Dev, Staging, Production}` on targets** (M11.E.11) —
   the louder-warning-on-production-mutating banner is structured to
   light up when that field ships; the field itself is deferred.
