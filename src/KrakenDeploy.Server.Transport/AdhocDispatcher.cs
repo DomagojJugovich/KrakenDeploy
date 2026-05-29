@@ -29,11 +29,19 @@ namespace KrakenDeploy.Server.Transport;
 /// SignalR.
 /// </para>
 /// </summary>
+public interface IAdhocDispatcher
+{
+    /// <summary>See <see cref="AdhocDispatcher.DispatchAsync"/>.</summary>
+    Task<IReadOnlyList<AdhocScriptResult>> DispatchAsync(
+        AdhocSession session, AdhocIteration iteration,
+        CancellationToken ct, TimeSpan? timeout = null);
+}
+
 public sealed class AdhocDispatcher(
     IAgentConnectionRegistry connections,
     IPendingAdhocRegistry pending,
     IAdhocAgentPusher pusher,
-    ILogger<AdhocDispatcher> logger)
+    ILogger<AdhocDispatcher> logger) : IAdhocDispatcher
 {
     /// <summary>
     /// Default per-target wait timeout. Adhoc scripts are interactive +

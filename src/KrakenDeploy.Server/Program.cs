@@ -270,7 +270,13 @@ public static class Program
         // M11.E.7 — per-target adhoc-script dispatch + result collation.
         builder.Services.AddSingleton<IPendingAdhocRegistry, PendingAdhocRegistry>();
         builder.Services.AddSingleton<IAdhocAgentPusher, HubContextAdhocAgentPusher>();
-        builder.Services.AddSingleton<AdhocDispatcher>();
+        builder.Services.AddSingleton<IAdhocDispatcher, AdhocDispatcher>();
+        // M11.E commits 3 + 5 — LLM-driven generation + verdict + the session
+        // orchestrator. Signing key is loaded lazily on first approval.
+        builder.Services.AddScoped<KrakenDeploy.Server.Data.Services.Ai.Adhoc.AdhocGenerationService>();
+        builder.Services.AddScoped<KrakenDeploy.Server.Data.Services.Ai.Adhoc.AdhocVerdictService>();
+        builder.Services.AddSingleton<KrakenDeploy.Server.Data.Services.Ai.Adhoc.AdhocSigningKeyProvider>();
+        builder.Services.AddScoped<AdhocSessionService>();
 
         // M11.C — autonomous failure diagnosis. The orchestrator drops failed
         // (started) deployment ids on the channel; the worker drains it +

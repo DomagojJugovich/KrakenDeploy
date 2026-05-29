@@ -1,0 +1,471 @@
+using System.Security.Cryptography;
+using System.Text.Json;
+using FluentAssertions;
+using KrakenDeploy.Ai;
+using KrakenDeploy.Contracts.Adhoc;
+using KrakenDeploy.Server.Core.Domain.Ai;
+using KrakenDeploy.Server.Core.Domain.Audit;
+using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Targets;
+using KrakenDeploy.Server.Data.Services.Ai.Adhoc;
+using KrakenDeploy.Server.Transport;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace KrakenDeploy.Server.Data.Tests;
+
+/// <summary>
+/// Integration tests for M11.E.13/14/15 — <see cref="AdhocSessionService"/>.
+/// Exercises the full state machine: create → generate → approve → dispatch →
+/// verdict → advance. Uses real Postgres for the aggregate, real
+/// <see cref="AdhocScriptGate"/> (it's static), real
+/// <see cref="AdhocScriptSigner"/> + provider with a generated keypair, fake
+/// <see cref="IKrakenAi"/> for canned generation + verdict results, and a
+/// fake <see cref="IAdhocDispatcher"/> for canned per-target results.
+/// </summary>
+[Collection("Postgres")]
+public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
+    : IClassFixture<PostgresFixture>, IAsyncLifetime
+{
+    public async Task InitializeAsync()
+    {
+        await using var db = postgres.CreateContext();
+        await db.AdhocSessions.IgnoreQueryFilters().ExecuteDeleteAsync();
+        await db.DeploymentTargets.IgnoreQueryFilters().ExecuteDeleteAsync();
+    }
+
+    public Task DisposeAsync() => Task.CompletedTask;
+
+    // ── Round-trip + sequencing ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task Iter1_AllSucceeded_closes_session_with_one_iteration()
+    {
+        var target = await SeedTargetAsync("web-01");
+        var harness = NewHarness(
+            generation: CannedGeneration("Get-Process"),
+            verdict:    CannedVerdict("AllSucceeded", "Everything is fine."));
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "list processes", AdhocMode.Readonly,
+            [target.Id], Guid.NewGuid(), "ops@laus.hr", default);
+
+        var iterId = await harness.Service.GenerateFirstIterationAsync(sessionId, default);
+
+        var outcome = await harness.Service.ApproveIterationAsync(
+            sessionId, iterId, Guid.NewGuid(), "approver@laus.hr",
+            editedScript: null, default);
+
+        outcome.SessionStatus.Should().Be(AdhocSessionStatus.Closed);
+        outcome.Verdict.Should().Be(AdhocVerdict.AllSucceeded);
+        outcome.NextIterationId.Should().BeNull();
+
+        await using var db = postgres.CreateContext();
+        var session = await db.AdhocSessions.Include(s => s.Iterations)
+            .SingleAsync(s => s.Id == sessionId);
+        session.Iterations.Should().ContainSingle();
+        session.Iterations[0].Verdict.Should().Be(AdhocVerdict.AllSucceeded);
+        session.Iterations[0].ScriptSignature.Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task Iter1_partial_fail_then_iter2_fix_closes_with_two_iterations()
+    {
+        var target = await SeedTargetAsync("web-01");
+        var aiSequence = new SequencedKrakenAi(
+            new AdhocGenerationResult { GeneratedScript = "Get-Service" },            // iter 1 generation
+            new IterationVerdict { Verdict = "ProposeFix",                            // iter 1 verdict
+                                   ProposedScript = "Get-Service | Where-Object { $_.Name -eq 'w3svc' }",
+                                   ProposedScriptDescription = "Filter to w3svc",
+                                   Narrative = "One target reported missing service info" },
+            new IterationVerdict { Verdict = "AllSucceeded", Narrative = "Resolved" }); // iter 2 verdict
+
+        var harness = NewHarness(ai: aiSequence);
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "check w3svc", AdhocMode.Readonly,
+            [target.Id], Guid.NewGuid(), "ops", default);
+
+        var iter1Id = await harness.Service.GenerateFirstIterationAsync(sessionId, default);
+        var iter1Outcome = await harness.Service.ApproveIterationAsync(
+            sessionId, iter1Id, Guid.NewGuid(), "ops", null, default);
+
+        iter1Outcome.Verdict.Should().Be(AdhocVerdict.ProposeFix);
+        iter1Outcome.NextIterationId.Should().NotBeNull();
+        iter1Outcome.SessionStatus.Should().Be(AdhocSessionStatus.Active);
+
+        var iter2Outcome = await harness.Service.ApproveIterationAsync(
+            sessionId, iter1Outcome.NextIterationId!.Value,
+            Guid.NewGuid(), "ops", null, default);
+
+        iter2Outcome.SessionStatus.Should().Be(AdhocSessionStatus.Closed);
+        iter2Outcome.Verdict.Should().Be(AdhocVerdict.AllSucceeded);
+    }
+
+    // ── Cap (M11.E.14) ──────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Cap_reached_auto_closes_with_CapReached_status()
+    {
+        var target = await SeedTargetAsync("web-01");
+        // Configure cap=2.
+        var harness = NewHarness(
+            maxIterations: 2,
+            ai: new SequencedKrakenAi(
+                new AdhocGenerationResult { GeneratedScript = "Get-Date" },               // iter 1 gen
+                new IterationVerdict { Verdict = "ProposeFix",                            // iter 1 verdict
+                                       ProposedScript = "Get-Date -UFormat %s",
+                                       ProposedScriptDescription = "try unix format",
+                                       Narrative = "needs another shot" },
+                new IterationVerdict { Verdict = "ProposeFix",                            // iter 2 verdict
+                                       ProposedScript = "Get-Date -Date '2026-01-01'",
+                                       ProposedScriptDescription = "and another",
+                                       Narrative = "still off" }));
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "what's the date", AdhocMode.Readonly,
+            [target.Id], Guid.NewGuid(), "ops", default);
+
+        var iter1Id = await harness.Service.GenerateFirstIterationAsync(sessionId, default);
+        var iter1 = await harness.Service.ApproveIterationAsync(
+            sessionId, iter1Id, Guid.NewGuid(), "ops", null, default);
+        var iter2 = await harness.Service.ApproveIterationAsync(
+            sessionId, iter1.NextIterationId!.Value, Guid.NewGuid(), "ops", null, default);
+
+        iter2.SessionStatus.Should().Be(AdhocSessionStatus.CapReached);
+        iter2.NextIterationId.Should().BeNull();
+
+        await using var db = postgres.CreateContext();
+        var session = await db.AdhocSessions.SingleAsync(s => s.Id == sessionId);
+        session.Status.Should().Be(AdhocSessionStatus.CapReached);
+        session.MaxIterations.Should().Be(2);
+    }
+
+    // ── Gate invariants (M11.E.15) ──────────────────────────────────────────
+
+    [Fact]
+    public async Task Verdict_proposing_a_mode_escalation_fix_is_gate_rejected_and_closes_session()
+    {
+        var target = await SeedTargetAsync("web-01");
+        var harness = NewHarness(
+            ai: new SequencedKrakenAi(
+                new AdhocGenerationResult { GeneratedScript = "Get-Process" },     // iter 1 generation
+                new IterationVerdict { Verdict = "ProposeFix",                      // mode-escalation attempt
+                                       ProposedScript = "Stop-Service -Name w3svc",
+                                       ProposedScriptDescription = "restart it",
+                                       Narrative = "service stuck" }));
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "check service", AdhocMode.Readonly,
+            [target.Id], Guid.NewGuid(), "ops", default);
+
+        var iterId = await harness.Service.GenerateFirstIterationAsync(sessionId, default);
+        var outcome = await harness.Service.ApproveIterationAsync(
+            sessionId, iterId, Guid.NewGuid(), "ops", null, default);
+
+        // Iter 1 itself completed; the gate rejected the proposed fix, so the
+        // session closes without opening iter 2.
+        outcome.SessionStatus.Should().Be(AdhocSessionStatus.Closed);
+        outcome.NextIterationId.Should().BeNull();
+
+        await using var db = postgres.CreateContext();
+        var session = await db.AdhocSessions.Include(s => s.Iterations)
+            .SingleAsync(s => s.Id == sessionId);
+        session.Iterations.Should().ContainSingle(
+            "the rejected proposed fix never becomes a real iteration row");
+        // Audit row records the gate rejection.
+        var auditDetails = await db.AuditEntries
+            .Where(e => e.SubjectType == "AdhocSession" && e.SubjectId == sessionId.ToString()
+                        && e.EventType == AuditEventType.AdhocGateRejected)
+            .Select(e => e.Details)
+            .ToListAsync();
+        auditDetails.Should().NotBeEmpty();
+        auditDetails[0].Should().Contain("ModeEscalation");
+    }
+
+    [Fact]
+    public async Task Generation_of_a_forbidden_script_for_iter1_throws_gate_rejected()
+    {
+        var target = await SeedTargetAsync("web-01");
+        var harness = NewHarness(
+            generation: new AdhocGenerationResult { GeneratedScript = "Invoke-Expression $x" },
+            verdict:    CannedVerdict("AllSucceeded"));
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "do a thing", AdhocMode.Mutating,
+            [target.Id], Guid.NewGuid(), "ops", default);
+
+        var act = async () => await harness.Service.GenerateFirstIterationAsync(sessionId, default);
+
+        await act.Should().ThrowAsync<AdhocGateRejectedException>();
+
+        await using var db = postgres.CreateContext();
+        var session = await db.AdhocSessions.Include(s => s.Iterations)
+            .SingleAsync(s => s.Id == sessionId);
+        session.Iterations.Should().BeEmpty(
+            "a gate-rejected generation never creates an iteration row");
+    }
+
+    [Fact]
+    public async Task Approval_of_an_operator_edited_script_that_fails_gate_throws()
+    {
+        var target = await SeedTargetAsync("web-01");
+        var harness = NewHarness();
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "check", AdhocMode.Readonly, [target.Id], Guid.NewGuid(), "ops", default);
+        var iterId = await harness.Service.GenerateFirstIterationAsync(sessionId, default);
+
+        // Operator "edits" the script to a mutating command before approving.
+        var act = async () => await harness.Service.ApproveIterationAsync(
+            sessionId, iterId, Guid.NewGuid(), "ops",
+            editedScript: "Stop-Service -Name w3svc", default);
+
+        await act.Should().ThrowAsync<AdhocGateRejectedException>();
+
+        await using var db = postgres.CreateContext();
+        var iter = await db.AdhocIterations.SingleAsync(i => i.Id == iterId);
+        iter.Status.Should().Be(AdhocIterationStatus.PendingApproval,
+            "a gate-rejected edit must NOT advance the iteration past PendingApproval");
+        iter.ScriptSignature.Should().BeNull(
+            "a rejected script is never signed");
+    }
+
+    // ── Operator-driven close paths ─────────────────────────────────────────
+
+    [Fact]
+    public async Task RejectIteration_marks_iteration_Rejected_and_leaves_session_Active()
+    {
+        var target = await SeedTargetAsync("web-01");
+        var harness = NewHarness();
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "x", AdhocMode.Readonly, [target.Id], Guid.NewGuid(), "ops", default);
+        var iterId = await harness.Service.GenerateFirstIterationAsync(sessionId, default);
+
+        await harness.Service.RejectIterationAsync(sessionId, iterId, "ops", default);
+
+        await using var db = postgres.CreateContext();
+        var session = await db.AdhocSessions.Include(s => s.Iterations)
+            .SingleAsync(s => s.Id == sessionId);
+        session.Status.Should().Be(AdhocSessionStatus.Active);
+        session.Iterations.Single().Status.Should().Be(AdhocIterationStatus.Rejected);
+    }
+
+    [Fact]
+    public async Task StopSession_transitions_to_OperatorStopped_and_is_idempotent()
+    {
+        var target = await SeedTargetAsync("web-01");
+        var harness = NewHarness();
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "x", AdhocMode.Readonly, [target.Id], Guid.NewGuid(), "ops", default);
+
+        await harness.Service.StopSessionAsync(sessionId, "ops", default);
+        await harness.Service.StopSessionAsync(sessionId, "ops", default); // idempotent
+
+        await using var db = postgres.CreateContext();
+        var session = await db.AdhocSessions.SingleAsync(s => s.Id == sessionId);
+        session.Status.Should().Be(AdhocSessionStatus.OperatorStopped);
+    }
+
+    [Fact]
+    public async Task MarkResolved_transitions_to_Closed()
+    {
+        var target = await SeedTargetAsync("web-01");
+        var harness = NewHarness();
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "x", AdhocMode.Readonly, [target.Id], Guid.NewGuid(), "ops", default);
+
+        await harness.Service.MarkResolvedAsync(sessionId, "ops", default);
+
+        await using var db = postgres.CreateContext();
+        var session = await db.AdhocSessions.SingleAsync(s => s.Id == sessionId);
+        session.Status.Should().Be(AdhocSessionStatus.Closed);
+    }
+
+    // ── CreateSession config + frozen JSON ──────────────────────────────────
+
+    [Fact]
+    public async Task CreateSession_persists_frozen_targets_and_configured_max_iterations()
+    {
+        var a = await SeedTargetAsync("a");
+        var b = await SeedTargetAsync("b");
+        var harness = NewHarness(maxIterations: 7);
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "audit", AdhocMode.Mutating,
+            [a.Id, b.Id], Guid.NewGuid(), "ops@laus.hr", default);
+
+        await using var db = postgres.CreateContext();
+        var session = await db.AdhocSessions.SingleAsync(s => s.Id == sessionId);
+        session.Mode.Should().Be(AdhocMode.Mutating);
+        session.MaxIterations.Should().Be(7);
+        session.CreatedByDisplay.Should().Be("ops@laus.hr");
+        var ids = JsonSerializer.Deserialize<List<Guid>>(session.FrozenTargetSetJson)!;
+        ids.Should().BeEquivalentTo(new[] { a.Id, b.Id });
+    }
+
+    [Fact]
+    public async Task CreateSession_with_empty_target_set_is_rejected()
+    {
+        var harness = NewHarness();
+        var act = async () => await harness.Service.CreateSessionAsync(
+            "x", AdhocMode.Readonly, [], Guid.NewGuid(), "ops", default);
+        await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+
+    private async Task<DeploymentTarget> SeedTargetAsync(string name)
+    {
+        await using var db = postgres.CreateContext();
+        var t = new DeploymentTarget
+        {
+            Name = name,
+            OperatingSystem = "Windows Server 2022",
+            Roles = ["web"],
+            Status = TargetStatus.Online,
+        };
+        db.DeploymentTargets.Add(t);
+        await db.SaveChangesAsync();
+        return t;
+    }
+
+    private sealed record Harness(AdhocSessionService Service);
+
+    private Harness NewHarness(
+        AdhocGenerationResult? generation = null,
+        IterationVerdict? verdict = null,
+        IKrakenAi? ai = null,
+        int? maxIterations = null)
+    {
+        var krakenAi = ai ?? new SequencedKrakenAi(
+            (object?)generation ?? new AdhocGenerationResult { GeneratedScript = "Get-Date" },
+            (object?)verdict ?? new IterationVerdict { Verdict = "AllSucceeded", Narrative = "ok" });
+
+        var logger = NullLogger<AdhocSessionService>.Instance;
+        var genSvc = new AdhocGenerationService(krakenAi, NullLogger<AdhocGenerationService>.Instance);
+        var verdictSvc = new AdhocVerdictService(krakenAi, NullLogger<AdhocVerdictService>.Instance);
+
+        // Generate a one-off signing key for this harness.
+        using var src = RSA.Create(2048);
+        var configValues = new Dictionary<string, string?>
+        {
+            ["Adhoc:SigningKey"] = src.ExportRSAPrivateKeyPem(),
+        };
+        if (maxIterations is not null)
+        {
+            configValues["Ai:Adhoc:MaxIterationsPerSession"] =
+                maxIterations.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(configValues).Build();
+
+        var keyProvider = new AdhocSigningKeyProvider(config);
+        var dispatcher = new FakeAdhocDispatcher();
+        var audit = new RecordingAuditLog(postgres);
+
+        var service = new AdhocSessionService(
+            postgres, genSvc, verdictSvc, keyProvider, dispatcher,
+            audit, config, TimeProvider.System, logger);
+        return new Harness(service);
+    }
+
+    private static AdhocGenerationResult CannedGeneration(string script)
+        => new() { GeneratedScript = script };
+
+    private static IterationVerdict CannedVerdict(string verdict, string narrative = "")
+        => new() { Verdict = verdict, Narrative = narrative };
+
+    /// <summary>
+    /// Hands out responses in the order they were given to the constructor.
+    /// Each call to <see cref="CompleteAsync{TResult}"/> pops the next item,
+    /// regardless of whether the caller expects a generation or verdict shape
+    /// — the orchestrator's call order (gen → verdict → gen → verdict …) is
+    /// what the test feeds in.
+    /// </summary>
+    private sealed class SequencedKrakenAi(params object?[] responses) : IKrakenAi
+    {
+        private int _idx;
+
+        public Task<TResult> CompleteAsync<TResult>(
+            IReadOnlyList<ChatMessage> messages, KrakenAiFeature feature,
+            KrakenAiRequestOptions? options = null, CancellationToken ct = default)
+            where TResult : class
+        {
+            if (_idx >= responses.Length)
+            {
+                throw new InvalidOperationException(
+                    $"SequencedKrakenAi: ran out of responses (had {responses.Length}).");
+            }
+            var next = responses[_idx++];
+            return Task.FromResult((TResult)next!);
+        }
+
+        public Task<KrakenAiCompletion> CompleteAsync(
+            IReadOnlyList<ChatMessage> messages, KrakenAiFeature feature,
+            KrakenAiRequestOptions? options = null, CancellationToken ct = default)
+            => throw new NotSupportedException();
+
+        public IAsyncEnumerable<string> StreamChatAsync(
+            IReadOnlyList<ChatMessage> messages, KrakenAiFeature feature,
+            KrakenAiRequestOptions? options = null, CancellationToken ct = default)
+            => throw new NotSupportedException();
+    }
+
+    /// <summary>Fake dispatcher that returns one success result per target in
+    /// the frozen set — enough for the orchestrator to advance through the
+    /// verdict + state-machine without hitting a real agent.</summary>
+    private sealed class FakeAdhocDispatcher : IAdhocDispatcher
+    {
+        public Task<IReadOnlyList<AdhocScriptResult>> DispatchAsync(
+            AdhocSession session, AdhocIteration iteration,
+            CancellationToken ct, TimeSpan? timeout = null)
+        {
+            var ids = JsonSerializer.Deserialize<List<Guid>>(session.FrozenTargetSetJson) ?? [];
+            var results = ids
+                .Select(id => new AdhocScriptResult(
+                    session.Id, iteration.IterNumber, ExitCode: 0,
+                    Stdout: $"ok on {id:N}", Stderr: "", AgentError: null))
+                .Cast<AdhocScriptResult>()
+                .ToList();
+            return Task.FromResult<IReadOnlyList<AdhocScriptResult>>(results);
+        }
+    }
+
+    /// <summary>
+    /// Minimal IAuditLog that writes rows straight to Postgres so tests can
+    /// query the audit trail. The production wire uses an EF interceptor +
+    /// AuditLog service; we don't need that whole chain here.
+    /// </summary>
+    private sealed class RecordingAuditLog(PostgresFixture postgres) : IAuditLog
+    {
+        public async Task RecordAsync(
+            string eventType,
+            string? subjectType = null,
+            string? subjectId = null,
+            string? subjectName = null,
+            string? details = null,
+            Guid? userId = null,
+            string? userDisplay = null,
+            CancellationToken ct = default)
+        {
+            await using var db = postgres.CreateContext();
+            db.AuditEntries.Add(new AuditEntry
+            {
+                EventType   = eventType,
+                SubjectType = subjectType,
+                SubjectId   = subjectId,
+                SubjectName = subjectName,
+                Details     = details,
+                OccurredUtc = DateTimeOffset.UtcNow,
+                SpaceId     = WellKnown.DefaultSpaceId,
+                UserId      = userId,
+                UserDisplay = userDisplay ?? "test",
+            });
+            await db.SaveChangesAsync(ct);
+        }
+    }
+}

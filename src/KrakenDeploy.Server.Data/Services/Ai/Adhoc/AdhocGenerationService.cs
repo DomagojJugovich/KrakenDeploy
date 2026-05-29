@@ -204,4 +204,8 @@ public enum AdhocFeatureUnavailableReason
 
     /// <summary>Month-to-date AI cost has reached the Space's cap.</summary>
     BudgetExceeded = 2,
+
+    /// <summary>The server has no <c>Adhoc:SigningKey</c> configured — adhoc
+    /// approval cannot sign and therefore cannot dispatch.</summary>
+    SigningKeyMissing = 3,
 }

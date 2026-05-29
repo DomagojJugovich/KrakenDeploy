@@ -281,4 +281,26 @@ public static class AuditEventType
     /// <summary>Operator clicked "Send test email" and the probe failed.
     /// Details: recipient + MailKit error message (no credentials leaked).</summary>
     public const string SmtpTestProbeFailed     = "Smtp.TestProbeFailed";
+
+    // ── Ad-hoc agent actions (M11.E) ─────────────────────────────────────────
+
+    /// <summary>The static-analysis gate rejected an ad-hoc script (the
+    /// generated iter 1, an operator-edited approval, or a verdict's proposed
+    /// fix). Details: iter number + violation summary.</summary>
+    public const string AdhocGateRejected      = "Adhoc.GateRejected";
+    /// <summary>Operator approved an iteration's signed script for execution.
+    /// Details: iter number + approver display.</summary>
+    public const string AdhocIterationApproved = "Adhoc.IterationApproved";
+    /// <summary>Operator rejected an iteration's proposed script. The
+    /// session stays Active; the operator can re-prompt or stop.</summary>
+    public const string AdhocIterationRejected = "Adhoc.IterationRejected";
+    /// <summary>Session closed — either via "Mark resolved" (M11.E.16) or
+    /// because the verdict was AllSucceeded / NoFixAvailable or the proposed
+    /// fix failed the gate. Details: reason.</summary>
+    public const string AdhocSessionClosed     = "Adhoc.SessionClosed";
+    /// <summary>Operator pressed "Stop session" (M11.E.16). Details: who.</summary>
+    public const string AdhocSessionStopped    = "Adhoc.SessionStopped";
+    /// <summary>Session auto-closed after hitting its iteration cap
+    /// (M11.E.14). Details: cap + "manual intervention required".</summary>
+    public const string AdhocSessionCapReached = "Adhoc.SessionCapReached";
 }
