@@ -100,7 +100,7 @@ public sealed class McpEnabledGateMiddlewareTests(PostgresFixture postgres)
     {
         McpEnabledGateMiddleware.ClearCacheForTest();
         return new McpEnabledGateMiddleware(
-            next, postgres, NullLogger<McpEnabledGateMiddleware>.Instance);
+            next, postgres.ScopeFactory, NullLogger<McpEnabledGateMiddleware>.Instance);
     }
 
     private async Task SeedSettingsAsync(bool mcpEnabled)

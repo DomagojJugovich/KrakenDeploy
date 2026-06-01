@@ -290,7 +290,7 @@ public sealed class DeploymentFreezeServiceTests(PostgresFixture postgres)
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private DeploymentFreezeService NewSvc() =>
-        new(postgres, new FixedClock(Now));
+        new(postgres.ScopeFactory, new FixedClock(Now));
 
     private static DeploymentFreeze SampleFreeze() => new()
     {

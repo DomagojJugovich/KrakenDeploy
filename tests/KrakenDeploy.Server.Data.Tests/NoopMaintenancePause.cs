@@ -1,7 +1,6 @@
 using KrakenDeploy.Server.Data.Jobs;
 using KrakenDeploy.Server.Data.Services;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace KrakenDeploy.Server.Data.Tests;
 
@@ -14,6 +13,6 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// </summary>
 internal static class NoopMaintenancePause
 {
-    public static MaintenancePause For(IDbContextFactory<KrakenDbContext> dbFactory)
-        => new(new MaintenanceModeService(dbFactory, TimeProvider.System));
+    public static MaintenancePause For(IServiceScopeFactory scopeFactory)
+        => new(new MaintenanceModeService(scopeFactory, TimeProvider.System));
 }

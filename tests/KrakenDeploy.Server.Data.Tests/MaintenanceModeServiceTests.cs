@@ -163,7 +163,7 @@ public sealed class MaintenanceModeServiceTests(PostgresFixture postgres)
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private MaintenanceModeService NewSvc()
-        => new(postgres, TimeProvider.System);
+        => new(postgres.ScopeFactory, TimeProvider.System);
 
     private sealed class CountingLogger : Microsoft.Extensions.Logging.ILogger<MaintenancePause>
     {

@@ -1,5 +1,6 @@
 using KrakenDeploy.Server.Core.Domain.Maintenance;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace KrakenDeploy.Server.Data.Services;
 
@@ -15,7 +16,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// </para>
 /// </summary>
 public sealed class MaintenanceModeService(
-    IDbContextFactory<KrakenDbContext> dbFactory,
+    IServiceScopeFactory scopeFactory,
     TimeProvider time)
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(10);
@@ -37,7 +38,8 @@ public sealed class MaintenanceModeService(
             }
         }
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var row = await db.MaintenanceSettings
             .AsNoTracking()
             .FirstOrDefaultAsync(m => m.Id == MaintenanceSettings.SingletonId, ct)
@@ -57,7 +59,8 @@ public sealed class MaintenanceModeService(
 
     public async Task EnableAsync(string? reason, Guid? userId, CancellationToken ct = default)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var row = await db.MaintenanceSettings
             .FirstOrDefaultAsync(m => m.Id == MaintenanceSettings.SingletonId, ct)
             .ConfigureAwait(false);
@@ -78,7 +81,8 @@ public sealed class MaintenanceModeService(
 
     public async Task DisableAsync(CancellationToken ct = default)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var row = await db.MaintenanceSettings
             .FirstOrDefaultAsync(m => m.Id == MaintenanceSettings.SingletonId, ct)
             .ConfigureAwait(false);

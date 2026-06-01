@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using Hangfire;
 using Hangfire.PostgreSql;
+using KrakenDeploy.Ai;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Mcp;
 using KrakenDeploy.Server.Auth;
@@ -124,6 +125,12 @@ public static class Program
 
         var dataPath = builder.Configuration["Server:DataPath"] ?? "data";
         builder.Services.AddKrakenDeployData(connectionString, dataPath);
+        // Registers IKrakenAi + KrakenAiClientFactory + prompt sanitiser/cost
+        // catalog. AddKrakenDeployData already registered the DB-backed
+        // IKrakenAiSettingsProvider / IKrakenAiCallSink / IBudgetTracker, so
+        // AddKrakenAi's TryAdd defaults defer to them; it only fills in the
+        // IKrakenAi pieces the AI services (diagnosis, assistant, adhoc) need.
+        builder.Services.AddKrakenAi();
         builder.Services.AddKrakenDeployIdentityCore()
             .AddSignInManager();
 

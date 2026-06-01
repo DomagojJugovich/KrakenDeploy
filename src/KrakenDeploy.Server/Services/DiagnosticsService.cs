@@ -7,6 +7,7 @@ using System.Text.Json;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Transport;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace KrakenDeploy.Server.Services;
 
@@ -25,7 +26,7 @@ namespace KrakenDeploy.Server.Services;
 /// </list>
 /// </summary>
 public sealed class DiagnosticsService(
-    IDbContextFactory<KrakenDbContext> dbFactory,
+    IServiceScopeFactory scopeFactory,
     IAgentConnectionRegistry agentRegistry,
     IConfiguration configuration,
     IHostEnvironment hostEnvironment,
@@ -50,7 +51,8 @@ public sealed class DiagnosticsService(
         var proc = System.Diagnostics.Process.GetCurrentProcess();
         var uptime = time.GetUtcNow() - ProcessStartedUtc;
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var (dbVersion, dbCanConnect) = await ProbeDatabaseAsync(db, ct).ConfigureAwait(false);
         var counts = await CollectRowCountsAsync(db, ct).ConfigureAwait(false);
 
@@ -95,7 +97,8 @@ public sealed class DiagnosticsService(
         var started = time.GetTimestamp();
         var findings = new List<IntegrityFinding>();
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
 
         // 1. Pending migrations
         try

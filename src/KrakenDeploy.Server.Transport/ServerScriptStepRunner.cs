@@ -6,6 +6,7 @@ using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Data;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace KrakenDeploy.Server.Transport;
@@ -24,7 +25,7 @@ namespace KrakenDeploy.Server.Transport;
 /// </para>
 /// </summary>
 public sealed class ServerScriptStepRunner(
-    IDbContextFactory<KrakenDbContext> dbFactory,
+    IServiceScopeFactory scopeFactory,
     IHubContext<UiHub, IUiHubClient> uiHub,
     TimeProvider timeProvider,
     ILogger<ServerScriptStepRunner> logger)
@@ -225,7 +226,8 @@ public sealed class ServerScriptStepRunner(
     {
         var timestamp = timeProvider.GetUtcNow();
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var deployment = await db.Deployments.FindAsync([deploymentId], ct).ConfigureAwait(false);
         if (deployment is null)
         {

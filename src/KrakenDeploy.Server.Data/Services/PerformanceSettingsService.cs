@@ -1,5 +1,6 @@
 using KrakenDeploy.Server.Core.Domain.Performance;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace KrakenDeploy.Server.Data.Services;
 
@@ -27,7 +28,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// </para>
 /// </summary>
 public sealed class PerformanceSettingsService(
-    IDbContextFactory<KrakenDbContext> dbFactory,
+    IServiceScopeFactory scopeFactory,
     TimeProvider time)
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
@@ -52,7 +53,8 @@ public sealed class PerformanceSettingsService(
             }
         }
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var row = await db.PerformanceSettings
             .AsNoTracking()
             .FirstOrDefaultAsync(p => p.Id == PerformanceSettings.SingletonId, ct)
@@ -77,7 +79,8 @@ public sealed class PerformanceSettingsService(
     {
         ArgumentNullException.ThrowIfNull(update);
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var row = await db.PerformanceSettings
             .FirstOrDefaultAsync(p => p.Id == PerformanceSettings.SingletonId, ct)
             .ConfigureAwait(false);

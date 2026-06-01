@@ -87,7 +87,7 @@ public static class ApplicationBuilderExtensions
 /// </summary>
 public sealed class McpEnabledGateMiddleware(
     RequestDelegate next,
-    IDbContextFactory<KrakenDbContext> dbFactory,
+    IServiceScopeFactory scopeFactory,
     ILogger<McpEnabledGateMiddleware> logger)
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
@@ -128,7 +128,8 @@ public sealed class McpEnabledGateMiddleware(
             }
         }
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var enabled = await db.SpaceAiSettings
             .IgnoreQueryFilters() // the gate looks across the SpaceScopingInterceptor
             .Where(s => s.SpaceId == WellKnown.DefaultSpaceId)

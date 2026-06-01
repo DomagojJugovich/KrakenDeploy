@@ -3,6 +3,7 @@ using KrakenDeploy.Server.Data.Interceptors;
 using KrakenDeploy.Server.Data.Spaces;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.DependencyInjection;
 using Testcontainers.PostgreSql;
 
 namespace KrakenDeploy.Server.Data.Tests;
@@ -24,7 +25,28 @@ public sealed class PostgresFixture : IAsyncLifetime, IDbContextFactory<KrakenDb
         .WithCleanUp(true)
         .Build();
 
+    private readonly ServiceProvider _scopeProvider;
+
+    public PostgresFixture()
+    {
+        // Mirrors the production registration enough for the singleton
+        // services that now open a per-call scope: each scope resolves a
+        // fresh KrakenDbContext via the fixture's factory.
+        var services = new ServiceCollection();
+        services.AddScoped<KrakenDbContext>(_ => CreateContext());
+        services.AddSingleton<IDbContextFactory<KrakenDbContext>>(this);
+        _scopeProvider = services.BuildServiceProvider();
+    }
+
     public string ConnectionString => _container.GetConnectionString();
+
+    /// <summary>
+    /// An <see cref="IServiceScopeFactory"/> whose scopes resolve a fresh
+    /// <see cref="KrakenDbContext"/>. Pass this to services that open a
+    /// per-call scope instead of capturing an <see cref="IDbContextFactory{TContext}"/>.
+    /// </summary>
+    public IServiceScopeFactory ScopeFactory =>
+        _scopeProvider.GetRequiredService<IServiceScopeFactory>();
 
     public KrakenDbContext CreateContext()
     {
@@ -53,7 +75,11 @@ public sealed class PostgresFixture : IAsyncLifetime, IDbContextFactory<KrakenDb
         await context.Database.MigrateAsync();
     }
 
-    public Task DisposeAsync() => _container.DisposeAsync().AsTask();
+    public async Task DisposeAsync()
+    {
+        await _scopeProvider.DisposeAsync();
+        await _container.DisposeAsync();
+    }
 
     KrakenDbContext IDbContextFactory<KrakenDbContext>.CreateDbContext() => CreateContext();
 }

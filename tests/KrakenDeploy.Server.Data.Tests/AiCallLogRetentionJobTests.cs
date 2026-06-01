@@ -170,7 +170,7 @@ public sealed class AiCallLogRetentionJobTests(PostgresFixture postgres)
         // PerformanceSettings row seeded the job falls back to appsettings,
         // which is the path the existing tests assert. The DB-wins path is
         // covered by Honours_DB_setting_when_PerformanceSettings_row_exists.
-        var performance = new PerformanceSettingsService(postgres, time);
+        var performance = new PerformanceSettingsService(postgres.ScopeFactory, time);
         return new AiCallLogRetentionJob(
             postgres,
             performance,

@@ -1,5 +1,6 @@
 using KrakenDeploy.Server.Core.Domain.Features;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace KrakenDeploy.Server.Data.Services;
 
@@ -12,7 +13,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// processes pick up the change within the TTL window.
 /// </summary>
 public sealed class FeatureFlagService(
-    IDbContextFactory<KrakenDbContext> dbFactory,
+    IServiceScopeFactory scopeFactory,
     IFeatureCatalog catalog,
     TimeProvider time)
 {
@@ -70,7 +71,8 @@ public sealed class FeatureFlagService(
             ?? throw new InvalidOperationException(
                 $"Feature '{key}' is not registered in IFeatureCatalog.");
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var row = await db.FeatureFlags
             .FirstOrDefaultAsync(f => f.Key == key, ct)
             .ConfigureAwait(false);
@@ -124,7 +126,8 @@ public sealed class FeatureFlagService(
             }
         }
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var rows = await db.FeatureFlags
             .AsNoTracking()
             .ToListAsync(ct)

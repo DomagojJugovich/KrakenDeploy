@@ -145,5 +145,5 @@ public sealed class PerformanceSettingsServiceTests(PostgresFixture postgres)
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private PerformanceSettingsService NewSvc()
-        => new(postgres, TimeProvider.System);
+        => new(postgres.ScopeFactory, TimeProvider.System);
 }

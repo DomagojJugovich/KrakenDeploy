@@ -1,5 +1,6 @@
 using KrakenDeploy.Server.Core.Domain.Freezes;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace KrakenDeploy.Server.Data.Services;
 
@@ -16,7 +17,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// </para>
 /// </summary>
 public sealed class DeploymentFreezeService(
-    IDbContextFactory<KrakenDbContext> dbFactory,
+    IServiceScopeFactory scopeFactory,
     TimeProvider time)
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
@@ -29,7 +30,8 @@ public sealed class DeploymentFreezeService(
     /// <summary>All freezes in the current Space (ambient scope).</summary>
     public async Task<List<DeploymentFreeze>> GetAllAsync(CancellationToken ct = default)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         return await db.DeploymentFreezes
             .OrderBy(f => f.StartUtc)
             .ToListAsync(ct)
@@ -38,7 +40,8 @@ public sealed class DeploymentFreezeService(
 
     public async Task<DeploymentFreeze?> GetAsync(Guid id, CancellationToken ct = default)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         return await db.DeploymentFreezes
             .FirstOrDefaultAsync(f => f.Id == id, ct)
             .ConfigureAwait(false);
@@ -49,7 +52,8 @@ public sealed class DeploymentFreezeService(
         ArgumentNullException.ThrowIfNull(input);
         Validate(input);
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         db.DeploymentFreezes.Add(input);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         InvalidateCache();
@@ -62,7 +66,8 @@ public sealed class DeploymentFreezeService(
         ArgumentNullException.ThrowIfNull(input);
         Validate(input);
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var existing = await db.DeploymentFreezes
             .FirstOrDefaultAsync(f => f.Id == id, ct)
             .ConfigureAwait(false);
@@ -84,7 +89,8 @@ public sealed class DeploymentFreezeService(
 
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var existing = await db.DeploymentFreezes
             .FirstOrDefaultAsync(f => f.Id == id, ct)
             .ConfigureAwait(false);
@@ -161,7 +167,8 @@ public sealed class DeploymentFreezeService(
             }
         }
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var freezes = await db.DeploymentFreezes
             .IgnoreQueryFilters() // we filter by SpaceId explicitly below
             .Where(f => f.SpaceId == spaceId && !f.Disabled)

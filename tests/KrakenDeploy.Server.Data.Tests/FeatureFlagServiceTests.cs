@@ -165,5 +165,5 @@ public sealed class FeatureFlagServiceTests(PostgresFixture postgres)
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private FeatureFlagService NewSvc() =>
-        new(postgres, new BuiltInFeatureCatalog(), TimeProvider.System);
+        new(postgres.ScopeFactory, new BuiltInFeatureCatalog(), TimeProvider.System);
 }

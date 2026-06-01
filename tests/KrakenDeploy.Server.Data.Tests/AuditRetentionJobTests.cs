@@ -157,9 +157,9 @@ public sealed class AuditRetentionJobTests(PostgresFixture postgres)
         var httpAccessor = new HttpContextAccessor();
         var spaceCtx = new KrakenDeploy.Server.Data.Spaces.DefaultSpaceContext();
         var auditLog = new AuditLogService(postgres, httpAccessor, spaceCtx, time);
-        var performance = new PerformanceSettingsService(postgres, time);
+        var performance = new PerformanceSettingsService(postgres.ScopeFactory, time);
         var featureFlags = new FeatureFlagService(
-            postgres,
+            postgres.ScopeFactory,
             new KrakenDeploy.Server.Core.Domain.Features.BuiltInFeatureCatalog(),
             time);
 

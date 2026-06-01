@@ -5,6 +5,7 @@ using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Octostache;
 
@@ -68,8 +69,7 @@ public static class OctopusDeployReleaseConfigKeys
 /// </list>
 /// </summary>
 public sealed class DeployReleaseStepRunner(
-    IDbContextFactory<KrakenDbContext> dbFactory,
-    DeploymentService deploymentService,
+    IServiceScopeFactory scopeFactory,
     IHubContext<UiHub, IUiHubClient> uiHub,
     TimeProvider timeProvider,
     ILogger<DeployReleaseStepRunner> logger)
@@ -115,7 +115,8 @@ public sealed class DeployReleaseStepRunner(
             return false;
         }
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
 
         // ── Resolve the parent deployment to find environment + target set ──
         // M-RollingDeployments Phase 1b: include the join collection so the
@@ -200,6 +201,7 @@ public sealed class DeployReleaseStepRunner(
         Deployment child;
         try
         {
+            var deploymentService = scope.ServiceProvider.GetRequiredService<DeploymentService>();
             child = await deploymentService.CreateAsync(
                 releaseId:           latestRelease.Id,
                 environmentId:       parent.EnvironmentId,
@@ -217,8 +219,9 @@ public sealed class DeployReleaseStepRunner(
             return false;
         }
 
-        await using (var linkDb = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false))
+        await using (var linkScope = scopeFactory.CreateAsyncScope())
         {
+            var linkDb = linkScope.ServiceProvider.GetRequiredService<KrakenDbContext>();
             var tracked = await linkDb.Deployments.FindAsync([child.Id], ct).ConfigureAwait(false);
             if (tracked is not null)
             {
@@ -244,7 +247,8 @@ public sealed class DeployReleaseStepRunner(
         var lastSequence = -1;
         while (!ct.IsCancellationRequested)
         {
-            await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
 
             // Stream any new log lines the child has written since we last polled.
             var newLines = await db.DeploymentLogEntries
@@ -399,7 +403,8 @@ public sealed class DeployReleaseStepRunner(
     {
         var timestamp = timeProvider.GetUtcNow();
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var deployment = await db.Deployments.FindAsync([deploymentId], ct).ConfigureAwait(false);
         if (deployment is null)
         {

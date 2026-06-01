@@ -1,6 +1,7 @@
 using KrakenDeploy.Server.Data;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace KrakenDeploy.Server.Services;
 
@@ -18,8 +19,7 @@ namespace KrakenDeploy.Server.Services;
 /// </para>
 /// </summary>
 public sealed class LicenseUsageCounter(
-    IDbContextFactory<KrakenDbContext> dbFactory,
-    UserManager<Data.Identity.ApplicationUser> userManager,
+    IServiceScopeFactory scopeFactory,
     TimeProvider time)
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(60);
@@ -43,7 +43,10 @@ public sealed class LicenseUsageCounter(
             }
         }
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
+        var userManager = scope.ServiceProvider
+            .GetRequiredService<UserManager<Data.Identity.ApplicationUser>>();
         var targets = await db.DeploymentTargets
             .IgnoreQueryFilters()
             .CountAsync(ct)
@@ -81,7 +84,8 @@ public sealed class LicenseUsageCounter(
     public async Task<IReadOnlyList<SpaceTargetCount>> GetPerSpaceTargetCountsAsync(
         CancellationToken ct = default)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
 
         // LEFT JOIN style — every Space appears even with zero targets.
         var rollup = await db.Spaces
@@ -109,7 +113,8 @@ public sealed class LicenseUsageCounter(
     public async Task<OtherResourceCounts> GetOtherResourceCountsAsync(
         CancellationToken ct = default)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
 
         // Each of these is ISpaceScoped except Spaces itself — IgnoreQueryFilters
         // ensures the count is server-wide for parity with the cap reporting.
