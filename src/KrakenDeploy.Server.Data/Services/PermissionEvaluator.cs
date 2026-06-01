@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Claims;
 using KrakenDeploy.Server.Core.Domain.Security;
 using Microsoft.EntityFrameworkCore;
@@ -22,8 +23,18 @@ public sealed class PermissionEvaluator(IDbContextFactory<KrakenDbContext> dbFac
     /// <summary>Standard claim name for the user's KrakenDeploy user id.</summary>
     public const string UserIdClaim = ClaimTypes.NameIdentifier;
 
-    private readonly Dictionary<CacheKey, IReadOnlyList<RoleAssignment>> _assignmentCache = [];
-    private readonly Dictionary<Guid, bool> _systemAdminCache = [];
+    // Concurrent because Blazor renders sibling components' async lifecycle
+    // methods (e.g. several RequirePermission checks on one page) without a
+    // barrier, and the DB fills below use ConfigureAwait(false) — so their
+    // continuations, including the cache writes, run on thread-pool threads in
+    // parallel. A plain Dictionary corrupts under concurrent TryInsert
+    // ("non-concurrent collections must have exclusive access"); on a cold
+    // circuit every check misses and writes at once, which is exactly the
+    // intermittent first-load failure. ConcurrentDictionary makes read+write
+    // atomic. Worst case on a cold cache: two checks issue the same idempotent
+    // query and last-writer-wins on an identical value — harmless.
+    private readonly ConcurrentDictionary<CacheKey, IReadOnlyList<RoleAssignment>> _assignmentCache = new();
+    private readonly ConcurrentDictionary<Guid, bool> _systemAdminCache = new();
 
     public async Task<bool> HasPermissionAsync(
         ClaimsPrincipal user,
