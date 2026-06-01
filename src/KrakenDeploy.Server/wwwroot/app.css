@@ -241,6 +241,13 @@ html, body {
 
 /* ── Process editor ──────────────────────────────────────────────────────── */
 
+/* Establishes the query container so the layout below can collapse based on
+   the width it actually gets (content area minus the two nav columns), not the
+   raw viewport — and it re-reacts when the left nav is collapsed. */
+.kraken-process-page {
+    container-type: inline-size;
+}
+
 .kraken-process-layout {
     display: flex;
     gap: 1.25rem;
@@ -255,6 +262,12 @@ html, body {
 .kraken-process-sidebar {
     width: 300px;
     flex-shrink: 0;
+}
+
+/* Toolbar toggle for the process aside. Hidden on wide viewports where the
+   aside is always visible; the narrow-viewport media query below reveals it. */
+.kraken-aside-toggle {
+    display: none;
 }
 
 .kraken-step-card {
@@ -326,6 +339,32 @@ html, body {
     font-size: 0.78rem;
     color: var(--rz-text-tertiary-color, rgba(0, 0, 0, 0.55));
     margin-top: 0.15rem;
+}
+
+/* Narrow content area: collapse the Lifecycle / Script Modules aside so the
+   step list gets the full width (otherwise the fixed 300px aside starves it and
+   step titles wrap one word per line). Container-query based, so it triggers on
+   the real available width rather than the viewport. The .kraken-aside-toggle
+   toolbar button forces it back open, mirroring the left nav's collapse. */
+@container (max-width: 900px) {
+    .kraken-process-layout {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .kraken-process-sidebar {
+        width: 100%;
+        display: none;
+    }
+
+    .kraken-process-layout--aside-open .kraken-process-sidebar {
+        display: block;
+        order: -1; /* surface the panel above the steps when forced open */
+    }
+
+    .kraken-aside-toggle {
+        display: inline-flex;
+    }
 }
 
 /* ── Project dashboard matrix ────────────────────────────────────────────── */
@@ -492,7 +531,13 @@ html, body {
 
 /* ── Package repository ──────────────────────────────────────────────────── */
 
+/* Query container so the two-column layout collapses on the real available
+   width, mirroring the Process editor (.kraken-process-page). */
 .kraken-pkg-page {
+    container-type: inline-size;
+}
+
+.kraken-pkg-layout {
     display: flex;
     gap: 1.25rem;
     align-items: flex-start;
@@ -508,6 +553,23 @@ html, body {
     flex-shrink: 0;
     position: sticky;
     top: 1rem;
+}
+
+/* Narrow content area: stack so the selected package's versions panel goes
+   full-width above the grid instead of squeezing it. The panel is
+   selection-driven and already carries a close (X) button, so no separate
+   toggle is needed — clicking a package row opens it, X closes it. */
+@container (max-width: 900px) {
+    .kraken-pkg-layout {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .kraken-pkg-side {
+        width: 100%;
+        position: static;
+        order: -1;
+    }
 }
 
 .kraken-pkg-version {

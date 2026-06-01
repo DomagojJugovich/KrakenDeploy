@@ -16,11 +16,19 @@
 @inject KrakenDeploy.Server.Data.Services.Ai.SpaceAiSettingsService AiSettingsSvc
 
 <ProjectShell Slug="@Slug">
+    <div class="kraken-process-page">
     <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
                  JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-4">
-        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
-            Process
-        </RadzenText>
+        <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.5rem">
+            <RadzenButton class="kraken-aside-toggle"
+                          Icon="@(_asideOpen ? "menu_open" : "view_sidebar")"
+                          ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                          Click="@(() => _asideOpen = !_asideOpen)"
+                          title="Show or hide the Lifecycle and Script Modules panel" />
+            <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
+                Process
+            </RadzenText>
+        </RadzenStack>
         <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
             <RequirePermission Permission="Permission.ReleaseCreate">
                 <RadzenButton Text="Create Release" Icon="add_circle_outline"
@@ -65,7 +73,7 @@
     }
     else
     {
-    <div class="kraken-process-layout">
+    <div class="kraken-process-layout @(_asideOpen ? "kraken-process-layout--aside-open" : null)">
         @* ── Left: step list ───────────────────────────────────────────── *@
         <div class="kraken-process-steps">
             @if (_steps.Count == 0)
@@ -355,6 +363,7 @@
         </aside>
     </div>
     }
+    </div>
 </ProjectShell>
 
 @code {
@@ -389,6 +398,13 @@
     private bool _loaded;
     private string? _loadError;
     private bool _assistantEnabled;
+
+    /// <summary>
+    /// Forces the Lifecycle / Script Modules aside visible on narrow viewports
+    /// where it auto-collapses (see .kraken-process-layout--aside-open in
+    /// app.css). No effect on wide viewports — the aside is always shown there.
+    /// </summary>
+    private bool _asideOpen;
 
     /// <summary>
     /// Cache of (package name → highest installed semver) used to render the

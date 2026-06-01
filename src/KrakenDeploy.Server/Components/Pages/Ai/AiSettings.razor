@@ -216,29 +216,38 @@
                         you can keep diagnosis on while leaving ad-hoc actions off.
                     </RadzenText>
 
-                    <RadzenCheckBox @bind-Value="_form.DiagnosisEnabled"
-                                    TValue="bool"
-                                    Disabled="@(!_canManage)" />
-                    <label class="rz-checkbox-label" style="margin-left: -1rem;">
-                        Autonomous failure diagnosis <em>(M11.C)</em> — write an AI Analysis card
-                        on every failed deployment.
-                    </label>
+                    <RadzenStack Orientation="Orientation.Horizontal"
+                                 AlignItems="AlignItems.Center" Gap="0.5rem">
+                        <RadzenCheckBox @bind-Value="_form.DiagnosisEnabled"
+                                        TValue="bool"
+                                        Disabled="@(!_canManage)" />
+                        <label class="rz-checkbox-label">
+                            Autonomous failure diagnosis <em>(M11.C)</em> — write an AI Analysis card
+                            on every failed deployment.
+                        </label>
+                    </RadzenStack>
 
-                    <RadzenCheckBox @bind-Value="_form.McpEnabled"
-                                    TValue="bool"
-                                    Disabled="@(!_canManage)" />
-                    <label class="rz-checkbox-label" style="margin-left: -1rem;">
-                        MCP server <em>(M11.B)</em> — expose this Space to MCP-aware AI clients
-                        (Claude Desktop, Cursor, Copilot Chat).
-                    </label>
+                    <RadzenStack Orientation="Orientation.Horizontal"
+                                 AlignItems="AlignItems.Center" Gap="0.5rem">
+                        <RadzenCheckBox @bind-Value="_form.McpEnabled"
+                                        TValue="bool"
+                                        Disabled="@(!_canManage)" />
+                        <label class="rz-checkbox-label">
+                            MCP server <em>(M11.B)</em> — expose this Space to MCP-aware AI clients
+                            (Claude Desktop, Cursor, Copilot Chat).
+                        </label>
+                    </RadzenStack>
 
-                    <RadzenCheckBox @bind-Value="_form.AdhocEnabled"
-                                    TValue="bool"
-                                    Disabled="@(!_canManage)" />
-                    <label class="rz-checkbox-label" style="margin-left: -1rem;">
-                        Ad-hoc agent actions <em>(M11.E)</em> — natural-language → operator-approved
-                        PowerShell run on selected targets.
-                    </label>
+                    <RadzenStack Orientation="Orientation.Horizontal"
+                                 AlignItems="AlignItems.Center" Gap="0.5rem">
+                        <RadzenCheckBox @bind-Value="_form.AdhocEnabled"
+                                        TValue="bool"
+                                        Disabled="@(!_canManage)" />
+                        <label class="rz-checkbox-label">
+                            Ad-hoc agent actions <em>(M11.E)</em> — natural-language → operator-approved
+                            PowerShell run on selected targets.
+                        </label>
+                    </RadzenStack>
 
                     @if (_form.AdhocEnabled)
                     {
@@ -256,24 +265,30 @@
                             here only affects sessions started afterwards.
                         </RadzenText>
 
-                        <RadzenCheckBox @bind-Value="_form.AdhocTwoPersonApproval"
-                                        TValue="bool"
-                                        Disabled="@(!_canManage)" />
-                        <label class="rz-checkbox-label" style="margin-left: -1rem;">
-                            Require <strong>two-person approval</strong> <em>(M11.E.11)</em> for
-                            high-risk iterations — a mutating session, or any Production-risk
-                            target in the frozen set. The second approver must differ from the
-                            first approver and from the session creator.
-                        </label>
+                        <RadzenStack Orientation="Orientation.Horizontal"
+                                     AlignItems="AlignItems.Center" Gap="0.5rem">
+                            <RadzenCheckBox @bind-Value="_form.AdhocTwoPersonApproval"
+                                            TValue="bool"
+                                            Disabled="@(!_canManage)" />
+                            <label class="rz-checkbox-label">
+                                Require <strong>two-person approval</strong> <em>(M11.E.11)</em> for
+                                high-risk iterations — a mutating session, or any Production-risk
+                                target in the frozen set. The second approver must differ from the
+                                first approver and from the session creator.
+                            </label>
+                        </RadzenStack>
                     }
 
-                    <RadzenCheckBox @bind-Value="_form.AssistantEnabled"
-                                    TValue="bool"
-                                    Disabled="@(!_canManage)" />
-                    <label class="rz-checkbox-label" style="margin-left: -1rem;">
-                        Process-builder assistant <em>(M11.D)</em> — inline AI suggestions in
-                        the step editor + field-level explanations.
-                    </label>
+                    <RadzenStack Orientation="Orientation.Horizontal"
+                                 AlignItems="AlignItems.Center" Gap="0.5rem">
+                        <RadzenCheckBox @bind-Value="_form.AssistantEnabled"
+                                        TValue="bool"
+                                        Disabled="@(!_canManage)" />
+                        <label class="rz-checkbox-label">
+                            Process-builder assistant <em>(M11.D)</em> — inline AI suggestions in
+                            the step editor + field-level explanations.
+                        </label>
+                    </RadzenStack>
                 </RadzenStack>
             </RadzenCard>
 
@@ -284,14 +299,15 @@
                         Audit
                     </RadzenText>
 
-                    <div>
+                    <RadzenStack Orientation="Orientation.Horizontal"
+                                 AlignItems="AlignItems.Center" Gap="0.5rem">
                         <RadzenCheckBox @bind-Value="_form.LogPromptBodies"
                                         TValue="bool"
                                         Disabled="@(!_canManage)" />
-                        <label class="rz-checkbox-label" style="margin-left: -1rem;">
+                        <label class="rz-checkbox-label">
                             Log full prompt + response bodies in <code>ai_call_logs</code>
                         </label>
-                    </div>
+                    </RadzenStack>
                     <RadzenAlert AlertStyle="AlertStyle.Warning"
                                  Variant="Variant.Outlined" ShowIcon="true" AllowClose="false"
                                  class="rz-mb-0">
