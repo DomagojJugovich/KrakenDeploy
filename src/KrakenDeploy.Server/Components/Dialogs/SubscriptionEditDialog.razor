@@ -12,6 +12,7 @@
 @inject ISpaceContext SpaceCtx
 @inject IAuditLog Audit
 @inject DialogService Dialog
+@inject UiActionGuard Guard
 
 <RadzenStack Gap="0.75rem">
 
@@ -322,6 +323,8 @@
             _error = "Name is required.";
             return;
         }
+
+        if (!await Guard.AllowAsync(Permission.SubscriptionManage)) return;
 
         // Build the canonical fields from the form.
         _form.EventTypePatterns = ParseLines(_eventTypesText);

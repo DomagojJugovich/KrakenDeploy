@@ -1354,11 +1354,15 @@
 
     private Dictionary<string, string> _extraConfigKeys = new(StringComparer.Ordinal);
 
+    /// <summary>Permission required to persist — defaults to ProcessEdit for
+    /// project processes; runbook step editing passes RunbookEdit.</summary>
+    [Parameter] public Permission EditPermission { get; set; } = Permission.ProcessEdit;
+
     private async Task OnSaveAsync()
     {
         _errors = [];
 
-        if (!await Guard.AllowAsync(Permission.ProcessEdit)) return;
+        if (!await Guard.AllowAsync(EditPermission)) return;
 
         if (string.IsNullOrWhiteSpace(_name))
         {

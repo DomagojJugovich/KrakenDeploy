@@ -9,6 +9,7 @@
 @inject OfflineResultService OfflineResultSvc
 @inject NavigationManager Nav
 @inject NotificationService Notify
+@inject UiActionGuard Guard
 
 <PageTitle>Deployment @(Deployment?.Id.ToString()[..8]) - KrakenDeploy</PageTitle>
 
@@ -77,11 +78,13 @@ else
                 <code>deployment-log.txt</code>, and optional <code>artifacts/</code>).
             </RadzenText>
             <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem" AlignItems="AlignItems.Center">
-                <InputFile OnChange="@OnResultFileSelected" accept=".zip" />
-                <RadzenButton Text="Upload Result" Icon="upload_file"
-                              ButtonStyle="ButtonStyle.Success"
-                              Click="@UploadResultAsync"
-                              Disabled="@(_resultFile is null || _uploading)" />
+                <RequirePermission Permission="Permission.OfflineResultUpload">
+                    <InputFile OnChange="@OnResultFileSelected" accept=".zip" />
+                    <RadzenButton Text="Upload Result" Icon="upload_file"
+                                  ButtonStyle="ButtonStyle.Success"
+                                  Click="@UploadResultAsync"
+                                  Disabled="@(_resultFile is null || _uploading)" />
+                </RequirePermission>
                 @if (_uploading)
                 {
                     <RadzenProgressBarCircular ShowValue="false" Size="ProgressBarCircularSize.Small"
@@ -471,6 +474,8 @@ else
         {
             return;
         }
+
+        if (!await Guard.AllowAsync(Permission.OfflineResultUpload)) return;
 
         _uploading = true;
         try

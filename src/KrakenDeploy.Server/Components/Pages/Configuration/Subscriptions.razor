@@ -11,6 +11,7 @@
 @inject DialogService Dialog
 @inject NotificationService Notify
 @inject IAuditLog Audit
+@inject UiActionGuard Guard
 
 <PageTitle>Subscriptions — KrakenDeploy</PageTitle>
 
@@ -165,6 +166,8 @@
 
     private async Task DeleteAsync(EventSubscription s)
     {
+        if (!await Guard.AllowAsync(Permission.SubscriptionManage)) return;
+
         var confirmed = await Dialog.Confirm(
             $"Delete subscription '{s.Name}'? Delivery history rows stay for " +
             "forensic review — only the subscription row is removed.",

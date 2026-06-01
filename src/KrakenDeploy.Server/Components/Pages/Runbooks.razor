@@ -7,6 +7,7 @@
 @inject RunbookService RunbookSvc
 @inject NavigationManager Nav
 @inject NotificationService Notify
+@inject UiActionGuard Guard
 
 <PageTitle>Runbooks - KrakenDeploy</PageTitle>
 
@@ -120,6 +121,8 @@ else
             return;
         }
 
+        if (!await Guard.AllowAsync(Permission.RunbookEdit)) return;
+
         try
         {
             var rb = await RunbookSvc.CreateAsync(
@@ -148,6 +151,7 @@ else
 
     private async Task DeleteAsync(Runbook rb)
     {
+        if (!await Guard.AllowAsync(Permission.RunbookEdit)) return;
         var deleted = await RunbookSvc.DeleteAsync(rb.Id);
         if (deleted)
         {

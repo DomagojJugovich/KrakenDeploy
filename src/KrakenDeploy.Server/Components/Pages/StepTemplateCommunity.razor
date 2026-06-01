@@ -9,6 +9,7 @@
 @inject StepTemplateCatalogService Catalog
 @inject NotificationService Notify
 @inject NavigationManager Nav
+@inject UiActionGuard Guard
 
 <PageTitle>Community Step Templates - KrakenDeploy</PageTitle>
 
@@ -259,6 +260,7 @@ else
 
     private async Task RefreshAsync()
     {
+        if (!await Guard.AllowAsync(Permission.StepTemplateCreate)) return;
         _refreshing = true;
         _lastError = null;
         try
@@ -283,6 +285,7 @@ else
 
     private async Task InstallAsync(StepTemplateCatalogEntry entry)
     {
+        if (!await Guard.AllowAsync(Permission.StepTemplateCreate)) return;
         _installing = entry.Id;
         try
         {

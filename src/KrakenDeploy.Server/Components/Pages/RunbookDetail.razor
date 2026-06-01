@@ -14,6 +14,7 @@
 @inject NavigationManager Nav
 @inject NotificationService Notify
 @inject DialogService Dialog
+@inject UiActionGuard Guard
 
 <PageTitle>@(_runbook?.Name ?? "Runbook") - KrakenDeploy</PageTitle>
 
@@ -29,8 +30,10 @@
     <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1">@_runbook.Name</RadzenText>
     <RadzenBadge Text="@(_runbook.Project?.Name ?? "?")" BadgeStyle="BadgeStyle.Light" />
     <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" style="margin-left:auto">
-        <RadzenButton Text="Run Now" Icon="play_arrow" ButtonStyle="ButtonStyle.Success"
-                      Click="@(() => _triggerOpen = !_triggerOpen)" />
+        <RequirePermission Permission="Permission.RunbookRunCreate">
+            <RadzenButton Text="Run Now" Icon="play_arrow" ButtonStyle="ButtonStyle.Success"
+                          Click="@(() => _triggerOpen = !_triggerOpen)" />
+        </RequirePermission>
     </RadzenStack>
 </div>
 
@@ -69,9 +72,11 @@
             </RadzenColumn>
         </RadzenRow>
         <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
-            <RadzenButton Text="Trigger" Icon="play_arrow" ButtonStyle="ButtonStyle.Success"
-                          Click="@TriggerRunAsync"
-                          Disabled="@(!_triggerEnvId.HasValue || !_triggerTargetId.HasValue)" />
+            <RequirePermission Permission="Permission.RunbookRunCreate">
+                <RadzenButton Text="Trigger" Icon="play_arrow" ButtonStyle="ButtonStyle.Success"
+                              Click="@TriggerRunAsync"
+                              Disabled="@(!_triggerEnvId.HasValue || !_triggerTargetId.HasValue)" />
+            </RequirePermission>
             <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
                           Click="@(() => _triggerOpen = false)" />
         </RadzenStack>
@@ -90,9 +95,11 @@
                        picker the process editor uses; the picker's
                        result drives which dialog opens (blank script,
                        Step Group, or template-backed step). *@
-                    <RadzenButton Text="Add Step" Icon="add_circle_outline" Size="ButtonSize.Small"
-                                  ButtonStyle="ButtonStyle.Primary"
-                                  Click="@OpenAddStepAsync" />
+                    <RequirePermission Permission="Permission.RunbookEdit">
+                        <RadzenButton Text="Add Step" Icon="add_circle_outline" Size="ButtonSize.Small"
+                                      ButtonStyle="ButtonStyle.Primary"
+                                      Click="@OpenAddStepAsync" />
+                    </RequirePermission>
                 </div>
 
                 @if (_steps.Count == 0)
@@ -390,6 +397,7 @@
                 new Dictionary<string, object?>
                 {
                     [nameof(StepFormDialog.Host)]         = (IStepEditingHost)RunbookSvc,
+                    [nameof(StepFormDialog.EditPermission)] = Permission.RunbookEdit,
                     [nameof(StepFormDialog.ProjectId)]    = Id, // runbook id, host resolves project id from it
                     [nameof(StepFormDialog.ActionType)]   = "Kraken.StepGroup",
                     [nameof(StepFormDialog.ParentStepId)] = parentStepId,
@@ -407,6 +415,7 @@
                 new Dictionary<string, object?>
                 {
                     [nameof(StepFormDialog.Host)]         = (IStepEditingHost)RunbookSvc,
+                    [nameof(StepFormDialog.EditPermission)] = Permission.RunbookEdit,
                     [nameof(StepFormDialog.ProjectId)]    = Id,
                     [nameof(StepFormDialog.ActionType)]   = "Kraken.Script",
                     [nameof(StepFormDialog.ParentStepId)] = parentStepId,
@@ -441,6 +450,7 @@
             new Dictionary<string, object?>
             {
                 [nameof(StepFormDialog.Host)] = (IStepEditingHost)RunbookSvc,
+                [nameof(StepFormDialog.EditPermission)] = Permission.RunbookEdit,
                 [nameof(StepFormDialog.Step)] = step,
             },
             new DialogOptions { Width = "720px", CloseDialogOnOverlayClick = false });
@@ -450,6 +460,7 @@
 
     private async Task DeleteStepAsync(RunbookStep step)
     {
+        if (!await Guard.AllowAsync(Permission.RunbookEdit)) return;
         var deleted = await RunbookSvc.DeleteStepAsync(step.Id);
         if (deleted)
         {
@@ -472,6 +483,8 @@
         {
             return;
         }
+
+        if (!await Guard.AllowAsync(Permission.RunbookRunCreate)) return;
 
         try
         {
@@ -651,6 +664,7 @@
 
     private async Task ReparentAsync(RunbookStep source, Guid? newParentId)
     {
+        if (!await Guard.AllowAsync(Permission.RunbookEdit)) return;
         try
         {
             await RunbookSvc.UpdateStepAsync(
