@@ -14,6 +14,7 @@
 @inject DialogService Dialog
 @inject ContextMenuService ContextMenu
 @inject NotificationService Notifications
+@inject UiActionGuard Guard
 
 <ProjectShell Slug="@Slug">
     <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
@@ -523,6 +524,7 @@
         // RowUpdate fires after the user clicks the Save (✓) button or
         // _grid.UpdateRow(v) is called.
         if (_project is null) return;
+        if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
 
         try
         {
@@ -552,6 +554,7 @@
     private async Task AddNewVariableAsync()
     {
         if (_project is null || string.IsNullOrWhiteSpace(_newName)) return;
+        if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
 
         try
         {
@@ -613,6 +616,7 @@
     private async Task AddValueAsync(Variable v)
     {
         if (_project is null) return;
+        if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
         await VariableSvc.CreateVariableAsync(
             _project.Id, v.Name, "", VariableType.Text, new VariableScope());
         await ReloadAsync();
@@ -621,6 +625,7 @@
     private async Task DuplicateAsync(Variable v)
     {
         if (_project is null) return;
+        if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
         var rawValue = v.Type == VariableType.Sensitive ? "" : v.Value;
         await VariableSvc.CreateVariableAsync(
             _project.Id, v.Name + " (copy)", rawValue, v.Type,
@@ -636,6 +641,8 @@
 
     private async Task DeleteAsync(Variable v)
     {
+        if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
+
         var confirmed = await Dialog.Confirm(
             $"Delete variable '{v.Name}'? This cannot be undone.",
             "Confirm Delete",
@@ -691,6 +698,7 @@
     private async Task SaveScopeAsync()
     {
         if (_project is null) return;
+        if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
 
         var roles = ParseCsv(_popRolesCsv);
         var envIds    = _popEnvIds.ToList();
@@ -897,6 +905,8 @@
 
     private async Task SaveArrayAsync()
     {
+        if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
+
         // Convert lines into a JSON array string. Newlines are split on \n
         // and \r\n alike; trailing \r is stripped. Empty lines are preserved
         // because empty array entries are sometimes meaningful.

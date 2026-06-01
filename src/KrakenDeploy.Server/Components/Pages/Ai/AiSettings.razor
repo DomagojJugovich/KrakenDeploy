@@ -13,6 +13,7 @@
 @inject IPermissionEvaluator PermissionEvaluator
 @inject ISpaceContext SpaceContext
 @inject AuthenticationStateProvider AuthStateProvider
+@inject UiActionGuard Guard
 
 <PageTitle>AI Settings — KrakenDeploy</PageTitle>
 
@@ -400,6 +401,8 @@
 
     private async Task SaveAsync()
     {
+        if (!await Guard.AllowAsync(Permission.SpaceAiSettingsManage,
+                new PermissionScope(SpaceId: SpaceContext.CurrentSpaceId))) return;
         _saving = true;
         try
         {
@@ -446,6 +449,8 @@
 
     private async Task RevealApiKeyAsync()
     {
+        if (!await Guard.AllowAsync(Permission.SpaceAiSettingsManage,
+                new PermissionScope(SpaceId: SpaceContext.CurrentSpaceId))) return;
         try
         {
             var key = await SettingsSvc.RevealApiKeyAsync();

@@ -1,5 +1,6 @@
 @inject DialogService Dialog
 @inject ProjectService ProjectSvc
+@inject UiActionGuard Guard
 
 <div style="min-width: 460px; padding: 0.25rem 0;">
     <EditForm Model="_model" OnValidSubmit="SaveAsync">
@@ -80,6 +81,12 @@
     private async Task SaveAsync()
     {
         _errorMessage = null;
+
+        if (!await Guard.AllowAsync(_isEdit ? Permission.ProjectEdit : Permission.ProjectCreate))
+        {
+            return;
+        }
+
         try
         {
             if (_isEdit)

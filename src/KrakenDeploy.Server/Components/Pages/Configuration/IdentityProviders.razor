@@ -5,6 +5,7 @@
 @inject IdentityProviderService IdpSvc
 @inject DialogService Dialog
 @inject NotificationService Notify
+@inject UiActionGuard Guard
 
 <PageTitle>Identity Providers - KrakenDeploy</PageTitle>
 
@@ -110,6 +111,8 @@
 
     private async Task DeleteAsync(IdentityProvider provider)
     {
+        if (!await Guard.AllowAsync(Permission.IdentityProviderDelete)) return;
+
         var confirmed = await Dialog.Confirm(
             $"Remove identity provider '{provider.Name}'? Users who sign in via this provider will no longer be able to authenticate.",
             "Confirm Remove",

@@ -9,6 +9,7 @@
 @inject StepPackageCatalogService Catalog
 @inject DialogService Dialog
 @inject NotificationService Notifications
+@inject UiActionGuard Guard
 
 <PageTitle>Step Packages</PageTitle>
 
@@ -281,6 +282,7 @@
 
     private async Task RefreshCatalogAsync()
     {
+        if (!await Guard.AllowAsync(Permission.StepPackageManage)) return;
         _refreshing = true;
         try
         {
@@ -306,6 +308,7 @@
 
     private async Task InstallFromCatalogAsync(StepPackageCatalogEntry entry)
     {
+        if (!await Guard.AllowAsync(Permission.StepPackageManage)) return;
         _installingKey = $"{entry.Name}@{entry.Version}";
         try
         {
@@ -354,6 +357,8 @@
     /// </summary>
     private async Task UninstallAsync(StepPackage pkg)
     {
+        if (!await Guard.AllowAsync(Permission.StepPackageManage)) return;
+
         var confirmed = await Dialog.Confirm(
             $"Remove step package '{pkg.Name}' version '{pkg.Version}'? " +
             "Any deployment / runbook steps pinned to this version will block the uninstall.",

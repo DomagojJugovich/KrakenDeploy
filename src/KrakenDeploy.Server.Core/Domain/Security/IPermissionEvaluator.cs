@@ -20,11 +20,18 @@ public interface IPermissionEvaluator
     /// True when <paramref name="user"/> has <paramref name="permission"/>
     /// within <paramref name="scope"/>. Always true for users with the
     /// <see cref="Permission.AdministerSystem"/> permission anywhere.
+    /// <para>
+    /// Set <paramref name="bypassCache"/> for an authoritative, never-stale
+    /// read — used by execution-time action guards so a stale UI cache cannot
+    /// authorize a privileged operation. UI rendering checks leave it
+    /// <c>false</c> to keep the per-render cache (bounded by the evaluator's TTL).
+    /// </para>
     /// </summary>
     Task<bool> HasPermissionAsync(
         ClaimsPrincipal user,
         Permission permission,
         PermissionScope scope = default,
+        bool bypassCache = false,
         CancellationToken ct = default);
 
     /// <summary>

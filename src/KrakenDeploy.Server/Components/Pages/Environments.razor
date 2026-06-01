@@ -5,6 +5,7 @@
 @inject EnvironmentService EnvironmentSvc
 @inject DialogService Dialog
 @inject NotificationService Notifications
+@inject UiActionGuard Guard
 
 <PageTitle>Environments - KrakenDeploy</PageTitle>
 
@@ -104,18 +105,22 @@
 
     private async Task MoveUpAsync(DeploymentEnvironment env)
     {
+        if (!await Guard.AllowAsync(Permission.EnvironmentEdit)) return;
         await EnvironmentSvc.MoveUpAsync(env.Id);
         _envs = await EnvironmentSvc.GetAllOrderedAsync();
     }
 
     private async Task MoveDownAsync(DeploymentEnvironment env)
     {
+        if (!await Guard.AllowAsync(Permission.EnvironmentEdit)) return;
         await EnvironmentSvc.MoveDownAsync(env.Id);
         _envs = await EnvironmentSvc.GetAllOrderedAsync();
     }
 
     private async Task DeleteAsync(DeploymentEnvironment env)
     {
+        if (!await Guard.AllowAsync(Permission.EnvironmentDelete)) return;
+
         var confirmed = await Dialog.Confirm(
             $"Delete environment '{env.Name}'? This cannot be undone.",
             "Confirm Delete",

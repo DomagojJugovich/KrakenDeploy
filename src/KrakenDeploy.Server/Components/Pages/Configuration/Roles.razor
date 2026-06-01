@@ -5,6 +5,7 @@
 @inject RoleService RoleSvc
 @inject DialogService Dialog
 @inject NotificationService Notify
+@inject UiActionGuard Guard
 
 <PageTitle>Roles - KrakenDeploy</PageTitle>
 
@@ -129,6 +130,8 @@
 
     private async Task DeleteAsync(Role role)
     {
+        if (!await Guard.AllowAsync(Permission.RoleDelete)) return;
+
         var confirmed = await Dialog.Confirm(
             $"Delete role '{role.Name}'? Teams with this role assigned will lose those permissions.",
             "Confirm Delete",

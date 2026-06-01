@@ -11,41 +11,53 @@ namespace KrakenDeploy.Server.Data.Services;
 /// <see cref="RoleAssignment"/>s, and evaluates the requested permission
 /// against the scope via <see cref="RoleAssignmentScopeMatcher"/>.
 /// <para>
-/// Caches assignments per request keyed by (UserId, SpaceId): repeated
-/// permission checks during one render hit the DB at most once per unique
-/// SpaceId. The cached value is the raw assignment list — scope filtering
-/// happens per-call so the same cache entry serves many different
-/// per-Project / per-Environment / per-Tenant queries.
+/// Caches assignments keyed by (UserId, SpaceId) with a short absolute TTL
+/// (<see cref="CacheTtl"/>): repeated permission checks during one render hit
+/// the DB at most once per unique SpaceId, while the TTL bounds staleness in a
+/// long-lived Blazor circuit so a revoked role takes effect within seconds
+/// rather than only at reconnect. The cached value is the raw assignment list —
+/// scope filtering happens per-call so the same cache entry serves many
+/// different per-Project / per-Environment / per-Tenant queries. Execution-time
+/// authorization (the UI action guard) passes <c>bypassCache: true</c> for an
+/// authoritative, never-stale read.
 /// </para>
 /// </summary>
-public sealed class PermissionEvaluator(IDbContextFactory<KrakenDbContext> dbFactory) : IPermissionEvaluator
+public sealed class PermissionEvaluator(
+    IDbContextFactory<KrakenDbContext> dbFactory,
+    TimeProvider timeProvider) : IPermissionEvaluator
 {
     /// <summary>Standard claim name for the user's KrakenDeploy user id.</summary>
     public const string UserIdClaim = ClaimTypes.NameIdentifier;
 
-    // Concurrent because Blazor renders sibling components' async lifecycle
-    // methods (e.g. several RequirePermission checks on one page) without a
-    // barrier, and the DB fills below use ConfigureAwait(false) — so their
-    // continuations, including the cache writes, run on thread-pool threads in
+    // Absolute TTL bounding how long a cached entry may serve a permission
+    // decision. In Blazor Server a DI scope = the whole circuit (long-lived),
+    // so without a TTL these caches would serve stale RBAC for the life of the
+    // connection — a revoked role would only take effect on reconnect. 60s is
+    // the chosen staleness tolerance for the read-only UI gate; execution-time
+    // checks pass bypassCache:true and are never stale regardless of this value.
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(60);
+
+    // ConcurrentDictionary (not plain Dictionary): Blazor renders sibling
+    // components' async lifecycle methods (e.g. several RequirePermission checks
+    // on one page) without a barrier, and the DB fills below use
+    // ConfigureAwait(false), so the cache writes run on thread-pool threads in
     // parallel. A plain Dictionary corrupts under concurrent TryInsert
-    // ("non-concurrent collections must have exclusive access"); on a cold
-    // circuit every check misses and writes at once, which is exactly the
-    // intermittent first-load failure. ConcurrentDictionary makes read+write
-    // atomic. Worst case on a cold cache: two checks issue the same idempotent
-    // query and last-writer-wins on an identical value — harmless.
-    private readonly ConcurrentDictionary<CacheKey, IReadOnlyList<RoleAssignment>> _assignmentCache = new();
-    private readonly ConcurrentDictionary<Guid, bool> _systemAdminCache = new();
+    // ("non-concurrent collections must have exclusive access") on a cold
+    // circuit. Each entry carries its fetch time so reads can honour the TTL.
+    private readonly ConcurrentDictionary<CacheKey, CacheEntry<IReadOnlyList<RoleAssignment>>> _assignmentCache = new();
+    private readonly ConcurrentDictionary<Guid, CacheEntry<bool>> _systemAdminCache = new();
 
     public async Task<bool> HasPermissionAsync(
         ClaimsPrincipal user,
         Permission permission,
         PermissionScope scope = default,
+        bool bypassCache = false,
         CancellationToken ct = default)
     {
         // AdministerSystem is god mode — short-circuits every check, regardless
         // of scope. Granted by being on a team whose role assignments include
         // that permission.
-        if (await UserIsSystemAdminAsync(user, ct).ConfigureAwait(false))
+        if (await UserIsSystemAdminAsync(user, bypassCache, ct).ConfigureAwait(false))
         {
             return true;
         }
@@ -56,7 +68,7 @@ public sealed class PermissionEvaluator(IDbContextFactory<KrakenDbContext> dbFac
             return false;
         }
 
-        var assignments = await GetCachedAssignmentsAsync(userId.Value, scope.SpaceId, ct)
+        var assignments = await GetCachedAssignmentsAsync(userId.Value, scope.SpaceId, bypassCache, ct)
             .ConfigureAwait(false);
 
         // Short-circuit: stop at the first matching assignment that grants
@@ -86,12 +98,12 @@ public sealed class PermissionEvaluator(IDbContextFactory<KrakenDbContext> dbFac
 
         // System admin: union of every defined permission. Cheap because
         // Permission is a bounded enum.
-        if (await UserIsSystemAdminAsync(user, ct).ConfigureAwait(false))
+        if (await UserIsSystemAdminAsync(user, bypassCache: false, ct).ConfigureAwait(false))
         {
             return new HashSet<Permission>(Enum.GetValues<Permission>());
         }
 
-        var assignments = await GetCachedAssignmentsAsync(userId.Value, scope.SpaceId, ct)
+        var assignments = await GetCachedAssignmentsAsync(userId.Value, scope.SpaceId, bypassCache: false, ct)
             .ConfigureAwait(false);
 
         var perms = new HashSet<Permission>();
@@ -113,39 +125,45 @@ public sealed class PermissionEvaluator(IDbContextFactory<KrakenDbContext> dbFac
     // ── Cached assignment fetch ───────────────────────────────────────────────
 
     private async Task<IReadOnlyList<RoleAssignment>> GetCachedAssignmentsAsync(
-        Guid userId, Guid? spaceId, CancellationToken ct)
+        Guid userId, Guid? spaceId, bool bypassCache, CancellationToken ct)
     {
         var key = new CacheKey(userId, spaceId);
 
-        // Fast path — no DB needed.
-        if (_assignmentCache.TryGetValue(key, out var cached))
+        // Fast path — a fresh (within-TTL) cache entry, no DB needed.
+        if (!bypassCache
+            && _assignmentCache.TryGetValue(key, out var cached)
+            && IsFresh(cached.CachedAtUtc))
         {
-            return cached;
+            return cached.Value;
         }
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var teamIds = await GetUserTeamIdsAsync(db, userId, ct).ConfigureAwait(false);
+
+        IReadOnlyList<RoleAssignment> assignments;
         if (teamIds.Count == 0)
         {
-            _assignmentCache[key] = [];
-            return [];
+            assignments = [];
+        }
+        else
+        {
+            // Pull every role assignment for those teams matching the requested
+            // Space (or system-wide assignments which apply to all Spaces).
+            // We deliberately keep the raw assignments — scope-dimension
+            // filtering is per-call, not per-fetch, so the same cache entry
+            // serves many different scoped queries during one render.
+            assignments = await db.RoleAssignments
+                .IgnoreQueryFilters() // RoleAssignment isn't ISpaceScoped, but be explicit
+                .Include(a => a.Role)
+                .Where(a => teamIds.Contains(a.TeamId))
+                .Where(a => a.SpaceId == null || a.SpaceId == spaceId)
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
         }
 
-        // Pull every role assignment for those teams matching the requested
-        // Space (or system-wide assignments which apply to all Spaces).
-        // We deliberately keep the raw assignments — scope-dimension filtering
-        // is per-call, not per-fetch, so the same cache entry serves many
-        // different scoped queries during one render.
-        var assignments = await db.RoleAssignments
-            .IgnoreQueryFilters() // RoleAssignment isn't ISpaceScoped, but be explicit
-            .Include(a => a.Role)
-            .Where(a => teamIds.Contains(a.TeamId))
-            .Where(a => a.SpaceId == null || a.SpaceId == spaceId)
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
-
-        _assignmentCache[key] = assignments;
+        _assignmentCache[key] = new CacheEntry<IReadOnlyList<RoleAssignment>>(
+            assignments, timeProvider.GetUtcNow());
         return assignments;
     }
 
@@ -216,7 +234,8 @@ public sealed class PermissionEvaluator(IDbContextFactory<KrakenDbContext> dbFac
 
     // ── System admin shortcut ─────────────────────────────────────────────────
 
-    private async Task<bool> UserIsSystemAdminAsync(ClaimsPrincipal user, CancellationToken ct)
+    private async Task<bool> UserIsSystemAdminAsync(
+        ClaimsPrincipal user, bool bypassCache, CancellationToken ct)
     {
         var userId = TryGetUserId(user);
         if (userId is null)
@@ -224,10 +243,12 @@ public sealed class PermissionEvaluator(IDbContextFactory<KrakenDbContext> dbFac
             return false;
         }
 
-        // Fast path — no DB needed.
-        if (_systemAdminCache.TryGetValue(userId.Value, out var cached))
+        // Fast path — a fresh (within-TTL) cache entry, no DB needed.
+        if (!bypassCache
+            && _systemAdminCache.TryGetValue(userId.Value, out var cached)
+            && IsFresh(cached.CachedAtUtc))
         {
-            return cached;
+            return cached.Value;
         }
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -254,15 +275,20 @@ public sealed class PermissionEvaluator(IDbContextFactory<KrakenDbContext> dbFac
             isAdmin = permissionLists.Any(p => p.Contains(Permission.AdministerSystem));
         }
 
-        _systemAdminCache[userId.Value] = isAdmin;
+        _systemAdminCache[userId.Value] = new CacheEntry<bool>(isAdmin, timeProvider.GetUtcNow());
         return isAdmin;
     }
+
+    private bool IsFresh(DateTimeOffset cachedAtUtc) =>
+        timeProvider.GetUtcNow() - cachedAtUtc < CacheTtl;
 
     private static Guid? TryGetUserId(ClaimsPrincipal user)
     {
         var idClaim = user.FindFirst(UserIdClaim)?.Value;
         return Guid.TryParse(idClaim, out var id) ? id : null;
     }
+
+    private readonly record struct CacheEntry<T>(T Value, DateTimeOffset CachedAtUtc);
 
     private readonly record struct CacheKey(Guid UserId, Guid? SpaceId);
 }

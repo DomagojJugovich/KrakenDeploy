@@ -7,6 +7,7 @@
 @inject DialogService Dialog
 @inject NavigationManager Nav
 @inject NotificationService Notify
+@inject UiActionGuard Guard
 
 <PageTitle>Teams - KrakenDeploy</PageTitle>
 
@@ -149,6 +150,8 @@
 
     private async Task DeleteAsync(Team team)
     {
+        if (!await Guard.AllowAsync(Permission.TeamDelete)) return;
+
         var confirmed = await Dialog.Confirm(
             $"Delete team '{team.Name}'? All role assignments on this team will be removed.",
             "Confirm Delete",

@@ -2,6 +2,7 @@
 @inject DialogService Dialog
 @inject ChannelService ChannelSvc
 @inject ReleaseService ReleaseSvc
+@inject UiActionGuard Guard
 
 @*
     Create a new release for a project. The deployment process snapshot
@@ -78,6 +79,9 @@
     private async Task SaveAsync()
     {
         _errorMessage = null;
+
+        if (!await Guard.AllowAsync(Permission.ReleaseCreate)) return;
+
         try
         {
             await ReleaseSvc.CreateAsync(

@@ -7,6 +7,7 @@
 @inject DialogService Dialog
 @inject NotificationService Notifications
 @inject NavigationManager Nav
+@inject UiActionGuard Guard
 
 <PageTitle>Packages - KrakenDeploy</PageTitle>
 
@@ -232,6 +233,8 @@ else
 
     private async Task DeleteAsync(Package p)
     {
+        if (!await Guard.AllowAsync(Permission.PackageDelete)) return;
+
         var confirmed = await Dialog.Confirm(
             $"Delete package '{p.PackageId}' version '{p.Version}'? The file is "
             + "removed from the repository. Releases that pinned this version "

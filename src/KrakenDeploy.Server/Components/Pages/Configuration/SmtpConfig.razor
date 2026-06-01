@@ -9,6 +9,7 @@
 @inject IAuditLog Audit
 @inject NotificationService Notify
 @inject ILogger<SmtpConfig> Log
+@inject UiActionGuard Guard
 
 <PageTitle>SMTP — KrakenDeploy</PageTitle>
 
@@ -231,6 +232,8 @@
             Notify.Notify(NotificationSeverity.Warning, "Recipient is required for test");
             return;
         }
+
+        if (!await Guard.AllowAsync(Permission.ConfigureServer)) return;
 
         _saving = true;
         _lastProbe = null;

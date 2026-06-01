@@ -5,6 +5,7 @@
 @inject PackageService PackageSvc
 @inject ProcessService ProcessSvc
 @inject DialogService DialogService
+@inject UiActionGuard Guard
 
 <RadzenStack Gap="1rem">
     <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
@@ -170,6 +171,7 @@
 
     private async Task CreateAsync()
     {
+        if (!await Guard.AllowAsync(Permission.ProcessEdit)) return;
         _busy = true;
         try
         {

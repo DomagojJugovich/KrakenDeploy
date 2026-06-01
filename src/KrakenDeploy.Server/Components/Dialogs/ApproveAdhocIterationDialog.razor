@@ -7,6 +7,7 @@
 @inject AuthenticationStateProvider AuthState
 @inject DialogService Dialog
 @inject NotificationService Notify
+@inject UiActionGuard Guard
 
 @*
     M11.E.4 — operator-approval dialog. Three buttons:
@@ -141,6 +142,8 @@
 
     private async Task ApproveAsync()
     {
+        if (!await Guard.AllowAsync(Permission.AdhocActionsExecute)) return;
+
         _error = null;
         _busy = true;
         try

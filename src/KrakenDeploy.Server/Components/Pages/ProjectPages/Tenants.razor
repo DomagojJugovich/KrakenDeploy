@@ -7,6 +7,7 @@
 @inject TenantService TenantSvc
 @inject DialogService Dialog
 @inject NotificationService Notifications
+@inject UiActionGuard Guard
 
 <ProjectShell Slug="@Slug">
     <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
@@ -167,6 +168,7 @@
     private async Task ConnectAsync()
     {
         if (_project is null || _addTenantId is null) return;
+        if (!await Guard.AllowAsync(Permission.ProjectEdit)) return;
         try
         {
             await TenantSvc.ConnectProjectAsync(_addTenantId.Value, _project.Id);
@@ -186,6 +188,7 @@
     private async Task DisconnectAsync(Tenant t)
     {
         if (_project is null) return;
+        if (!await Guard.AllowAsync(Permission.ProjectEdit)) return;
         var confirmed = await Dialog.Confirm(
             $"Disconnect tenant '{t.Name}' from this project? Tenant-scoped variables "
             + "and the project's tenanted deployment history are kept, but new "

@@ -7,6 +7,7 @@
 @inject LifecycleService LifecycleSvc
 @inject DialogService Dialog
 @inject NotificationService Notifications
+@inject UiActionGuard Guard
 @inject NavigationManager Nav
 
 <ProjectShell Slug="@Slug">
@@ -131,7 +132,7 @@
                         Deleting a project removes all of its releases, deployments,
                         variables, channels and runbooks. There is no undo.
                     </RadzenText>
-                    <RequirePermission Permission="Permission.ProjectEdit">
+                    <RequirePermission Permission="Permission.ProjectDelete">
                         <RadzenButton Text="Delete project" Icon="delete"
                                       ButtonStyle="ButtonStyle.Danger"
                                       Click="DeleteAsync" />
@@ -188,6 +189,7 @@
     private async Task SaveAsync()
     {
         if (_project is null) return;
+        if (!await Guard.AllowAsync(Permission.ProjectEdit)) return;
         _errorMessage = null;
         try
         {
@@ -218,6 +220,7 @@
     private async Task DeleteAsync()
     {
         if (_project is null) return;
+        if (!await Guard.AllowAsync(Permission.ProjectDelete)) return;
         var confirmed = await Dialog.Confirm(
             $"Delete project '{_project.Name}'? This cannot be undone.",
             "Confirm Delete",

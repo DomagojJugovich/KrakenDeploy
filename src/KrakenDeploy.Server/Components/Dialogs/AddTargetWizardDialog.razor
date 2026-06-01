@@ -1,6 +1,7 @@
 @inject DialogService Dialog
 @inject TargetRegistrationService RegistrationSvc
 @inject NavigationManager Nav
+@inject UiActionGuard Guard
 
 <div style="min-width:540px; padding:0.25rem 0;">
 
@@ -203,6 +204,7 @@
 
     private async Task CreateTargetAsync()
     {
+        if (!await Guard.AllowAsync(Permission.MachineCreate)) return;
         _creating = true;
         try
         {

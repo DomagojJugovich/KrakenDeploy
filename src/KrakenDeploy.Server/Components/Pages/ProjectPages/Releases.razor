@@ -8,6 +8,7 @@
 @inject ChannelService ChannelSvc
 @inject DialogService Dialog
 @inject NotificationService Notifications
+@inject UiActionGuard Guard
 @inject NavigationManager Nav
 
 <ProjectShell Slug="@Slug">
@@ -218,6 +219,7 @@
     /// </summary>
     private async Task UpdateVariablesAsync(Release release)
     {
+        if (!await Guard.AllowAsync(Permission.ReleaseEdit)) return;
         _updatingRelease = release.Id;
         try
         {

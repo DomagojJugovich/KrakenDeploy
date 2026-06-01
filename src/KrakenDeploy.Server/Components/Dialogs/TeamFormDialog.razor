@@ -1,5 +1,6 @@
 @inject TeamService TeamSvc
 @inject DialogService Dialog
+@inject UiActionGuard Guard
 
 <RadzenStack Gap="1rem">
     <RadzenFormField Text="Name *" style="width:100%">
@@ -52,6 +53,11 @@
         if (string.IsNullOrWhiteSpace(_name))
         {
             _error = "Name is required.";
+            return;
+        }
+
+        if (!await Guard.AllowAsync(Team is null ? Permission.TeamCreate : Permission.TeamEdit))
+        {
             return;
         }
 

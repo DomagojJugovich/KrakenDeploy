@@ -1,5 +1,6 @@
 @inject RoleService RoleSvc
 @inject DialogService Dialog
+@inject UiActionGuard Guard
 
 <RadzenStack Gap="1rem" Style="height:100%; overflow:hidden; display:flex; flex-direction:column;">
     <RadzenFormField Text="Name *" style="width:100%">
@@ -111,6 +112,11 @@
         if (string.IsNullOrWhiteSpace(_name))
         {
             _error = "Name is required.";
+            return;
+        }
+
+        if (!await Guard.AllowAsync(Role is null ? Permission.RoleCreate : Permission.RoleEdit))
+        {
             return;
         }
 

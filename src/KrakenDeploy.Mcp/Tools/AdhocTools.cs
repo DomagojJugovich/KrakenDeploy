@@ -194,7 +194,7 @@ public sealed class AdhocTools
         }
 
         var allowed = await permissions
-            .HasPermissionAsync(user, Permission.AdhocActionsExecute, new PermissionScope(), ct)
+            .HasPermissionAsync(user, Permission.AdhocActionsExecute, new PermissionScope(), ct: ct)
             .ConfigureAwait(false);
         if (!allowed)
         {

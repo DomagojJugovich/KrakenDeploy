@@ -44,7 +44,7 @@ public sealed class PermissionEvaluatorConcurrencyTests(PostgresFixture postgres
         for (var round = 0; round < rounds; round++)
         {
             // Fresh evaluator each round = cold caches, mirroring a new circuit.
-            var evaluator = new PermissionEvaluator(postgres);
+            var evaluator = new PermissionEvaluator(postgres, TimeProvider.System);
             var principals = Enumerable.Range(0, users).Select(_ => User(Guid.NewGuid()));
 
             var act = async () => await Parallel.ForEachAsync(
@@ -55,7 +55,7 @@ public sealed class PermissionEvaluatorConcurrencyTests(PostgresFixture postgres
                     // Exercises both write paths: _systemAdminCache and
                     // _assignmentCache (the user has no teams → empty results,
                     // but the cache writes still happen — that's the race).
-                    await evaluator.HasPermissionAsync(user, Permission.PackageView, scope, ct);
+                    await evaluator.HasPermissionAsync(user, Permission.PackageView, scope, ct: ct);
                 });
 
             await act.Should().NotThrowAsync(
@@ -69,7 +69,7 @@ public sealed class PermissionEvaluatorConcurrencyTests(PostgresFixture postgres
     {
         // The literal /packages shape: one user, the same permission evaluated
         // by several RequirePermission components at once on a cold circuit.
-        var evaluator = new PermissionEvaluator(postgres);
+        var evaluator = new PermissionEvaluator(postgres, TimeProvider.System);
         var user = User(Guid.NewGuid());
         var scope = new PermissionScope(SpaceId: Guid.NewGuid());
 

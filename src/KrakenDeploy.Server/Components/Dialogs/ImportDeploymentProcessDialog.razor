@@ -2,6 +2,7 @@
 @using Microsoft.AspNetCore.Components.Forms
 @inject ProcessService ProcessSvc
 @inject DialogService DialogService
+@inject UiActionGuard Guard
 
 <RadzenStack Gap="1rem">
     <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
@@ -121,6 +122,8 @@
             _error = "Paste the JSON or pick a file.";
             return;
         }
+
+        if (!await Guard.AllowAsync(Permission.ProcessEdit)) return;
 
         _busy = true;
         try

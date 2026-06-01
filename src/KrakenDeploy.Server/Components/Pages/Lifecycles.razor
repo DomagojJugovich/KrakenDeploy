@@ -5,6 +5,7 @@
 @inject LifecycleService LifecycleSvc
 @inject NavigationManager Nav
 @inject NotificationService Notify
+@inject UiActionGuard Guard
 
 <PageTitle>Lifecycles - KrakenDeploy</PageTitle>
 
@@ -80,6 +81,8 @@
             return;
         }
 
+        if (!await Guard.AllowAsync(Permission.LifecycleCreate)) return;
+
         try
         {
             var lc = await LifecycleSvc.CreateAsync(_name.Trim(), _description?.Trim());
@@ -107,6 +110,8 @@
 
     private async Task DeleteAsync(Lifecycle lc)
     {
+        if (!await Guard.AllowAsync(Permission.LifecycleDelete)) return;
+
         var deleted = await LifecycleSvc.DeleteAsync(lc.Id);
         if (deleted)
         {

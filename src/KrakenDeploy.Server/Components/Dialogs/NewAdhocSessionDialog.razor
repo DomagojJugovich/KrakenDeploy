@@ -10,6 +10,7 @@
 @inject AuthenticationStateProvider AuthState
 @inject DialogService Dialog
 @inject NotificationService Notify
+@inject UiActionGuard Guard
 
 @*
     M11.E.1 / M11.E.9 — "New ad-hoc session" dialog. The frozen target set is
@@ -103,6 +104,8 @@
             _error = "Pick at least one target.";
             return;
         }
+
+        if (!await Guard.AllowAsync(Permission.AdhocActionsExecute)) return;
 
         _busy = true;
         try

@@ -5,6 +5,7 @@
 @inject ProjectService ProjectSvc
 @inject DialogService Dialog
 @inject NotificationService Notifications
+@inject UiActionGuard Guard
 
 <PageTitle>Projects - KrakenDeploy</PageTitle>
 
@@ -92,6 +93,8 @@
 
     private async Task DeleteAsync(Project project)
     {
+        if (!await Guard.AllowAsync(Permission.ProjectDelete)) return;
+
         var confirmed = await Dialog.Confirm(
             $"Delete project '{project.Name}'? This cannot be undone.",
             "Confirm Delete",

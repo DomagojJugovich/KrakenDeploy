@@ -5,6 +5,7 @@
 @using KrakenDeploy.Server.Data.Services
 @inject TenantService TenantSvc
 @inject NotificationService Notify
+@inject UiActionGuard Guard
 
 <PageTitle>Tenants - KrakenDeploy</PageTitle>
 
@@ -97,6 +98,8 @@
             return;
         }
 
+        if (!await Guard.AllowAsync(Permission.TenantCreate)) return;
+
         try
         {
             var tenant = await TenantSvc.CreateAsync(_name.Trim(), _slug.Trim(), _description?.Trim());
@@ -124,6 +127,8 @@
 
     private async Task DeleteAsync(Tenant tenant)
     {
+        if (!await Guard.AllowAsync(Permission.TenantDelete)) return;
+
         var deleted = await TenantSvc.DeleteAsync(tenant.Id);
         if (deleted)
         {

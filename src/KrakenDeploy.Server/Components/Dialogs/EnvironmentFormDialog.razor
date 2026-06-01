@@ -1,5 +1,6 @@
 @inject DialogService Dialog
 @inject EnvironmentService EnvironmentSvc
+@inject UiActionGuard Guard
 
 <div style="min-width: 420px; padding: 0.25rem 0;">
     <EditForm Model="_model" OnValidSubmit="SaveAsync">
@@ -71,6 +72,12 @@
     private async Task SaveAsync()
     {
         _errorMessage = null;
+
+        if (!await Guard.AllowAsync(_isEdit ? Permission.EnvironmentEdit : Permission.EnvironmentCreate))
+        {
+            return;
+        }
+
         try
         {
             if (_isEdit)

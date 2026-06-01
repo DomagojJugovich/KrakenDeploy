@@ -9,6 +9,7 @@
 @inject LifecycleService LifecycleSvc
 @inject DialogService Dialog
 @inject NotificationService Notifications
+@inject UiActionGuard Guard
 
 <ProjectShell Slug="@Slug">
     <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
@@ -207,6 +208,8 @@
 
     private async Task DeleteAsync(Channel c)
     {
+        if (!await Guard.AllowAsync(Permission.ProjectEdit)) return;
+
         var confirmed = await Dialog.Confirm(
             $"Delete channel '{c.Name}'? This cannot be undone.",
             "Confirm Delete",

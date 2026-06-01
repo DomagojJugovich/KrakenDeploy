@@ -11,6 +11,7 @@
 @inject PerformanceSettingsService PerformanceSvc
 @inject IAuditLog Audit
 @inject NotificationService Notify
+@inject UiActionGuard Guard
 
 <PageTitle>Performance — KrakenDeploy</PageTitle>
 
@@ -186,6 +187,7 @@
     private async Task SaveAsync()
     {
         if (_settings is null || _baseline is null) { return; }
+        if (!await Guard.AllowAsync(Permission.ConfigureServer)) return;
 
         _saving = true;
         try

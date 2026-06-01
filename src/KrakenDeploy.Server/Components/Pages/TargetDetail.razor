@@ -8,6 +8,7 @@
 @inject IEncryptionService Encryption
 @inject NotificationService Notify
 @inject NavigationManager Nav
+@inject UiActionGuard Guard
 
 <PageTitle>Target @(Target?.Name ?? "…") - KrakenDeploy</PageTitle>
 
@@ -296,6 +297,7 @@ else
     private async Task SaveConfigAsync()
     {
         if (Target is null) return;
+        if (!await Guard.AllowAsync(Permission.MachineEdit)) return;
 
         _saving = true;
         try
@@ -358,6 +360,7 @@ else
     private async Task SaveRiskAsync()
     {
         if (Target is null) { return; }
+        if (!await Guard.AllowAsync(Permission.MachineEdit)) return;
         _savingRisk = true;
         try
         {

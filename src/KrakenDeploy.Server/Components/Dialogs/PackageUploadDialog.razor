@@ -3,6 +3,7 @@
 @using Microsoft.AspNetCore.Components.Forms
 @inject DialogService Dialog
 @inject PackageService PackageSvc
+@inject UiActionGuard Guard
 
 @*
     Upload a deployment package to the built-in repository.
@@ -143,6 +144,7 @@
     private async Task UploadAsync()
     {
         if (_file is null) return;
+        if (!await Guard.AllowAsync(Permission.PackageEdit)) return;
         _errorMessage = null;
         _uploading = true;
 

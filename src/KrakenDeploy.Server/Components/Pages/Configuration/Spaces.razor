@@ -5,6 +5,7 @@
 @inject SpaceService SpaceSvc
 @inject DialogService Dialog
 @inject NotificationService Notify
+@inject UiActionGuard Guard
 
 <PageTitle>Spaces - KrakenDeploy</PageTitle>
 
@@ -109,6 +110,8 @@
 
     private async Task ArchiveAsync(Space space)
     {
+        if (!await Guard.AllowAsync(Permission.SpaceDelete)) return;
+
         var confirmed = await Dialog.Confirm(
             $"Archive '{space.Name}'?",
             "Archive Space",

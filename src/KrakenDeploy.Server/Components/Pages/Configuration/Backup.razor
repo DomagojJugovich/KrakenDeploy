@@ -11,6 +11,7 @@
 @inject IAuditLog Audit
 @inject NotificationService Notify
 @inject ILogger<Backup> Log
+@inject UiActionGuard Guard
 
 <PageTitle>Backup — KrakenDeploy</PageTitle>
 
@@ -232,6 +233,7 @@
     private async Task SaveSettingsAsync()
     {
         if (_settings is null) { return; }
+        if (!await Guard.AllowAsync(Permission.ConfigureServer)) return;
         _saving = true;
         try
         {
@@ -265,6 +267,7 @@
 
     private async Task RunNowAsync()
     {
+        if (!await Guard.AllowAsync(Permission.ConfigureServer)) return;
         _running = true;
         try
         {

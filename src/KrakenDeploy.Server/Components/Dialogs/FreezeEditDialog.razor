@@ -10,6 +10,7 @@
 @inject ISpaceContext SpaceCtx
 @inject IAuditLog Audit
 @inject DialogService Dialog
+@inject UiActionGuard Guard
 
 <RadzenStack Gap="0.75rem">
     <RadzenFormField Text="Name *" Variant="Variant.Outlined" Style="width:100%">
@@ -144,6 +145,8 @@
             _error = "End must be after Start.";
             return;
         }
+
+        if (!await Guard.AllowAsync(Permission.DeploymentFreezeManage)) return;
 
         _saving = true;
         try

@@ -7,6 +7,7 @@
 @inject EnvironmentService EnvSvc
 @inject NavigationManager Nav
 @inject NotificationService Notify
+@inject UiActionGuard Guard
 
 <PageTitle>@(_lifecycle?.Name ?? "Lifecycle") - KrakenDeploy</PageTitle>
 
@@ -29,9 +30,11 @@
 @* ── Phases ───────────────────────────────────────────────────────────────── *@
 <div class="rz-display-flex rz-align-items-center rz-justify-content-between rz-mb-3">
     <RadzenText TextStyle="TextStyle.H6">Phases</RadzenText>
-    <RadzenButton Text="Add Phase" Icon="add_circle_outline" Size="ButtonSize.Small"
-                  ButtonStyle="ButtonStyle.Secondary"
-                  Click="@AddPhase" />
+    <RequirePermission Permission="Permission.LifecycleEdit">
+        <RadzenButton Text="Add Phase" Icon="add_circle_outline" Size="ButtonSize.Small"
+                      ButtonStyle="ButtonStyle.Secondary"
+                      Click="@AddPhase" />
+    </RequirePermission>
 </div>
 
 <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-3">
@@ -47,6 +50,7 @@
         <div class="rz-display-flex rz-align-items-center rz-justify-content-between rz-mb-3">
             <RadzenText TextStyle="TextStyle.Subtitle1">Phase @(idx + 1): @phase.Name</RadzenText>
             <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" AlignItems="AlignItems.Center">
+                <RequirePermission Permission="Permission.LifecycleEdit">
                 @if (idx > 0)
                 {
                     <RadzenButton Icon="arrow_upward" Size="ButtonSize.Small" Variant="Variant.Text"
@@ -61,6 +65,7 @@
                               ButtonStyle="ButtonStyle.Danger"
                               title="Remove phase"
                               Click="@(() => _phases.RemoveAt(idx))" />
+                </RequirePermission>
             </RadzenStack>
         </div>
 
@@ -151,8 +156,10 @@
 }
 
 <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem" class="rz-mt-4">
-    <RadzenButton Text="Save Lifecycle" Icon="save" ButtonStyle="ButtonStyle.Primary"
-                  Click="@SaveAsync" />
+    <RequirePermission Permission="Permission.LifecycleEdit">
+        <RadzenButton Text="Save Lifecycle" Icon="save" ButtonStyle="ButtonStyle.Primary"
+                      Click="@SaveAsync" />
+    </RequirePermission>
     <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
                   Click="@(() => Nav.NavigateTo("/lifecycles"))" />
 </RadzenStack>
@@ -220,6 +227,8 @@
         {
             return;
         }
+
+        if (!await Guard.AllowAsync(Permission.LifecycleEdit)) return;
 
         try
         {

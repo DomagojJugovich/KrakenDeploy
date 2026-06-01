@@ -325,6 +325,11 @@ public static class Program
         builder.Services.AddScoped<
             Microsoft.AspNetCore.Authorization.IAuthorizationHandler,
             PermissionAuthorizationHandler>();
+        // Execution-time authorization guard for interactive Blazor handlers —
+        // re-checks permission server-side (bypassCache) at action time so a
+        // stale/raced RequirePermission UI gate can't authorize a privileged
+        // circuit-invoked mutation. Scoped: lives with the circuit, like the UI.
+        builder.Services.AddScoped<UiActionGuard>();
 
         // ── OpenTelemetry ────────────────────────────────────────────────────
         // Tracing and metrics are wired; console exporter is enabled in

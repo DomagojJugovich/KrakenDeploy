@@ -3,6 +3,7 @@
 @inject DialogService Dialog
 @inject ChannelService ChannelSvc
 @inject LifecycleService LifecycleSvc
+@inject UiActionGuard Guard
 
 @*
     Add / edit a release channel for a project.
@@ -108,6 +109,9 @@
     private async Task SaveAsync()
     {
         _errorMessage = null;
+
+        if (!await Guard.AllowAsync(Permission.ProjectEdit)) return;
+
         try
         {
             if (_isEdit)

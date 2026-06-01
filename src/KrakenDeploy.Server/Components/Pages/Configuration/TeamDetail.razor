@@ -14,6 +14,7 @@
 @inject ISpaceContext SpaceCtx
 @inject NotificationService Notify
 @inject NavigationManager Nav
+@inject UiActionGuard Guard
 
 <PageTitle>@(_team?.Name ?? "Team") - KrakenDeploy</PageTitle>
 
@@ -405,6 +406,8 @@ else
             return;
         }
 
+        if (!await Guard.AllowAsync(Permission.TeamEdit)) return;
+
         await TeamSvc.AddMemberAsync(_team.Id, _addMemberId.Value);
         _addMemberId = null;
         await LoadTeamAsync();
@@ -417,6 +420,8 @@ else
         {
             return;
         }
+
+        if (!await Guard.AllowAsync(Permission.TeamEdit)) return;
 
         await TeamSvc.RemoveMemberAsync(_team.Id, user.Id);
         await LoadTeamAsync();
@@ -439,6 +444,8 @@ else
             return;
         }
 
+        if (!await Guard.AllowAsync(Permission.TeamEdit)) return;
+
         await TeamSvc.AddExternalGroupAsync(
             _team.Id, _newGroupClaim, _newGroupDisplayName, identityProviderId: null);
         _showAddGroupForm = false;
@@ -448,6 +455,8 @@ else
 
     private async Task RemoveExternalGroupAsync(TeamExternalGroup eg)
     {
+        if (!await Guard.AllowAsync(Permission.TeamEdit)) return;
+
         await TeamSvc.RemoveExternalGroupAsync(eg.Id);
         await LoadTeamAsync();
         Notify.Notify(NotificationSeverity.Info, "Group removed", duration: 3000);
@@ -461,6 +470,8 @@ else
         {
             return;
         }
+
+        if (!await Guard.AllowAsync(Permission.TeamEdit)) return;
 
         await TeamSvc.AddRoleAssignmentAsync(
             teamId: _team.Id,
@@ -484,6 +495,8 @@ else
 
     private async Task RemoveRoleAssignmentAsync(RoleAssignment assignment)
     {
+        if (!await Guard.AllowAsync(Permission.TeamEdit)) return;
+
         await TeamSvc.RemoveRoleAssignmentAsync(assignment.Id);
         await LoadTeamAsync();
         Notify.Notify(NotificationSeverity.Info, "Assignment removed", duration: 3000);

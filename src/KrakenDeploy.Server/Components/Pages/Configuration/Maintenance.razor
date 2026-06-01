@@ -9,6 +9,7 @@
 @inject IAuditLog Audit
 @inject AuthenticationStateProvider AuthState
 @inject NotificationService Notify
+@inject UiActionGuard Guard
 
 <PageTitle>Maintenance — KrakenDeploy</PageTitle>
 
@@ -121,6 +122,7 @@
 
     private async Task EnableAsync()
     {
+        if (!await Guard.AllowAsync(Permission.ConfigureServer)) return;
         _saving = true;
         try
         {
@@ -149,6 +151,7 @@
 
     private async Task DisableAsync()
     {
+        if (!await Guard.AllowAsync(Permission.ConfigureServer)) return;
         _saving = true;
         try
         {

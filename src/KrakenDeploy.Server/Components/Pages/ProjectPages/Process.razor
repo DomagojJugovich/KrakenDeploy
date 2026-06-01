@@ -12,6 +12,7 @@
 @inject StepPackageService StepPackageSvc
 @inject DialogService Dialog
 @inject NotificationService Notifications
+@inject UiActionGuard Guard
 @inject NavigationManager Nav
 @inject KrakenDeploy.Server.Data.Services.Ai.SpaceAiSettingsService AiSettingsSvc
 
@@ -718,6 +719,7 @@
 
     private async Task MoveAsync(Guid stepId, int direction)
     {
+        if (!await Guard.AllowAsync(Permission.ProcessEdit)) return;
         await ProcessSvc.MoveStepAsync(stepId, direction);
         await ReloadStepsAsync();
     }
@@ -837,6 +839,7 @@
 
     private async Task ReparentAsync(DeploymentStep source, Guid? newParentId)
     {
+        if (!await Guard.AllowAsync(Permission.ProcessEdit)) return;
         try
         {
             await ProcessSvc.UpdateStepAsync(
@@ -885,6 +888,8 @@
 
     private async Task DeleteAsync(DeploymentStep step)
     {
+        if (!await Guard.AllowAsync(Permission.ProcessEdit)) return;
+
         // M15 — Step Group deletion cascades through the parent_step_id FK,
         // so we warn explicitly when removing a parent that has children.
         var kids = ChildCountOf(step);

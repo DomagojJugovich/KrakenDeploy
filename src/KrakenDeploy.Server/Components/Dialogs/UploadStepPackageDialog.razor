@@ -4,6 +4,7 @@
 
 @inject StepPackageService Svc
 @inject DialogService DialogService
+@inject UiActionGuard Guard
 
 @*
     Upload a .kdeploy-step archive. The user picks the file, we stream it to
@@ -93,6 +94,7 @@
     private async Task UploadAsync()
     {
         if (_pickedFile is null) { return; }
+        if (!await Guard.AllowAsync(Permission.StepPackageManage)) return;
         _busy  = true;
         _error = null;
         try

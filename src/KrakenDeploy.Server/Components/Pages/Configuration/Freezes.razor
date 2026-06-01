@@ -9,6 +9,7 @@
 @inject ISpaceContext SpaceCtx
 @inject DialogService Dialog
 @inject NotificationService Notify
+@inject UiActionGuard Guard
 
 <PageTitle>Deployment Freezes — KrakenDeploy</PageTitle>
 
@@ -138,6 +139,8 @@
 
     private async Task DeleteAsync(DeploymentFreeze f)
     {
+        if (!await Guard.AllowAsync(Permission.DeploymentFreezeManage)) return;
+
         var confirmed = await Dialog.Confirm(
             $"Delete freeze '{f.Name}'? Any deployments currently in the window " +
             "will be unblocked on the next dispatch.",

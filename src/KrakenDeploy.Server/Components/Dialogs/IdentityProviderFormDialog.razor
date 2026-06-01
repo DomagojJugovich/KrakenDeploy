@@ -1,5 +1,6 @@
 @inject IdentityProviderService IdpSvc
 @inject DialogService Dialog
+@inject UiActionGuard Guard
 
 <RadzenStack Gap="1rem">
     <RadzenRow Gap="1rem">
@@ -133,6 +134,12 @@
         if (string.IsNullOrWhiteSpace(_clientId))
         {
             _error = "Client ID is required.";
+            return;
+        }
+
+        if (!await Guard.AllowAsync(
+                Provider is null ? Permission.IdentityProviderCreate : Permission.IdentityProviderEdit))
+        {
             return;
         }
 

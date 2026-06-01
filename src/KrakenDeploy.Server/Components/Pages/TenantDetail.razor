@@ -6,6 +6,7 @@
 @inject TenantService TenantSvc
 @inject NavigationManager Nav
 @inject NotificationService Notify
+@inject UiActionGuard Guard
 
 <PageTitle>@(_tenant?.Name ?? "Tenant") - KrakenDeploy</PageTitle>
 
@@ -29,9 +30,11 @@
 @* ── Tag Sets ─────────────────────────────────────────────────────────────── *@
 <div class="rz-display-flex rz-align-items-center rz-justify-content-between rz-mb-3">
     <RadzenText TextStyle="TextStyle.H6">Tag Sets</RadzenText>
-    <RadzenButton Text="Add Tag Set" Icon="add_circle_outline" Size="ButtonSize.Small"
-                  ButtonStyle="ButtonStyle.Secondary"
-                  Click="@(() => { _newTagSetName = ""; _newTagSetDesc = null; _newTagSetSortOrder = _tenant.TagSets.Count; _addTagSetOpen = true; })" />
+    <RequirePermission Permission="Permission.TenantEdit">
+        <RadzenButton Text="Add Tag Set" Icon="add_circle_outline" Size="ButtonSize.Small"
+                      ButtonStyle="ButtonStyle.Secondary"
+                      Click="@(() => { _newTagSetName = ""; _newTagSetDesc = null; _newTagSetSortOrder = _tenant.TagSets.Count; _addTagSetOpen = true; })" />
+    </RequirePermission>
 </div>
 
 @if (_addTagSetOpen)
@@ -68,6 +71,7 @@
         <div class="rz-display-flex rz-align-items-center rz-justify-content-between rz-mb-2">
             <RadzenText TextStyle="TextStyle.Subtitle1">@ts.Name</RadzenText>
             <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" AlignItems="AlignItems.Center">
+                <RequirePermission Permission="Permission.TenantEdit">
                 @if (_addTagOpen == ts.Id)
                 {
                     <RadzenTextBox @bind-Value="_newTagName" Placeholder="Tag name" style="width:120px" />
@@ -87,6 +91,7 @@
                               ButtonStyle="ButtonStyle.Danger"
                               title="Delete tag set"
                               Click="@(async () => await DeleteTagSetAsync(ts))" />
+                </RequirePermission>
             </RadzenStack>
         </div>
         @if (!string.IsNullOrEmpty(ts.Description))
@@ -102,8 +107,10 @@
                         <span style="@($"display:inline-block;width:10px;height:10px;border-radius:50%;background:{tag.Color}")">&nbsp;</span>
                     }
                     <RadzenBadge Text="@tag.Name" BadgeStyle="BadgeStyle.Info" />
-                    <RadzenButton Icon="close" Size="ButtonSize.ExtraSmall" Variant="Variant.Text"
-                                  Click="@(async () => await DeleteTagAsync(ts, tag))" />
+                    <RequirePermission Permission="Permission.TenantEdit">
+                        <RadzenButton Icon="close" Size="ButtonSize.ExtraSmall" Variant="Variant.Text"
+                                      Click="@(async () => await DeleteTagAsync(ts, tag))" />
+                    </RequirePermission>
                 </div>
             }
             @if (!ts.Tags.Any())
@@ -147,6 +154,8 @@
             return;
         }
 
+        if (!await Guard.AllowAsync(Permission.TenantEdit)) return;
+
         try
         {
             var ts = await TenantSvc.CreateTagSetAsync(
@@ -177,6 +186,7 @@
 
     private async Task DeleteTagSetAsync(TagSet ts)
     {
+        if (!await Guard.AllowAsync(Permission.TenantEdit)) return;
         var deleted = await TenantSvc.DeleteTagSetAsync(ts.Id);
         if (deleted && _tenant is not null)
         {
@@ -197,6 +207,8 @@
         {
             return;
         }
+
+        if (!await Guard.AllowAsync(Permission.TenantEdit)) return;
 
         try
         {
@@ -227,6 +239,7 @@
 
     private async Task DeleteTagAsync(TagSet ts, TenantTag tag)
     {
+        if (!await Guard.AllowAsync(Permission.TenantEdit)) return;
         var deleted = await TenantSvc.DeleteTagAsync(tag.Id);
         if (deleted)
         {

@@ -1,5 +1,6 @@
 @inject UserService UserSvc
 @inject DialogService Dialog
+@inject UiActionGuard Guard
 
 <RadzenStack Gap="1rem">
     <RadzenFormField Text="Email address *" style="width:100%">
@@ -55,6 +56,8 @@
             _errorMessage = "Email is required.";
             return;
         }
+
+        if (!await Guard.AllowAsync(Permission.UserInvite)) return;
 
         _busy         = true;
         _errorMessage = "";

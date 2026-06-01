@@ -16,6 +16,7 @@
 @inject VariableService VariableSvc
 @inject KrakenDeploy.Server.Data.Services.Ai.SpaceAiSettingsService AiSettingsSvc
 @inject KrakenDeploy.Server.Data.Services.Ai.Assistant.ProcessAssistantService AssistantSvc
+@inject UiActionGuard Guard
 
 @*
     Unified step add/edit dialog. Replaces the legacy script-only StepFormDialog
@@ -1356,6 +1357,8 @@
     private async Task OnSaveAsync()
     {
         _errors = [];
+
+        if (!await Guard.AllowAsync(Permission.ProcessEdit)) return;
 
         if (string.IsNullOrWhiteSpace(_name))
         {
