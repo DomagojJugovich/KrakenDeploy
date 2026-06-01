@@ -4,14 +4,14 @@
 <RadzenLayout>
     <RadzenHeader>
         <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.5rem" Style="height: 100%; padding: 0 1rem;">
-            <RadzenSidebarToggle />
+            <RadzenSidebarToggle Click="@(() => _sidebarExpanded = !_sidebarExpanded)" />
             <span class="kraken-brand-name">KrakenDeploy</span>
             <span class="kraken-env-badge">@EnvironmentName</span>
             <AuthorizeView>
                 <Authorized>
                     <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.75rem" Style="margin-left: auto;">
                         <SpaceSwitcher />
-                        <ThemeToggle @rendermode="InteractiveServer" />
+                        <ThemeToggle />
                         <span class="kraken-user-email">@context.User.Identity?.Name</span>
                         <form method="post" action="/logout" style="display:inline;">
                             <AntiforgeryToken />
@@ -25,57 +25,8 @@
 
     <LicenseWarningBanner />
 
-    <RadzenSidebar>
-        <RadzenPanelMenu>
-            <RadzenPanelMenuItem Text="Dashboard" Icon="dashboard" Path="/" />
-
-            <RadzenPanelMenuItem Text="Deploy" Icon="rocket_launch" Expanded="true">
-                <RadzenPanelMenuItem Text="Projects"     Icon="folder_open"  Path="/projects" />
-                <RadzenPanelMenuItem Text="Releases"     Icon="tag"          Path="/releases" />
-                <RadzenPanelMenuItem Text="Deployments"  Icon="play_circle"  Path="/deployments" />
-            </RadzenPanelMenuItem>
-
-            <RadzenPanelMenuItem Text="Infrastructure" Icon="dns" Expanded="true">
-                <RadzenPanelMenuItem Text="Targets"      Icon="computer"     Path="/targets" />
-                <RadzenPanelMenuItem Text="Environments" Icon="layers"       Path="/environments" />
-                <RadzenPanelMenuItem Text="Tenants"      Icon="people"       Path="/tenants" />
-                <RadzenPanelMenuItem Text="Ad-hoc actions" Icon="terminal"   Path="/adhoc" />
-            </RadzenPanelMenuItem>
-
-            <RadzenPanelMenuItem Text="Library" Icon="library_books" Expanded="true">
-                <RadzenPanelMenuItem Text="Packages"         Icon="inventory_2"             Path="/packages" />
-                <RadzenPanelMenuItem Text="Variable Sets"    Icon="data_object"             Path="/variable-sets" />
-                <RadzenPanelMenuItem Text="Step Templates"   Icon="extension"               Path="/step-templates" />
-                <RadzenPanelMenuItem Text="Lifecycles"       Icon="timeline"                Path="/lifecycles" />
-                <RadzenPanelMenuItem Text="Channels"         Icon="alt_route"               Path="/channels" />
-                <RadzenPanelMenuItem Text="Runbooks"         Icon="menu_book"               Path="/runbooks" />
-            </RadzenPanelMenuItem>
-
-            <RadzenPanelMenuItem Text="Configuration" Icon="admin_panel_settings">
-                <RadzenPanelMenuItem Text="Spaces"              Icon="workspaces"  Path="/configuration/spaces" />
-                <RadzenPanelMenuItem Text="Users"               Icon="person"      Path="/configuration/users" />
-                <RadzenPanelMenuItem Text="Teams"               Icon="groups"      Path="/configuration/teams" />
-                <RadzenPanelMenuItem Text="Roles"               Icon="badge"       Path="/configuration/roles" />
-                <RadzenPanelMenuItem Text="Identity Providers"  Icon="vpn_key"     Path="/configuration/identity-providers" />
-                <RadzenPanelMenuItem Text="License Usage"       Icon="speed"       Path="/configuration/license-usage" />
-                <RadzenPanelMenuItem Text="SMTP"                Icon="outgoing_mail" Path="/configuration/smtp" />
-                <RadzenPanelMenuItem Text="Features"            Icon="tune"        Path="/configuration/features" />
-                <RadzenPanelMenuItem Text="Deployment Freezes"  Icon="ac_unit"     Path="/configuration/freezes" />
-                <RadzenPanelMenuItem Text="Diagnostics"         Icon="monitor_heart" Path="/configuration/diagnostics" />
-                <RadzenPanelMenuItem Text="Maintenance"         Icon="construction" Path="/configuration/maintenance" />
-                <RadzenPanelMenuItem Text="Backup"              Icon="cloud_download" Path="/configuration/backup" />
-                <RadzenPanelMenuItem Text="Performance"         Icon="query_stats" Path="/configuration/performance" />
-                <RadzenPanelMenuItem Text="Subscriptions"       Icon="notifications_active" Path="/configuration/subscriptions" />
-                <RadzenPanelMenuItem Text="Test Permissions"    Icon="science"     Path="/configuration/test-permissions" />
-            </RadzenPanelMenuItem>
-
-            <RadzenPanelMenuItem Text="System" Icon="settings_applications" Expanded="true">
-                <RadzenPanelMenuItem Text="Tasks"       Icon="task"            Path="/tasks" />
-                <RadzenPanelMenuItem Text="Audit"       Icon="history"         Path="/audit" />
-                <RadzenPanelMenuItem Text="AI Settings" Icon="psychology"      Path="/settings/ai" />
-                <RadzenPanelMenuItem Text="Settings"    Icon="tune"            Path="/settings" />
-            </RadzenPanelMenuItem>
-        </RadzenPanelMenu>
+    <RadzenSidebar @bind-Expanded="_sidebarExpanded">
+        <NavMenu />
     </RadzenSidebar>
 
     <RadzenBody>
@@ -93,6 +44,8 @@
 
 @code {
     [Inject] private IConfiguration Configuration { get; set; } = default!;
+
+    private bool _sidebarExpanded = true;
 
     private string EnvironmentName => Configuration["Environment:Name"] ?? "dev";
 }

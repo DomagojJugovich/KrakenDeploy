@@ -9,14 +9,24 @@
     <link rel="stylesheet" href="@Assets["app.css"]" />
     <link rel="stylesheet" href="@Assets["KrakenDeploy.Server.styles.css"]" />
     <ImportMap />
-    <HeadOutlet />
+    <HeadOutlet @rendermode="@PageRenderMode" />
 </head>
 
 <body>
-    <Routes />
+    <Routes @rendermode="@PageRenderMode" />
     <RadzenComponents @rendermode="InteractiveServer" />
     <script src="_framework/blazor.web.js"></script>
     <script src="_content/Radzen.Blazor/Radzen.Blazor.js"></script>
 </body>
 
 </html>
+
+@code {
+    // Global interactivity with an opt-out: pages decorated with
+    // [ExcludeFromInteractiveRouting] (Login, Error) fall back to static SSR so
+    // cookie sign-in can write Set-Cookie headers and HttpContext stays usable.
+    [CascadingParameter] private HttpContext HttpContext { get; set; } = default!;
+
+    private IComponentRenderMode? PageRenderMode
+        => HttpContext.AcceptsInteractiveRouting() ? InteractiveServer : null;
+}
