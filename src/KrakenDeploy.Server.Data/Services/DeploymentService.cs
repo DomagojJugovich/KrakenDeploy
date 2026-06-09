@@ -150,7 +150,7 @@ public class DeploymentService(
     // ── Query ──────────────────────────────────────────────────────────────
 
     public async Task<List<Deployment>> GetAllAsync(
-        Guid? projectId = null, CancellationToken ct = default)
+        Guid? projectId = null, int? limit = null, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
@@ -158,6 +158,7 @@ public class DeploymentService(
             .Include(d => d.Release).ThenInclude(r => r.Project)
             .Include(d => d.Environment)
             .Include(d => d.Target)
+            .Include(d => d.Tenant)
             .AsQueryable();
 
         if (projectId.HasValue)
@@ -165,7 +166,11 @@ public class DeploymentService(
             q = q.Where(d => d.Release.ProjectId == projectId.Value);
         }
 
-        return await q.OrderByDescending(d => d.CreatedUtc).ToListAsync(ct).ConfigureAwait(false);
+        var ordered = q.OrderByDescending(d => d.CreatedUtc);
+        // Cap the row count when a limit is given (e.g. the global Tasks page)
+        // so an instance with a long history doesn't materialize every row.
+        var bounded = limit is > 0 ? ordered.Take(limit.Value) : (IQueryable<Deployment>)ordered;
+        return await bounded.ToListAsync(ct).ConfigureAwait(false);
     }
 
     public async Task<Deployment?> GetAsync(Guid id, CancellationToken ct = default)

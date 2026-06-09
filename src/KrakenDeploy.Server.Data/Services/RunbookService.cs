@@ -456,6 +456,32 @@ public class RunbookService(
             .FirstOrDefaultAsync(r => r.Id == runId, ct);
     }
 
+    /// <summary>
+    /// All runbook runs across every runbook in the active Space, newest first.
+    /// Backs the global Tasks page. <see cref="RunbookRun"/> is not itself
+    /// <c>ISpaceScoped</c>, so the Space filter is applied through its parent
+    /// <see cref="Runbook"/> (which is) — the <c>db.Runbooks.Any(...)</c> sub-query
+    /// carries the global query filter, scoping runs to the current Space.
+    /// </summary>
+    public async Task<List<RunbookRun>> GetAllRunsAsync(int? limit = null, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        IQueryable<RunbookRun> query = db.RunbookRuns
+            .Where(r => db.Runbooks.Any(rb => rb.Id == r.RunbookId))
+            .Include(r => r.Runbook).ThenInclude(rb => rb.Project)
+            .Include(r => r.Environment)
+            .Include(r => r.Target)
+            .Include(r => r.Tenant)
+            .OrderByDescending(r => r.CreatedUtc);
+
+        if (limit is > 0)
+        {
+            query = query.Take(limit.Value);
+        }
+
+        return await query.ToListAsync(ct);
+    }
+
     // ── Private helpers ────────────────────────────────────────────────────────
 
     private static async Task<RunbookProcess> GetOrCreateProcessAsync(

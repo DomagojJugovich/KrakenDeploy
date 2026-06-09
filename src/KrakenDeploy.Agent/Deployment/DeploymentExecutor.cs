@@ -4,8 +4,10 @@ using KrakenDeploy.Agent.StepPackages;
 using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Contracts.Steps;
+using KrakenDeploy.Execution;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Octostache;
 
 namespace KrakenDeploy.Agent.Deployment;
 
@@ -21,10 +23,9 @@ namespace KrakenDeploy.Agent.Deployment;
 /// </list>
 /// </summary>
 public sealed class DeploymentExecutor(
-    AgentContext context,
     IServerLink serverLink,
-    GrpcPackageDownloader packageDownloader,
-    GrpcArtifactUploader artifactUploader,
+    IPackageSource packageDownloader,
+    IArtifactSink artifactUploader,
     StepPackageLoader stepPackageLoader,
     IOptions<AgentConfig> agentConfig,
     ILogger<DeploymentExecutor> logger)
@@ -36,7 +37,15 @@ public sealed class DeploymentExecutor(
     /// </summary>
     public bool IsExecuting { get; private set; }
 
-    public async Task ExecuteAsync(DeploymentPlan plan)
+    /// <param name="orchestrateSteps">
+    /// When <c>true</c>, the executor itself applies per-step run conditions,
+    /// timeouts, retries, and Required-aware gating — the orchestration the
+    /// SERVER normally drives for online deployments. Used by the offline runner,
+    /// where no server orchestrates: the same plan executes with identical
+    /// semantics. Defaults to <c>false</c> so the online agent path (server
+    /// orchestrates) is unchanged.
+    /// </param>
+    public async Task ExecuteAsync(DeploymentPlan plan, bool orchestrateSteps = false)
     {
         ArgumentNullException.ThrowIfNull(plan);
 
@@ -71,17 +80,21 @@ public sealed class DeploymentExecutor(
             var waves = PartitionIntoWaves(plan.Steps);
 
             string? firstFailureMessage = null;
-            var anyStepFailed = false;
+            var anyStepFailed = false;     // any failure (legacy break + status)
+            var requiredFailed = false;    // a Required step failed (orchestrate break + status)
+            var hasFailed = false;         // a non-Required step failed (drives Failure conditions)
 
             foreach (var wave in waves)
             {
-                // Snapshot prior outputs once before the wave so all siblings
-                // see the same baseline — siblings don't see each other's
-                // captures.
+                // Snapshot prior outputs + failure state once before the wave so
+                // all siblings see the same baseline — siblings don't see each
+                // other's captures or failures.
                 var preWavePlan = AugmentPlanWithPriorOutputs(plan, outputsByStep);
+                var hasFailedSnapshot = hasFailed;
 
                 var stepTasks = wave.Select(step =>
-                    RunStepInWaveAsync(plan, preWavePlan, step, ct)).ToArray();
+                    RunStepInWaveAsync(
+                        plan, preWavePlan, step, orchestrateSteps, hasFailedSnapshot, ct)).ToArray();
 
                 var stepOutcomes = await Task.WhenAll(stepTasks).ConfigureAwait(false);
 
@@ -100,30 +113,44 @@ public sealed class DeploymentExecutor(
                         var accKey = outcome.Step.AccumulatorKey ?? outcome.Step.Name;
                         outputsByStep[accKey] = outcome.CapturedOutputs;
                     }
-                    if (!outcome.Success && firstFailureMessage is null)
+                    if (outcome.Skipped || outcome.Success)
                     {
-                        firstFailureMessage = $"Step '{outcome.Step.Name}' failed.";
+                        continue;
                     }
-                    if (!outcome.Success)
+
+                    anyStepFailed = true;
+                    firstFailureMessage ??= $"Step '{outcome.Step.Name}' failed.";
+                    // Required failures abort (below); non-required failures
+                    // flip hasFailed so Failure-conditioned cleanup/finalisation
+                    // steps in later waves run — mirrors the server orchestrator.
+                    if (outcome.Step.Required)
                     {
-                        anyStepFailed = true;
+                        requiredFailed = true;
+                    }
+                    else
+                    {
+                        hasFailed = true;
                     }
                 }
 
-                // If any step in the wave failed, stop dispatching further
-                // waves agent-side. Per-step Required attribution happens
-                // server-side (the orchestrator drained per-step reports
-                // from the registry).
-                if (anyStepFailed)
+                // Break semantics:
+                //   * orchestrate mode — only a Required failure aborts; non-
+                //     required failures continue so Failure/Always steps run.
+                //   * legacy (online agent) — any failure stops; the server
+                //     applies Required attribution from the per-step reports.
+                if (orchestrateSteps ? requiredFailed : anyStepFailed)
                 {
                     break;
                 }
             }
 
+            // orchestrate mode succeeds unless a Required step failed (non-
+            // required failures are warnings); legacy mode fails on any failure.
+            var deploymentSucceeded = orchestrateSteps ? !requiredFailed : !anyStepFailed;
             await serverLink
                 .CompleteDeploymentAsync(
                     plan.DeploymentId,
-                    success:      !anyStepFailed,
+                    success:      deploymentSucceeded,
                     errorMessage: firstFailureMessage,
                     ct)
                 .ConfigureAwait(false);
@@ -160,46 +187,24 @@ public sealed class DeploymentExecutor(
     private sealed record StepOutcome(
         DeploymentStepPlan Step,
         bool Success,
-        Dictionary<string, string> CapturedOutputs);
+        Dictionary<string, string> CapturedOutputs,
+        bool Skipped = false);
 
     /// <summary>
-    /// M14.4 — agent-side wave partitioner. Same algorithm as the server's
-    /// <see cref="Server.Transport.WavePartitioner"/> (kept duplicated so
-    /// the agent stays loosely coupled to the server-side helper; the
-    /// contract field <see cref="DeploymentStepPlan.StartTrigger"/> is
-    /// the source of truth). A wave = first step + all subsequent
-    /// <see cref="StepStartTrigger.StartWithPrevious"/> steps until the
-    /// next <see cref="StepStartTrigger.StartAfterPrevious"/> opens a new
-    /// wave. First step's trigger is ignored.
+    /// M14.4 — agent-side wave partitioning. Delegates the trigger-based
+    /// grouping to the shared <c>WaveGrouping.Partition</c>
+    /// (KrakenDeploy.Execution) — the same algorithm the server's
+    /// <c>WavePartitioner</c> uses — so online and offline group identically.
+    /// A wave = first step + all subsequent StartWithPrevious steps until the
+    /// next StartAfterPrevious opens a new wave; the first step's trigger is
+    /// ignored. The contract's <see cref="DeploymentStepPlan.StartTrigger"/>
+    /// int is the source of truth (1 = StartWithPrevious). The agent
+    /// intentionally omits the server's server/target classification +
+    /// mixed-wave validation — offline a plan is single-side.
     /// </summary>
     private static List<List<DeploymentStepPlan>> PartitionIntoWaves(
         DeploymentStepPlan[] steps)
-    {
-        var waves = new List<List<DeploymentStepPlan>>();
-        if (steps.Length == 0)
-        {
-            return waves;
-        }
-
-        var ordered = steps.OrderBy(s => s.Index).ToArray();
-        var current = new List<DeploymentStepPlan> { ordered[0] };
-
-        // StepStartTrigger int values: 0 = StartAfterPrevious, 1 = StartWithPrevious.
-        for (var i = 1; i < ordered.Length; i++)
-        {
-            if (ordered[i].StartTrigger == 1)
-            {
-                current.Add(ordered[i]);
-            }
-            else
-            {
-                waves.Add(current);
-                current = [ordered[i]];
-            }
-        }
-        waves.Add(current);
-        return waves;
-    }
+        => WaveGrouping.Partition(steps, s => s.Index, s => s.StartTrigger == 1);
 
     /// <summary>
     /// Runs a single step inside a wave, capturing outputs locally then
@@ -212,15 +217,78 @@ public sealed class DeploymentExecutor(
         DeploymentPlan basePlan,
         DeploymentPlan preWavePlan,
         DeploymentStepPlan step,
+        bool orchestrateSteps,
+        bool hasFailed,
         CancellationToken ct)
     {
+        // Orchestrate mode (offline): evaluate the step's Run Condition. Skipped
+        // steps don't run, don't fail the deployment, and produce no outputs.
+        if (orchestrateSteps)
+        {
+            // Uses the SAME StepConditionEvaluator the server orchestrator runs
+            // (KrakenDeploy.Execution) — identical Run/Skip decisions online and
+            // offline. The contract's int Condition maps directly to the pinned
+            // StepCondition enum values.
+            var condition = (StepCondition)step.Condition;
+            // Only a Variable run-condition reads the bag; Success/Failure/Always
+            // ignore it. Build the (potentially copying) effective-variable
+            // overlay + dictionary only for Variable so the common case doesn't
+            // clone the deployment-wide variable set per step. The overlay
+            // ensures a Variable expression referencing a step-scoped variable
+            // sees the same value the step body will.
+            VariableDictionary variableBag;
+            if (condition == StepCondition.Variable)
+            {
+                // Array-index parity: a Variable condition referencing an
+                // indexed element (e.g. #{Arr[0]}) must make the same Run/Skip
+                // decision offline as online. The server expands StringArrays
+                // into name[i] keys in its condition varDict
+                // (BuildTargetDispatchContextAsync); without the same expansion
+                // here, plan.Variables carries arrays only in comma-joined
+                // scalar form, so #{Arr[0]} stays unresolved → the step is
+                // wrongly skipped offline. Feed the effective overlay's
+                // ArrayVariables through the shared formatter so the keys match.
+                var effective = ApplyStepVariables(preWavePlan, step);
+                variableBag = effective.Variables.ToVariableDictionary(effective.ArrayVariables);
+            }
+            else
+            {
+                variableBag = new VariableDictionary();
+            }
+            var decision = StepConditionEvaluator.Evaluate(
+                condition,
+                step.ConditionVariableExpression,
+                hasFailed,
+                variableBag);
+            if (decision.Action == StepConditionEvaluator.Action.Skip)
+            {
+                // An Unresolved Variable condition (expression referenced a missing
+                // variable or failed to parse) is an author error, not an intentional
+                // skip — log it at warning so it stands out in the offline run log.
+                // Online the server discriminates this via a dedicated
+                // DeploymentVariableConditionUnresolved audit event; offline the log
+                // line is the only operator-facing signal, so the level carries it.
+                var level = decision.Kind == StepConditionEvaluator.Kind.Unresolved
+                    ? "warning"
+                    : "info";
+                await LogAsync(basePlan.DeploymentId, level,
+                    $"--- Step {step.Index + 1}: {step.Name} skipped: {decision.Reason} ---", ct)
+                    .ConfigureAwait(false);
+                return new StepOutcome(
+                    step, Success: true,
+                    new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                    Skipped: true);
+            }
+        }
+
         bool success;
         Dictionary<string, string> capturedOutputs;
         string? errorMessage = null;
         try
         {
-            (success, capturedOutputs) =
-                await ExecuteStepAsync(preWavePlan, step, ct).ConfigureAwait(false);
+            (success, capturedOutputs) = orchestrateSteps
+                ? await ExecuteStepWithRetriesAsync(preWavePlan, step, ct).ConfigureAwait(false)
+                : await ExecuteStepAsync(preWavePlan, step, ct).ConfigureAwait(false);
             if (!success)
             {
                 errorMessage = $"Step '{step.Name}' failed.";
@@ -270,6 +338,48 @@ public sealed class DeploymentExecutor(
         }
 
         return new StepOutcome(step, success, capturedOutputs);
+    }
+
+    // ── Orchestration (offline opt-in: condition / timeout / retry) ──────────────
+    // Online these are server-driven; offline the executor owns them so a process
+    // author sees identical semantics. Run-condition evaluation is shared with the
+    // server via KrakenDeploy.Execution's StepConditionEvaluator (called from
+    // RunStepInWaveAsync); the per-step timeout + retry loop mirrors
+    // DeploymentWorker's RunServerStepWithRetries/Timeout.
+
+    /// <summary>
+    /// Runs a step with its per-step timeout, retried up to
+    /// <see cref="DeploymentStepPlan.MaxRetries"/> times with
+    /// <see cref="DeploymentStepPlan.RetryDelaySeconds"/> between attempts.
+    /// Each attempt returns a fresh capture bag, so the returned outputs are the
+    /// final attempt's only.
+    /// <para>
+    /// Delegates the retry loop + per-attempt timeout to the shared
+    /// <see cref="StepRetryRunner"/> (KrakenDeploy.Execution), the same loop the
+    /// server orchestrator runs, and keeps the agent's own log side-effects: a
+    /// timeout-error line per timed-out attempt and the retry marker before each
+    /// delay. No late-success marker (the agent never emitted one).
+    /// </para>
+    /// </summary>
+    private async Task<(bool Success, Dictionary<string, string> Outputs)> ExecuteStepWithRetriesAsync(
+        DeploymentPlan preWavePlan, DeploymentStepPlan step, CancellationToken ct)
+    {
+        var outcome = await StepRetryRunner.RunAsync<(bool Success, Dictionary<string, string> Outputs)>(
+            step.Name,
+            step.MaxRetries,
+            step.RetryDelaySeconds,
+            step.TimeoutSeconds,
+            runAttempt: (CancellationToken attemptCt) => ExecuteStepAsync(preWavePlan, step, attemptCt),
+            isSuccess: r => r.Success,
+            onTimeoutResult: () => (false, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)),
+            onAttemptTimedOutAsync: timeoutSeconds => LogAsync(preWavePlan.DeploymentId, "error",
+                $"--- Step '{step.Name}' timed out after " +
+                $"{timeoutSeconds.ToString(CultureInfo.InvariantCulture)}s ---", ct),
+            onRetryAsync: info => LogAsync(preWavePlan.DeploymentId, "warning", info.Marker, ct),
+            onLateSuccessAsync: null,
+            ct).ConfigureAwait(false);
+
+        return outcome.Result;
     }
 
     // ── Step execution ─────────────────────────────────────────────────────────
@@ -328,11 +438,16 @@ public sealed class DeploymentExecutor(
                     $"Downloading {step.PackageId} v{step.PackageVersion}…", ct)
                     .ConfigureAwait(false);
 
-                var identity = context.Identity!;
                 zipPath = await packageDownloader
-                    .DownloadAsync(identity.ServerUrl, identity.AgentToken,
-                        step.PackageId, step.PackageVersion, tempRoot, ct)
+                    .DownloadAsync(step.PackageId, step.PackageVersion, tempRoot, ct)
                     .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Per-step timeout / deployment cancel — let it reach the timeout
+                // handler (orchestrate mode) or the outer cancel path, not get
+                // mislabelled as a download failure.
+                throw;
             }
             catch (Exception ex)
             {
@@ -347,6 +462,10 @@ public sealed class DeploymentExecutor(
                 await LogAsync(plan.DeploymentId, "info", "Extracting package…", ct)
                     .ConfigureAwait(false);
                 await PackageExtractor.ExtractAsync(zipPath, extractDir, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw; // timeout / cancel — propagate, don't mislabel as extraction failure
             }
             catch (Exception ex)
             {
@@ -373,7 +492,6 @@ public sealed class DeploymentExecutor(
             refExtractRoot = Path.Combine(string.IsNullOrEmpty(extractDir) ? tempRoot : extractDir, "refs");
             Directory.CreateDirectory(refExtractRoot);
 
-            var identity = context.Identity!;
             foreach (var r in refs)
             {
                 if (string.IsNullOrWhiteSpace(r.Version))
@@ -391,8 +509,7 @@ public sealed class DeploymentExecutor(
                         .ConfigureAwait(false);
 
                     var refZipPath = await packageDownloader
-                        .DownloadAsync(identity.ServerUrl, identity.AgentToken,
-                            r.PackageId, r.Version, refExtractRoot, ct)
+                        .DownloadAsync(r.PackageId, r.Version, refExtractRoot, ct)
                         .ConfigureAwait(false);
 
                     if (r.Extract)
@@ -405,6 +522,10 @@ public sealed class DeploymentExecutor(
                     {
                         referencedExtractedPaths[r.Name] = refZipPath;
                     }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw; // timeout / cancel — propagate, don't mislabel as a fetch failure
                 }
                 catch (Exception ex)
                 {
@@ -461,7 +582,11 @@ public sealed class DeploymentExecutor(
         {
             var handlerCtx = new StepHandlerContext
             {
-                Plan                   = plan,
+                // Overlay this step's per-step variable delta (step/action scope)
+                // onto the deployment-wide variables so $OctopusParameters +
+                // Octostache for this step see step-scoped values. No-op when the
+                // step carries no delta (the common case).
+                Plan                   = ApplyStepVariables(plan, step),
                 Step                   = step,
                 ExtractDir             = extractDir,
                 ArtifactsDir           = artifactsDir,
@@ -470,6 +595,16 @@ public sealed class DeploymentExecutor(
             };
 
             success = await handler.HandleAsync(handlerCtx, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Per-attempt timeout (StepRetryRunner's linked CancelAfter, orchestrate
+            // mode) or a deployment-level cancel — a handler that honours its token
+            // surfaces it here. Propagate (the package download/extract blocks above
+            // already do) so StepRetryRunner classifies it as a timeout
+            // ("--- Step 'X' timed out after Ns ---") instead of the generic catch
+            // below mislabelling it "Step handler threw an unhandled exception".
+            throw;
         }
         catch (Exception ex)
         {
@@ -587,6 +722,58 @@ public sealed class DeploymentExecutor(
         Dictionary<string, Dictionary<string, string>> outputsByStep)
         => OutputVariableAccumulator.AugmentPlanWithPriorOutputs(basePlan, outputsByStep);
 
+    /// <summary>
+    /// Overlays a step's per-step variable delta onto the plan's deployment-wide
+    /// variables. Returns the plan unchanged when the step has no delta. The
+    /// delta values already won scope resolution server-side, so they take
+    /// precedence over the deployment-wide values for this step.
+    /// </summary>
+    private static DeploymentPlan ApplyStepVariables(DeploymentPlan plan, DeploymentStepPlan step)
+    {
+        if (step.StepVariables is not { Count: > 0 } delta)
+        {
+            return plan;
+        }
+
+        var mergedScalars = new Dictionary<string, string>(plan.Variables, StringComparer.OrdinalIgnoreCase);
+        var mergedArrays = new Dictionary<string, string[]>(plan.ArrayVariables, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (name, value) in delta)
+        {
+            // Mirror the deployment-wide split: a StringArray arrives as its raw
+            // JSON, so expose it BOTH as a parsed array ($OctopusArrays / #{each})
+            // and a comma-joined scalar ($OctopusParameters), exactly like the
+            // deployment-wide variables. A step-scoped scalar overriding a
+            // deployment-wide array drops the stale array form.
+            if (value.StartsWith('[') && TryParseStringArray(value, out var items))
+            {
+                mergedArrays[name] = items;
+                mergedScalars[name] = string.Join(", ", items);
+            }
+            else
+            {
+                mergedScalars[name] = value;
+                mergedArrays.Remove(name);
+            }
+        }
+
+        return plan with { Variables = mergedScalars, ArrayVariables = mergedArrays };
+    }
+
+    private static bool TryParseStringArray(string value, out string[] items)
+    {
+        try
+        {
+            items = System.Text.Json.JsonSerializer.Deserialize<string[]>(value) ?? [];
+            return true;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            items = [];
+            return false;
+        }
+    }
+
     // ── Artifact collection ────────────────────────────────────────────────────
 
     private async Task CollectArtifactsAsync(
@@ -610,15 +797,6 @@ public sealed class DeploymentExecutor(
             return;
         }
 
-        var identity = context.Identity;
-        if (identity is null)
-        {
-            logger.LogWarning(
-                "Cannot upload artifacts for step '{StepName}' — agent identity not available.",
-                step.Name);
-            return;
-        }
-
         await LogAsync(plan.DeploymentId, "info",
             $"Collecting {files.Length} artifact(s) from step '{step.Name}'…", ct)
             .ConfigureAwait(false);
@@ -628,7 +806,6 @@ public sealed class DeploymentExecutor(
             ct.ThrowIfCancellationRequested();
 
             var artifactId = await artifactUploader.UploadAsync(
-                identity.ServerUrl, identity.AgentToken,
                 plan.DeploymentId, step.Name, filePath, ct)
                 .ConfigureAwait(false);
 

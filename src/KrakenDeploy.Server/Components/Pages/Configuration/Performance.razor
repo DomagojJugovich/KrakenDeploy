@@ -134,6 +134,28 @@
                 </RadzenStack>
             </RadzenCard>
 
+            @* ── Offline drop ──────────────────────────────────────────── *@
+            <RadzenCard>
+                <RadzenStack Gap="1rem">
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-0">
+                        Offline drop
+                    </RadzenText>
+                    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem"
+                                 AlignItems="AlignItems.Center">
+                        <RadzenSwitch @bind-Value="_settings.EmbedOfflineRunner"
+                                      Name="EmbedOfflineRunner" />
+                        <RadzenLabel Text="Embed the self-contained runner in offline drop bundles"
+                                     Component="EmbedOfflineRunner" />
+                    </RadzenStack>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                        On (default): bundles run on a target with no .NET installed,
+                        at ≈110&nbsp;MB per bundle. Off: bundles carry data only and the
+                        bootstrap uses a <code>KrakenDeploy.Agent</code> installed once on
+                        the target. Either way an absent staged runner degrades gracefully.
+                    </RadzenText>
+                </RadzenStack>
+            </RadzenCard>
+
             @* ── Save bar ──────────────────────────────────────────────── *@
             <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
                          JustifyContent="JustifyContent.End">
@@ -169,7 +191,8 @@
             || _settings.SlowDeploymentThresholdMinutes != _baseline.SlowDeploymentThresholdMinutes
             || _settings.SlowStepThresholdMinutes       != _baseline.SlowStepThresholdMinutes
             || _settings.AuditLogRetentionDays          != _baseline.AuditLogRetentionDays
-            || _settings.AiCallLogRetentionDays         != _baseline.AiCallLogRetentionDays);
+            || _settings.AiCallLogRetentionDays         != _baseline.AiCallLogRetentionDays
+            || _settings.EmbedOfflineRunner             != _baseline.EmbedOfflineRunner);
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
 
@@ -224,6 +247,7 @@
         SlowStepThresholdMinutes       = src.SlowStepThresholdMinutes,
         AuditLogRetentionDays          = src.AuditLogRetentionDays,
         AiCallLogRetentionDays         = src.AiCallLogRetentionDays,
+        EmbedOfflineRunner             = src.EmbedOfflineRunner,
     };
 
     /// <summary>
@@ -255,6 +279,10 @@
         if (before.AiCallLogRetentionDays != after.AiCallLogRetentionDays)
         {
             diffs.Add($"AiCallLogRetentionDays={before.AiCallLogRetentionDays}→{after.AiCallLogRetentionDays}");
+        }
+        if (before.EmbedOfflineRunner != after.EmbedOfflineRunner)
+        {
+            diffs.Add($"EmbedOfflineRunner={before.EmbedOfflineRunner}→{after.EmbedOfflineRunner}");
         }
 
         return string.Join(", ", diffs);

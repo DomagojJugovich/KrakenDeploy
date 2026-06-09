@@ -514,6 +514,19 @@ public sealed class StepPackageService(
         return new BulkUpgradeResult(packageName, targetVersion, touched, skipped);
     }
 
+    /// <summary>
+    /// Full path to the stored <c>.kdeploy-step</c> archive for
+    /// (<paramref name="name"/>, <paramref name="version"/>), or <c>null</c> if
+    /// not installed on disk. Used by the offline bundle generator to embed
+    /// step-handler archives so the offline runner loads them without server
+    /// connectivity.
+    /// </summary>
+    public string? TryGetArchivePath(string name, string version)
+    {
+        var path = Path.Combine(ResolveDir(name, version), "package" + StepPackageFiles.Extension);
+        return File.Exists(path) ? path : null;
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private string ResolveDir(string name, string version)

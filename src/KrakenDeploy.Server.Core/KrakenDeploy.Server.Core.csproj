@@ -7,10 +7,19 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- M14.2: StepConditionEvaluator uses Octostache to evaluate
-         Variable-condition expressions (#{...} truthy/falsy). Same
-         engine the orchestrator already uses for Config substitution. -->
+    <!-- M14.2: Variable-condition expressions (#{...} truthy/falsy) are
+         evaluated via Octostache — the same engine the orchestrator uses
+         for Config substitution. -->
     <PackageReference Include="Octostache" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- StepCondition + the shared StepConditionEvaluator live in
+         KrakenDeploy.Execution so both the server orchestrator and the
+         offline agent runner evaluate run conditions through one
+         implementation. Server.Core's domain entities (DeploymentStep,
+         StepSnapshot, StepExecutionKnobs) reference the StepCondition enum. -->
+    <ProjectReference Include="..\KrakenDeploy.Execution\KrakenDeploy.Execution.csproj" />
   </ItemGroup>
 
 </Project>

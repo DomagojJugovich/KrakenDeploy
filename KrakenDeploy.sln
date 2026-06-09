@@ -83,6 +83,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Mcp", "src\Kra
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Mcp.Cli", "src\KrakenDeploy.Mcp.Cli\KrakenDeploy.Mcp.Cli.csproj", "{6669E857-3E45-43F1-BAB0-162018D4C2FA}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KrakenDeploy.Execution", "src\KrakenDeploy.Execution\KrakenDeploy.Execution.csproj", "{8A1A3AE5-B7F9-4ED4-A12B-0A7ADF27184C}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -513,6 +515,18 @@ Global
 		{6669E857-3E45-43F1-BAB0-162018D4C2FA}.Release|x64.Build.0 = Release|Any CPU
 		{6669E857-3E45-43F1-BAB0-162018D4C2FA}.Release|x86.ActiveCfg = Release|Any CPU
 		{6669E857-3E45-43F1-BAB0-162018D4C2FA}.Release|x86.Build.0 = Release|Any CPU
+		{8A1A3AE5-B7F9-4ED4-A12B-0A7ADF27184C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8A1A3AE5-B7F9-4ED4-A12B-0A7ADF27184C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8A1A3AE5-B7F9-4ED4-A12B-0A7ADF27184C}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{8A1A3AE5-B7F9-4ED4-A12B-0A7ADF27184C}.Debug|x64.Build.0 = Debug|Any CPU
+		{8A1A3AE5-B7F9-4ED4-A12B-0A7ADF27184C}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{8A1A3AE5-B7F9-4ED4-A12B-0A7ADF27184C}.Debug|x86.Build.0 = Debug|Any CPU
+		{8A1A3AE5-B7F9-4ED4-A12B-0A7ADF27184C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8A1A3AE5-B7F9-4ED4-A12B-0A7ADF27184C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8A1A3AE5-B7F9-4ED4-A12B-0A7ADF27184C}.Release|x64.ActiveCfg = Release|Any CPU
+		{8A1A3AE5-B7F9-4ED4-A12B-0A7ADF27184C}.Release|x64.Build.0 = Release|Any CPU
+		{8A1A3AE5-B7F9-4ED4-A12B-0A7ADF27184C}.Release|x86.ActiveCfg = Release|Any CPU
+		{8A1A3AE5-B7F9-4ED4-A12B-0A7ADF27184C}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -553,5 +567,6 @@ Global
 		{E6C8B05A-7C53-4185-9893-4EBB921022CC} = {70566D49-9AF4-40FA-A1B1-6AF8A81B21E1}
 		{78C506F7-F289-49B4-8191-B258E393B61B} = {D0C490EE-0ACE-45C9-B592-342BB7F79A7C}
 		{6669E857-3E45-43F1-BAB0-162018D4C2FA} = {D0C490EE-0ACE-45C9-B592-342BB7F79A7C}
+		{8A1A3AE5-B7F9-4ED4-A12B-0A7ADF27184C} = {D0C490EE-0ACE-45C9-B592-342BB7F79A7C}
 	EndGlobalSection
 EndGlobal

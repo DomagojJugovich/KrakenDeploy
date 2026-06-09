@@ -1409,6 +1409,12 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_utc");
 
+                    b.Property<bool>("EmbedOfflineRunner")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("boolean")
+                        .HasDefaultValue(true)
+                        .HasColumnName("embed_offline_runner");
+
                     b.Property<int>("HangfireWorkerCount")
                         .HasColumnType("integer")
                         .HasColumnName("hangfire_worker_count");
@@ -3149,6 +3155,29 @@ namespace KrakenDeploy.Server.Data.Migrations
                     b.ToTable("tenant_tags", (string)null);
                 });
 
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Variables.ProjectVariableSetLink", b =>
+                {
+                    b.Property<Guid>("ProjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("project_id");
+
+                    b.Property<Guid>("VariableSetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("variable_set_id");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("sort_order");
+
+                    b.HasKey("ProjectId", "VariableSetId")
+                        .HasName("pk_project_variable_set_links");
+
+                    b.HasIndex("VariableSetId")
+                        .HasDatabaseName("ix_project_variable_set_links_variable_set_id");
+
+                    b.ToTable("project_variable_set_links", (string)null);
+                });
+
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Variables.Variable", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3210,11 +3239,25 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_utc");
 
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("description");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("integer")
+                        .HasColumnName("kind");
+
                     b.Property<DateTimeOffset?>("ModifiedUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("modified_utc");
 
-                    b.Property<Guid>("ProjectId")
+                    b.Property<string>("Name")
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<Guid?>("ProjectId")
                         .HasColumnType("uuid")
                         .HasColumnName("project_id");
 
@@ -3227,10 +3270,14 @@ namespace KrakenDeploy.Server.Data.Migrations
 
                     b.HasIndex("ProjectId")
                         .IsUnique()
-                        .HasDatabaseName("ix_variable_sets_project_id");
+                        .HasDatabaseName("ix_variable_sets_project_id")
+                        .HasFilter("project_id IS NOT NULL");
 
                     b.HasIndex("SpaceId")
                         .HasDatabaseName("ix_variable_sets_space_id");
+
+                    b.HasIndex("SpaceId", "Kind")
+                        .HasDatabaseName("ix_variable_sets_space_id_kind");
 
                     b.ToTable("variable_sets", (string)null);
                 });
@@ -3957,6 +4004,23 @@ namespace KrakenDeploy.Server.Data.Migrations
                     b.Navigation("TagSet");
                 });
 
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Variables.ProjectVariableSetLink", b =>
+                {
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Projects.Project", null)
+                        .WithMany()
+                        .HasForeignKey("ProjectId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_project_variable_set_links_projects_project_id");
+
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Variables.VariableSet", null)
+                        .WithMany()
+                        .HasForeignKey("VariableSetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_project_variable_set_links_variable_sets_variable_set_id");
+                });
+
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Variables.Variable", b =>
                 {
                     b.HasOne("KrakenDeploy.Server.Core.Domain.Variables.VariableSet", "Set")
@@ -3975,7 +4039,6 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .WithOne("VariableSet")
                         .HasForeignKey("KrakenDeploy.Server.Core.Domain.Variables.VariableSet", "ProjectId")
                         .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
                         .HasConstraintName("fk_variable_sets_projects_project_id");
 
                     b.HasOne("KrakenDeploy.Server.Core.Domain.Spaces.Space", null)

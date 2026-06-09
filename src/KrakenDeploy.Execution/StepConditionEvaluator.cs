@@ -1,6 +1,6 @@
 using Octostache;
 
-namespace KrakenDeploy.Server.Core.Domain.Processes;
+namespace KrakenDeploy.Execution;
 
 /// <summary>
 /// Pure-function helper that decides whether a step should run given
@@ -8,11 +8,13 @@ namespace KrakenDeploy.Server.Core.Domain.Processes;
 /// variable bag (for <see cref="StepCondition.Variable"/>).
 ///
 /// <para>
-/// Extracted from the orchestrator so it can be unit-tested without
-/// spinning up the full <c>DeploymentWorker</c> machinery. The
-/// orchestrator calls this once per step before dispatching execution
-/// and routes Skip decisions to the audit log + deployment log without
-/// changing the failed-state flag.
+/// Shared by the server orchestrator (<c>DeploymentWorker</c>) and the
+/// offline agent runner (<c>DeploymentExecutor</c>) so the condition
+/// int↔kind mapping and the Variable truthy contract have a single
+/// source of truth — online and offline produce identical Run/Skip
+/// decisions. The orchestrator calls this once per step before
+/// dispatching execution and routes Skip decisions to the audit log +
+/// deployment log without changing the failed-state flag.
 /// </para>
 /// </summary>
 public static class StepConditionEvaluator

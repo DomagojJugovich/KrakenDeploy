@@ -9,14 +9,14 @@ namespace KrakenDeploy.Server.Core.Domain.Variables;
 /// An unscoped variable (all constraints null) is the universal fallback.
 /// </para>
 /// <para>
-/// Scope resolution priority (higher score wins for the same variable name):
-/// <list type="table">
-///   <item><term>+8</term><description>TenantId is set and matches</description></item>
-///   <item><term>+4</term><description>EnvironmentId is set and matches</description></item>
-///   <item><term>+2</term><description>Roles overlap with the target's roles</description></item>
-///   <item><term>+1</term><description>TargetId is set and matches</description></item>
-/// </list>
-/// The highest-scoring matching variable for each name wins.
+/// Scope resolution is Octopus-compatible: the most-specific matching scope
+/// wins for each variable name. Specificity is a <b>place-value rank</b> (a
+/// more-specific dimension always beats any combination of less-specific ones),
+/// following Octopus's ordered scope list. For the dimensions KrakenDeploy
+/// models today the order, most specific first, is: <b>step &gt; target (machine) &gt;
+/// roles (target tags) &gt; tenant &gt; environment &gt; channel</b>. When two definitions
+/// are scoped <i>equally</i>, the source breaks the tie (project &gt; library
+/// &gt; tenant) — handled by the resolver, not this scope object.
 /// </para>
 /// </summary>
 public class VariableScope
@@ -36,6 +36,22 @@ public class VariableScope
     /// </summary>
     public List<string>? Roles { get; set; }
 
+    /// <summary>
+    /// If set, the variable applies only when the deployment's release belongs
+    /// to this channel. Channels are project-specific, so this only makes sense
+    /// on project variables (not library / tenant sets). Per Octopus's ordering
+    /// a channel scope is LESS specific than an environment scope.
+    /// </summary>
+    public Guid? ChannelId { get; set; }
+
+    /// <summary>
+    /// If set, the variable applies only to the deployment step with this name
+    /// (matched against the snapshot step's <c>Name</c> at deploy time). The
+    /// MOST specific scope dimension. Steps are project-specific, so this only
+    /// makes sense on project variables — never library / tenant sets.
+    /// </summary>
+    public string? StepName { get; set; }
+
     // ── Helpers (not persisted) ──────────────────────────────────────────────
 
     /// <summary>
@@ -46,37 +62,29 @@ public class VariableScope
         TenantId is null &&
         EnvironmentId is null &&
         TargetId is null &&
+        ChannelId is null &&
+        string.IsNullOrEmpty(StepName) &&
         (Roles is null || Roles.Count == 0);
 
     /// <summary>
-    /// Specificity score used to break ties when multiple variables with the
-    /// same name match a deployment context.
+    /// Scope-specificity rank — higher wins. A PLACE-VALUE rank (bitmask), not a
+    /// sum: a more-specific dimension always outranks any combination of
+    /// less-specific ones, matching Octopus's ordered scope-specificity list
+    /// (most specific first): step/action, machine (target), target-tags-by-step,
+    /// target-tags (roles), tenant, tenant-tag, environment, channel, process.
+    /// KrakenDeploy currently models target, roles, tenant and environment; the
+    /// other slots are reserved so the order stays correct once they're added.
     /// </summary>
     public int SpecificityScore()
     {
-        var score = 0;
-
-        if (TenantId.HasValue)
-        {
-            score += 8;
-        }
-
-        if (EnvironmentId.HasValue)
-        {
-            score += 4;
-        }
-
-        if (Roles is { Count: > 0 })
-        {
-            score += 2;
-        }
-
-        if (TargetId.HasValue)
-        {
-            score += 1;
-        }
-
-        return score;
+        var rank = 0;
+        if (!string.IsNullOrEmpty(StepName)) { rank |= 1 << 9; } // step / action (most specific)
+        if (TargetId.HasValue)       { rank |= 1 << 8; } // machine / deployment target
+        if (Roles is { Count: > 0 }) { rank |= 1 << 6; } // target tags / roles
+        if (TenantId.HasValue)       { rank |= 1 << 5; } // target tenant
+        if (EnvironmentId.HasValue)  { rank |= 1 << 3; } // environment
+        if (ChannelId.HasValue)      { rank |= 1 << 2; } // channel (less specific than environment)
+        return rank;
     }
 
     /// <summary>
@@ -87,7 +95,9 @@ public class VariableScope
         Guid environmentId,
         Guid? targetId,
         IReadOnlyList<string> targetRoles,
-        Guid? tenantId = null)
+        Guid? tenantId = null,
+        Guid? channelId = null,
+        string? stepName = null)
     {
         if (TenantId.HasValue && TenantId.Value != tenantId)
         {
@@ -95,6 +105,17 @@ public class VariableScope
         }
 
         if (EnvironmentId.HasValue && EnvironmentId.Value != environmentId)
+        {
+            return false;
+        }
+
+        if (ChannelId.HasValue && ChannelId.Value != channelId)
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrEmpty(StepName) &&
+            !string.Equals(StepName, stepName, StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }

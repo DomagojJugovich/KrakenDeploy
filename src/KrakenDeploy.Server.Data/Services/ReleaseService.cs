@@ -204,28 +204,67 @@ public class ReleaseService(
     private static async Task<List<VariableSnapshot>> BuildVariableSnapshotAsync(
         KrakenDbContext db, Guid projectId, CancellationToken ct)
     {
+        var result = new List<VariableSnapshot>();
+
+        // Included library variable sets first, at lower layers (inclusion
+        // SortOrder). A later-included set overlays an earlier one; the
+        // project's own variables (added below at ProjectLayer) win over all.
+        var links = await db.ProjectVariableSetLinks
+            .Where(l => l.ProjectId == projectId)
+            .OrderBy(l => l.SortOrder)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        if (links.Count > 0)
+        {
+            var ids = links.Select(l => l.VariableSetId).ToList();
+            var libSets = await db.VariableSets
+                .Where(vs => ids.Contains(vs.Id))
+                .Include(vs => vs.Variables)
+                .AsNoTracking()
+                .ToDictionaryAsync(vs => vs.Id, ct)
+                .ConfigureAwait(false);
+
+            foreach (var link in links)
+            {
+                if (libSets.TryGetValue(link.VariableSetId, out var libSet))
+                {
+                    result.AddRange(libSet.Variables.Select(v => ToSnapshot(v, link.SortOrder)));
+                }
+            }
+        }
+
+        // Project's own variable set last, at the top layer.
         var set = await db.VariableSets
             .Include(vs => vs.Variables)
             .AsNoTracking()
             .FirstOrDefaultAsync(vs => vs.ProjectId == projectId, ct)
             .ConfigureAwait(false);
 
-        if (set is null) { return []; }
-
-        return [.. set.Variables.Select(v => new VariableSnapshot
+        if (set is not null)
         {
-            Name  = v.Name,
-            Value = v.Value,
-            Type  = v.Type,
-            Scope = new VariableScope
-            {
-                EnvironmentId = v.Scope.EnvironmentId,
-                TargetId      = v.Scope.TargetId,
-                TenantId      = v.Scope.TenantId,
-                Roles         = v.Scope.Roles is null ? null : [.. v.Scope.Roles],
-            },
-        })];
+            result.AddRange(set.Variables.Select(v => ToSnapshot(v, VariableSnapshot.ProjectLayer)));
+        }
+
+        return result;
     }
+
+    private static VariableSnapshot ToSnapshot(Variable v, int layer) => new()
+    {
+        Name  = v.Name,
+        Value = v.Value,
+        Type  = v.Type,
+        Layer = layer,
+        Scope = new VariableScope
+        {
+            EnvironmentId = v.Scope.EnvironmentId,
+            TargetId      = v.Scope.TargetId,
+            TenantId      = v.Scope.TenantId,
+            ChannelId     = v.Scope.ChannelId,
+            StepName      = v.Scope.StepName,
+            Roles         = v.Scope.Roles is null ? null : [.. v.Scope.Roles],
+        },
+    };
 
     // ── Query ──────────────────────────────────────────────────────────────
 

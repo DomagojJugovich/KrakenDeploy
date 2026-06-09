@@ -1,9 +1,283 @@
 @page "/tasks"
+@rendermode InteractiveServer
 @attribute [Authorize]
+@using KrakenDeploy.Server.Services
+@implements IAsyncDisposable
+@inject ServerTasksService TasksSvc
+@inject NavigationManager Nav
 
 <PageTitle>Tasks - KrakenDeploy</PageTitle>
 
-<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">Tasks</RadzenText>
-<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-    Background task queue with live log streaming — M2.
-</RadzenText>
+<RequirePermission Permission="Permission.TaskView" Fallback="@_unauthorized">
+
+<RadzenStack Gap="1rem">
+
+    <RadzenStack Orientation="Orientation.Horizontal"
+                 AlignItems="AlignItems.Center"
+                 JustifyContent="JustifyContent.SpaceBetween"
+                 class="rz-mb-2">
+        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">Tasks</RadzenText>
+        <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.75rem">
+            <RadzenSwitch @bind-Value=@_autoRefresh Change="@(_ => StateHasChanged())" />
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Auto-refresh (5s)</RadzenText>
+            <RadzenButton Icon="refresh" Text="Refresh" ButtonStyle="ButtonStyle.Light"
+                          Size="ButtonSize.Small" Click="@ReloadAsync" Disabled="@_loading" />
+        </RadzenStack>
+    </RadzenStack>
+
+    @* ── Filters ──────────────────────────────────────────────────────────── *@
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                 Gap="1rem" Wrap="FlexWrap.Wrap" class="rz-mb-2">
+        <RadzenSelectBar @bind-Value=@_stateGroup TValue="string" Size="ButtonSize.Small"
+                         Change="@(() => ApplyFilter())">
+            <Items>
+                <RadzenSelectBarItem Text="All" Value="@("All")" />
+                <RadzenSelectBarItem Text="Running" Value="@("Running")" />
+                <RadzenSelectBarItem Text="Waiting" Value="@("Waiting")" />
+                <RadzenSelectBarItem Text="Completed" Value="@("Completed")" />
+                <RadzenSelectBarItem Text="Failed" Value="@("Failed")" />
+            </Items>
+        </RadzenSelectBar>
+
+        <RadzenDropDown @bind-Value=@_kindFilter TValue="string" Data="@KindOptions"
+                        TextProperty="Label" ValueProperty="Value" Style="width: 180px"
+                        Change="@(() => ApplyFilter())" />
+
+        <RadzenTextBox @bind-Value=@_search Placeholder="Search tasks…" Style="width: 280px"
+                       Change="@(() => ApplyFilter())" />
+    </RadzenStack>
+
+    <RadzenDataGrid Data="@_filtered" TItem="ServerTaskRow"
+                    AllowPaging="true" PageSize="25" PagerHorizontalAlign="HorizontalAlign.Center"
+                    AllowSorting="true" AllowColumnResize="true"
+                    RowClick="@OnRowClick"
+                    EmptyText="No tasks match the current filters.">
+        <Columns>
+            <RadzenDataGridColumn TItem="ServerTaskRow" Property="State" Title="State" Width="130px">
+                <Template Context="t">
+                    <RadzenBadge Text="@StateLabel(t.State)" BadgeStyle="@StateStyle(t.State)" />
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="ServerTaskRow" Property="Kind" Title="Type" Width="120px">
+                <Template Context="t">
+                    <RadzenBadge Text="@KindLabel(t.Kind)" BadgeStyle="@KindStyle(t.Kind)" IsPill="true" />
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="ServerTaskRow" Property="Title" Title="Task">
+                <Template Context="t">
+                    <RadzenText TextStyle="TextStyle.Body2" class="rz-mb-0">@t.Title</RadzenText>
+                    @if (t.Target is not null)
+                    {
+                        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                            Target: @t.Target
+                        </RadzenText>
+                    }
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="ServerTaskRow" Property="StartedUtc" Title="Started" Width="170px">
+                <Template Context="t">@Stamp(t.StartedUtc)</Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="ServerTaskRow" Property="CompletedUtc" Title="Completed" Width="170px">
+                <Template Context="t">@Stamp(t.CompletedUtc)</Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="ServerTaskRow" Title="Duration" Width="130px" Sortable="false">
+                <Template Context="t">@FormatDuration(t)</Template>
+            </RadzenDataGridColumn>
+        </Columns>
+    </RadzenDataGrid>
+
+    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+        Showing @_filtered.Count of @_all.Count tasks. Times are UTC. System jobs are
+        instance-wide (Hangfire); deployments and runbook runs are scoped to the active Space.
+    </RadzenText>
+
+</RadzenStack>
+
+</RequirePermission>
+
+@code {
+    private List<ServerTaskRow> _all = [];
+    private List<ServerTaskRow> _filtered = [];
+    private bool _loading;
+
+    // Filters
+    private string _stateGroup = "All";
+    private string _kindFilter = "All";
+    private string _search = "";
+
+    // Auto-refresh
+    private bool _autoRefresh = true;
+    private readonly CancellationTokenSource _cts = new();
+    private Task? _loop;
+
+    private sealed record KindOption(string Value, string Label);
+    private static readonly KindOption[] KindOptions =
+    [
+        new("All", "All types"),
+        new("Deployment", "Deployments"),
+        new("RunbookRun", "Runbook runs"),
+        new("SystemJob", "System jobs"),
+    ];
+
+    private RenderFragment _unauthorized =>
+        @<div class="rz-p-4">
+            <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true">
+                You do not have permission to view tasks.
+            </RadzenAlert>
+        </div>;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender && _loop is null)
+        {
+            _loop = AutoRefreshLoopAsync();
+        }
+    }
+
+    private async Task AutoRefreshLoopAsync()
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+            while (await timer.WaitForNextTickAsync(_cts.Token))
+            {
+                if (!_autoRefresh || _loading) continue;
+                await InvokeAsync(async () =>
+                {
+                    await ReloadAsync();
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // circuit tearing down — expected
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (_loading) return;
+        _loading = true;
+        try
+        {
+            _all = await TasksSvc.GetTasksAsync(_cts.Token);
+            ApplyFilter();
+        }
+        catch (OperationCanceledException)
+        {
+            // shutting down
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private void ApplyFilter()
+    {
+        IEnumerable<ServerTaskRow> q = _all;
+
+        if (_kindFilter != "All")
+        {
+            q = q.Where(r => r.Kind.ToString() == _kindFilter);
+        }
+
+        q = _stateGroup switch
+        {
+            "Running"   => q.Where(r => r.State == ServerTaskState.Running),
+            "Waiting"   => q.Where(r => r.State is ServerTaskState.Queued
+                                              or ServerTaskState.Scheduled
+                                              or ServerTaskState.PendingOfflineResult),
+            "Completed" => q.Where(r => r.State is ServerTaskState.Succeeded
+                                              or ServerTaskState.SucceededWithWarnings
+                                              or ServerTaskState.Failed
+                                              or ServerTaskState.Cancelled),
+            "Failed"    => q.Where(r => r.State == ServerTaskState.Failed),
+            _           => q,
+        };
+
+        if (!string.IsNullOrWhiteSpace(_search))
+        {
+            q = q.Where(r => r.Title.Contains(_search, StringComparison.OrdinalIgnoreCase));
+        }
+
+        _filtered = q.ToList();
+    }
+
+    private void OnRowClick(Radzen.DataGridRowMouseEventArgs<ServerTaskRow> args)
+    {
+        var row = args.Data;
+        if (row is null || string.IsNullOrEmpty(row.DetailUrl))
+        {
+            return;
+        }
+
+        Nav.NavigateTo(row.DetailUrl, forceLoad: row.ExternalNav);
+    }
+
+    private static string Stamp(DateTimeOffset? t) =>
+        t?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—";
+
+    private static string FormatDuration(ServerTaskRow r)
+    {
+        var start = r.StartedUtc;
+        var end = r.CompletedUtc ?? (r.State == ServerTaskState.Running ? DateTimeOffset.UtcNow : null);
+        if (start is null || end is null) return "—";
+
+        var d = end.Value - start.Value;
+        if (d < TimeSpan.Zero) return "—";
+        if (d.TotalSeconds < 1) return "less than a second";
+        if (d.TotalSeconds < 60) return $"{(int)d.TotalSeconds} seconds";
+        if (d.TotalMinutes < 60) return $"{(int)d.TotalMinutes} minutes";
+        if (d.TotalHours < 24) return $"{(int)d.TotalHours} hours";
+        return $"{(int)d.TotalDays} days";
+    }
+
+    private static string StateLabel(ServerTaskState s) => s switch
+    {
+        ServerTaskState.Succeeded => "Success",
+        ServerTaskState.SucceededWithWarnings => "Warnings",
+        ServerTaskState.PendingOfflineResult => "Pending offline",
+        _ => s.ToString(),
+    };
+
+    private static BadgeStyle StateStyle(ServerTaskState s) => s switch
+    {
+        ServerTaskState.Succeeded => BadgeStyle.Success,
+        ServerTaskState.SucceededWithWarnings => BadgeStyle.Warning,
+        ServerTaskState.Failed => BadgeStyle.Danger,
+        ServerTaskState.Running => BadgeStyle.Info,
+        ServerTaskState.Queued => BadgeStyle.Warning,
+        ServerTaskState.Scheduled => BadgeStyle.Warning,
+        ServerTaskState.PendingOfflineResult => BadgeStyle.Warning,
+        _ => BadgeStyle.Light,
+    };
+
+    private static string KindLabel(ServerTaskKind k) => k switch
+    {
+        ServerTaskKind.Deployment => "Deployment",
+        ServerTaskKind.RunbookRun => "Runbook",
+        ServerTaskKind.SystemJob => "System",
+        _ => "—",
+    };
+
+    private static BadgeStyle KindStyle(ServerTaskKind k) => k switch
+    {
+        ServerTaskKind.Deployment => BadgeStyle.Primary,
+        ServerTaskKind.RunbookRun => BadgeStyle.Secondary,
+        _ => BadgeStyle.Light,
+    };
+
+    public async ValueTask DisposeAsync()
+    {
+        _cts.Cancel();
+        if (_loop is not null)
+        {
+            try { await _loop; } catch { /* ignore teardown races */ }
+        }
+        _cts.Dispose();
+    }
+}

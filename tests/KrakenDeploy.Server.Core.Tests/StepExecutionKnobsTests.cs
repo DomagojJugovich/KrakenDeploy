@@ -1,4 +1,5 @@
 using FluentAssertions;
+using KrakenDeploy.Execution;
 using KrakenDeploy.Server.Core.Domain.Processes;
 
 namespace KrakenDeploy.Server.Core.Tests;

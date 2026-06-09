@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using KrakenDeploy.Contracts.Offline;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
@@ -89,30 +90,116 @@ public class OfflineResultService(
             logger.LogInformation("HMAC signature verified for deployment {Id}.", deploymentId);
         }
 
-        // ── Parse result ────────────────────────────────────────────────────
-        var resultEntry = archive.GetEntry("deployment-result.json");
-        if (resultEntry is not null)
+        // ── Bundle-format guard ─────────────────────────────────────────────
+        // The result shape is tied to the bundle format. Refuse a result from a
+        // bundle this server version doesn't understand (e.g. an older,
+        // pre-encrypted-plan bundle with no bundleFormat) rather than silently
+        // mis-recording it (its result JSON has no `success` key → would default
+        // to a false Failed).
+        var manifestEntryForFormat = archive.GetEntry("manifest.json")
+            ?? throw new InvalidOperationException("Result bundle is missing manifest.json.");
+        var manifestJsonForFormat = await ReadEntryTextAsync(manifestEntryForFormat, ct).ConfigureAwait(false);
+        var bundleFormat = JsonSerializer.Deserialize<ManifestFormatProbe>(manifestJsonForFormat, JsonOpts)?.BundleFormat ?? 0;
+        if (bundleFormat != DropBundleService.BundleFormat)
         {
-            var resultJson = await ReadEntryTextAsync(resultEntry, ct).ConfigureAwait(false);
-            var result = JsonSerializer.Deserialize<OfflineResult>(resultJson, JsonOpts);
-            if (result is not null)
-            {
-                deployment.Status = ParseStatus(result.Status);
-                if (result.CompletedUtc.HasValue)
-                {
-                    deployment.CompletedUtc = result.CompletedUtc.Value;
-                }
-                else
-                {
-                    deployment.CompletedUtc = DateTimeOffset.UtcNow;
-                }
-            }
+            throw new InvalidOperationException(
+                $"Result bundle format {bundleFormat} is not supported by this server " +
+                $"(expected {DropBundleService.BundleFormat}). Re-create the offline drop for this deployment.");
+        }
+
+        // Maps a sanitized artifact-dir segment back to the real step name so an
+        // artifact's StepName matches its step-outcome row even when the step
+        // name contains characters the on-disk dir can't hold (the runner writes
+        // artifacts under a sanitized dir; this reverses it via the result).
+        var stepNameBySanitizedDir = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        // ── Verify + parse result ───────────────────────────────────────────
+        // The offline runner writes an OfflineDropResult (overall success +
+        // per-step outcomes + output variables). We ingest the same step-outcome
+        // and output-variable rows an online deployment produces, so the
+        // Steps/Variables tabs render identically.
+        var resultEntry = archive.GetEntry(OfflineBundleLayout.ResultFile);
+        if (resultEntry is null)
+        {
+            // No result file — mark as succeeded by convention.
+            deployment.Status = DeploymentStatus.Succeeded;
+            deployment.CompletedUtc = DateTimeOffset.UtcNow;
         }
         else
         {
-            // No result file — mark as succeeded by convention
-            deployment.Status = DeploymentStatus.Succeeded;
-            deployment.CompletedUtc = DateTimeOffset.UtcNow;
+            var resultBytes = await ReadEntryBytesAsync(resultEntry, ct).ConfigureAwait(false);
+
+            // The result drives DB writes, and it travels back over an untrusted
+            // channel — verify its signature against the per-target bundle key
+            // when one is configured.
+            var bundleKey = GetBundleKey(deployment.Target);
+            if (bundleKey is not null)
+            {
+                var sigEntry = archive.GetEntry(OfflineBundleLayout.ResultSignatureFile)
+                    ?? throw new InvalidOperationException(
+                        "Result bundle is missing result-signature.bin — result integrity check required.");
+                var resultSig = await ReadEntryBytesAsync(sigEntry, ct).ConfigureAwait(false);
+                if (!OfflineResultSigner.Verify(bundleKey, resultBytes, resultSig))
+                {
+                    throw new InvalidOperationException(
+                        "Result signature verification failed — deployment-result.json may have been tampered with.");
+                }
+            }
+
+            var result = JsonSerializer.Deserialize<OfflineDropResult>(resultBytes, JsonOpts);
+            if (result is null)
+            {
+                deployment.Status = DeploymentStatus.Succeeded;
+                deployment.CompletedUtc = DateTimeOffset.UtcNow;
+            }
+            else
+            {
+                var completedUtc = result.CompletedUtc ?? DateTimeOffset.UtcNow;
+                // A non-Required step failure leaves Success=true but warrants the
+                // yellow SucceededWithWarnings, matching the online path.
+                var anyNonSkippedFailure = result.Steps.Any(s => !s.Skipped && !s.Success);
+                deployment.Status = !result.Success
+                    ? DeploymentStatus.Failed
+                    : anyNonSkippedFailure
+                        ? DeploymentStatus.SucceededWithWarnings
+                        : DeploymentStatus.Succeeded;
+                deployment.CompletedUtc = completedUtc;
+
+                foreach (var step in result.Steps)
+                {
+                    stepNameBySanitizedDir[OfflineBundleLayout.SanitizeStepName(step.StepName)] = step.StepName;
+
+                    var outcome = step.Skipped
+                        ? StepOutcomeKind.Skipped
+                        : step.Success ? StepOutcomeKind.Succeeded : StepOutcomeKind.Failed;
+                    db.Set<DeploymentStepOutcome>().Add(new DeploymentStepOutcome
+                    {
+                        DeploymentId = deploymentId,
+                        StepIndex    = step.StepIndex,
+                        StepName     = step.StepName,
+                        Outcome      = outcome,
+                        AttemptCount = 1,
+                        ErrorMessage = step.Success || step.Skipped ? null : step.ErrorMessage,
+                        StartedUtc   = step.Skipped ? null : completedUtc,
+                        CompletedUtc = completedUtc,
+                        IsServerSide = false,
+                        Required     = step.Required,
+                        TargetId     = deployment.TargetId,
+                    });
+
+                    foreach (var (name, value) in step.OutputVariables)
+                    {
+                        db.Set<DeploymentOutputVariable>().Add(new DeploymentOutputVariable
+                        {
+                            DeploymentId = deploymentId,
+                            StepName     = step.StepName,
+                            Name         = name,
+                            Value        = value,
+                            CapturedUtc  = completedUtc,
+                        });
+                    }
+                }
+            }
         }
 
         // ── Parse log ───────────────────────────────────────────────────────
@@ -158,15 +245,20 @@ public class OfflineResultService(
             }
 
             var fileName = Path.GetFileName(entry.FullName);
-            var stepName = Path.GetDirectoryName(entry.FullName)?
+            var sanitizedSegment = Path.GetDirectoryName(entry.FullName)?
                 .Replace("artifacts/", "", StringComparison.OrdinalIgnoreCase)
                 .Replace("artifacts\\", "", StringComparison.OrdinalIgnoreCase)
                 .Trim('/', '\\');
 
-            if (string.IsNullOrEmpty(stepName))
+            if (string.IsNullOrEmpty(sanitizedSegment))
             {
-                stepName = "offline";
+                sanitizedSegment = "offline";
             }
+
+            // The dir is a sanitized form of the step name — recover the real
+            // name from the result so the artifact's StepName matches its step
+            // outcome row (falls back to the sanitized segment if unmapped).
+            var stepName = stepNameBySanitizedDir.GetValueOrDefault(sanitizedSegment, sanitizedSegment);
 
             await using var artifactStream = entry.Open();
             var storedPath = await artifactStore
@@ -213,19 +305,14 @@ public class OfflineResultService(
         return Convert.FromBase64String(base64Key);
     }
 
-    private static DeploymentStatus ParseStatus(string? status)
+    private byte[]? GetBundleKey(DeploymentTarget? target)
     {
-        if (string.IsNullOrWhiteSpace(status))
+        var enc = target?.OfflineDropConfig?.BundleKeyEncrypted;
+        if (string.IsNullOrEmpty(enc))
         {
-            return DeploymentStatus.Succeeded;
+            return null;
         }
-
-        return status.Trim().ToLowerInvariant() switch
-        {
-            "succeeded" or "success" => DeploymentStatus.Succeeded,
-            "failed" or "failure"    => DeploymentStatus.Failed,
-            _                        => DeploymentStatus.Succeeded,
-        };
+        return Convert.FromBase64String(encryption.Decrypt(enc));
     }
 
     private static (string Level, string Message) ParseLogLine(string line)
@@ -263,12 +350,10 @@ public class OfflineResultService(
     }
 }
 
-/// <summary>Deserialized from <c>deployment-result.json</c> in the result bundle.</summary>
-internal sealed class OfflineResult
+/// <summary>Minimal projection to read the bundle format from manifest.json.</summary>
+internal sealed class ManifestFormatProbe
 {
-    public Guid DeploymentId { get; set; }
-    public string? Status { get; set; }
-    public DateTimeOffset? CompletedUtc { get; set; }
+    public int BundleFormat { get; set; }
 }
 
 /// <summary>Simple MIME type lookup for artifacts.</summary>

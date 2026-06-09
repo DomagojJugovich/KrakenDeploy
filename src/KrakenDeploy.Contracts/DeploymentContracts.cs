@@ -53,10 +53,11 @@ public sealed record DeploymentStepPlan(
     // sequential" — same as pre-M14 behaviour. Lets server upgrade
     // ahead of agent during a rolling deploy without breaking.
     /// <summary>M14.2 Run Condition — int value of
-    /// <c>KrakenDeploy.Server.Core.Domain.Processes.StepCondition</c>.
-    /// The agent doesn't consume this; the server evaluates it before
-    /// dispatching. Plumbed through the contract so future protocols
-    /// (e.g. agent-side step skip reporting) have the value available.</summary>
+    /// <c>KrakenDeploy.Execution.StepCondition</c>. The online server
+    /// evaluates it before dispatching; the offline agent runner evaluates
+    /// it itself (orchestrate mode) via the same shared
+    /// <c>StepConditionEvaluator</c>, so it is plumbed through the contract
+    /// for both consumers.</summary>
     int Condition = 0,
     string? ConditionVariableExpression = null,
     bool Required = true,
@@ -86,7 +87,17 @@ public sealed record DeploymentStepPlan(
     /// usable output-by-step-name rows. The display name (<see cref="Name"/>)
     /// stays the human-readable form for logs + Steps tab UI.
     /// </para></summary>
-    string? AccumulatorKey = null);
+    string? AccumulatorKey = null,
+    /// <summary>
+    /// Per-step variable scope (step/action dimension). Only the variables
+    /// whose resolved winner DIFFERS from the deployment-wide
+    /// <see cref="DeploymentPlan.Variables"/> for this step's context — i.e. a
+    /// delta the agent overlays onto the deployment-wide dict when executing
+    /// this step. <c>null</c>/empty (the common case, no step-scoped variables)
+    /// means the agent uses the deployment-wide variables unchanged. Appended
+    /// for back-compat: older agents ignore it and behave as before.
+    /// </summary>
+    IReadOnlyDictionary<string, string>? StepVariables = null);
 
 /// <summary>
 /// Sent by the agent to the server when a deployment is triggered.

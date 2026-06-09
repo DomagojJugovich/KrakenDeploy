@@ -1,0 +1,215 @@
+@page "/variable-sets/{Id:guid}"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.Variables
+@using KrakenDeploy.Server.Core.Domain.Environments
+@using KrakenDeploy.Server.Core.Domain.Tenants
+@using KrakenDeploy.Server.Core.Domain.Targets
+@using KrakenDeploy.Server.Data.Services
+@inject VariableService VariableSvc
+@inject EnvironmentService EnvironmentSvc
+@inject TenantService TenantSvc
+@inject TargetService TargetSvc
+@inject DialogService Dialog
+@inject NotificationService Notify
+@inject NavigationManager Nav
+@inject UiActionGuard Guard
+
+<PageTitle>@(_set?.Name ?? "Variable Set") - KrakenDeploy</PageTitle>
+
+@if (!_loaded)
+{
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading…</RadzenText>
+}
+else if (_set is null)
+{
+    <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+        Variable set not found.
+    </RadzenAlert>
+}
+else
+{
+    <div class="rz-mb-4">
+        <RadzenBreadCrumb>
+            <RadzenBreadCrumbItem Path="/variable-sets" Text="Variable Sets" />
+            <RadzenBreadCrumbItem Text="@_set.Name" />
+        </RadzenBreadCrumb>
+    </div>
+
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                 JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-2">
+        <div>
+            <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">@_set.Name</RadzenText>
+            @if (!string.IsNullOrWhiteSpace(_set.Description))
+            {
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">@_set.Description</RadzenText>
+            }
+        </div>
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+            <RequirePermission Permission="Permission.LibraryVariableSetEdit">
+                <RadzenButton Text="Rename" Icon="edit" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                              Click="@(() => { _editOpen = true; _name = _set.Name ?? ""; _description = _set.Description; })" />
+                <RadzenButton Text="Add Variable" Icon="add_circle_outline" ButtonStyle="ButtonStyle.Primary"
+                              Size="ButtonSize.Small" Click="@AddVariableAsync" />
+            </RequirePermission>
+        </RadzenStack>
+    </RadzenStack>
+
+    @if (_editOpen)
+    {
+        <RadzenCard class="rz-mb-4">
+            <RadzenFormField Text="Name" class="rz-mb-3" style="width:100%">
+                <RadzenTextBox @bind-Value="_name" style="width:100%" />
+            </RadzenFormField>
+            <RadzenFormField Text="Description (optional)" class="rz-mb-3" style="width:100%">
+                <RadzenTextBox @bind-Value="_description" style="width:100%" />
+            </RadzenFormField>
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+                <RadzenButton Text="Save" ButtonStyle="ButtonStyle.Primary" Click="@SaveRenameAsync" />
+                <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light" Click="@(() => _editOpen = false)" />
+            </RadzenStack>
+        </RadzenCard>
+    }
+
+    <RadzenDataGrid Data="@_variables" TItem="Variable"
+                    AllowPaging="true" PageSize="25"
+                    AllowSorting="true" AllowColumnResize="true"
+                    EmptyText="No variables in this set yet.">
+        <Columns>
+            <RadzenDataGridColumn TItem="Variable" Property="Name" Title="Name" Width="240px" />
+            <RadzenDataGridColumn TItem="Variable" Title="Value" Sortable="false">
+                <Template Context="v">
+                    @if (v.Type == VariableType.Sensitive)
+                    {
+                        <RadzenBadge Text="*** sensitive ***" BadgeStyle="BadgeStyle.Warning" IsPill="true" />
+                    }
+                    else
+                    {
+                        <code class="kraken-var-value">@v.Value</code>
+                    }
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="Variable" Property="Type" Title="Type" Width="120px" />
+            <RadzenDataGridColumn TItem="Variable" Title="Scope" Sortable="false">
+                <Template Context="v">@ScopeSummary(v.Scope)</Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="Variable" Title="" Width="110px" TextAlign="TextAlign.Right" Sortable="false">
+                <Template Context="v">
+                    <RequirePermission Permission="Permission.LibraryVariableSetEdit">
+                        <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.ExtraSmall"
+                                      Click="@(async _ => await EditVariableAsync(v))" title="Edit" />
+                        <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.ExtraSmall"
+                                      Variant="Variant.Text" class="rz-ml-1"
+                                      Click="@(async _ => await DeleteVariableAsync(v))" title="Delete" />
+                    </RequirePermission>
+                </Template>
+            </RadzenDataGridColumn>
+        </Columns>
+    </RadzenDataGrid>
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private VariableSet? _set;
+    private List<Variable> _variables = [];
+    private bool _loaded;
+    private bool _editOpen;
+    private string _name = "";
+    private string? _description;
+
+    private Dictionary<Guid, string> _envNames = [];
+    private Dictionary<Guid, string> _tenantNames = [];
+    private Dictionary<Guid, string> _targetNames = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _envNames    = (await EnvironmentSvc.GetAllOrderedAsync()).ToDictionary(e => e.Id, e => e.Name);
+        _tenantNames = (await TenantSvc.GetAllAsync()).ToDictionary(t => t.Id, t => t.Name);
+        _targetNames = (await TargetSvc.GetAllAsync()).ToDictionary(t => t.Id, t => t.Name);
+        await ReloadAsync();
+        _loaded = true;
+    }
+
+    private async Task ReloadAsync()
+    {
+        _set = await VariableSvc.GetSetAsync(Id);
+        _variables = _set?.Variables.OrderBy(v => v.Name).ToList() ?? [];
+    }
+
+    private async Task SaveRenameAsync()
+    {
+        if (_set is null || string.IsNullOrWhiteSpace(_name)) return;
+        if (!await Guard.AllowAsync(Permission.LibraryVariableSetEdit)) return;
+
+        var updated = await VariableSvc.UpdateLibrarySetAsync(_set.Id, _name.Trim(), _description?.Trim());
+        if (updated is not null)
+        {
+            _editOpen = false;
+            await ReloadAsync();
+            Notify.Notify(NotificationSeverity.Success, "Saved", "Variable set updated.", 3000);
+        }
+    }
+
+    private async Task AddVariableAsync()
+    {
+        if (_set is null) return;
+        if (!await Guard.AllowAsync(Permission.LibraryVariableSetEdit)) return;
+
+        var result = await Dialog.OpenAsync<VariableFormDialog>(
+            "Add Variable",
+            new Dictionary<string, object?> { [nameof(VariableFormDialog.SetId)] = _set.Id },
+            new DialogOptions { Width = "640px" });
+
+        if (result is true)
+        {
+            await ReloadAsync();
+        }
+    }
+
+    private async Task EditVariableAsync(Variable v)
+    {
+        if (!await Guard.AllowAsync(Permission.LibraryVariableSetEdit)) return;
+
+        var result = await Dialog.OpenAsync<VariableFormDialog>(
+            "Edit Variable",
+            new Dictionary<string, object?> { [nameof(VariableFormDialog.Variable)] = v },
+            new DialogOptions { Width = "640px" });
+
+        if (result is true)
+        {
+            await ReloadAsync();
+        }
+    }
+
+    private async Task DeleteVariableAsync(Variable v)
+    {
+        if (!await Guard.AllowAsync(Permission.LibraryVariableSetEdit)) return;
+
+        var confirmed = await Dialog.Confirm(
+            $"Delete variable '{v.Name}'? This cannot be undone.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+
+        if (confirmed == true)
+        {
+            await VariableSvc.DeleteVariableAsync(v.Id);
+            await ReloadAsync();
+            Notify.Notify(NotificationSeverity.Success, "Deleted", $"Variable '{v.Name}' was removed.", 3000);
+        }
+    }
+
+    private string ScopeSummary(VariableScope s)
+    {
+        if (s.IsUnscoped) return "(all)";
+        var parts = new List<string>();
+        if (s.EnvironmentId is { } e) parts.Add($"env: {Name(_envNames, e)}");
+        if (s.TenantId is { } t) parts.Add($"tenant: {Name(_tenantNames, t)}");
+        if (s.TargetId is { } tg) parts.Add($"target: {Name(_targetNames, tg)}");
+        if (s.Roles is { Count: > 0 } r) parts.Add($"roles: {string.Join(", ", r)}");
+        return string.Join(" • ", parts);
+    }
+
+    private static string Name(Dictionary<Guid, string> map, Guid id) =>
+        map.TryGetValue(id, out var n) ? n : "?";
+}

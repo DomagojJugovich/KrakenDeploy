@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Threading.Channels;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Execution;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Processes;
@@ -47,6 +48,7 @@ public sealed class DeploymentWorker(
     DeployReleaseStepRunner deployReleaseRunner,
     IPendingSubPlanRegistry subPlans,
     IServiceScopeFactory scopeFactory,
+    IDbContextFactory<KrakenDbContext> dbContextFactory,
     DeploymentDiagnosisChannel diagnosisChannel,
     ILogger<DeploymentWorker> logger)
     : BackgroundService
@@ -614,37 +616,101 @@ public sealed class DeploymentWorker(
     {
         var variableService = sp.GetRequiredService<VariableService>();
         var dropBundleService = sp.GetRequiredService<DropBundleService>();
+        var stepPackages = sp.GetRequiredService<StepPackageService>();
+        var encryption = sp.GetRequiredService<
+            KrakenDeploy.Server.Core.Domain.Variables.IEncryptionService>();
         var config = sp.GetRequiredService<IConfiguration>();
+        var dbFactory = sp.GetRequiredService<IDbContextFactory<KrakenDbContext>>();
         var dataPath = config["DataPath"] ?? "data";
+        var serverBaseUrl = config["Server:BaseUrl"];
 
-        var targetRoles = deployment.Target?.Roles ?? [];
-        var rawVars = await variableService.ResolveAsync(
-            deployment.Release.ProjectId,
-            deployment.EnvironmentId,
-            deployment.TargetId,
-            targetRoles,
-            deployment.TenantId,
-            ct).ConfigureAwait(false);
-
-        // Flatten variables to string dictionary (same as online path).
-        var systemVars = OctopusSystemVariablesBuilder.BuildForDeployment(
-            deployment,
-            deployment.Release,
-            deployment.Release.Project,
-            deployment.Environment,
-            deployment.Target,
-            deployment.Tenant,
-            deployment.Release.ProcessSnapshot,
-            config["Server:BaseUrl"]);
-
-        var flatVars = new Dictionary<string, string>(systemVars, StringComparer.OrdinalIgnoreCase);
-        foreach (var (name, value) in rawVars)
+        // Offline drops use the frozen release snapshot, exactly like online —
+        // refuse to ship a bundle from an un-snapshotted (pre-feature) release.
+        if (deployment.Release.VariableSnapshotUpdatedUtc is null)
         {
-            flatVars[name] = value;
+            await FailAsync(db, deployment,
+                $"Release '{deployment.Release.Version}' has no variable snapshot. " +
+                "Open the release and click 'Update Variables', then re-deploy.", ct)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        // Per-target bundle encryption key (provisioned when the target was
+        // configured as offline-drop). Without it we can't produce plan.enc.
+        var bundleKeyEnc = deployment.Target!.OfflineDropConfig?.BundleKeyEncrypted;
+        if (string.IsNullOrEmpty(bundleKeyEnc))
+        {
+            await FailAsync(db, deployment,
+                "Offline-drop target has no bundle encryption key. Re-save the " +
+                "target's offline-drop settings to provision one (and deliver it to " +
+                "the target operator out-of-band), then re-deploy.", ct).ConfigureAwait(false);
+            return;
+        }
+        var bundleKey = Convert.FromBase64String(encryption.Decrypt(bundleKeyEnc));
+
+        // Build the SAME plan the online path dispatches (snapshot-resolved,
+        // Octostache-substituted, flattened, per-step deltas) so the offline
+        // runner executes it through the identical DeploymentExecutor.
+        var snapshotSteps = deployment.Release.ProcessSnapshot
+            .OrderBy(s => s.SortOrder)
+            .ToArray();
+        var ctx = await BuildTargetDispatchContextAsync(
+            deployment, deployment.Target, snapshotSteps, variableService,
+            serverBaseUrl, dbFactory, ct).ConfigureAwait(false);
+
+        // Required ForEach that couldn't resolve its collection aborts here,
+        // mirroring the online gate.
+        foreach (var w in ctx.Flatten.Warnings)
+        {
+            if (w.Kind == DeploymentPlanFlattener.WarningKind.ForEachUnresolved && w.Source.Required)
+            {
+                await FailAsync(db, deployment,
+                    $"Required ForEach step '{w.Source.Name}' could not resolve its " +
+                    $"collection: {w.Detail}", ct).ConfigureAwait(false);
+                return;
+            }
+        }
+
+        var plan = ctx.Plan;
+
+        // Server-orchestrated step types can't run on an air-gapped box (no
+        // server to drive the cascade / approval). Refuse rather than ship a
+        // bundle that fails mid-run.
+        var onlineOnly = plan.Steps
+            .Where(s => s.StepType is "Octopus.DeployRelease" or "Octopus.Manual")
+            .Select(s => s.Name)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (onlineOnly.Count > 0)
+        {
+            await FailAsync(db, deployment,
+                "Offline drop cannot run server-orchestrated steps: " +
+                $"{string.Join(", ", onlineOnly)}. Remove them from the process or " +
+                "deploy this project to an online target.", ct).ConfigureAwait(false);
+            return;
+        }
+
+        // Runner embedding (PerformanceSettings.EmbedOfflineRunner, default true,
+        // editable on /configuration/performance): embed the self-contained
+        // runner published for the target's RID under
+        // {dataPath}/offline-runner/{rid}/ so the bundle needs no .NET on the
+        // target (~110 MB/bundle). When off, bundles stay small (data only) and
+        // the bootstrap falls back to a KrakenDeploy.Agent on PATH. An absent
+        // staged runner degrades gracefully regardless.
+        var perfSettings = await sp.GetRequiredService<PerformanceSettingsService>()
+            .GetAsync(ct).ConfigureAwait(false);
+        string? runnerStageDir = null;
+        if (perfSettings.EmbedOfflineRunner)
+        {
+            var rid = (deployment.Target.OperatingSystem ?? "")
+                .Contains("windows", StringComparison.OrdinalIgnoreCase)
+                    ? "win-x64" : "linux-x64";
+            runnerStageDir = Path.Combine(dataPath, "offline-runner", rid);
         }
 
         var bundlePath = await dropBundleService
-            .GenerateAsync(deployment, flatVars, dataPath, ct)
+            .GenerateAsync(deployment, plan, bundleKey,
+                stepPackages.TryGetArchivePath, dataPath, runnerStageDir, ct: ct)
             .ConfigureAwait(false);
 
         deployment.DropBundlePath = bundlePath;
@@ -774,11 +840,54 @@ public sealed class DeploymentWorker(
         IReadOnlyDictionary<string, string> flatVars,
         CancellationToken ct)
     {
+        // Overlay this step's per-step variable delta (step/action scope) onto
+        // the deployment-wide vars — the server-side counterpart of the agent's
+        // ApplyStepVariables. No-op when the step carries no delta.
+        var effectiveVars = OverlayStepVariables(flatVars, step);
         if (step.StepType.Equals(DeployReleaseStepRunner.StepType, StringComparison.OrdinalIgnoreCase))
         {
-            return deployReleaseRunner.ExecuteAsync(deploymentId, step, flatVars, ct);
+            return deployReleaseRunner.ExecuteAsync(deploymentId, step, effectiveVars, ct);
         }
-        return serverRunner.ExecuteAsync(deploymentId, step, flatVars, ct);
+        return serverRunner.ExecuteAsync(deploymentId, step, effectiveVars, ct);
+    }
+
+    private static IReadOnlyDictionary<string, string> OverlayStepVariables(
+        IReadOnlyDictionary<string, string> baseVars, DeploymentStepPlan step)
+    {
+        if (step.StepVariables is not { Count: > 0 } delta)
+        {
+            return baseVars;
+        }
+
+        var merged = new Dictionary<string, string>(baseVars, StringComparer.OrdinalIgnoreCase);
+        foreach (var (k, v) in delta)
+        {
+            // Server-side flatVars hold StringArrays as their comma-joined form,
+            // so split the delta's raw JSON the same way for consistency.
+            if (v.StartsWith('[') && TryParseStringArray(v, out var items))
+            {
+                merged[k] = string.Join(", ", items);
+            }
+            else
+            {
+                merged[k] = v;
+            }
+        }
+        return merged;
+    }
+
+    private static bool TryParseStringArray(string value, out string[] items)
+    {
+        try
+        {
+            items = JsonSerializer.Deserialize<string[]>(value) ?? [];
+            return true;
+        }
+        catch (JsonException)
+        {
+            items = [];
+            return false;
+        }
     }
 
     /// <summary>
@@ -829,24 +938,21 @@ public sealed class DeploymentWorker(
     // ── M14.2 + M14.3 helpers ────────────────────────────────────────────
 
     /// <summary>
-    /// Wraps <see cref="RunServerStepWithTimeoutAsync"/> with the M14.3
-    /// retry loop for server-side steps. Target-side groups have their
-    /// own equivalent retry loop inline in <c>DispatchAsync</c> because
-    /// the sub-plan dispatch lifecycle (TCS + subPlans.Register + linked
-    /// CTS) doesn't factor cleanly into a generic wrapper without
-    /// adding more parameters than the readability gain justifies.
+    /// Runs a server-side step through the shared <see cref="StepRetryRunner"/>
+    /// (KrakenDeploy.Execution) — the same retry loop + per-attempt timeout the
+    /// offline agent runner uses — and keeps the server's own side-effects via
+    /// the runner's callbacks: a <c>Deployment.StepRetried</c> audit + retry
+    /// marker log before each delay, and a "succeeded on attempt N" log on a
+    /// late success. Target-side groups have their own equivalent retry loop
+    /// inline in <c>DispatchAsync</c> because the sub-plan dispatch lifecycle
+    /// (TCS + subPlans.Register + linked CTS) doesn't factor cleanly here.
     ///
     /// <para>
-    /// On each non-final attempt failure, logs a retry marker + emits
-    /// <c>Deployment.StepRetried</c> audit + sleeps
-    /// <see cref="StepSnapshot.RetryDelaySeconds"/> before the next try.
-    /// Returns <c>(ok, timedOut)</c> reflecting the FINAL attempt only —
-    /// the retry detail lives in the deployment-log entries + audit rows.
-    /// </para>
-    ///
-    /// <para>
-    /// <c>MaxRetries = 0</c> (default) makes this a single-attempt call,
-    /// equivalent to <see cref="RunServerStepWithTimeoutAsync"/> directly.
+    /// Returns <c>(ok, timedOut)</c> reflecting the FINAL attempt only — the
+    /// retry detail lives in the deployment-log entries + audit rows. A
+    /// per-step timeout is surfaced via the runner's <c>TimedOut</c> and the
+    /// caller (<c>RunServerWaveAsync</c>) emits the timeout log + audit once.
+    /// <c>MaxRetries = 0</c> (default) makes this a single attempt.
     /// </para>
     ///
     /// <para>
@@ -872,138 +978,84 @@ public sealed class DeploymentWorker(
             DeploymentStepPlan step,
             StepSnapshot snapshot,
             Deployment deployment,
-            KrakenDbContext db,
             IAuditLog audit,
             LogSequencer logSeq,
             IReadOnlyDictionary<string, string> flatVars,
             CancellationToken ct)
     {
-        var maxAttempts = snapshot.MaxRetries < 0 ? 0 : snapshot.MaxRetries;
-        var delaySeconds = snapshot.RetryDelaySeconds < 0 ? 0 : snapshot.RetryDelaySeconds;
         // M14.5 — capture start time at first attempt so the outcome row
         // carries an accurate StartedUtc the Steps tab can show duration from.
         var startedUtc = DateTimeOffset.UtcNow;
 
-        var attempt = 0;
-        while (true)
-        {
-            var (ok, timedOut) = await RunServerStepWithTimeoutAsync(
-                deploymentId, step, snapshot, flatVars, ct).ConfigureAwait(false);
-
-            if (ok)
+        var outcome = await StepRetryRunner.RunAsync(
+            snapshot.Name,
+            snapshot.MaxRetries,
+            snapshot.RetryDelaySeconds,
+            snapshot.TimeoutSeconds,
+            runAttempt: (CancellationToken attemptCt) =>
+                ExecuteServerStepAsync(deploymentId, step, flatVars, attemptCt),
+            isSuccess: ok => ok,
+            onTimeoutResult: () => false,
+            // Server surfaces the per-step timeout ONCE via the final TimedOut
+            // (RunServerWaveAsync logs + audits it), not per timed-out attempt.
+            onAttemptTimedOutAsync: null,
+            // Wave steps run in parallel; each writes its log line through its
+            // own short-lived context (AppendConcurrentLogAsync) so they never
+            // contend on the shared per-dispatch db. Audit already uses its own
+            // per-call context (AuditLogService).
+            onRetryAsync: async info =>
             {
-                if (attempt > 0)
-                {
-                    db.DeploymentLogEntries.Add(new DeploymentLogEntry
-                    {
-                        DeploymentId = deployment.Id,
-                        Sequence     = logSeq.Next(),
-                        Timestamp    = DateTimeOffset.UtcNow,
-                        Level        = "info",
-                        Message      = $"--- Step '{snapshot.Name}' succeeded on attempt " +
-                                       $"{(attempt + 1).ToString(CultureInfo.InvariantCulture)} ---",
-                    });
-                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
-                }
-                return (Ok: true, TimedOut: false, AttemptCount: attempt + 1, StartedUtc: startedUtc);
-            }
+                await AppendConcurrentLogAsync(
+                    deployment.Id, logSeq, "warning", info.Marker, ct).ConfigureAwait(false);
+                await audit.RecordAsync(
+                    AuditEventType.DeploymentStepRetried,
+                    subjectType: "Deployment",
+                    subjectId:   deployment.Id.ToString(),
+                    details:     $"Step={snapshot.Name}, " +
+                                 $"Attempt={info.Attempt.ToString(CultureInfo.InvariantCulture)}, " +
+                                 $"MaxRetries={info.MaxAttempts.ToString(CultureInfo.InvariantCulture)}, " +
+                                 $"RetryDelaySeconds={info.DelaySeconds.ToString(CultureInfo.InvariantCulture)}",
+                    ct: ct).ConfigureAwait(false);
+            },
+            onLateSuccessAsync: attemptCount => AppendConcurrentLogAsync(
+                deployment.Id, logSeq, "info",
+                $"--- Step '{snapshot.Name}' succeeded on attempt " +
+                $"{attemptCount.ToString(CultureInfo.InvariantCulture)} ---", ct),
+            ct).ConfigureAwait(false);
 
-            if (attempt >= maxAttempts)
-            {
-                // Final attempt failed — caller applies Required gate.
-                return (Ok: false, TimedOut: timedOut, AttemptCount: attempt + 1, StartedUtc: startedUtc);
-            }
-
-            // Non-final attempt failed — emit retry marker + audit + delay.
-            attempt++;
-            var msg = delaySeconds > 0
-                ? $"--- Step '{snapshot.Name}' attempt " +
-                  $"{attempt.ToString(CultureInfo.InvariantCulture)} failed; retrying in " +
-                  $"{delaySeconds.ToString(CultureInfo.InvariantCulture)}s " +
-                  $"(attempt {(attempt + 1).ToString(CultureInfo.InvariantCulture)} of " +
-                  $"{(maxAttempts + 1).ToString(CultureInfo.InvariantCulture)}) ---"
-                : $"--- Step '{snapshot.Name}' attempt " +
-                  $"{attempt.ToString(CultureInfo.InvariantCulture)} failed; retrying " +
-                  $"(attempt {(attempt + 1).ToString(CultureInfo.InvariantCulture)} of " +
-                  $"{(maxAttempts + 1).ToString(CultureInfo.InvariantCulture)}) ---";
-            db.DeploymentLogEntries.Add(new DeploymentLogEntry
-            {
-                DeploymentId = deployment.Id,
-                Sequence     = logSeq.Next(),
-                Timestamp    = DateTimeOffset.UtcNow,
-                Level        = "warning",
-                Message      = msg,
-            });
-            await db.SaveChangesAsync(ct).ConfigureAwait(false);
-            await audit.RecordAsync(
-                AuditEventType.DeploymentStepRetried,
-                subjectType: "Deployment",
-                subjectId:   deployment.Id.ToString(),
-                details:     $"Step={snapshot.Name}, " +
-                             $"Attempt={attempt.ToString(CultureInfo.InvariantCulture)}, " +
-                             $"MaxRetries={maxAttempts.ToString(CultureInfo.InvariantCulture)}, " +
-                             $"RetryDelaySeconds={delaySeconds.ToString(CultureInfo.InvariantCulture)}",
-                ct: ct).ConfigureAwait(false);
-
-            if (delaySeconds > 0)
-            {
-                try
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds), ct).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    // Deployment cancelled during retry-delay sleep — bail
-                    // with the previous attempt's result rather than
-                    // re-entering the loop. The outer ct semantics handle
-                    // the cancellation reporting.
-                    throw;
-                }
-            }
-        }
+        return (Ok: outcome.Result, TimedOut: outcome.TimedOut,
+                AttemptCount: outcome.AttemptCount, StartedUtc: startedUtc);
     }
 
     /// <summary>
-    /// Wraps <see cref="ExecuteServerStepAsync"/> with a per-step timeout
-    /// from <see cref="StepSnapshot.TimeoutSeconds"/>. Returns
-    /// <c>(ok, timedOut)</c> so the caller can distinguish a runner-side
-    /// failure from a timeout-induced cancellation.
-    /// <para>
-    /// <c>TimeoutSeconds = 0</c> means unlimited — short-circuits without
-    /// allocating the linked CTS.
-    /// </para>
+    /// Appends one deployment-log entry through a SHORT-LIVED context from the
+    /// factory instead of the shared per-dispatch <c>db</c>. Wave steps and
+    /// rolling-deployment targets run in parallel and would otherwise contend on
+    /// the single (non-thread-safe) <see cref="KrakenDbContext"/>; giving each
+    /// concurrent log write its own context removes that contention entirely —
+    /// no global lock — so the fan-out scales (DB concurrency is then bounded by
+    /// the connection pool, not serialised). <see cref="LogSequencer"/> is
+    /// independently locked, so sequence numbers stay monotonic across branches,
+    /// and <c>IAuditLog</c> already uses its own per-call context
+    /// (<c>AuditLogService</c>), so audit writes need no special handling.
+    /// Used only on the CONCURRENT paths; the sequential post-wave writes keep
+    /// using the shared <c>db</c>. Internal (not private) so a focused test can
+    /// drive it from genuinely-parallel tasks (the orchestrator's fake-agent
+    /// harness resolves dispatches synchronously and can't race it otherwise).
     /// </summary>
-    private async Task<(bool Ok, bool TimedOut)> RunServerStepWithTimeoutAsync(
-        Guid deploymentId,
-        DeploymentStepPlan step,
-        StepSnapshot snapshot,
-        IReadOnlyDictionary<string, string> flatVars,
-        CancellationToken ct)
+    internal async Task AppendConcurrentLogAsync(
+        Guid deploymentId, LogSequencer logSeq, string level, string message, CancellationToken ct)
     {
-        if (snapshot.TimeoutSeconds <= 0)
+        await using var logDb = await dbContextFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        logDb.DeploymentLogEntries.Add(new DeploymentLogEntry
         {
-            var ok = await ExecuteServerStepAsync(deploymentId, step, flatVars, ct)
-                .ConfigureAwait(false);
-            return (ok, false);
-        }
-
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        linkedCts.CancelAfter(TimeSpan.FromSeconds(snapshot.TimeoutSeconds));
-        try
-        {
-            var ok = await ExecuteServerStepAsync(
-                deploymentId, step, flatVars, linkedCts.Token).ConfigureAwait(false);
-            return (ok, false);
-        }
-        catch (OperationCanceledException)
-        {
-            // Distinguish per-step timeout from a deployment-level cancellation.
-            if (!ct.IsCancellationRequested && linkedCts.IsCancellationRequested)
-            {
-                return (Ok: false, TimedOut: true);
-            }
-            throw;
-        }
+            DeploymentId = deploymentId,
+            Sequence     = logSeq.Next(),
+            Timestamp    = DateTimeOffset.UtcNow,
+            Level        = level,
+            Message      = message,
+        });
+        await logDb.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 
     private static async Task LogAndAuditStepSkippedAsync(
@@ -1036,22 +1088,20 @@ public sealed class DeploymentWorker(
             ct: ct).ConfigureAwait(false);
     }
 
-    private static async Task LogAndAuditStepTimedOutAsync(
-        KrakenDbContext db, IAuditLog audit, LogSequencer logSeq,
+    // Instance (not static) + fresh-context log write: this is the one
+    // log/audit helper with a CONCURRENT caller (RunServerWaveAsync's parallel
+    // step tasks), so its log line goes through AppendConcurrentLogAsync rather
+    // than the shared db. The sequential target-wave caller is unaffected.
+    private async Task LogAndAuditStepTimedOutAsync(
+        IAuditLog audit, LogSequencer logSeq,
         Deployment deployment, StepSnapshot snapshot,
         CancellationToken ct)
     {
-        var msg = $"--- Step '{snapshot.Name}' timed out after " +
-                  $"{snapshot.TimeoutSeconds.ToString(CultureInfo.InvariantCulture)}s ---";
-        db.DeploymentLogEntries.Add(new DeploymentLogEntry
-        {
-            DeploymentId = deployment.Id,
-            Sequence     = logSeq.Next(),
-            Timestamp    = DateTimeOffset.UtcNow,
-            Level        = "error",
-            Message      = msg,
-        });
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await AppendConcurrentLogAsync(
+            deployment.Id, logSeq, "error",
+            $"--- Step '{snapshot.Name}' timed out after " +
+            $"{snapshot.TimeoutSeconds.ToString(CultureInfo.InvariantCulture)}s ---",
+            ct).ConfigureAwait(false);
         await audit.RecordAsync(
             AuditEventType.DeploymentStepTimedOut,
             subjectType: "Deployment",
@@ -1389,29 +1439,25 @@ public sealed class DeploymentWorker(
                 AttemptCount: 0, StartedUtc: null)).ToList();
         }
 
-        // Fire all surviving steps in parallel. Each Task wraps the M14.3
-        // retry helper, which writes its own retry-marker log lines + audit
-        // rows. We pass the SHARED db / logSeq into the retry helper —
-        // safe today because:
-        //   1. LogSequencer is internally locked (M14.3.1).
-        //   2. The DbContext writes happen sequentially inside each helper
-        //      call (each call awaits SaveChangesAsync before returning).
-        //   3. Task.WhenAll resolves after all siblings finish so the worker
-        //      doesn't issue new DbContext calls on the same instance from
-        //      a different thread.
-        // The third point matters: if a runner started a background save we
-        // didn't await, this would break. Today's runners are linear.
+        // Fire all surviving steps in parallel. Each Task wraps the M14.3 retry
+        // helper. Those per-step writes (retry markers, late-success, timeout)
+        // go through short-lived per-write contexts (AppendConcurrentLogAsync),
+        // NOT the shared per-dispatch db, so the steps run fully in parallel with
+        // no DbContext contention. Audit uses its own per-call context
+        // (AuditLogService). LogSequencer is independently locked, so sequence
+        // numbers stay monotonic. The post-wave outcome upserts below run after
+        // Task.WhenAll (sequentially) on the shared db.
         var stepTasks = toRun.Select(async s =>
         {
             var snap = snapshotSteps[s.Index];
             var (ok, timedOut, attemptCount, startedUtc) =
                 await RunServerStepWithRetriesAsync(
-                    deployment.Id, s, snap, deployment, db, auditLog,
+                    deployment.Id, s, snap, deployment, auditLog,
                     logSeq, flatVars, ct).ConfigureAwait(false);
             if (timedOut)
             {
                 await LogAndAuditStepTimedOutAsync(
-                    db, auditLog, logSeq, deployment, snap, ct).ConfigureAwait(false);
+                    auditLog, logSeq, deployment, snap, ct).ConfigureAwait(false);
             }
             return new ServerStepOutcome(
                 Step:         s,
@@ -1485,7 +1531,6 @@ public sealed class DeploymentWorker(
             Deployment deployment,
             Guid targetId,
             string connectionId,
-            KrakenDbContext db,
             IAuditLog auditLog,
             LogSequencer logSeq,
             CancellationToken ct)
@@ -1565,17 +1610,11 @@ public sealed class DeploymentWorker(
                 timedOut = false;
                 if (attempt > 0)
                 {
-                    db.DeploymentLogEntries.Add(new DeploymentLogEntry
-                    {
-                        DeploymentId = deployment.Id,
-                        Sequence     = logSeq.Next(),
-                        Timestamp    = DateTimeOffset.UtcNow,
-                        Level        = "info",
-                        Message      = $"--- Target wave [{waveNamesForAudit}] " +
-                                       $"succeeded on attempt " +
-                                       $"{(attempt + 1).ToString(CultureInfo.InvariantCulture)} ---",
-                    });
-                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                    await AppendConcurrentLogAsync(
+                        deployment.Id, logSeq, "info",
+                        $"--- Target wave [{waveNamesForAudit}] succeeded on attempt " +
+                        $"{(attempt + 1).ToString(CultureInfo.InvariantCulture)} ---",
+                        ct).ConfigureAwait(false);
                 }
                 break;
             }
@@ -1589,22 +1628,16 @@ public sealed class DeploymentWorker(
 
             // Non-final attempt failed — emit retry marker + audit + delay.
             attempt++;
-            db.DeploymentLogEntries.Add(new DeploymentLogEntry
-            {
-                DeploymentId = deployment.Id,
-                Sequence     = logSeq.Next(),
-                Timestamp    = DateTimeOffset.UtcNow,
-                Level        = "warning",
-                Message      =
-                    $"--- Target wave [{waveNamesForAudit}] attempt " +
-                    $"{attempt.ToString(CultureInfo.InvariantCulture)} failed; retrying " +
-                    $"(attempt {(attempt + 1).ToString(CultureInfo.InvariantCulture)} of " +
-                    $"{(waveMaxRetries + 1).ToString(CultureInfo.InvariantCulture)})" +
-                    (waveRetryDelaySeconds > 0
-                        ? $" in {waveRetryDelaySeconds.ToString(CultureInfo.InvariantCulture)}s ---"
-                        : " ---"),
-            });
-            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            await AppendConcurrentLogAsync(
+                deployment.Id, logSeq, "warning",
+                $"--- Target wave [{waveNamesForAudit}] attempt " +
+                $"{attempt.ToString(CultureInfo.InvariantCulture)} failed; retrying " +
+                $"(attempt {(attempt + 1).ToString(CultureInfo.InvariantCulture)} of " +
+                $"{(waveMaxRetries + 1).ToString(CultureInfo.InvariantCulture)})" +
+                (waveRetryDelaySeconds > 0
+                    ? $" in {waveRetryDelaySeconds.ToString(CultureInfo.InvariantCulture)}s ---"
+                    : " ---"),
+                ct).ConfigureAwait(false);
             await auditLog.RecordAsync(
                 AuditEventType.DeploymentStepRetried,
                 subjectType: "Deployment",
@@ -1823,13 +1856,22 @@ public sealed class DeploymentWorker(
         IDbContextFactory<KrakenDbContext> dbFactory,
         CancellationToken ct)
     {
-        var rawVars = await variableService.ResolveFromSnapshotAsync(
+        // Resolve deployment-wide variables + per-step deltas in one pass over
+        // the frozen snapshot. The per-step phase is skipped internally when no
+        // variable is step-scoped (the common case).
+        var stepIdsAndNames = snapshotSteps
+            .Select(s => (s.Id, s.Name))
+            .ToList();
+        var stepResolution = await variableService.ResolveFromSnapshotWithStepsAsync(
             deployment.Release.VariableSnapshot,
             deployment.EnvironmentId,
             target.Id,
             target.Roles,
             deployment.TenantId,
+            deployment.Release.ChannelId,
+            stepIdsAndNames,
             ct).ConfigureAwait(false);
+        var rawVars = stepResolution.DeploymentWide;
 
         var varDict = new VariableDictionary();
 
@@ -1865,11 +1907,11 @@ public sealed class DeploymentWorker(
                     flatVars[name] = joined;
                     varDict[name] = joined;
 
-                    for (var i = 0; i < items.Length; i++)
-                    {
-                        varDict[$"{name}[{i.ToString(CultureInfo.InvariantCulture)}]"] = items[i];
-                    }
-
+                    // #{name[i]} index keys are added in one pass after the loop
+                    // (VariableDictionaryExtensions.AddArrayIndexEntries) so the
+                    // online varDict and the offline runner's condition bag
+                    // generate identical keys — single source of truth for the
+                    // name[i] format.
                     continue;
                 }
                 catch (JsonException)
@@ -1881,6 +1923,12 @@ public sealed class DeploymentWorker(
             flatVars[name] = value;
             varDict[name] = value;
         }
+
+        // Expand every StringArray into #{name[i]} keys via the shared formatter
+        // — the same call the offline runner's condition bag uses, so an indexed
+        // Variable run-condition (e.g. #{Arr[0]}) makes identical Run/Skip
+        // decisions online and offline.
+        VariableDictionaryExtensions.AddArrayIndexEntries(varDict, arrayVars);
 
         var flatten = DeploymentPlanFlattener.Flatten(
             snapshotSteps, arrayVars, varDict);
@@ -1898,6 +1946,14 @@ public sealed class DeploymentWorker(
             if (referenced.Count > 0)
             {
                 steps[i] = steps[i] with { ReferencedPackages = referenced };
+            }
+
+            // Per-step variable scope: attach the step's delta (keyed by source
+            // snapshot Id) so the agent overlays it onto the deployment-wide vars.
+            if (stepResolution.PerStepDelta.Count > 0
+                && stepResolution.PerStepDelta.TryGetValue(snapshotByPlanIndex[i].Id, out var stepDelta))
+            {
+                steps[i] = steps[i] with { StepVariables = stepDelta };
             }
         }
 
@@ -2222,7 +2278,7 @@ public sealed class DeploymentWorker(
             var connectionId = registry.GetConnectionId(ctx.Target.Id)!;
             var (waveResult, waveTimedOut, perStepResults) = await DispatchTargetWaveAsync(
                 ctx.Plan, stepsToRun, ctx.SnapshotByPlanIndex, deployment,
-                ctx.Target.Id, connectionId, db, auditLog, logSeq, ct)
+                ctx.Target.Id, connectionId, auditLog, logSeq, ct)
                 .ConfigureAwait(false);
             return (ctx, stepsToRun, waveResult, waveTimedOut, perStepResults);
         }).ToArray();
@@ -2292,7 +2348,7 @@ public sealed class DeploymentWorker(
                 if (timeoutStep is not null)
                 {
                     await LogAndAuditStepTimedOutAsync(
-                        db, auditLog, logSeq, deployment, timeoutStep, ct).ConfigureAwait(false);
+                        auditLog, logSeq, deployment, timeoutStep, ct).ConfigureAwait(false);
                 }
             }
 

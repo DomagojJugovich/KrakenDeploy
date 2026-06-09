@@ -82,13 +82,19 @@ public sealed class RunbookRunWorker(
 
             // ── Resolve variables ────────────────────────────────────────────
             var targetRoles = run.Target?.Roles ?? [];
-            var rawVars = await variableService.ResolveAsync(
+            // Resolve deployment-wide variables + per-step deltas live (runbooks
+            // don't use a frozen release snapshot). channelId is null — runbooks
+            // aren't channel-scoped.
+            var stepResolution = await variableService.ResolveWithStepsAsync(
                 run.Runbook.ProjectId,
                 run.EnvironmentId,
                 run.TargetId,
                 targetRoles,
                 run.TenantId,
-                ct).ConfigureAwait(false);
+                channelId: null,
+                steps: run.ProcessSnapshot.Select(s => (s.Id, s.Name)).ToList(),
+                ct: ct).ConfigureAwait(false);
+            var rawVars = stepResolution.DeploymentWide;
 
             // ── Build Octostache dictionary ───────────────────────────────────
             var varDict = new VariableDictionary();
@@ -172,11 +178,27 @@ public sealed class RunbookRunWorker(
                 }
             }
 
+            // Attach per-step variable deltas (step/action scope), keyed by source
+            // snapshot Id — the agent overlays them per step, same as the
+            // deployment path.
+            var steps = flatten.Plans;
+            if (stepResolution.PerStepDelta.Count > 0)
+            {
+                for (var i = 0; i < steps.Length; i++)
+                {
+                    if (stepResolution.PerStepDelta.TryGetValue(
+                            flatten.SnapshotByPlanIndex[i].Id, out var stepDelta))
+                    {
+                        steps[i] = steps[i] with { StepVariables = stepDelta };
+                    }
+                }
+            }
+
             // The plan uses RunbookRun.Id as DeploymentId — AgentHub resolves both tables.
             var plan = new DeploymentPlan(
                 DeploymentId: run.Id,
                 EnvironmentName: run.Environment.Name,
-                Steps: flatten.Plans,
+                Steps: steps,
                 Variables: flatVars,
                 ArrayVariables: arrayVars);
 

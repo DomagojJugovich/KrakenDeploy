@@ -1,16 +1,20 @@
 @using KrakenDeploy.Server.Core.Domain.Variables
 @using KrakenDeploy.Server.Core.Domain.Environments
 @using KrakenDeploy.Server.Core.Domain.Tenants
+@using KrakenDeploy.Server.Core.Domain.Channels
 @inject DialogService Dialog
 @inject VariableService VariableSvc
 @inject EnvironmentService EnvironmentSvc
 @inject TenantService TenantSvc
+@inject ChannelService ChannelSvc
+@inject ProcessService ProcessSvc
 
 @*
-    Add / edit a variable in a project's VariableSet.
+    Add / edit a variable in a project's VariableSet or a library VariableSet.
 
-    To add: pass ProjectId; leave Variable null.
-    To edit: pass Variable; ProjectId may also be passed (but isn't used).
+    To add to a project: pass ProjectId; leave Variable null.
+    To add to a library set: pass SetId; leave Variable null.
+    To edit: pass Variable; ProjectId / SetId may also be passed (but aren't used).
 
     Sensitive values are NEVER decrypted to the form — when editing a
     Sensitive variable the user must re-type the value or leave it blank
@@ -100,6 +104,26 @@
                                             Style="width:100%" />
                         </div>
                     </RadzenStack>
+                    @if (ProjectId is not null && _channels.Count > 0)
+                    {
+                        <div>
+                            <RadzenLabel Text="Channel" />
+                            <RadzenDropDown TValue="Guid?" @bind-Value="_model.ChannelId"
+                                            Data="@_channels" TextProperty="Name"
+                                            ValueProperty="Id" AllowClear="true"
+                                            Placeholder="(any channel)"
+                                            Style="width:100%" />
+                        </div>
+                    }
+                    @if (ProjectId is not null && _steps.Count > 0)
+                    {
+                        <div>
+                            <RadzenLabel Text="Step" />
+                            <RadzenDropDown TValue="string" @bind-Value="_model.StepName"
+                                            Data="@_steps" AllowClear="true"
+                                            Placeholder="(any step)" Style="width:100%" />
+                        </div>
+                    }
                     <div>
                         <RadzenLabel Text="Target Roles" />
                         <RadzenTextBox @bind-Value="_model.RolesCsv" Style="width:100%"
@@ -130,6 +154,7 @@
 
 @code {
     [Parameter] public Guid? ProjectId { get; set; }
+    [Parameter] public Guid? SetId { get; set; }
     [Parameter] public Variable? Variable { get; set; }
 
     private readonly FormModel _model = new();
@@ -138,6 +163,8 @@
 
     private List<DeploymentEnvironment> _environments = [];
     private List<Tenant> _tenants = [];
+    private List<Channel> _channels = [];
+    private List<string> _steps = [];
 
     private record TypeOption(VariableType Value, string Label);
     private readonly TypeOption[] _typeOptions =
@@ -151,6 +178,14 @@
     {
         _environments = await EnvironmentSvc.GetAllOrderedAsync();
         _tenants = await TenantSvc.GetAllAsync();
+
+        // Channels are project-specific, so only offer them for project variables.
+        if (ProjectId is { } pid)
+        {
+            _channels = await ChannelSvc.GetForProjectAsync(pid);
+            var process = await ProcessSvc.GetAsync(pid);
+            _steps = process?.Steps.Select(s => s.Name).ToList() ?? [];
+        }
     }
 
     protected override void OnParametersSet()
@@ -173,6 +208,10 @@
             }
             _model.EnvironmentId = Variable.Scope.EnvironmentId;
             _model.TenantId = Variable.Scope.TenantId;
+            // Carried even when the picker is hidden, so a non-project edit
+            // preserves any existing channel/step scope instead of wiping it.
+            _model.ChannelId = Variable.Scope.ChannelId;
+            _model.StepName = Variable.Scope.StepName;
             _model.RolesCsv = Variable.Scope.Roles is { Count: > 0 } r
                 ? string.Join(", ", r)
                 : "";
@@ -197,6 +236,8 @@
         {
             EnvironmentId = _model.EnvironmentId,
             TenantId = _model.TenantId,
+            ChannelId = _model.ChannelId,
+            StepName = _model.StepName,
             Roles = roles.Count > 0 ? roles : null,
         };
 
@@ -214,15 +255,20 @@
                 await VariableSvc.UpdateVariableAsync(
                     Variable!.Id, _model.Name, valueToSend, _model.Type, scope);
             }
+            else if (SetId is { } setId)
+            {
+                await VariableSvc.CreateVariableInSetAsync(
+                    setId, _model.Name, _model.Value ?? "", _model.Type, scope);
+            }
+            else if (ProjectId is { } projectId)
+            {
+                await VariableSvc.CreateVariableAsync(
+                    projectId, _model.Name, _model.Value ?? "", _model.Type, scope);
+            }
             else
             {
-                if (ProjectId is null)
-                {
-                    _errorMessage = "Missing ProjectId — cannot create a variable.";
-                    return;
-                }
-                await VariableSvc.CreateVariableAsync(
-                    ProjectId.Value, _model.Name, _model.Value ?? "", _model.Type, scope);
+                _errorMessage = "Missing target set — cannot create a variable.";
+                return;
             }
 
             Dialog.Close(true);
@@ -254,6 +300,8 @@
         public bool KeepSensitiveValue { get; set; }
         public Guid? EnvironmentId { get; set; }
         public Guid? TenantId { get; set; }
+        public Guid? ChannelId { get; set; }
+        public string? StepName { get; set; }
         public string RolesCsv { get; set; } = "";
     }
 }

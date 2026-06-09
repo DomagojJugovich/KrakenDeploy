@@ -21,10 +21,20 @@
   <ItemGroup>
     <ProjectReference Include="..\KrakenDeploy.Agent.Transport\KrakenDeploy.Agent.Transport.csproj" />
     <ProjectReference Include="..\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
+    <!-- Shared transport-agnostic per-step orchestration decisions
+         (StepConditionEvaluator + StepRetryRunner). Lets the offline
+         runner apply identical run-condition / retry / timeout semantics
+         to the online server path without referencing Server.Core /
+         Server.Transport. -->
+    <ProjectReference Include="..\KrakenDeploy.Execution\KrakenDeploy.Execution.csproj" />
     <!-- M11.E.7 — AdhocScriptExecutor reuses ScriptRunner directly (rather
          than going through the step-package loader) because ad-hoc actions
          don't have a step package and the executor needs the raw process
          exit code in its per-target result. -->
     <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.Common\KrakenDeploy.Steps.Common.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="KrakenDeploy.Agent.Tests" />
   </ItemGroup>
 </Project>

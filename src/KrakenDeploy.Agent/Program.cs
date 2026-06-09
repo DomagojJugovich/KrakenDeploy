@@ -35,6 +35,17 @@ finally
 
 static async Task<int> RunAsync(string[] args)
 {
+    // ── Offline drop runner mode ─────────────────────────────────────────────
+    // `KrakenDeploy.Agent --run-offline-drop <bundleDir> [--key <b64> | --key-file <path>]`
+    // Executes a single bundle locally (no registration / hub) through the same
+    // DeploymentExecutor, then exits. The per-target bundle key is delivered
+    // out-of-band; read it from an inline arg, a file, or KRAKEN_BUNDLE_KEY.
+    var offlineIdx = Array.IndexOf(args, "--run-offline-drop");
+    if (offlineIdx >= 0)
+    {
+        return await RunOfflineDropAsync(args, offlineIdx);
+    }
+
     var builder = Host.CreateApplicationBuilder(args);
 
     // ── Options ─────────────────────────────────────────────────────────
@@ -100,8 +111,31 @@ static async Task<int> RunAsync(string[] args)
         return new LocalPackageCache(cacheRoot);
     });
 
-    builder.Services.AddSingleton<GrpcPackageDownloader>();
-    builder.Services.AddSingleton<GrpcArtifactUploader>();
+    // Online package/artifact ports. Like GrpcStepPackageDownloader, they
+    // close over AgentContext via accessor delegates so they resolve the
+    // server URL + token at call time (after registration completes). The
+    // executor depends on the IPackageSource / IArtifactSink ports so the
+    // offline runner can swap in bundle-backed implementations.
+    builder.Services.AddSingleton<GrpcPackageDownloader>(sp =>
+    {
+        var ctx = sp.GetRequiredService<AgentContext>();
+        return new GrpcPackageDownloader(
+            sp.GetRequiredService<IPackageCache>(),
+            () => ctx.Identity?.ServerUrl  ?? throw new InvalidOperationException("Agent identity not yet ready."),
+            () => ctx.Identity?.AgentToken ?? throw new InvalidOperationException("Agent identity not yet ready."),
+            sp.GetRequiredService<ILogger<GrpcPackageDownloader>>());
+    });
+    builder.Services.AddSingleton<IPackageSource>(sp => sp.GetRequiredService<GrpcPackageDownloader>());
+
+    builder.Services.AddSingleton<GrpcArtifactUploader>(sp =>
+    {
+        var ctx = sp.GetRequiredService<AgentContext>();
+        return new GrpcArtifactUploader(
+            () => ctx.Identity?.ServerUrl  ?? throw new InvalidOperationException("Agent identity not yet ready."),
+            () => ctx.Identity?.AgentToken ?? throw new InvalidOperationException("Agent identity not yet ready."),
+            sp.GetRequiredService<ILogger<GrpcArtifactUploader>>());
+    });
+    builder.Services.AddSingleton<IArtifactSink>(sp => sp.GetRequiredService<GrpcArtifactUploader>());
 
     // ── Step-package loader + gRPC source (Phase D-4 / D-5) ──────────────
     // The downloader is a singleton: it closes over AgentContext via
@@ -162,4 +196,59 @@ static async Task<int> RunAsync(string[] args)
     var host = builder.Build();
     await host.RunAsync();
     return 0;
+}
+
+static async Task<int> RunOfflineDropAsync(string[] args, int flagIndex)
+{
+    if (flagIndex + 1 >= args.Length)
+    {
+        Log.Fatal("--run-offline-drop requires a bundle directory path.");
+        return 2;
+    }
+    var bundleDir = args[flagIndex + 1];
+
+    // Precedence: --key, then --key-file, then KRAKEN_BUNDLE_KEY. A --key-file
+    // that was passed but doesn't exist is an explicit error — don't silently
+    // fall through to the env var (which would mask the typo as 'wrong key').
+    var keyFile = GetArgValue(args, "--key-file");
+    var keyB64 = GetArgValue(args, "--key");
+    if (keyB64 is null && keyFile is not null)
+    {
+        if (!File.Exists(keyFile))
+        {
+            Log.Fatal("--key-file '{Path}' does not exist.", keyFile);
+            return 2;
+        }
+        keyB64 = (await File.ReadAllTextAsync(keyFile)).Trim();
+    }
+    keyB64 ??= Environment.GetEnvironmentVariable("KRAKEN_BUNDLE_KEY");
+
+    if (string.IsNullOrWhiteSpace(keyB64))
+    {
+        Log.Fatal(
+            "No bundle key supplied. Pass --key <base64>, --key-file <path>, " +
+            "or set KRAKEN_BUNDLE_KEY.");
+        return 2;
+    }
+
+    byte[] key;
+    try
+    {
+        key = Convert.FromBase64String(keyB64.Trim());
+    }
+    catch (FormatException)
+    {
+        Log.Fatal("Bundle key is not valid base64.");
+        return 2;
+    }
+
+    using var loggerFactory = LoggerFactory.Create(lb => lb.AddSerilog());
+    var runner = new KrakenDeploy.Agent.Offline.OfflineRunner(loggerFactory);
+    return await runner.RunAsync(bundleDir, key, CancellationToken.None);
+}
+
+static string? GetArgValue(string[] args, string name)
+{
+    var i = Array.IndexOf(args, name);
+    return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
 }

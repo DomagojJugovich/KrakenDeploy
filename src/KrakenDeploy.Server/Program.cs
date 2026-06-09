@@ -269,6 +269,10 @@ public static class Program
         // Streaming CSV / JSON export of audit_entries (M13.A.1). Scoped
         // because each export opens its own DbContext.
         builder.Services.AddScoped<AuditExportService>();
+        // Global Tasks page aggregator — composes deployments + runbook runs
+        // (Space-scoped DB) with Hangfire system jobs (instance-wide). Scoped
+        // to compose the scoped Deployment/Runbook services directly.
+        builder.Services.AddScoped<ServerTasksService>();
         builder.Services.AddHostedService<DeploymentWorker>();
         builder.Services.AddHostedService<RunbookRunWorker>();
         builder.Services.AddSingleton<ServerScriptStepRunner>();
@@ -809,7 +813,7 @@ public static class Program
                 var variables = await variableSvc
                     .ResolveAsync(release.ProjectId, deployment.EnvironmentId,
                         deployment.TargetId!.Value, target?.Roles ?? [],
-                        deployment.TenantId, ct)
+                        deployment.TenantId, release.ChannelId, ct: ct)
                     .ConfigureAwait(false);
 
                 // Split resolved variables into scalar and array.
@@ -1359,6 +1363,8 @@ public static class Program
                     EnvironmentId = req.ScopeEnvironmentId,
                     TargetId = req.ScopeTargetId,
                     Roles = req.ScopeRoles,
+                    ChannelId = req.ScopeChannelId,
+                    StepName = req.ScopeStepName,
                 };
 
                 try
@@ -1395,6 +1401,8 @@ public static class Program
                     EnvironmentId = req.ScopeEnvironmentId,
                     TargetId = req.ScopeTargetId,
                     Roles = req.ScopeRoles,
+                    ChannelId = req.ScopeChannelId,
+                    StepName = req.ScopeStepName,
                 };
 
                 var variable = await variableSvc
@@ -1835,7 +1843,7 @@ public static class Program
         // ── Deployment API ───────────────────────────────────────────────────
         app.MapGet("/api/deployments",
             async (Guid? projectId, DeploymentService deploymentSvc, CancellationToken ct) =>
-                Results.Ok(await deploymentSvc.GetAllAsync(projectId, ct).ConfigureAwait(false))
+                Results.Ok(await deploymentSvc.GetAllAsync(projectId, ct: ct).ConfigureAwait(false))
         ).RequirePermission(Permission.DeploymentView);
 
         app.MapGet("/api/deployments/{id:guid}",
@@ -2021,6 +2029,7 @@ public static class Program
         app.MapPost("/api/targets/{id:guid}/generate-hmac-key",
             async (Guid id, TargetService targetSvc,
                 KrakenDeploy.Server.Core.Domain.Variables.IEncryptionService encryption,
+                IAuditLog audit,
                 CancellationToken ct) =>
             {
                 var target = await targetSvc.GetAsync(id, ct).ConfigureAwait(false);
@@ -2034,7 +2043,51 @@ public static class Program
                 cfg.HmacKeyEncrypted = encryption.Encrypt(Convert.ToBase64String(rawKey));
                 target.OfflineDropConfig = cfg;
                 await targetSvc.UpdateAsync(target, ct).ConfigureAwait(false);
+
+                // Rotation invalidates in-flight bundles — record who/when for forensics.
+                await audit.RecordAsync(
+                    AuditEventType.OfflineDropHmacKeyGenerated,
+                    subjectType: "DeploymentTarget",
+                    subjectId:   id.ToString(),
+                    subjectName: target.Name,
+                    details:     "Offline-drop HMAC signing key (re)generated.",
+                    ct:          ct).ConfigureAwait(false);
                 return Results.Ok(new { hmacKeyGenerated = true });
+            }).RequirePermission(Permission.MachineEdit);
+
+        app.MapPost("/api/targets/{id:guid}/generate-bundle-key",
+            async (Guid id, TargetService targetSvc,
+                KrakenDeploy.Server.Core.Domain.Variables.IEncryptionService encryption,
+                IAuditLog audit,
+                CancellationToken ct) =>
+            {
+                var target = await targetSvc.GetAsync(id, ct).ConfigureAwait(false);
+                if (target is null)
+                {
+                    return Results.NotFound();
+                }
+
+                var cfg = target.OfflineDropConfig ?? new KrakenDeploy.Server.Core.Domain.Targets.OfflineDropConfig();
+                var rawKey = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+                var base64Key = Convert.ToBase64String(rawKey);
+                cfg.BundleKeyEncrypted = encryption.Encrypt(base64Key);
+                target.OfflineDropConfig = cfg;
+                await targetSvc.UpdateAsync(target, ct).ConfigureAwait(false);
+
+                // The raw key is disclosed once; rotation makes existing bundles
+                // undecryptable — record the disclosure/rotation for forensics.
+                await audit.RecordAsync(
+                    AuditEventType.OfflineDropBundleKeyGenerated,
+                    subjectType: "DeploymentTarget",
+                    subjectId:   id.ToString(),
+                    subjectName: target.Name,
+                    details:     "Offline-drop bundle encryption key (re)generated and disclosed once.",
+                    ct:          ct).ConfigureAwait(false);
+
+                // Returned ONCE so an operator can deliver it out-of-band to the
+                // offline target (the runner needs it to decrypt plan.enc). The
+                // server only ever persists the encrypted form.
+                return Results.Ok(new { bundleKey = base64Key });
             }).RequirePermission(Permission.MachineEdit);
 
         // ── Tenant API ─────────────────────────────────────────────────────────────

@@ -54,6 +54,7 @@ public class KrakenDbContext(
         => Set<DeploymentTargetAssignment>();
     public DbSet<VariableSet> VariableSets => Set<VariableSet>();
     public DbSet<Variable> Variables => Set<Variable>();
+    public DbSet<ProjectVariableSetLink> ProjectVariableSetLinks => Set<ProjectVariableSetLink>();
     public DbSet<StepTemplate> StepTemplates => Set<StepTemplate>();
     public DbSet<StepTemplateCatalogEntry> StepTemplateCatalog => Set<StepTemplateCatalogEntry>();
     public DbSet<StepPackage> StepPackages => Set<StepPackage>();

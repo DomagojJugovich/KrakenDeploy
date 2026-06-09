@@ -1,15 +1,130 @@
 @page "/projects/{Slug}/variable-sets"
+@rendermode InteractiveServer
 @attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.Variables
+@using KrakenDeploy.Server.Core.Domain.Projects
+@using KrakenDeploy.Server.Data.Services
+@inject ProjectService ProjectSvc
+@inject VariableService VariableSvc
+@inject NavigationManager Nav
+@inject NotificationService Notify
+@inject UiActionGuard Guard
 
 <ProjectShell Slug="@Slug">
-    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-3">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-2">
         Variable Sets
     </RadzenText>
-    <RadzenAlert AlertStyle="AlertStyle.Info" ShowIcon="true" AllowClose="false">
-        Library variable sets included in this project — pending.
-    </RadzenAlert>
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+        Library variable sets included in this project. Included sets overlay their
+        variables onto this project's own variables — sets lower in the list are
+        overlaid first, and this project's own variables always win on conflicts.
+        Manage the library at <RadzenLink Path="/variable-sets" Text="Variable Sets" />.
+    </RadzenText>
+
+    @if (!_loaded)
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading…</RadzenText>
+    }
+    else if (_project is null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+            Project '@Slug' was not found.
+        </RadzenAlert>
+    }
+    else
+    {
+        <RequirePermission Permission="Permission.ProjectEdit">
+            <RadzenCard class="rz-mb-4">
+                <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.End" Gap="0.75rem">
+                    <div style="flex:1;">
+                        <RadzenLabel Text="Add a library variable set" />
+                        <RadzenDropDown TValue="Guid?" @bind-Value="_selectedSetId"
+                                        Data="@_available" TextProperty="Name" ValueProperty="Id"
+                                        AllowClear="true" AllowFiltering="true"
+                                        Placeholder="@(_available.Count == 0 ? "No more sets available" : "Select a set…")"
+                                        Disabled="@(_available.Count == 0)"
+                                        Style="width:100%;" />
+                    </div>
+                    <RadzenButton Text="Include" Icon="add" ButtonStyle="ButtonStyle.Primary"
+                                  Disabled="@(_selectedSetId is null)" Click="@IncludeAsync" />
+                </RadzenStack>
+            </RadzenCard>
+        </RequirePermission>
+
+        <RadzenDataGrid Data="@_included" TItem="VariableSet"
+                        AllowPaging="false" AllowSorting="false" AllowColumnResize="true"
+                        EmptyText="No library variable sets included in this project.">
+            <Columns>
+                <RadzenDataGridColumn TItem="VariableSet" Title="Name">
+                    <Template Context="s">
+                        <RadzenLink Path="@($"/variable-sets/{s.Id}")" Text="@s.Name" />
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="VariableSet" Property="Description" Title="Description" />
+                <RadzenDataGridColumn TItem="VariableSet" Title="Variables" Width="100px">
+                    <Template Context="s">
+                        <RadzenBadge Text="@s.Variables.Count.ToString()" BadgeStyle="BadgeStyle.Info" />
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="VariableSet" Title="" Width="90px" TextAlign="TextAlign.Center">
+                    <Template Context="s">
+                        <RequirePermission Permission="Permission.ProjectEdit">
+                            <RadzenButton Icon="link_off" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                                          Variant="Variant.Text"
+                                          Click="@(async _ => await ExcludeAsync(s))"
+                                          title="Remove from project" />
+                        </RequirePermission>
+                    </Template>
+                </RadzenDataGridColumn>
+            </Columns>
+        </RadzenDataGrid>
+    }
 </ProjectShell>
 
 @code {
     [Parameter] public string Slug { get; set; } = "";
+
+    private Project? _project;
+    private bool _loaded;
+    private List<VariableSet> _included = [];
+    private List<VariableSet> _available = [];
+    private Guid? _selectedSetId;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _project = await ProjectSvc.GetBySlugAsync(Slug);
+        if (_project is not null)
+        {
+            await ReloadAsync();
+        }
+        _loaded = true;
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (_project is null) return;
+        _included = await VariableSvc.GetIncludedSetsAsync(_project.Id);
+        _available = await VariableSvc.GetAvailableLibrarySetsAsync(_project.Id);
+        _selectedSetId = null;
+    }
+
+    private async Task IncludeAsync()
+    {
+        if (_project is null || _selectedSetId is null) return;
+        if (!await Guard.AllowAsync(Permission.ProjectEdit)) return;
+
+        await VariableSvc.IncludeSetAsync(_project.Id, _selectedSetId.Value);
+        await ReloadAsync();
+        Notify.Notify(NotificationSeverity.Success, "Included", "Variable set added to project.", 3000);
+    }
+
+    private async Task ExcludeAsync(VariableSet set)
+    {
+        if (_project is null) return;
+        if (!await Guard.AllowAsync(Permission.ProjectEdit)) return;
+
+        await VariableSvc.ExcludeSetAsync(_project.Id, set.Id);
+        await ReloadAsync();
+        Notify.Notify(NotificationSeverity.Info, "Removed", $"'{set.Name}' removed from project.", 3000);
+    }
 }

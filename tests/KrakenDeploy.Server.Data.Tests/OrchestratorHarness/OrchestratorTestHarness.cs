@@ -121,6 +121,7 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             deployReleaseRunner:   _services.GetRequiredService<DeployReleaseStepRunner>(),
             subPlans:              _subPlans,
             scopeFactory:          _services.GetRequiredService<IServiceScopeFactory>(),
+            dbContextFactory:      _services.GetRequiredService<IDbContextFactory<KrakenDbContext>>(),
             // M11.C diagnosis channel — the harness doesn't run the diagnosis
             // worker, so FailAsync's writes just accumulate harmlessly on this
             // unbounded channel. DiagnosisChannel exposes the written ids for
@@ -281,6 +282,18 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
     /// <summary>Drives the orchestrator's dispatch path to terminal status.</summary>
     public Task RunDeploymentAsync(Guid deploymentId, CancellationToken ct = default)
         => _worker.DispatchForTestAsync(deploymentId, ct);
+
+    /// <summary>
+    /// Test seam: invokes the worker's concurrent log-append helper directly.
+    /// The fake agent resolves dispatches synchronously, so the orchestrator's
+    /// real parallel fan-out can't be raced through normal harness flow; this
+    /// lets a focused test drive <c>AppendConcurrentLogAsync</c> from genuinely
+    /// parallel tasks to prove it's safe under concurrent DbContext use.
+    /// </summary>
+    internal Task AppendConcurrentLogForTestAsync(
+        Guid deploymentId, LogSequencer logSeq, string level, string message,
+        CancellationToken ct = default)
+        => _worker.AppendConcurrentLogAsync(deploymentId, logSeq, level, message, ct);
 
     // ── Query helpers ───────────────────────────────────────────────────────
 

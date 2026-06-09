@@ -15,7 +15,9 @@ namespace KrakenDeploy.Agent.Transport;
 /// </para>
 /// </summary>
 public sealed class GrpcArtifactUploader(
-    ILogger<GrpcArtifactUploader> logger) : IAsyncDisposable
+    Func<string> serverUrlAccessor,
+    Func<string> agentTokenAccessor,
+    ILogger<GrpcArtifactUploader> logger) : IArtifactSink, IAsyncDisposable
 {
     private const int ChunkSize = 64 * 1024; // 64 KB
 
@@ -30,13 +32,13 @@ public sealed class GrpcArtifactUploader(
     /// should continue uploading other artifacts).
     /// </summary>
     public async Task<string?> UploadAsync(
-        string serverUrl,
-        string agentToken,
         Guid deploymentId,
         string stepName,
         string filePath,
         CancellationToken ct)
     {
+        var serverUrl   = serverUrlAccessor();
+        var agentToken  = agentTokenAccessor();
         var fileName    = Path.GetFileName(filePath);
         var contentType = ContentTypeFromFileName(fileName);
 

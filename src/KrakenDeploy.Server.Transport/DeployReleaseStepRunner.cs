@@ -1,4 +1,5 @@
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Execution;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Data;
@@ -7,7 +8,6 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Octostache;
 
 namespace KrakenDeploy.Server.Transport;
 
@@ -96,7 +96,7 @@ public sealed class DeployReleaseStepRunner(
             .ConfigureAwait(false);
 
         // Resolve config (Octostache-substituted).
-        var octostache = BuildOctostache(planVariables);
+        var octostache = planVariables.ToVariableDictionary();
         var rawProjectId  = step.Config.GetValueOrDefault(OctopusDeployReleaseConfigKeys.ProjectId);
         var projectIdRef  = string.IsNullOrWhiteSpace(rawProjectId) ? "" : octostache.Evaluate(rawProjectId);
         var conditionRaw  = step.Config.GetValueOrDefault(OctopusDeployReleaseConfigKeys.DeploymentCondition);
@@ -211,6 +211,13 @@ public sealed class DeployReleaseStepRunner(
                 additionalTargetIds: parentAdditionalTargetIds,
                 ct:                  ct).ConfigureAwait(false);
         }
+        catch (OperationCanceledException)
+        {
+            // Per-attempt timeout / deployment cancel during child creation —
+            // propagate so StepRetryRunner classifies it (TimedOut / cancel)
+            // rather than the generic catch reporting a child-creation failure.
+            throw;
+        }
         catch (Exception ex)
         {
             await AppendLogAsync(parentDeploymentId, "error",
@@ -245,8 +252,15 @@ public sealed class DeployReleaseStepRunner(
         Guid childId, Guid parentId, string stepName, CancellationToken ct)
     {
         var lastSequence = -1;
-        while (!ct.IsCancellationRequested)
+        // A per-attempt timeout (StepRetryRunner's linked CancelAfter) or a
+        // deployment-level cancel must SURFACE as an OperationCanceledException so
+        // StepRetryRunner can classify it (TimedOut / cancel). Returning false on a
+        // cancelled token — as the old `while (!ct.IsCancellationRequested)` guard and
+        // the Task.Delay catch did — mis-reported a per-step timeout as generic Failed.
+        while (true)
         {
+            ct.ThrowIfCancellationRequested();
+
             await using var scope = scopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
 
@@ -303,16 +317,11 @@ public sealed class DeployReleaseStepRunner(
                     break;
             }
 
-            try
-            {
-                await Task.Delay(PollInterval, ct).ConfigureAwait(false);
-            }
-            catch (TaskCanceledException)
-            {
-                return false;
-            }
+            // No catch here: a cancelled token (per-attempt timeout / deploy cancel)
+            // propagates the OCE to StepRetryRunner; only genuine terminal child
+            // states (handled in the switch above) return false.
+            await Task.Delay(PollInterval, ct).ConfigureAwait(false);
         }
-        return false;
     }
 
     private static async Task<KrakenDeploy.Server.Core.Domain.Projects.Project?> ResolveProjectAsync(
@@ -389,13 +398,6 @@ public sealed class DeployReleaseStepRunner(
         }
 
         return true;
-    }
-
-    private static VariableDictionary BuildOctostache(IReadOnlyDictionary<string, string> variables)
-    {
-        var dict = new VariableDictionary();
-        foreach (var (k, v) in variables) { dict.Set(k, v); }
-        return dict;
     }
 
     private async Task AppendLogAsync(

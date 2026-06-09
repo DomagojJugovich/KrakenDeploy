@@ -109,4 +109,19 @@ public class PerformanceSettings : AuditableEntity
     public int AiCallLogRetentionDays { get; set; } = DefaultAiCallLogRetentionDays;
 
     public const int DefaultAiCallLogRetentionDays = 90;
+
+    // ── Offline drop ──────────────────────────────────────────────────────
+
+    /// <summary>
+    /// When <c>true</c> (default), offline drop bundles embed the self-contained
+    /// runner for the target's RID — the target needs no .NET installed, at the
+    /// cost of ≈110 MB per bundle. When <c>false</c>, bundles carry data only and
+    /// the bootstrap uses a <c>KrakenDeploy.Agent</c> installed on the target's
+    /// PATH (suits fleets where the runner is installed once per machine). Read
+    /// at offline-drop generation time by <c>DeploymentWorker</c>; an absent
+    /// staged runner degrades gracefully either way.
+    /// </summary>
+    public bool EmbedOfflineRunner { get; set; } = DefaultEmbedOfflineRunner;
+
+    public const bool DefaultEmbedOfflineRunner = true;
 }

@@ -6,11 +6,14 @@
 @using KrakenDeploy.Server.Core.Domain.Environments
 @using KrakenDeploy.Server.Core.Domain.Tenants
 @using KrakenDeploy.Server.Core.Domain.Targets
+@using KrakenDeploy.Server.Core.Domain.Channels
 @inject ProjectService ProjectSvc
 @inject VariableService VariableSvc
 @inject EnvironmentService EnvironmentSvc
 @inject TenantService TenantSvc
 @inject TargetService TargetSvc
+@inject ChannelService ChannelSvc
+@inject ProcessService ProcessSvc
 @inject DialogService Dialog
 @inject ContextMenuService ContextMenu
 @inject NotificationService Notifications
@@ -244,6 +247,18 @@
                                                      BadgeStyle="BadgeStyle.Secondary"
                                                      IsPill="true" />
                                     }
+                                    @if (v.Scope.ChannelId is { } channelId)
+                                    {
+                                        <RadzenBadge Text="@($"channel: {ChannelName(channelId)}")"
+                                                     BadgeStyle="BadgeStyle.Warning"
+                                                     IsPill="true" />
+                                    }
+                                    @if (!string.IsNullOrEmpty(v.Scope.StepName))
+                                    {
+                                        <RadzenBadge Text="@($"step: {v.Scope.StepName}")"
+                                                     BadgeStyle="BadgeStyle.Primary"
+                                                     IsPill="true" />
+                                    }
                                     @if (v.Scope.Roles is { Count: > 0 })
                                     {
                                         @foreach (var r in v.Scope.Roles)
@@ -355,6 +370,21 @@
                                 Style="width: 100%;" />
             </div>
             <div>
+                <RadzenLabel Text="Channel" />
+                <RadzenDropDown TValue="Guid?" @bind-Value="_popChannelId"
+                                Data="@_channels" TextProperty="Name" ValueProperty="Id"
+                                AllowClear="true" AllowFiltering="true"
+                                Placeholder="(any channel)"
+                                Style="width: 100%;" />
+            </div>
+            <div>
+                <RadzenLabel Text="Step" />
+                <RadzenDropDown TValue="string" @bind-Value="_popStepName"
+                                Data="@_projectStepNames" AllowClear="true" AllowFiltering="true"
+                                Placeholder="(any step)"
+                                Style="width: 100%;" />
+            </div>
+            <div>
                 <RadzenLabel Text="Target Roles (comma-separated)" />
                 <RadzenTextBox @bind-Value="_popRolesCsv"
                                Placeholder="e.g. SERVER, TERMINAL"
@@ -396,6 +426,8 @@
     private List<DeploymentEnvironment> _environments = [];
     private List<Tenant> _tenants = [];
     private List<DeploymentTarget> _targets = [];
+    private List<Channel> _channels = [];
+    private List<string> _projectStepNames = [];
     private Dictionary<Guid, string> _envNames = [];
     private Dictionary<Guid, string> _tenantNames = [];
     private Dictionary<Guid, string> _targetNames = [];
@@ -432,6 +464,8 @@
     private IEnumerable<Guid> _popEnvIds = Array.Empty<Guid>();
     private IEnumerable<Guid> _popTenantIds = Array.Empty<Guid>();
     private IEnumerable<Guid> _popTargetIds = Array.Empty<Guid>();
+    private Guid? _popChannelId;
+    private string? _popStepName;
     private string _popRolesCsv = "";
 
     // ── Array-as-list editor state ─────────────────────────────────────────
@@ -456,6 +490,11 @@
 
             _targets = await TargetSvc.GetAllAsync();
             _targetNames = _targets.ToDictionary(t => t.Id, t => t.Name);
+
+            _channels = await ChannelSvc.GetForProjectAsync(_project.Id);
+
+            var process = await ProcessSvc.GetAsync(_project.Id);
+            _projectStepNames = process?.Steps.Select(s => s.Name).ToList() ?? [];
 
             await ReloadAsync();
         }
@@ -488,6 +527,8 @@
         _tenantNames.TryGetValue(id, out var n) ? n : "?";
     private string TargetName(Guid id) =>
         _targetNames.TryGetValue(id, out var n) ? n : "?";
+    private string ChannelName(Guid id) =>
+        _channels.FirstOrDefault(c => c.Id == id)?.Name ?? "?";
     private static int CountOf(IEnumerable<Guid>? e) => e?.Count() ?? 0;
 
     // ── Grid edit lifecycle ────────────────────────────────────────────────
@@ -586,6 +627,8 @@
         if (_newScope.EnvironmentId is { } e) parts.Add($"env: {EnvName(e)}");
         if (_newScope.TenantId is { } t) parts.Add($"tenant: {TenantName(t)}");
         if (_newScope.TargetId is { } tg) parts.Add($"target: {TargetName(tg)}");
+        if (_newScope.ChannelId is { } c) parts.Add($"channel: {ChannelName(c)}");
+        if (!string.IsNullOrEmpty(_newScope.StepName)) parts.Add($"step: {_newScope.StepName}");
         if (_newScope.Roles is { Count: > 0 } r) parts.Add($"roles: {string.Join(",", r)}");
         return string.Join(" • ", parts);
     }
@@ -693,6 +736,8 @@
         _popTenantIds = s.TenantId.HasValue      ? new[] { s.TenantId.Value }      : [];
         _popTargetIds = s.TargetId.HasValue      ? new[] { s.TargetId.Value }      : [];
         _popRolesCsv  = s.Roles is { Count: > 0 } r ? string.Join(", ", r) : "";
+        _popChannelId = s.ChannelId;
+        _popStepName = s.StepName;
     }
 
     private async Task SaveScopeAsync()
@@ -718,6 +763,8 @@
                     EnvironmentId = envIds.Count > 0 ? envIds[0] : null,
                     TenantId      = tenantIds.Count > 0 ? tenantIds[0] : null,
                     TargetId      = targetIds.Count > 0 ? targetIds[0] : null,
+                    ChannelId     = _popChannelId,
+                    StepName      = _popStepName,
                     Roles         = roles.Count > 0 ? roles : null,
                 };
                 ClosePopup();
@@ -748,6 +795,8 @@
                             EnvironmentId = e,
                             TenantId      = t,
                             TargetId      = tg,
+                            ChannelId     = _popChannelId,
+                            StepName      = _popStepName,
                             Roles         = roles.Count > 0 ? [..roles] : null,
                         };
                         await VariableSvc.CreateVariableAsync(
@@ -776,6 +825,8 @@
                 EnvironmentId = envIds.Count > 0 ? envIds[0] : null,
                 TenantId      = tenantIds.Count > 0 ? tenantIds[0] : null,
                 TargetId      = targetIds.Count > 0 ? targetIds[0] : null,
+                ChannelId     = _popChannelId,
+                StepName      = _popStepName,
                 Roles         = roles.Count > 0 ? roles : null,
             };
             await VariableSvc.UpdateVariableAsync(
@@ -803,6 +854,8 @@
                             EnvironmentId = e,
                             TenantId      = t,
                             TargetId      = tg,
+                            ChannelId     = _popChannelId,
+                            StepName      = _popStepName,
                             Roles         = roles.Count > 0 ? [..roles] : null,
                         };
                         await VariableSvc.CreateVariableAsync(
@@ -826,6 +879,7 @@
                 new Dictionary<string, object?>
                 {
                     [nameof(VariableFormDialog.Variable)] = _popupEditingVar,
+                    [nameof(VariableFormDialog.ProjectId)] = _project?.Id,
                 },
                 new DialogOptions { Width = "640px" });
             await ReloadAsync();

@@ -21,6 +21,14 @@ public static class AuditEventType
     public const string PermissionDenied  = "Security.PermissionDenied";
     public const string ApiKeyUsed        = "Security.ApiKeyUsed";
 
+    /// <summary>An offline-drop target's per-target HMAC signing key was
+    /// (re)generated. Rotation invalidates in-flight bundles. Details: target id.</summary>
+    public const string OfflineDropHmacKeyGenerated   = "OfflineDrop.HmacKeyGenerated";
+    /// <summary>An offline-drop target's per-target AES bundle key was
+    /// (re)generated and the raw key disclosed once to the caller. Rotation
+    /// makes existing bundles undecryptable. Details: target id.</summary>
+    public const string OfflineDropBundleKeyGenerated = "OfflineDrop.BundleKeyGenerated";
+
     // ── Deployment lifecycle (non-entity events) ──────────────────────────────
     public const string DeploymentStarted   = "Deployment.Started";
     public const string DeploymentSucceeded = "Deployment.Succeeded";

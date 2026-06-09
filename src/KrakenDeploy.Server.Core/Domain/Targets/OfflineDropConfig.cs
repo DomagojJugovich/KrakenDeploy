@@ -17,6 +17,17 @@ public class OfflineDropConfig
     /// </summary>
     public string? HmacKeyEncrypted { get; set; }
 
+    /// <summary>
+    /// Base64-encoded 32-byte AES-256-GCM key, encrypted with the server's master
+    /// key. Encrypts the serialized <c>DeploymentPlan</c> (<c>plan.enc</c>) in the
+    /// offline drop bundle. Provisioned once when the target is configured as
+    /// offline-drop and delivered to the target operator out-of-band; the offline
+    /// runner needs the decrypted key to read the plan. Decoupled from
+    /// <see cref="HmacKeyEncrypted"/> so signing and confidentiality keys rotate
+    /// independently.
+    /// </summary>
+    public string? BundleKeyEncrypted { get; set; }
+
     // ── Email delivery ────────────────────────────────────────────────────────
 
     public string? SmtpHost { get; set; }

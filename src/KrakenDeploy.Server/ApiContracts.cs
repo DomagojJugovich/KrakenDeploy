@@ -170,4 +170,6 @@ public sealed record UpsertVariableRequest(
     Guid? ScopeEnvironmentId,
     Guid? ScopeTargetId,
     List<string>? ScopeRoles,
-    Guid? ScopeTenantId = null);
+    Guid? ScopeTenantId = null,
+    Guid? ScopeChannelId = null,
+    string? ScopeStepName = null);

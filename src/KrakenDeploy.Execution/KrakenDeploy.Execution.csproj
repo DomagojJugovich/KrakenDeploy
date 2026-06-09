@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Transport-agnostic per-step orchestration decisions shared by the
+         server orchestrator (DeploymentWorker) and the offline agent runner
+         (DeploymentExecutor). Octostache is needed to evaluate the
+         Variable run-condition expression (#{...} truthy/falsy). The agent
+         is allowed to reference this assembly; Server.Core / Server.Transport
+         are not in scope here, so this project stays dependency-light
+         (Octostache only) — no Contracts, no Server.* references. -->
+    <PackageReference Include="Octostache" />
+  </ItemGroup>
+
+</Project>

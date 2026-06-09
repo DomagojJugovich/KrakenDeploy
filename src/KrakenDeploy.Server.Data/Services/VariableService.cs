@@ -137,6 +137,16 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
             return null;
         }
 
+        if (scope is not null && (!string.IsNullOrEmpty(scope.StepName) || scope.ChannelId.HasValue))
+        {
+            var kind = await db.VariableSets
+                .Where(vs => vs.Id == variable.SetId)
+                .Select(vs => vs.Kind)
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+            GuardLibrarySetScope(kind, scope);
+        }
+
         variable.Name = name;
         variable.Type = type;
         variable.Scope = scope ?? new VariableScope();
@@ -176,14 +186,259 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
         return true;
     }
 
+    // ── Library variable sets ──────────────────────────────────────────────
+
+    /// <summary>All library variable sets in the active Space, name-ordered, with variables loaded.</summary>
+    public async Task<List<VariableSet>> GetLibrarySetsAsync(CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.VariableSets
+            .Where(vs => vs.Kind == VariableSetKind.Library)
+            .Include(vs => vs.Variables)
+            .OrderBy(vs => vs.Name)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>A single variable set (any kind) by id, with variables loaded.</summary>
+    public async Task<VariableSet?> GetSetAsync(Guid setId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.VariableSets
+            .Include(vs => vs.Variables)
+            .FirstOrDefaultAsync(vs => vs.Id == setId, ct)
+            .ConfigureAwait(false);
+    }
+
+    public async Task<VariableSet> CreateLibrarySetAsync(
+        string name, string? description, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var set = new VariableSet
+        {
+            Kind = VariableSetKind.Library,
+            Name = name.Trim(),
+            Description = description?.Trim(),
+            // SpaceId is stamped by the SpaceScopingInterceptor; ProjectId stays null.
+        };
+        db.VariableSets.Add(set);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return set;
+    }
+
+    public async Task<VariableSet?> UpdateLibrarySetAsync(
+        Guid setId, string name, string? description, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var set = await db.VariableSets
+            .FirstOrDefaultAsync(vs => vs.Id == setId && vs.Kind == VariableSetKind.Library, ct)
+            .ConfigureAwait(false);
+
+        if (set is null)
+        {
+            return null;
+        }
+
+        set.Name = name.Trim();
+        set.Description = description?.Trim();
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return set;
+    }
+
+    /// <summary>
+    /// Deletes a library set. Its variables and any project inclusions cascade.
+    /// Returns false when the set doesn't exist or isn't a library set.
+    /// </summary>
+    public async Task<bool> DeleteLibrarySetAsync(Guid setId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var set = await db.VariableSets
+            .FirstOrDefaultAsync(vs => vs.Id == setId && vs.Kind == VariableSetKind.Library, ct)
+            .ConfigureAwait(false);
+
+        if (set is null)
+        {
+            return false;
+        }
+
+        db.VariableSets.Remove(set);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return true;
+    }
+
+    /// <summary>Variables in a specific set (sensitive values redacted) — backs the library-set detail page.</summary>
+    public async Task<List<VariableDto>> GetVariablesInSetAsync(Guid setId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var set = await db.VariableSets
+            .Include(vs => vs.Variables)
+            .FirstOrDefaultAsync(vs => vs.Id == setId, ct)
+            .ConfigureAwait(false);
+
+        if (set is null)
+        {
+            return [];
+        }
+
+        return set.Variables
+            .Select(v => new VariableDto(
+                v.Id,
+                v.Name,
+                v.Type == VariableType.Sensitive ? "***" : v.Value,
+                v.Type.ToString(),
+                v.Scope))
+            .ToList();
+    }
+
+    /// <summary>Creates a variable directly in a given set (project or library).</summary>
+    public async Task<Variable> CreateVariableInSetAsync(
+        Guid setId,
+        string name,
+        string value,
+        VariableType type,
+        VariableScope? scope,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(value);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var setKind = await db.VariableSets
+            .Where(vs => vs.Id == setId)
+            .Select(vs => (VariableSetKind?)vs.Kind)
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Variable set {setId} not found.");
+
+        GuardLibrarySetScope(setKind, scope);
+
+        var storedValue = type switch
+        {
+            VariableType.Sensitive => encryption.Encrypt(value),
+            VariableType.StringArray => NormalizeStringArray(value),
+            _ => value,
+        };
+
+        var variable = new Variable
+        {
+            SetId = setId,
+            Name = name,
+            Value = storedValue,
+            Type = type,
+            Scope = scope ?? new VariableScope(),
+        };
+
+        db.Variables.Add(variable);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return variable;
+    }
+
+    // ── Project ↔ library-set inclusion ────────────────────────────────────
+
+    /// <summary>Library sets a project includes, in overlay order (ascending SortOrder).</summary>
+    public async Task<List<VariableSet>> GetIncludedSetsAsync(Guid projectId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var links = await db.ProjectVariableSetLinks
+            .Where(l => l.ProjectId == projectId)
+            .OrderBy(l => l.SortOrder)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        if (links.Count == 0)
+        {
+            return [];
+        }
+
+        var ids = links.Select(l => l.VariableSetId).ToList();
+        var sets = await db.VariableSets
+            .Where(vs => ids.Contains(vs.Id))
+            .Include(vs => vs.Variables)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        var byId = sets.ToDictionary(s => s.Id);
+        return links
+            .Where(l => byId.ContainsKey(l.VariableSetId))
+            .Select(l => byId[l.VariableSetId])
+            .ToList();
+    }
+
+    /// <summary>Library sets NOT yet included by a project (candidates to add).</summary>
+    public async Task<List<VariableSet>> GetAvailableLibrarySetsAsync(Guid projectId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var includedIds = await db.ProjectVariableSetLinks
+            .Where(l => l.ProjectId == projectId)
+            .Select(l => l.VariableSetId)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        return await db.VariableSets
+            .Where(vs => vs.Kind == VariableSetKind.Library && !includedIds.Contains(vs.Id))
+            .OrderBy(vs => vs.Name)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>Includes a library set in a project (idempotent), appended at the end of the overlay order.</summary>
+    public async Task IncludeSetAsync(Guid projectId, Guid setId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var already = await db.ProjectVariableSetLinks
+            .AnyAsync(l => l.ProjectId == projectId && l.VariableSetId == setId, ct)
+            .ConfigureAwait(false);
+        if (already)
+        {
+            return;
+        }
+
+        var maxSort = await db.ProjectVariableSetLinks
+            .Where(l => l.ProjectId == projectId)
+            .Select(l => (int?)l.SortOrder)
+            .MaxAsync(ct)
+            .ConfigureAwait(false) ?? -1;
+
+        db.ProjectVariableSetLinks.Add(new ProjectVariableSetLink
+        {
+            ProjectId = projectId,
+            VariableSetId = setId,
+            SortOrder = maxSort + 1,
+        });
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Removes a library set from a project's inclusions (idempotent).</summary>
+    public async Task ExcludeSetAsync(Guid projectId, Guid setId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var link = await db.ProjectVariableSetLinks
+            .FirstOrDefaultAsync(l => l.ProjectId == projectId && l.VariableSetId == setId, ct)
+            .ConfigureAwait(false);
+        if (link is null)
+        {
+            return;
+        }
+
+        db.ProjectVariableSetLinks.Remove(link);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
     // ── Scope resolution ───────────────────────────────────────────────────
 
     /// <summary>
-    /// Resolves the effective variable set for a specific deployment context.
+    /// Resolves the effective variables for a deployment context, combining the
+    /// tenant common set, the project's included library variable sets, and the
+    /// project's own variables.
     /// <para>
-    /// For each variable name, the most-specific matching value wins.
-    /// Specificity is scored as: environment match (+4), role overlap (+2),
-    /// target machine match (+1). Unscoped variables (score 0) are the fallback.
+    /// Octopus-compatible precedence: for each name the most-specific matching
+    /// scope wins (see <see cref="VariableScope.SpecificityScore"/>). When two
+    /// definitions are scoped <i>equally</i>, the higher origin rank breaks the
+    /// tie — project over library (higher inclusion order first) over tenant.
     /// </para>
     /// <para>
     /// Sensitive values are decrypted; <see cref="VariableType.StringArray"/> values
@@ -196,13 +451,51 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
         Guid? targetId,
         IReadOnlyList<string> targetRoles,
         Guid? tenantId = null,
+        Guid? channelId = null,
+        string? stepName = null,
         CancellationToken ct = default)
+    {
+        var candidates = await BuildLiveCandidatesAsync(projectId, tenantId, ct).ConfigureAwait(false);
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        ResolveCandidates(candidates, result, environmentId, targetId, targetRoles, tenantId, channelId, stepName);
+        return result;
+    }
+
+    /// <summary>
+    /// Live counterpart of <see cref="ResolveFromSnapshotWithStepsAsync"/> — used by
+    /// runbook runs and offline-drop bundles, which resolve project variables live
+    /// (not from a frozen release snapshot). Returns the deployment-wide manifest
+    /// plus per-step deltas; the per-step phase is skipped when no variable is
+    /// step-scoped.
+    /// </summary>
+    public async Task<StepScopedResolution> ResolveWithStepsAsync(
+        Guid projectId,
+        Guid environmentId,
+        Guid? targetId,
+        IReadOnlyList<string> targetRoles,
+        Guid? tenantId,
+        Guid? channelId,
+        IReadOnlyList<(Guid StepId, string StepName)> steps,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(steps);
+        var candidates = await BuildLiveCandidatesAsync(projectId, tenantId, ct).ConfigureAwait(false);
+        return ResolveWithStepsCore(candidates, environmentId, targetId, targetRoles, tenantId, channelId, steps);
+    }
+
+    /// <summary>
+    /// Builds the live candidate set for a project deployment context, in
+    /// increasing origin rank: tenant common set, included library sets (by
+    /// inclusion SortOrder), then the project's own variables.
+    /// </summary>
+    private async Task<List<ScopedCandidate>> BuildLiveCandidatesAsync(
+        Guid projectId, Guid? tenantId, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
-        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var candidates = new List<ScopedCandidate>();
 
-        // 1. Resolve tenant common variables first (lowest priority)
+        // Tenant common variables — lowest origin rank.
         if (tenantId.HasValue)
         {
             var tenant = await db.Tenants
@@ -220,12 +513,39 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
 
                 if (tenantSet is not null)
                 {
-                    ApplyVariables(tenantSet.Variables, result, environmentId, targetId, targetRoles, tenantId);
+                    candidates.AddRange(tenantSet.Variables.Select(v => Candidate(v, TenantOriginRank)));
                 }
             }
         }
 
-        // 2. Resolve project variables (higher priority — overwrites tenant vars)
+        // Included library sets — origin rank = inclusion SortOrder (above tenant,
+        // below project; a higher SortOrder breaks ties over a lower one).
+        var links = await db.ProjectVariableSetLinks
+            .Where(l => l.ProjectId == projectId)
+            .OrderBy(l => l.SortOrder)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        if (links.Count > 0)
+        {
+            var ids = links.Select(l => l.VariableSetId).ToList();
+            var libSets = await db.VariableSets
+                .Where(vs => ids.Contains(vs.Id))
+                .Include(vs => vs.Variables)
+                .AsNoTracking()
+                .ToDictionaryAsync(vs => vs.Id, ct)
+                .ConfigureAwait(false);
+
+            foreach (var link in links)
+            {
+                if (libSets.TryGetValue(link.VariableSetId, out var set))
+                {
+                    candidates.AddRange(set.Variables.Select(v => Candidate(v, link.SortOrder)));
+                }
+            }
+        }
+
+        // Project's own variables — highest origin rank.
         var projectSet = await db.VariableSets
             .Include(vs => vs.Variables)
             .AsNoTracking()
@@ -234,27 +554,101 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
 
         if (projectSet is not null)
         {
-            ApplyVariables(projectSet.Variables, result, environmentId, targetId, targetRoles, tenantId);
+            candidates.AddRange(projectSet.Variables.Select(v => Candidate(v, VariableSnapshot.ProjectLayer)));
         }
 
-        return result;
+        return candidates;
     }
 
-    private void ApplyVariables(
-        IEnumerable<Variable> variables,
+    /// <summary>
+    /// Shared per-step resolution over a pre-built candidate set (snapshot or
+    /// live). Deployment-wide excludes step-scoped variables; each per-step delta
+    /// carries only the names whose winner changes in that step's context.
+    /// </summary>
+    private StepScopedResolution ResolveWithStepsCore(
+        IReadOnlyList<ScopedCandidate> candidates,
+        Guid environmentId,
+        Guid? targetId,
+        IReadOnlyList<string> targetRoles,
+        Guid? tenantId,
+        Guid? channelId,
+        IReadOnlyList<(Guid StepId, string StepName)> steps)
+    {
+        var deploymentWide = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        ResolveCandidates(candidates, deploymentWide, environmentId, targetId, targetRoles, tenantId, channelId, stepName: null);
+
+        var perStep = new Dictionary<Guid, Dictionary<string, string>>();
+
+        if (candidates.Any(c => !string.IsNullOrEmpty(c.Scope.StepName)))
+        {
+            foreach (var (stepId, stepNameValue) in steps)
+            {
+                var full = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                ResolveCandidates(candidates, full, environmentId, targetId, targetRoles, tenantId, channelId, stepNameValue);
+
+                var delta = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var (name, value) in full)
+                {
+                    if (!deploymentWide.TryGetValue(name, out var dw)
+                        || !string.Equals(dw, value, StringComparison.Ordinal))
+                    {
+                        delta[name] = value;
+                    }
+                }
+
+                if (delta.Count > 0)
+                {
+                    perStep[stepId] = delta;
+                }
+            }
+        }
+
+        return new StepScopedResolution(deploymentWide, perStep);
+    }
+
+    private const int TenantOriginRank = -1;
+
+    private static ScopedCandidate Candidate(Variable v, int originRank) =>
+        new(v.Name, v.Value, v.Type, v.Scope, originRank);
+
+    /// <summary>
+    /// Library variable sets are reusable across projects, so they cannot be
+    /// scoped to project-specific dimensions (steps, channels). Defence-in-depth
+    /// behind the UI, which already hides those pickers for library sets.
+    /// </summary>
+    private static void GuardLibrarySetScope(VariableSetKind kind, VariableScope? scope)
+    {
+        if (kind == VariableSetKind.Library && scope is not null
+            && (!string.IsNullOrEmpty(scope.StepName) || scope.ChannelId.HasValue))
+        {
+            throw new InvalidOperationException(
+                "Library variable sets cannot be scoped to steps or channels.");
+        }
+    }
+
+    /// <summary>
+    /// Resolves a flat candidate set into the effective variables for a
+    /// deployment context. Octopus-compatible precedence: the most-specific
+    /// matching scope wins for each name; an exact specificity tie is broken by
+    /// the higher origin rank (project &gt; library &gt; tenant). Sensitive
+    /// values are decrypted; StringArray values stay as raw JSON strings.
+    /// </summary>
+    private void ResolveCandidates(
+        IReadOnlyList<ScopedCandidate> candidates,
         Dictionary<string, string> result,
         Guid environmentId,
         Guid? targetId,
         IReadOnlyList<string> targetRoles,
-        Guid? tenantId)
+        Guid? tenantId,
+        Guid? channelId,
+        string? stepName)
     {
-        var byName = variables.GroupBy(v => v.Name, StringComparer.OrdinalIgnoreCase);
-
-        foreach (var group in byName)
+        foreach (var group in candidates.GroupBy(c => c.Name, StringComparer.OrdinalIgnoreCase))
         {
             var winner = group
-                .Where(v => v.Scope.Matches(environmentId, targetId, targetRoles, tenantId))
-                .OrderByDescending(v => v.Scope.SpecificityScore())
+                .Where(c => c.Scope.Matches(environmentId, targetId, targetRoles, tenantId, channelId, stepName))
+                .OrderByDescending(c => c.Scope.SpecificityScore())
+                .ThenByDescending(c => c.OriginRank)
                 .FirstOrDefault();
 
             if (winner is null)
@@ -268,39 +662,11 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
         }
     }
 
-    /// <summary>
-    /// Snapshot-side overload of <see cref="ApplyVariables(IEnumerable{Variable}, …)"/>.
-    /// Same scope-resolution semantics; consumes <see cref="VariableSnapshot"/>
-    /// rows that were frozen into a <see cref="Release"/> instead of live
-    /// <see cref="Variable"/> rows. Sensitive values still get decrypted at
-    /// resolve time using whatever encryption key the agent currently has —
-    /// snapshotting the ciphertext means key rotations after release time
-    /// will break the snapshot unless the old key is retained.
-    /// </summary>
-    private void ApplyVariables(
-        IEnumerable<VariableSnapshot> snapshot,
-        Dictionary<string, string> result,
-        Guid environmentId,
-        Guid? targetId,
-        IReadOnlyList<string> targetRoles,
-        Guid? tenantId)
-    {
-        var byName = snapshot.GroupBy(v => v.Name, StringComparer.OrdinalIgnoreCase);
-
-        foreach (var group in byName)
-        {
-            var winner = group
-                .Where(v => v.Scope.Matches(environmentId, targetId, targetRoles, tenantId))
-                .OrderByDescending(v => v.Scope.SpecificityScore())
-                .FirstOrDefault();
-
-            if (winner is null) { continue; }
-
-            result[winner.Name] = winner.Type == VariableType.Sensitive
-                ? encryption.Decrypt(winner.Value)
-                : winner.Value;
-        }
-    }
+    // One variable competing to win a name during resolution. OriginRank orders
+    // the source (tenant < library-by-SortOrder < project) and breaks ties ONLY
+    // when two candidates are scoped with equal specificity.
+    private sealed record ScopedCandidate(
+        string Name, string Value, VariableType Type, VariableScope Scope, int OriginRank);
 
     /// <summary>
     /// Resolves a deployment's effective variable set from a frozen
@@ -316,13 +682,52 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
         Guid? targetId,
         IReadOnlyList<string> targetRoles,
         Guid? tenantId = null,
+        Guid? channelId = null,
+        string? stepName = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(projectSnapshot);
 
+        var candidates = await BuildSnapshotCandidatesAsync(projectSnapshot, tenantId, ct).ConfigureAwait(false);
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        ResolveCandidates(candidates, result, environmentId, targetId, targetRoles, tenantId, channelId, stepName);
+        return result;
+    }
 
-        // 1. Tenant common variables (live — same as ResolveAsync).
+    /// <summary>
+    /// Snapshot-path resolution that ALSO produces a per-step delta for every
+    /// supplied step (per-step variable scope). The deployment-wide manifest
+    /// excludes step-scoped variables; each per-step delta carries only the
+    /// names whose winner changes in that step's context. Resolution runs
+    /// in-memory over a candidate set built once, so per-step passes are cheap;
+    /// the whole per-step phase is skipped when no variable carries a step scope.
+    /// </summary>
+    public async Task<StepScopedResolution> ResolveFromSnapshotWithStepsAsync(
+        IReadOnlyList<VariableSnapshot> projectSnapshot,
+        Guid environmentId,
+        Guid? targetId,
+        IReadOnlyList<string> targetRoles,
+        Guid? tenantId,
+        Guid? channelId,
+        IReadOnlyList<(Guid StepId, string StepName)> steps,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(projectSnapshot);
+        ArgumentNullException.ThrowIfNull(steps);
+
+        var candidates = await BuildSnapshotCandidatesAsync(projectSnapshot, tenantId, ct).ConfigureAwait(false);
+        return ResolveWithStepsCore(candidates, environmentId, targetId, targetRoles, tenantId, channelId, steps);
+    }
+
+    private async Task<List<ScopedCandidate>> BuildSnapshotCandidatesAsync(
+        IReadOnlyList<VariableSnapshot> projectSnapshot,
+        Guid? tenantId,
+        CancellationToken ct)
+    {
+        var candidates = new List<ScopedCandidate>();
+
+        // Tenant common variables resolve live (lowest origin rank) — they track
+        // the tenant, not the frozen release. Mirrors Octopus "Update Variables".
         if (tenantId.HasValue)
         {
             await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -341,16 +746,17 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
 
                 if (tenantSet is not null)
                 {
-                    ApplyVariables(tenantSet.Variables, result, environmentId, targetId, targetRoles, tenantId);
+                    candidates.AddRange(tenantSet.Variables.Select(v => Candidate(v, TenantOriginRank)));
                 }
             }
         }
 
-        // 2. Project variables — from the frozen release snapshot (higher
-        //    priority, overwrites tenant common vars).
-        ApplyVariables(projectSnapshot, result, environmentId, targetId, targetRoles, tenantId);
+        // Frozen snapshot entries carry their own origin rank in Layer
+        // (library = inclusion SortOrder, project = ProjectLayer).
+        candidates.AddRange(projectSnapshot.Select(s =>
+            new ScopedCandidate(s.Name, s.Value, s.Type, s.Scope, s.Layer)));
 
-        return result;
+        return candidates;
     }
 
     // ── Private helpers ────────────────────────────────────────────────────
@@ -415,3 +821,14 @@ public sealed record VariableDto(
     string Value,
     string Type,
     VariableScope Scope);
+
+/// <summary>
+/// Result of <see cref="VariableService.ResolveFromSnapshotWithStepsAsync"/>:
+/// the deployment-wide manifest (step-scoped variables excluded) plus a per-step
+/// delta keyed by snapshot step Id — only the names whose winner changes in that
+/// step's context. An empty <see cref="PerStepDelta"/> means no variable is
+/// step-scoped (the common case), so the agent's per-step overlay is a no-op.
+/// </summary>
+public sealed record StepScopedResolution(
+    Dictionary<string, string> DeploymentWide,
+    Dictionary<Guid, Dictionary<string, string>> PerStepDelta);

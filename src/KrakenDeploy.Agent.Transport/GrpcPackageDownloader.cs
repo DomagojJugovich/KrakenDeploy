@@ -25,7 +25,9 @@ namespace KrakenDeploy.Agent.Transport;
 /// </summary>
 public sealed class GrpcPackageDownloader(
     IPackageCache cache,
-    ILogger<GrpcPackageDownloader> logger) : IAsyncDisposable
+    Func<string> serverUrlAccessor,
+    Func<string> agentTokenAccessor,
+    ILogger<GrpcPackageDownloader> logger) : IPackageSource, IAsyncDisposable
 {
     // Lazily created and cached; recreated if the server URL changes.
     private string? _channelServerUrl;
@@ -37,13 +39,14 @@ public sealed class GrpcPackageDownloader(
     /// <paramref name="destDirectory"/>, and returns the full path of the zip file.
     /// </summary>
     public async Task<string> DownloadAsync(
-        string serverUrl,
-        string agentToken,
         string packageId,
         string version,
         string destDirectory,
         CancellationToken ct)
     {
+        var serverUrl  = serverUrlAccessor();
+        var agentToken = agentTokenAccessor();
+
         // ── 1. Cache hit ──────────────────────────────────────────────────────
         var cachedPath = cache.TryGetCachedPath(packageId, version);
         if (cachedPath is not null)

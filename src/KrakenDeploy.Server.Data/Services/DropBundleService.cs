@@ -1,9 +1,10 @@
-using System.Globalization;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using KrakenDeploy.Contracts.Steps;
+using KrakenDeploy.Contracts;
+using KrakenDeploy.Contracts.Crypto;
+using KrakenDeploy.Contracts.Offline;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Packages;
 using KrakenDeploy.Server.Core.Domain.Variables;
@@ -15,17 +16,29 @@ namespace KrakenDeploy.Server.Data.Services;
 /// <summary>
 /// Generates offline drop bundles for deployments targeting offline-drop targets.
 /// <para>
+/// The bundle carries the SAME <see cref="DeploymentPlan"/> the online path
+/// dispatches to an agent — resolved + Octostache-substituted variables,
+/// flattened waves, per-step deltas — so the offline runner executes it through
+/// the identical <c>DeploymentExecutor</c>. The plan is AES-256-GCM encrypted
+/// with the target's per-target bundle key; the deployable packages and the
+/// step-handler archives the plan needs are embedded so the bundle runs on a
+/// machine with no server connectivity.
+/// </para>
+/// <para>
 /// Bundle layout (zip):
 /// <list type="bullet">
-///   <item><c>manifest.json</c> — deployment metadata, steps, variables</item>
-///   <item><c>variables.json</c> — resolved key/value variable pairs</item>
+///   <item><c>plan.enc</c> — AES-GCM-encrypted serialized <see cref="DeploymentPlan"/></item>
+///   <item><c>manifest.json</c> — non-sensitive metadata (HMAC-signed)</item>
 ///   <item><c>machine-info.json</c> — target metadata</item>
-///   <item><c>packages/{packageId}/{version}/{file}</c> — referenced package files</item>
-///   <item><c>scripts/step-{i}-{name}.ps1</c> — per-step scripts</item>
-///   <item><c>deploy.ps1</c> — orchestrator PowerShell script</item>
-///   <item><c>deploy.sh</c> — orchestrator Bash script</item>
+///   <item><c>packages/{packageId}/{version}/{file}</c> — deployable packages</item>
+///   <item><c>step-packages/{name}/{version}/package.kdeploy-step</c> — step-handler archives</item>
+///   <item><c>artifacts/</c> — runner output</item>
+///   <item><c>deployment-result.json</c>, <c>deployment-log.txt</c> — runner output</item>
 ///   <item><c>signature.bin</c> — HMAC-SHA256 of <c>manifest.json</c></item>
 /// </list>
+/// The self-contained runner (<c>runner/</c>) + bootstrap are embedded by a
+/// later phase; the plan itself is integrity-protected by AES-GCM, the metadata
+/// by the HMAC signature.
 /// </para>
 /// </summary>
 public class DropBundleService(
@@ -34,33 +47,56 @@ public class DropBundleService(
     IEncryptionService encryption,
     ILogger<DropBundleService> logger)
 {
+    /// <summary>Bundle format discriminator (2 = plan-based + encrypted).</summary>
+    public const int BundleFormat = 2;
+
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true,
     };
 
     /// <summary>
-    /// Generates a drop bundle for the given deployment and stores it on disk.
-    /// Returns the relative path to the bundle zip file.
+    /// Generates a drop bundle for <paramref name="deployment"/> from its fully
+    /// resolved <paramref name="plan"/> and stores it on disk. Returns the
+    /// relative path to the bundle zip.
     /// </summary>
+    /// <param name="plan">
+    /// The same <see cref="DeploymentPlan"/> the online path builds — already
+    /// resolved, substituted, flattened, with per-step deltas attached.
+    /// </param>
+    /// <param name="bundleKey">
+    /// Decrypted 32-byte AES-256-GCM key (the target's per-target bundle key)
+    /// used to encrypt <c>plan.enc</c>.
+    /// </param>
+    /// <param name="stepPackageArchivePath">
+    /// Resolves the full path of a stored <c>.kdeploy-step</c> archive for a
+    /// <c>(name, version)</c> pair, or <c>null</c> if not installed. Wired to
+    /// <c>StepPackageService.TryGetArchivePath</c>.
+    /// </param>
     public async Task<string> GenerateAsync(
         Deployment deployment,
-        Dictionary<string, string> resolvedVariables,
+        DeploymentPlan plan,
+        byte[] bundleKey,
+        Func<string, string, string?> stepPackageArchivePath,
         string dataPath,
+        string? runnerStageDir = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(deployment);
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(bundleKey);
+        ArgumentNullException.ThrowIfNull(stepPackageArchivePath);
         ArgumentNullException.ThrowIfNull(deployment.Release);
         ArgumentNullException.ThrowIfNull(deployment.Environment);
         ArgumentNullException.ThrowIfNull(deployment.Target);
 
         var target = deployment.Target;
         var release = deployment.Release;
-        var snapshot = release.ProcessSnapshot;
 
-        // ── Build manifest ──────────────────────────────────────────────────
+        // ── Manifest (non-sensitive metadata only; signed for integrity) ─────
         var manifest = new DropManifest
         {
+            BundleFormat = BundleFormat,
             DeploymentId = deployment.Id,
             ProjectName = release.Project?.Name ?? "",
             ReleaseVersion = release.Version,
@@ -68,19 +104,25 @@ public class DropBundleService(
             TargetName = target.Name,
             TargetId = target.Id,
             CreatedUtc = DateTimeOffset.UtcNow,
-            Steps = snapshot.Select((s, i) => new DropManifestStep
-            {
-                Index = i,
-                Name = s.Name,
-                StepType = s.StepType,
-                PackageId = s.PackageId,
-                PackageVersion = s.PackageVersion,
-                Config = new Dictionary<string, string>(s.Config),
-            }).ToList(),
+            Steps = plan.Steps
+                .Select(s => new DropManifestStep
+                {
+                    Index = s.Index,
+                    Name = s.Name,
+                    StepType = s.StepType,
+                })
+                .ToList(),
         };
-
         var manifestJson = JsonSerializer.Serialize(manifest, JsonOpts);
-        var variablesJson = JsonSerializer.Serialize(resolvedVariables, JsonOpts);
+
+        // ── Encrypt the plan ─────────────────────────────────────────────────
+        // The serialized plan carries resolved (incl. sensitive) variables, so
+        // it's AES-GCM encrypted with the per-target bundle key. GCM is
+        // authenticated — tampering fails decryption, so the plan needs no
+        // separate signature.
+        var planJson = JsonSerializer.Serialize(plan, JsonOpts);
+        var planEnc = AesGcmCipher.Encrypt(bundleKey, planJson);
+
         var machineInfoJson = JsonSerializer.Serialize(new
         {
             target.MachineName,
@@ -98,53 +140,28 @@ public class DropBundleService(
         {
             using var archive = new ZipArchive(fs, ZipArchiveMode.Create, leaveOpen: false);
 
-            // manifest.json
             AddTextEntry(archive, "manifest.json", manifestJson);
-
-            // variables.json
-            AddTextEntry(archive, "variables.json", variablesJson);
-
-            // machine-info.json
+            AddTextEntry(archive, OfflineBundleLayout.EncryptedPlanFile, planEnc);
             AddTextEntry(archive, "machine-info.json", machineInfoJson);
 
-            // Per-step scripts
-            for (var i = 0; i < snapshot.Count; i++)
-            {
-                var step = snapshot[i];
-                if (step.Config.TryGetValue(KrakenScriptConfigKeys.ScriptBody, out var scriptBody) &&
-                    !string.IsNullOrWhiteSpace(scriptBody))
-                {
-                    var safeName = SanitizeFileName(step.Name);
-                    AddTextEntry(archive, $"scripts/step-{i}-{safeName}.ps1", scriptBody);
-                }
-            }
-
-            // Orchestrator scripts
-            AddTextEntry(archive, "deploy.ps1", GenerateOrchestratorPs1(manifest));
-            AddTextEntry(archive, "deploy.sh", GenerateOrchestratorSh(manifest));
-
-            // Packages
+            // Deployable packages + step-handler archives the plan references.
             await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-            await AddPackagesAsync(db, archive, snapshot, ct).ConfigureAwait(false);
+            await AddPlanPackagesAsync(db, archive, plan, ct).ConfigureAwait(false);
+            await AddStepPackagesAsync(archive, plan, stepPackageArchivePath, ct).ConfigureAwait(false);
 
-            // Empty result template
-            var resultTemplate = new DropResultTemplate
-            {
-                DeploymentId = deployment.Id,
-                Status = "",
-                CompletedUtc = null,
-            };
-            AddTextEntry(archive, "deployment-result.json",
-                JsonSerializer.Serialize(resultTemplate, JsonOpts));
+            // Runner output placeholders (the runner overwrites these).
+            AddTextEntry(archive, OfflineBundleLayout.ResultFile,
+                JsonSerializer.Serialize(new OfflineDropResult { DeploymentId = deployment.Id }, JsonOpts));
+            AddTextEntry(archive, OfflineBundleLayout.LogFile,
+                $"# Deployment Log — {deployment.Id}\n");
+            archive.CreateEntry($"{OfflineBundleLayout.ArtifactsDir}/");
 
-            // Empty log placeholder
-            AddTextEntry(archive, "deployment-log.txt",
-                $"# Deployment Log — {deployment.Id}\n# Paste or append log output below.\n");
+            // Entrypoint: bootstrap scripts + README, and (best-effort) the
+            // self-contained runner so the bundle runs without .NET installed.
+            await AddRunnerAndBootstrapAsync(archive, deployment, runnerStageDir, ct)
+                .ConfigureAwait(false);
 
-            // Artifacts directory placeholder
-            archive.CreateEntry("artifacts/");
-
-            // HMAC signature
+            // HMAC signature of the metadata.
             var hmacKey = GetHmacKey(target);
             if (hmacKey is not null)
             {
@@ -155,19 +172,14 @@ public class DropBundleService(
             }
         }
 
-        // Return relative path from dataPath root
         var relativePath = Path.GetRelativePath(dataPath, zipPath).Replace('\\', '/');
-
         logger.LogInformation(
-            "Generated drop bundle for deployment {DeploymentId}: {Path} ({Size} bytes).",
-            deployment.Id, relativePath, new FileInfo(zipPath).Length);
-
+            "Generated offline drop bundle for deployment {DeploymentId}: {Path} ({Size} bytes, {Steps} step(s)).",
+            deployment.Id, relativePath, new FileInfo(zipPath).Length, plan.Steps.Length);
         return relativePath;
     }
 
-    /// <summary>
-    /// Opens the drop bundle zip for download.
-    /// </summary>
+    /// <summary>Opens the drop bundle zip for download.</summary>
     public static Stream OpenRead(string dropBundlePath, string dataPath)
     {
         var fullPath = Path.Combine(dataPath, dropBundlePath.Replace('/', Path.DirectorySeparatorChar));
@@ -187,52 +199,58 @@ public class DropBundleService(
         {
             return null;
         }
-
         var base64Key = encryption.Decrypt(hmacEncrypted);
         return Convert.FromBase64String(base64Key);
     }
 
-    private async Task AddPackagesAsync(
-        KrakenDbContext db,
-        ZipArchive archive,
-        IReadOnlyList<Core.Domain.Releases.StepSnapshot> steps,
-        CancellationToken ct)
+    /// <summary>
+    /// Copies every deployable package the plan references (step packages +
+    /// referenced packages) into <c>packages/{id}/{version}/</c>. A missing
+    /// package is a warning — the step that needs it fails at run time, mirroring
+    /// the online behaviour of an unavailable package.
+    /// </summary>
+    private async Task AddPlanPackagesAsync(
+        KrakenDbContext db, ZipArchive archive, DeploymentPlan plan, CancellationToken ct)
     {
-        var added = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var step in steps)
+        var refs = new HashSet<(string Id, string Version)>();
+        foreach (var s in plan.Steps)
         {
-            if (string.IsNullOrEmpty(step.PackageId) || string.IsNullOrEmpty(step.PackageVersion))
+            if (!string.IsNullOrEmpty(s.PackageId) && !string.IsNullOrEmpty(s.PackageVersion))
             {
-                continue;
+                refs.Add((s.PackageId, s.PackageVersion));
             }
-
-            var key = $"{step.PackageId}/{step.PackageVersion}";
-            if (!added.Add(key))
+            if (s.ReferencedPackages is not null)
             {
-                continue;
+                foreach (var r in s.ReferencedPackages)
+                {
+                    if (!string.IsNullOrEmpty(r.PackageId) && !string.IsNullOrEmpty(r.Version))
+                    {
+                        refs.Add((r.PackageId, r.Version));
+                    }
+                }
             }
+        }
 
+        foreach (var (id, version) in refs)
+        {
             var pkg = await db.Packages
                 .AsNoTracking()
-                .FirstOrDefaultAsync(p =>
-                    p.PackageId == step.PackageId && p.Version == step.PackageVersion, ct)
+                .FirstOrDefaultAsync(p => p.PackageId == id && p.Version == version, ct)
                 .ConfigureAwait(false);
 
             if (pkg is null)
             {
                 logger.LogWarning(
-                    "Package {PackageId} v{Version} not found — omitted from drop bundle.",
-                    step.PackageId, step.PackageVersion);
+                    "Package {PackageId} v{Version} not found — omitted from offline bundle.",
+                    id, version);
                 continue;
             }
 
             try
             {
                 await using var pkgStream = await packageStore
-                    .OpenReadAsync(pkg.StoredPath, ct)
-                    .ConfigureAwait(false);
-
-                var entryPath = $"packages/{pkg.PackageId}/{pkg.Version}/{pkg.FileName}";
+                    .OpenReadAsync(pkg.StoredPath, ct).ConfigureAwait(false);
+                var entryPath = $"{OfflineBundleLayout.PackageDir(pkg.PackageId, pkg.Version)}/{pkg.FileName}";
                 var entry = archive.CreateEntry(entryPath, CompressionLevel.NoCompression);
                 await using var entryStream = entry.Open();
                 await pkgStream.CopyToAsync(entryStream, ct).ConfigureAwait(false);
@@ -241,176 +259,171 @@ public class DropBundleService(
             {
                 logger.LogWarning(
                     "Package file missing on disk for {PackageId} v{Version} at {Path}.",
-                    step.PackageId, step.PackageVersion, pkg.StoredPath);
+                    id, version, pkg.StoredPath);
             }
         }
     }
+
+    /// <summary>
+    /// Copies the <c>.kdeploy-step</c> handler archive for every step-package
+    /// the plan pins into <c>step-packages/{name}/{version}/</c>. Missing here is
+    /// FATAL — without the handler assembly the offline runner cannot execute the
+    /// step, so we refuse to ship a bundle that would fail mid-run.
+    /// </summary>
+    private static async Task AddStepPackagesAsync(
+        ZipArchive archive,
+        DeploymentPlan plan,
+        Func<string, string, string?> archivePathResolver,
+        CancellationToken ct)
+    {
+        var added = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in plan.Steps)
+        {
+            if (string.IsNullOrWhiteSpace(s.StepPackageName) || string.IsNullOrWhiteSpace(s.StepPackageVersion))
+            {
+                continue;
+            }
+            if (!added.Add($"{s.StepPackageName}/{s.StepPackageVersion}"))
+            {
+                continue;
+            }
+
+            var archivePath = archivePathResolver(s.StepPackageName, s.StepPackageVersion);
+            if (archivePath is null || !File.Exists(archivePath))
+            {
+                throw new InvalidOperationException(
+                    $"Step package '{s.StepPackageName}' v{s.StepPackageVersion} (required by step " +
+                    $"'{s.Name}') has no archive on the server. Cannot build a self-contained offline " +
+                    "bundle — install the step package, then re-create the release.");
+            }
+
+            var entryPath =
+                $"{OfflineBundleLayout.StepPackageDir(s.StepPackageName, s.StepPackageVersion)}/{Path.GetFileName(archivePath)}";
+            var entry = archive.CreateEntry(entryPath, CompressionLevel.NoCompression);
+            await using var src = new FileStream(
+                archivePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            await using var dest = entry.Open();
+            await src.CopyToAsync(dest, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Writes the bundle entrypoint — cross-platform bootstrap scripts + a
+    /// README — and, when a published runner is staged on the server
+    /// (<c>{dataPath}/offline-runner/{rid}/</c>), embeds the self-contained
+    /// runner under <c>runner/</c> so the bundle executes on a machine with no
+    /// .NET installed. Best-effort by design (offline is secondary): with no
+    /// staged runner the bootstrap falls back to a <c>KrakenDeploy.Agent</c> on
+    /// PATH, and the bundle is just smaller.
+    /// </summary>
+    private async Task AddRunnerAndBootstrapAsync(
+        ZipArchive archive, Deployment deployment, string? runnerStageDir, CancellationToken ct)
+    {
+        AddTextEntry(archive, "run.cmd", WindowsBootstrap);
+        AddTextEntry(archive, "run.sh", LinuxBootstrap);
+        AddTextEntry(archive, "README.txt", BuildReadme(deployment));
+
+        if (string.IsNullOrEmpty(runnerStageDir) || !Directory.Exists(runnerStageDir))
+        {
+            logger.LogInformation(
+                "No staged offline runner at '{Dir}' — bundle relies on a KrakenDeploy.Agent on PATH.",
+                runnerStageDir ?? "<none>");
+            return;
+        }
+
+        // Best-effort by contract: a concurrent writer on the staged runner (an
+        // admin re-publishing it) must not fail the whole deployment. On any IO
+        // error we log and leave embedding off — the bootstrap then falls back to
+        // a KrakenDeploy.Agent on PATH.
+        try
+        {
+            var files = Directory.GetFiles(runnerStageDir, "*", SearchOption.AllDirectories);
+            foreach (var file in files)
+            {
+                var rel = Path.GetRelativePath(runnerStageDir, file).Replace('\\', '/');
+                var entry = archive.CreateEntry($"{OfflineBundleLayout.RunnerDir}/{rel}", CompressionLevel.Optimal);
+                await using var src = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);
+                await using var dest = entry.Open();
+                await src.CopyToAsync(dest, ct).ConfigureAwait(false);
+            }
+            logger.LogInformation(
+                "Embedded self-contained runner ({Count} file(s)) from '{Dir}' into the bundle.",
+                files.Length, runnerStageDir);
+        }
+        catch (IOException ex)
+        {
+            logger.LogWarning(ex,
+                "Failed to embed the staged runner from '{Dir}' (concurrent write?); " +
+                "the bundle will rely on a KrakenDeploy.Agent on the target's PATH.",
+                runnerStageDir);
+        }
+    }
+
+    // Bootstrap chooses the bundled runner if present, else a KrakenDeploy.Agent
+    // on PATH. The key comes from bundle.key (next to the script) or, failing
+    // that, the KRAKEN_BUNDLE_KEY env var (the runner falls back to it).
+    private const string WindowsBootstrap =
+        "@echo off\r\n" +
+        "setlocal\r\n" +
+        "set \"BUNDLE=%~dp0\"\r\n" +
+        "if exist \"%BUNDLE%runner\\KrakenDeploy.Agent.exe\" (\r\n" +
+        "  set \"RUNNER=%BUNDLE%runner\\KrakenDeploy.Agent.exe\"\r\n" +
+        ") else (\r\n" +
+        "  set \"RUNNER=KrakenDeploy.Agent\"\r\n" +
+        ")\r\n" +
+        "\"%RUNNER%\" --run-offline-drop \"%BUNDLE%.\" --key-file \"%BUNDLE%bundle.key\"\r\n";
+
+    private const string LinuxBootstrap =
+        "#!/usr/bin/env bash\n" +
+        "set -euo pipefail\n" +
+        "BUNDLE=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\n" +
+        "if [ -x \"$BUNDLE/runner/KrakenDeploy.Agent\" ]; then\n" +
+        "  RUNNER=\"$BUNDLE/runner/KrakenDeploy.Agent\"\n" +
+        "else\n" +
+        "  RUNNER=\"KrakenDeploy.Agent\"\n" +
+        "fi\n" +
+        "\"$RUNNER\" --run-offline-drop \"$BUNDLE\" --key-file \"$BUNDLE/bundle.key\"\n";
+
+    private static string BuildReadme(Deployment deployment) =>
+        $"""
+        KrakenDeploy offline drop bundle
+        ================================
+        Deployment: {deployment.Id}
+        Project:    {deployment.Release.Project?.Name ?? ""}
+        Release:    {deployment.Release.Version}
+        Target:     {deployment.Target?.Name ?? ""}
+
+        To run on the offline target:
+
+        1. Obtain the bundle key (base64) delivered out-of-band by the KrakenDeploy
+           administrator, then either:
+             - save it to a file named 'bundle.key' next to this README, or
+             - set the KRAKEN_BUNDLE_KEY environment variable.
+
+        2. Run the bootstrap for your OS:
+             Windows : run.cmd
+             Linux   : ./run.sh
+           If a self-contained runner is bundled under runner/, it is used and no
+           .NET install is required. Otherwise a 'KrakenDeploy.Agent' on PATH runs it.
+
+        3. After it completes, return these to the administrator to reconcile the
+           deployment (re-zip this directory and upload it on the deployment page):
+             - deployment-result.json
+             - deployment-log.txt
+             - artifacts/ (if any)
+        """;
+
+    // No BOM: manifest.json is HMAC-signed over Encoding.UTF8.GetBytes(manifestJson)
+    // (no preamble) and re-verified by OfflineResultService over the raw entry
+    // bytes — a StreamWriter-emitted UTF-8 BOM would make every signed bundle
+    // fail verification. Applies to all text entries for consistency.
+    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
     private static void AddTextEntry(ZipArchive archive, string path, string content)
     {
         var entry = archive.CreateEntry(path, CompressionLevel.Optimal);
-        using var writer = new StreamWriter(entry.Open(), Encoding.UTF8);
+        using var writer = new StreamWriter(entry.Open(), Utf8NoBom);
         writer.Write(content);
-    }
-
-    private static string SanitizeFileName(string name)
-    {
-        var invalid = Path.GetInvalidFileNameChars();
-        var sb = new StringBuilder(name.Length);
-        foreach (var c in name)
-        {
-            sb.Append(Array.IndexOf(invalid, c) >= 0 ? '_' : c);
-        }
-        return sb.ToString();
-    }
-
-    private static string GenerateOrchestratorPs1(DropManifest manifest)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine("# KrakenDeploy Offline Drop Orchestrator");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"# Deployment: {manifest.DeploymentId}");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"# Release:    {manifest.ReleaseVersion}");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"# Environment: {manifest.EnvironmentName}");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"# Generated:  {manifest.CreatedUtc:O}");
-        sb.AppendLine();
-        sb.AppendLine("$ErrorActionPreference = 'Stop'");
-        sb.AppendLine("$DropRoot = $PSScriptRoot");
-        sb.AppendLine("$LogFile  = Join-Path $DropRoot 'deployment-log.txt'");
-        sb.AppendLine("$ResultFile = Join-Path $DropRoot 'deployment-result.json'");
-        sb.AppendLine("$ArtifactsDir = Join-Path $DropRoot 'artifacts'");
-        sb.AppendLine("if (-not (Test-Path $ArtifactsDir)) { New-Item -ItemType Directory -Path $ArtifactsDir | Out-Null }");
-        sb.AppendLine();
-        sb.AppendLine("function Write-Log($Message) {");
-        sb.AppendLine("    $ts = (Get-Date).ToUniversalTime().ToString('o')");
-        sb.AppendLine("    $line = \"$ts | info | $Message\"");
-        sb.AppendLine("    Add-Content -Path $LogFile -Value $line -Encoding UTF8");
-        sb.AppendLine("    Write-Host $line");
-        sb.AppendLine("}");
-        sb.AppendLine();
-        sb.AppendLine("# Load variables");
-        sb.AppendLine("$Variables = Get-Content (Join-Path $DropRoot 'variables.json') -Raw | ConvertFrom-Json");
-        sb.AppendLine();
-        sb.AppendLine("$Failed = $false");
-        sb.AppendLine("$StartTime = (Get-Date).ToUniversalTime()");
-        sb.AppendLine("Write-Log 'Deployment started'");
-        sb.AppendLine();
-
-        foreach (var step in manifest.Steps)
-        {
-            var safeName = SanitizeFileName(step.Name);
-            sb.AppendLine(CultureInfo.InvariantCulture, $"# ── Step {step.Index}: {step.Name} ──");
-            sb.AppendLine(CultureInfo.InvariantCulture, $"Write-Log 'Starting step {step.Index}: {step.Name}'");
-
-            if (step.Config.TryGetValue(KrakenScriptConfigKeys.ScriptBody, out _))
-            {
-                sb.AppendLine(CultureInfo.InvariantCulture, $"$stepScript = Join-Path $DropRoot 'scripts' 'step-{step.Index}-{safeName}.ps1'");
-                sb.AppendLine("if (Test-Path $stepScript) {");
-                sb.AppendLine("    try {");
-                sb.AppendLine("        & $stepScript");
-                sb.AppendLine(CultureInfo.InvariantCulture, $"        Write-Log 'Step {step.Index} succeeded'");
-                sb.AppendLine("    } catch {");
-                sb.AppendLine(CultureInfo.InvariantCulture, $"        Write-Log \"Step {step.Index} failed: $($_.Exception.Message)\"");
-                sb.AppendLine("        $Failed = $true");
-                sb.AppendLine("    }");
-                sb.AppendLine("} else {");
-                sb.AppendLine(CultureInfo.InvariantCulture, $"    Write-Log 'Step {step.Index}: script not found — skipped'");
-                sb.AppendLine("}");
-            }
-            else
-            {
-                sb.AppendLine(CultureInfo.InvariantCulture, $"Write-Log 'Step {step.Index}: no script body — manual step'");
-            }
-
-            sb.AppendLine();
-        }
-
-        sb.AppendLine("$EndTime = (Get-Date).ToUniversalTime()");
-        sb.AppendLine("$Status = if ($Failed) { 'Failed' } else { 'Succeeded' }");
-        sb.AppendLine("$Result = @{");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"    deploymentId = '{manifest.DeploymentId}'");
-        sb.AppendLine("    status       = $Status");
-        sb.AppendLine("    completedUtc = $EndTime.ToString('o')");
-        sb.AppendLine("} | ConvertTo-Json -Depth 3");
-        sb.AppendLine("Set-Content -Path $ResultFile -Value $Result -Encoding UTF8");
-        sb.AppendLine("Write-Log \"Deployment completed with status: $Status\"");
-        sb.AppendLine();
-        sb.AppendLine("Write-Host \"\"");
-        sb.AppendLine("Write-Host \"Result written to: $ResultFile\"");
-        sb.AppendLine("Write-Host \"Log written to:    $LogFile\"");
-        sb.AppendLine("Write-Host \"Artifacts:         $ArtifactsDir\"");
-        sb.AppendLine("Write-Host \"\"");
-        sb.AppendLine("Write-Host 'Package the result files and upload them back to the KrakenDeploy server.'");
-
-        return sb.ToString();
-    }
-
-    private static string GenerateOrchestratorSh(DropManifest manifest)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine("#!/usr/bin/env bash");
-        sb.AppendLine("set -euo pipefail");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"# KrakenDeploy Offline Drop Orchestrator");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"# Deployment: {manifest.DeploymentId}");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"# Release:    {manifest.ReleaseVersion}");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"# Environment: {manifest.EnvironmentName}");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"# Generated:  {manifest.CreatedUtc:O}");
-        sb.AppendLine();
-        sb.AppendLine("DROP_ROOT=\"$(cd \"$(dirname \"$0\")\" && pwd)\"");
-        sb.AppendLine("LOG_FILE=\"$DROP_ROOT/deployment-log.txt\"");
-        sb.AppendLine("RESULT_FILE=\"$DROP_ROOT/deployment-result.json\"");
-        sb.AppendLine("ARTIFACTS_DIR=\"$DROP_ROOT/artifacts\"");
-        sb.AppendLine("mkdir -p \"$ARTIFACTS_DIR\"");
-        sb.AppendLine();
-        sb.AppendLine("log_msg() { local ts; ts=$(date -u +%FT%T.%3NZ); echo \"$ts | info | $1\" | tee -a \"$LOG_FILE\"; }");
-        sb.AppendLine();
-        sb.AppendLine("FAILED=false");
-        sb.AppendLine("log_msg 'Deployment started'");
-        sb.AppendLine();
-
-        foreach (var step in manifest.Steps)
-        {
-            var safeName = SanitizeFileName(step.Name);
-            sb.AppendLine(CultureInfo.InvariantCulture, $"# ── Step {step.Index}: {step.Name} ──");
-            sb.AppendLine(CultureInfo.InvariantCulture, $"log_msg 'Starting step {step.Index}: {step.Name}'");
-
-            if (step.Config.TryGetValue(KrakenScriptConfigKeys.ScriptBody, out _))
-            {
-                sb.AppendLine(CultureInfo.InvariantCulture, $"STEP_SCRIPT=\"$DROP_ROOT/scripts/step-{step.Index}-{safeName}.ps1\"");
-                sb.AppendLine("if [ -f \"$STEP_SCRIPT\" ]; then");
-                sb.AppendLine("    if pwsh -NonInteractive -NoProfile -File \"$STEP_SCRIPT\"; then");
-                sb.AppendLine(CultureInfo.InvariantCulture, $"        log_msg 'Step {step.Index} succeeded'");
-                sb.AppendLine("    else");
-                sb.AppendLine(CultureInfo.InvariantCulture, $"        log_msg 'Step {step.Index} failed'");
-                sb.AppendLine("        FAILED=true");
-                sb.AppendLine("    fi");
-                sb.AppendLine("else");
-                sb.AppendLine(CultureInfo.InvariantCulture, $"    log_msg 'Step {step.Index}: script not found — skipped'");
-                sb.AppendLine("fi");
-            }
-            else
-            {
-                sb.AppendLine(CultureInfo.InvariantCulture, $"log_msg 'Step {step.Index}: no script body — manual step'");
-            }
-
-            sb.AppendLine();
-        }
-
-        sb.AppendLine("if $FAILED; then STATUS='Failed'; else STATUS='Succeeded'; fi");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"cat > \"$RESULT_FILE\" <<EOFRESULT");
-        sb.AppendLine("{");
-        sb.AppendLine(CultureInfo.InvariantCulture, $"  \"deploymentId\": \"{manifest.DeploymentId}\",");
-        sb.AppendLine("  \"status\": \"$STATUS\",");
-        sb.AppendLine("  \"completedUtc\": \"$(date -u +%FT%T.%3NZ)\"");
-        sb.AppendLine("}");
-        sb.AppendLine("EOFRESULT");
-        sb.AppendLine();
-        sb.AppendLine("log_msg \"Deployment completed with status: $STATUS\"");
-        sb.AppendLine("echo ''");
-        sb.AppendLine("echo \"Result: $RESULT_FILE\"");
-        sb.AppendLine("echo \"Log:    $LOG_FILE\"");
-        sb.AppendLine("echo 'Package the result files and upload them back to the KrakenDeploy server.'");
-
-        return sb.ToString();
     }
 }
 
@@ -418,6 +431,7 @@ public class DropBundleService(
 
 internal sealed class DropManifest
 {
+    public int BundleFormat { get; set; }
     public Guid DeploymentId { get; set; }
     public string ProjectName { get; set; } = "";
     public string ReleaseVersion { get; set; } = "";
@@ -433,14 +447,4 @@ internal sealed class DropManifestStep
     public int Index { get; set; }
     public string Name { get; set; } = "";
     public string StepType { get; set; } = "";
-    public string PackageId { get; set; } = "";
-    public string PackageVersion { get; set; } = "";
-    public Dictionary<string, string> Config { get; set; } = [];
-}
-
-internal sealed class DropResultTemplate
-{
-    public Guid DeploymentId { get; set; }
-    public string Status { get; set; } = "";
-    public DateTimeOffset? CompletedUtc { get; set; }
 }

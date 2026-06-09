@@ -132,8 +132,10 @@ public sealed class ReleaseVariableSnapshotTests(PostgresFixture postgres)
         var (project, env, target) = await SeedProjectWithEnvAsync(targetRoles: ["web"]);
         var vars = NewVarService(postgres);
 
-        // Three variables sharing a name, with progressively more specific scopes —
-        // the env-scoped one should win for a deployment to (env, target).
+        // Three variables sharing a name, with progressively more specific scopes.
+        // Octopus scope-specificity: a target tag / role is MORE specific than an
+        // environment, so for a deployment to (env, target, role=web) the
+        // role-scoped value wins.
         await vars.CreateVariableAsync(project.Id, "Db.Host", "default-host", VariableType.Text,
             scope: new VariableScope());
         await vars.CreateVariableAsync(project.Id, "Db.Host", "env-host", VariableType.Text,
@@ -150,8 +152,8 @@ public sealed class ReleaseVariableSnapshotTests(PostgresFixture postgres)
             targetId: target.Id,
             targetRoles: ["web"]);
 
-        // env (score +4) > role (score +2) > unscoped (score 0); env wins.
-        resolved["Db.Host"].Should().Be("env-host");
+        // role/tag (more specific) > env > unscoped; role wins.
+        resolved["Db.Host"].Should().Be("role-host");
     }
 
     [Fact]

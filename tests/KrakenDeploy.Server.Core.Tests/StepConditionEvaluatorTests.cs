@@ -1,5 +1,5 @@
 using FluentAssertions;
-using KrakenDeploy.Server.Core.Domain.Processes;
+using KrakenDeploy.Execution;
 using Octostache;
 
 namespace KrakenDeploy.Server.Core.Tests;

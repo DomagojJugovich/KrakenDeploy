@@ -74,6 +74,29 @@ public sealed class PerformanceSettingsServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task SaveAsync_persists_EmbedOfflineRunner_toggle()
+    {
+        // Regression guard: SaveAsync previously copied every field EXCEPT
+        // EmbedOfflineRunner, so the GUI toggle silently never persisted.
+        var svc = NewSvc();
+        (await svc.GetAsync()).EmbedOfflineRunner.Should().BeTrue("default is true");
+
+        await svc.SaveAsync(new PerformanceSettings
+        {
+            Id = PerformanceSettings.SingletonId,
+            EmbedOfflineRunner = false,
+        });
+        (await svc.GetAsync()).EmbedOfflineRunner.Should().BeFalse("the OFF toggle must persist");
+
+        await svc.SaveAsync(new PerformanceSettings
+        {
+            Id = PerformanceSettings.SingletonId,
+            EmbedOfflineRunner = true,
+        });
+        (await svc.GetAsync()).EmbedOfflineRunner.Should().BeTrue("the ON toggle must persist");
+    }
+
+    [Fact]
     public async Task SaveAsync_overwrites_existing_row()
     {
         var svc = NewSvc();
@@ -138,6 +161,7 @@ public sealed class PerformanceSettingsServiceTests(PostgresFixture postgres)
         PerformanceSettings.DefaultSlowStepThresholdMinutes.Should().Be(10);
         PerformanceSettings.DefaultAuditLogRetentionDays.Should().Be(365);
         PerformanceSettings.DefaultAiCallLogRetentionDays.Should().Be(90);
+        PerformanceSettings.DefaultEmbedOfflineRunner.Should().BeTrue();
 
         await Task.CompletedTask;
     }

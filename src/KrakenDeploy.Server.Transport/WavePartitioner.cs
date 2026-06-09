@@ -1,4 +1,5 @@
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Execution;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Releases;
 
@@ -97,35 +98,23 @@ public static class WavePartitioner
         ArgumentNullException.ThrowIfNull(steps);
         ArgumentNullException.ThrowIfNull(triggerByIndex);
 
-        var waves = new List<Wave>();
-        if (steps.Count == 0)
+        // Trigger-based grouping is shared with the offline agent runner via
+        // KrakenDeploy.Execution's WaveGrouping (single source of truth for the
+        // "first step + StartWithPrevious run until StartAfterPrevious" rule +
+        // the index ordering). The first step's trigger is ignored (the helper
+        // only evaluates the predicate for steps after the first).
+        var groups = WaveGrouping.Partition(
+            steps,
+            s => s.Index,
+            s => triggerByIndex(s.Index) == StepStartTrigger.StartWithPrevious);
+
+        // Classification (server-side vs target-side) + mixed-wave validation
+        // stay here — they are online-only concerns the agent does not share.
+        var waves = new List<Wave>(groups.Count);
+        foreach (var group in groups)
         {
-            return waves;
+            waves.Add(BuildWave(group));
         }
-
-        var ordered = steps.OrderBy(s => s.Index).ToArray();
-
-        // Start the first wave with the first step. The first step's
-        // StartTrigger is always ignored — a step at SortOrder == 0 cannot
-        // run "with the previous step" because there is none.
-        var current = new List<DeploymentStepPlan> { ordered[0] };
-
-        for (var i = 1; i < ordered.Length; i++)
-        {
-            var step    = ordered[i];
-            var trigger = triggerByIndex(step.Index);
-
-            if (trigger == StepStartTrigger.StartWithPrevious)
-            {
-                current.Add(step);
-            }
-            else
-            {
-                waves.Add(BuildWave(current));
-                current = [step];
-            }
-        }
-        waves.Add(BuildWave(current));
 
         return waves;
     }

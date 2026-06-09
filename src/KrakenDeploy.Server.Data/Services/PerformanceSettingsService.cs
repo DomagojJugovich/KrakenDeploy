@@ -96,6 +96,7 @@ public sealed class PerformanceSettingsService(
         row.SlowStepThresholdMinutes       = update.SlowStepThresholdMinutes;
         row.AuditLogRetentionDays          = update.AuditLogRetentionDays;
         row.AiCallLogRetentionDays         = update.AiCallLogRetentionDays;
+        row.EmbedOfflineRunner             = update.EmbedOfflineRunner;
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         InvalidateCache();

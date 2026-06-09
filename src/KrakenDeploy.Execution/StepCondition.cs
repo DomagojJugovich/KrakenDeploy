@@ -1,4 +1,4 @@
-namespace KrakenDeploy.Server.Core.Domain.Processes;
+namespace KrakenDeploy.Execution;
 
 /// <summary>
 /// Per-step "Run Condition" knob (M14.2). Decides whether a step runs
@@ -15,6 +15,13 @@ namespace KrakenDeploy.Server.Core.Domain.Processes;
 /// Explicit integer values are pinned because the column is persisted
 /// as <c>int</c>; renaming or reordering would silently change saved
 /// rows' semantics.
+/// </para>
+///
+/// <para>
+/// Lives in <c>KrakenDeploy.Execution</c> (not Server.Core) so the single
+/// <see cref="StepConditionEvaluator"/> can be shared by both the server
+/// orchestrator and the offline agent runner — the agent cannot reference
+/// Server.Core. The persisted int values are unchanged by the move.
 /// </para>
 /// </summary>
 public enum StepCondition
@@ -33,7 +40,7 @@ public enum StepCondition
     Always   = 2,
 
     /// <summary>Run iff
-    /// <see cref="DeploymentStep.ConditionVariableExpression"/> evaluates
+    /// <c>DeploymentStep.ConditionVariableExpression</c> evaluates
     /// truthy after Octostache expansion. See
     /// <c>AuditEventType.DeploymentVariableConditionUnresolved</c> for
     /// the failure mode when the expression references an unknown

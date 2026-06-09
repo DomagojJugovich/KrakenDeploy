@@ -134,6 +134,17 @@ public sealed class ServerScriptStepRunner(
                 ct).ConfigureAwait(false);
             return success;
         }
+        catch (OperationCanceledException)
+        {
+            // The per-attempt timeout (StepRetryRunner's linked CancelAfter) and a
+            // deployment-level cancel both surface here as WaitForExitAsync throwing.
+            // Propagate so StepRetryRunner can classify it: a per-step timeout becomes
+            // StepOutcomeKind.TimedOut (the generic catch below would otherwise mis-
+            // report it as Failed), and a deployment cancel propagates as cancellation.
+            // NB: the spawned OS process is NOT killed on timeout — that orphan is
+            // pre-existing and out of scope for this reporting fix.
+            throw;
+        }
         catch (Exception ex)
         {
             logger.LogError(ex,

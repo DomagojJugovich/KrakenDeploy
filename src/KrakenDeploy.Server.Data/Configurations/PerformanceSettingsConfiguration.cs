@@ -11,6 +11,10 @@ public sealed class PerformanceSettingsConfiguration
     {
         builder.ToTable("performance_settings");
         builder.HasKey(p => p.Id);
-        // All knobs are simple primitives — no special column mapping.
+        // All knobs are simple primitives — no special column mapping, except
+        // EmbedOfflineRunner carries a DB default so the column backfills true
+        // on the pre-existing singleton row when the migration adds it.
+        builder.Property(p => p.EmbedOfflineRunner)
+            .HasDefaultValue(PerformanceSettings.DefaultEmbedOfflineRunner);
     }
 }
