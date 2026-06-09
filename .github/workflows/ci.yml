@@ -23,14 +23,17 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      # global.json pins 9.0.101 with rollForward: latestFeature,
-      # so 9.0.x will satisfy it and keep the runner SDK up to date.
-      - name: Setup .NET 9
-        uses: actions/setup-dotnet@v4
+      # global.json pins SDK 10.0.300 with rollForward: latestFeature, so any
+      # 10.0.3xx+ SDK satisfies it. GitHub runners ship .NET 10 preinstalled, so
+      # this step is belt-and-suspenders: it guarantees a 10.0 SDK is present in
+      # case a runner image lags. (The project began on .NET 9 and was upgraded
+      # to .NET 10 — hence the old 9.0.x install this replaces.)
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: '9.0.x'
+          dotnet-version: '10.0.x'
 
       - name: Restore
         run: dotnet restore KrakenDeploy.sln
@@ -61,7 +64,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: test-results-${{ matrix.os }}
           path: '**/TestResults/*.trx'
@@ -77,7 +80,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Run smoke test
         run: bash scripts/smoke-test.sh
