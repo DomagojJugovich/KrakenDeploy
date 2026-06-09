@@ -25,10 +25,26 @@ public class TargetRegistrationService(
     /// Creates a new <see cref="DeploymentTarget"/> with a fresh one-time
     /// registration token. Returns the target and the raw (unhashed) token.
     /// </summary>
+    public Task<(DeploymentTarget Target, string PlainToken)> CreateAsync(
+        string name,
+        IReadOnlyList<string> roles,
+        TransportMode transportMode,
+        CancellationToken ct = default)
+        => CreateAsync(name, roles, transportMode, bypassLicenseCheck: false, ct);
+
+    /// <summary>
+    /// As the public overload, but <paramref name="bypassLicenseCheck"/> skips
+    /// the server-wide license quota gate. Only the dev-only
+    /// <c>/api/dev/smoke-register</c> endpoint passes <c>true</c> — the CI smoke
+    /// test runs against a fresh, license-less DB and just needs one target to
+    /// prove agent connectivity. Every production path keeps license enforcement
+    /// (the bool defaults to <c>false</c>).
+    /// </summary>
     public async Task<(DeploymentTarget Target, string PlainToken)> CreateAsync(
         string name,
         IReadOnlyList<string> roles,
         TransportMode transportMode,
+        bool bypassLicenseCheck,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(name);
@@ -43,14 +59,17 @@ public class TargetRegistrationService(
         // but the cap is a soft business limit, not a security boundary —
         // worst case is +1 over the cap under heavy concurrent operator
         // activity, which the next attempt will block).
-        var currentTargets = await db.DeploymentTargets
-            .IgnoreQueryFilters()
-            .CountAsync(ct)
-            .ConfigureAwait(false);
-        var refusal = licenseGate.CheckTargetCreate(currentTargets);
-        if (refusal is not null)
+        if (!bypassLicenseCheck)
         {
-            throw new LicenseLimitException(refusal);
+            var currentTargets = await db.DeploymentTargets
+                .IgnoreQueryFilters()
+                .CountAsync(ct)
+                .ConfigureAwait(false);
+            var refusal = licenseGate.CheckTargetCreate(currentTargets);
+            if (refusal is not null)
+            {
+                throw new LicenseLimitException(refusal);
+            }
         }
 
         var (plainToken, hash) = GenerateToken();

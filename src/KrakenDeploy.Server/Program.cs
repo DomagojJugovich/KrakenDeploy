@@ -2471,8 +2471,13 @@ public static class Program
                     TargetRegistrationService registrationSvc,
                     CancellationToken ct) =>
                 {
+                    // Dev-only smoke affordance: bypass the license quota gate so
+                    // the CI smoke test can register its one agent against a
+                    // fresh, license-less DB. Never reachable in production
+                    // (endpoint is IsDevelopment-gated).
                     var (_, token) = await registrationSvc
-                        .CreateAsync("smoke-agent", ["smoke"], TransportMode.Reverse, ct)
+                        .CreateAsync("smoke-agent", ["smoke"], TransportMode.Reverse,
+                            bypassLicenseCheck: true, ct)
                         .ConfigureAwait(false);
                     return Results.Ok(new { token });
                 }).AllowAnonymous();
