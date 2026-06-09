@@ -48,7 +48,6 @@ public sealed class DeploymentWorker(
     DeployReleaseStepRunner deployReleaseRunner,
     IPendingSubPlanRegistry subPlans,
     IServiceScopeFactory scopeFactory,
-    IDbContextFactory<KrakenDbContext> dbContextFactory,
     DeploymentDiagnosisChannel diagnosisChannel,
     ILogger<DeploymentWorker> logger)
     : BackgroundService
@@ -1028,16 +1027,22 @@ public sealed class DeploymentWorker(
     }
 
     /// <summary>
-    /// Appends one deployment-log entry through a SHORT-LIVED context from the
-    /// factory instead of the shared per-dispatch <c>db</c>. Wave steps and
-    /// rolling-deployment targets run in parallel and would otherwise contend on
-    /// the single (non-thread-safe) <see cref="KrakenDbContext"/>; giving each
-    /// concurrent log write its own context removes that contention entirely —
-    /// no global lock — so the fan-out scales (DB concurrency is then bounded by
-    /// the connection pool, not serialised). <see cref="LogSequencer"/> is
-    /// independently locked, so sequence numbers stay monotonic across branches,
-    /// and <c>IAuditLog</c> already uses its own per-call context
+    /// Appends one deployment-log entry through a SHORT-LIVED DI scope (its own
+    /// <see cref="KrakenDbContext"/>) instead of the shared per-dispatch
+    /// <c>db</c>. Wave steps and rolling-deployment targets run in parallel and
+    /// would otherwise contend on the single (non-thread-safe) DbContext; giving
+    /// each concurrent log write its own scoped context removes that contention
+    /// entirely — no global lock — so the fan-out scales (DB concurrency is then
+    /// bounded by the connection pool, not serialised). <see cref="LogSequencer"/>
+    /// is independently locked, so sequence numbers stay monotonic across
+    /// branches, and <c>IAuditLog</c> already uses its own per-call context
     /// (<c>AuditLogService</c>), so audit writes need no special handling.
+    /// <para>
+    /// Resolved via <see cref="IServiceScopeFactory"/> rather than injecting
+    /// <c>IDbContextFactory</c>: the factory is registered SCOPED in this app, so
+    /// injecting it into this singleton hosted service is a captive dependency
+    /// that fails the host's ValidateOnBuild. Mirrors <c>DispatchAsync</c>.
+    /// </para>
     /// Used only on the CONCURRENT paths; the sequential post-wave writes keep
     /// using the shared <c>db</c>. Internal (not private) so a focused test can
     /// drive it from genuinely-parallel tasks (the orchestrator's fake-agent
@@ -1046,7 +1051,8 @@ public sealed class DeploymentWorker(
     internal async Task AppendConcurrentLogAsync(
         Guid deploymentId, LogSequencer logSeq, string level, string message, CancellationToken ct)
     {
-        await using var logDb = await dbContextFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var logDb = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         logDb.DeploymentLogEntries.Add(new DeploymentLogEntry
         {
             DeploymentId = deploymentId,

@@ -121,7 +121,6 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             deployReleaseRunner:   _services.GetRequiredService<DeployReleaseStepRunner>(),
             subPlans:              _subPlans,
             scopeFactory:          _services.GetRequiredService<IServiceScopeFactory>(),
-            dbContextFactory:      _services.GetRequiredService<IDbContextFactory<KrakenDbContext>>(),
             // M11.C diagnosis channel — the harness doesn't run the diagnosis
             // worker, so FailAsync's writes just accumulate harmlessly on this
             // unbounded channel. DiagnosisChannel exposes the written ids for
