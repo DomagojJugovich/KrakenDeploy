@@ -11,6 +11,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// Pins the validation contract (transport-config schema-on-save) and the
 /// Space + system-wide visibility rules the UI relies on.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class EventSubscriptionServiceTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

@@ -15,6 +15,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// tested separately in <c>AuditExportServiceCsvEscapeTests</c>; this file
 /// pins the end-to-end shape — headers, row order, BOM, JSON structure.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class AuditExportServiceTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

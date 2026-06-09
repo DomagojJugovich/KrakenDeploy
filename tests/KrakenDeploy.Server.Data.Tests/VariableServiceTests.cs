@@ -13,6 +13,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// Integration tests for <see cref="VariableService"/>:
 /// CRUD, AES-256-GCM encryption, scope resolution, and StringArray handling.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {

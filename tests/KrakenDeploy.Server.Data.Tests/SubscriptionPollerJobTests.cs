@@ -18,6 +18,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// transport got called and the delivery row landed. Uses a capturing
 /// HTTP handler so the test never makes a real network call.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class SubscriptionPollerJobTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

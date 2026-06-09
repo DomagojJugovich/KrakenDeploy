@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data.Tests;
 
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public class MigrationsTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {

@@ -21,6 +21,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// index — leaving rows around would fail subsequent inserts).
 /// </para>
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class DbKrakenAiSettingsProviderTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

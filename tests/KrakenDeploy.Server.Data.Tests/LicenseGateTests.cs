@@ -14,6 +14,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// filter (otherwise foreign-Space rows would silently fall out of the count
 /// and the gate would let an operator drift past the cap).
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class LicenseGateTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

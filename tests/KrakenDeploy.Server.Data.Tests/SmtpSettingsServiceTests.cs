@@ -15,6 +15,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// it's covered only by a connect-failure test (probe should never
 /// throw — it returns a result with Succeeded=false).
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class SmtpSettingsServiceTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

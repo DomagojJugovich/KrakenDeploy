@@ -16,6 +16,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// gated by both the <c>audit.purge-enabled</c> feature flag (master
 /// kill-switch) and the DB-or-config retention day-count.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class AuditRetentionJobTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

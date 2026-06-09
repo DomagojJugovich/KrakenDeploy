@@ -33,6 +33,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// runner polls until the per-attempt timeout cancels it.
 /// </para>
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class DeployReleaseStepTimeoutTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>

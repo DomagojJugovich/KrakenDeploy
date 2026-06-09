@@ -40,12 +40,22 @@ jobs:
       - name: Build
         run: dotnet build KrakenDeploy.sln --no-restore --configuration Release
 
-      # Testcontainers.PostgreSql pulls a postgres:16 image at test time.
-      # Docker is pre-installed on both ubuntu-latest and windows-latest
-      # GitHub runners. Ryuk (the cleanup sidecar) is disabled because it
-      # can be flaky on Windows runner networking.
-      - name: Test
+      # Testcontainers.PostgreSql pulls a postgres:16 (Linux) image at test time.
+      # Linux runners run the full suite. Ryuk (the cleanup sidecar) is disabled
+      # because it can be flaky on Windows runner networking.
+      - name: Test (Linux — full suite incl. Testcontainers)
+        if: runner.os != 'Windows'
         run: dotnet test KrakenDeploy.sln --no-build --configuration Release --logger trx --results-directory TestResults
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+
+      # GitHub windows-latest runners can't run Linux Docker containers, so the
+      # Testcontainers (Postgres) tests can't start there. They're tagged
+      # [Trait("Category","Docker")]; skip them on Windows and rely on the Linux
+      # job for container coverage. Everything else still runs on Windows.
+      - name: Test (Windows — skip Docker/Testcontainers)
+        if: runner.os == 'Windows'
+        run: dotnet test KrakenDeploy.sln --no-build --configuration Release --logger trx --results-directory TestResults --filter "Category!=Docker"
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
 

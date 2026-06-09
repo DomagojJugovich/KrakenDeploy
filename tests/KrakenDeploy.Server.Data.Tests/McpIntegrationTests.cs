@@ -30,6 +30,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// dispatch layer.
 /// </para>
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class McpIntegrationTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

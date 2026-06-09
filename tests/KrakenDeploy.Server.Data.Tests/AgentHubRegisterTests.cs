@@ -16,6 +16,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// This validates the DB-update logic without requiring a full SignalR transport.
 /// End-to-end hub connectivity is covered by the M1 smoke test.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {

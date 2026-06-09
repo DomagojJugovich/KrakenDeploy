@@ -11,6 +11,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// that breaks the "set + immediately read" invariant (the UI relies on
 /// it) gets caught here.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class FeatureFlagServiceTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

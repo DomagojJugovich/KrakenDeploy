@@ -9,6 +9,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// Pins the fail-safe default (unclassified = Production) and the round-trip,
 /// since the ad-hoc approval policy keys off this value.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class DeploymentTargetRiskLevelTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

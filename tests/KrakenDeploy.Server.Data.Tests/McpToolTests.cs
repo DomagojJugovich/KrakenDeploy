@@ -21,6 +21,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// not-found throwing, and the retry tool's deployment-creation side
 /// effect.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class McpToolTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

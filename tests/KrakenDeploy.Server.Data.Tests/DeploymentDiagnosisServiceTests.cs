@@ -26,6 +26,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// relevant log lines; re-diagnosis upserts; AI-unavailable
 /// (disabled / feature-off / budget) never throws + never persists.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class DeploymentDiagnosisServiceTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

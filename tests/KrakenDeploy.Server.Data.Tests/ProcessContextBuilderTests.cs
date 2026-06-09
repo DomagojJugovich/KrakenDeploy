@@ -16,6 +16,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// DTO shape: curated config summaries, resolved parent-group names,
 /// server-side classification, and the drill-down fullConfigUri.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class ProcessContextBuilderTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

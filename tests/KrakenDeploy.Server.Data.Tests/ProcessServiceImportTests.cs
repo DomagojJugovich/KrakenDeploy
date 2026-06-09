@@ -8,6 +8,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// Integration tests for <see cref="ProcessService.ImportDeploymentProcessAsync"/>
 /// against a real Postgres database. Uses the shared <see cref="PostgresFixture"/>.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class ProcessServiceImportTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>

@@ -85,11 +85,14 @@ public sealed class AwsS3UploadArchiveTests
         // tests/AwsS3UploadStepPackage.Tests/bin/Debug/net10.0/
         //   → up five → solution root
         //   → examples/AwsS3UploadStepPackage/bin/Debug/net10.0/*.kdeploy-step
-        var candidate = Path.GetFullPath(Path.Combine(
+        var binRoot = Path.GetFullPath(Path.Combine(
             here, "..", "..", "..", "..", "..",
-            "examples", "AwsS3UploadStepPackage",
-            "bin", "Debug", "net10.0",
-            "kraken.steps.aws-s3-upload-1.0.0.kdeploy-step"));
-        return File.Exists(candidate) ? candidate : null;
+            "examples", "AwsS3UploadStepPackage", "bin"));
+        // Configuration-agnostic: CI builds Release, local builds Debug — locate
+        // the packed archive under bin/<Config>/<tfm>/ wherever it landed.
+        return Directory.Exists(binRoot)
+            ? Directory.EnumerateFiles(binRoot, "kraken.steps.aws-s3-upload-1.0.0.kdeploy-step",
+                SearchOption.AllDirectories).FirstOrDefault()
+            : null;
     }
 }

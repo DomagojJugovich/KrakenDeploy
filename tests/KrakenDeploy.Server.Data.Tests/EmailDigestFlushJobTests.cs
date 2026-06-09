@@ -21,6 +21,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// without needing an SMTP listener (uses RFC 5737 TEST-NET-1 for
 /// deterministic-failure paths).
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class EmailDigestFlushJobTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

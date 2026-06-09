@@ -16,6 +16,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// live resolution overlay (tenant &lt; library &lt; project), and the
 /// release-snapshot folding with layer-dominant precedence.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {

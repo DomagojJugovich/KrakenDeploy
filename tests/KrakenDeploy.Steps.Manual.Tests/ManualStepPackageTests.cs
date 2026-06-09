@@ -229,11 +229,14 @@ public sealed class ManualStepPackageTests
         var here = AppContext.BaseDirectory;
         // tests/KrakenDeploy.Steps.Manual.Tests/bin/Debug/net10.0/ → up four
         // → solution root → steps/.../bin/.../*.kdeploy-step
-        var candidate = Path.GetFullPath(Path.Combine(
+        var binRoot = Path.GetFullPath(Path.Combine(
             here, "..", "..", "..", "..", "..",
-            "steps", "KrakenDeploy.Steps.Manual",
-            "bin", "Debug", "net10.0",
-            "octopus.manual-1.0.0.kdeploy-step"));
-        return File.Exists(candidate) ? candidate : null;
+            "steps", "KrakenDeploy.Steps.Manual", "bin"));
+        // Configuration-agnostic: CI builds Release, local builds Debug — locate
+        // the packed archive under bin/<Config>/<tfm>/ wherever it landed.
+        return Directory.Exists(binRoot)
+            ? Directory.EnumerateFiles(binRoot, "octopus.manual-1.0.0.kdeploy-step",
+                SearchOption.AllDirectories).FirstOrDefault()
+            : null;
     }
 }

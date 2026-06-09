@@ -165,11 +165,14 @@ public sealed class SubstituteVariablesPackageTests : IDisposable
     private static string? FindBuiltArchive()
     {
         var here      = AppContext.BaseDirectory;
-        var candidate = Path.GetFullPath(Path.Combine(
+        var binRoot = Path.GetFullPath(Path.Combine(
             here, "..", "..", "..", "..", "..",
-            "steps", "KrakenDeploy.Steps.SubstituteVariables",
-            "bin", "Debug", "net10.0",
-            "octopus.substitutevariables-1.0.0.kdeploy-step"));
-        return File.Exists(candidate) ? candidate : null;
+            "steps", "KrakenDeploy.Steps.SubstituteVariables", "bin"));
+        // Configuration-agnostic: CI builds Release, local builds Debug — locate
+        // the packed archive under bin/<Config>/<tfm>/ wherever it landed.
+        return Directory.Exists(binRoot)
+            ? Directory.EnumerateFiles(binRoot, "octopus.substitutevariables-1.0.0.kdeploy-step",
+                SearchOption.AllDirectories).FirstOrDefault()
+            : null;
     }
 }

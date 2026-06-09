@@ -21,6 +21,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// log returns ndjson, and not-found cases throw McpException + audit
 /// "not-found".
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class McpResourceTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

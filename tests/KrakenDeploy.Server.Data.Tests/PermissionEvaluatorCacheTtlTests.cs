@@ -13,6 +13,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// bounds that staleness to seconds; <c>bypassCache: true</c> (used by the
 /// execution-time action guard) reflects the change immediately.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class PermissionEvaluatorCacheTtlTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>

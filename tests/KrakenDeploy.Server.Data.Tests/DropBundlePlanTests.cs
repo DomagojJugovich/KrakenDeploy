@@ -23,6 +23,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// step-handler archives it pins. Pins the encrypt→decrypt roundtrip and the
 /// embedding so the offline runner can reconstruct + execute the plan.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class DropBundlePlanTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {

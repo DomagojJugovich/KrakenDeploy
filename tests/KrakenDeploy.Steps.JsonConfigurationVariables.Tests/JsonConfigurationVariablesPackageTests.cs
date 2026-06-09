@@ -151,11 +151,14 @@ public sealed class JsonConfigurationVariablesPackageTests : IDisposable
     private static string? FindBuiltArchive()
     {
         var here      = AppContext.BaseDirectory;
-        var candidate = Path.GetFullPath(Path.Combine(
+        var binRoot = Path.GetFullPath(Path.Combine(
             here, "..", "..", "..", "..", "..",
-            "steps", "KrakenDeploy.Steps.JsonConfigurationVariables",
-            "bin", "Debug", "net10.0",
-            "octopus.jsonconfigurationvariables-1.0.0.kdeploy-step"));
-        return File.Exists(candidate) ? candidate : null;
+            "steps", "KrakenDeploy.Steps.JsonConfigurationVariables", "bin"));
+        // Configuration-agnostic: CI builds Release, local builds Debug — locate
+        // the packed archive under bin/<Config>/<tfm>/ wherever it landed.
+        return Directory.Exists(binRoot)
+            ? Directory.EnumerateFiles(binRoot, "octopus.jsonconfigurationvariables-1.0.0.kdeploy-step",
+                SearchOption.AllDirectories).FirstOrDefault()
+            : null;
     }
 }

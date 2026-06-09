@@ -18,6 +18,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// explanations return text; unknown package → null; AI-unavailable
 /// propagates for the UI to surface.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class ProcessAssistantServiceTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

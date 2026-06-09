@@ -29,6 +29,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 ///         live-resolve fallback in that case.</item>
 /// </list>
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class ReleaseVariableSnapshotTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>

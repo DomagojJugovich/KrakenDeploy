@@ -10,6 +10,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// (name, version) pair, UpdateStepAsync re-pins on demand, and
 /// ReleaseService.CreateAsync freezes the pair into the snapshot.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class StepPackagePinTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>

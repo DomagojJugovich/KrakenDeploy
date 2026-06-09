@@ -23,6 +23,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// concurrent, cache-missing checks. With the plain-Dictionary caches it throws
 /// intermittently; with ConcurrentDictionary it stays clean.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class PermissionEvaluatorConcurrencyTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>

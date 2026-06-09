@@ -10,6 +10,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// singleton entity that backs the <c>/configuration/performance</c> page
 /// + the retention jobs + the Hangfire worker-count read at startup.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class PerformanceSettingsServiceTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

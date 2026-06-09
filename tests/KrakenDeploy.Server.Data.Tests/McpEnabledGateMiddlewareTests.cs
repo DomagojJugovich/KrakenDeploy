@@ -16,6 +16,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// <see cref="DefaultHttpContext"/> + the real Postgres-backed
 /// <c>IDbContextFactory</c> — no TestServer needed.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class McpEnabledGateMiddlewareTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

@@ -17,6 +17,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// version) and the bulk-upgrade transaction (target validation,
 /// skipped-row reasons, runbook + deployment-step partition).
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class StepPackageBulkUpgradeTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>

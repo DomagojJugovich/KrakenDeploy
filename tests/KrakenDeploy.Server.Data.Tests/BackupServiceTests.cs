@@ -15,6 +15,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// "engine returns failure result when pg_dump unavailable / connection
 /// invalid" cases.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class BackupServiceTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

@@ -5,6 +5,7 @@ using KrakenDeploy.Server.Data.Services;
 
 namespace KrakenDeploy.Server.Data.Tests;
 
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public class TargetRegistrationServiceTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {

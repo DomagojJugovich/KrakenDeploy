@@ -20,6 +20,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// + config-validation contract so a wrong-shape subscription never
 /// reaches the SMTP layer.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class EmailImmediateTransportTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

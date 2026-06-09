@@ -3,6 +3,7 @@ using KrakenDeploy.Server.Data.Services;
 
 namespace KrakenDeploy.Server.Data.Tests;
 
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public class EnvironmentServiceTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {

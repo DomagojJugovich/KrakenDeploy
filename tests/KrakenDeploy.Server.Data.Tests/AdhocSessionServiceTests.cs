@@ -25,6 +25,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// <see cref="IKrakenAi"/> for canned generation + verdict results, and a
 /// fake <see cref="IAdhocDispatcher"/> for canned per-target results.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

@@ -27,6 +27,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// a few seconds after the test completes.
 /// </para>
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class ServerScriptStepTimeoutTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>

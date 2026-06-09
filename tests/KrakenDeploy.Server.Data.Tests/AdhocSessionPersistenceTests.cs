@@ -12,6 +12,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// <c>(session_id, iter_number)</c> index, and Space auto-stamping +
 /// query-filter scoping.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class AdhocSessionPersistenceTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

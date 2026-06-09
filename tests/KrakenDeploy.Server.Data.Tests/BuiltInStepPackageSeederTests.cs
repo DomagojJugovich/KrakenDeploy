@@ -14,6 +14,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// and asserts the seeder installs it, is idempotent on re-run, and tolerates
 /// individual archive failures without aborting the whole pass.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class BuiltInStepPackageSeederTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IDisposable

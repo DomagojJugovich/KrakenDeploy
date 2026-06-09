@@ -15,6 +15,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// the IgnoreQueryFilters override, and the actual ExecuteDeleteAsync
 /// generation all exercise.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class AiCallLogRetentionJobTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

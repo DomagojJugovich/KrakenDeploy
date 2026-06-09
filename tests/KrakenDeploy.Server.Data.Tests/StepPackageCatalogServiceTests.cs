@@ -16,6 +16,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// — release-notes manifest extraction, SHA-256 directive parsing,
 /// upsert + orphan cleanup, idempotent refresh — is all server-side.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class StepPackageCatalogServiceTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>

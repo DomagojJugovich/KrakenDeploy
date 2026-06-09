@@ -16,6 +16,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// can't silently break the "operator edits Model without re-pasting the
 /// key" workflow.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class SpaceAiSettingsServiceTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

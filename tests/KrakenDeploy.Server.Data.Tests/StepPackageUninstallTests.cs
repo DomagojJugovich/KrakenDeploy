@@ -14,6 +14,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// Three outcomes: clean removal, blocked by a live <see cref="DeploymentStep"/>,
 /// blocked by a frozen <see cref="StepSnapshot"/> inside a Release.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class StepPackageUninstallTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IDisposable

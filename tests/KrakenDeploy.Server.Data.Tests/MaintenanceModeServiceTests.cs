@@ -14,6 +14,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// <c>MaintenanceMiddleware.IsExemptPath</c> directly in the Server
 /// test project.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class MaintenanceModeServiceTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

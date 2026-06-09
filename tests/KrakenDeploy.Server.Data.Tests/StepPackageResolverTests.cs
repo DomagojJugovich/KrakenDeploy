@@ -73,6 +73,7 @@ public sealed class StepPackageResolverUnitTests
     }
 }
 
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class StepPackageResolverDbTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>

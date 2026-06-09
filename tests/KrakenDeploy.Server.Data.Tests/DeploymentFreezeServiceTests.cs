@@ -13,6 +13,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// (window, project, environment, tenant tag) gets a positive + negative
 /// test here.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class DeploymentFreezeServiceTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

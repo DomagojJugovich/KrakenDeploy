@@ -15,6 +15,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// release / diff context builders against the shared Postgres fixture.
 /// These are the kernel the MCP tools + the M11.C diagnosis job consume.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class AiContextBuilderTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

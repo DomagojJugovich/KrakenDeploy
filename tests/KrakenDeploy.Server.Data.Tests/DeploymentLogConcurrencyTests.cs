@@ -28,6 +28,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// </list>
 /// </para>
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class DeploymentLogConcurrencyTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>

@@ -16,6 +16,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// stores) so we spin up a minimal DI tree against the Postgres fixture
 /// rather than newing up UserManager directly.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class UserServiceServiceAccountTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime

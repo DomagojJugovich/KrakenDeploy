@@ -15,6 +15,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// synchronously so there are no Task.Delay sleeps — each test runs
 /// in &lt;100 ms barring the Postgres roundtrip.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class OrchestratorE2ETests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>

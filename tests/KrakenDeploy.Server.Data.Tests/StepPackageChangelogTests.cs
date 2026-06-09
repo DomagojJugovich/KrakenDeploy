@@ -19,6 +19,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 ///   <item>Archive ships a hostile-sized changelog → contents are capped + truncation marker appended.</item>
 /// </list>
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class StepPackageChangelogTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IDisposable

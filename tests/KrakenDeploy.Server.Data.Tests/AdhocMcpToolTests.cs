@@ -27,6 +27,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// ApprovalPending=true — the human MUST still approve in the UI), and the
 /// gate-rejection translation.
 /// </summary>
+[Trait("Category", "Docker")]
 [Collection("Postgres")]
 public sealed class AdhocMcpToolTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>, IAsyncLifetime
