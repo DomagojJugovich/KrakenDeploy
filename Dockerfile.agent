@@ -25,7 +25,10 @@ RUN dotnet publish src/KrakenDeploy.Agent/KrakenDeploy.Agent.csproj \
     --output /app
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
+# aspnet (not the plain runtime): KrakenDeploy.Agent.Transport has a
+# FrameworkReference to Microsoft.AspNetCore.App, so the agent needs the
+# ASP.NET Core shared framework at runtime.
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
 RUN groupadd --system kraken \
