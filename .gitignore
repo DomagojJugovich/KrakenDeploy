@@ -92,9 +92,13 @@ artifacts/
 *.pfx
 *.publishsettings
 
-# Backup & report files from converting an old project
+# Backup & report files from converting an old project.
+# Anchored to the repo root: these are VS-generated upgrade artifacts that
+# only appear at the solution root. Without the leading slash, "Backup*/"
+# also matched the source folder src/.../Domain/Backup/, silently excluding
+# BackupRun.cs + BackupSettings.cs from git (they built locally but broke CI).
 _UpgradeReport_Files/
-Backup*/
+/Backup*/
 UpgradeLog*.XML
 UpgradeLog*.htm
 ServiceFabricBackup/
