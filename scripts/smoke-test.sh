@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M1 cross-platform smoke test.
+# Cross-platform smoke test.
 # Builds server + agent Docker images, starts them with Postgres, generates a
 # registration token via the dev-only endpoint, connects an agent, and asserts
 # the target goes Online by polling /healthz for connectedAgents >= 1.
@@ -22,7 +22,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "======================================"
-echo " KrakenDeploy M1 Smoke Test"
+echo " KrakenDeploy Smoke Test"
 echo "======================================"
 
 # ── 1. Build images ────────────────────────────────────────────────────────
@@ -77,6 +77,6 @@ done
 
 echo ""
 echo "======================================"
-echo " M1 SMOKE TEST PASSED"
-echo " Agent is Online — M1 exit criterion met."
+echo " SMOKE TEST PASSED"
+echo " Agent is Online — smoke exit criterion met."
 echo "======================================"

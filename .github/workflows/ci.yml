@@ -68,7 +68,7 @@ jobs:
           if-no-files-found: warn
 
   smoke:
-    name: M1 Smoke Test
+    name: Smoke Test
     runs-on: ubuntu-latest
     # Only run on pushes to main; PRs run build-and-test only.
     # Building both Docker images on every PR is too slow for a quick feedback loop.
