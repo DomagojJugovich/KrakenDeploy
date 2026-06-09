@@ -1,35 +1,41 @@
 # ── Build stage ──────────────────────────────────────────────────────────────
-FROM mcr.microsoft.com/dotnet/sdk:9.0-alpine AS build
+# Debian-based (glibc), NOT Alpine: KrakenDeploy.Contracts compiles .proto via
+# Grpc.Tools, whose bundled protoc is a glibc binary that fails to exec under
+# Alpine's musl libc (MSB6003).
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
-# Copy Central Package Management and tooling manifests first — these rarely
-# change, so Docker caches the restore layer efficiently.
-COPY Directory.Build.props Directory.Packages.props global.json ./
+# Central Package Management + the SDK pin + .editorconfig first (rarely change
+# → cached layer). .editorconfig is required at build time: it carries the
+# analyzer suppressions (e.g. CA1861 on generated EF migrations) without which
+# the Release build fails under TreatWarningsAsErrors.
+COPY Directory.Build.props Directory.Packages.props global.json .editorconfig ./
 
-# Copy project files only so 'dotnet restore' is its own cached layer.
-COPY src/KrakenDeploy.Contracts/KrakenDeploy.Contracts.csproj                src/KrakenDeploy.Contracts/
-COPY src/KrakenDeploy.Server.Core/KrakenDeploy.Server.Core.csproj             src/KrakenDeploy.Server.Core/
-COPY src/KrakenDeploy.Server.Data/KrakenDeploy.Server.Data.csproj             src/KrakenDeploy.Server.Data/
-COPY src/KrakenDeploy.Server.Transport/KrakenDeploy.Server.Transport.csproj   src/KrakenDeploy.Server.Transport/
-COPY src/KrakenDeploy.Server/KrakenDeploy.Server.csproj                       src/KrakenDeploy.Server/
+# Copy the full source the server's project graph needs. That graph spans src/
+# (Server, Server.*, Mcp, Ai, Contracts, Execution, …) and steps/ (the built-in
+# step packages the server references). Copy both wholesale rather than listing
+# ~15 individual .csproj files, which drifts out of date and silently breaks the
+# restore whenever a project is added. .dockerignore keeps bin/obj out.
+COPY src/ ./src/
+COPY steps/ ./steps/
 
 RUN dotnet restore src/KrakenDeploy.Server/KrakenDeploy.Server.csproj
 
-# Copy source and publish a self-contained-ready, framework-dependent binary.
-COPY src/ ./src/
 RUN dotnet publish src/KrakenDeploy.Server/KrakenDeploy.Server.csproj \
     --configuration Release \
     --no-restore \
     --output /app
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-FROM mcr.microsoft.com/dotnet/aspnet:9.0-alpine AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
-# curl is needed for the Docker health check.
-RUN apk add --no-cache curl \
- && addgroup -S kraken \
- && adduser  -S kraken -G kraken
+# curl is needed for the Docker health check; run as a non-root user.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --system kraken \
+ && useradd --system --gid kraken kraken
 
 COPY --from=build /app ./
 

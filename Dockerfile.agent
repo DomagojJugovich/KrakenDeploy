@@ -1,27 +1,35 @@
 # ── Build stage ──────────────────────────────────────────────────────────────
-FROM mcr.microsoft.com/dotnet/sdk:9.0-alpine AS build
+# Debian-based (glibc), NOT Alpine: KrakenDeploy.Contracts compiles .proto via
+# Grpc.Tools, whose bundled protoc is a glibc binary that fails to exec under
+# Alpine's musl libc (MSB6003).
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
-COPY Directory.Build.props Directory.Packages.props global.json ./
+# Central Package Management + the SDK pin + .editorconfig first (rarely change
+# → cached layer). .editorconfig carries the analyzer suppressions the Release
+# build relies on under TreatWarningsAsErrors.
+COPY Directory.Build.props Directory.Packages.props global.json .editorconfig ./
 
-COPY src/KrakenDeploy.Contracts/KrakenDeploy.Contracts.csproj              src/KrakenDeploy.Contracts/
-COPY src/KrakenDeploy.Agent.Transport/KrakenDeploy.Agent.Transport.csproj   src/KrakenDeploy.Agent.Transport/
-COPY src/KrakenDeploy.Agent/KrakenDeploy.Agent.csproj                       src/KrakenDeploy.Agent/
+# The agent's project graph spans src/ (Agent, Agent.Transport, Contracts,
+# Execution) and steps/ (Steps.Common). Copy both wholesale rather than listing
+# individual .csproj files, which drifts out of date and silently breaks the
+# restore whenever a project is added. .dockerignore keeps bin/obj out.
+COPY src/ ./src/
+COPY steps/ ./steps/
 
 RUN dotnet restore src/KrakenDeploy.Agent/KrakenDeploy.Agent.csproj
 
-COPY src/ ./src/
 RUN dotnet publish src/KrakenDeploy.Agent/KrakenDeploy.Agent.csproj \
     --configuration Release \
     --no-restore \
     --output /app
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-FROM mcr.microsoft.com/dotnet/runtime:9.0-alpine AS runtime
+FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
 WORKDIR /app
 
-RUN addgroup -S kraken \
- && adduser  -S kraken -G kraken
+RUN groupadd --system kraken \
+ && useradd --system --gid kraken kraken
 
 COPY --from=build /app ./
 

@@ -1,0 +1,11 @@
+# Keep the Docker build context lean and never copy host build artifacts into
+# the image (the build stage restores + publishes from clean source).
+**/bin/
+**/obj/
+.git/
+.github/
+.vs/
+.idea/
+**/TestResults/
+artifacts/
+*.user
