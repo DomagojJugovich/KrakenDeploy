@@ -62,6 +62,8 @@ public static class Program
                     return await BackupCommands.RunAsync(args.AsSpan(1).ToArray(), cliContentRoot).ConfigureAwait(false);
                 case "restore":
                     return await RestoreCommands.RunAsync(args.AsSpan(1).ToArray(), cliContentRoot).ConfigureAwait(false);
+                case "seed-demo":
+                    return await SeedDemoCommands.RunAsync(args.AsSpan(1).ToArray(), cliContentRoot).ConfigureAwait(false);
             }
         }
 
