@@ -71,7 +71,7 @@ else
         </RadzenCard>
     }
 
-    <RadzenDataGrid Data="@_variables" TItem="Variable"
+    <KrakenGrid SettingsKey="variable-set-detail" Data="@_variables" TItem="Variable"
                     AllowPaging="true" PageSize="25"
                     AllowSorting="true" AllowColumnResize="true"
                     EmptyText="No variables in this set yet.">
@@ -105,7 +105,7 @@ else
                 </Template>
             </RadzenDataGridColumn>
         </Columns>
-    </RadzenDataGrid>
+    </KrakenGrid>
 }
 
 @code {

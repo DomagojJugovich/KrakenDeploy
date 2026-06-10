@@ -148,7 +148,7 @@
                               Click="ReloadHistoryAsync" />
             </RadzenStack>
 
-            <RadzenDataGrid Data="@_history" TItem="BackupRun"
+            <KrakenGrid SettingsKey="backup" AllowColumnResize="true" Data="@_history" TItem="BackupRun"
                             AllowPaging="false" AllowSorting="false"
                             EmptyText="No runs yet.">
                 <Columns>
@@ -202,7 +202,7 @@
                         </Template>
                     </RadzenDataGridColumn>
                 </Columns>
-            </RadzenDataGrid>
+            </KrakenGrid>
         </RadzenCard>
     }
 

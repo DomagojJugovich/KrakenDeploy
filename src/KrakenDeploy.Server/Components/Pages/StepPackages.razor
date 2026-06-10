@@ -58,7 +58,7 @@
             }
             else
             {
-                <RadzenDataGrid Data="@_packages" TItem="StepPackage"
+                <KrakenGrid SettingsKey="step-packages" AllowColumnResize="true" Data="@_packages" TItem="StepPackage"
                                 AllowPaging="false" AllowSorting="true" AllowFiltering="false"
                                 Density="Density.Compact">
                     <Columns>
@@ -120,7 +120,7 @@
                             </Template>
                         </RadzenDataGridColumn>
                     </Columns>
-                </RadzenDataGrid>
+                </KrakenGrid>
             }
         </RadzenTabsItem>
 
@@ -163,7 +163,7 @@
             }
             else
             {
-                <RadzenDataGrid Data="@_catalog" TItem="StepPackageCatalogEntry"
+                <KrakenGrid SettingsKey="step-packages-2" AllowColumnResize="true" Data="@_catalog" TItem="StepPackageCatalogEntry"
                                 AllowPaging="false" AllowSorting="true" AllowFiltering="false"
                                 Density="Density.Compact">
                     <Columns>
@@ -211,7 +211,7 @@
                             </Template>
                         </RadzenDataGridColumn>
                     </Columns>
-                </RadzenDataGrid>
+                </KrakenGrid>
             }
         </RadzenTabsItem>
     </Tabs>

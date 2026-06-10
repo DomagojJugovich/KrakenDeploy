@@ -50,7 +50,7 @@
             @if (_result.Errors.Count > 0)
             {
                 <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mt-3 rz-mb-1">Errors</RadzenText>
-                <RadzenDataGrid Data="@_result.Errors" TItem="ImportFromDirectoryError"
+                <KrakenGrid SettingsKey="import-octopus-api-dialog" AllowColumnResize="true" Data="@_result.Errors" TItem="ImportFromDirectoryError"
                                 AllowPaging="false" AllowSorting="false"
                                 Density="Density.Compact">
                     <Columns>
@@ -59,7 +59,7 @@
                         </RadzenDataGridColumn>
                         <RadzenDataGridColumn TItem="ImportFromDirectoryError" Property="Message" Title="Message" />
                     </Columns>
-                </RadzenDataGrid>
+                </KrakenGrid>
             }
         </RadzenCard>
     }

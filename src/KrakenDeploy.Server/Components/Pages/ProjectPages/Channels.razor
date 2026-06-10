@@ -61,7 +61,7 @@
     }
     else
     {
-        <RadzenDataGrid Data="@_channels" TItem="Channel"
+        <KrakenGrid SettingsKey="project-channels" Data="@_channels" TItem="Channel"
                         AllowFiltering="true" FilterMode="FilterMode.Simple"
                         AllowSorting="true" AllowColumnResize="true">
             <Columns>
@@ -135,7 +135,7 @@
                     </Template>
                 </RadzenDataGridColumn>
             </Columns>
-        </RadzenDataGrid>
+        </KrakenGrid>
     }
 </ProjectShell>
 

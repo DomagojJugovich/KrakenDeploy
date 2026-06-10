@@ -118,7 +118,7 @@
             </div>
         </RequirePermission>
 
-        <RadzenDataGrid @ref="_grid" Data="@_variables" TItem="Variable"
+        <KrakenGrid SettingsKey="project-variables" @ref="_grid" Data="@_variables" TItem="Variable"
                         AllowFiltering="true" FilterMode="FilterMode.Simple"
                         AllowSorting="true" AllowPaging="true" PageSize="50"
                         AllowGrouping="true" Groups="@_groups"
@@ -300,7 +300,7 @@
                     </EditTemplate>
                 </RadzenDataGridColumn>
             </Columns>
-        </RadzenDataGrid>
+        </KrakenGrid>
     }
 </ProjectShell>
 

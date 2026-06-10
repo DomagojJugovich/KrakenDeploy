@@ -208,7 +208,7 @@
                 <RadzenButton Text="Refresh" Icon="refresh" Size="ButtonSize.Small"
                               ButtonStyle="ButtonStyle.Light" Click="@RefreshRunsAsync" />
             </div>
-            <RadzenDataGrid Data="@_runs" TItem="RunbookRun"
+            <KrakenGrid SettingsKey="runbook-detail" AllowColumnResize="true" Data="@_runs" TItem="RunbookRun"
                             AllowPaging="true" PageSize="10"
                             AllowSorting="true"
                             RowClick="@(async args => { if (args.Data is { } r) await ToggleRunLog(r); })"
@@ -234,7 +234,7 @@
                         <Template Context="r">@FormatDuration(r)</Template>
                     </RadzenDataGridColumn>
                 </Columns>
-            </RadzenDataGrid>
+            </KrakenGrid>
 
             @* Inline log viewer for the selected run *@
             @if (_selectedRun is not null)

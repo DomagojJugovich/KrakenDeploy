@@ -61,7 +61,7 @@
     }
     else
     {
-        <RadzenDataGrid Data="@_releases" TItem="Release"
+        <KrakenGrid SettingsKey="project-releases" Data="@_releases" TItem="Release"
                         AllowFiltering="true" FilterMode="FilterMode.Simple"
                         AllowSorting="true" AllowPaging="true" PageSize="25"
                         AllowColumnResize="true">
@@ -145,7 +145,7 @@
                     </Template>
                 </RadzenDataGridColumn>
             </Columns>
-        </RadzenDataGrid>
+        </KrakenGrid>
     }
 </ProjectShell>
 

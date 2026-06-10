@@ -16,7 +16,7 @@
         </span>
     </RadzenStack>
 
-    <RadzenDataGrid Data="@_rows" TItem="SubscriptionDelivery"
+    <KrakenGrid SettingsKey="subscription-history-dialog" AllowColumnResize="true" Data="@_rows" TItem="SubscriptionDelivery"
                     AllowPaging="false" AllowSorting="false"
                     EmptyText="No deliveries yet — wait for a matching event or use 'Send test event' (Phase 4 polish)."
                     Density="Density.Compact" Style="max-height:60vh; overflow:auto;">
@@ -78,7 +78,7 @@
                 </Template>
             </RadzenDataGridColumn>
         </Columns>
-    </RadzenDataGrid>
+    </KrakenGrid>
 
     <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
                  JustifyContent="JustifyContent.End">

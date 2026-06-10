@@ -77,7 +77,7 @@
     }
     else
     {
-        <RadzenDataGrid Data="@ConnectedTenants" TItem="Tenant"
+        <KrakenGrid SettingsKey="project-tenants" Data="@ConnectedTenants" TItem="Tenant"
                         AllowFiltering="true" FilterMode="FilterMode.Simple"
                         AllowSorting="true" AllowColumnResize="true">
             <Columns>
@@ -106,7 +106,7 @@
                     </Template>
                 </RadzenDataGridColumn>
             </Columns>
-        </RadzenDataGrid>
+        </KrakenGrid>
     }
 </ProjectShell>
 

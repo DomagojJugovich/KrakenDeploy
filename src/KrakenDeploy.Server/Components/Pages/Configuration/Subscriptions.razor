@@ -35,7 +35,7 @@
 </RadzenText>
 
 <RequirePermission Permission="Permission.SubscriptionView">
-    <RadzenDataGrid Data="@_subscriptions" TItem="EventSubscription"
+    <KrakenGrid SettingsKey="subscriptions" Data="@_subscriptions" TItem="EventSubscription"
                     AllowPaging="true" PageSize="25"
                     AllowSorting="true"
                     AllowColumnResize="true"
@@ -102,7 +102,7 @@
                 </Template>
             </RadzenDataGridColumn>
         </Columns>
-    </RadzenDataGrid>
+    </KrakenGrid>
 </RequirePermission>
 
 @code {

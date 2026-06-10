@@ -3,24 +3,32 @@
 
 <RadzenLayout>
     <RadzenHeader>
-        <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.5rem" Style="height: 100%; padding: 0 1rem;">
+        <div class="kraken-header-bar">
             <RadzenSidebarToggle Click="@(() => _sidebarExpanded = !_sidebarExpanded)" />
-            <span class="kraken-brand-name">KrakenDeploy</span>
+            <div class="kraken-brand">
+                <img class="kraken-brand-mark" src="kraken-mark.png" alt="KrakenDeploy" />
+                <span class="kraken-brand-name">KrakenDeploy</span>
+            </div>
             <span class="kraken-env-badge">@EnvironmentName</span>
             <AuthorizeView>
                 <Authorized>
-                    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.75rem" Style="margin-left: auto;">
+                    <div class="kraken-header-tools">
                         <SpaceSwitcher />
                         <ThemeToggle />
-                        <span class="kraken-user-email">@context.User.Identity?.Name</span>
+                        <div class="kraken-user-chip">
+                            <span class="kraken-user-avatar">@Initials(context.User.Identity?.Name)</span>
+                            <span class="kraken-user-email">@context.User.Identity?.Name</span>
+                        </div>
                         <form method="post" action="/logout" style="display:inline;">
                             <AntiforgeryToken />
-                            <button type="submit" class="kraken-signout-btn">Sign out</button>
+                            <button type="submit" class="kraken-signout-btn" title="Sign out" aria-label="Sign out">
+                                <RadzenIcon Icon="logout" />
+                            </button>
                         </form>
-                    </RadzenStack>
+                    </div>
                 </Authorized>
             </AuthorizeView>
-        </RadzenStack>
+        </div>
     </RadzenHeader>
 
     <LicenseWarningBanner />
@@ -48,4 +56,25 @@
     private bool _sidebarExpanded = true;
 
     private string EnvironmentName => Configuration["Environment:Name"] ?? "dev";
+
+    /// <summary>Up to two uppercase initials for the header avatar, derived from
+    /// the user's display name or email local-part (e.g. "domagoj.jugovic@…" → "DJ").</summary>
+    private static string Initials(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return "?";
+        }
+
+        var local = name.Contains('@') ? name[..name.IndexOf('@')] : name;
+        var parts = local.Split([' ', '.', '_', '-'], StringSplitOptions.RemoveEmptyEntries);
+
+        var initials = parts.Length >= 2
+            ? $"{parts[0][0]}{parts[1][0]}"
+            : parts.Length == 1
+                ? (parts[0].Length >= 2 ? parts[0][..2] : parts[0])
+                : "?";
+
+        return initials.ToUpperInvariant();
+    }
 }

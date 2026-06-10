@@ -145,7 +145,7 @@ else
                         <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-0">
                             Per-target results
                         </RadzenText>
-                        <RadzenDataGrid Data="@rows" TItem="ResultRow"
+                        <KrakenGrid SettingsKey="adhoc-session-detail" AllowColumnResize="true" Data="@rows" TItem="ResultRow"
                                         AllowPaging="false" Density="Density.Compact"
                                         EmptyText="No results recorded.">
                             <Columns>
@@ -176,7 +176,7 @@ else
                                     </Template>
                                 </RadzenDataGridColumn>
                             </Columns>
-                        </RadzenDataGrid>
+                        </KrakenGrid>
 
                         @if (!string.IsNullOrEmpty(iter.Narrative))
                         {

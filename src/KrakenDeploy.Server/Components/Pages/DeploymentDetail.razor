@@ -19,37 +19,65 @@
 }
 else
 {
-    <div class="rz-mb-4 rz-d-flex rz-align-items-center rz-gap-3">
-        <RadzenBreadCrumb>
-            <RadzenBreadCrumbItem Path="/deployments" Text="Deployments" />
-            <RadzenBreadCrumbItem Text="@Deployment.Id.ToString()[..8]" />
-        </RadzenBreadCrumb>
+    <div class="breadcrumb">
+        <a href="/deployments">Deployments</a>
+        <RadzenIcon Icon="chevron_right" />
+        <span>@Deployment.Id.ToString()[..8]</span>
     </div>
 
-    <RadzenCard class="rz-mb-4">
-        <div class="rz-grid-table" style="grid-template-columns: auto 1fr auto 1fr;">
-            <span class="rz-color-secondary">Status</span>
-            <span><RadzenBadge Text="@Deployment.Status.ToString()"
-                               BadgeStyle="@StatusStyle(Deployment.Status)" /></span>
-            <span class="rz-color-secondary">Project</span>
-            <span>@(Deployment.Release?.Project?.Name ?? "—")</span>
-
-            <span class="rz-color-secondary">Release</span>
-            <span>@(Deployment.Release?.Version ?? "—")</span>
-            <span class="rz-color-secondary">Environment</span>
-            <span>@(Deployment.Environment?.Name ?? "—")</span>
-
-            <span class="rz-color-secondary">Target@(MultiTargetCount > 1 ? "s" : "")</span>
-            <span>@TargetSummary</span>
-            <span class="rz-color-secondary">Started</span>
-            <span>@(Deployment.StartedUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—")</span>
-
-            <span class="rz-color-secondary">Completed</span>
-            <span>@(Deployment.CompletedUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "—")</span>
-            <span class="rz-color-secondary">Duration</span>
-            <span>@FormatDuration()</span>
+    <div class="page-head">
+        <div>
+            <h1 class="page-title">
+                @(Deployment.Release?.Project?.Name ?? "Deployment")
+                @if (Deployment.Release?.Version is { Length: > 0 } ver)
+                {
+                    <span class="mono" style="font-weight:600; color:var(--text-2); font-size:18px; margin-left:8px;">@ver</span>
+                }
+            </h1>
+            <p class="page-sub">@(Deployment.Environment?.Name ?? "—") · @TargetSummary</p>
         </div>
-    </RadzenCard>
+    </div>
+
+    @* ── Bold status banner ── *@
+    <div class="kr-card st--@BannerClass(Deployment.Status) rz-mb-4">
+        <div class="kr-card-pad status-banner">
+            <StatusPill Deployment="Deployment.Status" Variant="StatusPill.PillVariant.Bold" />
+            @if (Deployment.Status == DeploymentStatus.Running)
+            {
+                <span class="banner-msg">@RunningStepLabel()</span>
+                <span class="grow">
+                    <RadzenProgressBar Value="100" Mode="ProgressBarMode.Indeterminate"
+                                       ShowValue="false" Style="height:6px;" />
+                </span>
+            }
+            else if (Deployment.Status == DeploymentStatus.Failed)
+            {
+                <span class="banner-msg">@(_diagnosis?.ProbableCause ?? LastErrorLine() ?? "Deployment failed.")</span>
+            }
+            else if (Deployment.Status == DeploymentStatus.PendingOfflineResult)
+            {
+                <span class="banner-msg">Awaiting offline result from an air-gapped target.</span>
+            }
+            else
+            {
+                <span class="banner-msg muted">Finished in @FormatDuration()</span>
+            }
+        </div>
+    </div>
+
+    @* ── Summary grid ── *@
+    <div class="kr-card kr-card-pad rz-mb-4">
+        <dl class="kv">
+            <dt>Project</dt><dd>@(Deployment.Release?.Project?.Name ?? "—")</dd>
+            <dt>Release</dt><dd class="mono">@(Deployment.Release?.Version ?? "—")</dd>
+            <dt>Environment</dt><dd>@(Deployment.Environment?.Name ?? "—")</dd>
+            <dt>Target@(MultiTargetCount > 1 ? "s" : "")</dt><dd>@TargetSummary</dd>
+            <dt>Started</dt><dd class="mono">@(Deployment.StartedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")</dd>
+            <dt>Completed</dt><dd class="mono">@(Deployment.CompletedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")</dd>
+            <dt>Duration</dt><dd class="mono">@FormatDuration()</dd>
+            <dt>Deployment</dt><dd class="mono">@Deployment.Id.ToString()[..8]</dd>
+        </dl>
+    </div>
 
     @* ── Offline drop bundle actions ─────────────────────────────────────── *@
     @if (Deployment.Status == DeploymentStatus.PendingOfflineResult)
@@ -177,7 +205,7 @@ else
                 }
                 else
                 {
-                    <RadzenDataGrid Data="@_stepOutcomes" TItem="DeploymentStepOutcome"
+                    <KrakenGrid SettingsKey="deployment-steps" Data="@_stepOutcomes" TItem="DeploymentStepOutcome"
                                     AllowSorting="false" AllowColumnResize="true"
                                     class="rz-mt-3">
                         <Columns>
@@ -200,12 +228,11 @@ else
                             <RadzenDataGridColumn TItem="DeploymentStepOutcome"
                                                   Property="Outcome" Title="Outcome" Width="140px">
                                 <Template Context="o">
-                                    <RadzenBadge Text="@o.Outcome.ToString()"
-                                                 BadgeStyle="@OutcomeStyle(o.Outcome)" />
+                                    <StatusPill Step="o.Outcome" />
                                 </Template>
                             </RadzenDataGridColumn>
                             <RadzenDataGridColumn TItem="DeploymentStepOutcome"
-                                                  Title="Side" Width="80px">
+                                                  UniqueID="side" Title="Side" Width="80px">
                                 <Template Context="o">
                                     @(o.IsServerSide ? "Server" : "Target")
                                 </Template>
@@ -216,7 +243,7 @@ else
                                side steps + pre-Phase-1a outcomes have a null
                                TargetId and render "—". *@
                             <RadzenDataGridColumn TItem="DeploymentStepOutcome"
-                                                  Title="Target" Width="140px">
+                                                  UniqueID="target" Title="Target" Width="140px">
                                 <Template Context="o">
                                     @if (o.TargetId is { } tid)
                                     {
@@ -242,7 +269,7 @@ else
                                 </Template>
                             </RadzenDataGridColumn>
                             <RadzenDataGridColumn TItem="DeploymentStepOutcome"
-                                                  Title="Duration" Width="100px">
+                                                  UniqueID="duration" Title="Duration" Width="100px">
                                 <Template Context="o">@FormatStepDuration(o)</Template>
                             </RadzenDataGridColumn>
                             <RadzenDataGridColumn TItem="DeploymentStepOutcome"
@@ -254,23 +281,26 @@ else
                                 </Template>
                             </RadzenDataGridColumn>
                         </Columns>
-                    </RadzenDataGrid>
+                    </KrakenGrid>
                 }
             </RadzenTabsItem>
 
             <RadzenTabsItem Text="Log" Icon="terminal">
-                <div style="font-family: monospace; font-size: 0.85rem; background: #1e1e1e; color: #d4d4d4;
-                             padding: 1rem; border-radius: 4px; max-height: 600px; overflow-y: auto;">
+                <div class="kraken-log rz-mt-3">
                     @foreach (var entry in Deployment.LogEntries.OrderBy(l => l.Sequence))
                     {
-                        <div class="@LevelClass(entry.Level)">
-                            <span style="color: #888; user-select: none;">@entry.Timestamp.ToString("HH:mm:ss")</span>
-                            <span> @entry.Message</span>
+                        <div class="ln @LevelClass(entry.Level)">
+                            <span class="lt">@entry.Timestamp.ToString("HH:mm:ss")</span>
+                            <span class="lm">@entry.Message</span>
                         </div>
+                    }
+                    @if (Deployment.LogEntries.Any() && Deployment.Status == DeploymentStatus.Running)
+                    {
+                        <div class="ln"><span class="lt"></span><span class="lm"><span class="kraken-caret"></span></span></div>
                     }
                     @if (!Deployment.LogEntries.Any())
                     {
-                        <span style="color:#888;">No log entries yet.</span>
+                        <span class="kraken-log-empty">No log entries yet.</span>
                     }
                 </div>
             </RadzenTabsItem>
@@ -284,7 +314,7 @@ else
                 }
                 else
                 {
-                    <RadzenDataGrid Data="@_artifacts" TItem="DeploymentArtifact"
+                    <KrakenGrid SettingsKey="deployment-artifacts" Data="@_artifacts" TItem="DeploymentArtifact"
                                     AllowSorting="true" AllowColumnResize="true"
                                     class="rz-mt-3">
                         <Columns>
@@ -316,7 +346,7 @@ else
                                     @a.CollectedUtc.ToString("yyyy-MM-dd HH:mm")
                                 </Template>
                             </RadzenDataGridColumn>
-                            <RadzenDataGridColumn TItem="DeploymentArtifact" Title="Download"
+                            <RadzenDataGridColumn TItem="DeploymentArtifact" UniqueID="download" Title="Download"
                                                   Width="100px" Sortable="false">
                                 <Template Context="a">
                                     <RadzenButton Icon="download" ButtonStyle="ButtonStyle.Light"
@@ -326,7 +356,7 @@ else
                                 </Template>
                             </RadzenDataGridColumn>
                         </Columns>
-                    </RadzenDataGrid>
+                    </KrakenGrid>
                 }
             </RadzenTabsItem>
 
@@ -355,7 +385,7 @@ else
                                     (@group.Count() variable@(group.Count() == 1 ? "" : "s"))
                                 </span>
                             </RadzenText>
-                            <RadzenDataGrid Data="@group.OrderBy(o => o.Name)"
+                            <KrakenGrid SettingsKey="deployment-output-vars" Data="@group.OrderBy(o => o.Name)"
                                             TItem="DeploymentOutputVariable"
                                             AllowSorting="false" AllowColumnResize="true">
                                 <Columns>
@@ -397,7 +427,7 @@ else
                                         </Template>
                                     </RadzenDataGridColumn>
                                 </Columns>
-                            </RadzenDataGrid>
+                            </KrakenGrid>
                         </RadzenCard>
                     }
                 }
@@ -544,9 +574,11 @@ else
 
     private static string LevelClass(string level) => level switch
     {
-        "error"   => "rz-color-danger",
-        "warning" => "rz-color-warning",
-        _         => "",
+        "error"             => "lv-error",
+        "warn" or "warning" => "lv-warn",
+        "ok" or "success"   => "lv-ok",
+        "cmd" or "command"  => "lv-cmd",
+        _                   => "lv-info",
     };
 
     private string DownloadUrl(Guid artifactId)
@@ -606,25 +638,34 @@ else
         return targetId.ToString()[..8];
     }
 
-    private static BadgeStyle StatusStyle(DeploymentStatus status) => status switch
+    // Maps a deployment status to the StatusPill colour family (.st--*) for the
+    // bold header banner's left border + soft tint.
+    private static string BannerClass(DeploymentStatus s) => s switch
     {
-        DeploymentStatus.Succeeded             => BadgeStyle.Success,
-        DeploymentStatus.SucceededWithWarnings => BadgeStyle.Warning,
-        DeploymentStatus.Failed                => BadgeStyle.Danger,
-        DeploymentStatus.Running               => BadgeStyle.Info,
-        DeploymentStatus.Queued                => BadgeStyle.Warning,
-        DeploymentStatus.PendingOfflineResult  => BadgeStyle.Warning,
-        _                                      => BadgeStyle.Light,
+        DeploymentStatus.Succeeded             => "ok",
+        DeploymentStatus.SucceededWithWarnings => "warn",
+        DeploymentStatus.Failed                => "fail",
+        DeploymentStatus.Running               => "run",
+        DeploymentStatus.Queued                => "queue",
+        DeploymentStatus.PendingOfflineResult  => "offline",
+        DeploymentStatus.Cancelled             => "idle",
+        _                                      => "idle",
     };
 
-    private static BadgeStyle OutcomeStyle(StepOutcomeKind o) => o switch
+    // Best-effort "current step" label for a running deployment, derived from the
+    // outcomes recorded so far (no fabricated total — the process step count isn't
+    // loaded here).
+    private string RunningStepLabel()
     {
-        StepOutcomeKind.Succeeded => BadgeStyle.Success,
-        StepOutcomeKind.Failed    => BadgeStyle.Danger,
-        StepOutcomeKind.TimedOut  => BadgeStyle.Danger,
-        StepOutcomeKind.Skipped   => BadgeStyle.Light,
-        _                         => BadgeStyle.Light,
-    };
+        var last = _stepOutcomes.LastOrDefault();
+        return last is not null ? $"Step {_stepOutcomes.Count} · {last.StepName}" : "In progress…";
+    }
+
+    private string? LastErrorLine()
+        => Deployment?.LogEntries?
+            .Where(l => l.Level == "error")
+            .OrderByDescending(l => l.Sequence)
+            .FirstOrDefault()?.Message;
 
     private static string FormatStepDuration(DeploymentStepOutcome o)
     {

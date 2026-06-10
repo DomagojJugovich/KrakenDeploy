@@ -93,7 +93,7 @@ else
                         </RequirePermission>
                     </RadzenStack>
 
-                    <RadzenDataGrid Data="@_memberUsers" TItem="ApplicationUser"
+                    <KrakenGrid SettingsKey="team-detail" AllowColumnResize="true" Data="@_memberUsers" TItem="ApplicationUser"
                                     AllowPaging="true" PageSize="15"
                                     EmptyText="No explicit members.">
                         <Columns>
@@ -115,7 +115,7 @@ else
                                 </Template>
                             </RadzenDataGridColumn>
                         </Columns>
-                    </RadzenDataGrid>
+                    </KrakenGrid>
                 }
             </RadzenTabsItem>
 
@@ -156,7 +156,7 @@ else
                     </RadzenCard>
                 }
 
-                <RadzenDataGrid Data="@_team.ExternalGroups.ToList()"
+                <KrakenGrid SettingsKey="team-detail-2" AllowColumnResize="true" Data="@_team.ExternalGroups.ToList()"
                                 TItem="TeamExternalGroup"
                                 AllowPaging="true" PageSize="15"
                                 EmptyText="No external groups mapped.">
@@ -184,7 +184,7 @@ else
                             </Template>
                         </RadzenDataGridColumn>
                     </Columns>
-                </RadzenDataGrid>
+                </KrakenGrid>
             </RadzenTabsItem>
 
             @* ── Role Assignments tab ────────────────────────────────────── *@
@@ -269,7 +269,7 @@ else
                     </RadzenCard>
                 }
 
-                <RadzenDataGrid Data="@_team.RoleAssignments.ToList()"
+                <KrakenGrid SettingsKey="team-detail-3" AllowColumnResize="true" Data="@_team.RoleAssignments.ToList()"
                                 TItem="RoleAssignment"
                                 AllowPaging="true" PageSize="15"
                                 EmptyText="No role assignments — this team has no permissions.">
@@ -318,7 +318,7 @@ else
                             </Template>
                         </RadzenDataGridColumn>
                     </Columns>
-                </RadzenDataGrid>
+                </KrakenGrid>
             </RadzenTabsItem>
         </Tabs>
     </RadzenTabs>

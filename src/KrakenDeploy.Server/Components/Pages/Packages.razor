@@ -61,7 +61,7 @@ else
             }
             else
             {
-                <RadzenDataGrid Data="@_summaries" TItem="PackageSummary"
+                <KrakenGrid SettingsKey="packages" Data="@_summaries" TItem="PackageSummary"
                                 AllowFiltering="true" FilterMode="FilterMode.Simple"
                                 AllowSorting="true" AllowPaging="true" PageSize="30"
                                 AllowColumnResize="true">
@@ -101,7 +101,7 @@ else
                                               Title="Last uploaded" Width="200px"
                                               FormatString="{0:yyyy-MM-dd HH:mm}" />
                     </Columns>
-                </RadzenDataGrid>
+                </KrakenGrid>
             }
         </div>
 

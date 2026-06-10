@@ -17,89 +17,149 @@
 
 <PageTitle>Sign in - KrakenDeploy</PageTitle>
 
-<div class="kraken-login-container">
-    <RadzenCard class="kraken-login-card" Variant="Variant.Filled">
-        <RadzenStack Gap="1.5rem">
-            <div class="kraken-login-brand">
-                <h1 class="rz-display-h5">KrakenDeploy</h1>
-                <span class="rz-text-secondary">Sign in to continue</span>
+<div class="login-wrap">
+    @* ── Left: brand hero ── *@
+    <div class="login-hero">
+        <img class="login-hero-watermark" src="kraken-mark.png" alt="" aria-hidden="true" />
+        <div class="login-hero-inner">
+            <div class="login-brand">
+                <img src="kraken-mark.png" alt="KrakenDeploy" />
+                <span class="login-brand-name">KrakenDeploy</span>
             </div>
+            <h1 class="login-hero-title">Ship to every target,<br />on your own terms.</h1>
+            <p class="login-hero-sub">
+                Self-hosted, .NET-native deployment automation — projects, releases,
+                environments and tenants, with reverse-tunnel agents that need no
+                inbound firewall rules.
+            </p>
+            <ul class="login-feats">
+                <li><RadzenIcon Icon="vpn_lock" /> Reverse-tunnel agents over outbound HTTPS</li>
+                <li><RadzenIcon Icon="cloud_off" /> Offline drop for air-gapped targets</li>
+                <li><RadzenIcon Icon="extension" /> Octopus step-template compatible</li>
+            </ul>
+        </div>
+    </div>
 
-            @* ── External / OIDC providers ────────────────────────────── *@
+    @* ── Right: sign-in card ── *@
+    <div class="login-form-col">
+        <div class="login-themetoggle">
+            <button type="button" data-theme="light" onclick="krakenLoginTheme('light')" title="Light"><RadzenIcon Icon="light_mode" /></button>
+            <button type="button" data-theme="dark" onclick="krakenLoginTheme('dark')" title="Dark"><RadzenIcon Icon="dark_mode" /></button>
+        </div>
+
+        <div class="login-card">
+            <h2 class="login-card-title">Sign in</h2>
+            <p class="login-card-sub">Welcome back. Continue to KrakenDeploy.</p>
+
+            @* ── External / OIDC providers ── *@
             @if (_oidcProviders.Count > 0)
             {
-                <RadzenStack Gap="0.5rem">
-                    @foreach (var idp in _oidcProviders)
-                    {
-                        var challengeUrl = $"/login/external?provider={OidcRegistrar.SchemeName(idp.Id)}&returnUrl={Uri.EscapeDataString(ReturnUrl ?? "/")}";
-                        <a href="@challengeUrl" style="text-decoration:none;">
-                            <RadzenButton Text="@($"Sign in with {idp.Name}")"
-                                          ButtonStyle="ButtonStyle.Secondary"
-                                          Variant="Variant.Outlined"
-                                          Size="ButtonSize.Large"
-                                          Style="width:100%" />
-                        </a>
-                    }
-                </RadzenStack>
+                @foreach (var idp in _oidcProviders)
+                {
+                    var challengeUrl = $"/login/external?provider={OidcRegistrar.SchemeName(idp.Id)}&returnUrl={Uri.EscapeDataString(ReturnUrl ?? "/")}";
+                    <a class="oidc-btn" href="@challengeUrl">
+                        <span class="oidc-mark">@(idp.Name.Length > 0 ? idp.Name[0].ToString().ToUpperInvariant() : "?")</span>
+                        <span>Continue with @idp.Name</span>
+                    </a>
+                }
 
                 @if (_showLocalForm)
                 {
-                    <hr style="border-top:1px solid var(--rz-base-300); margin:0;" />
+                    <div class="login-divider">or sign in with email</div>
                 }
             }
 
-            @* ── Local password form ──────────────────────────────────── *@
+            @* ── Local password form ── *@
             @if (_showLocalForm)
             {
                 <EditForm Model="Input" method="post" OnValidSubmit="LoginAsync" FormName="login">
                     <DataAnnotationsValidator />
-                    <RadzenStack Gap="1rem">
-                        <div>
-                            <label for="login-email" class="rz-text-subtitle2">Email</label>
-                            <InputText id="login-email"
-                                       @bind-Value="Input.Email"
-                                       class="rz-textbox"
-                                       autocomplete="username"
-                                       style="width: 100%" />
-                            <ValidationMessage For="() => Input.Email" class="kraken-validation-error" />
+
+                    @if (!string.IsNullOrEmpty(_errorMessage))
+                    {
+                        <div class="login-err"><RadzenIcon Icon="error" /> @_errorMessage</div>
+                    }
+
+                    <div class="login-field">
+                        <label for="login-email">Email</label>
+                        <div class="login-input">
+                            <RadzenIcon Icon="mail" />
+                            <InputText id="login-email" @bind-Value="Input.Email" autocomplete="username" />
                         </div>
+                        <ValidationMessage For="() => Input.Email" class="login-validation" />
+                    </div>
 
-                        <div>
-                            <label for="login-password" class="rz-text-subtitle2">Password</label>
-                            <InputText id="login-password"
-                                       type="password"
-                                       @bind-Value="Input.Password"
-                                       class="rz-textbox"
-                                       autocomplete="current-password"
-                                       style="width: 100%" />
-                            <ValidationMessage For="() => Input.Password" class="kraken-validation-error" />
+                    <div class="login-field">
+                        <label for="login-password">Password</label>
+                        <div class="login-input">
+                            <RadzenIcon Icon="lock" />
+                            <InputText id="login-password" type="password" @bind-Value="Input.Password" autocomplete="current-password" />
                         </div>
+                        <ValidationMessage For="() => Input.Password" class="login-validation" />
+                    </div>
 
-                        @if (!string.IsNullOrEmpty(_errorMessage))
-                        {
-                            <div class="kraken-login-error rz-text-body2">@_errorMessage</div>
-                        }
+                    <button type="submit" class="login-submit">Sign in</button>
 
-                        <RadzenButton ButtonType="ButtonType.Submit"
-                                      ButtonStyle="ButtonStyle.Primary"
-                                      Variant="Variant.Filled"
-                                      Size="ButtonSize.Large"
-                                      Text="Sign in"
-                                      Style="width: 100%" />
-                    </RadzenStack>
+                    <div class="login-foot">
+                        <a class="login-link" href="/forgot-password">Forgot password?</a>
+                        <span class="login-ver">MIT</span>
+                    </div>
                 </EditForm>
             }
 
             @* Remote failure / provisioning error banner *@
             @if (Error is { Length: > 0 })
             {
-                <div class="kraken-login-error rz-text-body2">
+                <div class="login-err" style="margin-top:14px;">
+                    <RadzenIcon Icon="error" />
                     @ErrorMessages.GetValueOrDefault(Error, "An error occurred during sign-in.")
                 </div>
             }
-        </RadzenStack>
-    </RadzenCard>
+        </div>
+    </div>
 </div>
+
+@* Login-scoped theme toggle (static SSR — no Blazor circuit for the page). Swaps
+   the Radzen stylesheet link + persists to localStorage; honours the saved choice
+   on load. The <RadzenTheme> component in App.razor is InteractiveServer even
+   here, so after Blazor boots it re-asserts its default stylesheet — the
+   MutationObserver re-applies the saved choice whenever the link is reset. *@
+<script suppress-error="BL9992">
+    (function () {
+        var current = 'light';
+        try { var s = localStorage.getItem('kraken-theme'); if (s && s.indexOf('dark') >= 0) current = 'dark'; } catch (e) { }
+
+        function hrefFor(t, h) {
+            return t === 'dark' ? h.replace('material-base', 'material-dark-base')
+                                : h.replace('material-dark-base', 'material-base');
+        }
+        function enforce() {
+            var l = document.getElementById('radzen-theme-link');
+            if (!l) { return; }
+            var h = l.getAttribute('href') || '';
+            var want = hrefFor(current, h);
+            if (want !== h) { l.setAttribute('href', want); }
+        }
+        function applyTheme(t) {
+            current = t;
+            enforce();
+            document.querySelectorAll('.login-themetoggle button').forEach(function (b) {
+                b.classList.toggle('on', b.getAttribute('data-theme') === t);
+            });
+        }
+        window.krakenLoginTheme = function (t) {
+            try { localStorage.setItem('kraken-theme', t === 'dark' ? 'material-dark' : 'material'); } catch (e) { }
+            applyTheme(t);
+        };
+        applyTheme(current);
+
+        if (window.MutationObserver) {
+            new MutationObserver(enforce).observe(document.head, {
+                childList: true, subtree: true, attributes: true, attributeFilter: ['href']
+            });
+        }
+    })();
+</script>
 
 @code {
     [SupplyParameterFromForm]

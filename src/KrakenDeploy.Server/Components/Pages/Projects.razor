@@ -9,37 +9,43 @@
 
 <PageTitle>Projects - KrakenDeploy</PageTitle>
 
-<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
-             JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-4">
-    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">
-        Projects
-    </RadzenText>
-    <RequirePermission Permission="Permission.ProjectCreate">
-        <RadzenButton Icon="add_circle_outline" Text="New Project"
-                      ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
-                      Click="OpenCreateDialogAsync" />
-    </RequirePermission>
-</RadzenStack>
+<div class="page-head">
+    <div>
+        <h1 class="page-title">Projects</h1>
+        <p class="page-sub">@_projects.Count project@(_projects.Count == 1 ? "" : "s") in this space</p>
+    </div>
+    <div class="page-head-actions">
+        <RequirePermission Permission="Permission.ProjectCreate">
+            <RadzenButton Icon="add_circle_outline" Text="New project"
+                          ButtonStyle="ButtonStyle.Primary" Variant="Variant.Filled"
+                          Click="OpenCreateDialogAsync" />
+        </RequirePermission>
+    </div>
+</div>
 
-<RadzenDataGrid Data="@_projects" TItem="Project"
+<KrakenGrid SettingsKey="projects" Data="@_projects" TItem="Project"
                 AllowPaging="true" PageSize="25"
                 AllowSorting="true"
-                AllowFiltering="true" FilterMode="FilterMode.Simple"
                 AllowColumnResize="true"
-                EmptyText="No projects yet. Click 'New Project' to get started.">
+                GridLines="DataGridGridLines.Horizontal"
+                EmptyText="No projects yet. Click 'New project' to get started.">
     <Columns>
-        <RadzenDataGridColumn TItem="Project" Property="Name" Title="Name" Width="220px">
+        <RadzenDataGridColumn TItem="Project" Property="Name" Title="Name" Width="280px">
             <Template Context="p">
-                <RadzenLink Path="@($"/projects/{p.Slug}")" Text="@p.Name" />
+                <span class="kraken-proj-cell">
+                    <span class="kraken-proj-tile"><RadzenIcon Icon="language" /></span>
+                    <span>
+                        <a class="primary-link" href="@($"/projects/{p.Slug}")">@p.Name</a>
+                        <span class="mono cell-muted" style="display:block; font-size:12px;">@p.Slug</span>
+                    </span>
+                </span>
             </Template>
         </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="Project" Property="Slug" Title="Slug" Width="180px" />
-        <RadzenDataGridColumn TItem="Project" Property="Description" Title="Description"
-                              Filterable="false" />
+        <RadzenDataGridColumn TItem="Project" Property="Description" Title="Description" />
         <RadzenDataGridColumn TItem="Project" Property="CreatedUtc" Title="Created"
                               Width="130px" FormatString="{0:yyyy-MM-dd}"
                               Filterable="false" />
-        <RadzenDataGridColumn TItem="Project" Title="" Width="88px"
+        <RadzenDataGridColumn TItem="Project" UniqueID="actions" Title="" Width="88px"
                               Filterable="false" Sortable="false" TextAlign="TextAlign.Right">
             <Template Context="p">
                 <RequirePermission Permission="Permission.ProjectEdit">
@@ -57,7 +63,7 @@
             </Template>
         </RadzenDataGridColumn>
     </Columns>
-</RadzenDataGrid>
+</KrakenGrid>
 
 @code {
     private IReadOnlyList<Project> _projects = [];

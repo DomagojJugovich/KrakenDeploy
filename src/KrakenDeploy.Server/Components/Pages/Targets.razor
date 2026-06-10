@@ -10,92 +10,149 @@
 
 <PageTitle>Deployment Targets - KrakenDeploy</PageTitle>
 
-<RadzenStack Orientation="Orientation.Horizontal"
-             JustifyContent="JustifyContent.SpaceBetween"
-             AlignItems="AlignItems.Center"
-             class="rz-mb-4">
-    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" style="margin:0;">
-        Deployment Targets
-    </RadzenText>
-    <RequirePermission Permission="Permission.MachineCreate">
-        <RadzenButton Text="Add Deployment Target"
-                      Icon="add_circle_outline"
-                      ButtonStyle="ButtonStyle.Primary"
-                      Click="OpenAddWizardAsync" />
-    </RequirePermission>
-</RadzenStack>
+<div class="page-head">
+    <div>
+        <h1 class="page-title">Targets</h1>
+        <p class="page-sub">@_filtered.Count of @_targets.Count deployment targets</p>
+    </div>
+    <div class="page-head-actions">
+        <RequirePermission Permission="Permission.MachineCreate">
+            <RadzenButton Text="Add target" Icon="add_circle_outline"
+                          ButtonStyle="ButtonStyle.Primary" Variant="Variant.Filled"
+                          Click="OpenAddWizardAsync" />
+        </RequirePermission>
+    </div>
+</div>
 
-<RadzenDataGrid Data="@_targets" TItem="DeploymentTarget"
-                AllowPaging="true" PageSize="25"
-                AllowSorting="true"
-                AllowFiltering="true" FilterMode="FilterMode.Simple"
-                AllowColumnResize="true"
-                EmptyText="No targets registered yet. Click 'Add Deployment Target' to get started.">
+@* ── Status summary strip ── *@
+<div class="stat-grid rz-mb-4">
+    <div class="stat st--ok">
+        <span class="stat-strip"></span>
+        <div class="stat-row">
+            <div class="stat-ic"><RadzenIcon Icon="check_circle" /></div>
+            <div><div class="stat-val">@_countOnline</div><div class="stat-label">Online</div></div>
+        </div>
+    </div>
+    <div class="stat st--fail">
+        <span class="stat-strip"></span>
+        <div class="stat-row">
+            <div class="stat-ic"><RadzenIcon Icon="error" /></div>
+            <div><div class="stat-val">@_countOffline</div><div class="stat-label">Errored / offline</div></div>
+        </div>
+    </div>
+    <div class="stat st--offline">
+        <span class="stat-strip"></span>
+        <div class="stat-row">
+            <div class="stat-ic"><RadzenIcon Icon="cloud_off" /></div>
+            <div><div class="stat-val">@_countOfflineDrop</div><div class="stat-label">Offline-drop</div></div>
+        </div>
+    </div>
+    <div class="stat st--idle">
+        <span class="stat-strip"></span>
+        <div class="stat-row">
+            <div class="stat-ic"><RadzenIcon Icon="block" /></div>
+            <div><div class="stat-val">@_countDisabled</div><div class="stat-label">Disabled</div></div>
+        </div>
+    </div>
+</div>
+
+@* ── Risk filter ── *@
+<div class="toolbar">
+    <div class="seg">
+        <button class="@(_riskFilter is null ? "on" : "")" @onclick="@(() => SetRisk(null))">All risk</button>
+        <button class="st--fail @(_riskFilter == TargetRiskLevel.Production ? "on" : "")" @onclick="@(() => SetRisk(TargetRiskLevel.Production))"><span class="dot"></span>Production</button>
+        <button class="st--queue @(_riskFilter == TargetRiskLevel.Staging ? "on" : "")" @onclick="@(() => SetRisk(TargetRiskLevel.Staging))"><span class="dot"></span>Staging</button>
+        <button class="st--run @(_riskFilter == TargetRiskLevel.Development ? "on" : "")" @onclick="@(() => SetRisk(TargetRiskLevel.Development))"><span class="dot"></span>Development</button>
+    </div>
+</div>
+
+<KrakenGrid SettingsKey="targets" Data="@_filtered" TItem="DeploymentTarget"
+                AllowPaging="true" PageSize="25" AllowSorting="true"
+                AllowColumnResize="true" GridLines="DataGridGridLines.Horizontal"
+                EmptyText="No targets match the current filter.">
     <Columns>
-        <RadzenDataGridColumn TItem="DeploymentTarget" Property="Name" Title="Name" Width="180px">
+        <RadzenDataGridColumn TItem="DeploymentTarget" Property="Name" Title="Name" Width="220px">
             <Template Context="t">
-                <a href="/targets/@t.Id">@t.Name</a>
+                <a class="primary-link" href="/targets/@t.Id">@t.Name</a>
+                @if (!string.IsNullOrEmpty(t.MachineName))
+                {
+                    <div class="mono cell-muted" style="font-size:12px;">@t.MachineName</div>
+                }
             </Template>
         </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="DeploymentTarget" Property="Status" Title="Status"
-                              Width="120px" Filterable="false">
+
+        <RadzenDataGridColumn TItem="DeploymentTarget" Property="Status" Title="Status" Width="140px">
             <Template Context="t">
-                <span title="@LastSeenTitle(t.LastSeenUtc)">
-                    <RadzenBadge Text="@t.Status.ToString()" BadgeStyle="@StatusBadgeStyle(t.Status)" />
+                <span title="@LastSeenTitle(t.LastSeenUtc)"><StatusPill Target="t.Status" /></span>
+            </Template>
+        </RadzenDataGridColumn>
+
+        <RadzenDataGridColumn TItem="DeploymentTarget" Property="RiskLevel" Title="Risk" Width="130px">
+            <Template Context="t"><StatusPill Risk="t.RiskLevel" Variant="StatusPill.PillVariant.Dot" /></Template>
+        </RadzenDataGridColumn>
+
+        <RadzenDataGridColumn TItem="DeploymentTarget" Property="OperatingSystem" Title="OS" Width="150px">
+            <Template Context="t">
+                <span class="env-cell">
+                    <RadzenIcon Icon="@OsIcon(t.OperatingSystem)" Style="font-size:18px; color:var(--text-3);" />
+                    @(string.IsNullOrEmpty(t.OperatingSystem) ? "—" : t.OperatingSystem)
                 </span>
             </Template>
         </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="DeploymentTarget" Property="RiskLevel" Title="Risk"
-                              Width="110px">
+
+        <RadzenDataGridColumn TItem="DeploymentTarget" Property="AgentVersion" Title="Agent" Width="100px">
+            <Template Context="t"><span class="mono cell-muted">@(t.AgentVersion ?? "—")</span></Template>
+        </RadzenDataGridColumn>
+
+        <RadzenDataGridColumn TItem="DeploymentTarget" Property="TransportMode" Title="Transport" Width="120px" Sortable="false">
+            <Template Context="t"><span class="kraken-tag">@t.TransportMode</span></Template>
+        </RadzenDataGridColumn>
+
+        <RadzenDataGridColumn TItem="DeploymentTarget" UniqueID="roles" Title="Roles" Sortable="false">
             <Template Context="t">
-                <RadzenBadge Text="@t.RiskLevel.ToString()" BadgeStyle="@RiskBadgeStyle(t.RiskLevel)" />
+                @foreach (var role in t.Roles)
+                {
+                    <span class="kraken-tag" style="margin-right:4px;">@role</span>
+                }
+                @if (t.Roles.Count == 0)
+                {
+                    <span class="cell-muted">—</span>
+                }
             </Template>
         </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="DeploymentTarget" Property="MachineName" Title="Hostname"
-                              Width="160px" />
-        <RadzenDataGridColumn TItem="DeploymentTarget" Property="OperatingSystem" Title="OS"
-                              Width="130px" />
-        <RadzenDataGridColumn TItem="DeploymentTarget" Property="AgentVersion" Title="Agent"
-                              Width="100px" />
-        <RadzenDataGridColumn TItem="DeploymentTarget" Property="TransportMode" Title="Transport"
-                              Width="110px">
+
+        <RadzenDataGridColumn TItem="DeploymentTarget" UniqueID="last-seen" Title="Last seen" Width="120px" Sortable="false">
             <Template Context="t">
-                @t.TransportMode.ToString()
-            </Template>
-        </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="DeploymentTarget" Title="Roles" Filterable="false"
-                              Sortable="false">
-            <Template Context="t">
-                @string.Join(", ", t.Roles)
-            </Template>
-        </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="DeploymentTarget" Title="Last Seen" Width="130px"
-                              Filterable="false" Sortable="false">
-            <Template Context="t">
-                <span title="@(t.LastSeenUtc.HasValue ? t.LastSeenUtc.Value.ToString("u") : "never")">
-                    @RelativeTime(t.LastSeenUtc)
-                </span>
+                <span class="cell-muted" title="@(t.LastSeenUtc?.ToString("u") ?? "never")">@RelativeTime(t.LastSeenUtc)</span>
             </Template>
         </RadzenDataGridColumn>
     </Columns>
-</RadzenDataGrid>
+</KrakenGrid>
 
 @code {
     private List<DeploymentTarget> _targets = [];
+    private List<DeploymentTarget> _filtered = [];
+    private TargetRiskLevel? _riskFilter;
+
+    private int _countOnline;
+    private int _countOffline;
+    private int _countOfflineDrop;
+    private int _countDisabled;
 
     // ── Lifecycle ───────────────────────────────────────────────────────────
 
     protected override async Task OnInitializedAsync()
-        => _targets = await TargetSvc.GetAllAsync();
+    {
+        _targets = await TargetSvc.GetAllAsync();
+        Recompute();
+    }
 
     protected override void OnAfterRender(bool firstRender)
     {
-        if (!firstRender)
+        if (firstRender)
         {
-            return;
+            StatusNotifier.TargetStatusChanged += OnTargetStatusChanged;
         }
-
-        StatusNotifier.TargetStatusChanged += OnTargetStatusChanged;
     }
 
     public ValueTask DisposeAsync()
@@ -116,9 +173,24 @@
 
         target.Status = status;
         target.LastSeenUtc = lastSeenUtc;
-
-        // Schedule a UI re-render on the correct Blazor synchronisation context.
+        Recompute();
         _ = InvokeAsync(StateHasChanged);
+    }
+
+    // ── Filtering + summary ──────────────────────────────────────────────────
+
+    private void SetRisk(TargetRiskLevel? risk) { _riskFilter = risk; Recompute(); }
+
+    private void Recompute()
+    {
+        _filtered = _riskFilter is { } r
+            ? _targets.Where(t => t.RiskLevel == r).ToList()
+            : _targets;
+
+        _countOnline = _targets.Count(t => t.Status == TargetStatus.Online);
+        _countOffline = _targets.Count(t => t.Status == TargetStatus.Offline);
+        _countOfflineDrop = _targets.Count(t => t.TransportMode == TransportMode.OfflineDrop);
+        _countDisabled = _targets.Count(t => t.Status == TargetStatus.Disabled);
     }
 
     // ── Wizard ─────────────────────────────────────────────────────────────
@@ -136,6 +208,7 @@
         if (result is true)
         {
             _targets = await TargetSvc.GetAllAsync();
+            Recompute();
             Notification.Notify(new NotificationMessage
             {
                 Severity = NotificationSeverity.Success,
@@ -148,26 +221,18 @@
 
     // ── Helpers ─────────────────────────────────────────────────────────────
 
-    private static BadgeStyle StatusBadgeStyle(TargetStatus status) => status switch
+    private static string OsIcon(string? os)
     {
-        TargetStatus.Online       => BadgeStyle.Success,
-        TargetStatus.Offline      => BadgeStyle.Danger,
-        TargetStatus.Disabled     => BadgeStyle.Warning,
-        TargetStatus.ShuttingDown => BadgeStyle.Warning,
-        _                         => BadgeStyle.Light,
-    };
-
-    private static BadgeStyle RiskBadgeStyle(TargetRiskLevel risk) => risk switch
-    {
-        TargetRiskLevel.Production  => BadgeStyle.Danger,
-        TargetRiskLevel.Staging     => BadgeStyle.Warning,
-        _                           => BadgeStyle.Info,
-    };
+        if (string.IsNullOrEmpty(os)) return "dns";
+        var o = os.ToLowerInvariant();
+        if (o.Contains("win")) return "desktop_windows";
+        if (o.Contains("linux") || o.Contains("ubuntu") || o.Contains("debian") || o.Contains("alpine")) return "terminal";
+        if (o.Contains("mac") || o.Contains("darwin") || o.Contains("osx")) return "laptop_mac";
+        return "dns";
+    }
 
     private static string LastSeenTitle(DateTimeOffset? dt)
-        => dt.HasValue
-            ? $"Last seen {dt.Value:u}"
-            : "Never connected";
+        => dt.HasValue ? $"Last seen {dt.Value:u}" : "Never connected";
 
     private static string RelativeTime(DateTimeOffset? dt)
     {

@@ -35,7 +35,7 @@
 </RadzenText>
 
 <RequirePermission Permission="Permission.DeploymentFreezeView">
-    <RadzenDataGrid Data="@_freezes" TItem="DeploymentFreeze"
+    <KrakenGrid SettingsKey="freezes" Data="@_freezes" TItem="DeploymentFreeze"
                     AllowPaging="true" PageSize="25"
                     AllowSorting="true"
                     AllowColumnResize="true"
@@ -96,7 +96,7 @@
                 </Template>
             </RadzenDataGridColumn>
         </Columns>
-    </RadzenDataGrid>
+    </KrakenGrid>
 </RequirePermission>
 
 @code {

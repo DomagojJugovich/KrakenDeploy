@@ -52,7 +52,7 @@
     </RadzenAlert>
 }
 
-<RadzenDataGrid Data="@VisibleTeams" TItem="Team"
+<KrakenGrid SettingsKey="teams" Data="@VisibleTeams" TItem="Team"
                 AllowPaging="true" PageSize="25"
                 AllowSorting="true"
                 AllowFiltering="true" FilterMode="FilterMode.Simple"
@@ -118,7 +118,7 @@
             </Template>
         </RadzenDataGridColumn>
     </Columns>
-</RadzenDataGrid>
+</KrakenGrid>
 
 @code {
     private List<Team> _teams = [];

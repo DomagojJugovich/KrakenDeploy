@@ -115,7 +115,7 @@
                                   Visible="@_showOnlyGranted" />
                 </RadzenStack>
 
-                <RadzenDataGrid Data="@_displayRows"
+                <KrakenGrid SettingsKey="test-permissions" Data="@_displayRows"
                                 TItem="PermissionRow"
                                 AllowPaging="true" PageSize="50"
                                 AllowSorting="true" AllowColumnResize="true"
@@ -148,7 +148,7 @@
                                               Title="Id" Width="80px" Sortable="true"
                                               TextAlign="TextAlign.Right" />
                     </Columns>
-                </RadzenDataGrid>
+                </KrakenGrid>
             </RadzenCard>
         }
     </RadzenStack>

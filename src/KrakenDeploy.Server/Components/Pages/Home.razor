@@ -1,57 +1,213 @@
 @page "/"
 @attribute [Authorize]
+@inject DashboardService DashboardSvc
+@inject NavigationManager Nav
 
 <PageTitle>Dashboard - KrakenDeploy</PageTitle>
 
-<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">Dashboard</RadzenText>
+<div class="page-head">
+    <div>
+        <h1 class="page-title">Dashboard</h1>
+        <p class="page-sub">@(_summary?.SpaceName ?? "…") · all projects</p>
+    </div>
+    <div class="page-head-actions">
+        <RadzenButton Text="Refresh" Icon="refresh" ButtonStyle="ButtonStyle.Light"
+                      Variant="Variant.Filled" Click="@RefreshAsync" />
+        <RadzenButton Text="Deploy" Icon="rocket_launch" ButtonStyle="ButtonStyle.Primary"
+                      Variant="Variant.Filled" Click="@(() => Nav.NavigateTo("/projects"))" />
+    </div>
+</div>
 
-<RadzenRow Gap="1.5rem" class="rz-mb-6">
-    <RadzenColumn Size="12" SizeSM="6" SizeLG="3">
-        <RadzenCard>
-            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="1rem">
-                <RadzenIcon Icon="computer" class="kraken-stat-icon" Style="color: var(--rz-success);" />
-                <RadzenStack Gap="0">
-                    <RadzenText TextStyle="TextStyle.H5" class="rz-mb-0">—</RadzenText>
-                    <RadzenText TextStyle="TextStyle.Caption" class="rz-mb-0">Targets Online</RadzenText>
-                </RadzenStack>
-            </RadzenStack>
-        </RadzenCard>
-    </RadzenColumn>
-    <RadzenColumn Size="12" SizeSM="6" SizeLG="3">
-        <RadzenCard>
-            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="1rem">
-                <RadzenIcon Icon="check_circle" class="kraken-stat-icon" Style="color: var(--rz-success);" />
-                <RadzenStack Gap="0">
-                    <RadzenText TextStyle="TextStyle.H5" class="rz-mb-0">—</RadzenText>
-                    <RadzenText TextStyle="TextStyle.Caption" class="rz-mb-0">Deployments Today</RadzenText>
-                </RadzenStack>
-            </RadzenStack>
-        </RadzenCard>
-    </RadzenColumn>
-    <RadzenColumn Size="12" SizeSM="6" SizeLG="3">
-        <RadzenCard>
-            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="1rem">
-                <RadzenIcon Icon="error" class="kraken-stat-icon" Style="color: var(--rz-danger);" />
-                <RadzenStack Gap="0">
-                    <RadzenText TextStyle="TextStyle.H5" class="rz-mb-0">—</RadzenText>
-                    <RadzenText TextStyle="TextStyle.Caption" class="rz-mb-0">Failed Deployments</RadzenText>
-                </RadzenStack>
-            </RadzenStack>
-        </RadzenCard>
-    </RadzenColumn>
-    <RadzenColumn Size="12" SizeSM="6" SizeLG="3">
-        <RadzenCard>
-            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="1rem">
-                <RadzenIcon Icon="pending" class="kraken-stat-icon" Style="color: var(--rz-warning);" />
-                <RadzenStack Gap="0">
-                    <RadzenText TextStyle="TextStyle.H5" class="rz-mb-0">—</RadzenText>
-                    <RadzenText TextStyle="TextStyle.Caption" class="rz-mb-0">Pending Offline Results</RadzenText>
-                </RadzenStack>
-            </RadzenStack>
-        </RadzenCard>
-    </RadzenColumn>
-</RadzenRow>
+@if (_summary is null)
+{
+    <RadzenProgressBarCircular ShowValue="false" Mode="ProgressBarMode.Indeterminate" Size="ProgressBarCircularSize.Small" />
+}
+else
+{
+    var s = _summary;
 
-<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-    Project, environment, target management, and live deployment data land in Phases 5–9.
-</RadzenText>
+    @* ── Stat cards ── *@
+    <div class="stat-grid">
+        <div class="stat st--ok">
+            <span class="stat-strip"></span>
+            <div class="stat-row">
+                <div class="stat-ic"><RadzenIcon Icon="dns" /></div>
+                <div>
+                    <div class="stat-val">@($"{s.TargetsOnline}/{s.TargetsTotal}")</div>
+                    <div class="stat-label">Targets online</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="stat st--run">
+            <span class="stat-strip"></span>
+            <div class="stat-row">
+                <div class="stat-ic"><RadzenIcon Icon="rocket_launch" /></div>
+                <div>
+                    <div class="stat-val">@s.DeploymentsToday</div>
+                    <div class="stat-label">Deployments today</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="stat st--fail">
+            <span class="stat-strip"></span>
+            <div class="stat-row">
+                <div class="stat-ic"><RadzenIcon Icon="error" /></div>
+                <div>
+                    <div class="stat-val">@s.Failed24h</div>
+                    <div class="stat-label">Failed (24h)</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="stat st--offline">
+            <span class="stat-strip"></span>
+            <div class="stat-row">
+                <div class="stat-ic"><RadzenIcon Icon="cloud_off" /></div>
+                <div>
+                    <div class="stat-val">@s.PendingOffline</div>
+                    <div class="stat-label">Pending offline</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @* ── Recent (left) + Attention & Environment health (right) ── *@
+    <div class="dash-split">
+        <div class="kr-card">
+            <div class="kr-card-head">
+                <h3>Recent deployments</h3>
+                <a class="primary-link" href="/deployments">View all</a>
+            </div>
+            @if (s.Recent.Count == 0)
+            {
+                <div class="kr-empty">No deployments yet.</div>
+            }
+            else
+            {
+                <table class="dg">
+                    <thead>
+                        <tr>
+                            <th>Status</th>
+                            <th>Project / Release</th>
+                            <th>Environment</th>
+                            <th>Target</th>
+                            <th>Time</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var d in s.Recent)
+                        {
+                            <tr class="clickable" @onclick="@(() => Nav.NavigateTo($"/deployments/{d.Id}"))">
+                                <td><StatusPill Deployment="d.Status" /></td>
+                                <td>
+                                    <span class="cell-strong">@(d.Release?.Project?.Name ?? "—")</span>
+                                    <span class="mono cell-muted">&nbsp;@(d.Release?.Version)</span>
+                                </td>
+                                <td>
+                                    <span class="env-cell @EnvColor(d.Environment?.Name)">
+                                        <span class="dot"></span>@(d.Environment?.Name ?? "—")
+                                    </span>
+                                </td>
+                                <td>@TargetLabel(d)</td>
+                                <td class="mono cell-muted">@TimeLabel(d)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+
+        <div class="dash-side">
+            <div class="kr-card">
+                <div class="kr-card-head"><h3>Needs attention</h3></div>
+                @if (s.Attention.Count == 0)
+                {
+                    <div class="kr-empty">Nothing needs attention.</div>
+                }
+                else
+                {
+                    @foreach (var d in s.Attention)
+                    {
+                        <a class="attn-row" href="@($"/deployments/{d.Id}")">
+                            <StatusPill Deployment="d.Status" />
+                            <div class="attn-body">
+                                <div class="attn-title">
+                                    @(d.Release?.Project?.Name ?? "—")
+                                    <span class="mono muted-3">@(d.Release?.Version)</span>
+                                </div>
+                                <div class="attn-meta">@(d.Environment?.Name) · @TargetLabel(d) · @TimeLabel(d)</div>
+                            </div>
+                            <RadzenIcon Icon="chevron_right" Style="color: var(--text-3);" />
+                        </a>
+                    }
+                }
+            </div>
+
+            <div class="kr-card">
+                <div class="kr-card-head"><h3>Environment health</h3></div>
+                @if (s.Environments.Count == 0)
+                {
+                    <div class="kr-empty">No environments configured.</div>
+                }
+                else
+                {
+                    @for (var i = 0; i < s.Environments.Count; i++)
+                    {
+                        var e = s.Environments[i];
+                        <div class="envh-row @($"env-c{i % 6}")">
+                            <span class="envh-dot"></span>
+                            <span class="envh-name">@e.Name</span>
+                            <span class="envh-spacer"></span>
+                            <span class="envh-deploys">@e.DeploysThisWeek deploys/wk</span>
+                            <span class="envh-gauge">@e.TargetsOnline / @e.TargetsTotal up</span>
+                        </div>
+                    }
+                }
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private DashboardSummary? _summary;
+    private Dictionary<string, int> _envColor = new(StringComparer.OrdinalIgnoreCase);
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _summary = await DashboardSvc.GetSummaryAsync();
+        _envColor = _summary.Environments
+            .Select((e, i) => (e.Name, i))
+            .ToDictionary(x => x.Name, x => x.i, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task RefreshAsync()
+    {
+        _summary = null;
+        await LoadAsync();
+    }
+
+    private string EnvColor(string? name)
+        => name is not null && _envColor.TryGetValue(name, out var i) ? $"env-c{i % 6}" : "env-c0";
+
+    private static string TargetLabel(Deployment d)
+    {
+        if (d.Target is not null)
+        {
+            return d.Target.Name;
+        }
+        var count = d.Targets?.Count ?? 0;
+        return count > 0 ? $"{count} targets" : "—";
+    }
+
+    private static string TimeLabel(Deployment d)
+    {
+        var ts = (d.StartedUtc ?? d.CreatedUtc).ToLocalTime();
+        return ts.Date == DateTimeOffset.Now.Date
+            ? ts.ToString("HH:mm")
+            : ts.ToString("MMM d");
+    }
+}

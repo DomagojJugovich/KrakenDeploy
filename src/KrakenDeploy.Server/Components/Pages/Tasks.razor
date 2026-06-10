@@ -47,7 +47,7 @@
                        Change="@(() => ApplyFilter())" />
     </RadzenStack>
 
-    <RadzenDataGrid Data="@_filtered" TItem="ServerTaskRow"
+    <KrakenGrid SettingsKey="tasks" Data="@_filtered" TItem="ServerTaskRow"
                     AllowPaging="true" PageSize="25" PagerHorizontalAlign="HorizontalAlign.Center"
                     AllowSorting="true" AllowColumnResize="true"
                     RowClick="@OnRowClick"
@@ -84,7 +84,7 @@
                 <Template Context="t">@FormatDuration(t)</Template>
             </RadzenDataGridColumn>
         </Columns>
-    </RadzenDataGrid>
+    </KrakenGrid>
 
     <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
         Showing @_filtered.Count of @_all.Count tasks. Times are UTC. System jobs are

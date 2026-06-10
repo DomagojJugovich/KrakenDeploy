@@ -1,14 +1,17 @@
 @using KrakenDeploy.Server.Core.Domain.Projects
 @using KrakenDeploy.Server.Data.Services
 @inject ProjectService ProjectSvc
+@inject LifecycleService LifecycleSvc
 @inject NavigationManager Nav
 
 @*
     Shell wrapper for every project sub-page. Provides:
-    - Breadcrumb (Projects / All Projects)
-    - Project header (icon, name, favorite star)
-    - Left sub-menu (Dashboard, Process, Channels, Releases, ...)
-    - Right content area rendered from ChildContent
+    - Breadcrumb (Projects / {name})
+    - Project header (52px coral icon tile, name, lifecycle subtitle)
+    - Horizontal sub-nav tabs (+ secondary pill row for the Variables and
+      Runbooks families) — plain anchors, because the shell renders
+      statically (SSR) while most sub-pages are InteractiveServer.
+    - Content area rendered from ChildContent
 
     Usage in a sub-page:
         <ProjectShell Slug="@Slug">
@@ -26,80 +29,55 @@ else if (_project is not null)
 {
     <PageTitle>@_project.Name - KrakenDeploy</PageTitle>
 
-    @* Breadcrumb *@
-    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
-                 Gap="0.4rem" class="rz-mb-3">
-        <RadzenLink Path="/projects" Text="Projects" />
-        <RadzenIcon Icon="chevron_right" Style="font-size: 1rem; opacity: 0.5;" />
-        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-0">
-            All Projects
-        </RadzenText>
-    </RadzenStack>
-
-    @* Project header *@
-    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
-                 Gap="1rem" class="rz-mb-4">
-        <div class="kraken-project-icon">
-            <RadzenIcon Icon="folder_open" />
-        </div>
-        <RadzenText TextStyle="TextStyle.H4" TagName="TagName.H1" class="rz-mb-0">
-            @_project.Name
-        </RadzenText>
-        <RadzenIcon Icon="star_outline"
-                    Style="font-size: 1.5rem; cursor: pointer; opacity: 0.6;" />
-    </RadzenStack>
-
-    @* Two-column layout: sub-menu | content *@
-    <div class="kraken-project-shell">
-        <aside class="kraken-project-submenu">
-            <RadzenPanelMenu>
-                @* Primary section *@
-                <RadzenPanelMenuItem Text="Dashboard" Path="@Sub("dashboard")" />
-                <RadzenPanelMenuItem Text="Process"   Path="@Sub("process")" />
-                <RadzenPanelMenuItem Text="Channels"  Path="@Sub("channels")" />
-                <RadzenPanelMenuItem Text="Releases"  Path="@Sub("releases")" />
-                <RadzenPanelMenuItem Text="Triggers"  Path="@Sub("triggers")" />
-                <RadzenPanelMenuItem Text="Settings"  Path="@Sub("settings")" />
-            </RadzenPanelMenu>
-
-            <hr class="kraken-submenu-sep" />
-
-            <div class="kraken-submenu-section">Operations</div>
-            <RadzenPanelMenu>
-                <RadzenPanelMenuItem Text="Runbooks"         Path="@Sub("runbooks")" />
-                <RadzenPanelMenuItem Text="Runbook Triggers" Path="@Sub("runbook-triggers")" />
-            </RadzenPanelMenu>
-
-            <hr class="kraken-submenu-sep" />
-
-            <RadzenPanelMenu>
-                <RadzenPanelMenuItem Text="Ephemeral Environments"
-                                     Path="@Sub("ephemeral-environments")" />
-            </RadzenPanelMenu>
-
-            <hr class="kraken-submenu-sep" />
-
-            <RadzenPanelMenu>
-                <RadzenPanelMenuItem Text="Project Variables" Path="@Sub("variables")" />
-                <RadzenPanelMenuItem Text="Tenant Variables"  Path="@Sub("tenant-variables")" />
-                <RadzenPanelMenuItem Text="Variable Sets"     Path="@Sub("variable-sets")" />
-                <RadzenPanelMenuItem Text="All Variables"     Path="@Sub("all-variables")" />
-                <RadzenPanelMenuItem Text="Variable Preview"  Path="@Sub("variable-preview")" />
-            </RadzenPanelMenu>
-
-            <hr class="kraken-submenu-sep" />
-
-            <RadzenPanelMenu>
-                <RadzenPanelMenuItem Text="Tenants" Path="@Sub("tenants")" />
-            </RadzenPanelMenu>
-        </aside>
-
-        <main class="kraken-project-content">
-            <CascadingValue Value="_project" Name="Project">
-                @ChildContent
-            </CascadingValue>
-        </main>
+    <div class="breadcrumb">
+        <a href="/projects">Projects</a>
+        <RadzenIcon Icon="chevron_right" />
+        <span>@_project.Name</span>
     </div>
+
+    <div class="kraken-project-head">
+        <div class="kraken-project-icon">
+            <RadzenIcon Icon="language" />
+        </div>
+        <div>
+            <h1 class="page-title">@_project.Name</h1>
+            <p class="page-sub">@Subtitle</p>
+        </div>
+    </div>
+
+    <nav class="kraken-ptabs">
+        @foreach (var tab in PrimaryTabs)
+        {
+            <a class="kraken-ptab @(IsTabActive(tab.Seg) ? "active" : null)" href="@Sub(tab.Seg)">
+                <RadzenIcon Icon="@tab.Icon" />@tab.Label
+            </a>
+        }
+    </nav>
+
+    @if (VariablesFamily.Contains(ActiveSegment))
+    {
+        <div class="kraken-ptabs-sub">
+            @foreach (var sub in VariablesSubTabs)
+            {
+                <a class="kraken-ptab-sub @(ActiveSegment == sub.Seg ? "active" : null)" href="@Sub(sub.Seg)">@sub.Label</a>
+            }
+        </div>
+    }
+    else if (RunbooksFamily.Contains(ActiveSegment))
+    {
+        <div class="kraken-ptabs-sub">
+            @foreach (var sub in RunbooksSubTabs)
+            {
+                <a class="kraken-ptab-sub @(ActiveSegment == sub.Seg ? "active" : null)" href="@Sub(sub.Seg)">@sub.Label</a>
+            }
+        </div>
+    }
+
+    <main class="kraken-project-content">
+        <CascadingValue Value="_project" Name="Project">
+            @ChildContent
+        </CascadingValue>
+    </main>
 }
 
 @code {
@@ -107,11 +85,78 @@ else if (_project is not null)
     [Parameter] public RenderFragment? ChildContent { get; set; }
 
     private Project? _project;
+    private string? _lifecycleName;
     private bool _loaded;
+
+    private static readonly (string Seg, string Icon, string Label)[] PrimaryTabs =
+    [
+        ("dashboard", "grid_view", "Overview"),
+        ("process", "account_tree", "Process"),
+        ("releases", "sell", "Releases"),
+        ("channels", "alt_route", "Channels"),
+        ("triggers", "bolt", "Triggers"),
+        ("runbooks", "menu_book", "Runbooks"),
+        ("variables", "data_object", "Variables"),
+        ("tenants", "people", "Tenants"),
+        ("ephemeral-environments", "timelapse", "Ephemeral"),
+        ("settings", "settings", "Settings"),
+    ];
+
+    private static readonly string[] VariablesFamily =
+        ["variables", "tenant-variables", "variable-sets", "all-variables", "variable-preview"];
+
+    private static readonly string[] RunbooksFamily = ["runbooks", "runbook-triggers"];
+
+    private static readonly (string Seg, string Label)[] VariablesSubTabs =
+    [
+        ("variables", "Project Variables"),
+        ("tenant-variables", "Tenant Variables"),
+        ("variable-sets", "Variable Sets"),
+        ("all-variables", "All Variables"),
+        ("variable-preview", "Preview"),
+    ];
+
+    private static readonly (string Seg, string Label)[] RunbooksSubTabs =
+    [
+        ("runbooks", "Runbooks"),
+        ("runbook-triggers", "Runbook Triggers"),
+    ];
+
+    private string Subtitle =>
+        $"Lifecycle: {_lifecycleName ?? "—"} · {_project?.Slug}";
+
+    /// <summary>First path segment after /projects/{slug}; "dashboard" for the root.</summary>
+    private string ActiveSegment
+    {
+        get
+        {
+            var path = new Uri(Nav.Uri).AbsolutePath;
+            var marker = $"/projects/{Slug}";
+            var idx = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+            if (idx < 0)
+            {
+                return "dashboard";
+            }
+            var rest = path[(idx + marker.Length)..].Trim('/');
+            var seg = rest.Split('/')[0];
+            return string.IsNullOrEmpty(seg) ? "dashboard" : seg;
+        }
+    }
+
+    private bool IsTabActive(string seg) => seg switch
+    {
+        "variables" => VariablesFamily.Contains(ActiveSegment),
+        "runbooks"  => RunbooksFamily.Contains(ActiveSegment),
+        _           => string.Equals(ActiveSegment, seg, StringComparison.OrdinalIgnoreCase),
+    };
 
     protected override async Task OnParametersSetAsync()
     {
         _project = await ProjectSvc.GetBySlugAsync(Slug);
+        if (_project?.LifecycleId is { } lifecycleId)
+        {
+            _lifecycleName = (await LifecycleSvc.GetAsync(lifecycleId))?.Name;
+        }
         _loaded = true;
     }
 

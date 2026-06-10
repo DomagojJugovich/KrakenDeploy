@@ -1,0 +1,126 @@
+@* Shared status pill — the single source of truth for status → colour/icon/label.
+   Replaces the per-page BadgeStyle()/StatusStyle()/OutcomeStyle() switches that
+   were duplicated across Deployments, DeploymentDetail, Targets and the matrix.
+
+   Usage:
+     <StatusPill Deployment="d.Status" />
+     <StatusPill Deployment="d.Status" Variant="StatusPill.PillVariant.Bold" />
+     <StatusPill Target="t.Status" />
+     <StatusPill Step="o.Kind" Variant="StatusPill.PillVariant.Dot" />
+     <StatusPill Risk="t.RiskLevel" Variant="StatusPill.PillVariant.Bold" />
+     <StatusPill Kind="StatusPill.StatusKind.Fail" Label="Air-gapped" /> *@
+
+@{
+    var (cls, icon, label) = Resolve();
+    var classes = $"pill st--{cls} {VariantClass}".Trim();
+    var spinning = cls == "run";
+}
+<span class="@classes">
+    @if (Variant == PillVariant.Dot)
+    {
+        <span class="dot"></span>
+    }
+    else if (!string.IsNullOrEmpty(icon))
+    {
+        <span class="kraken-pill-ic @(spinning ? "spin" : null)">
+            <RadzenIcon Icon="@icon" />
+        </span>
+    }
+    <span>@label</span>
+</span>
+
+@code {
+    public enum PillVariant { Dot, Icon, Bold, Solid }
+
+    /// <summary>Status colour family. Maps 1:1 to the .st--* CSS classes.</summary>
+    public enum StatusKind { Ok, Run, Fail, Queue, Warn, Offline, Idle }
+
+    [Parameter] public DeploymentStatus? Deployment { get; set; }
+    [Parameter] public TargetStatus? Target { get; set; }
+    [Parameter] public StepOutcomeKind? Step { get; set; }
+    [Parameter] public TargetRiskLevel? Risk { get; set; }
+
+    /// <summary>Generic escape hatch when no domain enum fits.</summary>
+    [Parameter] public StatusKind? Kind { get; set; }
+
+    /// <summary>Override the resolved label (e.g. shorter text in a dense grid).</summary>
+    [Parameter] public string? Label { get; set; }
+
+    /// <summary>Override the resolved Material Symbols icon name.</summary>
+    [Parameter] public string? Icon { get; set; }
+
+    [Parameter] public PillVariant Variant { get; set; } = PillVariant.Icon;
+
+    private string VariantClass => Variant switch
+    {
+        PillVariant.Bold  => "pill-lg pill-solid",
+        PillVariant.Solid => "pill-solid",
+        _                 => "",
+    };
+
+    private (string Cls, string Icon, string Label) Resolve()
+    {
+        (string cls, string icon, string label) v = this switch
+        {
+            { Deployment: { } d } => MapDeployment(d),
+            { Target: { } t }     => MapTarget(t),
+            { Step: { } s }       => MapStep(s),
+            { Risk: { } r }       => MapRisk(r),
+            { Kind: { } k }       => (KindClass(k), "", k.ToString()),
+            _                     => ("idle", "help", "Unknown"),
+        };
+
+        // Caller overrides win.
+        return (v.cls, Icon ?? v.icon, Label ?? v.label);
+    }
+
+    private static (string, string, string) MapDeployment(DeploymentStatus s) => s switch
+    {
+        DeploymentStatus.Succeeded             => ("ok", "check_circle", "Succeeded"),
+        DeploymentStatus.SucceededWithWarnings => ("warn", "warning", "Succeeded · warnings"),
+        DeploymentStatus.Failed                => ("fail", "cancel", "Failed"),
+        DeploymentStatus.Running               => ("run", "autorenew", "Running"),
+        DeploymentStatus.Queued                => ("queue", "schedule", "Queued"),
+        DeploymentStatus.PendingOfflineResult  => ("offline", "cloud_off", "Pending offline result"),
+        DeploymentStatus.Cancelled             => ("idle", "block", "Cancelled"),
+        _                                      => ("idle", "help", s.ToString()),
+    };
+
+    private static (string, string, string) MapTarget(TargetStatus s) => s switch
+    {
+        TargetStatus.Online       => ("ok", "check_circle", "Online"),
+        TargetStatus.Offline      => ("fail", "cancel", "Offline"),
+        TargetStatus.Disabled     => ("idle", "block", "Disabled"),
+        TargetStatus.ShuttingDown => ("queue", "power_settings_new", "Shutting down"),
+        _                         => ("idle", "help", "Unknown"),
+    };
+
+    private static (string, string, string) MapStep(StepOutcomeKind s) => s switch
+    {
+        StepOutcomeKind.Succeeded => ("ok", "check_circle", "Succeeded"),
+        StepOutcomeKind.Failed    => ("fail", "cancel", "Failed"),
+        StepOutcomeKind.Skipped   => ("idle", "do_not_disturb_on", "Skipped"),
+        StepOutcomeKind.TimedOut  => ("fail", "timer_off", "Timed out"),
+        _                         => ("idle", "help", s.ToString()),
+    };
+
+    private static (string, string, string) MapRisk(TargetRiskLevel r) => r switch
+    {
+        TargetRiskLevel.Production  => ("fail", "", "Production"),
+        TargetRiskLevel.Staging     => ("queue", "", "Staging"),
+        TargetRiskLevel.Development => ("run", "", "Development"),
+        _                           => ("idle", "", r.ToString()),
+    };
+
+    private static string KindClass(StatusKind k) => k switch
+    {
+        StatusKind.Ok      => "ok",
+        StatusKind.Run     => "run",
+        StatusKind.Fail    => "fail",
+        StatusKind.Queue   => "queue",
+        StatusKind.Warn    => "warn",
+        StatusKind.Offline => "offline",
+        StatusKind.Idle    => "idle",
+        _                  => "idle",
+    };
+}

@@ -120,7 +120,7 @@
                 </RadzenText>
             </RadzenStack>
 
-            <RadzenDataGrid Data="@_perSpace"
+            <KrakenGrid SettingsKey="license-usage" AllowColumnResize="true" Data="@_perSpace"
                             TItem="SpaceTargetCount"
                             AllowPaging="false"
                             AllowSorting="true"
@@ -152,7 +152,7 @@
                         </Template>
                     </RadzenDataGridColumn>
                 </Columns>
-            </RadzenDataGrid>
+            </KrakenGrid>
         </RadzenCard>
 
         @* ── Other resources (context, not capped) ────────────────────── *@

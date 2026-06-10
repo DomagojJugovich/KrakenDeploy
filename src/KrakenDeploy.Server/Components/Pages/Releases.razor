@@ -8,7 +8,7 @@
 
 <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">Releases</RadzenText>
 
-<RadzenDataGrid Data="@_releases" TItem="Release"
+<KrakenGrid SettingsKey="releases" Data="@_releases" TItem="Release"
                 AllowPaging="true" PageSize="25"
                 AllowSorting="true"
                 AllowColumnResize="true"
@@ -24,7 +24,7 @@
         <RadzenDataGridColumn TItem="Release" Property="CreatedUtc" Title="Created"
                               FormatString="{0:yyyy-MM-dd HH:mm}" />
     </Columns>
-</RadzenDataGrid>
+</KrakenGrid>
 
 @code {
     private List<Release> _releases = [];

@@ -19,7 +19,7 @@
     </RequirePermission>
 </RadzenStack>
 
-<RadzenDataGrid Data="@_spaces" TItem="Space"
+<KrakenGrid SettingsKey="spaces" Data="@_spaces" TItem="Space"
                 AllowPaging="true" PageSize="25"
                 AllowSorting="true"
                 AllowFiltering="true" FilterMode="FilterMode.Simple"
@@ -78,7 +78,7 @@
             </Template>
         </RadzenDataGridColumn>
     </Columns>
-</RadzenDataGrid>
+</KrakenGrid>
 
 @code {
     private List<Space> _spaces = [];

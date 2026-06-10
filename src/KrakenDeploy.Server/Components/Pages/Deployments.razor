@@ -1,58 +1,188 @@
 @page "/deployments"
 @attribute [Authorize]
-@using KrakenDeploy.Server.Core.Domain.Deployments
-@using KrakenDeploy.Server.Data.Services
 @inject DeploymentService DeploymentSvc
+@inject EnvironmentService EnvironmentSvc
 @inject NavigationManager Nav
 
 <PageTitle>Deployments - KrakenDeploy</PageTitle>
 
-<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">Deployments</RadzenText>
+<div class="page-head">
+    <div>
+        <h1 class="page-title">Deployments</h1>
+        <p class="page-sub">@_filtered.Count of @_all.Count deployments</p>
+    </div>
+</div>
 
-<RadzenDataGrid Data="@_deployments" TItem="Deployment"
-                AllowPaging="true" PageSize="25"
-                AllowSorting="true"
-                AllowColumnResize="true"
+<div class="toolbar">
+    <div class="search">
+        <RadzenIcon Icon="search" />
+        <input placeholder="Search project, release, target…" value="@_search"
+               @oninput="@(e => { _search = e.Value?.ToString() ?? string.Empty; ApplyFilters(); })" />
+    </div>
+
+    @if (_envs.Count > 0)
+    {
+        <div class="seg">
+            <button class="@(_envFilter is null ? "on" : "")" @onclick="@(() => SetEnv(null))">All envs</button>
+            @for (var i = 0; i < _envs.Count; i++)
+            {
+                var e = _envs[i];
+                <button class="@($"env-c{i % 6} {(_envFilter == e.Id ? "on" : "")}")" @onclick="@(() => SetEnv(e.Id))">
+                    <span class="dot"></span>@e.Name
+                </button>
+            }
+        </div>
+    }
+
+    <div class="seg">
+        @foreach (var opt in _statusFilters)
+        {
+            <button class="@(_statusFilter == opt.Value ? "on" : "")" @onclick="@(() => SetStatus(opt.Value))">@opt.Label</button>
+        }
+    </div>
+</div>
+
+<KrakenGrid SettingsKey="deployments" @ref="_grid" Data="@_filtered" TItem="Deployment"
+                AllowPaging="true" PageSize="25" AllowSorting="true" AllowColumnResize="true"
                 RowClick="@(args => { if (args.Data is { } d) Nav.NavigateTo($"/deployments/{d.Id}"); })"
-                EmptyText="No deployments yet.">
+                GridLines="DataGridGridLines.Horizontal"
+                EmptyText="No deployments match the current filters.">
     <Columns>
-        <RadzenDataGridColumn TItem="Deployment" Property="Status" Title="Status" Width="120px">
+        <RadzenDataGridColumn TItem="Deployment" Property="Status" Title="Status" Width="160px">
+            <Template Context="d"><StatusPill Deployment="d.Status" /></Template>
+        </RadzenDataGridColumn>
+
+        <RadzenDataGridColumn TItem="Deployment" UniqueID="project-release" Title="Project / Release" Width="260px" Sortable="false">
             <Template Context="d">
-                <RadzenBadge Text="@d.Status.ToString()" BadgeStyle="@StatusStyle(d.Status)" />
+                <span class="cell-strong">@(d.Release?.Project?.Name ?? "—")</span>
+                @if (d.Release?.Version is { Length: > 0 } v)
+                {
+                    <span class="mono cell-muted">&nbsp;@v</span>
+                }
             </Template>
         </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="Deployment" Title="Project / Release" Width="240px">
+
+        <RadzenDataGridColumn TItem="Deployment" UniqueID="environment" Title="Environment" Width="160px" Sortable="false">
             <Template Context="d">
-                @(d.Release?.Project?.Name ?? "—") / @(d.Release?.Version ?? "—")
+                <span class="env-cell @EnvColor(d.EnvironmentId)">
+                    <span class="dot"></span>@(d.Environment?.Name ?? "—")
+                </span>
             </Template>
         </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="Deployment" Title="Environment" Width="160px">
-            <Template Context="d">@(d.Environment?.Name ?? "—")</Template>
+
+        <RadzenDataGridColumn TItem="Deployment" UniqueID="target" Title="Target" Width="160px" Sortable="false">
+            <Template Context="d">@TargetLabel(d)</Template>
         </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="Deployment" Title="Target" Width="160px">
-            <Template Context="d">@(d.Target?.Name ?? "—")</Template>
+
+        <RadzenDataGridColumn TItem="Deployment" Property="StartedUtc" Title="Started" Width="160px">
+            <Template Context="d">
+                <span class="mono cell-muted">@(d.StartedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")</span>
+            </Template>
         </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="Deployment" Property="StartedUtc" Title="Started"
-                              Width="160px" FormatString="{0:yyyy-MM-dd HH:mm}" />
-        <RadzenDataGridColumn TItem="Deployment" Property="CompletedUtc" Title="Completed"
-                              Width="160px" FormatString="{0:yyyy-MM-dd HH:mm}" />
+
+        <RadzenDataGridColumn TItem="Deployment" UniqueID="duration" Title="Duration" Width="110px" Sortable="false">
+            <Template Context="d"><span class="mono cell-muted">@Duration(d)</span></Template>
+        </RadzenDataGridColumn>
+
+        <RadzenDataGridColumn TItem="Deployment" UniqueID="open" Title="" Width="48px" Sortable="false" TextAlign="TextAlign.Center">
+            <Template Context="d"><RadzenIcon Icon="chevron_right" Style="color: var(--text-3);" /></Template>
+        </RadzenDataGridColumn>
     </Columns>
-</RadzenDataGrid>
+</KrakenGrid>
 
 @code {
-    private List<Deployment> _deployments = [];
+    private RadzenDataGrid<Deployment>? _grid;
+    private List<Deployment> _all = [];
+    private List<Deployment> _filtered = [];
+    private List<DeploymentEnvironment> _envs = [];
+    private Dictionary<Guid, int> _envColor = [];
+
+    private string _search = string.Empty;
+    private Guid? _envFilter;
+    private DeploymentStatus? _statusFilter;
+
+    private readonly (string Label, DeploymentStatus? Value)[] _statusFilters =
+    [
+        ("All", null),
+        ("Running", DeploymentStatus.Running),
+        ("Failed", DeploymentStatus.Failed),
+        ("Succeeded", DeploymentStatus.Succeeded),
+        ("Queued", DeploymentStatus.Queued),
+    ];
 
     protected override async Task OnInitializedAsync()
-        => _deployments = await DeploymentSvc.GetAllAsync();
-
-    private static BadgeStyle StatusStyle(DeploymentStatus status) => status switch
     {
-        DeploymentStatus.Succeeded             => BadgeStyle.Success,
-        DeploymentStatus.SucceededWithWarnings => BadgeStyle.Warning,
-        DeploymentStatus.Failed                => BadgeStyle.Danger,
-        DeploymentStatus.Running               => BadgeStyle.Info,
-        DeploymentStatus.Queued                => BadgeStyle.Warning,
-        DeploymentStatus.PendingOfflineResult  => BadgeStyle.Warning,
-        _                                      => BadgeStyle.Light,
-    };
+        _all = await DeploymentSvc.GetAllAsync();
+        _envs = await EnvironmentSvc.GetAllOrderedAsync();
+        _envColor = _envs.Select((e, i) => (e.Id, i)).ToDictionary(x => x.Id, x => x.i);
+        ApplyFilters();
+    }
+
+    private void SetEnv(Guid? id) { _envFilter = id; ApplyFilters(); }
+    private void SetStatus(DeploymentStatus? s) { _statusFilter = s; ApplyFilters(); }
+
+    private void ApplyFilters()
+    {
+        IEnumerable<Deployment> q = _all;
+
+        if (_envFilter is { } envId)
+        {
+            q = q.Where(d => d.EnvironmentId == envId);
+        }
+
+        if (_statusFilter is { } st)
+        {
+            q = st == DeploymentStatus.Succeeded
+                ? q.Where(d => d.Status is DeploymentStatus.Succeeded or DeploymentStatus.SucceededWithWarnings)
+                : q.Where(d => d.Status == st);
+        }
+
+        if (!string.IsNullOrWhiteSpace(_search))
+        {
+            var s = _search.Trim();
+            q = q.Where(d =>
+                (d.Release?.Project?.Name?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (d.Release?.Version?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (d.Target?.Name?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || (d.Environment?.Name?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false));
+        }
+
+        _filtered = q.ToList();
+        _grid?.Reload();
+    }
+
+    private string EnvColor(Guid envId)
+        => _envColor.TryGetValue(envId, out var i) ? $"env-c{i % 6}" : "env-c0";
+
+    private static string TargetLabel(Deployment d)
+    {
+        if (d.Target is not null)
+        {
+            return d.Target.Name;
+        }
+        var count = d.Targets?.Count ?? 0;
+        return count > 0 ? $"{count} targets" : "—";
+    }
+
+    private static string Duration(Deployment d)
+    {
+        if (d.StartedUtc is not { } start)
+        {
+            return "—";
+        }
+
+        var end = d.CompletedUtc
+            ?? (d.Status == DeploymentStatus.Running ? DateTimeOffset.UtcNow : (DateTimeOffset?)null);
+        if (end is not { } e)
+        {
+            return "—";
+        }
+
+        var span = e - start;
+        return span.TotalHours >= 1
+            ? $"{(int)span.TotalHours}h {span.Minutes}m"
+            : span.TotalMinutes >= 1
+                ? $"{(int)span.TotalMinutes}m {span.Seconds}s"
+                : $"{Math.Max(0, (int)span.TotalSeconds)}s";
+    }
 }

@@ -60,7 +60,7 @@
     </RadzenAlert>
 }
 
-<RadzenDataGrid Data="@VisibleUsers" TItem="ApplicationUser"
+<KrakenGrid SettingsKey="users" Data="@VisibleUsers" TItem="ApplicationUser"
                 AllowPaging="true" PageSize="25"
                 AllowSorting="true"
                 AllowFiltering="true" FilterMode="FilterMode.Simple"
@@ -116,7 +116,7 @@
             </Template>
         </RadzenDataGridColumn>
     </Columns>
-</RadzenDataGrid>
+</KrakenGrid>
 
 @code {
     private enum UserKindFilter { All, Humans, ServiceAccounts }

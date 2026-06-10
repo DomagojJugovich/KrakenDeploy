@@ -26,7 +26,7 @@
     accounts always remain available for bootstrap and break-glass admin access.
 </RadzenText>
 
-<RadzenDataGrid Data="@_providers" TItem="IdentityProvider"
+<KrakenGrid SettingsKey="identity-providers" Data="@_providers" TItem="IdentityProvider"
                 AllowPaging="true" PageSize="25"
                 AllowSorting="true"
                 AllowColumnResize="true"
@@ -70,7 +70,7 @@
             </Template>
         </RadzenDataGridColumn>
     </Columns>
-</RadzenDataGrid>
+</KrakenGrid>
 
 @code {
     private List<IdentityProvider> _providers = [];

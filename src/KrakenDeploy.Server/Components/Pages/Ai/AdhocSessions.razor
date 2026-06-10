@@ -47,7 +47,7 @@
 }
 else
 {
-    <RadzenDataGrid Data="@_sessions" TItem="AdhocSessionListItem"
+    <KrakenGrid SettingsKey="adhoc-sessions" AllowColumnResize="true" Data="@_sessions" TItem="AdhocSessionListItem"
                     AllowPaging="true" PageSize="25" AllowSorting="true"
                     EmptyText="No ad-hoc sessions yet.">
         <Columns>
@@ -81,7 +81,7 @@ else
                 </Template>
             </RadzenDataGridColumn>
         </Columns>
-    </RadzenDataGrid>
+    </KrakenGrid>
 }
 
 @code {

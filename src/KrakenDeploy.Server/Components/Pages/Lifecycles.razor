@@ -36,7 +36,7 @@
     </RadzenCard>
 }
 
-<RadzenDataGrid Data="@_lifecycles" TItem="Lifecycle"
+<KrakenGrid SettingsKey="lifecycles" Data="@_lifecycles" TItem="Lifecycle"
                 AllowPaging="true" PageSize="20"
                 AllowSorting="true"
                 AllowColumnResize="true"
@@ -63,7 +63,7 @@
             </Template>
         </RadzenDataGridColumn>
     </Columns>
-</RadzenDataGrid>
+</KrakenGrid>
 
 @code {
     private List<Lifecycle> _lifecycles = [];

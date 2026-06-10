@@ -46,7 +46,7 @@
     </RadzenCard>
 }
 
-<RadzenDataGrid Data="@_tenants" TItem="Tenant"
+<KrakenGrid SettingsKey="tenants" Data="@_tenants" TItem="Tenant"
                 AllowPaging="true" PageSize="20"
                 AllowSorting="true"
                 AllowColumnResize="true"
@@ -73,7 +73,7 @@
             </Template>
         </RadzenDataGridColumn>
     </Columns>
-</RadzenDataGrid>
+</KrakenGrid>
 
 @code {
     private List<Tenant> _tenants = [];

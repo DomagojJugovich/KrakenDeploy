@@ -26,9 +26,9 @@
                           ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
                           Click="@(() => _asideOpen = !_asideOpen)"
                           title="Show or hide the Lifecycle and Script Modules panel" />
-            <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
-                Process
-            </RadzenText>
+            <h2 class="section-title" style="margin: 0; align-self: center;">
+                Deployment process · @_steps.Count step@(_steps.Count == 1 ? "" : "s")
+            </h2>
         </RadzenStack>
         <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
             <RequirePermission Permission="Permission.ReleaseCreate">
@@ -313,27 +313,19 @@
                     <RadzenText TextStyle="TextStyle.Body2" class="rz-mb-3">
                         <strong>@_lifecycle.Name</strong>
                     </RadzenText>
+                    var phaseIndex = 0;
                     @foreach (var phase in _lifecycle.Phases.OrderBy(p => p.SortOrder))
                     {
-                        <div class="kraken-phase-block">
-                            <div class="kraken-phase-header">
-                                @phase.Name
-                                @if (phase.IsOptional)
-                                {
-                                    <span class="kraken-phase-flag">optional</span>
-                                }
-                            </div>
-                            <div class="kraken-phase-envs">
-                                @if (phase.EnvironmentIds.Count > 0)
-                                {
-                                    <text>@phase.EnvironmentIds.Count required env(s)</text>
-                                }
-                                else
-                                {
-                                    <text>(no environments)</text>
-                                }
+                        <div class="kraken-lc-item @($"env-c{phaseIndex % 6}")">
+                            <span class="kraken-lc-dot"></span>
+                            <div>
+                                <div class="kraken-lc-name">@phase.Name</div>
+                                <div class="kraken-lc-meta">
+                                    @(phase.IsOptional ? "optional" : "required")@(phase.EnvironmentIds.Count > 0 ? $" · {phase.EnvironmentIds.Count} env(s)" : null)
+                                </div>
                             </div>
                         </div>
+                        phaseIndex++;
                     }
                 }
                 else

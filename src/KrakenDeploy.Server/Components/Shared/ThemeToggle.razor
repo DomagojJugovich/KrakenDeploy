@@ -6,12 +6,36 @@
 @inject ThemeService ThemeSvc
 @inject UserService UserSvc
 @inject AuthenticationStateProvider AuthState
+@inject IJSRuntime JS
 
-<RadzenAppearanceToggle LightTheme="material" DarkTheme="material-dark" />
+@* Two-button segmented light/dark toggle (same control as the login page),
+   driving Radzen's ThemeService so the stylesheet swap + per-user persistence
+   keep working exactly as with RadzenAppearanceToggle. *@
+<div class="kraken-theme-toggle" role="group" aria-label="Theme">
+    <button type="button" class="@(IsDark ? null : "on")" title="Light"
+            @onclick="@(() => SetTheme("material"))">
+        <RadzenIcon Icon="light_mode" />
+    </button>
+    <button type="button" class="@(IsDark ? "on" : null)" title="Dark"
+            @onclick="@(() => SetTheme("material-dark"))">
+        <RadzenIcon Icon="dark_mode" />
+    </button>
+</div>
 
 @code {
     private Guid? _userId;
     private string? _lastSavedTheme;
+
+    private bool IsDark =>
+        ThemeSvc.Theme?.Contains("dark", StringComparison.OrdinalIgnoreCase) == true;
+
+    private void SetTheme(string theme)
+    {
+        if (ThemeSvc.Theme != theme)
+        {
+            ThemeSvc.SetTheme(theme, triggerChange: true);
+        }
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -39,16 +63,32 @@
 
     private async void OnThemeChanged()
     {
-        if (_userId is not { } id)
-        {
-            return;
-        }
         var current = ThemeSvc.Theme;
+
+        // Re-render so the segmented control's active marking follows the theme.
+        await InvokeAsync(StateHasChanged);
+
         if (current == _lastSavedTheme)
         {
             return;
         }
         _lastSavedTheme = current;
+
+        try
+        {
+            // Mirror to localStorage so the (static SSR) login page wakes up in
+            // the same theme the user last used in the app.
+            await JS.InvokeVoidAsync("localStorage.setItem", "kraken-theme", current);
+        }
+        catch
+        {
+            // JS interop unavailable (prerender) — harmless.
+        }
+
+        if (_userId is not { } id)
+        {
+            return;
+        }
         try
         {
             await UserSvc.UpdateThemeAsync(id, current);

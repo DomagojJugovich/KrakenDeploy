@@ -5,50 +5,12 @@
 @using KrakenDeploy.Server.Core.Domain.Deployments
 @inject ProjectService ProjectSvc
 @inject DeploymentService DeploymentSvc
+@inject DashboardService DashboardSvc
 @inject DialogService Dialog
 @inject NotificationService Notifications
+@inject NavigationManager Nav
 
 <ProjectShell Slug="@Slug">
-    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
-                 JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-4">
-        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
-            Project Dashboard
-        </RadzenText>
-        <RequirePermission Permission="Permission.ReleaseCreate">
-            <RadzenButton Text="Create Release" Icon="add_circle_outline"
-                          ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
-                          Click="OpenCreateAsync" />
-        </RequirePermission>
-    </RadzenStack>
-
-    @* Filter row *@
-    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
-                 Gap="1rem" class="rz-mb-3">
-        <div style="min-width: 220px;">
-            <RadzenLabel Text="Filter by release" />
-            <RadzenDropDown @bind-Value="_filterReleaseId" Data="@_releaseOptions"
-                            TextProperty="Label" ValueProperty="Value"
-                            AllowClear="true" Placeholder="(all releases)"
-                            Style="width: 100%;" />
-        </div>
-        <div style="min-width: 200px;">
-            <RadzenLabel Text="Group by" />
-            <RadzenDropDown TValue="string" Value="@_groupBy"
-                            ValueChanged="@((string v) => _groupBy = v)"
-                            Data="@_groupByOptions"
-                            TextProperty="Label" ValueProperty="Value"
-                            Style="width: 100%;" />
-        </div>
-        <div class="rz-ml-auto" style="align-self: end;">
-            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
-                @if (_matrix is not null)
-                {
-                    <text>1 - @_matrix.Tenants.Count of @_matrix.Tenants.Count Tenants</text>
-                }
-            </RadzenText>
-        </div>
-    </RadzenStack>
-
     @if (!_loaded)
     {
         <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
@@ -61,27 +23,13 @@
             Failed to load dashboard: @_loadError
         </RadzenAlert>
     }
-    else if (_matrix is null)
+    else if (_project is null)
     {
         <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
             Project '@Slug' was not found.
         </RadzenAlert>
     }
-    else if (_matrix.Tenants.Count == 0)
-    {
-        <RadzenCard class="rz-p-5 rz-text-align-center">
-            <RadzenIcon Icon="people_outline" Style="font-size: 3rem; opacity: 0.3;" />
-            <RadzenText TextStyle="TextStyle.H6" class="rz-mt-3">
-                No tenants connected to this project
-            </RadzenText>
-            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-                Connect tenants from the
-                <RadzenLink Path="@($"/projects/{Slug}/tenants")" Text="Tenants" />
-                tab to see them here.
-            </RadzenText>
-        </RadzenCard>
-    }
-    else if (_matrix.Environments.Count == 0)
+    else if (_releaseMatrix is null || _releaseMatrix.Environments.Count == 0)
     {
         <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
             No environments are defined in this Space. Define environments first
@@ -90,81 +38,181 @@
     }
     else
     {
-        <h3 class="rz-text-h6 rz-mt-4 rz-mb-3">Deployments</h3>
-        <div class="kraken-matrix-wrap">
-            <table class="kraken-matrix">
-                <thead>
-                    <tr>
-                        <th class="kraken-matrix-th-tenant">Tenant</th>
-                        @foreach (var env in _matrix.Environments)
-                        {
-                            <th>@env.Name.ToUpperInvariant()</th>
-                        }
-                    </tr>
-                </thead>
-                <tbody>
-                    @foreach (var tenant in _matrix.Tenants)
-                    {
+        @* ── Release / environment matrix ── *@
+        <div class="toolbar">
+            <div class="section-title" style="margin: 0; align-self: center;">
+                Release / environment matrix
+            </div>
+            <div style="margin-left: auto; display: flex; gap: 10px; align-items: center;">
+                <div class="search" style="min-width: 200px;">
+                    <RadzenIcon Icon="search" />
+                    <input placeholder="Find release…" value="@_releaseSearch"
+                           @oninput="@(e => _releaseSearch = e.Value?.ToString() ?? string.Empty)" />
+                </div>
+                <RequirePermission Permission="Permission.ReleaseCreate">
+                    <RadzenButton Text="Create release" Icon="rocket_launch"
+                                  ButtonStyle="ButtonStyle.Primary"
+                                  Click="OpenCreateAsync" />
+                </RequirePermission>
+            </div>
+        </div>
+
+        @if (FilteredReleases.Count == 0)
+        {
+            <div class="kr-card kr-card-pad kr-empty">
+                @(_releaseMatrix.Releases.Count == 0
+                    ? "No releases yet. Create a release to start deploying."
+                    : "No releases match the search.")
+            </div>
+        }
+        else
+        {
+            <div class="kraken-matrix-wrap">
+                <table class="kraken-matrix">
+                    <thead>
                         <tr>
-                            <td class="kraken-matrix-tenant-cell">
-                                <RadzenStack Orientation="Orientation.Horizontal"
-                                             AlignItems="AlignItems.Center" Gap="0.6rem">
-                                    <div class="kraken-tenant-avatar">
-                                        @TenantInitials(tenant.Name)
-                                    </div>
-                                    <span class="kraken-tenant-name">
-                                        @tenant.Name.ToUpperInvariant()
-                                    </span>
-                                </RadzenStack>
-                            </td>
-                            @foreach (var env in _matrix.Environments)
+                            <th class="kraken-matrix-th-tenant">Release</th>
+                            @for (var i = 0; i < _releaseMatrix.Environments.Count; i++)
                             {
-                                <td class="kraken-matrix-cell">
-                                    @{
-                                        _matrix.Cells.TryGetValue(
-                                            (tenant.Id, env.Id), out var cell);
-                                    }
-                                    @if (cell is null)
-                                    {
-                                        <span class="kraken-matrix-empty">—</span>
-                                    }
-                                    else if (_filterReleaseId is null
-                                             || ReleaseLabelById(_filterReleaseId)
-                                                 == cell.ReleaseVersion)
-                                    {
-                                        <RadzenStack Orientation="Orientation.Horizontal"
-                                                     AlignItems="AlignItems.Start" Gap="0.5rem">
-                                            <span class="@StatusClass(cell.Status)">
-                                                <RadzenIcon Icon="@StatusIcon(cell.Status)" />
-                                            </span>
-                                            <div>
-                                                <div class="kraken-matrix-version">
-                                                    @cell.ReleaseVersion
-                                                </div>
-                                                @if (cell.ChannelName is not null)
-                                                {
-                                                    <RadzenBadge Text="@cell.ChannelName"
-                                                                 BadgeStyle="BadgeStyle.Info"
-                                                                 IsPill="true" />
-                                                }
-                                                <div class="kraken-matrix-date">
-                                                    @cell.CreatedUtc.LocalDateTime
-                                                        .ToString("MMM d, yyyy h:mm tt")
-                                                </div>
-                                            </div>
-                                        </RadzenStack>
-                                    }
-                                    else
-                                    {
-                                        <span class="kraken-matrix-empty">—</span>
-                                    }
-                                </td>
+                                var env = _releaseMatrix.Environments[i];
+                                <th>
+                                    <span class="kraken-matrix-envhead @($"env-c{i % 6}")">
+                                        <span class="dot"></span>@env.Name
+                                    </span>
+                                </th>
                             }
                         </tr>
-                    }
-                </tbody>
-            </table>
-        </div>
+                    </thead>
+                    <tbody>
+                        @foreach (var rel in FilteredReleases)
+                        {
+                            <tr>
+                                <td class="kraken-matrix-tenant-cell">
+                                    <div class="kraken-matrix-rel">
+                                        <RadzenIcon Icon="sell" />
+                                        <div>
+                                            <div class="kraken-matrix-rel-version">@rel.Version</div>
+                                            <div class="kraken-matrix-rel-meta">
+                                                @rel.CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd") · @(rel.ChannelName ?? "Default")
+                                            </div>
+                                        </div>
+                                    </div>
+                                </td>
+                                @foreach (var env in _releaseMatrix.Environments)
+                                {
+                                    <td class="kraken-matrix-cell">
+                                        @if (rel.Cells.TryGetValue(env.Id, out var cell))
+                                        {
+                                            <a class="kraken-matrix-celllink" href="@($"/deployments/{cell.DeploymentId}")">
+                                                <span class="@StatusClass(cell.Status)">
+                                                    <RadzenIcon Icon="@StatusIcon(cell.Status)"
+                                                                class="@(cell.Status == DeploymentStatus.Running ? "spin" : null)" />
+                                                </span>
+                                                <div>
+                                                    <div class="kraken-matrix-cell-version">@rel.Version</div>
+                                                    <div class="kraken-matrix-cell-time">
+                                                        @(cell.Status == DeploymentStatus.Running
+                                                            ? "deploying…"
+                                                            : cell.When.ToLocalTime().ToString("dd MMM HH:mm"))
+                                                    </div>
+                                                </div>
+                                            </a>
+                                        }
+                                        else
+                                        {
+                                            <span class="kraken-matrix-empty">—</span>
+                                        }
+                                    </td>
+                                }
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div class="kraken-matrix-hint">
+                <RadzenIcon Icon="info" />
+                Click any cell to open that deployment. Promote a release by deploying it
+                to the next environment in the lifecycle.
+            </div>
+        }
+
+        @* ── Tenant / environment matrix (only when tenants are connected) ── *@
+        @if (_tenantMatrix is not null && _tenantMatrix.Tenants.Count > 0)
+        {
+            <div class="section-title" style="margin-top: var(--section-gap);">
+                Tenant / environment matrix
+            </div>
+            <div class="kraken-matrix-wrap">
+                <table class="kraken-matrix">
+                    <thead>
+                        <tr>
+                            <th class="kraken-matrix-th-tenant">Tenant</th>
+                            @for (var i = 0; i < _tenantMatrix.Environments.Count; i++)
+                            {
+                                var env = _tenantMatrix.Environments[i];
+                                <th>
+                                    <span class="kraken-matrix-envhead @($"env-c{i % 6}")">
+                                        <span class="dot"></span>@env.Name
+                                    </span>
+                                </th>
+                            }
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var tenant in _tenantMatrix.Tenants)
+                        {
+                            <tr>
+                                <td class="kraken-matrix-tenant-cell">
+                                    <RadzenStack Orientation="Orientation.Horizontal"
+                                                 AlignItems="AlignItems.Center" Gap="0.6rem">
+                                        <div class="kraken-tenant-avatar">
+                                            @TenantInitials(tenant.Name)
+                                        </div>
+                                        <span class="kraken-tenant-name">@tenant.Name</span>
+                                    </RadzenStack>
+                                </td>
+                                @foreach (var env in _tenantMatrix.Environments)
+                                {
+                                    <td class="kraken-matrix-cell">
+                                        @{
+                                            _tenantMatrix.Cells.TryGetValue((tenant.Id, env.Id), out var cell);
+                                        }
+                                        @if (cell is null)
+                                        {
+                                            <span class="kraken-matrix-empty">—</span>
+                                        }
+                                        else
+                                        {
+                                            <div class="kraken-matrix-rel">
+                                                <span class="@StatusClass(cell.Status)">
+                                                    <RadzenIcon Icon="@StatusIcon(cell.Status)"
+                                                                class="@(cell.Status == DeploymentStatus.Running ? "spin" : null)" />
+                                                </span>
+                                                <div>
+                                                    <div class="kraken-matrix-cell-version">@cell.ReleaseVersion</div>
+                                                    <div class="kraken-matrix-cell-time">
+                                                        @cell.CreatedUtc.ToLocalTime().ToString("dd MMM HH:mm")@(cell.ChannelName is not null ? $" · {cell.ChannelName}" : null)
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        }
+                                    </td>
+                                }
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else
+        {
+            <div class="kraken-matrix-hint">
+                <RadzenIcon Icon="people_outline" />
+                No tenants connected — connect tenants from the
+                <a class="primary-link" href="@($"/projects/{Slug}/tenants")">Tenants</a>
+                tab to get a per-tenant matrix.
+            </div>
+        }
     }
 </ProjectShell>
 
@@ -172,20 +220,18 @@
     [Parameter] public string Slug { get; set; } = "";
 
     private Project? _project;
-    private ProjectDashboardMatrix? _matrix;
-    private string? _filterReleaseId;
-    private string _groupBy = "none";
+    private ReleaseMatrix? _releaseMatrix;
+    private ProjectDashboardMatrix? _tenantMatrix;
+    private string _releaseSearch = string.Empty;
     private bool _loaded;
     private string? _loadError;
 
-    private record Option(string Value, string Label);
-
-    private List<Option> _releaseOptions = [];
-    private readonly Option[] _groupByOptions =
-    [
-        new("none", "(none)"),
-        new("tenant-tag", "Tenant tag"),
-    ];
+    private List<ReleaseMatrixRow> FilteredReleases =>
+        string.IsNullOrWhiteSpace(_releaseSearch)
+            ? _releaseMatrix?.Releases.ToList() ?? []
+            : (_releaseMatrix?.Releases ?? [])
+                .Where(r => r.Version.Contains(_releaseSearch.Trim(), StringComparison.OrdinalIgnoreCase))
+                .ToList();
 
     protected override async Task OnParametersSetAsync()
     {
@@ -197,21 +243,12 @@
             _project = await ProjectSvc.GetBySlugAsync(Slug);
             if (_project is null)
             {
-                _matrix = null;
                 _loaded = true;
                 return;
             }
 
-            _matrix = await DeploymentSvc.GetProjectMatrixAsync(_project.Id);
-
-            // Distinct release versions present in this project's matrix become
-            // the filter dropdown choices. Most recent first.
-            _releaseOptions = _matrix.Cells.Values
-                .OrderByDescending(c => c.CreatedUtc)
-                .Select(c => c.ReleaseVersion)
-                .Distinct()
-                .Select(v => new Option(v, v))
-                .ToList();
+            _releaseMatrix = await DashboardSvc.GetReleaseMatrixAsync(_project.Id);
+            _tenantMatrix = await DeploymentSvc.GetProjectMatrixAsync(_project.Id);
         }
         catch (Exception ex)
         {
@@ -241,8 +278,6 @@
         }
     }
 
-    private string ReleaseLabelById(string? id) => id ?? "";
-
     private static string TenantInitials(string name)
     {
         var parts = name.Split([' ', '-', '_'],
@@ -258,9 +293,9 @@
         DeploymentStatus.SucceededWithWarnings => "warning_amber",
         DeploymentStatus.Failed                => "close",
         DeploymentStatus.Cancelled             => "block",
-        DeploymentStatus.Running               => "play_arrow",
+        DeploymentStatus.Running               => "autorenew",
         DeploymentStatus.Queued                => "schedule",
-        DeploymentStatus.PendingOfflineResult  => "hourglass_empty",
+        DeploymentStatus.PendingOfflineResult  => "cloud_off",
         _                                       => "help",
     };
 
@@ -271,6 +306,7 @@
         DeploymentStatus.Failed                => "kraken-matrix-status kraken-matrix-status--err",
         DeploymentStatus.Cancelled             => "kraken-matrix-status kraken-matrix-status--cancelled",
         DeploymentStatus.Running               => "kraken-matrix-status kraken-matrix-status--running",
+        DeploymentStatus.PendingOfflineResult  => "kraken-matrix-status kraken-matrix-status--offline",
         _                                       => "kraken-matrix-status kraken-matrix-status--pending",
     };
 }

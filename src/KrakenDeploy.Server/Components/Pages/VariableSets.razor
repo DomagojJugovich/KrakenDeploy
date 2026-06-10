@@ -42,7 +42,7 @@
     </RadzenCard>
 }
 
-<RadzenDataGrid Data="@_sets" TItem="VariableSet"
+<KrakenGrid SettingsKey="variable-sets" Data="@_sets" TItem="VariableSet"
                 AllowPaging="true" PageSize="20"
                 AllowSorting="true" AllowColumnResize="true"
                 RowClick="@(args => { if (args.Data is { } s) Nav.NavigateTo($"/variable-sets/{s.Id}"); })"
@@ -69,7 +69,7 @@
             </Template>
         </RadzenDataGridColumn>
     </Columns>
-</RadzenDataGrid>
+</KrakenGrid>
 
 @code {
     private List<VariableSet> _sets = [];

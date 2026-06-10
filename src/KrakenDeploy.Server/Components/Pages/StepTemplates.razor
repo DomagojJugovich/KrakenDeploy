@@ -43,7 +43,7 @@
     </RadzenColumn>
 </RadzenRow>
 
-<RadzenDataGrid @ref="_grid"
+<KrakenGrid SettingsKey="step-templates" AllowColumnResize="true" @ref="_grid"
                 Data="@_templates"
                 TItem="StepTemplate"
                 AllowFiltering="true"
@@ -103,7 +103,7 @@
             </Template>
         </RadzenDataGridColumn>
     </Columns>
-</RadzenDataGrid>
+</KrakenGrid>
 
 @code {
     private RadzenDataGrid<StepTemplate> _grid = default!;

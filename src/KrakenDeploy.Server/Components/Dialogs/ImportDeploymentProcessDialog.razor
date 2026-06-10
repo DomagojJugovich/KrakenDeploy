@@ -58,7 +58,7 @@
             @if (_result.Warnings.Count > 0)
             {
                 <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mt-3 rz-mb-1">Warnings</RadzenText>
-                <RadzenDataGrid Data="@_result.Warnings" TItem="ImportDeploymentProcessWarning"
+                <KrakenGrid SettingsKey="import-deployment-process-dialog" AllowColumnResize="true" Data="@_result.Warnings" TItem="ImportDeploymentProcessWarning"
                                 AllowPaging="false" AllowSorting="false"
                                 Density="Density.Compact">
                     <Columns>
@@ -67,7 +67,7 @@
                         </RadzenDataGridColumn>
                         <RadzenDataGridColumn TItem="ImportDeploymentProcessWarning" Property="Message" Title="Message" />
                     </Columns>
-                </RadzenDataGrid>
+                </KrakenGrid>
             }
         </RadzenCard>
     }

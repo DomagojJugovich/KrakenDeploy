@@ -89,7 +89,7 @@ else
                 </RadzenStack>
             </RadzenStack>
 
-            <RadzenDataGrid Data="@group.Rows" TItem="StepPackageUsage.UsageRow"
+            <KrakenGrid SettingsKey="step-package-usage-page" AllowColumnResize="true" Data="@group.Rows" TItem="StepPackageUsage.UsageRow"
                             Density="Density.Compact"
                             AllowSorting="false" AllowFiltering="false" AllowPaging="false">
                 <Columns>
@@ -115,7 +115,7 @@ else
                     <RadzenDataGridColumn TItem="StepPackageUsage.UsageRow" Property="StepName" Title="Step" />
                     <RadzenDataGridColumn TItem="StepPackageUsage.UsageRow" Property="StepType" Title="Step type" />
                 </Columns>
-            </RadzenDataGrid>
+            </KrakenGrid>
         </RadzenCard>
     }
 }

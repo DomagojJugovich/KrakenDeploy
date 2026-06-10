@@ -3,79 +3,95 @@
 @attribute [Authorize]
 
 @inject EnvironmentService EnvironmentSvc
+@inject DashboardService DashboardSvc
 @inject DialogService Dialog
 @inject NotificationService Notifications
 @inject UiActionGuard Guard
 
 <PageTitle>Environments - KrakenDeploy</PageTitle>
 
-<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
-             JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-4">
-    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">
-        Environments
-    </RadzenText>
-    <RequirePermission Permission="Permission.EnvironmentCreate">
-        <RadzenButton Icon="add_circle_outline" Text="New Environment"
-                      ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
-                      Click="OpenCreateDialogAsync" />
-    </RequirePermission>
-</RadzenStack>
+<div class="page-head">
+    <div>
+        <h1 class="page-title">Environments</h1>
+        <p class="page-sub">Promotion path · @_envs.Count environments</p>
+    </div>
+    <div class="page-head-actions">
+        <RequirePermission Permission="Permission.EnvironmentCreate">
+            <RadzenButton Icon="add_circle_outline" Text="New environment"
+                          ButtonStyle="ButtonStyle.Primary" Variant="Variant.Filled"
+                          Click="OpenCreateDialogAsync" />
+        </RequirePermission>
+    </div>
+</div>
 
-<RadzenDataGrid Data="@_envs" TItem="DeploymentEnvironment"
-                AllowSorting="false"
-                AllowFiltering="false"
-                AllowColumnResize="true"
-                EmptyText="No environments yet. Click 'New Environment' to get started.">
-    <Columns>
-        <RadzenDataGridColumn TItem="DeploymentEnvironment" Title="#" Width="56px"
-                              TextAlign="TextAlign.Center">
-            <Template Context="e">
-                <span>@(_envs.IndexOf(e) + 1)</span>
-            </Template>
-        </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="DeploymentEnvironment" Property="Name" Title="Name"
-                              Width="220px" />
-        <RadzenDataGridColumn TItem="DeploymentEnvironment" Property="Slug" Title="Slug"
-                              Width="180px" />
-        <RadzenDataGridColumn TItem="DeploymentEnvironment" Title="" Width="140px"
-                              TextAlign="TextAlign.Right">
-            <Template Context="e">
-                <RequirePermission Permission="Permission.EnvironmentEdit">
-                    <RadzenButton Icon="arrow_upward" ButtonStyle="ButtonStyle.Light"
-                                  Size="ButtonSize.ExtraSmall" class="rz-mr-1"
-                                  Disabled="@(_envs.IndexOf(e) == 0)"
-                                  Click="@(() => MoveUpAsync(e))"
-                                  title="Move up" />
-                </RequirePermission>
-                <RequirePermission Permission="Permission.EnvironmentEdit">
-                    <RadzenButton Icon="arrow_downward" ButtonStyle="ButtonStyle.Light"
-                                  Size="ButtonSize.ExtraSmall" class="rz-mr-1"
-                                  Disabled="@(_envs.IndexOf(e) == _envs.Count - 1)"
-                                  Click="@(() => MoveDownAsync(e))"
-                                  title="Move down" />
-                </RequirePermission>
-                <RequirePermission Permission="Permission.EnvironmentEdit">
-                    <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
-                                  Size="ButtonSize.ExtraSmall" class="rz-mr-1"
-                                  Click="@(() => OpenEditDialogAsync(e))"
-                                  title="Edit" />
-                </RequirePermission>
-                <RequirePermission Permission="Permission.EnvironmentDelete">
-                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
-                                  Size="ButtonSize.ExtraSmall"
-                                  Click="@(() => DeleteAsync(e))"
-                                  title="Delete" />
-                </RequirePermission>
-            </Template>
-        </RadzenDataGridColumn>
-    </Columns>
-</RadzenDataGrid>
+@if (_envs.Count == 0)
+{
+    <div class="kr-card kr-card-pad kr-empty">No environments yet. Click "New environment" to get started.</div>
+}
+else
+{
+    <div class="env-flow">
+        @for (var i = 0; i < _envs.Count; i++)
+        {
+            var e = _envs[i];
+            var h = _health.GetValueOrDefault(e.Id);
+            var idx = i;
+            <div class="env-card @($"env-c{i % 6}")">
+                <div class="env-card-bar"></div>
+                <div class="env-card-body">
+                    <div class="env-card-head">
+                        <span class="env-card-name">@e.Name</span>
+                        <span class="env-card-order">#@(i + 1)</span>
+                    </div>
+                    <div class="env-card-gauge">
+                        @(h?.TargetsOnline ?? 0)<small> / @(h?.TargetsTotal ?? 0) targets up</small>
+                    </div>
+                    <div class="env-card-deploys">@(h?.DeploysThisWeek ?? 0) deploys this week</div>
+                    <div class="env-card-actions">
+                        <RequirePermission Permission="Permission.EnvironmentEdit">
+                            <RadzenButton Icon="arrow_upward" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.ExtraSmall"
+                                          Disabled="@(idx == 0)" Click="@(() => MoveUpAsync(e))" title="Move up" />
+                        </RequirePermission>
+                        <RequirePermission Permission="Permission.EnvironmentEdit">
+                            <RadzenButton Icon="arrow_downward" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.ExtraSmall"
+                                          Disabled="@(idx == _envs.Count - 1)" Click="@(() => MoveDownAsync(e))" title="Move down" />
+                        </RequirePermission>
+                        <RequirePermission Permission="Permission.EnvironmentEdit">
+                            <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.ExtraSmall"
+                                          Click="@(() => OpenEditDialogAsync(e))" title="Edit" />
+                        </RequirePermission>
+                        <RequirePermission Permission="Permission.EnvironmentDelete">
+                            <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.ExtraSmall"
+                                          Click="@(() => DeleteAsync(e))" title="Delete" />
+                        </RequirePermission>
+                    </div>
+                </div>
+            </div>
+            @if (i < _envs.Count - 1)
+            {
+                <div class="env-arrow"><RadzenIcon Icon="east" /></div>
+            }
+        }
+    </div>
+
+    <p class="page-sub" style="margin-top:-8px;">
+        Target counts reflect distinct machines that have deployed to each environment
+        (targets carry roles, not a fixed environment).
+    </p>
+}
 
 @code {
     private List<DeploymentEnvironment> _envs = [];
+    private Dictionary<Guid, EnvironmentHealth> _health = [];
 
-    protected override async Task OnInitializedAsync()
-        => _envs = await EnvironmentSvc.GetAllOrderedAsync();
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        _envs = await EnvironmentSvc.GetAllOrderedAsync();
+        _health = (await DashboardSvc.GetEnvironmentHealthAsync())
+            .ToDictionary(h => h.EnvironmentId);
+    }
 
     private async Task OpenCreateDialogAsync()
     {
@@ -86,7 +102,7 @@
 
         if (result is true)
         {
-            _envs = await EnvironmentSvc.GetAllOrderedAsync();
+            await LoadAsync();
         }
     }
 
@@ -99,7 +115,7 @@
 
         if (result is true)
         {
-            _envs = await EnvironmentSvc.GetAllOrderedAsync();
+            await LoadAsync();
         }
     }
 
@@ -107,14 +123,14 @@
     {
         if (!await Guard.AllowAsync(Permission.EnvironmentEdit)) return;
         await EnvironmentSvc.MoveUpAsync(env.Id);
-        _envs = await EnvironmentSvc.GetAllOrderedAsync();
+        await LoadAsync();
     }
 
     private async Task MoveDownAsync(DeploymentEnvironment env)
     {
         if (!await Guard.AllowAsync(Permission.EnvironmentEdit)) return;
         await EnvironmentSvc.MoveDownAsync(env.Id);
-        _envs = await EnvironmentSvc.GetAllOrderedAsync();
+        await LoadAsync();
     }
 
     private async Task DeleteAsync(DeploymentEnvironment env)
@@ -129,7 +145,7 @@
         if (confirmed == true)
         {
             await EnvironmentSvc.DeleteAsync(env.Id);
-            _envs = await EnvironmentSvc.GetAllOrderedAsync();
+            await LoadAsync();
             Notifications.Notify(NotificationSeverity.Success, "Deleted",
                 $"'{env.Name}' was deleted.", 4000);
         }

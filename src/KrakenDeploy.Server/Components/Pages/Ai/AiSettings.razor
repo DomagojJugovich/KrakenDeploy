@@ -174,7 +174,7 @@
 
                         @if (_usage.FeatureBreakdown.Count > 0)
                         {
-                            <RadzenDataGrid Data="@_usage.FeatureBreakdown"
+                            <KrakenGrid SettingsKey="ai-settings" AllowColumnResize="true" Data="@_usage.FeatureBreakdown"
                                             TItem="SpaceAiUsageFeatureBreakdown"
                                             Density="Density.Compact"
                                             AllowSorting="false" AllowPaging="false">
@@ -200,7 +200,7 @@
                                         </Template>
                                     </RadzenDataGridColumn>
                                 </Columns>
-                            </RadzenDataGrid>
+                            </KrakenGrid>
                         }
                     }
                 </RadzenStack>

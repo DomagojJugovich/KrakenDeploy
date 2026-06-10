@@ -19,7 +19,7 @@
     </RequirePermission>
 </RadzenStack>
 
-<RadzenDataGrid Data="@_roles" TItem="Role"
+<KrakenGrid SettingsKey="roles" Data="@_roles" TItem="Role"
                 AllowPaging="true" PageSize="25"
                 AllowSorting="true"
                 AllowFiltering="true" FilterMode="FilterMode.Simple"
@@ -80,7 +80,7 @@
             </Template>
         </RadzenDataGridColumn>
     </Columns>
-</RadzenDataGrid>
+</KrakenGrid>
 
 @code {
     private List<Role> _roles = [];

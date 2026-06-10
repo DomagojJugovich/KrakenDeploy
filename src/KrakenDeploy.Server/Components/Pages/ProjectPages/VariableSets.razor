@@ -51,7 +51,7 @@
             </RadzenCard>
         </RequirePermission>
 
-        <RadzenDataGrid Data="@_included" TItem="VariableSet"
+        <KrakenGrid SettingsKey="project-variable-sets" Data="@_included" TItem="VariableSet"
                         AllowPaging="false" AllowSorting="false" AllowColumnResize="true"
                         EmptyText="No library variable sets included in this project.">
             <Columns>
@@ -77,7 +77,7 @@
                     </Template>
                 </RadzenDataGridColumn>
             </Columns>
-        </RadzenDataGrid>
+        </KrakenGrid>
     }
 </ProjectShell>
 

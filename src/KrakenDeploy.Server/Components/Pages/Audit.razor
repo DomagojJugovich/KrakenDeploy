@@ -102,7 +102,7 @@
     </RadzenCard>
 
     @* ── Grid ─────────────────────────────────────────────────────────── *@
-    <RadzenDataGrid @ref="_grid"
+    <KrakenGrid SettingsKey="audit" @ref="_grid"
                     Data="@_entries"
                     TItem="AuditEntry"
                     Count="@_totalCount"
@@ -175,7 +175,7 @@
                 </Template>
             </RadzenDataGridColumn>
         </Columns>
-    </RadzenDataGrid>
+    </KrakenGrid>
 
 </RadzenStack>
 
