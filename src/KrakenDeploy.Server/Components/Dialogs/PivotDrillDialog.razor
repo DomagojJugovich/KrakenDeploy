@@ -1,0 +1,63 @@
+@using KrakenDeploy.Server.Core.Domain.Deployments
+@inject DialogService Dialog
+@inject NavigationManager Nav
+
+@* Drill-through for the dashboard analytics pivot: lists the deployments
+   behind a pivot row total. Rows navigate to the deployment detail. *@
+
+@if (Facts.Count == 0)
+{
+    <div class="kr-empty">No deployments in this cell.</div>
+}
+else
+{
+    <div class="grid-wrap" style="max-height: 60vh; overflow-y: auto;">
+        <table class="dg">
+            <thead>
+                <tr>
+                    <th>Status</th>
+                    <th>Project / Release</th>
+                    <th>Environment</th>
+                    <th>Tenant</th>
+                    <th>Target</th>
+                    <th>When</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var f in Facts.OrderByDescending(f => f.When))
+                {
+                    <tr class="clickable" @onclick="@(() => Open(f))">
+                        <td>
+                            @if (Enum.TryParse<DeploymentStatus>(f.Status, out var status))
+                            {
+                                <StatusPill Deployment="status" />
+                            }
+                            else
+                            {
+                                @f.Status
+                            }
+                        </td>
+                        <td>
+                            <span class="cell-strong">@f.Project</span>
+                            <span class="mono cell-muted">&nbsp;@f.Release</span>
+                        </td>
+                        <td>@f.Environment</td>
+                        <td>@f.Tenant</td>
+                        <td>@f.Target</td>
+                        <td class="mono cell-muted">@f.When.ToString("dd MMM HH:mm")</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    [Parameter] public IReadOnlyList<DeploymentFact> Facts { get; set; } = [];
+
+    private void Open(DeploymentFact fact)
+    {
+        Dialog.Close();
+        Nav.NavigateTo($"/deployments/{fact.DeploymentId}");
+    }
+}

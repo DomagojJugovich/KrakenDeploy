@@ -675,6 +675,11 @@ html, body {
 .env-c4 { --c: var(--ok); }
 .env-c5 { --c: var(--offline); }
 
+/* ── Analytics pivot (dashboard) ── */
+.kraken-analytics-head { cursor: pointer; user-select: none; }
+.kraken-analytics-head:hover { background: var(--surface-2); }
+.rz-pivot-data-grid { font-size: var(--font-body); }
+
 /* ── Compact custom data table (.dg) — for dashboard / matrix-style lists ── */
 .grid-wrap {
     background: var(--surface);

@@ -1,6 +1,14 @@
 @page "/"
 @attribute [Authorize]
+@using System.Text.Json
+@using System.Text.Json.Serialization
+@using System.Security.Claims
+@using KrakenDeploy.Server.Core.Domain.Analytics
 @inject DashboardService DashboardSvc
+@inject PivotViewService PivotViewSvc
+@inject DialogService Dialog
+@inject NotificationService Notifications
+@inject AuthenticationStateProvider AuthState
 @inject NavigationManager Nav
 
 <PageTitle>Dashboard - KrakenDeploy</PageTitle>
@@ -168,6 +176,55 @@ else
             </div>
         </div>
     </div>
+
+    @* ── Analytics — OLAP-style pivot over deployment facts ── *@
+    <div class="kr-card" style="margin-top: var(--section-gap);">
+        <div class="kr-card-head kraken-analytics-head" @onclick="ToggleAnalyticsAsync">
+            <h3><RadzenIcon Icon="pivot_table_chart" Style="vertical-align: -4px; margin-right: 7px; color: var(--coral);" />Analytics</h3>
+            <RadzenIcon Icon="@(_analyticsOpen ? "expand_less" : "expand_more")" Style="color: var(--text-3);" />
+        </div>
+
+        @if (_analyticsOpen)
+        {
+            <div class="kr-card-pad">
+                <div class="toolbar">
+                    <div class="seg">
+                        @foreach (var days in (int[])[7, 30, 90])
+                        {
+                            var d = days;
+                            <button class="@(_rangeDays == d ? "on" : "")" @onclick="@(() => SetRangeAsync(d))">@d days</button>
+                        }
+                    </div>
+
+                    <RadzenDropDown TValue="Guid?" Data="@_views" ValueProperty="Id" TextProperty="Name"
+                                    Value="@_selectedViewId" Change="@(v => ApplyViewAsync((Guid?)v))"
+                                    AllowClear="true" Placeholder="Saved views…" Style="min-width: 190px;" />
+                    <RadzenButton Icon="save" Text="Save view" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                                  Click="@SaveViewAsync" />
+                    @if (_selectedViewId is not null)
+                    {
+                        <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                                      title="Delete selected view" Click="@DeleteViewAsync" />
+                    }
+
+                    <span class="muted-3" style="margin-left: auto; font-size: 12.5px;">
+                        @_facts.Count deployment@(_facts.Count == 1 ? "" : "s")@(_factsTruncated ? " (capped — narrow the range)" : "") ·
+                        click a row total to open the deployments behind it
+                    </span>
+                </div>
+
+                @if (_factsLoading)
+                {
+                    <RadzenProgressBarCircular ShowValue="false" Mode="ProgressBarMode.Indeterminate" Size="ProgressBarCircularSize.Small" />
+                }
+                else
+                {
+                    <AnalyticsPivot @ref="_pivot" Facts="@_facts" Layout="@_layout"
+                                    RenderToken="@_pivotKey" OnDrill="@OpenDrillAsync" />
+                }
+            </div>
+        }
+    </div>
 }
 
 @code {
@@ -209,5 +266,180 @@ else
         return ts.Date == DateTimeOffset.Now.Date
             ? ts.ToString("HH:mm")
             : ts.ToString("MMM d");
+    }
+
+    // ── Analytics pivot ──────────────────────────────────────────────────
+
+    private const int FactRowCap = 10_000;
+
+    private static readonly JsonSerializerOptions LayoutJson = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() },
+    };
+
+    private AnalyticsPivot? _pivot;
+    private bool _analyticsOpen;
+    private bool _factsLoading;
+    private bool _factsTruncated;
+    private int _rangeDays = 90;
+    private int _rebuilds;
+    private IReadOnlyList<DeploymentFact> _facts = [];
+    private PivotLayout _layout = PivotFields.Default();
+    private string _pivotKey = "default";
+    private List<PivotView> _views = [];
+    private Guid? _selectedViewId;
+    private Guid? _userId;
+
+    /// <summary>Forces the child pivot to rebuild (remount + render). Used after
+    /// a range change or applied view so a fresh layout takes; incidental Home
+    /// re-renders keep the token stable, leaving the user's picker state intact.</summary>
+    private void BumpPivot() => _pivotKey = $"r{++_rebuilds}";
+
+    private async Task ToggleAnalyticsAsync()
+    {
+        _analyticsOpen = !_analyticsOpen;
+        if (_analyticsOpen && _facts.Count == 0)
+        {
+            await LoadAnalyticsAsync();
+        }
+    }
+
+    private async Task LoadAnalyticsAsync()
+    {
+        _factsLoading = true;
+        try
+        {
+            if (_userId is null)
+            {
+                var state = await AuthState.GetAuthenticationStateAsync();
+                var claim = state.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                if (Guid.TryParse(claim, out var id))
+                {
+                    _userId = id;
+                    _views = await PivotViewSvc.GetForUserAsync(id);
+                }
+            }
+
+            _facts = await DashboardSvc.GetDeploymentFactsAsync(
+                DateTimeOffset.UtcNow.AddDays(-_rangeDays), FactRowCap);
+            _factsTruncated = _facts.Count >= FactRowCap;
+            BumpPivot(); // new fact set → rebuild the pivot
+        }
+        finally
+        {
+            _factsLoading = false;
+        }
+    }
+
+    private async Task SetRangeAsync(int days)
+    {
+        if (days == _rangeDays)
+        {
+            return;
+        }
+        _rangeDays = days;
+        await LoadAnalyticsAsync();
+    }
+
+    private async Task SaveViewAsync()
+    {
+        if (_userId is not { } userId)
+        {
+            return;
+        }
+
+        var initial = _views.FirstOrDefault(v => v.Id == _selectedViewId)?.Name;
+        var result = await Dialog.OpenAsync<SavePivotViewDialog>(
+            "Save pivot view",
+            new Dictionary<string, object?> { [nameof(SavePivotViewDialog.InitialName)] = initial },
+            new DialogOptions { Width = "420px" });
+
+        if (result is not string name || string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+
+        var layout = _pivot?.ReadLiveLayout() ?? _layout;
+        if (layout.Values.Count == 0)
+        {
+            Notifications.Notify(NotificationSeverity.Warning, "Nothing to save",
+                "Add at least one value to the pivot first.", 4000);
+            return;
+        }
+
+        var saved = await PivotViewSvc.UpsertAsync(userId, name, JsonSerializer.Serialize(layout, LayoutJson));
+        _views = await PivotViewSvc.GetForUserAsync(userId);
+        _selectedViewId = saved.Id;
+        Notifications.Notify(NotificationSeverity.Success, "View saved", $"'{name}' was saved.", 3000);
+    }
+
+    private Task ApplyViewAsync(Guid? viewId)
+    {
+        _selectedViewId = viewId;
+
+        if (viewId is null)
+        {
+            _layout = PivotFields.Default();
+            BumpPivot();
+            return Task.CompletedTask;
+        }
+
+        var view = _views.FirstOrDefault(v => v.Id == viewId);
+        if (view is null)
+        {
+            return Task.CompletedTask;
+        }
+
+        try
+        {
+            var layout = JsonSerializer.Deserialize<PivotLayout>(view.Definition, LayoutJson);
+            if (layout is { Values.Count: > 0 })
+            {
+                // Drop properties that no longer exist on the fact shape so a
+                // stale view can't wedge the pivot.
+                var known = PivotFields.Catalog.Select(f => f.Property).ToHashSet();
+                _layout = new PivotLayout(
+                    layout.Rows.Where(known.Contains).ToList(),
+                    layout.Columns.Where(known.Contains).ToList(),
+                    layout.Values.Where(v => known.Contains(v.Property)).ToList());
+                BumpPivot(); // rebuild with the applied layout
+            }
+        }
+        catch (JsonException)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Corrupt view",
+                "This saved view could not be read.", 4000);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private async Task DeleteViewAsync()
+    {
+        if (_userId is not { } userId || _selectedViewId is not { } viewId)
+        {
+            return;
+        }
+
+        var view = _views.FirstOrDefault(v => v.Id == viewId);
+        var confirmed = await Dialog.Confirm(
+            $"Delete view '{view?.Name}'?", "Delete pivot view",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+
+        if (confirmed == true)
+        {
+            await PivotViewSvc.DeleteAsync(userId, viewId);
+            _views = await PivotViewSvc.GetForUserAsync(userId);
+            await ApplyViewAsync(null);
+        }
+    }
+
+    private async Task OpenDrillAsync(IQueryable<DeploymentFact>? view)
+    {
+        var facts = view?.ToList() ?? [];
+        await Dialog.OpenAsync<PivotDrillDialog>(
+            $"Deployments ({facts.Count})",
+            new Dictionary<string, object?> { [nameof(PivotDrillDialog.Facts)] = facts },
+            new DialogOptions { Width = "880px" });
     }
 }

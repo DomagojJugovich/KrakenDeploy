@@ -1,0 +1,25 @@
+@inject DialogService Dialog
+
+@* Names (or renames) a saved pivot view. Returns the chosen name, or null. *@
+
+<RadzenStack Gap="1rem">
+    <div>
+        <RadzenLabel Text="View name" Component="pivot-view-name" />
+        <RadzenTextBox id="pivot-view-name" @bind-Value="_name" MaxLength="120"
+                       Placeholder="e.g. Failures by tenant" Style="width: 100%;" />
+    </div>
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" JustifyContent="JustifyContent.End">
+        <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light" Click="@(() => Dialog.Close(null))" />
+        <RadzenButton Text="Save view" Icon="save" ButtonStyle="ButtonStyle.Primary"
+                      Disabled="@(string.IsNullOrWhiteSpace(_name))"
+                      Click="@(() => Dialog.Close(_name!.Trim()))" />
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    [Parameter] public string? InitialName { get; set; }
+
+    private string? _name;
+
+    protected override void OnInitialized() => _name = InitialName;
+}
