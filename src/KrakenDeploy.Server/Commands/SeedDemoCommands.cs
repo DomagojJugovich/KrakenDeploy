@@ -101,6 +101,9 @@ internal static class SeedDemoCommands
         // ── Deployments (direct insert; varied terminal + live states) ────
         await SeedDeploymentsAsync(dbFactory, releases, envs.Select(e => e.Id).ToList(), targets);
 
+        // ── Release ladder + promotion matrix for EVERY project ───────────
+        await SeedProjectMatricesAsync(dbFactory, processSvc, releaseSvc, targets).ConfigureAwait(false);
+
         // ── Tenants + project connections + deployment tagging ────────────
         await SeedTenantsAsync(dbFactory, sp.GetRequiredService<TenantService>()).ConfigureAwait(false);
 
@@ -229,6 +232,147 @@ internal static class SeedDemoCommands
         await db.SaveChangesAsync();
     }
 
+    /// <summary>
+    /// Gives EVERY project in the space a populated release × environment
+    /// matrix: ensures a deployment process exists, builds a 4-step release
+    /// ladder (predecessor versions of the newest release, or 2026.6.1–.4 for
+    /// release-less projects), then inserts one deployment per (release, env)
+    /// following a promotion story — oldest releases fully promoted, a warning
+    /// and a failure in the middle, the newest mid-promotion. Idempotent: only
+    /// missing releases and missing (release, env) deployments are created.
+    /// </summary>
+    private static async Task SeedProjectMatricesAsync(
+        IDbContextFactory<KrakenDbContext> dbFactory,
+        ProcessService processSvc,
+        ReleaseService releaseSvc,
+        List<DeploymentTarget> targets)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync();
+        var projects = await db.Projects.AsNoTracking().ToListAsync();
+        var envs = await db.Environments.AsNoTracking()
+            .OrderBy(e => e.SortOrder).ThenBy(e => e.Name)
+            .Select(e => e.Id)
+            .ToListAsync();
+
+        if (envs.Count == 0)
+        {
+            return;
+        }
+
+        var targetId = targets.FirstOrDefault()?.Id;
+        var now = DateTimeOffset.UtcNow;
+
+        foreach (var project in projects)
+        {
+            // A release requires a process with at least one step.
+            var process = await processSvc.GetAsync(project.Id).ConfigureAwait(false);
+            if (process is null || process.Steps.Count == 0)
+            {
+                await processSvc.AddStepAsync(project.Id, "Deploy package to IIS", "Script", "", ["web-server"], []).ConfigureAwait(false);
+                await processSvc.AddStepAsync(project.Id, "Run database migrations", "Script", "", ["db"], []).ConfigureAwait(false);
+                await processSvc.AddStepAsync(project.Id, "Smoke test — health endpoint", "Script", "", ["web-server"], []).ConfigureAwait(false);
+            }
+
+            await using var pdb = await dbFactory.CreateDbContextAsync();
+            var existingVersions = await pdb.Releases
+                .Where(r => r.ProjectId == project.Id)
+                .Select(r => r.Version)
+                .ToListAsync();
+
+            foreach (var version in LadderVersions(existingVersions))
+            {
+                await releaseSvc.CreateAsync(project.Id, version).ConfigureAwait(false);
+            }
+
+            // Ladder = up to 4 newest releases by version; promotion pattern
+            // from oldest (fully promoted) to newest (first env only).
+            var releases = (await pdb.Releases
+                    .Where(r => r.ProjectId == project.Id)
+                    .Select(r => new { r.Id, r.Version })
+                    .ToListAsync())
+                .OrderBy(r => r.Version, StringComparer.OrdinalIgnoreCase)
+                .TakeLast(4)
+                .ToList();
+
+            var deployed = (await pdb.Deployments
+                    .Where(d => d.Release.ProjectId == project.Id)
+                    .Select(d => new { d.ReleaseId, d.EnvironmentId })
+                    .ToListAsync())
+                .Select(x => (x.ReleaseId, x.EnvironmentId))
+                .ToHashSet();
+
+            await using var ddb = await dbFactory.CreateDbContextAsync();
+            for (var i = 0; i < releases.Count; i++)
+            {
+                var rel = releases[i];
+                var ageDays = releases.Count - i; // oldest ladder rung = furthest back
+                var envCount = i == releases.Count - 1 && envs.Count > 1 ? 1 : envs.Count;
+
+                for (var e = 0; e < envCount; e++)
+                {
+                    if (deployed.Contains((rel.Id, envs[e])))
+                    {
+                        continue;
+                    }
+
+                    var status = (Rung: i, Env: e) switch
+                    {
+                        _ when i == releases.Count - 3 && e == envs.Count - 1 => DeploymentStatus.SucceededWithWarnings,
+                        _ when i == releases.Count - 2 && e == envs.Count - 1 => DeploymentStatus.Failed,
+                        _ => DeploymentStatus.Succeeded,
+                    };
+
+                    var started = now.AddDays(-ageDays).AddMinutes(e * 40);
+                    ddb.Deployments.Add(new Deployment
+                    {
+                        SpaceId = WellKnown.DefaultSpaceId,
+                        ReleaseId = rel.Id,
+                        EnvironmentId = envs[e],
+                        TargetId = targetId,
+                        Status = status,
+                        StartedUtc = started,
+                        CompletedUtc = started.AddMinutes(3),
+                        NextLogSequence = 0,
+                    });
+                }
+            }
+            await ddb.SaveChangesAsync();
+        }
+    }
+
+    /// <summary>
+    /// New ladder versions to create: predecessors of the newest existing
+    /// version by decrementing the last numeric segment (2026.6.4 → .3/.2/.1),
+    /// or the default 2026.6.1–.4 set when the project has no releases yet.
+    /// </summary>
+    private static List<string> LadderVersions(List<string> existing)
+    {
+        if (existing.Count == 0)
+        {
+            return ["2026.6.1", "2026.6.2", "2026.6.3", "2026.6.4"];
+        }
+
+        var newest = existing.OrderBy(v => v, StringComparer.OrdinalIgnoreCase).Last();
+        var parts = newest.Split('.');
+        if (!int.TryParse(parts[^1], out var last))
+        {
+            return [];
+        }
+
+        var result = new List<string>();
+        for (var i = 1; i <= 3 && last - i >= 0; i++)
+        {
+            var candidate = string.Join('.', [.. parts[..^1], (last - i).ToString(System.Globalization.CultureInfo.InvariantCulture)]);
+            if (!existing.Contains(candidate, StringComparer.OrdinalIgnoreCase))
+            {
+                result.Add(candidate);
+            }
+        }
+
+        result.Reverse(); // create ascending so CreatedUtc follows version order
+        return result;
+    }
+
     private static readonly string[] DemoTenantSlugs =
         ["grad-dubrovnik", "grad-split", "ministarstvo-financija"];
 
@@ -242,20 +386,19 @@ internal static class SeedDemoCommands
     {
         (string Name, string Slug, string[] ProjectSlugs)[] specs =
         [
-            ("Grad Dubrovnik", "grad-dubrovnik", ["argosy-web", "argosy-api"]),
-            ("Grad Split", "grad-split", ["argosy-web", "argosy-api"]),
+            // "argosy" is the hand-created test project — connected when present.
+            ("Grad Dubrovnik", "grad-dubrovnik", ["argosy-web", "argosy-api", "argosy"]),
+            ("Grad Split", "grad-split", ["argosy-web", "argosy-api", "argosy"]),
             ("Ministarstvo financija", "ministarstvo-financija", ["billing-service"]),
         ];
 
         await using var db = await dbFactory.CreateDbContextAsync();
         var projectIds = await db.Projects.ToDictionaryAsync(p => p.Slug, p => p.Id);
 
-        var tenantIds = new Dictionary<string, Guid>();
         foreach (var (name, slug, projectSlugs) in specs)
         {
             var tenant = await tenantSvc.GetBySlugAsync(slug).ConfigureAwait(false)
                          ?? await tenantSvc.CreateAsync(name, slug, $"{name} — demo tenant").ConfigureAwait(false);
-            tenantIds[slug] = tenant.Id;
 
             foreach (var ps in projectSlugs)
             {
@@ -267,20 +410,30 @@ internal static class SeedDemoCommands
             }
         }
 
-        // Tag the multi-tenant projects' untagged deployments alternating
-        // between the two city tenants.
-        var cityTenants = new[] { tenantIds["grad-dubrovnik"], tenantIds["grad-split"] };
-        string[] multiTenantSlugs = ["argosy-web", "argosy-api"];
-
+        // Tag untagged deployments of every tenant-connected project,
+        // round-robin over that project's tenants, so the per-tenant matrix
+        // renders cells wherever tenants are wired up.
         await using var db2 = await dbFactory.CreateDbContextAsync();
+        var tenantsByProject = (await db2.Tenants
+                .Include(t => t.Projects)
+                .ToListAsync())
+            .SelectMany(t => t.Projects.Select(p => (ProjectId: p.Id, TenantId: t.Id)))
+            .GroupBy(x => x.ProjectId)
+            .ToDictionary(g => g.Key, g => g.Select(x => x.TenantId).ToList());
+
         var untagged = await db2.Deployments
-            .Where(d => d.TenantId == null && multiTenantSlugs.Contains(d.Release.Project.Slug))
-            .OrderBy(d => d.CreatedUtc)
+            .Where(d => d.TenantId == null)
+            .Select(d => new { Deployment = d, d.Release.ProjectId })
+            .OrderBy(x => x.Deployment.CreatedUtc)
             .ToListAsync();
 
-        for (var i = 0; i < untagged.Count; i++)
+        var i = 0;
+        foreach (var entry in untagged)
         {
-            untagged[i].TenantId = cityTenants[i % cityTenants.Length];
+            if (tenantsByProject.TryGetValue(entry.ProjectId, out var ids))
+            {
+                entry.Deployment.TenantId = ids[i++ % ids.Count];
+            }
         }
         await db2.SaveChangesAsync();
     }
