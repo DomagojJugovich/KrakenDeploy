@@ -8,6 +8,7 @@
 @inject TenantService TenantSvc
 @inject ChannelService ChannelSvc
 @inject ProcessService ProcessSvc
+@inject TargetService TargetSvc
 
 @*
     Add / edit a variable in a project's VariableSet or a library VariableSet.
@@ -126,11 +127,14 @@
                     }
                     <div>
                         <RadzenLabel Text="Target Roles" />
-                        <RadzenTextBox @bind-Value="_model.RolesCsv" Style="width:100%"
-                                       Placeholder="Comma-separated, e.g. SERVER, TERMINAL" />
+                        <RadzenDropDown TValue="IEnumerable<string>" @bind-Value="_model.Roles"
+                                        Data="@_availableRoles" Multiple="true" Chips="true"
+                                        AllowClear="true" AllowFiltering="true"
+                                        Placeholder="(any role)" Style="width:100%" />
                         <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
                             Variable applies only to targets whose roles overlap this list.
-                            Leave empty to apply to all roles.
+                            Leave empty to apply to all roles. Roles are defined on
+                            deployment targets and process steps.
                         </RadzenText>
                     </div>
                 </RadzenStack>
@@ -165,6 +169,7 @@
     private List<Tenant> _tenants = [];
     private List<Channel> _channels = [];
     private List<string> _steps = [];
+    private List<string> _availableRoles = [];
 
     private record TypeOption(VariableType Value, string Label);
     private readonly TypeOption[] _typeOptions =
@@ -179,13 +184,34 @@
         _environments = await EnvironmentSvc.GetAllOrderedAsync();
         _tenants = await TenantSvc.GetAllAsync();
 
+        // Roles offered for scoping: every role on a deployment target, plus
+        // (for project variables) roles referenced by the project's steps,
+        // plus whatever is already on the variable being edited — so a stale
+        // role stays selectable instead of silently disappearing on save.
+        var roles = new SortedSet<string>(
+            await TargetSvc.GetAllRolesAsync(), StringComparer.OrdinalIgnoreCase);
+
         // Channels are project-specific, so only offer them for project variables.
         if (ProjectId is { } pid)
         {
             _channels = await ChannelSvc.GetForProjectAsync(pid);
             var process = await ProcessSvc.GetAsync(pid);
             _steps = process?.Steps.Select(s => s.Name).ToList() ?? [];
+            foreach (var role in process?.Steps.SelectMany(s => s.TargetRoles) ?? [])
+            {
+                roles.Add(role);
+            }
         }
+
+        if (Variable?.Scope.Roles is { Count: > 0 } existing)
+        {
+            foreach (var role in existing)
+            {
+                roles.Add(role);
+            }
+        }
+
+        _availableRoles = [.. roles];
     }
 
     protected override void OnParametersSet()
@@ -212,9 +238,7 @@
             // preserves any existing channel/step scope instead of wiping it.
             _model.ChannelId = Variable.Scope.ChannelId;
             _model.StepName = Variable.Scope.StepName;
-            _model.RolesCsv = Variable.Scope.Roles is { Count: > 0 } r
-                ? string.Join(", ", r)
-                : "";
+            _model.Roles = Variable.Scope.Roles?.ToList() ?? [];
         }
     }
 
@@ -231,7 +255,10 @@
             return;
         }
 
-        var roles = ParseCsv(_model.RolesCsv);
+        var roles = _model.Roles
+            .Where(r => !string.IsNullOrWhiteSpace(r))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         var scope = new VariableScope
         {
             EnvironmentId = _model.EnvironmentId,
@@ -279,16 +306,6 @@
         }
     }
 
-    private static List<string> ParseCsv(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return [];
-        }
-        return raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                  .ToList();
-    }
-
     private sealed class FormModel
     {
         [System.ComponentModel.DataAnnotations.Required]
@@ -302,6 +319,6 @@
         public Guid? TenantId { get; set; }
         public Guid? ChannelId { get; set; }
         public string? StepName { get; set; }
-        public string RolesCsv { get; set; } = "";
+        public IEnumerable<string> Roles { get; set; } = [];
     }
 }

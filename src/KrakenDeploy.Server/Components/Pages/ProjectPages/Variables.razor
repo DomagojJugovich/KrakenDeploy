@@ -385,10 +385,12 @@
                                 Style="width: 100%;" />
             </div>
             <div>
-                <RadzenLabel Text="Target Roles (comma-separated)" />
-                <RadzenTextBox @bind-Value="_popRolesCsv"
-                               Placeholder="e.g. SERVER, TERMINAL"
-                               Style="width: 100%;" />
+                <RadzenLabel Text="Target Roles" />
+                <RadzenDropDown TValue="IEnumerable<string>" @bind-Value="_popRoles"
+                                Data="@_availableRoles"
+                                Multiple="true" AllowClear="true" AllowFiltering="true"
+                                Chips="true" Placeholder="(any role)"
+                                Style="width: 100%;" />
             </div>
 
             @if (_popupEditingVar?.Type == VariableType.Sensitive
@@ -466,7 +468,8 @@
     private IEnumerable<Guid> _popTargetIds = Array.Empty<Guid>();
     private Guid? _popChannelId;
     private string? _popStepName;
-    private string _popRolesCsv = "";
+    private IEnumerable<string> _popRoles = [];
+    private List<string> _availableRoles = [];
 
     // ── Array-as-list editor state ─────────────────────────────────────────
     private bool _arrayPopupOpen;
@@ -495,6 +498,15 @@
 
             var process = await ProcessSvc.GetAsync(_project.Id);
             _projectStepNames = process?.Steps.Select(s => s.Name).ToList() ?? [];
+
+            // Roles offered for scoping: every role on a deployment target
+            // plus roles referenced by the project's steps.
+            _availableRoles = _targets.SelectMany(t => t.Roles)
+                .Concat(process?.Steps.SelectMany(s => s.TargetRoles) ?? [])
+                .Where(r => !string.IsNullOrWhiteSpace(r))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(r => r, StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
             await ReloadAsync();
         }
@@ -735,7 +747,13 @@
         _popEnvIds    = s.EnvironmentId.HasValue ? new[] { s.EnvironmentId.Value } : [];
         _popTenantIds = s.TenantId.HasValue      ? new[] { s.TenantId.Value }      : [];
         _popTargetIds = s.TargetId.HasValue      ? new[] { s.TargetId.Value }      : [];
-        _popRolesCsv  = s.Roles is { Count: > 0 } r ? string.Join(", ", r) : "";
+        _popRoles = s.Roles is { Count: > 0 } r ? r.ToList() : [];
+        // A stale role (no longer on any target/step) must stay selectable.
+        foreach (var role in _popRoles.Where(r =>
+                     !_availableRoles.Contains(r, StringComparer.OrdinalIgnoreCase)))
+        {
+            _availableRoles.Add(role);
+        }
         _popChannelId = s.ChannelId;
         _popStepName = s.StepName;
     }
@@ -745,7 +763,10 @@
         if (_project is null) return;
         if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
 
-        var roles = ParseCsv(_popRolesCsv);
+        var roles = _popRoles
+            .Where(r => !string.IsNullOrWhiteSpace(r))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         var envIds    = _popEnvIds.ToList();
         var tenantIds = _popTenantIds.ToList();
         var targetIds = _popTargetIds.ToList();
@@ -884,14 +905,6 @@
                 new DialogOptions { Width = "640px" });
             await ReloadAsync();
         }
-    }
-
-    private static List<string> ParseCsv(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw)) return [];
-        return raw.Split(',', StringSplitOptions.RemoveEmptyEntries
-                            | StringSplitOptions.TrimEntries)
-                  .ToList();
     }
 
     // ── Array-as-list editor ───────────────────────────────────────────────
