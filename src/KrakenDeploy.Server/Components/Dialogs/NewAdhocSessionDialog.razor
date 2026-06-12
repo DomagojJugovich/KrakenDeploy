@@ -42,7 +42,7 @@
     <RadzenFormField Text="Targets (frozen for the session's lifetime)" Variant="Variant.Outlined">
         <RadzenDropDown @bind-Value="_selectedTargetIds" Data="@_targets"
                         TextProperty="Name" ValueProperty="Id"
-                        Multiple="true" AllowClear="true" AllowFiltering="true"
+                        Multiple="true" AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                         Placeholder="Pick at least one target"
                         Style="width:100%" />
     </RadzenFormField>

@@ -173,6 +173,25 @@ public class DeploymentService(
         return await bounded.ToListAsync(ct).ConfigureAwait(false);
     }
 
+    /// <summary>Deployments that ran on one target (newest first, bounded) —
+    /// powers the target-detail Deployments tab. Matches both the legacy
+    /// single-target FK and the multi-target join.</summary>
+    public async Task<List<Deployment>> GetForTargetAsync(
+        Guid targetId, int limit = 100, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.Deployments
+            .Include(d => d.Release).ThenInclude(r => r.Project)
+            .Include(d => d.Environment)
+            .Include(d => d.Tenant)
+            .Where(d => d.TargetId == targetId
+                     || d.Targets.Any(a => a.TargetId == targetId))
+            .OrderByDescending(d => d.CreatedUtc)
+            .Take(limit)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+    }
+
     /// <summary>Every deployment of one release (newest first) — powers the
     /// release-detail page's deployment history.</summary>
     public async Task<List<Deployment>> GetForReleaseAsync(

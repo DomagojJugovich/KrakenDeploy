@@ -418,6 +418,71 @@ internal static class SeedDemoCommands
             }
         }
 
+        // Associate demo targets with tenants. The DIRECT association
+        // (DeploymentTarget.Tenants) is the primary tenant↔target link and
+        // powers tenant-filtered target pickers; the tenant TAGS created
+        // below are auxiliary metadata (module selection etc.) seeded so the
+        // tags UI has demo data too.
+        (string TenantSlug, string Tag, string[] Targets)[] tagSpecs =
+        [
+            ("grad-dubrovnik", "DBK", ["demo-web-prod-01", "demo-web-stage-01"]),
+            ("grad-split", "ST", ["demo-web-prod-02"]),
+            ("ministarstvo-financija", "MFIN", ["demo-api-prod-03", "demo-dmz-gw-01"]),
+        ];
+
+        await using (var tdb = await dbFactory.CreateDbContextAsync())
+        {
+            var targetIds = await tdb.DeploymentTargets
+                .Where(t => t.Name.StartsWith("demo-"))
+                .ToDictionaryAsync(t => t.Name, t => t.Id);
+            var tenantIds = await tdb.Tenants.ToDictionaryAsync(t => t.Slug, t => t.Id);
+
+            foreach (var (tenantSlug, tagName, targetNames) in tagSpecs)
+            {
+                if (!tenantIds.TryGetValue(tenantSlug, out var tenantId))
+                {
+                    continue;
+                }
+
+                var tagSet = await tdb.TagSets
+                        .Include(ts => ts.Tags)
+                        .FirstOrDefaultAsync(ts => ts.TenantId == tenantId && ts.Name == "Hosting")
+                    is { } existingSet
+                    ? existingSet
+                    : await tenantSvc.CreateTagSetAsync(tenantId, "Hosting", "Demo hosting tag set", 0);
+
+                var tag = tagSet.Tags.FirstOrDefault(t => t.Name == tagName)
+                          ?? await tenantSvc.CreateTagAsync(tagSet.Id, tagName, null);
+
+                foreach (var tn in targetNames)
+                {
+                    if (targetIds.TryGetValue(tn, out var tid))
+                    {
+                        await tenantSvc.AddTagToTargetAsync(tag.Id, tid); // idempotent
+                    }
+                }
+
+                // Direct association (the primary link) for the same pairs.
+                foreach (var tn in targetNames)
+                {
+                    if (!targetIds.TryGetValue(tn, out var tid))
+                    {
+                        continue;
+                    }
+                    await using var adb = await dbFactory.CreateDbContextAsync();
+                    var target = await adb.DeploymentTargets
+                        .Include(t => t.Tenants)
+                        .FirstAsync(t => t.Id == tid);
+                    if (target.Tenants.All(t => t.Id != tenantId))
+                    {
+                        var tenant = await adb.Tenants.FirstAsync(t => t.Id == tenantId);
+                        target.Tenants.Add(tenant);
+                        await adb.SaveChangesAsync();
+                    }
+                }
+            }
+        }
+
         // Tag untagged deployments of every tenant-connected project,
         // round-robin over that project's tenants, so the per-tenant matrix
         // renders cells wherever tenants are wired up.

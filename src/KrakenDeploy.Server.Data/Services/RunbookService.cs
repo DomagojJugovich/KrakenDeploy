@@ -465,9 +465,30 @@ public class RunbookService(
     /// </summary>
     public async Task<List<RunbookRun>> GetAllRunsAsync(int? limit = null, CancellationToken ct = default)
     {
+        return await GetRunsCoreAsync(targetId: null, limit, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Runbook runs that executed on one target (newest first,
+    /// bounded) — powers the target-detail Runbook runs tab. Space scoping
+    /// is inherited through the parent Runbook, same as
+    /// <see cref="GetAllRunsAsync"/>.</summary>
+    public async Task<List<RunbookRun>> GetRunsForTargetAsync(
+        Guid targetId, int limit = 100, CancellationToken ct = default)
+    {
+        return await GetRunsCoreAsync(targetId, limit, ct).ConfigureAwait(false);
+    }
+
+    private async Task<List<RunbookRun>> GetRunsCoreAsync(
+        Guid? targetId, int? limit, CancellationToken ct)
+    {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        IQueryable<RunbookRun> query = db.RunbookRuns
-            .Where(r => db.Runbooks.Any(rb => rb.Id == r.RunbookId))
+        IQueryable<RunbookRun> source = db.RunbookRuns
+            .Where(r => db.Runbooks.Any(rb => rb.Id == r.RunbookId));
+        if (targetId is { } tid)
+        {
+            source = source.Where(r => r.TargetId == tid);
+        }
+        IQueryable<RunbookRun> query = source
             .Include(r => r.Runbook).ThenInclude(rb => rb.Project)
             .Include(r => r.Environment)
             .Include(r => r.Target)

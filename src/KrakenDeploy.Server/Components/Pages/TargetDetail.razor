@@ -1,215 +1,487 @@
 @page "/targets/{Id:guid}"
 @rendermode InteractiveServer
 @attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.Audit
+@using KrakenDeploy.Server.Core.Domain.Deployments
+@using KrakenDeploy.Server.Core.Domain.Environments
+@using KrakenDeploy.Server.Core.Domain.Runbooks
 @using KrakenDeploy.Server.Core.Domain.Targets
+@using KrakenDeploy.Server.Core.Domain.Tenants
 @using KrakenDeploy.Server.Core.Domain.Variables
 @using KrakenDeploy.Server.Data.Services
 @inject TargetService TargetSvc
+@inject EnvironmentService EnvironmentSvc
+@inject TenantService TenantSvc
+@inject DeploymentService DeploymentSvc
+@inject RunbookService RunbookSvc
+@inject AuditLogService AuditSvc
 @inject IEncryptionService Encryption
 @inject NotificationService Notify
-@inject NavigationManager Nav
 @inject UiActionGuard Guard
 
 <PageTitle>Target @(Target?.Name ?? "…") - KrakenDeploy</PageTitle>
 
 @if (Target is null)
 {
-    <RadzenText>Loading…</RadzenText>
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading…</RadzenText>
 }
 else
 {
-    <div class="rz-mb-4 rz-d-flex rz-align-items-center rz-gap-3">
-        <RadzenBreadCrumb>
-            <RadzenBreadCrumbItem Path="/targets" Text="Targets" />
-            <RadzenBreadCrumbItem Text="@Target.Name" />
-        </RadzenBreadCrumb>
+    <div class="toolbar">
+        <RadzenLink Path="/targets" class="kraken-back-link">
+            <RadzenIcon Icon="arrow_back" /> Deployment Targets
+        </RadzenLink>
     </div>
 
-    @* ── General info card ──────────────────────────────────────────── *@
-    <RadzenCard class="rz-mb-4">
-        <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">General</RadzenText>
-        <div class="rz-grid-table" style="grid-template-columns: auto 1fr auto 1fr;">
-            <span class="rz-color-secondary">Name</span>
-            <span>@Target.Name</span>
-            <span class="rz-color-secondary">Status</span>
-            <span><RadzenBadge Text="@Target.Status.ToString()" BadgeStyle="@StatusBadge(Target.Status)" /></span>
-
-            <span class="rz-color-secondary">Transport</span>
-            <span>@Target.TransportMode.ToString()</span>
-            <span class="rz-color-secondary">Hostname</span>
-            <span>@(Target.MachineName ?? "—")</span>
-
-            <span class="rz-color-secondary">OS</span>
-            <span>@(Target.OperatingSystem ?? "—")</span>
-            <span class="rz-color-secondary">Agent Version</span>
-            <span>@(Target.AgentVersion ?? "—")</span>
-
-            <span class="rz-color-secondary">Roles</span>
-            <span>@(Target.Roles.Count > 0 ? string.Join(", ", Target.Roles) : "—")</span>
-            <span class="rz-color-secondary">Last Seen</span>
-            <span>@(Target.LastSeenUtc?.ToString("yyyy-MM-dd HH:mm:ss") ?? "never")</span>
-
-            <span class="rz-color-secondary">Risk level</span>
-            <span><RadzenBadge Text="@Target.RiskLevel.ToString()" BadgeStyle="@RiskBadge(Target.RiskLevel)" /></span>
-        </div>
-
-        <RequirePermission Permission="Permission.MachineEdit">
-            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
-                         Gap="0.75rem" class="rz-mt-3">
-                <RadzenLabel Text="Set risk level" />
-                <RadzenDropDown TValue="TargetRiskLevel" @bind-Value="_riskLevel"
-                                Data="@_riskLevels" Style="width:180px;" />
-                <RadzenButton Text="Save" Icon="save" Size="ButtonSize.Small"
-                              ButtonStyle="ButtonStyle.Primary" IsBusy="_savingRisk"
-                              Click="SaveRiskAsync" />
-                <span class="rz-text-caption rz-color-secondary-light">
-                    Production triggers the louder ad-hoc approval banner and (where enabled) the two-person rule.
-                </span>
-            </RadzenStack>
-        </RequirePermission>
-    </RadzenCard>
-
-    @* ── Offline Drop Config ────────────────────────────────────────── *@
-    @if (Target.TransportMode == TransportMode.OfflineDrop)
-    {
-        <RadzenCard class="rz-mb-4" style="border-left:4px solid var(--rz-info)">
-            <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">Offline Drop Configuration</RadzenText>
-
-            <RadzenStack Gap="1rem">
-                <div>
-                    <RadzenLabel Text="Delivery Channel" />
-                    <RadzenDropDown @bind-Value="_deliveryChannel"
-                                    Data="@_deliveryChannels"
-                                    TextProperty="Text" ValueProperty="Value"
-                                    Style="width:100%;" />
+    <div class="page-head">
+        <div style="display:flex; align-items:center; gap:14px;">
+            <span class="kraken-proj-tile" style="width:42px; height:42px;"><RadzenIcon Icon="dns" /></span>
+            <div>
+                <h1 class="page-title" style="margin-bottom:2px;">@Target.Name</h1>
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <span class="kraken-channel-pill">@TransportLabel(Target.TransportMode)</span>
+                    <StatusPill Target="Target.Status" />
                 </div>
+            </div>
+        </div>
+    </div>
 
-                @* HMAC Signing *@
-                <div>
-                    <RadzenLabel Text="HMAC Signing" />
-                    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" AlignItems="AlignItems.Center">
-                        @if (_hasHmacKey)
-                        {
-                            <RadzenBadge Text="Configured" BadgeStyle="BadgeStyle.Success" />
-                            <RequirePermission Permission="Permission.MachineEdit">
-                                <RadzenButton Text="Regenerate Key" Icon="refresh"
-                                              Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Light"
-                                              Click="GenerateHmacKey" />
-                            </RequirePermission>
-                            <RequirePermission Permission="Permission.MachineEdit">
-                                <RadzenButton Text="Remove Key" Icon="delete"
-                                              Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Danger"
-                                              Variant="Variant.Text"
-                                              Click="RemoveHmacKey" />
-                            </RequirePermission>
-                        }
-                        else
-                        {
-                            <RadzenBadge Text="Not configured" BadgeStyle="BadgeStyle.Light" />
-                            <RequirePermission Permission="Permission.MachineEdit">
-                                <RadzenButton Text="Generate HMAC Key" Icon="vpn_key"
-                                              Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Info"
-                                              Click="GenerateHmacKey" />
-                            </RequirePermission>
-                        }
+    <div class="kraken-detail-layout">
+        @* ── Left sub-nav ── *@
+        <nav class="kraken-subnav">
+            @foreach (var (key, label, icon) in Sections)
+            {
+                var k = key;
+                <button class="@(_section == k ? "active" : "")" @onclick="@(() => OpenSectionAsync(k))">
+                    <RadzenIcon Icon="@icon" /> @label
+                    @if (k == "connectivity" && Target.Status == TargetStatus.Online)
+                    {
+                        <RadzenIcon Icon="check_circle" class="ok-dot" />
+                    }
+                </button>
+            }
+        </nav>
+
+        <div style="min-width:0;">
+            @* ════ Settings ════ *@
+            @if (_section == "settings")
+            {
+                <div class="kr-card kr-card-pad">
+                    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                                 JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-2">
+                        <RadzenText TextStyle="TextStyle.H6" class="rz-mb-0">Settings</RadzenText>
+                        <RequirePermission Permission="Permission.MachineEdit">
+                            <RadzenButton Text="Save" Icon="save" ButtonStyle="ButtonStyle.Primary"
+                                          IsBusy="_savingSettings" Click="SaveSettingsAsync" />
+                        </RequirePermission>
                     </RadzenStack>
-                    <div class="rz-text-caption rz-color-secondary-light" style="margin-top:0.25rem;">
-                        When set, drop and result bundles are HMAC-SHA256 signed for tamper detection.
+
+                    <div class="kraken-def">
+                        <div class="kraken-def-label">Display Name
+                            <div class="kraken-def-sub">Shown everywhere this target appears.</div>
+                        </div>
+                        <div class="kraken-def-value">
+                            <RadzenTextBox @bind-Value="_name" Style="width:100%; max-width:480px;" aria-label="Display name" />
+                        </div>
+                    </div>
+
+                    <div class="kraken-def-section">Deployment</div>
+
+                    <div class="kraken-def">
+                        <div class="kraken-def-label">Environments
+                            <div class="kraken-def-sub">Environments this target deploys into.</div>
+                        </div>
+                        <div class="kraken-def-value">
+                            <RadzenDropDown TValue="IEnumerable<Guid>" @bind-Value="_environmentIds"
+                                            Data="@_environments" TextProperty="Name" ValueProperty="Id"
+                                            Multiple="true" Chips="true" AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                            Placeholder="(none)" Style="width:100%; max-width:480px;" />
+                        </div>
+                    </div>
+
+                    <div class="kraken-def">
+                        <div class="kraken-def-label">Target Roles
+                            <div class="kraken-def-sub">Steps run on targets whose roles overlap the step's roles.</div>
+                        </div>
+                        <div class="kraken-def-value">
+                            <RadzenDropDown TValue="IEnumerable<string>" @bind-Value="_roles"
+                                            Data="@_roleCatalog"
+                                            Multiple="true" Chips="true" AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                            Placeholder="(none)" Style="width:100%; max-width:480px;" />
+                            <RadzenStack Orientation="Orientation.Horizontal" Gap="6px" class="rz-mt-2"
+                                         AlignItems="AlignItems.Center">
+                                <RadzenTextBox @bind-Value="_newRole" Placeholder="New role…"
+                                               Style="width:200px;" aria-label="New role" />
+                                <RadzenButton Text="Add role" Icon="add" Size="ButtonSize.ExtraSmall"
+                                              ButtonStyle="ButtonStyle.Light" Click="AddRole" />
+                            </RadzenStack>
+                        </div>
+                    </div>
+
+                    <div class="kraken-def">
+                        <div class="kraken-def-label">Risk level
+                            <div class="kraken-def-sub">Production triggers the louder ad-hoc approval banner and (where enabled) the two-person rule.</div>
+                        </div>
+                        <div class="kraken-def-value">
+                            <RadzenDropDown TValue="TargetRiskLevel" @bind-Value="_riskLevel"
+                                            Data="@_riskLevels" Style="width:220px;" />
+                        </div>
+                    </div>
+
+                    <div class="kraken-def-section">Machine</div>
+
+                    <div class="kraken-def">
+                        <div class="kraken-def-label">Hostname</div>
+                        <div class="kraken-def-value" style="padding-top:6px;">
+                            <span class="mono">@(Target.MachineName ?? "—")</span>
+                            <span class="cell-muted" style="margin-left:14px;">@(Target.OperatingSystem ?? "")</span>
+                        </div>
+                    </div>
+
+                    <div class="kraken-def">
+                        <div class="kraken-def-label">Transport</div>
+                        <div class="kraken-def-value" style="padding-top:6px;">@TransportLabel(Target.TransportMode)</div>
+                    </div>
+
+                    <div class="kraken-def-section">Restrictions</div>
+
+                    <div class="kraken-def">
+                        <div class="kraken-def-label">Associated Tenants
+                            <div class="kraken-def-sub">
+                                Tenants this deployment target serves. This is the primary
+                                tenant↔target association; tenant tags are separate, auxiliary metadata.
+                            </div>
+                        </div>
+                        <div class="kraken-def-value">
+                            <RadzenDropDown TValue="IEnumerable<Guid>" @bind-Value="_tenantIds"
+                                            Data="@_tenants" TextProperty="Name" ValueProperty="Id"
+                                            Multiple="true" Chips="true" AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                            Placeholder="(no tenants — untenanted target)"
+                                            Style="width:100%; max-width:480px;" />
+                        </div>
                     </div>
                 </div>
 
-                @* ── Email settings ────────────────────────────────────── *@
-                @if (_deliveryChannel == OfflineDropDeliveryChannel.Email)
+                @* ── Offline Drop Config (unchanged behaviour) ── *@
+                @if (Target.TransportMode == TransportMode.OfflineDrop)
                 {
-                    <RadzenFieldset Text="Email Delivery" class="rz-mt-2">
-                        <RadzenStack Gap="0.75rem">
+                    <RadzenCard class="rz-mt-4" style="border-left:4px solid var(--rz-info)">
+                        <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">Offline Drop Configuration</RadzenText>
+
+                        <RadzenStack Gap="1rem">
                             <div>
-                                <RadzenLabel Text="SMTP Host" />
-                                <RadzenTextBox @bind-Value="_smtpHost" Style="width:100%;" Placeholder="smtp.example.com" />
+                                <RadzenLabel Text="Delivery Channel" />
+                                <RadzenDropDown @bind-Value="_deliveryChannel"
+                                                Data="@_deliveryChannels"
+                                                TextProperty="Text" ValueProperty="Value"
+                                                Style="width:100%;" />
                             </div>
-                            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem">
-                                <div style="flex:1">
-                                    <RadzenLabel Text="Port" />
-                                    <RadzenNumeric @bind-Value="_smtpPort" Style="width:100%;" />
+
+                            <div>
+                                <RadzenLabel Text="HMAC Signing" />
+                                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" AlignItems="AlignItems.Center">
+                                    @if (_hasHmacKey)
+                                    {
+                                        <RadzenBadge Text="Configured" BadgeStyle="BadgeStyle.Success" />
+                                        <RequirePermission Permission="Permission.MachineEdit">
+                                            <RadzenButton Text="Regenerate Key" Icon="refresh"
+                                                          Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Light"
+                                                          Click="GenerateHmacKey" />
+                                        </RequirePermission>
+                                        <RequirePermission Permission="Permission.MachineEdit">
+                                            <RadzenButton Text="Remove Key" Icon="delete"
+                                                          Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Danger"
+                                                          Variant="Variant.Text"
+                                                          Click="RemoveHmacKey" />
+                                        </RequirePermission>
+                                    }
+                                    else
+                                    {
+                                        <RadzenBadge Text="Not configured" BadgeStyle="BadgeStyle.Light" />
+                                        <RequirePermission Permission="Permission.MachineEdit">
+                                            <RadzenButton Text="Generate HMAC Key" Icon="vpn_key"
+                                                          Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Info"
+                                                          Click="GenerateHmacKey" />
+                                        </RequirePermission>
+                                    }
+                                </RadzenStack>
+                                <div class="rz-text-caption rz-color-secondary-light" style="margin-top:0.25rem;">
+                                    When set, drop and result bundles are HMAC-SHA256 signed for tamper detection.
                                 </div>
-                                <div style="flex:1">
-                                    <RadzenLabel Text="Use SSL" />
-                                    <RadzenCheckBox @bind-Value="_smtpUseSsl" />
-                                </div>
+                            </div>
+
+                            @if (_deliveryChannel == OfflineDropDeliveryChannel.Email)
+                            {
+                                <RadzenFieldset Text="Email Delivery" class="rz-mt-2">
+                                    <RadzenStack Gap="0.75rem">
+                                        <div>
+                                            <RadzenLabel Text="SMTP Host" />
+                                            <RadzenTextBox @bind-Value="_smtpHost" Style="width:100%;" Placeholder="smtp.example.com" />
+                                        </div>
+                                        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem">
+                                            <div style="flex:1">
+                                                <RadzenLabel Text="Port" />
+                                                <RadzenNumeric @bind-Value="_smtpPort" Style="width:100%;" />
+                                            </div>
+                                            <div style="flex:1">
+                                                <RadzenLabel Text="Use SSL" />
+                                                <RadzenCheckBox @bind-Value="_smtpUseSsl" />
+                                            </div>
+                                        </RadzenStack>
+                                        <div>
+                                            <RadzenLabel Text="Username" />
+                                            <RadzenTextBox @bind-Value="_smtpUsername" Style="width:100%;" />
+                                        </div>
+                                        <div>
+                                            <RadzenLabel Text="Password" />
+                                            <RadzenPassword @bind-Value="_smtpPassword" Style="width:100%;" Placeholder="••••••••" />
+                                            @if (!string.IsNullOrEmpty(Target.OfflineDropConfig?.SmtpPasswordEncrypted) && string.IsNullOrEmpty(_smtpPassword))
+                                            {
+                                                <div class="rz-text-caption rz-color-secondary-light">Leave blank to keep existing password.</div>
+                                            }
+                                        </div>
+                                        <div>
+                                            <RadzenLabel Text="Recipient" />
+                                            <RadzenTextBox @bind-Value="_smtpRecipient" Style="width:100%;" Placeholder="ops@example.com" />
+                                        </div>
+                                        <div>
+                                            <RadzenLabel Text="Sender" />
+                                            <RadzenTextBox @bind-Value="_smtpSender" Style="width:100%;" Placeholder="krakendeploy@example.com" />
+                                        </div>
+                                    </RadzenStack>
+                                </RadzenFieldset>
+                            }
+
+                            @if (_deliveryChannel == OfflineDropDeliveryChannel.Webhook)
+                            {
+                                <RadzenFieldset Text="Webhook Delivery" class="rz-mt-2">
+                                    <RadzenStack Gap="0.75rem">
+                                        <div>
+                                            <RadzenLabel Text="Webhook URL" />
+                                            <RadzenTextBox @bind-Value="_webhookUrl" Style="width:100%;" Placeholder="https://hooks.example.com/deploy" />
+                                        </div>
+                                        <div>
+                                            <RadzenLabel Text="Shared Secret (optional)" />
+                                            <RadzenPassword @bind-Value="_webhookSecret" Style="width:100%;" Placeholder="••••••••" />
+                                        </div>
+                                    </RadzenStack>
+                                </RadzenFieldset>
+                            }
+
+                            @if (_deliveryChannel == OfflineDropDeliveryChannel.FileShareDrop)
+                            {
+                                <RadzenFieldset Text="File Share / SFTP Delivery" class="rz-mt-2">
+                                    <RadzenStack Gap="0.75rem">
+                                        <div>
+                                            <RadzenLabel Text="Path" />
+                                            <RadzenTextBox @bind-Value="_fileSharePath" Style="width:100%;" Placeholder="\\server\share\drops or sftp://host/path" />
+                                        </div>
+                                        <div>
+                                            <RadzenLabel Text="Username (optional)" />
+                                            <RadzenTextBox @bind-Value="_fileShareUsername" Style="width:100%;" />
+                                        </div>
+                                        <div>
+                                            <RadzenLabel Text="Password (optional)" />
+                                            <RadzenPassword @bind-Value="_fileSharePassword" Style="width:100%;" Placeholder="••••••••" />
+                                        </div>
+                                    </RadzenStack>
+                                </RadzenFieldset>
+                            }
+
+                            <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End" class="rz-mt-3">
+                                <RequirePermission Permission="Permission.MachineEdit">
+                                    <RadzenButton Text="Save Configuration" Icon="save"
+                                                  ButtonStyle="ButtonStyle.Primary"
+                                                  IsBusy="_saving"
+                                                  Click="SaveConfigAsync" />
+                                </RequirePermission>
                             </RadzenStack>
-                            <div>
-                                <RadzenLabel Text="Username" />
-                                <RadzenTextBox @bind-Value="_smtpUsername" Style="width:100%;" />
-                            </div>
-                            <div>
-                                <RadzenLabel Text="Password" />
-                                <RadzenPassword @bind-Value="_smtpPassword" Style="width:100%;" Placeholder="••••••••" />
-                                @if (!string.IsNullOrEmpty(Target.OfflineDropConfig?.SmtpPasswordEncrypted) && string.IsNullOrEmpty(_smtpPassword))
-                                {
-                                    <div class="rz-text-caption rz-color-secondary-light">Leave blank to keep existing password.</div>
-                                }
-                            </div>
-                            <div>
-                                <RadzenLabel Text="Recipient" />
-                                <RadzenTextBox @bind-Value="_smtpRecipient" Style="width:100%;" Placeholder="ops@example.com" />
-                            </div>
-                            <div>
-                                <RadzenLabel Text="Sender" />
-                                <RadzenTextBox @bind-Value="_smtpSender" Style="width:100%;" Placeholder="krakendeploy@example.com" />
-                            </div>
                         </RadzenStack>
-                    </RadzenFieldset>
+                    </RadzenCard>
                 }
+            }
 
-                @* ── Webhook settings ──────────────────────────────────── *@
-                @if (_deliveryChannel == OfflineDropDeliveryChannel.Webhook)
-                {
-                    <RadzenFieldset Text="Webhook Delivery" class="rz-mt-2">
-                        <RadzenStack Gap="0.75rem">
-                            <div>
-                                <RadzenLabel Text="Webhook URL" />
-                                <RadzenTextBox @bind-Value="_webhookUrl" Style="width:100%;" Placeholder="https://hooks.example.com/deploy" />
-                            </div>
-                            <div>
-                                <RadzenLabel Text="Shared Secret (optional)" />
-                                <RadzenPassword @bind-Value="_webhookSecret" Style="width:100%;" Placeholder="••••••••" />
-                            </div>
-                        </RadzenStack>
-                    </RadzenFieldset>
-                }
+            @* ════ Connectivity ════ *@
+            @if (_section == "connectivity")
+            {
+                <div class="kr-card kr-card-pad">
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">Connectivity</RadzenText>
 
-                @* ── File-share settings ───────────────────────────────── *@
-                @if (_deliveryChannel == OfflineDropDeliveryChannel.FileShareDrop)
-                {
-                    <RadzenFieldset Text="File Share / SFTP Delivery" class="rz-mt-2">
-                        <RadzenStack Gap="0.75rem">
-                            <div>
-                                <RadzenLabel Text="Path" />
-                                <RadzenTextBox @bind-Value="_fileSharePath" Style="width:100%;" Placeholder="\\server\share\drops or sftp://host/path" />
+                    <div class="kraken-health @HealthClass(Target.Status)">
+                        <RadzenIcon Icon="@HealthIcon(Target.Status)" />
+                        <div>
+                            <div class="kraken-health-title">@HealthTitle(Target.Status)</div>
+                            <div class="kraken-health-sub">
+                                @(Target.LastSeenUtc is { } seen
+                                    ? $"Last seen {Relative(seen)} ({seen.ToLocalTime():g})"
+                                    : "Never seen — the agent has not checked in yet.")
                             </div>
-                            <div>
-                                <RadzenLabel Text="Username (optional)" />
-                                <RadzenTextBox @bind-Value="_fileShareUsername" Style="width:100%;" />
-                            </div>
-                            <div>
-                                <RadzenLabel Text="Password (optional)" />
-                                <RadzenPassword @bind-Value="_fileSharePassword" Style="width:100%;" Placeholder="••••••••" />
-                            </div>
-                        </RadzenStack>
-                    </RadzenFieldset>
-                }
+                        </div>
+                    </div>
 
-                <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End" class="rz-mt-3">
-                    <RequirePermission Permission="Permission.MachineEdit">
-                        <RadzenButton Text="Save Configuration" Icon="save"
-                                      ButtonStyle="ButtonStyle.Primary"
-                                      IsBusy="_saving"
-                                      Click="SaveConfigAsync" />
-                    </RequirePermission>
-                </RadzenStack>
-            </RadzenStack>
-        </RadzenCard>
-    }
+                    <div class="kraken-def">
+                        <div class="kraken-def-label">Agent version</div>
+                        <div class="kraken-def-value" style="padding-top:6px;">
+                            <span class="mono">@(Target.AgentVersion ?? "—")</span>
+                        </div>
+                    </div>
+
+                    <div class="kraken-def">
+                        <div class="kraken-def-label">Lock agent version
+                            <div class="kraken-def-sub">When locked, this agent will not auto-update past its current version.</div>
+                        </div>
+                        <div class="kraken-def-value" style="padding-top:6px;">
+                            <RadzenStack Orientation="Orientation.Horizontal" Gap="10px" AlignItems="AlignItems.Center">
+                                <RadzenSwitch Value="@(!Target.AutoUpdateEnabled)"
+                                              ValueChanged="@(v => ToggleVersionLockAsync(v))"
+                                              Disabled="@_savingLock" />
+                                <span class="cell-muted">@(!Target.AutoUpdateEnabled ? "Locked to current version" : "Auto-update enabled")</span>
+                            </RadzenStack>
+                        </div>
+                    </div>
+
+                    <div class="kraken-def">
+                        <div class="kraken-def-label">Transport</div>
+                        <div class="kraken-def-value" style="padding-top:6px;">@TransportLabel(Target.TransportMode)</div>
+                    </div>
+
+                    <div class="kraken-def">
+                        <div class="kraken-def-label">Machine</div>
+                        <div class="kraken-def-value" style="padding-top:6px;">
+                            <span class="mono">@(Target.MachineName ?? "—")</span>
+                            <span class="cell-muted" style="margin-left:14px;">@(Target.OperatingSystem ?? "")</span>
+                        </div>
+                    </div>
+                </div>
+            }
+
+            @* ════ Deployments ════ *@
+            @if (_section == "deployments")
+            {
+                <div class="kr-card kr-card-pad">
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">Deployments to this target</RadzenText>
+                    @if (_deployments is null)
+                    {
+                        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading…</RadzenText>
+                    }
+                    else if (_deployments.Count == 0)
+                    {
+                        <div class="kr-empty">No deployments have run on this target yet.</div>
+                    }
+                    else
+                    {
+                        <KrakenGrid SettingsKey="target-deployments" Data="@_deployments" TItem="Deployment"
+                                    AllowPaging="true" PageSize="15" AllowSorting="true"
+                                    AllowColumnResize="true" GridLines="DataGridGridLines.Horizontal">
+                            <Columns>
+                                <RadzenDataGridColumn TItem="Deployment" Title="Status" Width="150px" Sortable="false">
+                                    <Template Context="d"><StatusPill Deployment="d.Status" /></Template>
+                                </RadzenDataGridColumn>
+                                <RadzenDataGridColumn TItem="Deployment" Title="Project" Width="200px" Sortable="false">
+                                    <Template Context="d">
+                                        <a class="primary-link" href="@($"/deployments/{d.Id}")">@d.Release.Project.Name</a>
+                                    </Template>
+                                </RadzenDataGridColumn>
+                                <RadzenDataGridColumn TItem="Deployment" Title="Release" Width="150px" Sortable="false">
+                                    <Template Context="d"><span class="mono">@d.Release.Version</span></Template>
+                                </RadzenDataGridColumn>
+                                <RadzenDataGridColumn TItem="Deployment" Title="Environment" Width="140px" Sortable="false">
+                                    <Template Context="d">@d.Environment.Name</Template>
+                                </RadzenDataGridColumn>
+                                <RadzenDataGridColumn TItem="Deployment" Title="Tenant" Width="180px" Sortable="false">
+                                    <Template Context="d">@(d.Tenant?.Name ?? "—")</Template>
+                                </RadzenDataGridColumn>
+                                <RadzenDataGridColumn TItem="Deployment" Property="CreatedUtc" Title="When"
+                                                      Width="170px" FormatString="{0:g}" />
+                            </Columns>
+                        </KrakenGrid>
+                    }
+                </div>
+            }
+
+            @* ════ Runbook runs ════ *@
+            @if (_section == "runbooks")
+            {
+                <div class="kr-card kr-card-pad">
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">Runbook runs on this target</RadzenText>
+                    @if (_runbookRuns is null)
+                    {
+                        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading…</RadzenText>
+                    }
+                    else if (_runbookRuns.Count == 0)
+                    {
+                        <div class="kr-empty">No runbook runs have executed on this target yet.</div>
+                    }
+                    else
+                    {
+                        <KrakenGrid SettingsKey="target-runbook-runs" Data="@_runbookRuns" TItem="RunbookRun"
+                                    AllowPaging="true" PageSize="15" AllowSorting="true"
+                                    AllowColumnResize="true" GridLines="DataGridGridLines.Horizontal">
+                            <Columns>
+                                <RadzenDataGridColumn TItem="RunbookRun" Title="Status" Width="150px" Sortable="false">
+                                    <Template Context="r"><StatusPill Deployment="r.Status" /></Template>
+                                </RadzenDataGridColumn>
+                                <RadzenDataGridColumn TItem="RunbookRun" Title="Runbook" Width="220px" Sortable="false">
+                                    <Template Context="r">@r.Runbook.Name</Template>
+                                </RadzenDataGridColumn>
+                                <RadzenDataGridColumn TItem="RunbookRun" Title="Project" Width="200px" Sortable="false">
+                                    <Template Context="r">@r.Runbook.Project.Name</Template>
+                                </RadzenDataGridColumn>
+                                <RadzenDataGridColumn TItem="RunbookRun" Title="Environment" Width="140px" Sortable="false">
+                                    <Template Context="r">@r.Environment.Name</Template>
+                                </RadzenDataGridColumn>
+                                <RadzenDataGridColumn TItem="RunbookRun" Property="CreatedUtc" Title="When"
+                                                      Width="170px" FormatString="{0:g}" />
+                            </Columns>
+                        </KrakenGrid>
+                    }
+                </div>
+            }
+
+            @* ════ Events ════ *@
+            @if (_section == "events")
+            {
+                <div class="kr-card kr-card-pad">
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">Events</RadzenText>
+                    @if (_events is null)
+                    {
+                        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading…</RadzenText>
+                    }
+                    else if (_events.Count == 0)
+                    {
+                        <div class="kr-empty">No audit events recorded for this target.</div>
+                    }
+                    else
+                    {
+                        <KrakenGrid SettingsKey="target-events" Data="@_events" TItem="AuditEntry"
+                                    AllowPaging="true" PageSize="20" AllowSorting="true"
+                                    AllowColumnResize="true" GridLines="DataGridGridLines.Horizontal">
+                            <Columns>
+                                <RadzenDataGridColumn TItem="AuditEntry" Property="OccurredUtc" Title="When"
+                                                      Width="170px" FormatString="{0:g}" />
+                                <RadzenDataGridColumn TItem="AuditEntry" Property="EventType" Title="Event" Width="220px">
+                                    <Template Context="e"><span class="mono">@e.EventType</span></Template>
+                                </RadzenDataGridColumn>
+                                <RadzenDataGridColumn TItem="AuditEntry" Property="UserDisplay" Title="User" Width="180px" />
+                                <RadzenDataGridColumn TItem="AuditEntry" Property="Details" Title="Details" Sortable="false">
+                                    <Template Context="e">
+                                        @if (string.IsNullOrWhiteSpace(e.Details))
+                                        {
+                                            <span class="cell-muted">—</span>
+                                        }
+                                        else
+                                        {
+                                            <span title="@e.Details">@(e.Details!.Length > 120 ? e.Details[..120] + "…" : e.Details)</span>
+                                        }
+                                    </Template>
+                                </RadzenDataGridColumn>
+                            </Columns>
+                        </KrakenGrid>
+                    }
+                </div>
+            }
+        </div>
+    </div>
 }
 
 @code {
@@ -217,7 +489,36 @@ else
 
     private DeploymentTarget? Target { get; set; }
 
-    // Offline config editing state
+    private static readonly (string Key, string Label, string Icon)[] Sections =
+    [
+        ("settings", "Settings", "tune"),
+        ("connectivity", "Connectivity", "settings_input_antenna"),
+        ("deployments", "Deployments", "play_circle"),
+        ("runbooks", "Runbook runs", "menu_book"),
+        ("events", "Events", "history"),
+    ];
+    private string _section = "settings";
+
+    // ── Settings form state ────────────────────────────────────────────────
+    private string _name = "";
+    private IEnumerable<string> _roles = [];
+    private List<string> _roleCatalog = [];
+    private string _newRole = "";
+    private TargetRiskLevel _riskLevel;
+    private IEnumerable<Guid> _environmentIds = [];
+    private IEnumerable<Guid> _tenantIds = [];
+    private List<DeploymentEnvironment> _environments = [];
+    private List<Tenant> _tenants = [];
+    private bool _savingSettings;
+    private bool _savingLock;
+    private readonly TargetRiskLevel[] _riskLevels = Enum.GetValues<TargetRiskLevel>();
+
+    // ── Tab data (lazy) ────────────────────────────────────────────────────
+    private List<Deployment>? _deployments;
+    private List<RunbookRun>? _runbookRuns;
+    private List<AuditEntry>? _events;
+
+    // ── Offline drop state (unchanged behaviour) ───────────────────────────
     private OfflineDropDeliveryChannel _deliveryChannel;
     private bool _hasHmacKey;
     private string _smtpHost = "";
@@ -234,11 +535,6 @@ else
     private string _fileSharePassword = "";
     private bool _saving;
 
-    // Risk level editing state
-    private TargetRiskLevel _riskLevel;
-    private bool _savingRisk;
-    private readonly TargetRiskLevel[] _riskLevels = Enum.GetValues<TargetRiskLevel>();
-
     private readonly List<object> _deliveryChannels =
     [
         new { Text = "Manual (download from UI)", Value = OfflineDropDeliveryChannel.Manual },
@@ -249,16 +545,131 @@ else
 
     protected override async Task OnInitializedAsync()
     {
+        // Tracked entity for offline-drop / version-lock saves (no associations).
         Target = await TargetSvc.GetAsync(Id);
-        if (Target is not null)
+        if (Target is null) return;
+
+        _name = Target.Name;
+        _riskLevel = Target.RiskLevel;
+
+        _environments = await EnvironmentSvc.GetAllOrderedAsync();
+        _tenants = await TenantSvc.GetAllAsync();
+
+        // Associations come from a separate read-only load so the tracked
+        // entity above stays free of join rows (see TargetService docs).
+        var withAssoc = await TargetSvc.GetWithAssociationsAsync(Id);
+        _environmentIds = withAssoc?.Environments.Select(e => e.Id).ToList() ?? [];
+        _tenantIds = withAssoc?.Tenants.Select(t => t.Id).ToList() ?? [];
+
+        var catalog = new SortedSet<string>(
+            await TargetSvc.GetAllRolesAsync(), StringComparer.OrdinalIgnoreCase);
+        foreach (var role in Target.Roles)
         {
-            _riskLevel = Target.RiskLevel;
+            catalog.Add(role);
         }
-        if (Target?.OfflineDropConfig is not null)
+        _roleCatalog = [.. catalog];
+        _roles = Target.Roles.ToList();
+
+        if (Target.OfflineDropConfig is not null)
         {
             LoadConfigState(Target.OfflineDropConfig);
         }
     }
+
+    private async Task OpenSectionAsync(string section)
+    {
+        _section = section;
+        switch (section)
+        {
+            case "deployments":
+                _deployments ??= await DeploymentSvc.GetForTargetAsync(Id);
+                break;
+            case "runbooks":
+                _runbookRuns ??= await RunbookSvc.GetRunsForTargetAsync(Id);
+                break;
+            case "events":
+                _events ??= await AuditSvc.GetForSubjectAsync(Id.ToString());
+                break;
+        }
+    }
+
+    private void AddRole()
+    {
+        var role = _newRole.Trim();
+        if (role.Length == 0) return;
+        if (!_roleCatalog.Contains(role, StringComparer.OrdinalIgnoreCase))
+        {
+            _roleCatalog = [.. _roleCatalog.Append(role).OrderBy(r => r, StringComparer.OrdinalIgnoreCase)];
+        }
+        if (!_roles.Contains(role, StringComparer.OrdinalIgnoreCase))
+        {
+            _roles = [.. _roles, role];
+        }
+        _newRole = "";
+    }
+
+    private async Task SaveSettingsAsync()
+    {
+        if (Target is null) return;
+        if (!await Guard.AllowAsync(Permission.MachineEdit)) return;
+
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            Notify.Notify(NotificationSeverity.Warning, "Missing name", "Display name is required.", 4000);
+            return;
+        }
+
+        _savingSettings = true;
+        try
+        {
+            await TargetSvc.SaveSettingsAsync(
+                Id, _name,
+                _roles.Where(r => !string.IsNullOrWhiteSpace(r)).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
+                _riskLevel,
+                _environmentIds.ToList(),
+                _tenantIds.ToList());
+
+            // Refresh the header copies of name / risk.
+            Target.Name = _name.Trim();
+            Target.RiskLevel = _riskLevel;
+
+            Notify.Notify(NotificationSeverity.Success, "Saved", "Target settings were saved.", 3000);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(NotificationSeverity.Error, "Save failed", ex.Message, 6000);
+        }
+        finally
+        {
+            _savingSettings = false;
+        }
+    }
+
+    private async Task ToggleVersionLockAsync(bool locked)
+    {
+        if (Target is null) return;
+        if (!await Guard.AllowAsync(Permission.MachineEdit)) return;
+
+        _savingLock = true;
+        try
+        {
+            Target.AutoUpdateEnabled = !locked;
+            await TargetSvc.UpdateAsync(Target);
+            Notify.Notify(NotificationSeverity.Success, "Saved",
+                locked ? "Agent locked to its current version." : "Agent auto-update enabled.", 3000);
+        }
+        catch (Exception ex)
+        {
+            Target.AutoUpdateEnabled = locked; // revert optimistic flip
+            Notify.Notify(NotificationSeverity.Error, "Save failed", ex.Message, 6000);
+        }
+        finally
+        {
+            _savingLock = false;
+        }
+    }
+
+    // ── Offline drop config (unchanged behaviour) ──────────────────────────
 
     private void LoadConfigState(OfflineDropConfig cfg)
     {
@@ -305,7 +716,6 @@ else
             var cfg = Target.OfflineDropConfig ??= new OfflineDropConfig();
             cfg.DeliveryChannel = _deliveryChannel;
 
-            // Email
             cfg.SmtpHost = string.IsNullOrWhiteSpace(_smtpHost) ? null : _smtpHost.Trim();
             cfg.SmtpPort = _smtpPort;
             cfg.SmtpUseSsl = _smtpUseSsl;
@@ -317,14 +727,12 @@ else
                 cfg.SmtpPasswordEncrypted = Encryption.Encrypt(_smtpPassword);
             }
 
-            // Webhook
             cfg.WebhookUrl = string.IsNullOrWhiteSpace(_webhookUrl) ? null : _webhookUrl.Trim();
             if (!string.IsNullOrEmpty(_webhookSecret))
             {
                 cfg.WebhookSecretEncrypted = Encryption.Encrypt(_webhookSecret);
             }
 
-            // File share
             cfg.FileSharePath = string.IsNullOrWhiteSpace(_fileSharePath) ? null : _fileSharePath.Trim();
             cfg.FileShareUsername = string.IsNullOrWhiteSpace(_fileShareUsername) ? null : _fileShareUsername.Trim();
             if (!string.IsNullOrEmpty(_fileSharePassword))
@@ -333,23 +741,11 @@ else
             }
 
             await TargetSvc.UpdateAsync(Target);
-
-            Notify.Notify(new NotificationMessage
-            {
-                Severity = NotificationSeverity.Success,
-                Summary = "Configuration saved",
-                Duration = 3000,
-            });
+            Notify.Notify(NotificationSeverity.Success, "Configuration saved", "", 3000);
         }
         catch (Exception ex)
         {
-            Notify.Notify(new NotificationMessage
-            {
-                Severity = NotificationSeverity.Error,
-                Summary = "Save failed",
-                Detail = ex.Message,
-                Duration = 5000,
-            });
+            Notify.Notify(NotificationSeverity.Error, "Save failed", ex.Message, 5000);
         }
         finally
         {
@@ -357,51 +753,47 @@ else
         }
     }
 
-    private async Task SaveRiskAsync()
+    // ── Display helpers ─────────────────────────────────────────────────────
+
+    private static string TransportLabel(TransportMode m) => m switch
     {
-        if (Target is null) { return; }
-        if (!await Guard.AllowAsync(Permission.MachineEdit)) return;
-        _savingRisk = true;
-        try
-        {
-            Target.RiskLevel = _riskLevel;
-            await TargetSvc.UpdateAsync(Target);
-            Notify.Notify(new NotificationMessage
-            {
-                Severity = NotificationSeverity.Success,
-                Summary = "Risk level saved",
-                Duration = 3000,
-            });
-        }
-        catch (Exception ex)
-        {
-            Notify.Notify(new NotificationMessage
-            {
-                Severity = NotificationSeverity.Error,
-                Summary = "Save failed",
-                Detail = ex.Message,
-                Duration = 5000,
-            });
-        }
-        finally
-        {
-            _savingRisk = false;
-        }
+        TransportMode.Reverse     => "Polling agent",
+        TransportMode.Direct      => "Direct (listening)",
+        TransportMode.Polling     => "Polling agent",
+        TransportMode.OfflineDrop => "Offline drop",
+        _                          => m.ToString(),
+    };
+
+    private static string HealthClass(TargetStatus s) => s switch
+    {
+        TargetStatus.Online       => "kraken-health--ok",
+        TargetStatus.Offline      => "kraken-health--fail",
+        TargetStatus.ShuttingDown => "kraken-health--warn",
+        _                         => "kraken-health--idle",
+    };
+
+    private static string HealthIcon(TargetStatus s) => s switch
+    {
+        TargetStatus.Online  => "check_circle",
+        TargetStatus.Offline => "error",
+        _                    => "help",
+    };
+
+    private static string HealthTitle(TargetStatus s) => s switch
+    {
+        TargetStatus.Online       => "Healthy",
+        TargetStatus.Offline      => "Offline",
+        TargetStatus.Disabled     => "Disabled",
+        TargetStatus.ShuttingDown => "Shutting down",
+        _                         => "Unknown",
+    };
+
+    private static string Relative(DateTimeOffset ts)
+    {
+        var delta = DateTimeOffset.UtcNow - ts;
+        if (delta < TimeSpan.FromMinutes(1)) { return "just now"; }
+        if (delta < TimeSpan.FromHours(1))   { return $"{(int)delta.TotalMinutes} minutes ago"; }
+        if (delta < TimeSpan.FromDays(1))    { return $"{(int)delta.TotalHours} hours ago"; }
+        return $"{(int)delta.TotalDays} days ago";
     }
-
-    private static BadgeStyle RiskBadge(TargetRiskLevel risk) => risk switch
-    {
-        TargetRiskLevel.Production  => BadgeStyle.Danger,
-        TargetRiskLevel.Staging     => BadgeStyle.Warning,
-        _                           => BadgeStyle.Info,
-    };
-
-    private static BadgeStyle StatusBadge(TargetStatus s) => s switch
-    {
-        TargetStatus.Online       => BadgeStyle.Success,
-        TargetStatus.Offline      => BadgeStyle.Danger,
-        TargetStatus.Disabled     => BadgeStyle.Warning,
-        TargetStatus.ShuttingDown => BadgeStyle.Warning,
-        _                         => BadgeStyle.Light,
-    };
 }

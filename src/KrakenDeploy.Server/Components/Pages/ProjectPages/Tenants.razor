@@ -19,7 +19,7 @@
             <RequirePermission Permission="Permission.ProjectEdit">
                 <RadzenDropDown TValue="Guid?" @bind-Value="_addTenantId"
                                 Data="@AvailableTenants" TextProperty="Name" ValueProperty="Id"
-                                AllowClear="true" AllowFiltering="true"
+                                AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                                 Placeholder="Pick a tenant to connect..."
                                 Style="width: 280px;" />
                 <RadzenButton Icon="add_circle_outline" Text="Connect"

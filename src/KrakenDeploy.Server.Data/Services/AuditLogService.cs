@@ -17,6 +17,22 @@ public sealed class AuditLogService(
     ISpaceContext spaceCtx,
     TimeProvider time) : IAuditLog
 {
+    /// <summary>Audit entries about one subject (newest first, bounded) —
+    /// powers per-entity "Events" tabs (e.g. target detail).</summary>
+    public async Task<List<AuditEntry>> GetForSubjectAsync(
+        string subjectId, int limit = 100, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(subjectId);
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.AuditEntries
+            .AsNoTracking()
+            .Where(e => e.SubjectId == subjectId)
+            .OrderByDescending(e => e.OccurredUtc)
+            .Take(limit)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+    }
+
     public async Task RecordAsync(
         string eventType,
         string? subjectType  = null,

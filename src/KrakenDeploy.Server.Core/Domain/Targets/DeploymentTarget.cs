@@ -1,4 +1,5 @@
 using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Environments;
 using KrakenDeploy.Server.Core.Domain.Tenants;
 
 namespace KrakenDeploy.Server.Core.Domain.Targets;
@@ -41,6 +42,21 @@ public class DeploymentTarget : AuditableEntity, ISpaceScoped
     /// </summary>
     public bool AutoUpdateEnabled { get; set; } = true;
 
-    /// <summary>Tenant tags assigned to this target.</summary>
+    /// <summary>
+    /// Tenants this target is directly associated with — the PRIMARY
+    /// tenant↔target link (Octopus "Associated Tenants"). Tenant-aware
+    /// filtering (e.g. variable scoping) reads THIS relation. Tenant tags
+    /// (<see cref="TenantTags"/>) are auxiliary metadata, not association.
+    /// </summary>
+    public ICollection<Tenant> Tenants { get; set; } = [];
+
+    /// <summary>Environments this target serves (Octopus "Environments").</summary>
+    public ICollection<DeploymentEnvironment> Environments { get; set; } = [];
+
+    /// <summary>
+    /// Tenant tags assigned to this target — auxiliary tenant-defined
+    /// metadata (e.g. which app modules to install), NOT the tenant
+    /// association itself (see <see cref="Tenants"/>).
+    /// </summary>
     public ICollection<TenantTag> TenantTags { get; set; } = [];
 }

@@ -61,6 +61,18 @@ public class DeploymentTargetConfiguration : IEntityTypeConfiguration<Deployment
             .HasConversion(new JsonbValueConverter<OfflineDropConfig>());
 #pragma warning restore CS8620
 
+        // Direct tenant association (Octopus "Associated Tenants") — the
+        // primary tenant↔target link. Distinct from target_tenant_tags,
+        // which carries auxiliary tag metadata.
+        builder.HasMany(x => x.Tenants)
+            .WithMany()
+            .UsingEntity(j => j.ToTable("target_tenants"));
+
+        // Environments this target serves.
+        builder.HasMany(x => x.Environments)
+            .WithMany()
+            .UsingEntity(j => j.ToTable("target_environments"));
+
         builder.Property(x => x.CreatedUtc).IsRequired();
     }
 }

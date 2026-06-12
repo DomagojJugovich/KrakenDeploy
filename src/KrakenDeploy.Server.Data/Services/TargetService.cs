@@ -5,6 +5,94 @@ namespace KrakenDeploy.Server.Data.Services;
 
 public class TargetService(IDbContextFactory<KrakenDbContext> dbFactory)
 {
+    /// <summary>
+    /// The target with its direct associations (tenants + environments)
+    /// loaded — for the target Settings page. Keep <see cref="GetAsync"/>
+    /// association-free so <see cref="UpdateAsync"/>'s detached
+    /// <c>db.Update</c> never drags join rows into a foreign context.
+    /// </summary>
+    public async Task<DeploymentTarget?> GetWithAssociationsAsync(
+        Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.DeploymentTargets
+            .AsNoTracking()
+            .Include(t => t.Tenants)
+            .Include(t => t.Environments)
+            .FirstOrDefaultAsync(t => t.Id == id, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Persists the target Settings form in one transaction: display name,
+    /// roles, risk level, and the direct tenant / environment associations
+    /// (collections are replaced to match the given id sets).
+    /// </summary>
+    public async Task SaveSettingsAsync(
+        Guid id,
+        string name,
+        List<string> roles,
+        TargetRiskLevel riskLevel,
+        IReadOnlyCollection<Guid> environmentIds,
+        IReadOnlyCollection<Guid> tenantIds,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var target = await db.DeploymentTargets
+            .Include(t => t.Tenants)
+            .Include(t => t.Environments)
+            .FirstOrDefaultAsync(t => t.Id == id, ct)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Target {id} not found.");
+
+        target.Name = name.Trim();
+        target.Roles = roles;
+        target.RiskLevel = riskLevel;
+
+        var envs = await db.Environments
+            .Where(e => environmentIds.Contains(e.Id))
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        target.Environments.Clear();
+        foreach (var env in envs)
+        {
+            target.Environments.Add(env);
+        }
+
+        var tenants = await db.Tenants
+            .Where(t => tenantIds.Contains(t.Id))
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        target.Tenants.Clear();
+        foreach (var tenant in tenants)
+        {
+            target.Tenants.Add(tenant);
+        }
+
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Which tenants each target is DIRECTLY associated with (the
+    /// "Associated Tenants" relation, not tenant tags): target id → tenant
+    /// ids. Targets with no association are absent. Powers tenant-aware
+    /// target filtering (e.g. the variable scope editor).
+    /// </summary>
+    public async Task<Dictionary<Guid, HashSet<Guid>>> GetTenantAssociationMapAsync(
+        CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var pairs = await db.DeploymentTargets
+            .SelectMany(t => t.Tenants.Select(tn => new { TargetId = t.Id, TenantId = tn.Id }))
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        return pairs
+            .GroupBy(p => p.TargetId)
+            .ToDictionary(g => g.Key, g => g.Select(p => p.TenantId).ToHashSet());
+    }
+
     public async Task<List<DeploymentTarget>> GetAllAsync(CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);

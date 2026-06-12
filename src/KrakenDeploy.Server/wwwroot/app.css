@@ -1289,6 +1289,86 @@ a.kraken-matrix-celllink:hover { background: var(--surface-2); }
 .kraken-matrix-cell-version { font-family: var(--mono); font-weight: 600; font-size: 13px; color: var(--text); }
 .kraken-matrix-cell-time { font-size: 12px; color: var(--text-3); margin-top: 2px; }
 
+/* ── Entity detail layout (target detail): left sub-nav + content ── */
+.kraken-detail-layout {
+    display: grid;
+    grid-template-columns: 200px minmax(0, 1fr);
+    gap: 22px;
+    align-items: start;
+}
+.kraken-subnav {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    position: sticky;
+    top: 12px;
+}
+.kraken-subnav button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--text-2);
+    font-size: 13.5px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+}
+.kraken-subnav button:hover { color: var(--text); background: var(--surface-2); }
+.kraken-subnav button.active {
+    color: var(--coral);
+    background: var(--coral-soft);
+    border-color: var(--coral-line);
+}
+.kraken-subnav button .rzi { font-size: 16px; }
+.kraken-subnav .ok-dot { color: var(--ok); font-size: 15px; margin-left: auto; }
+
+/* Octopus-style definition rows inside a settings card */
+.kraken-def {
+    display: grid;
+    grid-template-columns: 220px minmax(0, 1fr);
+    gap: 16px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--border);
+    align-items: start;
+}
+.kraken-def:last-child { border-bottom: 0; }
+.kraken-def-label { font-weight: 600; font-size: 13.5px; color: var(--text); padding-top: 6px; }
+.kraken-def-sub { font-size: 12px; color: var(--text-3); font-weight: 400; margin-top: 2px; }
+.kraken-def-value { min-width: 0; }
+.kraken-def-section {
+    padding: 10px 0 4px;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-3);
+}
+
+/* Connectivity health banner */
+.kraken-health {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+    border-radius: var(--radius);
+    border: 1px solid var(--c, var(--idle));
+    border-left-width: 4px;
+    background: var(--cs, var(--idle-soft));
+    margin-bottom: 16px;
+}
+.kraken-health .rzi { font-size: 22px; color: var(--c, var(--idle)); }
+.kraken-health-title { font-weight: 700; color: var(--c, var(--idle)); }
+.kraken-health-sub { font-size: 12.5px; color: var(--text-2); margin-top: 2px; }
+.kraken-health--ok   { --c: var(--ok);      --cs: var(--ok-soft); }
+.kraken-health--fail { --c: var(--fail);    --cs: var(--fail-soft); }
+.kraken-health--idle { --c: var(--idle);    --cs: var(--idle-soft); }
+.kraken-health--warn { --c: var(--queue);   --cs: var(--queue-soft); }
+
 /* Back-link above detail pages ("← All releases") */
 a.kraken-back-link {
     display: inline-flex;

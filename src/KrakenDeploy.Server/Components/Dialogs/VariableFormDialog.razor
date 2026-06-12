@@ -129,7 +129,7 @@
                         <RadzenLabel Text="Target Roles" />
                         <RadzenDropDown TValue="IEnumerable<string>" @bind-Value="_model.Roles"
                                         Data="@_availableRoles" Multiple="true" Chips="true"
-                                        AllowClear="true" AllowFiltering="true"
+                                        AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                                         Placeholder="(any role)" Style="width:100%" />
                         <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
                             Variable applies only to targets whose roles overlap this list.

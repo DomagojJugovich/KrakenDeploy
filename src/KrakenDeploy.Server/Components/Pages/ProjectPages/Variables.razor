@@ -349,38 +349,45 @@
                 <RadzenLabel Text="Environments" />
                 <RadzenDropDown TValue="IEnumerable<Guid>" @bind-Value="_popEnvIds"
                                 Data="@_environments" TextProperty="Name" ValueProperty="Id"
-                                Multiple="true" AllowClear="true" AllowFiltering="true"
+                                Multiple="true" AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                                 Chips="true" Placeholder="(any environment)"
                                 Style="width: 100%;" />
             </div>
             <div>
                 <RadzenLabel Text="Tenants" />
-                <RadzenDropDown TValue="IEnumerable<Guid>" @bind-Value="_popTenantIds"
+                <RadzenDropDown TValue="IEnumerable<Guid>" Value="@_popTenantIds"
+                                ValueChanged="@OnPopTenantsChanged"
                                 Data="@_tenants" TextProperty="Name" ValueProperty="Id"
-                                Multiple="true" AllowClear="true" AllowFiltering="true"
+                                Multiple="true" AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                                 Chips="true" Placeholder="(any tenant)"
                                 Style="width: 100%;" />
             </div>
             <div>
                 <RadzenLabel Text="Targets" />
                 <RadzenDropDown TValue="IEnumerable<Guid>" @bind-Value="_popTargetIds"
-                                Data="@_targets" TextProperty="Name" ValueProperty="Id"
-                                Multiple="true" AllowClear="true" AllowFiltering="true"
+                                Data="@PopTargetOptions" TextProperty="Name" ValueProperty="Id"
+                                Multiple="true" AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                                 Chips="true" Placeholder="(any target)"
                                 Style="width: 100%;" />
+                @if (CountOf(_popTenantIds) > 0)
+                {
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                        Showing only targets tagged for the selected tenant(s).
+                    </RadzenText>
+                }
             </div>
             <div>
                 <RadzenLabel Text="Channel" />
                 <RadzenDropDown TValue="Guid?" @bind-Value="_popChannelId"
                                 Data="@_channels" TextProperty="Name" ValueProperty="Id"
-                                AllowClear="true" AllowFiltering="true"
+                                AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                                 Placeholder="(any channel)"
                                 Style="width: 100%;" />
             </div>
             <div>
                 <RadzenLabel Text="Step" />
                 <RadzenDropDown TValue="string" @bind-Value="_popStepName"
-                                Data="@_projectStepNames" AllowClear="true" AllowFiltering="true"
+                                Data="@_projectStepNames" AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                                 Placeholder="(any step)"
                                 Style="width: 100%;" />
             </div>
@@ -388,7 +395,7 @@
                 <RadzenLabel Text="Target Roles" />
                 <RadzenDropDown TValue="IEnumerable<string>" @bind-Value="_popRoles"
                                 Data="@_availableRoles"
-                                Multiple="true" AllowClear="true" AllowFiltering="true"
+                                Multiple="true" AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                                 Chips="true" Placeholder="(any role)"
                                 Style="width: 100%;" />
             </div>
@@ -428,6 +435,7 @@
     private List<DeploymentEnvironment> _environments = [];
     private List<Tenant> _tenants = [];
     private List<DeploymentTarget> _targets = [];
+    private Dictionary<Guid, HashSet<Guid>> _targetTenantMap = [];
     private List<Channel> _channels = [];
     private List<string> _projectStepNames = [];
     private Dictionary<Guid, string> _envNames = [];
@@ -493,6 +501,7 @@
 
             _targets = await TargetSvc.GetAllAsync();
             _targetNames = _targets.ToDictionary(t => t.Id, t => t.Name);
+            _targetTenantMap = await TargetSvc.GetTenantAssociationMapAsync();
 
             _channels = await ChannelSvc.GetForProjectAsync(_project.Id);
 
@@ -531,6 +540,35 @@
             if (entity is not null) entities.Add(entity);
         }
         _variables = entities;
+    }
+
+    /// <summary>
+    /// Targets offered in the scope popup. With tenants selected, only
+    /// targets directly ASSOCIATED with one of those tenants are shown
+    /// (a target with no tenant association drops out too).
+    /// </summary>
+    private IEnumerable<DeploymentTarget> PopTargetOptions
+    {
+        get
+        {
+            var tenantIds = _popTenantIds.ToHashSet();
+            if (tenantIds.Count == 0)
+            {
+                return _targets;
+            }
+            return _targets.Where(t =>
+                _targetTenantMap.TryGetValue(t.Id, out var serves)
+                && serves.Overlaps(tenantIds));
+        }
+    }
+
+    /// <summary>Tenant selection changed → drop selected targets that no
+    /// longer serve the selection, so a hidden option can't stay selected.</summary>
+    private void OnPopTenantsChanged(IEnumerable<Guid> tenantIds)
+    {
+        _popTenantIds = tenantIds;
+        var allowed = PopTargetOptions.Select(t => t.Id).ToHashSet();
+        _popTargetIds = _popTargetIds.Where(allowed.Contains).ToList();
     }
 
     private string EnvName(Guid id) =>

@@ -95,7 +95,7 @@
                 @if (!all)
                 {
                     <RadzenDropDown TValue="IEnumerable<Guid>" Multiple="true" Chips="true"
-                                    AllowClear="true" AllowFiltering="true"
+                                    AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                                     Placeholder="Select…" Data="@options"
                                     TextProperty="Name" ValueProperty="Id"
                                     Value="@selected" ValueChanged="@setSelected"

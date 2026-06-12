@@ -40,7 +40,7 @@
                         <RadzenLabel Text="Add a library variable set" />
                         <RadzenDropDown TValue="Guid?" @bind-Value="_selectedSetId"
                                         Data="@_available" TextProperty="Name" ValueProperty="Id"
-                                        AllowClear="true" AllowFiltering="true"
+                                        AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                                         Placeholder="@(_available.Count == 0 ? "No more sets available" : "Select a set…")"
                                         Disabled="@(_available.Count == 0)"
                                         Style="width:100%;" />
