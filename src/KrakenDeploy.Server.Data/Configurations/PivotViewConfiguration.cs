@@ -18,6 +18,6 @@ public sealed class PivotViewConfiguration : IEntityTypeConfiguration<PivotView>
         builder.Property(v => v.Name).IsRequired().HasMaxLength(120);
         builder.Property(v => v.Definition).IsRequired();
 
-        builder.HasIndex(v => new { v.UserId, v.Name }).IsUnique();
+        builder.HasIndex(v => new { v.SpaceId, v.UserId, v.Name }).IsUnique();
     }
 }

@@ -17,6 +17,6 @@ public sealed class ProjectDashboardViewConfiguration : IEntityTypeConfiguration
 
         builder.Property(v => v.Definition).IsRequired();
 
-        builder.HasIndex(v => v.UserId).IsUnique();
+        builder.HasIndex(v => new { v.SpaceId, v.UserId }).IsUnique();
     }
 }

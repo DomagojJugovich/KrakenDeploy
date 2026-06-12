@@ -7,10 +7,13 @@ namespace KrakenDeploy.Server.Core.Domain.Analytics;
 /// which fields sit in rows / columns / values and with which aggregate
 /// functions. The layout is stored as JSON (<see cref="Definition"/>) so the
 /// schema doesn't change every time the analytics UI grows a knob — the
-/// shape is owned by the UI layer (PivotLayout record).
+/// shape is owned by the UI layer (PivotLayout record). Space-scoped because
+/// the layout references the space's facts; also private to its owning user.
 /// </summary>
-public class PivotView : AuditableEntity
+public class PivotView : AuditableEntity, ISpaceScoped
 {
+    public Guid SpaceId { get; set; }
+
     /// <summary>Owner. Views are private to the user who saved them.</summary>
     public Guid UserId { get; set; }
 

@@ -9,8 +9,10 @@ namespace KrakenDeploy.Server.Core.Domain.Projects;
 /// stored as JSON (<see cref="Definition"/>) so the schema doesn't churn as the
 /// filter UI grows — the shape is owned by the UI layer (ProjectDashboardFilter).
 /// </summary>
-public class ProjectDashboardView : AuditableEntity
+public class ProjectDashboardView : AuditableEntity, ISpaceScoped
 {
+    public Guid SpaceId { get; set; }
+
     /// <summary>Owner. The saved view is private to this user.</summary>
     public Guid UserId { get; set; }
 
