@@ -1,0 +1,72 @@
+@using KrakenDeploy.Server.Data.Services
+@using Radzen
+
+@*
+    Pure render of a PivotLayout. Radzen's own field picker is OFF
+    (AllowFieldsPicking="false") because its UpdateFieldsFromSelected discards a
+    value's chosen aggregate function whenever the value set changes (upstream
+    bug). Instead the dashboard owns the layout via its own controls and rebuilds
+    this grid (RenderToken bump) on every change — so the layout is the single
+    source of truth and the grid can never desync. ShouldRender() re-renders only
+    when RenderToken changes, so incidental parent re-renders are ignored.
+*@
+
+<RadzenPivotDataGrid @ref="_pivot" @key="@RenderToken" TItem="DeploymentFact" Data="@Facts"
+                     AllowDrillDown="true" AllowFieldsPicking="false"
+                     AllowSorting="true" AllowFiltering="true"
+                     ShowRowsTotals="true" ShowColumnsTotals="true"
+                     GridLines="DataGridGridLines.Horizontal">
+    <Columns>
+        @foreach (var c in Layout.Columns)
+        {
+            <RadzenPivotColumn TItem="DeploymentFact" Property="@c" Title="@PivotFields.Title(c)" />
+        }
+    </Columns>
+    <Rows>
+        @foreach (var r in Layout.Rows)
+        {
+            <RadzenPivotRow TItem="DeploymentFact" Property="@r" Title="@PivotFields.Title(r)" />
+        }
+    </Rows>
+    <Aggregates>
+        @foreach (var v in Layout.Values)
+        {
+            @if (v.Property == PivotFields.CountProperty)
+            {
+                <RadzenPivotAggregate TItem="DeploymentFact" Property="@v.Property"
+                                      Title="Deployments" Aggregate="AggregateFunction.Count">
+                    <RowTotalTemplate Context="cell">
+                        <a class="primary-link" @onclick="@(() => OnDrill.InvokeAsync(cell.View))"
+                           @onclick:stopPropagation="true">@cell.Value</a>
+                    </RowTotalTemplate>
+                </RadzenPivotAggregate>
+            }
+            else
+            {
+                <RadzenPivotAggregate TItem="DeploymentFact" Property="@v.Property"
+                                      Title="@PivotFields.MeasureTitle(v)" Aggregate="@v.Function"
+                                      FormatString="@PivotFields.MeasureFormat(v)" />
+            }
+        }
+    </Aggregates>
+</RadzenPivotDataGrid>
+
+@code {
+    [Parameter] public IReadOnlyList<DeploymentFact> Facts { get; set; } = [];
+    [Parameter] public PivotLayout Layout { get; set; } = PivotFields.Default();
+
+    /// <summary>Changes only when the parent deliberately rebuilds the pivot
+    /// (range change / applied view). Drives both the @key remount and the
+    /// render gate.</summary>
+    [Parameter] public string RenderToken { get; set; } = "";
+
+    /// <summary>Invoked with the underlying rows when a Count cell total is clicked.</summary>
+    [Parameter] public EventCallback<IQueryable<DeploymentFact>> OnDrill { get; set; }
+
+    private RadzenPivotDataGrid<DeploymentFact>? _pivot;
+    private string? _rendered;
+
+    protected override bool ShouldRender() => _rendered != RenderToken;
+
+    protected override void OnAfterRender(bool firstRender) => _rendered = RenderToken;
+}

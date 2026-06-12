@@ -206,6 +206,67 @@ public sealed class DashboardService(
         return new ReleaseMatrix(rows, environments);
     }
 
+    /// <summary>
+    /// Flat per-deployment fact rows for the dashboard analytics pivot —
+    /// star-schema grain: one row per deployment, dimensions denormalized to
+    /// display strings, measures summable (Count / IsFailure / DurationSeconds)
+    /// so any client-side re-aggregation stays correct. Bounded by
+    /// <paramref name="fromUtc"/> and <paramref name="maxRows"/> (newest first).
+    /// </summary>
+    public async Task<IReadOnlyList<DeploymentFact>> GetDeploymentFactsAsync(
+        DateTimeOffset fromUtc, int maxRows = 10_000, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        var rows = await db.Deployments
+            .AsNoTracking()
+            .Where(d => d.CreatedUtc >= fromUtc)
+            .OrderByDescending(d => d.CreatedUtc)
+            .Take(maxRows)
+            .Select(d => new
+            {
+                d.Id,
+                Project = d.Release.Project.Name,
+                Tenant = d.Tenant != null ? d.Tenant.Name : null,
+                Environment = d.Environment.Name,
+                Release = d.Release.Version,
+                Channel = d.Release.Channel != null ? d.Release.Channel.Name : null,
+                Target = d.Target != null ? d.Target.Name : null,
+                d.Status,
+                d.CreatedUtc,
+                d.StartedUtc,
+                d.CompletedUtc,
+            })
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        return rows.Select(d =>
+        {
+            var when = (d.StartedUtc ?? d.CreatedUtc).ToLocalTime();
+            var duration = d.CompletedUtc is { } end && d.StartedUtc is { } start
+                ? (end - start).TotalSeconds
+                : 0d;
+
+            return new DeploymentFact(
+                d.Id,
+                d.Project,
+                d.Tenant ?? "—",
+                d.Environment,
+                d.Release,
+                d.Channel ?? "Default",
+                d.Target ?? "—",
+                d.Status.ToString(),
+                when,
+                Day: when.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture),
+                Week: string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                    $"{System.Globalization.ISOWeek.GetYear(when.DateTime)}-W{System.Globalization.ISOWeek.GetWeekOfYear(when.DateTime):00}"),
+                Month: when.ToString("yyyy-MM", System.Globalization.CultureInfo.InvariantCulture),
+                DurationSeconds: duration,
+                IsFailure: d.Status == DeploymentStatus.Failed ? 1 : 0,
+                IsSuccess: d.Status is DeploymentStatus.Succeeded or DeploymentStatus.SucceededWithWarnings ? 1 : 0);
+        }).ToList();
+    }
+
     private static IQueryable<Deployment> WithNav(KrakenDbContext db) =>
         db.Deployments
             .AsNoTracking()
@@ -213,6 +274,24 @@ public sealed class DashboardService(
             .Include(d => d.Environment)
             .Include(d => d.Target);
 }
+
+/// <summary>One deployment, flattened for pivoting (dimensions + summable measures).</summary>
+public sealed record DeploymentFact(
+    Guid DeploymentId,
+    string Project,
+    string Tenant,
+    string Environment,
+    string Release,
+    string Channel,
+    string Target,
+    string Status,
+    DateTimeOffset When,
+    string Day,
+    string Week,
+    string Month,
+    double DurationSeconds,
+    int IsFailure,
+    int IsSuccess);
 
 /// <summary>Release × environment matrix for a project Overview page.</summary>
 public sealed record ReleaseMatrix(
