@@ -213,9 +213,51 @@ else
                     </span>
                 </div>
 
+                @* Layout controls — our own (Radzen's field picker is off): the
+                   layout is the single source of truth, edits rebuild the pivot. *@
+                <div class="kraken-pivot-controls">
+                    <div class="kpc-field">
+                        <label>Rows</label>
+                        <RadzenDropDown TValue="IEnumerable<string>" Multiple="true" Chips="true" AllowClear="true"
+                                        Data="@PivotFields.Dimensions" TextProperty="Title" ValueProperty="Property"
+                                        Value="@_layout.Rows" Change="@(v => SetAxis(isRows: true, (IEnumerable<string>?)v))"
+                                        Placeholder="(none)" Style="width: 100%;" />
+                    </div>
+                    <div class="kpc-field">
+                        <label>Columns</label>
+                        <RadzenDropDown TValue="IEnumerable<string>" Multiple="true" Chips="true" AllowClear="true"
+                                        Data="@PivotFields.Dimensions" TextProperty="Title" ValueProperty="Property"
+                                        Value="@_layout.Columns" Change="@(v => SetAxis(isRows: false, (IEnumerable<string>?)v))"
+                                        Placeholder="(none)" Style="width: 100%;" />
+                    </div>
+                    <div class="kpc-field">
+                        <label>Values</label>
+                        <RadzenDropDown TValue="IEnumerable<string>" Multiple="true" Chips="true" AllowClear="true"
+                                        Data="@PivotFields.Catalog" TextProperty="Title" ValueProperty="Property"
+                                        Value="@_layout.Values.Select(v => v.Property)" Change="@(v => SetValues((IEnumerable<string>?)v))"
+                                        Placeholder="(none)" Style="width: 100%;" />
+                        <div class="kpc-fns">
+                            @foreach (var v in _layout.Values)
+                            {
+                                var prop = v.Property;
+                                <div class="kpc-fn">
+                                    <span class="kpc-fn-name">@PivotFields.Title(prop)</span>
+                                    <RadzenDropDown TValue="AggregateFunction" Data="@PivotFields.FunctionsFor(prop)"
+                                                    Value="@v.Function" Change="@(f => SetValueFunction(prop, (AggregateFunction)f))"
+                                                    Disabled="@(PivotFields.FunctionsFor(prop).Count == 1)" />
+                                </div>
+                            }
+                        </div>
+                    </div>
+                </div>
+
                 @if (_factsLoading)
                 {
                     <RadzenProgressBarCircular ShowValue="false" Mode="ProgressBarMode.Indeterminate" Size="ProgressBarCircularSize.Small" />
+                }
+                else if (_layout.Values.Count == 0)
+                {
+                    <div class="kr-empty">Add at least one value to see the pivot.</div>
                 }
                 else
                 {
@@ -341,6 +383,38 @@ else
         await LoadAnalyticsAsync();
     }
 
+    // ── Layout controls (our own — Radzen field picker is off) ───────────
+
+    private void SetAxis(bool isRows, IEnumerable<string>? props)
+    {
+        var list = props?.ToList() ?? [];
+        _layout = isRows ? _layout with { Rows = list } : _layout with { Columns = list };
+        BumpPivot();
+    }
+
+    private void SetValues(IEnumerable<string>? props)
+    {
+        var selected = props?.ToList() ?? [];
+        // Keep the function of values that stay; default-init newly added ones;
+        // preserve the user's ordering of the multiselect.
+        var values = selected.Select(p =>
+            _layout.Values.FirstOrDefault(v => v.Property == p)
+            ?? new PivotMeasure(p, PivotFields.DefaultFunction(p))).ToList();
+        _layout = _layout with { Values = values };
+        BumpPivot();
+    }
+
+    private void SetValueFunction(string property, AggregateFunction fn)
+    {
+        _layout = _layout with
+        {
+            Values = _layout.Values
+                .Select(v => v.Property == property ? v with { Function = fn } : v)
+                .ToList(),
+        };
+        BumpPivot();
+    }
+
     private async Task SaveViewAsync()
     {
         if (_userId is not { } userId)
@@ -359,15 +433,14 @@ else
             return;
         }
 
-        var layout = _pivot?.ReadLiveLayout() ?? _layout;
-        if (layout.Values.Count == 0)
+        if (_layout.Values.Count == 0)
         {
             Notifications.Notify(NotificationSeverity.Warning, "Nothing to save",
                 "Add at least one value to the pivot first.", 4000);
             return;
         }
 
-        var saved = await PivotViewSvc.UpsertAsync(userId, name, JsonSerializer.Serialize(layout, LayoutJson));
+        var saved = await PivotViewSvc.UpsertAsync(userId, name, JsonSerializer.Serialize(_layout, LayoutJson));
         _views = await PivotViewSvc.GetForUserAsync(userId);
         _selectedViewId = saved.Id;
         Notifications.Notify(NotificationSeverity.Success, "View saved", $"'{name}' was saved.", 3000);

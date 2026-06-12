@@ -2,17 +2,17 @@
 @using Radzen
 
 @*
-    Isolates the RadzenPivotDataGrid from the rest of the dashboard. The pivot's
-    declarative field set is re-imposed on every render of its parent, which
-    would clobber the user's live field-picker changes (e.g. switching a value
-    to "Last" reverts to "Count" the next time Home re-renders for an unrelated
-    reason like opening the drill dialog). ShouldRender() therefore re-renders
-    ONLY when RenderToken changes — i.e. when the parent deliberately rebuilds
-    the pivot (new facts / applied view), never for incidental re-renders.
+    Pure render of a PivotLayout. Radzen's own field picker is OFF
+    (AllowFieldsPicking="false") because its UpdateFieldsFromSelected discards a
+    value's chosen aggregate function whenever the value set changes (upstream
+    bug). Instead the dashboard owns the layout via its own controls and rebuilds
+    this grid (RenderToken bump) on every change — so the layout is the single
+    source of truth and the grid can never desync. ShouldRender() re-renders only
+    when RenderToken changes, so incidental parent re-renders are ignored.
 *@
 
 <RadzenPivotDataGrid @ref="_pivot" @key="@RenderToken" TItem="DeploymentFact" Data="@Facts"
-                     AllowDrillDown="true" AllowFieldsPicking="true"
+                     AllowDrillDown="true" AllowFieldsPicking="false"
                      AllowSorting="true" AllowFiltering="true"
                      ShowRowsTotals="true" ShowColumnsTotals="true"
                      GridLines="DataGridGridLines.Horizontal">
@@ -48,16 +48,6 @@
                                       FormatString="@PivotFields.MeasureFormat(v)" />
             }
         }
-        @* Remaining fields, pre-declared (unselected) so the picker pool is
-           complete and every pickable field already exists in
-           allPivotAggregates — picking one then routes through Radzen's normal
-           path instead of the fallback that recreates it with a default
-           function (the "chip says Last, cells show Count" desync). *@
-        @foreach (var f in PivotFields.Spare(Layout))
-        {
-            <RadzenPivotAggregate TItem="DeploymentFact" Property="@f" Title="@PivotFields.Title(f)"
-                                  Selected="false" Aggregate="AggregateFunction.Count" />
-        }
     </Aggregates>
 </RadzenPivotDataGrid>
 
@@ -79,23 +69,4 @@
     protected override bool ShouldRender() => _rendered != RenderToken;
 
     protected override void OnAfterRender(bool firstRender) => _rendered = RenderToken;
-
-    /// <summary>Reads the live picker arrangement back into a serializable
-    /// layout (for "Save view"). RowsCollection/ColumnsCollection/
-    /// AggregatesCollection reflect the field picker's current state.</summary>
-    public PivotLayout ReadLiveLayout()
-    {
-        if (_pivot is null)
-        {
-            return Layout;
-        }
-
-        return new PivotLayout(
-            Rows: _pivot.RowsCollection.Select(r => r.Property).Where(p => p is not null).Cast<string>().ToList(),
-            Columns: _pivot.ColumnsCollection.Select(c => c.Property).Where(p => p is not null).Cast<string>().ToList(),
-            Values: _pivot.AggregatesCollection
-                .Where(a => a.Property is not null)
-                .Select(a => new PivotMeasure(a.Property!, a.Aggregate))
-                .ToList());
-    }
 }

@@ -680,6 +680,34 @@ html, body {
 .kraken-analytics-head:hover { background: var(--surface-2); }
 .rz-pivot-data-grid { font-size: var(--font-body); }
 
+/* Layout controls (our own picker: Rows / Columns / Values + per-value fn) */
+.kraken-pivot-controls {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--gap);
+    margin-bottom: var(--section-gap);
+}
+.kraken-pivot-controls .kpc-field label {
+    display: block;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-3);
+    margin-bottom: 6px;
+}
+.kraken-pivot-controls .rz-dropdown { width: 100%; }
+.kpc-fns { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.kpc-fn {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 4px 6px 4px 10px;
+}
+.kpc-fn-name { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+.kpc-fn .rz-dropdown { width: 130px; min-width: 130px; }
+
 /* ── Compact custom data table (.dg) — for dashboard / matrix-style lists ── */
 .grid-wrap {
     background: var(--surface);

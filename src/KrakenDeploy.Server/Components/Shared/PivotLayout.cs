@@ -16,30 +16,75 @@ public sealed record PivotLayout(
 
 public sealed record PivotMeasure(string Property, AggregateFunction Function);
 
+/// <summary>A selectable field for the layout controls. A real type (not a
+/// value tuple) so Radzen dropdowns can reflect Property/Title at runtime —
+/// tuple element names are compile-time only.</summary>
+public sealed record PivotFieldOption(string Property, string Title);
+
 /// <summary>Catalog of pivotable fields on <see cref="DeploymentFact"/> with
 /// display titles, plus the default layout and per-measure formatting.</summary>
 public static class PivotFields
 {
-    public static readonly (string Property, string Title)[] Catalog =
+    public static readonly IReadOnlyList<PivotFieldOption> Catalog =
     [
-        (nameof(DeploymentFact.Project), "Project"),
-        (nameof(DeploymentFact.Tenant), "Tenant"),
-        (nameof(DeploymentFact.Environment), "Environment"),
-        (nameof(DeploymentFact.Release), "Release"),
-        (nameof(DeploymentFact.Channel), "Channel"),
-        (nameof(DeploymentFact.Target), "Target"),
-        (nameof(DeploymentFact.Status), "Status"),
-        (nameof(DeploymentFact.Day), "Day"),
-        (nameof(DeploymentFact.Week), "Week"),
-        (nameof(DeploymentFact.Month), "Month"),
-        (nameof(DeploymentFact.DeploymentId), "Deployments"),
-        (nameof(DeploymentFact.IsFailure), "Failures"),
-        (nameof(DeploymentFact.IsSuccess), "Successes"),
-        (nameof(DeploymentFact.DurationSeconds), "Duration (s)"),
+        new(nameof(DeploymentFact.Project), "Project"),
+        new(nameof(DeploymentFact.Tenant), "Tenant"),
+        new(nameof(DeploymentFact.Environment), "Environment"),
+        new(nameof(DeploymentFact.Release), "Release"),
+        new(nameof(DeploymentFact.Channel), "Channel"),
+        new(nameof(DeploymentFact.Target), "Target"),
+        new(nameof(DeploymentFact.Status), "Status"),
+        new(nameof(DeploymentFact.Day), "Day"),
+        new(nameof(DeploymentFact.Week), "Week"),
+        new(nameof(DeploymentFact.Month), "Month"),
+        new(nameof(DeploymentFact.DeploymentId), "Deployments"),
+        new(nameof(DeploymentFact.IsFailure), "Failures"),
+        new(nameof(DeploymentFact.IsSuccess), "Successes"),
+        new(nameof(DeploymentFact.DurationSeconds), "Duration (s)"),
     ];
 
     /// <summary>The Count-of-deployments measure — rendered with the drill-through link.</summary>
     public const string CountProperty = nameof(DeploymentFact.DeploymentId);
+
+    /// <summary>Fields offered as Rows / Columns (categorical, not the numeric measures).</summary>
+    public static readonly IReadOnlyList<PivotFieldOption> Dimensions =
+    [
+        new(nameof(DeploymentFact.Project), "Project"),
+        new(nameof(DeploymentFact.Tenant), "Tenant"),
+        new(nameof(DeploymentFact.Environment), "Environment"),
+        new(nameof(DeploymentFact.Release), "Release"),
+        new(nameof(DeploymentFact.Channel), "Channel"),
+        new(nameof(DeploymentFact.Target), "Target"),
+        new(nameof(DeploymentFact.Status), "Status"),
+        new(nameof(DeploymentFact.Day), "Day"),
+        new(nameof(DeploymentFact.Week), "Week"),
+        new(nameof(DeploymentFact.Month), "Month"),
+    ];
+
+    private static readonly string[] NumericFields =
+    [
+        nameof(DeploymentFact.IsFailure),
+        nameof(DeploymentFact.IsSuccess),
+        nameof(DeploymentFact.DurationSeconds),
+    ];
+
+    /// <summary>Aggregate functions valid for a field as a Value: count-of-rows
+    /// for the deployment id, numeric stats for the numeric measures, and
+    /// Count/First/Last for categorical fields (so "Release · Last" works).</summary>
+    public static IReadOnlyList<AggregateFunction> FunctionsFor(string property)
+    {
+        if (property == CountProperty)
+        {
+            return [AggregateFunction.Count];
+        }
+        if (NumericFields.Contains(property))
+        {
+            return [AggregateFunction.Sum, AggregateFunction.Average, AggregateFunction.Min, AggregateFunction.Max, AggregateFunction.Count];
+        }
+        return [AggregateFunction.Count, AggregateFunction.First, AggregateFunction.Last];
+    }
+
+    public static AggregateFunction DefaultFunction(string property) => FunctionsFor(property)[0];
 
     public static PivotLayout Default() => new(
         Rows: [nameof(DeploymentFact.Project), nameof(DeploymentFact.Tenant)],
@@ -52,7 +97,7 @@ public static class PivotFields
         ]);
 
     public static string Title(string property)
-        => Catalog.FirstOrDefault(f => f.Property == property).Title ?? property;
+        => Catalog.FirstOrDefault(f => f.Property == property)?.Title ?? property;
 
     public static string MeasureTitle(PivotMeasure v) => (v.Property, v.Function) switch
     {
@@ -64,9 +109,4 @@ public static class PivotFields
 
     public static string? MeasureFormat(PivotMeasure v)
         => v.Property == nameof(DeploymentFact.DurationSeconds) ? "{0:N0}" : null;
-
-    /// <summary>Catalog properties not already used as a value (declared as
-    /// unselected aggregates so the picker pool is complete).</summary>
-    public static IEnumerable<string> Spare(PivotLayout layout)
-        => Catalog.Select(f => f.Property).Where(p => !layout.Values.Any(v => v.Property == p));
 }
