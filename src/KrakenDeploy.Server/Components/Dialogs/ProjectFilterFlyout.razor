@@ -1,0 +1,127 @@
+@using KrakenDeploy.Server.Data.Services
+@using Radzen
+
+@*
+    Octopus-style "Advanced filters" flyout for the Projects dashboard. Owns a
+    working copy of the filter; the parent persists + applies it on Save. Each
+    axis is "All (default)" or "Only selected" + a multiselect. Dropdown data is
+    a real FilterOption record (Radzen reflects Id/Name at runtime — value
+    tuples don't reflect).
+*@
+
+@if (Visible)
+{
+    <div class="kraken-flyout-backdrop" @onclick="OnClose"></div>
+    <aside class="kraken-flyout" @onclick:stopPropagation="true">
+        <div class="kraken-flyout-head">
+            <h2>Filters</h2>
+            <p>Change and save the default view of the dashboard to display all or only
+               selected project groups, projects, environments or tenants.</p>
+        </div>
+
+        <div class="kraken-flyout-body">
+            @Section("Project Groups", "View all or selected project groups",
+                     _allGroups, v => _allGroups = v, Groups, _groupIds, v => _groupIds = v)
+            @Section("Projects", "View all or selected projects",
+                     _allProjects, v => _allProjects = v, Projects, _projectIds, v => _projectIds = v)
+            @Section("Environments", "View all or selected environments",
+                     _allEnvironments, v => _allEnvironments = v, Environments, _environmentIds, v => _environmentIds = v)
+            @Section("Tenants", "View all or selected tenants",
+                     _allTenants, v => _allTenants = v, Tenants, _tenantIds, v => _tenantIds = v)
+        </div>
+
+        <div class="kraken-flyout-foot">
+            <RadzenButton Text="Reset to all" Icon="restart_alt" Variant="Variant.Text"
+                          ButtonStyle="ButtonStyle.Light" Click="ResetAll" />
+            <div style="margin-left:auto; display:flex; gap:8px;">
+                <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light" Click="OnClose" />
+                <RadzenButton Text="Save" Icon="check" ButtonStyle="ButtonStyle.Primary" Click="SaveAsync" />
+            </div>
+        </div>
+    </aside>
+}
+
+@code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public ProjectDashboardFilter Filter { get; set; } = ProjectDashboardFilter.All;
+    [Parameter] public IReadOnlyList<FilterOption> Groups { get; set; } = [];
+    [Parameter] public IReadOnlyList<FilterOption> Projects { get; set; } = [];
+    [Parameter] public IReadOnlyList<FilterOption> Environments { get; set; } = [];
+    [Parameter] public IReadOnlyList<FilterOption> Tenants { get; set; } = [];
+    [Parameter] public EventCallback<ProjectDashboardFilter> OnSave { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+
+    private bool _allGroups = true, _allProjects = true, _allEnvironments = true, _allTenants = true;
+    private IEnumerable<Guid> _groupIds = [], _projectIds = [], _environmentIds = [], _tenantIds = [];
+    private bool _syncedFor;
+
+    protected override void OnParametersSet()
+    {
+        // Re-seed the working copy each time the flyout is (re)opened.
+        if (Visible && !_syncedFor)
+        {
+            _allGroups = Filter.AllGroups; _groupIds = Filter.GroupIds.ToList();
+            _allProjects = Filter.AllProjects; _projectIds = Filter.ProjectIds.ToList();
+            _allEnvironments = Filter.AllEnvironments; _environmentIds = Filter.EnvironmentIds.ToList();
+            _allTenants = Filter.AllTenants; _tenantIds = Filter.TenantIds.ToList();
+            _syncedFor = true;
+        }
+        else if (!Visible)
+        {
+            _syncedFor = false;
+        }
+    }
+
+    private RenderFragment Section(
+        string title, string sub,
+        bool all, Action<bool> setAll,
+        IReadOnlyList<FilterOption> options,
+        IEnumerable<Guid> selected, Action<IEnumerable<Guid>> setSelected) => __builder =>
+    {
+        <div class="kraken-flyout-section">
+            <div class="kraken-flyout-section-label">
+                <div class="kraken-flyout-section-title">@title</div>
+                <div class="kraken-flyout-section-sub">@sub</div>
+            </div>
+            <div class="kraken-flyout-section-control">
+                <RadzenRadioButtonList TValue="bool" Value="@all"
+                                       ValueChanged="@(v => { setAll(v); StateHasChanged(); })"
+                                       Orientation="Orientation.Vertical">
+                    <Items>
+                        <RadzenRadioButtonListItem Text="All (default)" Value="true" />
+                        <RadzenRadioButtonListItem Text="Only selected" Value="false" />
+                    </Items>
+                </RadzenRadioButtonList>
+                @if (!all)
+                {
+                    <RadzenDropDown TValue="IEnumerable<Guid>" Multiple="true" Chips="true"
+                                    AllowClear="true" AllowFiltering="true"
+                                    Placeholder="Select…" Data="@options"
+                                    TextProperty="Name" ValueProperty="Id"
+                                    Value="@selected" ValueChanged="@setSelected"
+                                    Style="width:100%; margin-top:8px;" />
+                }
+            </div>
+        </div>
+    };
+
+    private void ResetAll()
+    {
+        _allGroups = _allProjects = _allEnvironments = _allTenants = true;
+        _groupIds = _projectIds = _environmentIds = _tenantIds = [];
+    }
+
+    private async Task SaveAsync()
+    {
+        // An axis with "Only selected" but nothing picked is meaningless — treat
+        // it as All so the dashboard never goes inexplicably empty.
+        var filter = new ProjectDashboardFilter(
+            AllGroups: _allGroups || !_groupIds.Any(), _groupIds.ToList(),
+            AllProjects: _allProjects || !_projectIds.Any(), _projectIds.ToList(),
+            AllEnvironments: _allEnvironments || !_environmentIds.Any(), _environmentIds.ToList(),
+            AllTenants: _allTenants || !_tenantIds.Any(), _tenantIds.ToList());
+        await OnSave.InvokeAsync(filter);
+    }
+
+    public sealed record FilterOption(Guid Id, string Name);
+}

@@ -207,6 +207,140 @@ public sealed class DashboardService(
     }
 
     /// <summary>
+    /// Project × environment dashboard (the Projects landing page): one row per
+    /// project, grouped by Project Group, with the latest deployment into each
+    /// environment (release version, status, when) plus a tenant-coverage badge
+    /// — how many of the project's connected tenants are on that current release
+    /// in that environment. Read-only; mirrors Octopus's project dashboard.
+    /// </summary>
+    public async Task<ProjectDashboard> GetProjectDashboardAsync(
+        ProjectDashboardFilter? filter = null, CancellationToken ct = default)
+    {
+        filter ??= ProjectDashboardFilter.All;
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        var envQuery = db.Environments.AsNoTracking().AsQueryable();
+        if (!filter.AllEnvironments)
+        {
+            envQuery = envQuery.Where(e => filter.EnvironmentIds.Contains(e.Id));
+        }
+        var environments = await envQuery
+            .OrderBy(e => e.SortOrder).ThenBy(e => e.Name)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        var projectQuery = db.Projects.AsNoTracking().AsQueryable();
+        if (!filter.AllGroups)
+        {
+            projectQuery = projectQuery.Where(p =>
+                p.ProjectGroupId != null && filter.GroupIds.Contains(p.ProjectGroupId.Value));
+        }
+        if (!filter.AllProjects)
+        {
+            projectQuery = projectQuery.Where(p => filter.ProjectIds.Contains(p.Id));
+        }
+
+        var projects = await projectQuery
+            .Select(p => new
+            {
+                p.Id,
+                p.Name,
+                p.Slug,
+                GroupId = p.ProjectGroupId,
+                GroupName = p.ProjectGroup != null ? p.ProjectGroup.Name : null,
+                GroupSort = p.ProjectGroup != null ? p.ProjectGroup.SortOrder : int.MaxValue,
+                // Denominator of the tenant-coverage badge honours the tenant
+                // filter: when only some tenants are shown, count only those.
+                TenantsConnected = filter.AllTenants
+                    ? p.Tenants.Count
+                    : p.Tenants.Count(t => filter.TenantIds.Contains(t.Id)),
+            })
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        // Minimal projection of the whole deployment history (same scoping the
+        // env-health query already does over all deployments). Latest-per-cell
+        // and tenant coverage are computed in memory below.
+        var depQuery = db.Deployments.AsNoTracking().AsQueryable();
+        if (!filter.AllTenants)
+        {
+            depQuery = depQuery.Where(d => d.TenantId != null && filter.TenantIds.Contains(d.TenantId.Value));
+        }
+        var deps = await depQuery
+            .Select(d => new
+            {
+                d.Id,
+                ProjectId = d.Release.ProjectId,
+                d.EnvironmentId,
+                d.ReleaseId,
+                Version = d.Release.Version,
+                Channel = d.Release.Channel != null ? d.Release.Channel.Name : null,
+                d.TenantId,
+                d.Status,
+                d.CreatedUtc,
+                d.StartedUtc,
+                d.CompletedUtc,
+            })
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        var cellsByProject = deps
+            .GroupBy(d => d.ProjectId)
+            .ToDictionary(
+                pg => pg.Key,
+                pg => pg
+                    .GroupBy(d => d.EnvironmentId)
+                    .ToDictionary(
+                        eg => eg.Key,
+                        eg =>
+                        {
+                            var latest = eg.OrderByDescending(d => d.CreatedUtc).First();
+                            var onRelease = eg
+                                .Where(d => d.ReleaseId == latest.ReleaseId && d.TenantId != null)
+                                .Select(d => d.TenantId!.Value)
+                                .Distinct()
+                                .Count();
+                            return new ProjectDashboardCell(
+                                latest.Id,
+                                latest.Version,
+                                latest.Channel,
+                                latest.Status,
+                                latest.CompletedUtc ?? latest.StartedUtc ?? latest.CreatedUtc,
+                                onRelease);
+                        }));
+
+        var rowsByGroup = projects
+            .OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(p => (p.GroupId, Row: new ProjectDashboardRow(
+                p.Id, p.Name, p.Slug, p.TenantsConnected,
+                cellsByProject.GetValueOrDefault(p.Id) ?? [])))
+            .ToLookup(x => x.GroupId, x => x.Row);
+
+        // Sections come from the groups TABLE (not just groups that happen to
+        // have projects), so a freshly created group shows up empty.
+        var groupQuery = db.ProjectGroups.AsNoTracking().AsQueryable();
+        if (!filter.AllGroups)
+        {
+            groupQuery = groupQuery.Where(g => filter.GroupIds.Contains(g.Id));
+        }
+        var allGroups = await groupQuery
+            .OrderBy(g => g.SortOrder).ThenBy(g => g.Name)
+            .Select(g => new { g.Id, g.Name })
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        var groups = allGroups
+            .Select(g => new ProjectGroupSection(g.Id, g.Name, rowsByGroup[g.Id].ToList()))
+            .ToList();
+        if (rowsByGroup[null].Any())
+        {
+            groups.Add(new ProjectGroupSection(null, "Ungrouped", rowsByGroup[null].ToList()));
+        }
+
+        return new ProjectDashboard(groups, environments);
+    }
+
+    /// <summary>
     /// Flat per-deployment fact rows for the dashboard analytics pivot —
     /// star-schema grain: one row per deployment, dimensions denormalized to
     /// display strings, measures summable (Count / IsFailure / DurationSeconds)
@@ -292,6 +426,52 @@ public sealed record DeploymentFact(
     double DurationSeconds,
     int IsFailure,
     int IsSuccess);
+
+/// <summary>
+/// Per-user filter for the Projects dashboard: show all, or only a selected
+/// subset of project groups / projects / environments / tenants. Serialized to
+/// <c>ProjectDashboardView.Definition</c>; the empty-list + All=true shape is
+/// the unfiltered default.
+/// </summary>
+public sealed record ProjectDashboardFilter(
+    bool AllGroups, IReadOnlyList<Guid> GroupIds,
+    bool AllProjects, IReadOnlyList<Guid> ProjectIds,
+    bool AllEnvironments, IReadOnlyList<Guid> EnvironmentIds,
+    bool AllTenants, IReadOnlyList<Guid> TenantIds)
+{
+    public static ProjectDashboardFilter All { get; } =
+        new(true, [], true, [], true, [], true, []);
+
+    /// <summary>True when any axis is restricted to a subset.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsActive => !AllGroups || !AllProjects || !AllEnvironments || !AllTenants;
+}
+
+/// <summary>Project × environment dashboard (Projects landing page), grouped by Project Group.</summary>
+public sealed record ProjectDashboard(
+    IReadOnlyList<ProjectGroupSection> Groups,
+    IReadOnlyList<DeploymentEnvironment> Environments);
+
+public sealed record ProjectGroupSection(
+    Guid? GroupId,
+    string GroupName,
+    IReadOnlyList<ProjectDashboardRow> Projects);
+
+public sealed record ProjectDashboardRow(
+    Guid ProjectId,
+    string Name,
+    string Slug,
+    int TenantsConnected,
+    IReadOnlyDictionary<Guid, ProjectDashboardCell> Cells);
+
+/// <summary>Latest deployment of a project into one environment, with tenant coverage.</summary>
+public sealed record ProjectDashboardCell(
+    Guid DeploymentId,
+    string ReleaseVersion,
+    string? ChannelName,
+    DeploymentStatus Status,
+    DateTimeOffset When,
+    int TenantsOnRelease);
 
 /// <summary>Release × environment matrix for a project Overview page.</summary>
 public sealed record ReleaseMatrix(

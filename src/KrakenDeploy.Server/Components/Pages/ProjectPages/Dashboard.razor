@@ -88,15 +88,22 @@
                         {
                             <tr>
                                 <td class="kraken-matrix-tenant-cell">
-                                    <div class="kraken-matrix-rel">
+                                    <a class="kraken-matrix-rel kraken-matrix-rel-link"
+                                       href="@($"/projects/{Slug}/releases/{rel.ReleaseId}")">
                                         <RadzenIcon Icon="sell" />
                                         <div>
-                                            <div class="kraken-matrix-rel-version">@rel.Version</div>
+                                            <div class="kraken-matrix-rel-version">
+                                                @rel.Version
+                                                @if (rel.ChannelName is { } ch)
+                                                {
+                                                    <span class="kraken-channel-pill">@ch</span>
+                                                }
+                                            </div>
                                             <div class="kraken-matrix-rel-meta">
-                                                @rel.CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd") · @(rel.ChannelName ?? "Default")
+                                                @rel.CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd")
                                             </div>
                                         </div>
-                                    </div>
+                                    </a>
                                 </td>
                                 @foreach (var env in _releaseMatrix.Environments)
                                 {

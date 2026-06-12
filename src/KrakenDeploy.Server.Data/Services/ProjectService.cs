@@ -36,7 +36,22 @@ public class ProjectService(IDbContextFactory<KrakenDbContext> dbFactory)
             throw new InvalidOperationException($"Slug '{slug}' is already taken.");
         }
 
-        var project = new Project { Name = name, Slug = slug, Description = description };
+        // New projects land in the Space's Default Project Group unless moved
+        // later (matches the documented behaviour). The global space filter
+        // scopes this to the current Space; null only if no default exists.
+        var defaultGroupId = await db.ProjectGroups
+            .Where(g => g.IsDefault)
+            .Select(g => (Guid?)g.Id)
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false);
+
+        var project = new Project
+        {
+            Name = name,
+            Slug = slug,
+            Description = description,
+            ProjectGroupId = defaultGroupId,
+        };
         db.Projects.Add(project);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return project;
@@ -76,6 +91,36 @@ public class ProjectService(IDbContextFactory<KrakenDbContext> dbFactory)
             .OrderBy(g => g.SortOrder).ThenBy(g => g.Name)
             .ToListAsync(ct)
             .ConfigureAwait(false);
+    }
+
+    /// <summary>Creates a new project group at the end of the display order.</summary>
+    public async Task<ProjectGroup> CreateGroupAsync(
+        string name, string slug, string? description, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        ArgumentException.ThrowIfNullOrEmpty(slug);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        if (await db.ProjectGroups.AnyAsync(g => g.Slug == slug, ct).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException($"Slug '{slug}' is already taken.");
+        }
+
+        var sortOrder = (await db.ProjectGroups
+            .MaxAsync(g => (int?)g.SortOrder, ct)
+            .ConfigureAwait(false) ?? -1) + 1;
+
+        var group = new ProjectGroup
+        {
+            Name = name,
+            Slug = slug,
+            Description = description,
+            SortOrder = sortOrder,
+        };
+        db.ProjectGroups.Add(group);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return group;
     }
 
     /// <summary>

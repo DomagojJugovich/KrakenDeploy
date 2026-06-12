@@ -1,5 +1,20 @@
 // Small front-end shims for upstream component quirks. Pure DOM, no Blazor
 // interop — safe to load once on every page.
+
+// Client-side text-file download (project export etc.) — invoked from Blazor
+// via IJSRuntime; avoids a dedicated download endpoint.
+window.krakenDownload = function (fileName, text) {
+    var blob = new Blob([text], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
+};
+
 (function () {
     // ── RadzenPivotDataGrid filter-popup double-toggle ──────────────────────
     // Upstream (RadzenPivotDataGrid.razor, still present in 10.4.x/master)

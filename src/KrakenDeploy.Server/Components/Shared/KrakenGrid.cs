@@ -56,6 +56,15 @@ public class KrakenGrid<TItem> : RadzenDataGrid<TItem>
 
     protected override void OnInitialized()
     {
+        // App-wide default: text filters match case-insensitively. Guarded so
+        // a consumer that explicitly binds the parameter still wins (the
+        // explicit-Default case is indistinguishable from unset — acceptable,
+        // nothing in the app wants case-sensitive filtering).
+        if (FilterCaseSensitivity == FilterCaseSensitivity.Default)
+        {
+            FilterCaseSensitivity = FilterCaseSensitivity.CaseInsensitive;
+        }
+
         if (!string.IsNullOrEmpty(SettingsKey))
         {
             // Unsupplied parameters are never touched by SetParametersAsync,

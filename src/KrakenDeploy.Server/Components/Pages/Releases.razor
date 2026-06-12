@@ -6,31 +6,142 @@
 
 <PageTitle>Releases - KrakenDeploy</PageTitle>
 
-<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">Releases</RadzenText>
+<div class="page-head">
+    <div>
+        <h1 class="page-title">Releases</h1>
+        <p class="page-sub">@_releases.Count release@(_releases.Count == 1 ? "" : "s") @RangeLabel</p>
+    </div>
+</div>
+
+<div class="toolbar">
+    <div class="seg">
+        @foreach (var (key, label) in Ranges)
+        {
+            var k = key;
+            <button class="@(_range == k ? "on" : "")" @onclick="@(() => SetRangeAsync(k))">@label</button>
+        }
+    </div>
+    @if (_range == "custom")
+    {
+        <RadzenDatePicker TValue="DateTime?" Value="@_customFrom" Change="@(d => SetCustomAsync(d, _customTo))"
+                          DateFormat="yyyy-MM-dd" Placeholder="From" Style="width: 150px;" />
+        <RadzenDatePicker TValue="DateTime?" Value="@_customTo" Change="@(d => SetCustomAsync(_customFrom, d))"
+                          DateFormat="yyyy-MM-dd" Placeholder="To (inclusive)" Style="width: 150px;" />
+    }
+</div>
 
 <KrakenGrid SettingsKey="releases" Data="@_releases" TItem="Release"
                 AllowPaging="true" PageSize="25"
                 AllowSorting="true"
+                AllowFiltering="true" FilterMode="FilterMode.Simple"
                 AllowColumnResize="true"
-                EmptyText="No releases yet. Create a project and define a release process in M2.">
+                GridLines="DataGridGridLines.Horizontal"
+                EmptyText="No releases in this range.">
     <Columns>
-        <RadzenDataGridColumn TItem="Release" Property="Version" Title="Version" Width="160px" />
-        <RadzenDataGridColumn TItem="Release" Title="Project" Width="220px"
-                              Sortable="false" Filterable="false">
+        <RadzenDataGridColumn TItem="Release" Property="Version" Title="Version" Width="180px">
             <Template Context="r">
-                @(r.Project?.Name ?? r.ProjectId.ToString())
+                @if (r.Project is not null)
+                {
+                    <a class="primary-link mono" href="@($"/projects/{r.Project.Slug}/releases/{r.Id}")">@r.Version</a>
+                }
+                else
+                {
+                    <span class="mono">@r.Version</span>
+                }
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="Release" Property="Project.Name" Title="Project" Width="240px">
+            <Template Context="r">
+                @if (r.Project is not null)
+                {
+                    <a class="primary-link" href="@($"/projects/{r.Project.Slug}")">@r.Project.Name</a>
+                }
+                else
+                {
+                    @r.ProjectId
+                }
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="Release" Property="Channel.Name" Title="Channel" Width="180px">
+            <Template Context="r">
+                <RadzenBadge Text="@(r.Channel?.Name ?? "Default")"
+                             BadgeStyle="BadgeStyle.Info" IsPill="true" />
             </Template>
         </RadzenDataGridColumn>
         <RadzenDataGridColumn TItem="Release" Property="CreatedUtc" Title="Created"
-                              FormatString="{0:yyyy-MM-dd HH:mm}" />
+                              Width="180px" FormatString="{0:yyyy-MM-dd HH:mm}"
+                              Filterable="false" />
+        <RadzenDataGridColumn TItem="Release" Property="ReleaseNotes" Title="Notes" Sortable="false">
+            <Template Context="r">
+                @if (string.IsNullOrWhiteSpace(r.ReleaseNotes))
+                {
+                    <span class="cell-muted">—</span>
+                }
+                else
+                {
+                    <span title="@r.ReleaseNotes">@(r.ReleaseNotes.Length > 100 ? r.ReleaseNotes[..100] + "…" : r.ReleaseNotes)</span>
+                }
+            </Template>
+        </RadzenDataGridColumn>
     </Columns>
 </KrakenGrid>
 
 @code {
-    private List<Release> _releases = [];
+    private static readonly (string Key, string Label)[] Ranges =
+    [
+        ("30", "30 days"),
+        ("60", "60 days"),
+        ("365", "Year"),
+        ("all", "All"),
+        ("custom", "Custom"),
+    ];
 
-    protected override async Task OnInitializedAsync()
+    private List<Release> _releases = [];
+    private string _range = "all";
+    private DateTime? _customFrom;
+    private DateTime? _customTo;
+
+    private string RangeLabel => _range switch
     {
-        _releases = await ReleaseSvc.GetAllAsync();
+        "30" or "60" => $"in the last {_range} days",
+        "365" => "in the last year",
+        "custom" => "in the selected range",
+        _ => "in this space",
+    };
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        DateTimeOffset? from = _range switch
+        {
+            "30" or "60" or "365" => DateTimeOffset.UtcNow.AddDays(-int.Parse(_range, System.Globalization.CultureInfo.InvariantCulture)),
+            "custom" when _customFrom is { } f => new DateTimeOffset(f.Date, TimeSpan.Zero),
+            _ => null,
+        };
+        // "To" is inclusive for the operator → query with < next midnight.
+        DateTimeOffset? to = _range == "custom" && _customTo is { } t
+            ? new DateTimeOffset(t.Date.AddDays(1), TimeSpan.Zero)
+            : null;
+
+        _releases = await ReleaseSvc.GetAllAsync(from, to);
+    }
+
+    private async Task SetRangeAsync(string range)
+    {
+        if (_range == range) return;
+        _range = range;
+        // Custom waits for dates; everything else reloads immediately.
+        if (range != "custom" || _customFrom is not null || _customTo is not null)
+        {
+            await LoadAsync();
+        }
+    }
+
+    private async Task SetCustomAsync(DateTime? from, DateTime? to)
+    {
+        _customFrom = from;
+        _customTo = to;
+        await LoadAsync();
     }
 }

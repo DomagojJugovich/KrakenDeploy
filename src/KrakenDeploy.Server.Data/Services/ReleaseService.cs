@@ -279,11 +279,28 @@ public class ReleaseService(
             .ConfigureAwait(false);
     }
 
-    public async Task<List<Release>> GetAllAsync(CancellationToken ct = default)
+    /// <summary>
+    /// All releases in the space (newest first), optionally bounded to a
+    /// created-date window — powers the global Releases page's range bar.
+    /// </summary>
+    public async Task<List<Release>> GetAllAsync(
+        DateTimeOffset? fromUtc = null, DateTimeOffset? toUtc = null,
+        CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        return await db.Releases
+        var q = db.Releases
             .Include(r => r.Project)
+            .Include(r => r.Channel)
+            .AsQueryable();
+        if (fromUtc is { } from)
+        {
+            q = q.Where(r => r.CreatedUtc >= from);
+        }
+        if (toUtc is { } to)
+        {
+            q = q.Where(r => r.CreatedUtc < to);
+        }
+        return await q
             .OrderByDescending(r => r.CreatedUtc)
             .ToListAsync(ct)
             .ConfigureAwait(false);
@@ -294,6 +311,7 @@ public class ReleaseService(
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         return await db.Releases
             .Include(r => r.Project)
+            .Include(r => r.Channel)
             .FirstOrDefaultAsync(r => r.Id == id, ct);
     }
 

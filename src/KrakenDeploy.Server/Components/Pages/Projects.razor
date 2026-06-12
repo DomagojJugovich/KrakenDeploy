@@ -2,7 +2,17 @@
 @rendermode InteractiveServer
 @attribute [Authorize]
 
+@using System.Text.Json
+@using System.Security.Claims
+@using KrakenDeploy.Server.Core.Domain.Deployments
 @inject ProjectService ProjectSvc
+@inject DashboardService DashboardSvc
+@inject EnvironmentService EnvironmentSvc
+@inject TenantService TenantSvc
+@inject ProjectDashboardViewService ViewSvc
+@inject AuthenticationStateProvider AuthState
+@inject ProjectTransferService TransferSvc
+@inject IJSRuntime JS
 @inject DialogService Dialog
 @inject NotificationService Notifications
 @inject UiActionGuard Guard
@@ -12,9 +22,19 @@
 <div class="page-head">
     <div>
         <h1 class="page-title">Projects</h1>
-        <p class="page-sub">@_projects.Count project@(_projects.Count == 1 ? "" : "s") in this space</p>
+        <p class="page-sub">@_total project@(_total == 1 ? "" : "s") in this space</p>
     </div>
     <div class="page-head-actions">
+        <RequirePermission Permission="Permission.ProjectGroupCreate">
+            <RadzenButton Icon="create_new_folder" Text="Add group"
+                          ButtonStyle="ButtonStyle.Light"
+                          Click="OpenCreateGroupDialogAsync" />
+        </RequirePermission>
+        <RequirePermission Permission="Permission.ProjectImport">
+            <RadzenButton Icon="cloud_download" Text="Import project"
+                          ButtonStyle="ButtonStyle.Light"
+                          Click="OpenImportDialogAsync" />
+        </RequirePermission>
         <RequirePermission Permission="Permission.ProjectCreate">
             <RadzenButton Icon="add_circle_outline" Text="New project"
                           ButtonStyle="ButtonStyle.Primary" Variant="Variant.Filled"
@@ -23,53 +43,257 @@
     </div>
 </div>
 
-<KrakenGrid SettingsKey="projects" Data="@_projects" TItem="Project"
-                AllowPaging="true" PageSize="25"
-                AllowSorting="true"
-                AllowColumnResize="true"
-                GridLines="DataGridGridLines.Horizontal"
-                EmptyText="No projects yet. Click 'New project' to get started.">
-    <Columns>
-        <RadzenDataGridColumn TItem="Project" Property="Name" Title="Name" Width="280px">
-            <Template Context="p">
-                <span class="kraken-proj-cell">
-                    <span class="kraken-proj-tile"><RadzenIcon Icon="language" /></span>
-                    <span>
-                        <a class="primary-link" href="@($"/projects/{p.Slug}")">@p.Name</a>
-                        <span class="mono cell-muted" style="display:block; font-size:12px;">@p.Slug</span>
-                    </span>
-                </span>
-            </Template>
-        </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="Project" Property="Description" Title="Description" />
-        <RadzenDataGridColumn TItem="Project" Property="CreatedUtc" Title="Created"
-                              Width="130px" FormatString="{0:yyyy-MM-dd}"
-                              Filterable="false" />
-        <RadzenDataGridColumn TItem="Project" UniqueID="actions" Title="" Width="88px"
-                              Filterable="false" Sortable="false" TextAlign="TextAlign.Right">
-            <Template Context="p">
-                <RequirePermission Permission="Permission.ProjectEdit">
-                    <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
-                                  Size="ButtonSize.ExtraSmall" class="rz-mr-1"
-                                  Click="@(() => OpenEditDialogAsync(p))"
-                                  title="Edit" />
-                </RequirePermission>
-                <RequirePermission Permission="Permission.ProjectDelete">
-                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
-                                  Size="ButtonSize.ExtraSmall"
-                                  Click="@(() => DeleteAsync(p))"
-                                  title="Delete" />
-                </RequirePermission>
-            </Template>
-        </RadzenDataGridColumn>
-    </Columns>
-</KrakenGrid>
+<div class="toolbar">
+    <div class="search" style="min-width: 320px;">
+        <RadzenIcon Icon="search" />
+        <input placeholder="Find projects or project groups…" value="@_search"
+               @oninput="@(e => _search = e.Value?.ToString() ?? string.Empty)" />
+    </div>
+    <RadzenButton Text="Advanced filters" Icon="filter_list" Variant="Variant.Text"
+                  ButtonStyle="@(_filter.IsActive ? ButtonStyle.Primary : ButtonStyle.Light)"
+                  Click="OpenFiltersAsync" />
+    @if (_filter.IsActive)
+    {
+        <RadzenButton Text="Clear filter" Icon="filter_alt_off" Variant="Variant.Text"
+                      ButtonStyle="ButtonStyle.Light" Click="ClearFilterAsync" />
+    }
+</div>
+
+@if (!_loaded)
+{
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading projects…</RadzenText>
+}
+else if (_dashboard is null || _dashboard.Environments.Count == 0)
+{
+    <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+        No environments are defined in this Space. Define environments first so
+        projects have somewhere to deploy.
+    </RadzenAlert>
+}
+else if (_total == 0 && _dashboard.Groups.Count == 0)
+{
+    <div class="kr-card kr-card-pad kr-empty">
+        No projects yet. Click 'New project' to get started.
+    </div>
+}
+else
+{
+    var envs = _dashboard.Environments;
+    var colSpan = envs.Count + 2; // name + envs + actions
+    <div class="kraken-matrix-wrap">
+        <table class="kraken-matrix">
+            <thead>
+                <tr>
+                    <th class="kraken-matrix-th-tenant">Project</th>
+                    @for (var i = 0; i < envs.Count; i++)
+                    {
+                        var env = envs[i];
+                        <th>
+                            <span class="kraken-matrix-envhead @($"env-c{i % 6}")">
+                                <span class="dot"></span>@env.Name
+                            </span>
+                        </th>
+                    }
+                    <th style="width:120px;"></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var group in VisibleGroups)
+                {
+                    <tr class="kraken-matrix-group">
+                        <td colspan="@colSpan">
+                            <span class="kraken-matrix-group-name">@group.GroupName</span>
+                            <span class="kraken-matrix-group-count">@group.Projects.Count</span>
+                        </td>
+                    </tr>
+                    @foreach (var p in VisibleProjects(group))
+                    {
+                        <tr>
+                            <td class="kraken-matrix-tenant-cell">
+                                <span class="kraken-proj-cell">
+                                    <span class="kraken-proj-tile"><RadzenIcon Icon="language" /></span>
+                                    <span>
+                                        <a class="primary-link" href="@($"/projects/{p.Slug}")">@p.Name</a>
+                                        <span class="mono cell-muted" style="display:block; font-size:12px;">@p.Slug</span>
+                                    </span>
+                                </span>
+                            </td>
+                            @foreach (var env in envs)
+                            {
+                                <td class="kraken-matrix-cell">
+                                    @if (p.Cells.TryGetValue(env.Id, out var cell))
+                                    {
+                                        <a class="kraken-matrix-celllink" href="@($"/deployments/{cell.DeploymentId}")">
+                                            <span class="@StatusClass(cell.Status)">
+                                                <RadzenIcon Icon="@StatusIcon(cell.Status)"
+                                                            class="@(cell.Status == DeploymentStatus.Running ? "spin" : null)" />
+                                            </span>
+                                            <div>
+                                                <div class="kraken-matrix-cell-version">
+                                                    @cell.ReleaseVersion
+                                                    @if (cell.ChannelName is { } ch)
+                                                    {
+                                                        <span class="kraken-channel-pill">@ch</span>
+                                                    }
+                                                </div>
+                                                <div class="kraken-matrix-cell-time">
+                                                    @(cell.Status == DeploymentStatus.Running
+                                                        ? "deploying…"
+                                                        : cell.When.ToLocalTime().ToString("dd MMM HH:mm"))
+                                                </div>
+                                            </div>
+                                            @if (p.TenantsConnected > 0)
+                                            {
+                                                <span class="kraken-cell-badge"
+                                                      title="@($"{cell.TenantsOnRelease} of {p.TenantsConnected} tenants on this release")">
+                                                    @cell.TenantsOnRelease/@p.TenantsConnected
+                                                </span>
+                                            }
+                                        </a>
+                                    }
+                                    else
+                                    {
+                                        <span class="kraken-matrix-empty">No Data</span>
+                                    }
+                                </td>
+                            }
+                            <td class="kraken-matrix-cell" style="text-align:right; min-width:0;">
+                                <RequirePermission Permission="Permission.ProjectExport">
+                                    <RadzenButton Icon="file_download" ButtonStyle="ButtonStyle.Light"
+                                                  Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                                                  Click="@(() => ExportAsync(p.ProjectId))"
+                                                  title="Export project (JSON)" />
+                                </RequirePermission>
+                                <RequirePermission Permission="Permission.ProjectEdit">
+                                    <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
+                                                  Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                                                  Click="@(() => OpenEditDialogAsync(p.ProjectId))"
+                                                  title="Edit" />
+                                </RequirePermission>
+                                <RequirePermission Permission="Permission.ProjectDelete">
+                                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                                  Size="ButtonSize.ExtraSmall"
+                                                  Click="@(() => DeleteAsync(p.ProjectId, p.Name))"
+                                                  title="Delete" />
+                                </RequirePermission>
+                            </td>
+                        </tr>
+                    }
+                    @if (group.Projects.Count == 0)
+                    {
+                        <tr>
+                            <td colspan="@colSpan" class="kraken-matrix-cell">
+                                <span class="kraken-matrix-empty">No projects in this group yet.</span>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+    <div class="kraken-matrix-hint">
+        <RadzenIcon Icon="info" />
+        Each cell shows the latest release in that environment; the badge counts tenants on
+        that release. Click a cell to open the deployment, or a project name for its dashboard.
+    </div>
+}
+
+<ProjectFilterFlyout Visible="@_filterOpen" Filter="@_filter"
+                     Groups="@_groupOptions" Projects="@_projectOptions"
+                     Environments="@_envOptions" Tenants="@_tenantOptions"
+                     OnSave="@ApplyFilterAsync" OnClose="@(() => _filterOpen = false)" />
 
 @code {
-    private IReadOnlyList<Project> _projects = [];
+    private ProjectDashboard? _dashboard;
+    private string _search = string.Empty;
+    private bool _loaded;
+    private int _total;
+
+    private ProjectDashboardFilter _filter = ProjectDashboardFilter.All;
+    private bool _filterOpen;
+    private Guid? _userId;
+    private bool _optionsLoaded;
+    private IReadOnlyList<ProjectFilterFlyout.FilterOption> _groupOptions = [];
+    private IReadOnlyList<ProjectFilterFlyout.FilterOption> _projectOptions = [];
+    private IReadOnlyList<ProjectFilterFlyout.FilterOption> _envOptions = [];
+    private IReadOnlyList<ProjectFilterFlyout.FilterOption> _tenantOptions = [];
+
+    private static readonly JsonSerializerOptions FilterJson = new(JsonSerializerDefaults.Web);
 
     protected override async Task OnInitializedAsync()
-        => _projects = await ProjectSvc.GetAllAsync();
+    {
+        var state = await AuthState.GetAuthenticationStateAsync();
+        if (Guid.TryParse(state.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var id))
+        {
+            _userId = id;
+            var saved = await ViewSvc.GetForUserAsync(id);
+            if (saved is not null)
+            {
+                try { _filter = JsonSerializer.Deserialize<ProjectDashboardFilter>(saved.Definition, FilterJson) ?? ProjectDashboardFilter.All; }
+                catch (JsonException) { _filter = ProjectDashboardFilter.All; }
+            }
+        }
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _dashboard = await DashboardSvc.GetProjectDashboardAsync(_filter);
+        _total = _dashboard.Groups.Sum(g => g.Projects.Count);
+        _loaded = true;
+    }
+
+    private async Task OpenFiltersAsync()
+    {
+        if (!_optionsLoaded)
+        {
+            _groupOptions = (await ProjectSvc.GetProjectGroupsAsync()).Select(g => new ProjectFilterFlyout.FilterOption(g.Id, g.Name)).ToArray();
+            _projectOptions = (await ProjectSvc.GetAllAsync()).Select(p => new ProjectFilterFlyout.FilterOption(p.Id, p.Name)).ToArray();
+            _envOptions = (await EnvironmentSvc.GetAllOrderedAsync()).Select(e => new ProjectFilterFlyout.FilterOption(e.Id, e.Name)).ToArray();
+            _tenantOptions = (await TenantSvc.GetAllAsync()).Select(t => new ProjectFilterFlyout.FilterOption(t.Id, t.Name)).ToArray();
+            _optionsLoaded = true;
+        }
+        _filterOpen = true;
+    }
+
+    private async Task ApplyFilterAsync(ProjectDashboardFilter filter)
+    {
+        _filter = filter;
+        _filterOpen = false;
+        if (_userId is { } uid)
+        {
+            if (filter.IsActive)
+                await ViewSvc.UpsertAsync(uid, JsonSerializer.Serialize(filter, FilterJson));
+            else
+                await ViewSvc.ClearAsync(uid);
+        }
+        await LoadAsync();
+    }
+
+    private async Task ClearFilterAsync()
+    {
+        _filter = ProjectDashboardFilter.All;
+        if (_userId is { } uid) await ViewSvc.ClearAsync(uid);
+        await LoadAsync();
+    }
+
+    // While searching, hide groups with no matches; otherwise show every
+    // group — including freshly created empty ones.
+    private IEnumerable<ProjectGroupSection> VisibleGroups =>
+        (_dashboard?.Groups ?? []).Where(g =>
+            _search.Trim().Length == 0 || VisibleProjects(g).Any());
+
+    private IEnumerable<ProjectDashboardRow> VisibleProjects(ProjectGroupSection group)
+    {
+        var q = _search.Trim();
+        if (q.Length == 0) return group.Projects;
+        var groupMatches = group.GroupName.Contains(q, StringComparison.OrdinalIgnoreCase);
+        return groupMatches
+            ? group.Projects
+            : group.Projects.Where(p =>
+                p.Name.Contains(q, StringComparison.OrdinalIgnoreCase)
+                || p.Slug.Contains(q, StringComparison.OrdinalIgnoreCase));
+    }
 
     private async Task OpenCreateDialogAsync()
     {
@@ -78,40 +302,102 @@
             new Dictionary<string, object?>(),
             new DialogOptions { Width = "520px" });
 
+        if (result is true) await LoadAsync();
+    }
+
+    private async Task OpenCreateGroupDialogAsync()
+    {
+        var result = await Dialog.OpenAsync<ProjectGroupFormDialog>(
+            "New Project Group",
+            new Dictionary<string, object?>(),
+            new DialogOptions { Width = "520px" });
+
         if (result is true)
         {
-            _projects = await ProjectSvc.GetAllAsync();
+            _optionsLoaded = false; // group options for the filter flyout changed
+            await LoadAsync();
         }
     }
 
-    private async Task OpenEditDialogAsync(Project project)
+    private async Task OpenImportDialogAsync()
     {
+        var result = await Dialog.OpenAsync<ImportProjectDialog>(
+            "Import project",
+            new Dictionary<string, object?>(),
+            new DialogOptions { Width = "780px", CloseDialogOnOverlayClick = false });
+
+        if (result is true)
+        {
+            _optionsLoaded = false;
+            await LoadAsync();
+        }
+    }
+
+    private async Task ExportAsync(Guid projectId)
+    {
+        if (!await Guard.AllowAsync(Permission.ProjectExport)) return;
+
+        var export = await TransferSvc.ExportAsync(projectId);
+        await JS.InvokeVoidAsync("krakenDownload", export.FileName, export.Json);
+
+        if (export.Warnings.Count > 0)
+        {
+            Notifications.Notify(NotificationSeverity.Warning, "Exported with notes",
+                $"{export.FileName}: {export.Warnings.Count} mapping note(s) — see file for details.", 6000);
+        }
+    }
+
+    private async Task OpenEditDialogAsync(Guid projectId)
+    {
+        var project = await ProjectSvc.GetAsync(projectId);
+        if (project is null) return;
+
         var result = await Dialog.OpenAsync<ProjectFormDialog>(
             "Edit Project",
             new Dictionary<string, object?> { [nameof(ProjectFormDialog.Project)] = project },
             new DialogOptions { Width = "520px" });
 
-        if (result is true)
-        {
-            _projects = await ProjectSvc.GetAllAsync();
-        }
+        if (result is true) await LoadAsync();
     }
 
-    private async Task DeleteAsync(Project project)
+    private async Task DeleteAsync(Guid projectId, string name)
     {
         if (!await Guard.AllowAsync(Permission.ProjectDelete)) return;
 
         var confirmed = await Dialog.Confirm(
-            $"Delete project '{project.Name}'? This cannot be undone.",
+            $"Delete project '{name}'? This cannot be undone.",
             "Confirm Delete",
             new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
 
         if (confirmed == true)
         {
-            await ProjectSvc.DeleteAsync(project.Id);
-            _projects = await ProjectSvc.GetAllAsync();
+            await ProjectSvc.DeleteAsync(projectId);
+            await LoadAsync();
             Notifications.Notify(NotificationSeverity.Success, "Deleted",
-                $"'{project.Name}' was deleted.", 4000);
+                $"'{name}' was deleted.", 4000);
         }
     }
+
+    private static string StatusIcon(DeploymentStatus s) => s switch
+    {
+        DeploymentStatus.Succeeded             => "check",
+        DeploymentStatus.SucceededWithWarnings => "warning_amber",
+        DeploymentStatus.Failed                => "close",
+        DeploymentStatus.Cancelled             => "block",
+        DeploymentStatus.Running               => "autorenew",
+        DeploymentStatus.Queued                => "schedule",
+        DeploymentStatus.PendingOfflineResult  => "cloud_off",
+        _                                       => "help",
+    };
+
+    private static string StatusClass(DeploymentStatus s) => s switch
+    {
+        DeploymentStatus.Succeeded             => "kraken-matrix-status kraken-matrix-status--ok",
+        DeploymentStatus.SucceededWithWarnings => "kraken-matrix-status kraken-matrix-status--warn",
+        DeploymentStatus.Failed                => "kraken-matrix-status kraken-matrix-status--err",
+        DeploymentStatus.Cancelled             => "kraken-matrix-status kraken-matrix-status--cancelled",
+        DeploymentStatus.Running               => "kraken-matrix-status kraken-matrix-status--running",
+        DeploymentStatus.PendingOfflineResult  => "kraken-matrix-status kraken-matrix-status--offline",
+        _                                       => "kraken-matrix-status kraken-matrix-status--pending",
+    };
 }

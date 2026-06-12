@@ -1261,6 +1261,16 @@ table.dg tbody tr.row-accent td:first-child { box-shadow: inset 3px 0 0 var(--c,
     white-space: nowrap;
 }
 .kraken-matrix-rel .rzi { font-size: 18px; color: var(--text-3); }
+/* Release row head as a link → release detail */
+a.kraken-matrix-rel-link {
+    text-decoration: none;
+    color: inherit;
+    border-radius: var(--radius-sm);
+    padding: 4px 6px;
+    margin: -4px -6px;
+}
+a.kraken-matrix-rel-link:hover { background: var(--surface-2); }
+a.kraken-matrix-rel-link:hover .kraken-matrix-rel-version { color: var(--coral); }
 .kraken-matrix-rel-version { font-family: var(--mono); font-weight: 600; font-size: 13px; color: var(--text); }
 .kraken-matrix-rel-meta { font-size: 12px; color: var(--text-3); margin-top: 2px; }
 
@@ -1278,6 +1288,122 @@ a.kraken-matrix-celllink {
 a.kraken-matrix-celllink:hover { background: var(--surface-2); }
 .kraken-matrix-cell-version { font-family: var(--mono); font-weight: 600; font-size: 13px; color: var(--text); }
 .kraken-matrix-cell-time { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+
+/* Back-link above detail pages ("← All releases") */
+a.kraken-back-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--text-3);
+    font-size: 13px;
+    text-decoration: none;
+}
+a.kraken-back-link:hover { color: var(--coral); }
+a.kraken-back-link .rzi { font-size: 16px; }
+
+/* ── Advanced-filters flyout (Projects dashboard) ── */
+.kraken-flyout-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.35);
+    z-index: 1040;
+}
+.kraken-flyout {
+    position: fixed; top: 0; right: 0; bottom: 0;
+    width: min(560px, 92vw);
+    z-index: 1041;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    box-shadow: -8px 0 28px rgba(0, 0, 0, 0.25);
+}
+.kraken-flyout-head {
+    padding: 1.1rem 1.4rem 0.9rem;
+    border-bottom: 1px solid var(--border);
+}
+.kraken-flyout-head h2 { margin: 0 0 0.35rem; font-size: 1.05rem; color: var(--text); }
+.kraken-flyout-head p { margin: 0; font-size: 0.82rem; color: var(--text-3); line-height: 1.4; }
+.kraken-flyout-body { flex: 1; overflow-y: auto; padding: 0.5rem 1.4rem; }
+.kraken-flyout-section {
+    display: grid;
+    grid-template-columns: 1fr 1.1fr;
+    gap: 1rem;
+    padding: 1.1rem 0;
+    border-bottom: 1px solid var(--border);
+}
+.kraken-flyout-section:last-child { border-bottom: 0; }
+.kraken-flyout-section-title { font-weight: 600; font-size: 0.9rem; color: var(--text); }
+.kraken-flyout-section-sub { font-size: 0.78rem; color: var(--text-3); margin-top: 0.2rem; }
+.kraken-flyout-foot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0.9rem 1.4rem;
+    border-top: 1px solid var(--border);
+    background: var(--surface-2);
+}
+
+/* Project-group separator row in the Projects dashboard */
+.kraken-matrix-group td {
+    padding: 0.5rem 0.85rem;
+    background: var(--surface-2);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+}
+.kraken-matrix tbody tr.kraken-matrix-group + tr td { border-top: 0; }
+.kraken-matrix-group-name {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-2);
+}
+.kraken-matrix-group-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 18px;
+    margin-left: 8px;
+    padding: 0 6px;
+    border-radius: 9px;
+    background: var(--surface-3, var(--border));
+    color: var(--text-3);
+    font-size: 0.7rem;
+    font-weight: 700;
+}
+
+/* Channel pill next to a release version in matrix cells */
+.kraken-channel-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 8px;
+    border-radius: 10px;
+    background: var(--run-soft);
+    color: var(--run);
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.5;
+    vertical-align: 1px;
+    white-space: nowrap;
+}
+
+/* Tenant-coverage badge inside a project-dashboard cell ("3/35") */
+.kraken-cell-badge {
+    margin-left: auto;
+    align-self: center;
+    flex-shrink: 0;
+    padding: 1px 7px;
+    border-radius: 9px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text-3);
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.5;
+}
 
 /* Env column header: colour dot + name */
 .kraken-matrix-envhead { display: inline-flex; align-items: center; gap: 7px; }

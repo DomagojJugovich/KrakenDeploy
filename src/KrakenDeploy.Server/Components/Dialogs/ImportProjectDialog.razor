@@ -1,0 +1,201 @@
+@using KrakenDeploy.Server.Data.Services
+@using Microsoft.AspNetCore.Components.Forms
+@inject ProjectService ProjectSvc
+@inject ProcessService ProcessSvc
+@inject DialogService DialogService
+@inject UiActionGuard Guard
+
+<RadzenStack Gap="1rem">
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+        Creates a <strong>new project</strong> from a file. Accepts a
+        <strong>KrakenDeploy project export</strong> (from the Projects page) or a raw
+        <strong>Octopus deploymentprocess</strong> JSON
+        (<code>GET /api/{spaceId}/deploymentprocesses/{processId}</code>) — for the
+        latter, fill in the project name yourself.
+    </RadzenText>
+
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" AlignItems="AlignItems.Center">
+        <InputFile OnChange="@OnFileSelectedAsync" accept=".json,.txt" />
+        @if (!string.IsNullOrEmpty(_fileName))
+        {
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                Loaded <code>@_fileName</code>@(_probe is not null ? _probe.IsKrakenEnvelope ? " — Kraken project export." : " — Octopus deploymentprocess." : ".")
+            </RadzenText>
+        }
+    </RadzenStack>
+
+    <RadzenFormField Text="JSON" Variant="Variant.Outlined" style="width:100%">
+        <RadzenTextArea Value="@_json" ValueChanged="@OnJsonChanged" Rows="8"
+                        Style="width:100%; font-family: var(--rz-mono-font, monospace);"
+                        Placeholder='{ "FormatVersion": 1, "Project": { ... }, "DeploymentProcess": { ... } }' />
+    </RadzenFormField>
+
+    <RadzenRow Gap="1rem">
+        <RadzenColumn Size="6">
+            <RadzenLabel Text="Project name *" />
+            <RadzenTextBox @bind-Value="_name" Change="@OnNameChanged" Style="width:100%" aria-label="Project name" />
+        </RadzenColumn>
+        <RadzenColumn Size="6">
+            <RadzenLabel Text="Slug *" />
+            <RadzenTextBox @bind-Value="_slug" Style="width:100%" aria-label="Slug" />
+        </RadzenColumn>
+    </RadzenRow>
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" Shade="Shade.Lighter" AllowClose="false">@_error</RadzenAlert>
+    }
+
+    @if (_result is not null)
+    {
+        <RadzenCard>
+            <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-2">Import summary</RadzenText>
+            <div class="rz-grid-table" style="grid-template-columns: auto 1fr;">
+                <span class="rz-color-secondary">Project</span><span><a class="primary-link" href="@($"/projects/{_createdSlug}")">@_name</a></span>
+                <span class="rz-color-secondary">Steps</span><span>@_result.Imported imported</span>
+                <span class="rz-color-secondary">Warnings</span><span>@_result.Warnings.Count</span>
+            </div>
+            @if (_result.Warnings.Count > 0)
+            {
+                <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mt-3 rz-mb-1">Warnings</RadzenText>
+                <KrakenGrid SettingsKey="import-project-dialog" AllowColumnResize="true"
+                            Data="@_result.Warnings" TItem="ImportDeploymentProcessWarning"
+                            AllowPaging="false" AllowSorting="false"
+                            Density="Density.Compact">
+                    <Columns>
+                        <RadzenDataGridColumn TItem="ImportDeploymentProcessWarning" Property="StepName" Title="Step">
+                            <Template Context="w"><code>@w.StepName</code></Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="ImportDeploymentProcessWarning" Property="Message" Title="Message" />
+                    </Columns>
+                </KrakenGrid>
+            }
+        </RadzenCard>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End" Gap="0.5rem">
+        <RadzenButton Text="@(_result is null ? "Cancel" : "Close")"
+                      ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => DialogService.Close(_result is not null))" />
+        @if (_result is null)
+        {
+            <RadzenButton Text="Import project" ButtonStyle="ButtonStyle.Primary"
+                          Icon="cloud_download" IsBusy="@_busy" Click="@RunAsync" />
+        }
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    private string _json = string.Empty;
+    private string _fileName = string.Empty;
+    private string _name = string.Empty;
+    private string _slug = string.Empty;
+    private string _error = string.Empty;
+    private string _createdSlug = string.Empty;
+    private string _lastAutoSlug = "";
+    private bool _busy;
+    private ProjectImportProbe? _probe;
+    private ImportDeploymentProcessResult? _result;
+
+    private const long MaxFileSize = 20 * 1024 * 1024; // 20 MB
+
+    private async Task OnFileSelectedAsync(InputFileChangeEventArgs e)
+    {
+        _error = string.Empty;
+        if (e.File is null) return;
+        try
+        {
+            await using var stream = e.File.OpenReadStream(maxAllowedSize: MaxFileSize);
+            using var reader = new StreamReader(stream);
+            OnJsonChanged(await reader.ReadToEndAsync());
+            _fileName = e.File.Name;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to read file: {ex.Message}";
+        }
+    }
+
+    /// <summary>Probe on every JSON change so envelope metadata prefills the form.</summary>
+    private void OnJsonChanged(string value)
+    {
+        _json = value;
+        _probe = null;
+        if (string.IsNullOrWhiteSpace(value)) return;
+
+        try
+        {
+            _probe = ProjectTransferService.Probe(value);
+            if (_probe.IsKrakenEnvelope)
+            {
+                if (string.IsNullOrWhiteSpace(_name) && !string.IsNullOrWhiteSpace(_probe.Name))
+                {
+                    _name = _probe.Name!;
+                }
+                if (string.IsNullOrWhiteSpace(_slug) && !string.IsNullOrWhiteSpace(_probe.Slug))
+                {
+                    _slug = _probe.Slug!;
+                    _lastAutoSlug = _slug;
+                }
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // Not classifiable yet (partial paste) — RunAsync reports properly.
+        }
+    }
+
+    private void OnNameChanged(string? value)
+    {
+        if (value is null) return;
+        if (_slug != _lastAutoSlug) return;
+        _lastAutoSlug = ProjectService.Slugify(value);
+        _slug = _lastAutoSlug;
+    }
+
+    private async Task RunAsync()
+    {
+        _error = string.Empty;
+
+        if (!await Guard.AllowAsync(Permission.ProjectImport)) return;
+
+        if (string.IsNullOrWhiteSpace(_json)) { _error = "Paste or upload the JSON first."; return; }
+        if (string.IsNullOrWhiteSpace(_name) || string.IsNullOrWhiteSpace(_slug))
+        {
+            _error = "Project name and slug are required.";
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            var probe = ProjectTransferService.Probe(_json);
+
+            var project = await ProjectSvc.CreateAsync(
+                _name.Trim(), _slug.Trim(), probe.Description);
+
+            // Envelope names a project group → assign when one matches.
+            if (!string.IsNullOrWhiteSpace(probe.ProjectGroup))
+            {
+                var group = (await ProjectSvc.GetProjectGroupsAsync())
+                    .FirstOrDefault(g => g.Name.Equals(probe.ProjectGroup, StringComparison.OrdinalIgnoreCase));
+                if (group is not null)
+                {
+                    await ProjectSvc.SetLifecycleAndGroupAsync(project.Id, null, group.Id);
+                }
+            }
+
+            _result = await ProcessSvc.ImportDeploymentProcessAsync(
+                project.Id, probe.ProcessJson, replace: true);
+            _createdSlug = project.Slug;
+        }
+        catch (InvalidOperationException ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

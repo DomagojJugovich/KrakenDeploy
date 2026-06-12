@@ -173,6 +173,22 @@ public class DeploymentService(
         return await bounded.ToListAsync(ct).ConfigureAwait(false);
     }
 
+    /// <summary>Every deployment of one release (newest first) — powers the
+    /// release-detail page's deployment history.</summary>
+    public async Task<List<Deployment>> GetForReleaseAsync(
+        Guid releaseId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.Deployments
+            .Include(d => d.Environment)
+            .Include(d => d.Target)
+            .Include(d => d.Tenant)
+            .Where(d => d.ReleaseId == releaseId)
+            .OrderByDescending(d => d.CreatedUtc)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+    }
+
     public async Task<Deployment?> GetAsync(Guid id, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);

@@ -14,6 +14,7 @@
 <RadzenPivotDataGrid @ref="_pivot" @key="@RenderToken" TItem="DeploymentFact" Data="@Facts"
                      AllowDrillDown="true" AllowFieldsPicking="false"
                      AllowSorting="true" AllowFiltering="true"
+                     FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                      ShowRowsTotals="true" ShowColumnsTotals="true"
                      GridLines="DataGridGridLines.Horizontal">
     <Columns>

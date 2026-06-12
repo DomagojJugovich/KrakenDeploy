@@ -1,0 +1,202 @@
+@page "/projects/{Slug}/releases/{ReleaseId:guid}"
+@rendermode InteractiveServer
+@attribute [Authorize]
+
+@using KrakenDeploy.Server.Core.Domain.Deployments
+@using KrakenDeploy.Server.Core.Domain.Releases
+@inject ProjectService ProjectSvc
+@inject ReleaseService ReleaseSvc
+@inject DeploymentService DeploymentSvc
+@inject NotificationService Notifications
+@inject UiActionGuard Guard
+
+<PageTitle>@(_release?.Version ?? "Release") - KrakenDeploy</PageTitle>
+
+<ProjectShell Slug="@Slug">
+    @if (!_loaded)
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            Loading release...
+        </RadzenText>
+    }
+    else if (_release is null || _project is null || _release.ProjectId != _project.Id)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+            Release was not found in project '@Slug'.
+        </RadzenAlert>
+    }
+    else
+    {
+        <div class="toolbar">
+            <RadzenLink Path="@($"/projects/{Slug}/releases")" class="kraken-back-link">
+                <RadzenIcon Icon="arrow_back" /> All releases
+            </RadzenLink>
+        </div>
+
+        <div class="kr-card kr-card-pad rz-mb-4">
+            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                         Gap="1rem" Wrap="FlexWrap.Wrap">
+                <div class="kraken-matrix-rel" style="gap: 12px;">
+                    <RadzenIcon Icon="sell" Style="font-size: 26px;" />
+                    <div>
+                        <div class="kraken-matrix-rel-version" style="font-size: 19px;">@_release.Version</div>
+                        <div class="kraken-matrix-rel-meta">
+                            Created @_release.CreatedUtc.ToLocalTime().ToString("g")
+                        </div>
+                    </div>
+                </div>
+                <RadzenBadge Text="@(_release.Channel?.Name ?? "Default")"
+                             BadgeStyle="BadgeStyle.Info" IsPill="true" />
+                <div style="margin-left:auto; display:flex; gap:18px; color: var(--text-3); font-size: 13px;">
+                    <span title="Process steps frozen into this release">
+                        <RadzenIcon Icon="account_tree" Style="font-size:16px;" />
+                        @_release.ProcessSnapshot.Count step@(_release.ProcessSnapshot.Count == 1 ? "" : "s")
+                    </span>
+                    <span title="@(_release.VariableSnapshotUpdatedUtc is { } ts
+                                     ? $"Variables snapshotted {ts.ToLocalTime():g}"
+                                     : "Pre-snapshot release — variables resolve live at deploy time")">
+                        <RadzenIcon Icon="data_object" Style="font-size:16px;" />
+                        @(_release.VariableSnapshotUpdatedUtc is null
+                            ? "no variable snapshot"
+                            : $"{_release.VariableSnapshot.Count} variable(s) pinned")
+                    </span>
+                </div>
+            </RadzenStack>
+            @if (!string.IsNullOrWhiteSpace(_release.ReleaseNotes))
+            {
+                <div class="rz-mt-3" style="white-space: pre-wrap; color: var(--text-2); font-size: 13.5px;">@_release.ReleaseNotes</div>
+            }
+        </div>
+
+        <div class="section-title">Deployments of this release</div>
+        @if (_deployments.Count == 0)
+        {
+            <div class="kr-card kr-card-pad kr-empty">
+                This release has not been deployed yet.
+            </div>
+        }
+        else
+        {
+            <KrakenGrid SettingsKey="release-deployments" Data="@_deployments" TItem="Deployment"
+                        AllowPaging="true" PageSize="15"
+                        AllowSorting="true" AllowColumnResize="true"
+                        GridLines="DataGridGridLines.Horizontal">
+                <Columns>
+                    <RadzenDataGridColumn TItem="Deployment" Title="Status" Width="150px" Sortable="false">
+                        <Template Context="d"><StatusPill Deployment="d.Status" /></Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="Deployment" Title="Environment" Width="160px" Sortable="false">
+                        <Template Context="d">
+                            <a class="primary-link" href="@($"/deployments/{d.Id}")">@d.Environment.Name</a>
+                        </Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="Deployment" Title="Tenant" Width="180px" Sortable="false">
+                        <Template Context="d">@(d.Tenant?.Name ?? "—")</Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="Deployment" Title="Target" Width="180px" Sortable="false">
+                        <Template Context="d">@(d.Target?.Name ?? "—")</Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="Deployment" Property="CreatedUtc" Title="Started"
+                                          Width="170px" FormatString="{0:g}" />
+                    <RadzenDataGridColumn TItem="Deployment" Title="Duration" Width="110px" Sortable="false">
+                        <Template Context="d">@Duration(d)</Template>
+                    </RadzenDataGridColumn>
+                </Columns>
+            </KrakenGrid>
+        }
+
+        <div class="section-title" style="margin-top: var(--section-gap);">Process snapshot</div>
+        <div class="kr-card">
+            <table class="kraken-matrix">
+                <thead>
+                    <tr>
+                        <th style="width:42px;">#</th>
+                        <th>Step</th>
+                        <th style="width:220px;">Type</th>
+                        <th style="width:220px;">Roles</th>
+                        <th style="width:180px;">Package</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var (step, index, depth) in OrderedSnapshot())
+                    {
+                        <tr>
+                            <td class="kraken-matrix-cell mono cell-muted">@(depth == 0 ? (index + 1).ToString() : "")</td>
+                            <td class="kraken-matrix-cell" style="@(depth > 0 ? "padding-left: 2.2rem;" : null)">
+                                @if (depth > 0)
+                                {
+                                    <RadzenIcon Icon="subdirectory_arrow_right" Style="font-size: 14px; color: var(--text-3);" />
+                                }
+                                @step.Name
+                            </td>
+                            <td class="kraken-matrix-cell mono cell-muted">@step.StepType</td>
+                            <td class="kraken-matrix-cell cell-muted">@(step.TargetRoles.Count > 0 ? string.Join(", ", step.TargetRoles) : "—")</td>
+                            <td class="kraken-matrix-cell mono cell-muted">
+                                @(string.IsNullOrWhiteSpace(step.PackageId) ? "—" : $"{step.PackageId} {step.PackageVersion}".TrimEnd())
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</ProjectShell>
+
+@code {
+    [Parameter] public string Slug { get; set; } = "";
+    [Parameter] public Guid ReleaseId { get; set; }
+
+    private Project? _project;
+    private Release? _release;
+    private List<Deployment> _deployments = [];
+    private bool _loaded;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        try
+        {
+            _project = await ProjectSvc.GetBySlugAsync(Slug);
+            _release = await ReleaseSvc.GetAsync(ReleaseId);
+            if (_project is not null && _release?.ProjectId == _project.Id)
+            {
+                _deployments = await DeploymentSvc.GetForReleaseAsync(ReleaseId);
+            }
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Load failed", ex.Message, 6000);
+        }
+        finally
+        {
+            _loaded = true;
+        }
+    }
+
+    /// <summary>Snapshot steps in display order: roots by SortOrder, children
+    /// indented under their parent (one level — mirrors the process editor).</summary>
+    private IEnumerable<(StepSnapshot Step, int Index, int Depth)> OrderedSnapshot()
+    {
+        if (_release is null) yield break;
+        // Pre-M15 snapshots carry null/Guid.Empty parents — both mean "root".
+        var children = _release.ProcessSnapshot
+            .Where(s => s.ParentStepId is { } p && p != Guid.Empty)
+            .ToLookup(s => s.ParentStepId!.Value);
+        var roots = _release.ProcessSnapshot
+            .Where(s => s.ParentStepId is null || s.ParentStepId == Guid.Empty)
+            .OrderBy(s => s.SortOrder)
+            .ToList();
+        for (var i = 0; i < roots.Count; i++)
+        {
+            yield return (roots[i], i, 0);
+            foreach (var child in children[roots[i].Id].OrderBy(s => s.SortOrder))
+            {
+                yield return (child, i, 1);
+            }
+        }
+    }
+
+    private static string Duration(Deployment d) =>
+        d.CompletedUtc is { } end && d.StartedUtc is { } start
+            ? $"{(end - start).TotalSeconds:N0}s"
+            : d.Status == DeploymentStatus.Running ? "running…" : "—";
+}

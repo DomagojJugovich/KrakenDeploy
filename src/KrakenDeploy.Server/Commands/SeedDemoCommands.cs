@@ -107,6 +107,14 @@ internal static class SeedDemoCommands
         // ── Tenants + project connections + deployment tagging ────────────
         await SeedTenantsAsync(dbFactory, sp.GetRequiredService<TenantService>()).ConfigureAwait(false);
 
+        // ── Backfill: any ungrouped project → Default Project Group ────────
+        await BackfillProjectGroupAsync(dbFactory).ConfigureAwait(false);
+
+        // ── Channels: give two projects a non-default channel and put their
+        //    newest (deployed) releases on it, so channel pills render on the
+        //    Projects / project dashboards ─────────────────────────────────
+        await SeedChannelsAsync(dbFactory, sp.GetRequiredService<ChannelService>()).ConfigureAwait(false);
+
         Console.WriteLine($"Seeded: {targets.Count} targets, {specs.Length} projects/releases, demo deployments, 3 tenants.");
         Console.WriteLine("Open the dashboard / deployments / targets to review. Re-run with --clear to remove.");
         return 0;
@@ -436,6 +444,76 @@ internal static class SeedDemoCommands
             }
         }
         await db2.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Demo channels: "hotfix" on argosy-web and "lts" on billing-service,
+    /// with each project's newest release moved onto the channel. Those
+    /// releases already have deployments (ladder seeding), so the channel
+    /// pill shows up in the Projects matrix immediately. Idempotent.
+    /// </summary>
+    private static async Task SeedChannelsAsync(
+        IDbContextFactory<KrakenDbContext> dbFactory, ChannelService channelSvc)
+    {
+        (string ProjectSlug, string Channel)[] specs =
+            [("argosy-web", "hotfix"), ("billing-service", "lts")];
+
+        foreach (var (slug, channelName) in specs)
+        {
+            await using var db = await dbFactory.CreateDbContextAsync();
+            var project = await db.Projects.AsNoTracking().FirstOrDefaultAsync(p => p.Slug == slug);
+            if (project is null)
+            {
+                continue;
+            }
+
+            var channel = await db.Channels.AsNoTracking()
+                .FirstOrDefaultAsync(c => c.ProjectId == project.Id && c.Name == channelName)
+                ?? await channelSvc.CreateAsync(project.Id, channelName, isDefault: false,
+                    lifecycleId: null, versionRange: null, versionTag: null);
+
+            // Newest release that actually has a deployment → visible pill.
+            var release = await db.Releases
+                .Where(r => r.ProjectId == project.Id && r.ChannelId == null
+                         && db.Deployments.Any(d => d.ReleaseId == r.Id))
+                .OrderByDescending(r => r.CreatedUtc)
+                .FirstOrDefaultAsync();
+            if (release is not null)
+            {
+                db.Releases.Attach(release);
+                release.ChannelId = channel.Id;
+                await db.SaveChangesAsync();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Assigns the Default Project Group to any project left ungrouped (e.g.
+    /// projects created before <see cref="ProjectService.CreateAsync"/> began
+    /// defaulting the group). Idempotent.
+    /// </summary>
+    private static async Task BackfillProjectGroupAsync(IDbContextFactory<KrakenDbContext> dbFactory)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync();
+        var defaultGroupId = await db.ProjectGroups
+            .Where(g => g.IsDefault)
+            .Select(g => (Guid?)g.Id)
+            .FirstOrDefaultAsync();
+        if (defaultGroupId is null)
+        {
+            return;
+        }
+
+        var ungrouped = await db.Projects.Where(p => p.ProjectGroupId == null).ToListAsync();
+        foreach (var p in ungrouped)
+        {
+            p.ProjectGroupId = defaultGroupId;
+        }
+        if (ungrouped.Count > 0)
+        {
+            await db.SaveChangesAsync();
+            Console.WriteLine($"Backfilled {ungrouped.Count} ungrouped project(s) into the Default Project Group.");
+        }
     }
 
     private static DeploymentLogEntry Log(Deployment d, int seq, string msg, string level, DateTimeOffset ts) => new()
