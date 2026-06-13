@@ -1,8 +1,12 @@
+using System.Security.Claims;
 using Grpc.Core;
 using KrakenDeploy.Contracts.Grpc;
+using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.ArtifactStorage;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace KrakenDeploy.Server.Transport;
@@ -20,6 +24,8 @@ namespace KrakenDeploy.Server.Transport;
 [Authorize(AuthenticationSchemes = "AgentJwt")]
 public sealed class GrpcArtifactUploadService(
     ArtifactService artifactService,
+    IDbContextFactory<KrakenDbContext> dbFactory,
+    IHttpContextAccessor httpContextAccessor,
     ILogger<GrpcArtifactUploadService> logger)
     : ArtifactUpload.ArtifactUploadBase
 {
@@ -60,6 +66,30 @@ public sealed class GrpcArtifactUploadService(
             logger.LogInformation(
                 "Receiving artifact '{FileName}' for deployment {DeploymentId} step '{StepName}'.",
                 fileName, deploymentId, stepName);
+
+            // Ownership: the uploading agent may only attach artifacts to a
+            // deployment its OWN authenticated target participates in — the same
+            // trust boundary as the AgentHub log/complete path. Checked BEFORE
+            // buffering the stream so an unauthorized agent can't push bytes.
+            var rawTarget = httpContextAccessor.HttpContext?.User
+                .FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(rawTarget, out var connectionTargetId))
+            {
+                return Fail("Unauthenticated artifact upload.");
+            }
+
+            await using (var db = await dbFactory
+                .CreateDbContextAsync(context.CancellationToken).ConfigureAwait(false))
+            {
+                if (!await AgentDeploymentOwnership.ConnectionOwnsDeploymentAsync(
+                        db, deploymentId, connectionTargetId).ConfigureAwait(false))
+                {
+                    logger.LogWarning(
+                        "Artifact upload rejected: target {Target} is not assigned to deployment {Id}.",
+                        connectionTargetId, deploymentId);
+                    return Fail("Not authorized for this deployment.");
+                }
+            }
 
             // Pipe all chunks through a PipeStream into ArtifactService.
             using var ms = new MemoryStream();

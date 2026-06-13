@@ -201,6 +201,7 @@ public sealed class AgentHub(
     {
         ArgumentNullException.ThrowIfNull(message);
 
+        var connectionTargetId = GetTargetId();
         var timestamp = timeProvider.GetUtcNow();
 
         await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
@@ -217,6 +218,16 @@ public sealed class AgentHub(
 
         if (deployment is not null)
         {
+            if (connectionTargetId is null
+                || !await AgentDeploymentOwnership.ConnectionOwnsDeploymentAsync(
+                    db, deployment, connectionTargetId.Value).ConfigureAwait(false))
+            {
+                logger.LogWarning(
+                    "AppendLog rejected: target {Target} is not assigned to deployment {Id}.",
+                    connectionTargetId, deploymentId);
+                return;
+            }
+
             var seq = deployment.NextLogSequence++;
             db.DeploymentLogEntries.Add(new KrakenDeploy.Server.Core.Domain.Deployments.DeploymentLogEntry
             {
@@ -242,6 +253,14 @@ public sealed class AgentHub(
 
         if (run is not null)
         {
+            if (connectionTargetId is null || run.TargetId != connectionTargetId)
+            {
+                logger.LogWarning(
+                    "AppendLog rejected: target {Target} does not own runbook run {Id}.",
+                    connectionTargetId, deploymentId);
+                return;
+            }
+
             var seq = run.NextLogSequence++;
             db.RunbookRunLogEntries.Add(new KrakenDeploy.Server.Core.Domain.Runbooks.RunbookRunLogEntry
             {
@@ -306,6 +325,16 @@ public sealed class AgentHub(
 
         if (deployment is not null)
         {
+            if (connectionTargetId is null
+                || !await AgentDeploymentOwnership.ConnectionOwnsDeploymentAsync(
+                    db, deployment, connectionTargetId.Value).ConfigureAwait(false))
+            {
+                logger.LogWarning(
+                    "CompleteDeployment rejected: target {Target} is not assigned to deployment {Id}.",
+                    connectionTargetId, deploymentId);
+                return;
+            }
+
             deployment.Status = success
                 ? KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Succeeded
                 : KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Failed;
@@ -339,6 +368,14 @@ public sealed class AgentHub(
 
         if (run is not null)
         {
+            if (connectionTargetId is null || run.TargetId != connectionTargetId)
+            {
+                logger.LogWarning(
+                    "CompleteDeployment rejected: target {Target} does not own runbook run {Id}.",
+                    connectionTargetId, deploymentId);
+                return;
+            }
+
             run.Status = success
                 ? KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Succeeded
                 : KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Failed;
@@ -423,11 +460,11 @@ public sealed class AgentHub(
         // Resolve the deployment's Space directly (IgnoreQueryFilters — the hub
         // has no real Space context) both to confirm it exists and to stamp the
         // output-variable rows so they aren't mis-scoped to the Default Space.
-        var spaceId = await db.Deployments.IgnoreQueryFilters()
+        var deploymentScope = await db.Deployments.IgnoreQueryFilters()
             .Where(d => d.Id == deploymentId)
-            .Select(d => (Guid?)d.SpaceId)
+            .Select(d => new { d.SpaceId, d.TargetId })
             .FirstOrDefaultAsync().ConfigureAwait(false);
-        if (spaceId is null)
+        if (deploymentScope is null)
         {
             // Runbook runs don't currently capture output variables — when they
             // do, route here using a parallel table. Until then, ignore.
@@ -435,6 +472,24 @@ public sealed class AgentHub(
                 "ReportStepCompleted for unknown deployment {Id}; ignored.", deploymentId);
             return;
         }
+
+        // Ownership: only a target assigned to this deployment may persist its
+        // output variables — otherwise a foreign agent could inject outputs that
+        // later steps consume.
+        if (connectionTargetId is null
+            || !(deploymentScope.TargetId == connectionTargetId
+                 || await db.DeploymentTargetAssignments.IgnoreQueryFilters()
+                        .AnyAsync(a => a.DeploymentId == deploymentId
+                                       && a.TargetId == connectionTargetId.Value)
+                        .ConfigureAwait(false)))
+        {
+            logger.LogWarning(
+                "ReportStepCompleted rejected: target {Target} is not assigned to deployment {Id}.",
+                connectionTargetId, deploymentId);
+            return;
+        }
+
+        var spaceId = deploymentScope.SpaceId;
 
         var existing = await db.DeploymentOutputVariables
             .Where(o => o.DeploymentId == deploymentId && o.StepName == stepName)
@@ -453,7 +508,7 @@ public sealed class AgentHub(
                 db.DeploymentOutputVariables.Add(
                     new KrakenDeploy.Server.Core.Domain.Deployments.DeploymentOutputVariable
                     {
-                        SpaceId      = spaceId.Value,
+                        SpaceId      = spaceId,
                         DeploymentId = deploymentId,
                         StepName     = stepName,
                         Name         = name,

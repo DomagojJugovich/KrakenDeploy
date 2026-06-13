@@ -693,8 +693,15 @@ public static class Program
                 DeploymentLogLineRequest req,
                 KrakenDbContext db,
                 TimeProvider timeProvider,
+                HttpContext http,
                 CancellationToken ct) =>
             {
+                var claimTargetId = GetAgentTargetId(http);
+                if (claimTargetId is null)
+                {
+                    return Results.StatusCode(403);
+                }
+
                 var deployment = await db.Deployments.FindAsync(new object[] { id }, ct)
                     .ConfigureAwait(false);
                 if (deployment is null)
@@ -707,6 +714,12 @@ public static class Program
                         return Results.NotFound();
                     }
 
+                    // Ownership: only the run's own target may append its logs.
+                    if (run.TargetId != claimTargetId)
+                    {
+                        return Results.StatusCode(403);
+                    }
+
                     var runEntry = new KrakenDeploy.Server.Core.Domain.Runbooks.RunbookRunLogEntry
                     {
                         RunbookRunId = id,
@@ -717,6 +730,15 @@ public static class Program
                     db.RunbookRunLogEntries.Add(runEntry);
                     await db.SaveChangesAsync(ct).ConfigureAwait(false);
                     return Results.NoContent();
+                }
+
+                // Ownership: only a target assigned to this deployment may append its logs.
+                if (deployment.TargetId != claimTargetId
+                    && !await db.DeploymentTargetAssignments
+                        .AnyAsync(a => a.DeploymentId == id && a.TargetId == claimTargetId.Value, ct)
+                        .ConfigureAwait(false))
+                {
+                    return Results.StatusCode(403);
                 }
 
                 var entry = new KrakenDeploy.Server.Core.Domain.Deployments.DeploymentLogEntry
@@ -739,8 +761,15 @@ public static class Program
                 KrakenDbContext db,
                 TimeProvider timeProvider,
                 TargetStatusPublisher statusPub,
+                HttpContext http,
                 CancellationToken ct) =>
             {
+                var claimTargetId = GetAgentTargetId(http);
+                if (claimTargetId is null)
+                {
+                    return Results.StatusCode(403);
+                }
+
                 var deployment = await db.Deployments.FindAsync(new object[] { id }, ct)
                     .ConfigureAwait(false);
                 if (deployment is null)
@@ -753,12 +782,27 @@ public static class Program
                         return Results.NotFound();
                     }
 
+                    // Ownership: only the run's own target may complete it.
+                    if (run.TargetId != claimTargetId)
+                    {
+                        return Results.StatusCode(403);
+                    }
+
                     run.Status = req.Success
                         ? KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Succeeded
                         : KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Failed;
                     run.CompletedUtc = timeProvider.GetUtcNow();
                     await db.SaveChangesAsync(ct).ConfigureAwait(false);
                     return Results.NoContent();
+                }
+
+                // Ownership: only a target assigned to this deployment may complete it.
+                if (deployment.TargetId != claimTargetId
+                    && !await db.DeploymentTargetAssignments
+                        .AnyAsync(a => a.DeploymentId == id && a.TargetId == claimTargetId.Value, ct)
+                        .ConfigureAwait(false))
+                {
+                    return Results.StatusCode(403);
                 }
 
                 deployment.Status = req.Success
@@ -775,8 +819,18 @@ public static class Program
                 Guid targetId,
                 KrakenDbContext db,
                 VariableService variableSvc,
+                HttpContext http,
                 CancellationToken ct) =>
             {
+                // Ownership: an agent may only poll work for its OWN target. The
+                // route id is untrusted; the authoritative target is the JWT
+                // NameIdentifier claim. A token for target A must not pull target
+                // B's queued plan (which carries decrypted sensitive variables).
+                if (GetAgentTargetId(http) != targetId)
+                {
+                    return Results.StatusCode(403);
+                }
+
                 // Find the next Queued deployment for this target.
                 var deployment = await db.Deployments
                     .Where(d => d.TargetId == targetId
@@ -963,6 +1017,15 @@ public static class Program
         //   GET  /space/switch?id={id}    — for the Blazor SpaceSwitcher
         //                                   (browser nav with full reload so
         //                                    DI scopes pick up the new context)
+        // Resolve the calling agent's authoritative target id from its AgentJwt
+        // NameIdentifier claim. Never trust a target/deployment id taken from the
+        // route or body — an agent must only act on its own target's work.
+        static Guid? GetAgentTargetId(HttpContext http)
+        {
+            var raw = http.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+            return Guid.TryParse(raw, out var id) ? id : null;
+        }
+
         static async Task<IResult> SwitchSpaceAsync(
             Guid spaceId,
             string? returnUrl,
