@@ -438,7 +438,11 @@ public class RunbookService(
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         return await db.RunbookRuns
-            .Where(r => r.RunbookId == runbookId)
+            // RunbookRun isn't ISpaceScoped — scope transitively through the
+            // (space-filtered) Runbooks set so a cross-space runbookId can't
+            // read another Space's runs (same guard as GetAllRunsAsync).
+            .Where(r => r.RunbookId == runbookId
+                     && db.Runbooks.Any(rb => rb.Id == r.RunbookId))
             .Include(r => r.Environment)
             .Include(r => r.Target)
             .OrderByDescending(r => r.CreatedUtc)
@@ -449,6 +453,9 @@ public class RunbookService(
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         return await db.RunbookRuns
+            // Transitive Space scope — a run's GUID from another Space must 404,
+            // not leak the run + its log output (RunbookRun isn't ISpaceScoped).
+            .Where(r => db.Runbooks.Any(rb => rb.Id == r.RunbookId))
             .Include(r => r.Runbook)
             .Include(r => r.Environment)
             .Include(r => r.Target)

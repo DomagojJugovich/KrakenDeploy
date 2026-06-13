@@ -49,12 +49,17 @@ public sealed class ArtifactService(
 
     // ── Query ──────────────────────────────────────────────────────────────────
 
+    // DeploymentArtifact isn't ISpaceScoped — it reaches a Space via its parent
+    // Deployment. Read paths therefore scope transitively through the
+    // (space-filtered) Deployments set, so an artifact/deployment GUID from
+    // another Space can't be read or downloaded across the request-path API.
     public async Task<List<DeploymentArtifact>> GetByDeploymentAsync(
         Guid deploymentId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         return await db.DeploymentArtifacts
-             .Where(a => a.DeploymentId == deploymentId)
+             .Where(a => a.DeploymentId == deploymentId
+                      && db.Deployments.Any(d => d.Id == a.DeploymentId))
              .OrderBy(a => a.StepName).ThenBy(a => a.FileName)
              .ToListAsync(ct);
     }
@@ -62,7 +67,9 @@ public sealed class ArtifactService(
     public async Task<DeploymentArtifact?> GetAsync(Guid artifactId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        return await db.DeploymentArtifacts.FirstOrDefaultAsync(a => a.Id == artifactId, ct);
+        return await db.DeploymentArtifacts
+            .FirstOrDefaultAsync(a => a.Id == artifactId
+                                   && db.Deployments.Any(d => d.Id == a.DeploymentId), ct);
     }
 
     // ── Download ───────────────────────────────────────────────────────────────
@@ -72,7 +79,9 @@ public sealed class ArtifactService(
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var artifact = await db.DeploymentArtifacts
-            .FirstOrDefaultAsync(a => a.Id == artifactId, ct).ConfigureAwait(false)
+            .FirstOrDefaultAsync(a => a.Id == artifactId
+                                   && db.Deployments.Any(d => d.Id == a.DeploymentId), ct)
+            .ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Artifact {artifactId} not found.");
 
         var stream = await store.OpenReadAsync(artifact.StoredPath, ct).ConfigureAwait(false);
