@@ -344,21 +344,20 @@ public class LicenseService : ILicenseGate
         return null;
     }
 
-    private static LicenseClaims ParseClaims(ClaimsPrincipal principal)
+    internal static LicenseClaims ParseClaims(ClaimsPrincipal principal)
     {
         var customerName = principal.FindFirstValue("customer_name") ?? "Unknown";
         var maxTargets = int.Parse(
             principal.FindFirstValue("max_targets") ?? "0", CultureInfo.InvariantCulture);
         var maxUsers = int.Parse(
             principal.FindFirstValue("max_users") ?? "0", CultureInfo.InvariantCulture);
-        var expiresUtc = DateTimeOffset.Parse(
-            principal.FindFirstValue("exp") ?? "0", CultureInfo.InvariantCulture);
-        var issuedUtc = DateTimeOffset.Parse(
-            principal.FindFirstValue("iat") ?? "0", CultureInfo.InvariantCulture);
         var licenseType = Enum.Parse<LicenseType>(
             principal.FindFirstValue("license_type") ?? "Trial");
 
-        // JWT exp/iat are Unix epoch seconds.
+        // JWT exp/iat are Unix epoch seconds — DateTimeOffset.Parse would throw a
+        // FormatException on the integer claim (it expects a date string), which
+        // ValidateLicense's catch-all then turned into "invalid license", failing
+        // every validation closed and blocking all provisioning. Parse as epoch.
         var expDt = DateTimeOffset.UnixEpoch.AddSeconds(
             long.Parse(principal.FindFirstValue("exp") ?? "0", CultureInfo.InvariantCulture));
         var iatDt = DateTimeOffset.UnixEpoch.AddSeconds(

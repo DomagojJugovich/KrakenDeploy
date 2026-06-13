@@ -30,6 +30,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -148,15 +149,44 @@ public static class Program
         var masterKey = builder.Configuration["Encryption:MasterKey"];
         if (string.IsNullOrWhiteSpace(masterKey))
         {
+            if (!builder.Environment.IsDevelopment())
+            {
+                // Fail fast: an ephemeral key would silently make every sensitive
+                // variable encrypted this session permanently undecryptable after
+                // the next restart. Refuse to boot a non-Development host without it.
+                throw new InvalidOperationException(
+                    "Encryption:MasterKey is not configured. Set a base64-encoded 32-byte key " +
+                    "(Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))) via configuration " +
+                    "before starting a non-Development environment.");
+            }
+
             masterKey = Convert.ToBase64String(
                 System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
             Log.Warning(
-                "Encryption:MasterKey is not configured — using an ephemeral key. " +
-                "Sensitive variables encrypted in this session will be unreadable after restart. " +
-                "Set Encryption:MasterKey in appsettings or user-secrets for production.");
+                "Encryption:MasterKey is not configured — using an ephemeral Development key. " +
+                "Sensitive variables encrypted in this session will be unreadable after restart.");
         }
 
         builder.Services.AddSingleton<IEncryptionService>(_ => new AesEncryptionService(masterKey));
+
+        // ── Data Protection ─────────────────────────────────────────────────
+        // Persist the key ring so auth cookies + antiforgery tokens survive
+        // restarts and are shared across an HA pair (point DataProtection:KeyPath
+        // at a shared volume for HA). Without this, ASP.NET Core uses an ephemeral
+        // key ring: every restart logs users out and 400s antiforgery-protected
+        // POSTs, and HA nodes can't read each other's cookies/tokens.
+        var keyRingPath = builder.Configuration["DataProtection:KeyPath"]
+            ?? Path.Combine(builder.Configuration["DataPath"] ?? "data", "dataprotection-keys");
+        var dataProtection = builder.Services.AddDataProtection()
+            .SetApplicationName("KrakenDeploy")
+            .PersistKeysToFileSystem(new DirectoryInfo(keyRingPath));
+        if (OperatingSystem.IsWindows())
+        {
+            // Encrypt the key ring at rest with Windows DPAPI (single host). On a
+            // Linux host or in HA, protect the shared key directory via volume
+            // permissions or configure a certificate-based protector instead.
+            dataProtection.ProtectKeysWithDpapi();
+        }
 
         // ── Authentication ───────────────────────────────────────────────────
         builder.Services.AddAuthentication(IdentityConstants.ApplicationScheme)
