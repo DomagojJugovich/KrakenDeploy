@@ -526,6 +526,20 @@ public class RunbookService(
             return process;
         }
 
+        // The RunbookProcesses query above is Space-filtered (RunbookProcess is
+        // ISpaceScoped), so a cross-Space runbookId returns null and would
+        // otherwise create a process in the CURRENT Space pointing at a Runbook
+        // the caller can't see. Validate the Runbook is visible in this Space
+        // first (db.Runbooks carries the global filter).
+        var runbookExists = await db.Runbooks
+            .AnyAsync(r => r.Id == runbookId, ct)
+            .ConfigureAwait(false);
+
+        if (!runbookExists)
+        {
+            throw new InvalidOperationException($"Runbook {runbookId} not found.");
+        }
+
         process = new RunbookProcess { RunbookId = runbookId };
         db.RunbookProcesses.Add(process);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);

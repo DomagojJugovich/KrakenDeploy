@@ -573,6 +573,21 @@ public class ProcessService(
             return process;
         }
 
+        // The DeploymentProcesses query above is Space-filtered (DeploymentProcess
+        // is ISpaceScoped), so a cross-Space projectId returns null and would
+        // otherwise create a process in the CURRENT Space pointing at a Project
+        // the caller can't see. Validate the Project is visible in this Space
+        // first (db.Projects carries the global filter) — mirrors
+        // VariableService.GetOrCreateSetCoreAsync.
+        var projectExists = await db.Projects
+            .AnyAsync(p => p.Id == projectId, ct)
+            .ConfigureAwait(false);
+
+        if (!projectExists)
+        {
+            throw new InvalidOperationException($"Project {projectId} not found.");
+        }
+
         process = new DeploymentProcess { ProjectId = projectId };
         db.DeploymentProcesses.Add(process);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
