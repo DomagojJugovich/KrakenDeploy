@@ -1,9 +1,11 @@
+using System.Security.Claims;
 using Grpc.Core;
 using KrakenDeploy.Contracts.Grpc;
 using KrakenDeploy.Server.Core.Domain.Packages;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -28,10 +30,17 @@ public sealed class GrpcPackageDeliveryService(
     IDbContextFactory<KrakenDbContext> dbFactory,
     IPackageStore packageStore,
     PackageDeltaService deltaService,
+    IHttpContextAccessor httpContextAccessor,
     ILogger<GrpcPackageDeliveryService> logger)
     : PackageDelivery.PackageDeliveryBase
 {
     private const int ChunkSize = 64 * 1024; // 64 KB
+
+    private Guid? AgentTargetId()
+    {
+        var raw = httpContextAccessor.HttpContext?.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        return Guid.TryParse(raw, out var id) ? id : null;
+    }
 
     public override async Task Download(
         DownloadRequest request,
@@ -42,6 +51,25 @@ public sealed class GrpcPackageDeliveryService(
         var ct = context.CancellationToken;
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // ── Entitlement ───────────────────────────────────────────────────────
+        // An agent may only download a package some deployment dispatched to ITS
+        // target references (primary or referenced). Closes cross-package
+        // exfiltration; checked on PackageId so the delta base version (same id,
+        // resolved below) is covered by the same decision. Denied before the row
+        // lookup so an unentitled caller gets no package-existence oracle.
+        var targetId = AgentTargetId();
+        if (targetId is null
+            || !await AgentPackageEntitlement.TargetMayDownloadPackageAsync(
+                db, targetId.Value, request.PackageId, ct).ConfigureAwait(false))
+        {
+            logger.LogWarning(
+                "Package download denied: target {Target} is not entitled to package {PackageId}.",
+                targetId, request.PackageId);
+            throw new RpcException(new Status(
+                StatusCode.PermissionDenied,
+                "Calling agent is not entitled to this package."));
+        }
 
         // ── Resolve the requested package ─────────────────────────────────────
         var package = await db.Packages

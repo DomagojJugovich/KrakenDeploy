@@ -1,9 +1,11 @@
+using System.Security.Claims;
 using System.Security.Cryptography;
 using Grpc.Core;
 using KrakenDeploy.Contracts.Grpc;
 using KrakenDeploy.Contracts.StepPackages;
 using KrakenDeploy.Server.Data;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -33,10 +35,17 @@ namespace KrakenDeploy.Server.Transport;
 public sealed class GrpcStepPackageDeliveryService(
     IDbContextFactory<KrakenDbContext> dbFactory,
     IConfiguration config,
+    IHttpContextAccessor httpContextAccessor,
     ILogger<GrpcStepPackageDeliveryService> logger)
     : StepPackageDelivery.StepPackageDeliveryBase
 {
     private const int ChunkSize = 64 * 1024; // 64 KB — same as PackageDelivery.
+
+    private Guid? AgentTargetId()
+    {
+        var raw = httpContextAccessor.HttpContext?.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        return Guid.TryParse(raw, out var id) ? id : null;
+    }
 
     public override async Task DownloadStepPackage(
         StepPackageDownloadRequest request,
@@ -46,8 +55,25 @@ public sealed class GrpcStepPackageDeliveryService(
         ArgumentNullException.ThrowIfNull(request);
         var ct = context.CancellationToken;
 
-        // ── Resolve the install row ───────────────────────────────────────────
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // ── Entitlement ───────────────────────────────────────────────────────
+        // An agent may only download a step package some deployment dispatched to
+        // ITS target references (by StepPackageName). Denied before the row lookup.
+        var targetId = AgentTargetId();
+        if (targetId is null
+            || !await AgentPackageEntitlement.TargetMayDownloadStepPackageAsync(
+                db, targetId.Value, request.Name, ct).ConfigureAwait(false))
+        {
+            logger.LogWarning(
+                "Step-package download denied: target {Target} is not entitled to step package {Name}.",
+                targetId, request.Name);
+            throw new RpcException(new Status(
+                StatusCode.PermissionDenied,
+                "Calling agent is not entitled to this step package."));
+        }
+
+        // ── Resolve the install row ───────────────────────────────────────────
         var row = await db.StepPackages
             .FirstOrDefaultAsync(p => p.Name == request.Name && p.Version == request.Version, ct)
             .ConfigureAwait(false)
