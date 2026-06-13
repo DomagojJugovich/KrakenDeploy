@@ -538,14 +538,16 @@ public sealed class DeploymentWorker(
                         droppedTargets.Add(dropped);
                     }
 
-                    // A dropped target — Required-step failure OR agent-offline —
-                    // puts the deployment in a failing state, so subsequent waves
-                    // on the SURVIVORS must run Failure/Always-conditioned
-                    // cleanup/rollback steps. Previously only non-required step
-                    // failures flipped this, so a Required-failure drop silently
-                    // skipped cleanup on the survivors.
-                    if (targetWaveResult.HasFailedNonRequired
-                        || targetWaveResult.DroppedTargets.Count > 0)
+                    // Only a non-required step failure flips the deployment-wide
+                    // hasFailed flag (which skips Condition=Success steps AND runs
+                    // Condition=Failure steps on later waves). A Required-step drop
+                    // deliberately does NOT, so the SURVIVING targets keep running
+                    // their normal steps to completion — the Phase 3 best-effort
+                    // contract (e.g. deploy the rest of an RDS farm when one node
+                    // is out). Running Failure/Always cleanup across all targets on
+                    // any failure ("atomic" mode) is a deliberate, configurable
+                    // behaviour tracked as a separate feature, not forced here.
+                    if (targetWaveResult.HasFailedNonRequired)
                     {
                         hasFailed = true;
                     }

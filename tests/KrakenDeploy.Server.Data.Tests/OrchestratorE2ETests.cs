@@ -83,9 +83,11 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
     public async Task Required_failure_on_one_target_drops_it_and_lets_others_continue()
     {
         // The headline Phase 3 behaviour: a Required step failure on target B
-        // removes B from subsequent waves but A + C complete normally. The
-        // deployment terminates as SucceededWithWarnings (partial success
-        // visible without scraping audit rows).
+        // removes B from subsequent waves but A + C complete normally. Per the
+        // CAT 4 decision, a Required-step failure on ANY target is a hard
+        // failure — the deployment terminates as Failed even though the
+        // survivors completed (required means required). The per-target outcomes
+        // below still show A + C succeeding (drop-and-continue worked).
         await using var harness = new OrchestratorTestHarness(postgres);
         var (deploymentId, targets) = await SeedAsync(harness,
             stepNames: ["smoke", "deploy"],
@@ -99,9 +101,9 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
         await harness.RunDeploymentAsync(deploymentId);
 
         var deployment = await harness.GetDeploymentAsync(deploymentId);
-        deployment.Status.Should().Be(DeploymentStatus.SucceededWithWarnings,
-            because: "B dropped out on a Required step failure but A + C completed cleanly — " +
-                      "partial success terminates as SucceededWithWarnings");
+        deployment.Status.Should().Be(DeploymentStatus.Failed,
+            because: "B dropped out on a Required step failure — a Required failure on any " +
+                      "target terminates the deployment as Failed, even though A + C completed");
 
         var outcomes = await harness.GetOutcomesAsync(deploymentId);
 
@@ -253,7 +255,9 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
         // failure (canary-ish gate). Phase 3 removed that gate — each
         // target's failure drops only that target; batch 2 still runs.
         // This test pins the Phase 3 behaviour (the failing target drops,
-        // the survivors complete).
+        // the survivors complete) AND the CAT 4 labeling: a Required-step
+        // failure makes the deployment terminal status Failed even though the
+        // other three targets succeeded.
         await using var harness = new OrchestratorTestHarness(postgres);
 
         var project = await harness.SeedProjectAsync("rolling-fail-proj");
@@ -275,8 +279,9 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
         await harness.RunDeploymentAsync(deploymentId);
 
         var deployment = await harness.GetDeploymentAsync(deploymentId);
-        deployment.Status.Should().Be(DeploymentStatus.SucceededWithWarnings,
-            because: "a2 dropped, others succeeded — partial success");
+        deployment.Status.Should().Be(DeploymentStatus.Failed,
+            because: "a2 dropped on a Required-step failure — Failed even though the other " +
+                      "three targets succeeded (required means required)");
 
         var outcomes = await harness.GetOutcomesAsync(deploymentId);
         outcomes.Where(o => o.Outcome == StepOutcomeKind.Succeeded)
