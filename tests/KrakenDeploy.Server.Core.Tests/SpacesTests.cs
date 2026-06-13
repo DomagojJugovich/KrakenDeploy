@@ -54,8 +54,12 @@ public sealed class SpacesTests
         // excluded here.
         var excluded = new HashSet<string>(StringComparer.Ordinal)
         {
-            // Children — reach a Space via parent navigation
-            "Variable",
+            // Children still reached only via a Space-scoped parent navigation.
+            // NOTE: DeploymentProcess/DeploymentStep/RunbookProcess/RunbookStep/
+            // Variable/TenantTag were PROMOTED to ISpaceScoped (they were read/
+            // mutated directly by id/FK on the request path → cross-Space IDOR);
+            // the remaining entries below are written on the agent/transport path
+            // and stay transitive pending explicit per-write-site SpaceId stamping.
             "DeploymentLogEntry",
             "DeploymentArtifact",
             "DeploymentOutputVariable",
@@ -69,15 +73,10 @@ public sealed class SpacesTests
             // same reasoning as the other Deployment-keyed aggregates.
             "DeploymentTargetAssignment",
             "LifecyclePhase",
-            "DeploymentProcess",
-            "DeploymentStep",
             "StepSnapshot",
-            "RunbookProcess",
-            "RunbookStep",
             "RunbookRun",
             "RunbookRunLogEntry",
             "StepTemplateParameter",
-            "TenantTag",
             // Space itself — it's the partition, not a member of one
             "Space",
             // Common base classes

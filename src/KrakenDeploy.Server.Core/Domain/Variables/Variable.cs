@@ -14,8 +14,12 @@ namespace KrakenDeploy.Server.Core.Domain.Variables;
 /// a JSON array of strings, e.g. <c>["a","b","c"]</c>.
 /// </para>
 /// </summary>
-public class Variable : AuditableEntity
+public class Variable : AuditableEntity, ISpaceScoped
 {
+    /// <summary>Inherited from the owning VariableSet; stamped on insert and
+    /// backfilled for existing rows so by-id reads/mutations are Space-safe.</summary>
+    public Guid SpaceId { get; set; }
+
     public Guid SetId { get; set; }
     public VariableSet Set { get; set; } = null!;
 

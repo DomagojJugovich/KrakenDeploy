@@ -12,6 +12,8 @@ public class VariableConfiguration : IEntityTypeConfiguration<Variable>
         builder.ToTable("variables");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.Property(x => x.Name).HasMaxLength(200).IsRequired();
 
         // Value: plain string, AES-GCM ciphertext (base64), or JSON array string.

@@ -13,6 +13,8 @@ public class DeploymentStepConfiguration : IEntityTypeConfiguration<DeploymentSt
         builder.ToTable("deployment_steps");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.Property(x => x.Name).HasMaxLength(256).IsRequired();
         builder.Property(x => x.StepType).HasMaxLength(128).IsRequired();
         builder.Property(x => x.SortOrder).IsRequired();

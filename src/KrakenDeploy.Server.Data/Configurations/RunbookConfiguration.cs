@@ -34,6 +34,8 @@ public class RunbookProcessConfiguration : IEntityTypeConfiguration<RunbookProce
         builder.ToTable("runbook_processes");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.HasOne(x => x.Runbook)
             .WithOne(r => r.Process)
             .HasForeignKey<RunbookProcess>(x => x.RunbookId)
@@ -47,6 +49,8 @@ public class RunbookStepConfiguration : IEntityTypeConfiguration<RunbookStep>
     {
         builder.ToTable("runbook_steps");
         builder.HasKey(x => x.Id);
+
+        builder.ConfigureSpaceScope();
 
         builder.Property(x => x.Name).IsRequired().HasMaxLength(200);
         builder.Property(x => x.StepType).IsRequired().HasMaxLength(100);

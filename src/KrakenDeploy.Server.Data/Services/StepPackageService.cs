@@ -274,6 +274,7 @@ public sealed class StepPackageService(
 
         // ── Live process steps (DeploymentStep + RunbookStep) ───────────
         var liveDeploymentSteps = await db.DeploymentSteps
+            .IgnoreQueryFilters() // step packages are platform-wide; usage/upgrade scans span all Spaces
             .AsNoTracking()
             .Where(s => s.StepPackageName == name && s.StepPackageVersion == version)
             .Select(s => new StepPackageUsageReport.LiveStepRef(
@@ -282,6 +283,7 @@ public sealed class StepPackageService(
             .ConfigureAwait(false);
 
         var liveRunbookSteps = await db.RunbookSteps
+            .IgnoreQueryFilters() // step packages are platform-wide; usage/upgrade scans span all Spaces
             .AsNoTracking()
             .Where(s => s.StepPackageName == name && s.StepPackageVersion == version)
             .Select(s => new StepPackageUsageReport.LiveStepRef(
@@ -366,6 +368,7 @@ public sealed class StepPackageService(
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var deploymentRows = await db.DeploymentSteps
+            .IgnoreQueryFilters() // step packages are platform-wide; usage/upgrade scans span all Spaces
             .AsNoTracking()
             .Where(s => s.StepPackageName == packageName && s.StepPackageVersion != null)
             .Select(s => new StepPackageUsage.UsageRow(
@@ -378,6 +381,7 @@ public sealed class StepPackageService(
             .ToListAsync(ct).ConfigureAwait(false);
 
         var runbookRows = await db.RunbookSteps
+            .IgnoreQueryFilters() // step packages are platform-wide; usage/upgrade scans span all Spaces
             .AsNoTracking()
             .Where(s => s.StepPackageName == packageName && s.StepPackageVersion != null)
             .Select(s => new StepPackageUsage.UsageRow(
@@ -392,11 +396,13 @@ public sealed class StepPackageService(
         // Re-query to grab each step's version (Select dropped it because the
         // UsageRow record doesn't carry it — version is the GROUPING key).
         var dpVersions = await db.DeploymentSteps
+            .IgnoreQueryFilters() // step packages are platform-wide; usage/upgrade scans span all Spaces
             .AsNoTracking()
             .Where(s => s.StepPackageName == packageName && s.StepPackageVersion != null)
             .Select(s => new { s.Id, s.StepPackageVersion })
             .ToDictionaryAsync(s => s.Id, s => s.StepPackageVersion!, ct).ConfigureAwait(false);
         var rbVersions = await db.RunbookSteps
+            .IgnoreQueryFilters() // step packages are platform-wide; usage/upgrade scans span all Spaces
             .AsNoTracking()
             .Where(s => s.StepPackageName == packageName && s.StepPackageVersion != null)
             .Select(s => new { s.Id, s.StepPackageVersion })
@@ -459,6 +465,7 @@ public sealed class StepPackageService(
         if (deploymentStepIds.Count > 0)
         {
             var rows = await db.DeploymentSteps
+            .IgnoreQueryFilters() // step packages are platform-wide; usage/upgrade scans span all Spaces
                 .Where(s => deploymentStepIds.Contains(s.Id)
                             && s.StepPackageName == packageName)
                 .ToDictionaryAsync(s => s.Id, ct).ConfigureAwait(false);
@@ -484,6 +491,7 @@ public sealed class StepPackageService(
         if (runbookStepIds.Count > 0)
         {
             var rows = await db.RunbookSteps
+            .IgnoreQueryFilters() // step packages are platform-wide; usage/upgrade scans span all Spaces
                 .Where(s => runbookStepIds.Contains(s.Id)
                             && s.StepPackageName == packageName)
                 .ToDictionaryAsync(s => s.Id, ct).ConfigureAwait(false);

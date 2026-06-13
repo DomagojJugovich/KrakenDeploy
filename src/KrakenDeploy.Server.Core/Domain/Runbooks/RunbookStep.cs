@@ -8,8 +8,13 @@ namespace KrakenDeploy.Server.Core.Domain.Runbooks;
 /// <c>DeploymentStep</c> but is FK'd to a runbook process instead of a
 /// deployment process, keeping runbook steps independently versioned.
 /// </summary>
-public class RunbookStep : Entity, IComposableStep
+public class RunbookStep : Entity, IComposableStep, ISpaceScoped
 {
+    /// <summary>Inherited from the owning process/runbook; stamped on insert and
+    /// backfilled for existing rows so by-stepId reads/mutations are Space-safe.
+    /// Platform-wide scans (step-package usage) must use IgnoreQueryFilters.</summary>
+    public Guid SpaceId { get; set; }
+
     public Guid ProcessId { get; set; }
     public RunbookProcess Process { get; set; } = null!;
 

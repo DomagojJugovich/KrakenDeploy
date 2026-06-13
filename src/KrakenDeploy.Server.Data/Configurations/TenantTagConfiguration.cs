@@ -11,6 +11,8 @@ public class TenantTagConfiguration : IEntityTypeConfiguration<TenantTag>
         builder.ToTable("tenant_tags");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.Property(x => x.Name).IsRequired().HasMaxLength(200);
         builder.Property(x => x.Color).HasMaxLength(20);
 

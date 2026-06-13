@@ -20,8 +20,13 @@ namespace KrakenDeploy.Server.Core.Domain.Processes;
 /// </list>
 /// </para>
 /// </summary>
-public class DeploymentStep : Entity, IComposableStep
+public class DeploymentStep : Entity, IComposableStep, ISpaceScoped
 {
+    /// <summary>Inherited from the owning process/project; stamped on insert and
+    /// backfilled for existing rows so by-stepId reads/mutations are Space-safe.
+    /// Platform-wide scans (step-package usage) must use IgnoreQueryFilters.</summary>
+    public Guid SpaceId { get; set; }
+
     public Guid ProcessId { get; set; }
     public DeploymentProcess Process { get; set; } = null!;
 
