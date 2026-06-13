@@ -14,6 +14,8 @@ public class RunbookRunConfiguration : IEntityTypeConfiguration<RunbookRun>
         builder.ToTable("runbook_runs");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.Property(x => x.Status).IsRequired().HasConversion<int>();
         builder.HasIndex(x => x.Status);
 
@@ -52,6 +54,8 @@ public class RunbookRunLogEntryConfiguration : IEntityTypeConfiguration<RunbookR
     {
         builder.ToTable("runbook_run_log_entries");
         builder.HasKey(x => x.Id);
+
+        builder.ConfigureSpaceScope();
 
         builder.Property(x => x.Level).HasMaxLength(20).IsRequired();
         builder.Property(x => x.Message).IsRequired();

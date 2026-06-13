@@ -17,8 +17,12 @@ namespace KrakenDeploy.Server.Core.Domain.Ai;
 /// Space FK.
 /// </para>
 /// </summary>
-public class AdhocIteration : Entity
+public class AdhocIteration : Entity, ISpaceScoped
 {
+    /// <summary>Inherited from the parent AdhocSession; set explicitly at each
+    /// write site (transport path has no real Space context).</summary>
+    public Guid SpaceId { get; set; }
+
     /// <summary>FK to the owning <see cref="AdhocSession"/>.</summary>
     public Guid SessionId { get; set; }
 

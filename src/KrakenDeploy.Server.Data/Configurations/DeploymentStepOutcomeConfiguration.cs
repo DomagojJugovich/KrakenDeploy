@@ -19,6 +19,8 @@ public sealed class DeploymentStepOutcomeConfiguration
         builder.ToTable("deployment_step_outcomes");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.Property(x => x.StepIndex).IsRequired();
         builder.Property(x => x.StepName).HasMaxLength(256).IsRequired();
         builder.Property(x => x.Outcome).HasConversion<int>().IsRequired();

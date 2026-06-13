@@ -164,7 +164,8 @@ public sealed class DeploymentWorker(
                     deployment.Id, blockingFreeze.Id, blockingFreeze.Name, blockingFreeze.EndUtc);
                 db.DeploymentLogEntries.Add(new DeploymentLogEntry
                 {
-                    DeploymentId = deployment.Id,
+                    SpaceId      = deployment.SpaceId,
+            DeploymentId = deployment.Id,
                     Sequence     = logSeq.Next(),
                     Timestamp    = DateTimeOffset.UtcNow,
                     Level        = "error",
@@ -238,7 +239,8 @@ public sealed class DeploymentWorker(
                     deployment.Id, deployment.Release.Id);
                 db.DeploymentLogEntries.Add(new DeploymentLogEntry
                 {
-                    DeploymentId = deployment.Id,
+                    SpaceId      = deployment.SpaceId,
+            DeploymentId = deployment.Id,
                     Sequence     = logSeq.Next(),
                     Timestamp    = DateTimeOffset.UtcNow,
                     Level        = "error",
@@ -311,7 +313,8 @@ public sealed class DeploymentWorker(
                 };
                 db.DeploymentLogEntries.Add(new DeploymentLogEntry
                 {
-                    DeploymentId = deployment.Id,
+                    SpaceId      = deployment.SpaceId,
+            DeploymentId = deployment.Id,
                     Sequence     = logSeq.Next(),
                     Timestamp    = DateTimeOffset.UtcNow,
                     Level        = w.Kind == DeploymentPlanFlattener.WarningKind.ForEachEmpty
@@ -366,7 +369,8 @@ public sealed class DeploymentWorker(
                     ct: ct).ConfigureAwait(false);
                 db.DeploymentLogEntries.Add(new DeploymentLogEntry
                 {
-                    DeploymentId = deployment.Id,
+                    SpaceId      = deployment.SpaceId,
+            DeploymentId = deployment.Id,
                     Sequence     = logSeq.Next(),
                     Timestamp    = DateTimeOffset.UtcNow,
                     Level        = "error",
@@ -1053,8 +1057,17 @@ public sealed class DeploymentWorker(
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var logDb = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
+        // This short-lived scope has no real Space context (DefaultSpaceId), so
+        // resolve the deployment's Space directly (IgnoreQueryFilters) and stamp
+        // it explicitly — the interceptor would otherwise mis-stamp DefaultSpaceId.
+        var spaceId = await logDb.Deployments.IgnoreQueryFilters()
+            .Where(d => d.Id == deploymentId)
+            .Select(d => d.SpaceId)
+            .FirstAsync(ct)
+            .ConfigureAwait(false);
         logDb.DeploymentLogEntries.Add(new DeploymentLogEntry
         {
+            SpaceId      = spaceId,
             DeploymentId = deploymentId,
             Sequence     = logSeq.Next(),
             Timestamp    = DateTimeOffset.UtcNow,
@@ -1072,6 +1085,7 @@ public sealed class DeploymentWorker(
     {
         db.DeploymentLogEntries.Add(new DeploymentLogEntry
         {
+            SpaceId      = deployment.SpaceId,
             DeploymentId = deployment.Id,
             Sequence     = logSeq.Next(),
             Timestamp    = DateTimeOffset.UtcNow,
@@ -1124,6 +1138,7 @@ public sealed class DeploymentWorker(
     {
         db.DeploymentLogEntries.Add(new DeploymentLogEntry
         {
+            SpaceId      = deployment.SpaceId,
             DeploymentId = deployment.Id,
             Sequence     = logSeq.Next(),
             Timestamp    = DateTimeOffset.UtcNow,
@@ -1310,6 +1325,7 @@ public sealed class DeploymentWorker(
 
         db.DeploymentLogEntries.Add(new DeploymentLogEntry
         {
+            SpaceId      = deployment.SpaceId,
             DeploymentId = deployment.Id,
             Sequence     = logSeq.Next(),
             Timestamp    = DateTimeOffset.UtcNow,
@@ -1717,7 +1733,8 @@ public sealed class DeploymentWorker(
 
             db.DeploymentLogEntries.Add(new DeploymentLogEntry
             {
-                DeploymentId = deployment.Id,
+                SpaceId      = deployment.SpaceId,
+            DeploymentId = deployment.Id,
                 Sequence     = logSeq.Next(),
                 Timestamp    = DateTimeOffset.UtcNow,
                 Level        = "warning",
@@ -1803,8 +1820,16 @@ public sealed class DeploymentWorker(
             return;
         }
 
+        // Worker context has no real Space (DefaultSpaceId); resolve + stamp the
+        // deployment's Space explicitly so the interceptor leaves it alone.
+        var spaceId = await db.Deployments.IgnoreQueryFilters()
+            .Where(d => d.Id == deploymentId)
+            .Select(d => d.SpaceId)
+            .FirstAsync(ct)
+            .ConfigureAwait(false);
         db.DeploymentStepOutcomes.Add(new DeploymentStepOutcome
         {
+            SpaceId      = spaceId,
             DeploymentId = deploymentId,
             StepIndex    = stepIndex,
             StepName     = stepName,
@@ -2202,7 +2227,8 @@ public sealed class DeploymentWorker(
                     ct: ct).ConfigureAwait(false);
                 db.DeploymentLogEntries.Add(new DeploymentLogEntry
                 {
-                    DeploymentId = deployment.Id,
+                    SpaceId      = deployment.SpaceId,
+            DeploymentId = deployment.Id,
                     Sequence     = logSeq.Next(),
                     Timestamp    = DateTimeOffset.UtcNow,
                     Level        = "info",

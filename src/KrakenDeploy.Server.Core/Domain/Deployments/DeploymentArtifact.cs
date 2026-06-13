@@ -11,8 +11,12 @@ namespace KrakenDeploy.Server.Core.Domain.Deployments;
 /// <c>ArtifactUpload.Upload</c> RPC after the step finishes.
 /// </para>
 /// </summary>
-public sealed class DeploymentArtifact : Entity
+public sealed class DeploymentArtifact : Entity, ISpaceScoped
 {
+    /// <summary>Inherited from the parent Deployment; set explicitly in
+    /// ArtifactService.SaveAsync (agent upload path has no real Space context).</summary>
+    public Guid   SpaceId { get; set; }
+
     public Guid   DeploymentId { get; set; }
     public Deployment Deployment { get; set; } = null!;
 

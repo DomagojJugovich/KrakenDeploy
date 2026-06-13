@@ -11,6 +11,8 @@ public sealed class DeploymentArtifactConfiguration : IEntityTypeConfiguration<D
         builder.ToTable("deployment_artifacts");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.Property(x => x.StepName).HasMaxLength(256).IsRequired();
         builder.Property(x => x.FileName).HasMaxLength(512).IsRequired();
         builder.Property(x => x.ContentType).HasMaxLength(128).IsRequired();

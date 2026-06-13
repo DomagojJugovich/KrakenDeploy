@@ -29,8 +29,20 @@ public sealed class ArtifactService(
         var storedPath = await store.SaveAsync(deploymentId, stepName, fileName, content, ct)
             .ConfigureAwait(false);
 
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // Agent-upload path has no real Space context — resolve the parent
+        // deployment's Space directly (IgnoreQueryFilters) and stamp it so the
+        // interceptor doesn't mis-assign the Default Space.
+        var spaceId = await db.Deployments.IgnoreQueryFilters()
+            .Where(d => d.Id == deploymentId)
+            .Select(d => d.SpaceId)
+            .FirstAsync(ct)
+            .ConfigureAwait(false);
+
         var artifact = new DeploymentArtifact
         {
+            SpaceId      = spaceId,
             DeploymentId = deploymentId,
             StepName     = stepName,
             FileName     = fileName,
@@ -40,7 +52,6 @@ public sealed class ArtifactService(
             CollectedUtc = DateTimeOffset.UtcNow,
         };
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         db.DeploymentArtifacts.Add(artifact);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 

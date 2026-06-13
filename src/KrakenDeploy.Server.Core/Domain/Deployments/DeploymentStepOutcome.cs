@@ -34,8 +34,12 @@ namespace KrakenDeploy.Server.Core.Domain.Deployments;
 /// duration without creating duplicates.
 /// </para>
 /// </summary>
-public class DeploymentStepOutcome : Entity
+public class DeploymentStepOutcome : Entity, ISpaceScoped
 {
+    /// <summary>Inherited from the parent Deployment; set explicitly at each
+    /// write site (agent/transport path has no real Space context).</summary>
+    public Guid SpaceId { get; set; }
+
     public Guid DeploymentId { get; set; }
     public Deployment Deployment { get; set; } = null!;
 

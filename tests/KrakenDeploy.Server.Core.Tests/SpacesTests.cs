@@ -55,27 +55,19 @@ public sealed class SpacesTests
         var excluded = new HashSet<string>(StringComparer.Ordinal)
         {
             // Children still reached only via a Space-scoped parent navigation.
-            // NOTE: DeploymentProcess/DeploymentStep/RunbookProcess/RunbookStep/
-            // Variable/TenantTag were PROMOTED to ISpaceScoped (they were read/
-            // mutated directly by id/FK on the request path → cross-Space IDOR);
-            // the remaining entries below are written on the agent/transport path
-            // and stay transitive pending explicit per-write-site SpaceId stamping.
-            "DeploymentLogEntry",
-            "DeploymentArtifact",
-            "DeploymentOutputVariable",
-            // M11.E.12 — child of AdhocSession; scope inherits via SessionId.
-            "AdhocIteration",
-            // M14.5 — per-step outcome aggregate; same reasoning as
-            // DeploymentOutputVariable, scope inherits via DeploymentId.
-            "DeploymentStepOutcome",
+            // The cross-space IDOR remediation promoted the directly-queried /
+            // agent-written children to ISpaceScoped (process/step/variable/tag
+            // in tier 1; deployment logs/outcomes/output-vars/artifacts, runbook
+            // runs + their logs, and adhoc iterations in tier 2 — those set
+            // SpaceId explicitly from the parent at each agent/transport write
+            // site, since that path has no real Space context). The entries
+            // below remain genuinely transitive: read only via a Space-scoped
+            // parent's navigation, never queried/mutated directly by id/FK.
             // M-RollingDeployments groundwork — join row between a
-            // Deployment and its targets. Scope inherits via DeploymentId,
-            // same reasoning as the other Deployment-keyed aggregates.
+            // Deployment and its targets. Scope inherits via DeploymentId.
             "DeploymentTargetAssignment",
             "LifecyclePhase",
             "StepSnapshot",
-            "RunbookRun",
-            "RunbookRunLogEntry",
             "StepTemplateParameter",
             // Space itself — it's the partition, not a member of one
             "Space",

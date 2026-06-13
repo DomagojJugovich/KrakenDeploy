@@ -9,8 +9,12 @@ namespace KrakenDeploy.Server.Core.Domain.Deployments;
 /// detail page can surface "step X produced these outputs" and so subsequent
 /// audit can reconstruct exactly what each step emitted.
 /// </summary>
-public class DeploymentOutputVariable : Entity
+public class DeploymentOutputVariable : Entity, ISpaceScoped
 {
+    /// <summary>Inherited from the parent Deployment; set explicitly at the
+    /// write site (agent/transport path has no real Space context).</summary>
+    public Guid SpaceId { get; set; }
+
     public Guid DeploymentId { get; set; }
     public Deployment Deployment { get; set; } = null!;
 

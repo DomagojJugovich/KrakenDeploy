@@ -166,6 +166,7 @@ public sealed class AdhocSessionService(
 
         var iter = new AdhocIteration
         {
+            SpaceId             = session.SpaceId,
             SessionId           = session.Id,
             IterNumber          = 1,
             CreatedUtc          = clock.GetUtcNow(),
@@ -512,6 +513,7 @@ public sealed class AdhocSessionService(
 
                 var nextIter = new AdhocIteration
                 {
+                    SpaceId             = session.SpaceId,
                     SessionId           = session.Id,
                     IterNumber          = completedIter.IterNumber + 1,
                     CreatedUtc          = clock.GetUtcNow(),

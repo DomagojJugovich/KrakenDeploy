@@ -17,6 +17,8 @@ public sealed class AdhocIterationConfiguration : IEntityTypeConfiguration<Adhoc
         builder.ToTable("adhoc_iterations");
         builder.HasKey(i => i.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.HasIndex(i => new { i.SessionId, i.IterNumber }).IsUnique();
 
         builder.Property(i => i.GeneratedScript).IsRequired();

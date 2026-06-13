@@ -416,6 +416,7 @@ public class RunbookService(
 
         var run = new RunbookRun
         {
+            SpaceId = runbook.SpaceId,
             RunbookId = runbookId,
             EnvironmentId = environmentId,
             TargetId = targetId,

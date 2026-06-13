@@ -12,6 +12,8 @@ public sealed class DeploymentOutputVariableConfiguration
         builder.ToTable("deployment_output_variables");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.Property(x => x.StepName).HasMaxLength(256).IsRequired();
         builder.Property(x => x.Name).HasMaxLength(256).IsRequired();
         builder.Property(x => x.Value).IsRequired();

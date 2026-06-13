@@ -174,6 +174,7 @@ public class OfflineResultService(
                         : step.Success ? StepOutcomeKind.Succeeded : StepOutcomeKind.Failed;
                     db.Set<DeploymentStepOutcome>().Add(new DeploymentStepOutcome
                     {
+                        SpaceId      = deployment.SpaceId,
                         DeploymentId = deploymentId,
                         StepIndex    = step.StepIndex,
                         StepName     = step.StepName,
@@ -191,6 +192,7 @@ public class OfflineResultService(
                     {
                         db.Set<DeploymentOutputVariable>().Add(new DeploymentOutputVariable
                         {
+                            SpaceId      = deployment.SpaceId,
                             DeploymentId = deploymentId,
                             StepName     = step.StepName,
                             Name         = name,
@@ -223,6 +225,7 @@ public class OfflineResultService(
 
                 db.Set<DeploymentLogEntry>().Add(new DeploymentLogEntry
                 {
+                    SpaceId = deployment.SpaceId,
                     DeploymentId = deploymentId,
                     Sequence = seq++,
                     Timestamp = DateTimeOffset.UtcNow,
@@ -268,6 +271,7 @@ public class OfflineResultService(
             var contentType = MimeMapping.GetContentType(fileName);
             db.Set<DeploymentArtifact>().Add(new DeploymentArtifact
             {
+                SpaceId = deployment.SpaceId,
                 DeploymentId = deploymentId,
                 StepName = stepName,
                 FileName = fileName,

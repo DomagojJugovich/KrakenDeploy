@@ -14,8 +14,13 @@ namespace KrakenDeploy.Server.Core.Domain.Runbooks;
 /// The agent receives this run as a <see cref="Contracts.DeploymentPlan"/> with the
 /// RunbookRun ID in the <c>DeploymentId</c> field; the hub resolves it back here.
 /// </summary>
-public class RunbookRun : AuditableEntity
+public class RunbookRun : AuditableEntity, ISpaceScoped
 {
+    /// <summary>Inherited from the parent Runbook. Set explicitly in
+    /// TriggerAsync (request path) so it's correct even though the run is later
+    /// updated by RunbookRunWorker on the transport path.</summary>
+    public Guid SpaceId { get; set; }
+
     public Guid RunbookId { get; set; }
     public Runbook Runbook { get; set; } = null!;
 

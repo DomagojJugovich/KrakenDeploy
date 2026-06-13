@@ -418,6 +418,7 @@ public sealed class DeployReleaseStepRunner(
         var seq = deployment.NextLogSequence++;
         db.DeploymentLogEntries.Add(new DeploymentLogEntry
         {
+            SpaceId      = deployment.SpaceId,
             DeploymentId = deploymentId,
             Sequence     = seq,
             Timestamp    = timestamp,

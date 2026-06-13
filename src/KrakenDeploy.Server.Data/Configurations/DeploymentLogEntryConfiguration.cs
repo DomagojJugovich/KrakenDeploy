@@ -11,6 +11,8 @@ public class DeploymentLogEntryConfiguration : IEntityTypeConfiguration<Deployme
         builder.ToTable("deployment_log_entries");
         builder.HasKey(x => x.Id);
 
+        builder.ConfigureSpaceScope();
+
         builder.Property(x => x.Sequence).IsRequired();
         builder.Property(x => x.Timestamp).IsRequired();
         builder.Property(x => x.Message).IsRequired();

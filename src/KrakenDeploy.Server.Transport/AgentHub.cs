@@ -203,6 +203,7 @@ public sealed class AgentHub(
             var seq = deployment.NextLogSequence++;
             db.DeploymentLogEntries.Add(new KrakenDeploy.Server.Core.Domain.Deployments.DeploymentLogEntry
             {
+                SpaceId = deployment.SpaceId,
                 DeploymentId = deploymentId,
                 Sequence = seq,
                 Timestamp = timestamp,
@@ -226,6 +227,7 @@ public sealed class AgentHub(
             var seq = run.NextLogSequence++;
             db.RunbookRunLogEntries.Add(new KrakenDeploy.Server.Core.Domain.Runbooks.RunbookRunLogEntry
             {
+                SpaceId = run.SpaceId,
                 RunbookRunId = deploymentId,
                 Sequence = seq,
                 Timestamp = timestamp,
@@ -394,9 +396,14 @@ public sealed class AgentHub(
 
         await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
 
-        var deploymentExists = await db.Deployments
-            .AnyAsync(d => d.Id == deploymentId).ConfigureAwait(false);
-        if (!deploymentExists)
+        // Resolve the deployment's Space directly (IgnoreQueryFilters — the hub
+        // has no real Space context) both to confirm it exists and to stamp the
+        // output-variable rows so they aren't mis-scoped to the Default Space.
+        var spaceId = await db.Deployments.IgnoreQueryFilters()
+            .Where(d => d.Id == deploymentId)
+            .Select(d => (Guid?)d.SpaceId)
+            .FirstOrDefaultAsync().ConfigureAwait(false);
+        if (spaceId is null)
         {
             // Runbook runs don't currently capture output variables — when they
             // do, route here using a parallel table. Until then, ignore.
@@ -422,6 +429,7 @@ public sealed class AgentHub(
                 db.DeploymentOutputVariables.Add(
                     new KrakenDeploy.Server.Core.Domain.Deployments.DeploymentOutputVariable
                     {
+                        SpaceId      = spaceId.Value,
                         DeploymentId = deploymentId,
                         StepName     = stepName,
                         Name         = name,
