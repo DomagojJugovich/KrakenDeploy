@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Claims;
 using System.Text;
+using System.Threading.RateLimiting;
 using Hangfire;
 using Hangfire.PostgreSql;
 using KrakenDeploy.Ai;
@@ -148,6 +149,31 @@ public static class Program
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddScoped<HttpSpaceContext>();
         builder.Services.AddScoped<ISpaceContext>(sp => sp.GetRequiredService<HttpSpaceContext>());
+
+        // Rate limiting — SCOPED TO /api/agents/register ONLY (applied via
+        // .RequireRateLimiting below). Deliberately NOT a global limiter: gov
+        // sites NAT many real agents + users behind one public IP, so a global
+        // per-IP limiter would throttle legitimate UI / agent traffic. Agent
+        // registration is a one-time-per-agent operation whose failure path does
+        // NOT consume the registration token, so without a limit the endpoint is
+        // a token brute-force oracle. A generous per-IP fixed window crushes
+        // brute force while leaving staggered real rollouts room.
+        // NOTE: behind a TLS proxy without UseForwardedHeaders, RemoteIpAddress is
+        // the proxy's — all callers share one bucket (still fine: registration is
+        // infrequent). Sharpen once forwarded headers land (CAT F).
+        builder.Services.AddRateLimiter(options =>
+        {
+            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            options.AddPolicy("agent-register", httpContext =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    factory: _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 10,
+                        Window      = TimeSpan.FromMinutes(1),
+                        QueueLimit  = 0,
+                    }));
+        });
 
         // ── Encryption (AES-256-GCM for sensitive variables) ────────────────
         // In production, set Encryption:MasterKey to a base64-encoded 32-byte key.
@@ -533,6 +559,10 @@ public static class Program
         app.UseAuthentication();
         app.UseAuthorization();
 
+        // Enforces the per-endpoint "agent-register" policy below. No global
+        // limiter is configured, so this only affects endpoints that opt in.
+        app.UseRateLimiter();
+
         // Resolve + validate the active Space for this request (cookie vs the
         // user's accessible Spaces) into HttpContext.Items, before any Space-aware
         // middleware (maintenance gate, MCP gate) or endpoint reads it. After auth
@@ -644,7 +674,7 @@ public static class Program
                 var jwt = jwtSvc.Issue(target.Id);
                 return Results.Ok(new RegisterAgentResponse(
                     target.Id, jwt, target.TransportMode.ToString()));
-            }).AllowAnonymous();
+            }).AllowAnonymous().RequireRateLimiting("agent-register");
 
         // ── Agent REST API (non-SignalR transports: Direct, Polling) ──────────────
         // Mirrors the SignalR hub methods so DirectServerLink and PollingServerLink

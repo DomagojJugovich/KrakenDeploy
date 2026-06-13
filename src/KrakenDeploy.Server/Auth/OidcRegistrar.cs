@@ -174,14 +174,51 @@ public static class OidcRegistrar
                     return;
                 }
 
-                // ── 2. Find or provision user ─────────────────────────────────
-                var user = await userManager.FindByEmailAsync(email);
+                // ── 2. Resolve the stable subject + email-verification state ──
+                // The IdP-asserted subject (sub) is the stable identity key. We
+                // match on (provider scheme, sub) FIRST so a changed/recycled
+                // email — or a second IdP asserting someone else's email — can't
+                // take over an account. email_verified gates the email-based path
+                // only when it is EXPLICITLY false (ADFS/LDAP may omit it, so we
+                // must not hard-require it).
+                var sub =
+                    principal?.FindFirstValue("sub") ??
+                    principal?.FindFirstValue(ClaimTypes.NameIdentifier);
 
-                // Service accounts authenticate ONLY via API keys — block
-                // SSO sign-in even if a matching row exists. Without this,
-                // an IdP user whose email happens to collide with a service
-                // account would inherit the service account's team
-                // membership (a real escalation risk).
+                var emailExplicitlyUnverified =
+                    bool.TryParse(principal?.FindFirstValue("email_verified"), out var ev) && !ev;
+
+                // ── 3. Find or provision user ─────────────────────────────────
+                ApplicationUser? user = null;
+                if (!string.IsNullOrWhiteSpace(sub))
+                {
+                    user = await userManager.FindByLoginAsync(scheme, sub);
+                }
+                var matchedBySub = user is not null;
+
+                if (user is null)
+                {
+                    // No linked login yet — fall back to email (first sign-in via
+                    // this provider, or a pre-existing local / invited account).
+                    // Refuse an EXPLICITLY-unverified email here: that is the claim
+                    // an attacker would forge to hijack an email-matched account.
+                    if (emailExplicitlyUnverified)
+                    {
+                        logger.LogWarning(
+                            "OIDC [{Scheme}]: sign-in refused for {Email} — email_verified " +
+                            "is false and no linked login exists.", scheme, email);
+                        context.Response.Redirect("/login?error=email_unverified");
+                        context.HandleResponse();
+                        return;
+                    }
+
+                    user = await userManager.FindByEmailAsync(email);
+                }
+
+                // Service accounts authenticate ONLY via API keys — block SSO
+                // sign-in even if a matching row exists (by sub OR email). Without
+                // this, an IdP user whose email collides with a service account
+                // would inherit its team membership (a real escalation risk).
                 if (user is not null && user.Kind == UserKind.ServiceAccount)
                 {
                     logger.LogWarning(
@@ -244,7 +281,22 @@ public static class OidcRegistrar
                         scheme, email, idpName);
                 }
 
-                // ── 3. Persist external group memberships ─────────────────────
+                // Link the external login on first sign-in via this provider so
+                // every subsequent sign-in matches on (scheme, sub), not email.
+                if (!matchedBySub && !string.IsNullOrWhiteSpace(sub))
+                {
+                    var link = await userManager.AddLoginAsync(
+                        user, new UserLoginInfo(scheme, sub, idpName));
+                    if (!link.Succeeded)
+                    {
+                        logger.LogWarning(
+                            "OIDC [{Scheme}]: could not link (scheme, sub) login for {Email}: {Errors}",
+                            scheme, email,
+                            string.Join("; ", link.Errors.Select(e => e.Description)));
+                    }
+                }
+
+                // ── 4. Persist external group memberships ─────────────────────
                 // Stored on the user record so they survive Identity security-
                 // stamp refreshes without requiring the IdP to be re-queried.
                 var groups = principal!
@@ -261,7 +313,7 @@ public static class OidcRegistrar
 
                 await userManager.UpdateAsync(user);
 
-                // ── 4. Sign in with the Identity application cookie ───────────
+                // ── 5. Sign in with the Identity application cookie ───────────
                 await signInMgr.SignInAsync(user, isPersistent: true);
 
                 var returnUrl = context.Properties?.RedirectUri ?? "/";
