@@ -538,7 +538,14 @@ public sealed class DeploymentWorker(
                         droppedTargets.Add(dropped);
                     }
 
-                    if (targetWaveResult.HasFailedNonRequired)
+                    // A dropped target — Required-step failure OR agent-offline —
+                    // puts the deployment in a failing state, so subsequent waves
+                    // on the SURVIVORS must run Failure/Always-conditioned
+                    // cleanup/rollback steps. Previously only non-required step
+                    // failures flipped this, so a Required-failure drop silently
+                    // skipped cleanup on the survivors.
+                    if (targetWaveResult.HasFailedNonRequired
+                        || targetWaveResult.DroppedTargets.Count > 0)
                     {
                         hasFailed = true;
                     }
@@ -572,18 +579,18 @@ public sealed class DeploymentWorker(
             }
 
             // ── M14.2 + Phase 3 finalisation ────────────────────────────
-            // hasFailed = true means at least one non-required step failed
-            // along the way; the deployment terminates as
-            // SucceededWithWarnings (Octopus's yellow-badge state) rather
-            // than the pristine Succeeded.
-            // Phase 3 — droppedTargets non-empty ALSO yields
-            // SucceededWithWarnings, even if every surviving target's
-            // remaining steps all succeeded cleanly. Partial success is
-            // visible in the terminal status without needing to scrape
-            // audit rows.
-            var terminalStatus = (hasFailed || droppedTargets.Count > 0)
-                ? DeploymentStatus.SucceededWithWarnings
-                : DeploymentStatus.Succeeded;
+            // Reached only when at least one target survived (the all-dropped
+            // case failed earlier). A Required-step failure on ANY target is a
+            // hard failure → Failed: survivors completing doesn't make the
+            // deployment a success, and SucceededWithWarnings would mask it.
+            // Softer partial-success (a non-required step failure via hasFailed,
+            // or an agent-offline-only drop) stays SucceededWithWarnings — the
+            // yellow-badge state — so partial success is still visible without
+            // scraping audit rows. See DeploymentTerminalStatusResolver.
+            var terminalStatus = DeploymentTerminalStatusResolver.Resolve(
+                hasFailed,
+                requiredStepDropped: droppedTargets.Any(d => d.Reason == DropReason.RequiredStepFailed),
+                droppedTargetCount:  droppedTargets.Count);
             DateTimeOffset finalCompletedUtc;
             await using (var finalDb = await scope.ServiceProvider
                 .GetRequiredService<IDbContextFactory<KrakenDbContext>>()
