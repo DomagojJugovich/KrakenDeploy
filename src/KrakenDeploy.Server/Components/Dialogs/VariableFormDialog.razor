@@ -9,6 +9,7 @@
 @inject ChannelService ChannelSvc
 @inject ProcessService ProcessSvc
 @inject TargetService TargetSvc
+@inject UiActionGuard Guard
 
 @*
     Add / edit a variable in a project's VariableSet or a library VariableSet.
@@ -245,6 +246,16 @@
     private async Task SaveAsync()
     {
         _errorMessage = null;
+
+        // Server-side recheck: the Blazor circuit bypasses the HTTP authz
+        // middleware, and the project-variable opener (Variables.razor) has no
+        // pre-open gate. Library-set edits require LibraryVariableSetEdit; project
+        // and standalone variables require VariableEdit.
+        if (!await Guard.AllowAsync(
+            SetId is not null ? Permission.LibraryVariableSetEdit : Permission.VariableEdit))
+        {
+            return;
+        }
 
         // Sensitive variable: must have a value unless user is keeping existing.
         if (_model.Type == VariableType.Sensitive

@@ -6,6 +6,7 @@
 @inject DialogService DialogService
 @inject NotificationService NotificationService
 @inject NavigationManager Nav
+@inject UiActionGuard Guard
 
 <PageTitle>Step Templates - KrakenDeploy</PageTitle>
 
@@ -126,6 +127,7 @@
 
     private async Task ShowImportDialog()
     {
+        if (!await Guard.AllowAsync(Permission.StepTemplateCreate)) return;
         var result = await DialogService.OpenAsync<Dialogs.ImportStepTemplateDialog>(
             "Import Step Template",
             options: new DialogOptions
@@ -146,6 +148,7 @@
 
     private async Task ShowImportOctopusApiDialog()
     {
+        if (!await Guard.AllowAsync(Permission.StepTemplateCreate)) return;
         var result = await DialogService.OpenAsync<Dialogs.ImportOctopusApiDialog>(
             "Import from Octopus actiontemplates dump",
             options: new DialogOptions
@@ -166,6 +169,7 @@
 
     private async Task ShowImportFolderDialog()
     {
+        if (!await Guard.AllowAsync(Permission.StepTemplateCreate)) return;
         var result = await DialogService.OpenAsync<Dialogs.ImportFolderDialog>(
             "Import templates from folder",
             options: new DialogOptions
@@ -186,6 +190,7 @@
 
     private async Task ShowCreateDialog()
     {
+        if (!await Guard.AllowAsync(Permission.StepTemplateCreate)) return;
         var result = await DialogService.OpenAsync<Dialogs.CreateStepTemplateDialog>(
             "New Step Template",
             options: new DialogOptions
@@ -206,6 +211,7 @@
 
     private async Task DeleteTemplateAsync(StepTemplate template)
     {
+        if (!await Guard.AllowAsync(Permission.StepTemplateDelete)) return;
         var confirmed = await DialogService.Confirm(
             $"Delete template '{template.Name}'? This action cannot be undone.",
             "Delete Template",
