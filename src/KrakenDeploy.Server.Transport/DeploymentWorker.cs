@@ -7,6 +7,7 @@ using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
@@ -75,12 +76,35 @@ public sealed class DeploymentWorker(
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
+        var spaceContext = scope.ServiceProvider.GetRequiredService<ISpaceContext>();
         var variableService = scope.ServiceProvider.GetRequiredService<VariableService>();
         var serverBaseUrl = scope.ServiceProvider
             .GetRequiredService<IConfiguration>()["Server:BaseUrl"];
 
         try
         {
+            // The worker scope has no active Space (no HttpContext → DefaultSpaceId),
+            // so the global query filter would hide a deployment created in a
+            // non-Default Space (the dispatch load below returns null → the
+            // deployment sits Queued forever). Resolve its Space filter-free, then
+            // run the entire unit of work under it so every space-scoped read +
+            // write (the Include load, variable resolution, freeze lookup, step
+            // outcomes, finalisation) resolves against the deployment's real Space.
+            // Note: server-side step runners open their own scopes and are scoped
+            // separately (see ExecuteServerStepAsync); AppendConcurrentLogAsync
+            // defends its own short-lived scope via IgnoreQueryFilters.
+            var deploymentSpaceId = await db.Deployments.IgnoreQueryFilters()
+                .Where(d => d.Id == deploymentId)
+                .Select(d => (Guid?)d.SpaceId)
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+            if (deploymentSpaceId is null)
+            {
+                logger.LogWarning("DeploymentWorker: deployment {Id} not found.", deploymentId);
+                return;
+            }
+            using var spaceScope = spaceContext.WithSpace(deploymentSpaceId.Value);
+
             var deployment = await db.Deployments
                 .Include(d => d.Release)
                     .ThenInclude(r => r.Project)
@@ -604,9 +628,14 @@ public sealed class DeploymentWorker(
 
             await using var errorScope = scopeFactory.CreateAsyncScope();
             var errorDb = errorScope.ServiceProvider.GetRequiredService<KrakenDbContext>();
-            var dep = await errorDb.Deployments.FindAsync([deploymentId], ct).ConfigureAwait(false);
+            // Fresh scope → DefaultSpaceId; load filter-free so a non-Default-Space
+            // deployment is still found, then scope FailAsync to its Space.
+            var dep = await errorDb.Deployments.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(d => d.Id == deploymentId, ct).ConfigureAwait(false);
             if (dep is not null)
             {
+                using var _ = errorScope.ServiceProvider
+                    .GetRequiredService<ISpaceContext>().WithSpace(dep.SpaceId);
                 await FailAsync(errorDb, dep, ex.Message, ct).ConfigureAwait(false);
             }
         }
@@ -841,6 +870,7 @@ public sealed class DeploymentWorker(
         Guid deploymentId,
         DeploymentStepPlan step,
         IReadOnlyDictionary<string, string> flatVars,
+        Guid spaceId,
         CancellationToken ct)
     {
         // Overlay this step's per-step variable delta (step/action scope) onto
@@ -849,8 +879,15 @@ public sealed class DeploymentWorker(
         var effectiveVars = OverlayStepVariables(flatVars, step);
         if (step.StepType.Equals(DeployReleaseStepRunner.StepType, StringComparison.OrdinalIgnoreCase))
         {
-            return deployReleaseRunner.ExecuteAsync(deploymentId, step, effectiveVars, ct);
+            // DeployRelease creates a CHILD deployment that must inherit the
+            // parent's Space — thread spaceId so CreateAsync stamps it and the
+            // child-log polling resolves in the right Space. (The runner opens
+            // its own DI scope, so the worker's WithSpace doesn't reach it.)
+            return deployReleaseRunner.ExecuteAsync(deploymentId, step, effectiveVars, spaceId, ct);
         }
+        // ServerScriptStepRunner only writes deployment-log rows and scopes those
+        // short-lived writes itself (IgnoreQueryFilters + explicit SpaceId stamp),
+        // so it needs no Space threading.
         return serverRunner.ExecuteAsync(deploymentId, step, effectiveVars, ct);
     }
 
@@ -996,7 +1033,7 @@ public sealed class DeploymentWorker(
             snapshot.RetryDelaySeconds,
             snapshot.TimeoutSeconds,
             runAttempt: (CancellationToken attemptCt) =>
-                ExecuteServerStepAsync(deploymentId, step, flatVars, attemptCt),
+                ExecuteServerStepAsync(deploymentId, step, flatVars, deployment.SpaceId, attemptCt),
             isSuccess: ok => ok,
             onTimeoutResult: () => false,
             // Server surfaces the per-step timeout ONCE via the final TimedOut

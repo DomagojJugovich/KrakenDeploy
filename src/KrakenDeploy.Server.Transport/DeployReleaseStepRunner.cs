@@ -2,6 +2,7 @@ using KrakenDeploy.Contracts;
 using KrakenDeploy.Execution;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.AspNetCore.SignalR;
@@ -89,6 +90,7 @@ public sealed class DeployReleaseStepRunner(
         Guid parentDeploymentId,
         DeploymentStepPlan step,
         IReadOnlyDictionary<string, string> planVariables,
+        Guid spaceId,
         CancellationToken ct)
     {
         await AppendLogAsync(parentDeploymentId, "info",
@@ -116,6 +118,14 @@ public sealed class DeployReleaseStepRunner(
         }
 
         await using var scope = scopeFactory.CreateAsyncScope();
+        // This runner opens its own DI scope (the worker's WithSpace doesn't reach
+        // here), so establish the parent's Space explicitly. Without it the scope
+        // defaults to DefaultSpaceId and: the parent load is filtered to null, the
+        // project/release lookups return nothing, and — most damaging — the child
+        // deployment created below is stamped with the wrong Space (the interceptor
+        // stamps the ambient Space and SpaceId is immutable thereafter).
+        using var spaceScope = scope.ServiceProvider
+            .GetRequiredService<ISpaceContext>().WithSpace(spaceId);
         var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
 
         // ── Resolve the parent deployment to find environment + target set ──
@@ -228,6 +238,8 @@ public sealed class DeployReleaseStepRunner(
 
         await using (var linkScope = scopeFactory.CreateAsyncScope())
         {
+            using var _ = linkScope.ServiceProvider
+                .GetRequiredService<ISpaceContext>().WithSpace(spaceId);
             var linkDb = linkScope.ServiceProvider.GetRequiredService<KrakenDbContext>();
             var tracked = await linkDb.Deployments.FindAsync([child.Id], ct).ConfigureAwait(false);
             if (tracked is not null)
@@ -243,13 +255,16 @@ public sealed class DeployReleaseStepRunner(
             ct).ConfigureAwait(false);
 
         // ── Mirror the child's log into the parent + wait for terminal state ──
-        return await WaitForChildAsync(child.Id, parentDeploymentId, step.Name, ct).ConfigureAwait(false);
+        // child + parent both live in spaceId; thread it so the poll-loop's
+        // own scopes resolve their reads against that Space.
+        return await WaitForChildAsync(child.Id, parentDeploymentId, step.Name, spaceId, ct)
+            .ConfigureAwait(false);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private async Task<bool> WaitForChildAsync(
-        Guid childId, Guid parentId, string stepName, CancellationToken ct)
+        Guid childId, Guid parentId, string stepName, Guid spaceId, CancellationToken ct)
     {
         var lastSequence = -1;
         // A per-attempt timeout (StepRetryRunner's linked CancelAfter) or a
@@ -262,6 +277,8 @@ public sealed class DeployReleaseStepRunner(
             ct.ThrowIfCancellationRequested();
 
             await using var scope = scopeFactory.CreateAsyncScope();
+            using var _ = scope.ServiceProvider
+                .GetRequiredService<ISpaceContext>().WithSpace(spaceId);
             var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
 
             // Stream any new log lines the child has written since we last polled.
@@ -407,7 +424,11 @@ public sealed class DeployReleaseStepRunner(
 
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
-        var deployment = await db.Deployments.FindAsync([deploymentId], ct).ConfigureAwait(false);
+        // Background scope → DefaultSpaceId; load filter-free (already-authorised
+        // by-id read) and stamp the log row's SpaceId from the loaded deployment
+        // below — mirrors ServerScriptStepRunner / AppendConcurrentLogAsync.
+        var deployment = await db.Deployments.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(d => d.Id == deploymentId, ct).ConfigureAwait(false);
         if (deployment is null)
         {
             logger.LogWarning(

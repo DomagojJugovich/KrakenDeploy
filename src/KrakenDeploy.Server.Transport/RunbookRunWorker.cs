@@ -1,6 +1,7 @@
 using System.Text.Json;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.AspNetCore.SignalR;
@@ -40,12 +41,31 @@ public sealed class RunbookRunWorker(
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
+        var spaceContext = scope.ServiceProvider.GetRequiredService<ISpaceContext>();
         var variableService = scope.ServiceProvider.GetRequiredService<VariableService>();
         var serverBaseUrl = scope.ServiceProvider
             .GetRequiredService<IConfiguration>()["Server:BaseUrl"];
 
         try
         {
+            // Worker scope has no active Space (no HttpContext → DefaultSpaceId);
+            // a run triggered in a non-Default Space (RunbookRun.SpaceId = the
+            // parent runbook's Space) would be hidden by the global filter and
+            // sit Queued forever. Resolve its Space filter-free, then scope the
+            // whole unit of work — including VariableService.ResolveWithStepsAsync,
+            // which relies on the ambient filter to scope variable sets.
+            var runSpaceId = await db.RunbookRuns.IgnoreQueryFilters()
+                .Where(r => r.Id == runId)
+                .Select(r => (Guid?)r.SpaceId)
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+            if (runSpaceId is null)
+            {
+                logger.LogWarning("RunbookRunWorker: run {Id} not found.", runId);
+                return;
+            }
+            using var spaceScope = spaceContext.WithSpace(runSpaceId.Value);
+
             var run = await db.RunbookRuns
                 .Include(r => r.Runbook)
                     .ThenInclude(rb => rb.Project)
@@ -220,9 +240,14 @@ public sealed class RunbookRunWorker(
 
             await using var errorScope = scopeFactory.CreateAsyncScope();
             var errorDb = errorScope.ServiceProvider.GetRequiredService<KrakenDbContext>();
-            var run = await errorDb.RunbookRuns.FindAsync([runId], ct).ConfigureAwait(false);
+            // Fresh scope → DefaultSpaceId; load filter-free so a non-Default-Space
+            // run is still found, then scope FailAsync to its Space.
+            var run = await errorDb.RunbookRuns.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(r => r.Id == runId, ct).ConfigureAwait(false);
             if (run is not null)
             {
+                using var _ = errorScope.ServiceProvider
+                    .GetRequiredService<ISpaceContext>().WithSpace(run.SpaceId);
                 await FailAsync(errorDb, run, ex.Message, ct).ConfigureAwait(false);
             }
         }

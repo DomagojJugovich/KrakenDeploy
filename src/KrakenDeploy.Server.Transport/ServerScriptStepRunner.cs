@@ -239,7 +239,12 @@ public sealed class ServerScriptStepRunner(
 
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
-        var deployment = await db.Deployments.FindAsync([deploymentId], ct).ConfigureAwait(false);
+        // Background scope → DefaultSpaceId, so the global filter would hide a
+        // deployment in a non-Default Space. Load it filter-free (it's an
+        // already-authorised by-id read) and stamp the log row's SpaceId from the
+        // loaded deployment below — same pattern as DeploymentWorker.AppendConcurrentLogAsync.
+        var deployment = await db.Deployments.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(d => d.Id == deploymentId, ct).ConfigureAwait(false);
         if (deployment is null)
         {
             logger.LogWarning("ServerScriptStepRunner: deployment {Id} not found for log line.", deploymentId);

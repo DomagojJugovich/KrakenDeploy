@@ -141,7 +141,9 @@ public sealed class DeployReleaseStepTimeoutTests(PostgresFixture postgres)
             maxRetries:              0,
             retryDelaySeconds:       0,
             timeoutSeconds:          2,
-            runAttempt:              ct => runner.ExecuteAsync(parentDeploymentId, step, planVars, ct),
+            runAttempt:              ct => runner.ExecuteAsync(
+                                         parentDeploymentId, step, planVars,
+                                         WellKnown.DefaultSpaceId, ct),
             isSuccess:               ok => ok,
             onTimeoutResult:         () => false,
             onAttemptTimedOutAsync:  null,

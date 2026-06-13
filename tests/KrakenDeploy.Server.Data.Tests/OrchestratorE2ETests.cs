@@ -1,6 +1,12 @@
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Core.Domain.Environments;
+using KrakenDeploy.Server.Core.Domain.Projects;
+using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.Spaces;
+using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data.Tests.OrchestratorHarness;
+using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data.Tests;
 
@@ -307,6 +313,155 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
                     because: "the Phase 1a widened unique key " +
                               "(DeploymentId, StepIndex, TargetId) yields one row per target");
         }
+    }
+
+    // ── Cross-Space execution regression (multi-Space dispatch fix) ─────────
+
+    // A fixed Space id distinct from WellKnown.DefaultSpaceId (the fixture's
+    // ambient context always resolves Default).
+    private static readonly Guid NonDefaultSpaceId =
+        Guid.Parse("0000ffff-0000-0000-0000-00000000d15a");
+
+    [Fact]
+    public async Task Deployment_in_a_non_default_Space_dispatches_and_succeeds()
+    {
+        // Regression for the latent multi-Space execution bug: the worker scope
+        // has no active Space (no HttpContext → DefaultSpaceId), so before the
+        // fix the global query filter hid a deployment created in a non-Default
+        // Space — DispatchAsync's load returned null ("not found") and the
+        // deployment sat Queued forever. The worker now resolves the
+        // deployment's Space filter-free and runs the unit of work under
+        // ISpaceContext.WithSpace; this proves a non-Default-Space deployment
+        // loads, dispatches to its agent, and finalises.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var (deploymentId, targets) = await SeedInSpaceAsync(
+            harness, NonDefaultSpaceId,
+            stepNames: ["s1", "s2"],
+            targetNames: ["t1"]);
+        harness.ConnectFakeAgent(targets[0]); // all steps succeed by default
+
+        await harness.RunDeploymentAsync(deploymentId);
+
+        // Assert with IgnoreQueryFilters — the fixture's query helpers run under
+        // the Default Space and would themselves filter out this row.
+        await using var db = harness.CreateContext();
+        var deployment = await db.Deployments.IgnoreQueryFilters()
+            .FirstOrDefaultAsync(d => d.Id == deploymentId);
+        deployment.Should().NotBeNull();
+        deployment!.Status.Should().Be(DeploymentStatus.Succeeded,
+            because: "a non-Default-Space deployment must load + dispatch + finalise " +
+                      "now that the worker scopes its unit of work to the deployment's Space");
+        deployment.SpaceId.Should().Be(NonDefaultSpaceId);
+
+        var outcomes = await db.DeploymentStepOutcomes.IgnoreQueryFilters()
+            .Where(o => o.DeploymentId == deploymentId)
+            .ToListAsync();
+        outcomes.Should().HaveCount(2);
+        outcomes.Should().AllSatisfy(o =>
+        {
+            o.Outcome.Should().Be(StepOutcomeKind.Succeeded);
+            o.SpaceId.Should().Be(NonDefaultSpaceId,
+                because: "step-outcome rows the worker writes must inherit the " +
+                          "deployment's Space, not be mis-stamped DefaultSpaceId");
+        });
+    }
+
+    /// <summary>
+    /// Seeds a minimal Project + Environment + Release + Target(s) + Deployment
+    /// entirely in <paramref name="spaceId"/> (explicit SpaceId — the
+    /// interceptor preserves caller-set values), bypassing the harness's
+    /// Default-Space seed helpers. The join collection is not ISpaceScoped, so
+    /// it needs no Space stamp.
+    /// </summary>
+    private static async Task<(Guid DeploymentId, List<DeploymentTarget> Targets)>
+        SeedInSpaceAsync(
+            OrchestratorTestHarness harness,
+            Guid spaceId,
+            string[] stepNames,
+            string[] targetNames)
+    {
+        await using var db = harness.CreateContext();
+
+        if (!await db.Spaces.IgnoreQueryFilters().AnyAsync(s => s.Id == spaceId))
+        {
+            db.Spaces.Add(new Space
+            {
+                Id = spaceId, Slug = $"sp-{spaceId:N}"[..12], Name = "Non-Default",
+            });
+        }
+
+        var project = new Project
+        {
+            SpaceId = spaceId,
+            Name    = $"xp-{Guid.NewGuid():N}"[..12],
+            Slug    = $"xp-{Guid.NewGuid():N}"[..12],
+        };
+        var env = new DeploymentEnvironment
+        {
+            SpaceId   = spaceId,
+            Name      = $"xe-{Guid.NewGuid():N}"[..12],
+            Slug      = $"xe-{Guid.NewGuid():N}"[..12],
+            SortOrder = 1,
+        };
+        db.Projects.Add(project);
+        db.Environments.Add(env);
+
+        var targets = new List<DeploymentTarget>(targetNames.Length);
+        foreach (var n in targetNames)
+        {
+            var t = new DeploymentTarget
+            {
+                SpaceId       = spaceId,
+                Name          = n,
+                Roles         = ["web"],
+                TransportMode = TransportMode.Reverse,
+                Status        = TargetStatus.Online,
+            };
+            db.DeploymentTargets.Add(t);
+            targets.Add(t);
+        }
+        await db.SaveChangesAsync();
+
+        var snapshot = new List<StepSnapshot>(stepNames.Length);
+        for (var i = 0; i < stepNames.Length; i++)
+        {
+            snapshot.Add(StepBuilder.Script(stepNames[i]).ToSnapshot(i));
+        }
+        var release = new Release
+        {
+            SpaceId                    = spaceId,
+            ProjectId                  = project.Id,
+            Version                    = "1.0",
+            ProcessSnapshot            = snapshot,
+            VariableSnapshot           = [],
+            VariableSnapshotUpdatedUtc = DateTimeOffset.UtcNow,
+        };
+        db.Releases.Add(release);
+        await db.SaveChangesAsync();
+
+        var deployment = new Deployment
+        {
+            SpaceId       = spaceId,
+            ReleaseId     = release.Id,
+            EnvironmentId = env.Id,
+            TargetId      = targets[0].Id,
+            Status        = DeploymentStatus.Queued,
+        };
+        db.Deployments.Add(deployment);
+        await db.SaveChangesAsync();
+
+        foreach (var t in targets)
+        {
+            db.DeploymentTargetAssignments.Add(new DeploymentTargetAssignment
+            {
+                DeploymentId = deployment.Id,
+                TargetId     = t.Id,
+                AddedUtc     = DateTimeOffset.UtcNow,
+            });
+        }
+        await db.SaveChangesAsync();
+
+        return (deployment.Id, targets);
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

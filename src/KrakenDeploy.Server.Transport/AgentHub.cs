@@ -47,8 +47,12 @@ public sealed class AgentHub(
         registry.Add(Context.ConnectionId, targetId.Value);
 
         await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
+        // The target id is the authenticated agent's own NameIdentifier; load it
+        // filter-free since the hub has no ambient Space and the global filter
+        // would otherwise hide a target that lives in a non-Default Space.
         var target = await db.DeploymentTargets
-            .FindAsync(new object?[] { targetId.Value })
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(t => t.Id == targetId.Value)
             .ConfigureAwait(false);
 
         if (target is not null)
@@ -114,8 +118,12 @@ public sealed class AgentHub(
         }
 
         await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
+        // The target id is the authenticated agent's own NameIdentifier; load it
+        // filter-free since the hub has no ambient Space and the global filter
+        // would otherwise hide a target that lives in a non-Default Space.
         var target = await db.DeploymentTargets
-            .FindAsync(new object?[] { targetId.Value })
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(t => t.Id == targetId.Value)
             .ConfigureAwait(false);
 
         if (target is null)
@@ -158,8 +166,12 @@ public sealed class AgentHub(
         }
 
         await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
+        // The target id is the authenticated agent's own NameIdentifier; load it
+        // filter-free since the hub has no ambient Space and the global filter
+        // would otherwise hide a target that lives in a non-Default Space.
         var target = await db.DeploymentTargets
-            .FindAsync(new object?[] { targetId.Value })
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(t => t.Id == targetId.Value)
             .ConfigureAwait(false);
 
         if (target is null)
@@ -194,8 +206,13 @@ public sealed class AgentHub(
         await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
 
         // Try Deployment first, then RunbookRun (same ID space, non-overlapping GUIDs).
+        // The agent reports against a deployment/run id; the hub has no ambient
+        // Space (DefaultSpaceId), so load filter-free — the global filter would
+        // otherwise hide a deployment that lives in a non-Default Space. Writes
+        // below stamp SpaceId explicitly from the loaded row.
         var deployment = await db.Deployments
-            .FindAsync(new object?[] { deploymentId })
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(d => d.Id == deploymentId)
             .ConfigureAwait(false);
 
         if (deployment is not null)
@@ -219,7 +236,8 @@ public sealed class AgentHub(
         }
 
         var run = await db.RunbookRuns
-            .FindAsync(new object?[] { deploymentId })
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(r => r.Id == deploymentId)
             .ConfigureAwait(false);
 
         if (run is not null)
@@ -277,8 +295,13 @@ public sealed class AgentHub(
         await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
 
         // Try Deployment first.
+        // The agent reports against a deployment/run id; the hub has no ambient
+        // Space (DefaultSpaceId), so load filter-free — the global filter would
+        // otherwise hide a deployment that lives in a non-Default Space. Writes
+        // below stamp SpaceId explicitly from the loaded row.
         var deployment = await db.Deployments
-            .FindAsync(new object?[] { deploymentId })
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(d => d.Id == deploymentId)
             .ConfigureAwait(false);
 
         if (deployment is not null)
@@ -310,7 +333,8 @@ public sealed class AgentHub(
 
         // Try RunbookRun.
         var run = await db.RunbookRuns
-            .FindAsync(new object?[] { deploymentId })
+            .IgnoreQueryFilters()
+            .FirstOrDefaultAsync(r => r.Id == deploymentId)
             .ConfigureAwait(false);
 
         if (run is not null)
@@ -526,8 +550,10 @@ public sealed class AgentHub(
             await using var scope = scopeFactory.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
 
+            // Filter-free: own-target by-id read in a Space-less background scope.
             var target = await db.DeploymentTargets
-                .FindAsync(new object?[] { targetId })
+                .IgnoreQueryFilters()
+                .FirstOrDefaultAsync(t => t.Id == targetId)
                 .ConfigureAwait(false);
 
             if (target is null || target.Status != TargetStatus.Online)
