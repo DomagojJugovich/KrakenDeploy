@@ -31,13 +31,6 @@ public interface ISpaceContext
     Guid CurrentSpaceId { get; }
 
     /// <summary>
-    /// True when the current principal is a system administrator and may act in
-    /// any Space, including via cross-Space queries that bypass the global filter.
-    /// Resolved from the user's role membership; defaults to <c>false</c>.
-    /// </summary>
-    bool IsSystemAdmin { get; }
-
-    /// <summary>
     /// Pushes a temporary Space override for the duration of the returned scope.
     /// Used by Hangfire workers, tests, and administrative operations that act on
     /// a specific Space regardless of the request's resolved active Space.

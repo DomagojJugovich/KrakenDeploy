@@ -295,7 +295,6 @@ public sealed class SpaceAiSettingsServiceTests(PostgresFixture postgres)
     private sealed class FixedSpaceContext(Guid spaceId) : ISpaceContext
     {
         public Guid CurrentSpaceId => spaceId;
-        public bool IsSystemAdmin  => false;
         public IDisposable WithSpace(Guid newSpaceId) => new NoOp();
         private sealed class NoOp : IDisposable { public void Dispose() { } }
     }

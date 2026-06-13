@@ -1,29 +1,36 @@
-using System.Security.Claims;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 
 namespace KrakenDeploy.Server.Spaces;
 
 /// <summary>
-/// HTTP-aware <see cref="ISpaceContext"/> used by the Blazor server and the
-/// minimal-API endpoints. Replaces <c>DefaultSpaceContext</c> (the simpler
-/// fallback that just returns <see cref="WellKnown.DefaultSpaceId"/>) when the
-/// HTTP pipeline is available.
+/// HTTP / circuit-aware <see cref="ISpaceContext"/> used by the Blazor server and
+/// the minimal-API endpoints. Replaces <c>DefaultSpaceContext</c> (the fallback
+/// that just returns <see cref="WellKnown.DefaultSpaceId"/>) when the HTTP
+/// pipeline is available.
 /// <para>
 /// Resolution order (first match wins):
 /// </para>
 /// <list type="number">
 ///   <item>Explicit override pushed via <see cref="WithSpace"/> — used by
-///         background workers, system admin operations, and tests.</item>
-///   <item>The <c>kraken-active-space</c> cookie set by the Space switcher.
-///         A separate cookie (rather than an auth claim) so switching Spaces
-///         doesn't require re-issuing the auth cookie.</item>
-///   <item><see cref="WellKnown.DefaultSpaceId"/> — fallback for unauthenticated
-///         requests, single-Space on-prem installs, and any pre-switcher state.</item>
+///         background workers, system-admin operations, and tests.</item>
+///   <item>The circuit-resolved Space set via <see cref="SetResolved"/> — used by
+///         <c>SpaceContextBoundary</c> on the interactive circuit, where
+///         <see cref="IHttpContextAccessor.HttpContext"/> (and thus the cookie)
+///         is unavailable.</item>
+///   <item><c>HttpContext.Items[ResolvedSpaceItemKey]</c> — the
+///         <c>ActiveSpaceResolutionMiddleware</c> validated the
+///         <c>kraken-active-space</c> cookie against the user's accessible Spaces
+///         and stored the result here for the duration of the HTTP request
+///         (prerender + minimal-API).</item>
+///   <item><see cref="WellKnown.DefaultSpaceId"/> — only for requests the
+///         resolution middleware doesn't touch (static assets, unauthenticated),
+///         none of which read Space-scoped data.</item>
 /// </list>
 /// <para>
-/// Slug-based routing (<c>/s/{spaceSlug}/...</c>) is not yet wired — that's
-/// turned on later when the cloud SaaS deployment model needs per-tenant URLs.
+/// The raw cookie is deliberately NOT read here: it is never trusted without the
+/// async accessibility check, which lives in the middleware / boundary and
+/// flows in via <c>Items</c> / <see cref="SetResolved"/>.
 /// </para>
 /// </summary>
 public sealed class HttpSpaceContext(IHttpContextAccessor httpContextAccessor) : ISpaceContext
@@ -32,55 +39,61 @@ public sealed class HttpSpaceContext(IHttpContextAccessor httpContextAccessor) :
     public const string ActiveSpaceCookieName = "kraken-active-space";
 
     /// <summary>
-    /// Role claim that grants system-wide admin privileges. Will be replaced by
-    /// the M10 Permission/Role/Team model once it lands; for now any user in
-    /// this role bypasses Space restrictions.
+    /// <c>HttpContext.Items</c> key under which <c>ActiveSpaceResolutionMiddleware</c>
+    /// stores the validated active Space id for the current request.
     /// </summary>
-    public const string SystemAdminRole = "SystemAdministrator";
+    public const string ResolvedSpaceItemKey = "kraken-resolved-space";
 
     private readonly Stack<Guid> _overrides = new();
+
+    // Circuit-scoped memo. On the interactive circuit HttpContext is null, so the
+    // boundary resolves+validates the carried Space once and pushes it here;
+    // subsequent reads in the same circuit reuse it. In a request scope it caches
+    // the Items lookup.
+    private Guid? _resolved;
 
     public Guid CurrentSpaceId
     {
         get
         {
-            // 1. Explicit override (workers, tests, admin operations)
+            // 1. Explicit override (workers, tests, admin operations).
             if (_overrides.Count > 0)
             {
                 return _overrides.Peek();
             }
 
+            // 2. Already resolved for this scope (circuit boundary, or a prior
+            //    Items read in this request).
+            if (_resolved is { } memo)
+            {
+                return memo;
+            }
+
+            // 3. Validated active Space stamped by the resolution middleware.
             var ctx = httpContextAccessor.HttpContext;
-            if (ctx is null)
+            if (ctx is not null
+                && ctx.Items.TryGetValue(ResolvedSpaceItemKey, out var item)
+                && item is Guid fromItems)
             {
-                return WellKnown.DefaultSpaceId;
+                _resolved = fromItems;
+                return fromItems;
             }
 
-            // 2. Cookie set by the Space switcher
-            if (ctx.Request.Cookies.TryGetValue(ActiveSpaceCookieName, out var cookieValue) &&
-                Guid.TryParse(cookieValue, out var fromCookie))
-            {
-                return fromCookie;
-            }
-
-            // 3. Fallback
+            // 4. Fallback for requests the middleware doesn't process (static
+            //    assets, unauthenticated) — none of which read Space-scoped data.
+            //    The interactive circuit reaches its validated Space via
+            //    SetResolved before any Space-scoped query runs.
             return WellKnown.DefaultSpaceId;
         }
     }
 
-    public bool IsSystemAdmin
-    {
-        get
-        {
-            var ctx = httpContextAccessor.HttpContext;
-            if (ctx?.User is not ClaimsPrincipal user || user.Identity?.IsAuthenticated != true)
-            {
-                return false;
-            }
-
-            return user.IsInRole(SystemAdminRole);
-        }
-    }
+    /// <summary>
+    /// Sets the active Space for the current circuit. Called once by
+    /// <c>SpaceContextBoundary</c> after re-validating the carried candidate
+    /// against the user's accessible Spaces — the persisted circuit hint is
+    /// client-tamperable, so it is only honoured if it survives that check.
+    /// </summary>
+    public void SetResolved(Guid spaceId) => _resolved = spaceId;
 
     public IDisposable WithSpace(Guid spaceId)
     {

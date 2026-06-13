@@ -139,10 +139,15 @@ public static class Program
             .AddSignInManager();
 
         // ── Space context (HTTP-aware override of DefaultSpaceContext) ───────
-        // Reads the active Space from the kraken-active-space cookie set by
-        // the Space switcher; falls back to WellKnown.DefaultSpaceId.
+        // Active-Space resolution. ActiveSpaceResolutionMiddleware validates the
+        // kraken-active-space cookie against the user's accessible Spaces and
+        // stamps the result into HttpContext.Items; SpaceContextBoundary carries
+        // and re-validates it onto the interactive circuit. Registered as the
+        // concrete type (with the interface forwarded to the same instance) so
+        // those callers can push the resolved Space via SetResolved.
         builder.Services.AddHttpContextAccessor();
-        builder.Services.AddScoped<ISpaceContext, HttpSpaceContext>();
+        builder.Services.AddScoped<HttpSpaceContext>();
+        builder.Services.AddScoped<ISpaceContext>(sp => sp.GetRequiredService<HttpSpaceContext>());
 
         // ── Encryption (AES-256-GCM for sensitive variables) ────────────────
         // In production, set Encryption:MasterKey to a base64-encoded 32-byte key.
@@ -527,6 +532,12 @@ public static class Program
 
         app.UseAuthentication();
         app.UseAuthorization();
+
+        // Resolve + validate the active Space for this request (cookie vs the
+        // user's accessible Spaces) into HttpContext.Items, before any Space-aware
+        // middleware (maintenance gate, MCP gate) or endpoint reads it. After auth
+        // so HttpContext.User is populated; skips static assets / negotiate.
+        app.UseMiddleware<KrakenDeploy.Server.Spaces.ActiveSpaceResolutionMiddleware>();
 
         // M11.B — per-Space MCP-enabled gate. Path-scoped to /mcp so other
         // endpoints sharing the API key (the /api/* surface) keep working

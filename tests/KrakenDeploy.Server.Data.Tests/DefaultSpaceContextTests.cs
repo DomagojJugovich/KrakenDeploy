@@ -16,7 +16,6 @@ public sealed class DefaultSpaceContextTests
         var sut = new DefaultSpaceContext();
 
         sut.CurrentSpaceId.Should().Be(WellKnown.DefaultSpaceId);
-        sut.IsSystemAdmin.Should().BeTrue("CLI / migration host runs with full privileges");
     }
 
     [Fact]

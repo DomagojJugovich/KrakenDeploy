@@ -153,6 +153,11 @@ license-private-key.xml
 license-public-key.xml
 
 # =====================================================================
+# ASP.NET Data Protection key ring (runtime secret — never commit)
+# =====================================================================
+src/KrakenDeploy.Server/data/dataprotection-keys/
+
+# =====================================================================
 # Claude Code auto-memory (session-local)
 # =====================================================================
 memory/

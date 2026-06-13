@@ -196,7 +196,6 @@ public sealed class DbKrakenAiSettingsProviderTests(PostgresFixture postgres)
     private sealed class FixedSpaceContext(Guid spaceId) : ISpaceContext
     {
         public Guid CurrentSpaceId => spaceId;
-        public bool IsSystemAdmin  => false;
         public IDisposable WithSpace(Guid newSpaceId) => new NoOpDisposable();
         private sealed class NoOpDisposable : IDisposable { public void Dispose() { } }
     }
