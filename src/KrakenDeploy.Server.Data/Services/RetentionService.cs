@@ -1,4 +1,5 @@
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Core.Domain.Spaces;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -8,7 +9,10 @@ namespace KrakenDeploy.Server.Data.Services;
 /// Prunes excess deployments after a successful deployment based on the lifecycle
 /// phase retention policy.
 /// </summary>
-public class RetentionService(IDbContextFactory<KrakenDbContext> dbFactory, ILogger<RetentionService> logger)
+public class RetentionService(
+    IDbContextFactory<KrakenDbContext> dbFactory,
+    ISpaceContext spaceContext,
+    ILogger<RetentionService> logger)
 {
     /// <summary>
     /// Called after a deployment succeeds. Finds the lifecycle phase that owns the
@@ -20,7 +24,14 @@ public class RetentionService(IDbContextFactory<KrakenDbContext> dbFactory, ILog
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
+        // This runs in a background DI scope (fire-and-forget from
+        // AgentHub.CompleteDeploymentAsync) with no active Space → DefaultSpaceId.
+        // Load the deployment filter-free so a non-Default-Space deployment is
+        // still found, then scope the rest of the prune (lifecycle/project lookup,
+        // success-id query, ExecuteDelete) to its Space — so we prune within the
+        // deployment's own Space and never reach across Spaces.
         var deployment = await db.Deployments
+            .IgnoreQueryFilters()
             .Include(d => d.Release)
                 .ThenInclude(r => r.Channel)
                     .ThenInclude(c => c!.Lifecycle)
@@ -32,6 +43,8 @@ public class RetentionService(IDbContextFactory<KrakenDbContext> dbFactory, ILog
         {
             return;
         }
+
+        using var spaceScope = spaceContext.WithSpace(deployment.SpaceId);
 
         var lifecycle = deployment.Release.Channel?.Lifecycle
             ?? await db.Projects
