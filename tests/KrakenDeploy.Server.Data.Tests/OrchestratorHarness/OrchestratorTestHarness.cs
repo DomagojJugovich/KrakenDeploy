@@ -231,7 +231,8 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
     public async Task<Guid> CreateDeploymentAsync(
         Guid releaseId,
         Guid environmentId,
-        IReadOnlyList<DeploymentTarget> targets)
+        IReadOnlyList<DeploymentTarget> targets,
+        DeploymentFailureMode failureMode = DeploymentFailureMode.BestEffort)
     {
         ArgumentNullException.ThrowIfNull(targets);
         if (targets.Count == 0)
@@ -246,6 +247,7 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             EnvironmentId = environmentId,
             TargetId      = targets[0].Id,  // legacy single-target column
             Status        = DeploymentStatus.Queued,
+            FailureMode   = failureMode,
         };
         db.Deployments.Add(deployment);
         await db.SaveChangesAsync();

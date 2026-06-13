@@ -17,6 +17,9 @@ public class DeploymentConfiguration : IEntityTypeConfiguration<Deployment>
         builder.Property(x => x.Status).IsRequired().HasConversion<int>();
         builder.HasIndex(x => x.Status);
 
+        // Rolling-deployment failure handling. Stored as int (0 = BestEffort).
+        builder.Property(x => x.FailureMode).IsRequired().HasConversion<int>();
+
         builder.Property(x => x.StartedUtc);
         builder.Property(x => x.CompletedUtc);
         builder.Property(x => x.ScheduledFor);

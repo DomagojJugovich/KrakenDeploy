@@ -2071,6 +2071,7 @@ public static class Program
                             targetId:      req.TargetId,
                             tenantId:      req.TenantId,
                             scheduledFor:  req.ScheduledFor,
+                            failureMode:   req.FailureMode,
                             ct:            ct)
                         .ConfigureAwait(false);
                     return Results.Created($"/api/deployments/{deployment.Id}", deployment);

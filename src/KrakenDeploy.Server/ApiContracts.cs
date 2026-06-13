@@ -57,7 +57,9 @@ public sealed record TriggerDeploymentRequest(
     Guid EnvironmentId,
     Guid TargetId,
     Guid? TenantId = null,
-    DateTimeOffset? ScheduledFor = null);
+    DateTimeOffset? ScheduledFor = null,
+    Core.Domain.Deployments.DeploymentFailureMode FailureMode
+        = Core.Domain.Deployments.DeploymentFailureMode.BestEffort);
 
 // ── Step-template API ──────────────────────────────────────────────────────────
 

@@ -37,6 +37,13 @@ public class Deployment : AuditableEntity, ISpaceScoped
     public Guid? TenantId { get; set; }
     public Tenant? Tenant { get; set; }
     public DeploymentStatus Status { get; set; } = DeploymentStatus.Queued;
+
+    /// <summary>
+    /// How the rolling orchestrator reacts when a target fails a Required step.
+    /// Defaults to <see cref="DeploymentFailureMode.BestEffort"/>.
+    /// </summary>
+    public DeploymentFailureMode FailureMode { get; set; } = DeploymentFailureMode.BestEffort;
+
     public DateTimeOffset? StartedUtc { get; set; }
     public DateTimeOffset? CompletedUtc { get; set; }
 

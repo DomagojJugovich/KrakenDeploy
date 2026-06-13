@@ -43,6 +43,7 @@ public class DeploymentService(
         Guid? tenantId = null,
         DateTimeOffset? scheduledFor = null,
         IReadOnlyCollection<Guid>? additionalTargetIds = null,
+        DeploymentFailureMode failureMode = DeploymentFailureMode.BestEffort,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -115,6 +116,7 @@ public class DeploymentService(
             TargetId = targetId,
             TenantId = tenantId,
             Status = DeploymentStatus.Queued,
+            FailureMode = failureMode,
             ScheduledFor = scheduledFor,
         };
 

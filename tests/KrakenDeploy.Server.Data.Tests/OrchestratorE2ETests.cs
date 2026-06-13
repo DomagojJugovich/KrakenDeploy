@@ -83,11 +83,9 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
     public async Task Required_failure_on_one_target_drops_it_and_lets_others_continue()
     {
         // The headline Phase 3 behaviour: a Required step failure on target B
-        // removes B from subsequent waves but A + C complete normally. Per the
-        // CAT 4 decision, a Required-step failure on ANY target is a hard
-        // failure — the deployment terminates as Failed even though the
-        // survivors completed (required means required). The per-target outcomes
-        // below still show A + C succeeding (drop-and-continue worked).
+        // removes B from subsequent waves but A + C complete normally. This is
+        // the default BestEffort failure mode, so the deployment terminates as
+        // SucceededWithWarnings (partial success — survivors deployed).
         await using var harness = new OrchestratorTestHarness(postgres);
         var (deploymentId, targets) = await SeedAsync(harness,
             stepNames: ["smoke", "deploy"],
@@ -101,9 +99,9 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
         await harness.RunDeploymentAsync(deploymentId);
 
         var deployment = await harness.GetDeploymentAsync(deploymentId);
-        deployment.Status.Should().Be(DeploymentStatus.Failed,
-            because: "B dropped out on a Required step failure — a Required failure on any " +
-                      "target terminates the deployment as Failed, even though A + C completed");
+        deployment.Status.Should().Be(DeploymentStatus.SucceededWithWarnings,
+            because: "BestEffort: B dropped on a Required step failure but A + C completed — " +
+                      "partial success terminates as SucceededWithWarnings");
 
         var outcomes = await harness.GetOutcomesAsync(deploymentId);
 
@@ -121,6 +119,42 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
                       "dispatch to it, so no second outcome row lands");
         bOutcomes[0].StepName.Should().Be("smoke");
         bOutcomes[0].Outcome.Should().Be(StepOutcomeKind.Failed);
+    }
+
+    [Fact]
+    public async Task Atomic_mode_required_failure_fails_deployment_and_taints_survivors()
+    {
+        // Contrast with the BestEffort test above. In Atomic mode a Required-step
+        // failure on B fails the WHOLE deployment and puts every surviving target
+        // into the failing state, so the survivor A's LATER Condition=Success step
+        // is SKIPPED — the same hook that makes Condition=Failure/Always cleanup
+        // run farm-wide (e.g. roll back a half-applied version). Terminal = Failed.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var project = await harness.SeedProjectAsync("atomic-proj");
+        var env     = await harness.SeedEnvironmentAsync("atomic-env");
+        var targets = await harness.SeedTargetsAsync("A", "B");
+        var release = await harness.SeedReleaseAsync(
+            project.Id, "1.0",
+            StepBuilder.Script("smoke"),
+            StepBuilder.Script("deploy"));
+        var deploymentId = await harness.CreateDeploymentAsync(
+            release.Id, env.Id, targets, DeploymentFailureMode.Atomic);
+
+        harness.ConnectFakeAgent(targets[0]); // A succeeds
+        var agentB = harness.ConnectFakeAgent(targets[1]);
+        agentB.StepResponses["smoke"] = FakeStepResponse.Fail("smoke refused"); // B fails required smoke
+
+        await harness.RunDeploymentAsync(deploymentId);
+
+        var deployment = await harness.GetDeploymentAsync(deploymentId);
+        deployment.Status.Should().Be(DeploymentStatus.Failed,
+            because: "Atomic: a Required-step failure on any target fails the whole deployment");
+
+        var aOutcomes = (await harness.GetOutcomesAsync(deploymentId))
+            .Where(o => o.TargetId == targets[0].Id).ToList();
+        aOutcomes.Should().Contain(o => o.StepName == "smoke" && o.Outcome == StepOutcomeKind.Succeeded);
+        aOutcomes.Should().Contain(o => o.StepName == "deploy" && o.Outcome == StepOutcomeKind.Skipped,
+            because: "Atomic mode taints the survivor: A's later Condition=Success step is skipped");
     }
 
     [Fact]
@@ -255,9 +289,8 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
         // failure (canary-ish gate). Phase 3 removed that gate — each
         // target's failure drops only that target; batch 2 still runs.
         // This test pins the Phase 3 behaviour (the failing target drops,
-        // the survivors complete) AND the CAT 4 labeling: a Required-step
-        // failure makes the deployment terminal status Failed even though the
-        // other three targets succeeded.
+        // the survivors complete) under the default BestEffort failure mode:
+        // partial success → SucceededWithWarnings.
         await using var harness = new OrchestratorTestHarness(postgres);
 
         var project = await harness.SeedProjectAsync("rolling-fail-proj");
@@ -279,9 +312,8 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
         await harness.RunDeploymentAsync(deploymentId);
 
         var deployment = await harness.GetDeploymentAsync(deploymentId);
-        deployment.Status.Should().Be(DeploymentStatus.Failed,
-            because: "a2 dropped on a Required-step failure — Failed even though the other " +
-                      "three targets succeeded (required means required)");
+        deployment.Status.Should().Be(DeploymentStatus.SucceededWithWarnings,
+            because: "BestEffort: a2 dropped, others succeeded — partial success");
 
         var outcomes = await harness.GetOutcomesAsync(deploymentId);
         outcomes.Where(o => o.Outcome == StepOutcomeKind.Succeeded)

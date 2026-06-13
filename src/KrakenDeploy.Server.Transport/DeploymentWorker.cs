@@ -459,9 +459,14 @@ public sealed class DeploymentWorker(
             // possible"); when some survived, it terminates as
             // SucceededWithWarnings even if all waves' agent-side calls
             // returned cleanly for the survivors.
+            var failureMode = deployment.FailureMode;
             var hasFailed = false;
             var aliveTargets = new List<DeploymentTarget>(targets);
             var droppedTargets = new List<DroppedTargetInfo>();
+            // BestEffort per-target soft-failure tracking: a non-required failure
+            // on target X skips only X's later Condition=Success steps, never a
+            // sibling's. (Atomic mode uses the global hasFailed flag instead.)
+            var softFailedTargets = new HashSet<Guid>();
 
             foreach (var wave in waves)
             {
@@ -526,7 +531,7 @@ public sealed class DeploymentWorker(
                     // them from aliveTargets and continues.
                     var targetWaveResult = await DispatchTargetWaveAcrossTargetsAsync(
                         wave, aliveTargets, contexts, canonicalCtx.SnapshotByPlanIndex,
-                        snapshotById, hasFailed, deployment,
+                        snapshotById, failureMode, hasFailed, softFailedTargets, deployment,
                         db, auditLog, logSeq, ct).ConfigureAwait(false);
 
                     foreach (var dropped in targetWaveResult.DroppedTargets)
@@ -538,16 +543,24 @@ public sealed class DeploymentWorker(
                         droppedTargets.Add(dropped);
                     }
 
-                    // Only a non-required step failure flips the deployment-wide
-                    // hasFailed flag (which skips Condition=Success steps AND runs
-                    // Condition=Failure steps on later waves). A Required-step drop
-                    // deliberately does NOT, so the SURVIVING targets keep running
-                    // their normal steps to completion — the Phase 3 best-effort
-                    // contract (e.g. deploy the rest of an RDS farm when one node
-                    // is out). Running Failure/Always cleanup across all targets on
-                    // any failure ("atomic" mode) is a deliberate, configurable
-                    // behaviour tracked as a separate feature, not forced here.
-                    if (targetWaveResult.HasFailedNonRequired)
+                    // Record per-target soft failures so each target's own later
+                    // Condition=Success steps skip (BestEffort isolation).
+                    foreach (var id in targetWaveResult.SoftFailedTargetIds)
+                    {
+                        softFailedTargets.Add(id);
+                    }
+
+                    // Promote to the deployment-global failing state — which skips
+                    // Condition=Success and runs Condition=Failure/Always on EVERY
+                    // surviving target in later waves — only in Atomic mode, and on
+                    // ANY failure (a Required drop OR a soft failure): one target's
+                    // failure fails the whole deployment so a half-applied change is
+                    // cleaned up / rolled back farm-wide. In BestEffort mode a
+                    // target failure stays local (survivors keep deploying) and the
+                    // global flag is reserved for deployment-level/server failures.
+                    if (failureMode == DeploymentFailureMode.Atomic
+                        && (targetWaveResult.DroppedTargets.Count > 0
+                            || targetWaveResult.SoftFailedTargetIds.Count > 0))
                     {
                         hasFailed = true;
                     }
@@ -582,17 +595,17 @@ public sealed class DeploymentWorker(
 
             // ── M14.2 + Phase 3 finalisation ────────────────────────────
             // Reached only when at least one target survived (the all-dropped
-            // case failed earlier). A Required-step failure on ANY target is a
-            // hard failure → Failed: survivors completing doesn't make the
-            // deployment a success, and SucceededWithWarnings would mask it.
-            // Softer partial-success (a non-required step failure via hasFailed,
-            // or an agent-offline-only drop) stays SucceededWithWarnings — the
-            // yellow-badge state — so partial success is still visible without
-            // scraping audit rows. See DeploymentTerminalStatusResolver.
+            // case failed earlier). Terminal status is mode-aware: in Atomic mode
+            // a Required-step failure on any target is a hard Failed; in BestEffort
+            // a partial drop / soft failure with survivors completing is
+            // SucceededWithWarnings (the yellow-badge state). See
+            // DeploymentTerminalStatusResolver.
             var terminalStatus = DeploymentTerminalStatusResolver.Resolve(
+                failureMode,
                 hasFailed,
                 requiredStepDropped: droppedTargets.Any(d => d.Reason == DropReason.RequiredStepFailed),
-                droppedTargetCount:  droppedTargets.Count);
+                droppedTargetCount:  droppedTargets.Count,
+                softFailedCount:     softFailedTargets.Count);
             DateTimeOffset finalCompletedUtc;
             await using (var finalDb = await scope.ServiceProvider
                 .GetRequiredService<IDbContextFactory<KrakenDbContext>>()
@@ -2068,7 +2081,11 @@ public sealed class DeploymentWorker(
     /// </summary>
     private sealed record TargetWaveAggregateResult(
         IReadOnlyList<DroppedTargetInfo> DroppedTargets,
-        bool HasFailedNonRequired);
+        // Target ids that had a NON-required step failure this wave (the target
+        // survives but is "soft-failed"). In BestEffort mode only this target's
+        // later Condition=Success steps skip; in Atomic mode any failure taints
+        // the whole deployment via the global hasFailed flag instead.
+        IReadOnlyList<Guid> SoftFailedTargetIds);
 
     /// <summary>
     /// One target that dropped out of subsequent waves. Carries enough
@@ -2130,7 +2147,9 @@ public sealed class DeploymentWorker(
         IReadOnlyDictionary<Guid, TargetDispatchContext> contexts,
         StepSnapshot[] canonicalSnapshotByPlanIndex,
         IReadOnlyDictionary<Guid, StepSnapshot> snapshotById,
-        bool hasFailedAtWaveStart,
+        DeploymentFailureMode failureMode,
+        bool deploymentHasFailed,
+        HashSet<Guid> softFailedTargets,
         Deployment deployment,
         KrakenDbContext db,
         IAuditLog auditLog,
@@ -2150,6 +2169,17 @@ public sealed class DeploymentWorker(
         foreach (var target in targets)
         {
             var ctx = contexts[target.Id];
+
+            // Per-target failed state for Condition evaluation:
+            //  - Atomic: the deployment-global flag (any failure anywhere taints
+            //    every target, so cleanup runs farm-wide and Success steps skip).
+            //  - BestEffort: the global flag (server-level failures are deployment-
+            //    wide) OR this target's own soft-failure — a non-required failure
+            //    on another target does NOT skip this target's Success steps.
+            var targetHasFailed = deploymentHasFailed
+                || (failureMode == DeploymentFailureMode.BestEffort
+                    && softFailedTargets.Contains(target.Id));
+
             var stepsToRun = new List<DeploymentStepPlan>(wave.Steps.Count);
             foreach (var s in wave.Steps)
             {
@@ -2157,7 +2187,7 @@ public sealed class DeploymentWorker(
                 var decision = StepConditionEvaluator.Evaluate(
                     snapshot.Condition,
                     snapshot.ConditionVariableExpression,
-                    hasFailedAtWaveStart,
+                    targetHasFailed,
                     ctx.VarDict);
                 if (decision.Action == StepConditionEvaluator.Action.Skip)
                 {
@@ -2223,8 +2253,8 @@ public sealed class DeploymentWorker(
             // the outer loop applies them to aliveTargets + fails the
             // deployment when the set goes empty.
             return new TargetWaveAggregateResult(
-                DroppedTargets:       droppedTargets,
-                HasFailedNonRequired: false);
+                DroppedTargets:      droppedTargets,
+                SoftFailedTargetIds: []);
         }
 
         // ── M-RollingDeployments Phase 2 — resolve effective MaxParallelism ──
@@ -2249,7 +2279,7 @@ public sealed class DeploymentWorker(
         // didn't fire).
         var batchingActive = batches.Count > 1 && rollingGroupName is not null;
 
-        var hasFailedNonRequired = false;
+        var softFailedTargetIds = new List<Guid>();
 
         for (var batchIdx = 0; batchIdx < batches.Count; batchIdx++)
         {
@@ -2297,10 +2327,7 @@ public sealed class DeploymentWorker(
             // semantics across batches can rely on per-target drop-out
             // emptying aliveTargets if every batch's targets fail.
             droppedTargets.AddRange(batchOutcome.DroppedTargets);
-            if (batchOutcome.HasFailedNonRequired)
-            {
-                hasFailedNonRequired = true;
-            }
+            softFailedTargetIds.AddRange(batchOutcome.SoftFailedTargetIds);
 
             if (batchingActive)
             {
@@ -2320,8 +2347,8 @@ public sealed class DeploymentWorker(
         }
 
         return new TargetWaveAggregateResult(
-            DroppedTargets:       droppedTargets,
-            HasFailedNonRequired: hasFailedNonRequired);
+            DroppedTargets:      droppedTargets,
+            SoftFailedTargetIds: softFailedTargetIds);
     }
 
     /// <summary>
@@ -2338,7 +2365,7 @@ public sealed class DeploymentWorker(
     /// </summary>
     private sealed record BatchOutcome(
         IReadOnlyList<DroppedTargetInfo> DroppedTargets,
-        bool HasFailedNonRequired,
+        IReadOnlyList<Guid> SoftFailedTargetIds,
         IReadOnlyList<string> FailedTargets);
 
     private async Task<BatchOutcome> DispatchOneBatchAsync(
@@ -2364,7 +2391,7 @@ public sealed class DeploymentWorker(
         var perTargetOutcomes = await Task.WhenAll(dispatchTasks).ConfigureAwait(false);
         var waveCompletedUtc = DateTimeOffset.UtcNow;
 
-        var hasFailedNonRequired = false;
+        var softFailedTargetIds = new List<Guid>();
         var droppedTargets = new List<DroppedTargetInfo>();
         var failedTargets = new List<string>();
 
@@ -2490,13 +2517,13 @@ public sealed class DeploymentWorker(
                             ctx.SnapshotByPlanIndex[p.Index], ct).ConfigureAwait(false);
                     }
                 }
-                hasFailedNonRequired = true;
+                softFailedTargetIds.Add(ctx.Target.Id);
             }
         }
 
         return new BatchOutcome(
-            DroppedTargets:       droppedTargets,
-            HasFailedNonRequired: hasFailedNonRequired,
-            FailedTargets:        failedTargets);
+            DroppedTargets:      droppedTargets,
+            SoftFailedTargetIds: softFailedTargetIds,
+            FailedTargets:       failedTargets);
     }
 }
