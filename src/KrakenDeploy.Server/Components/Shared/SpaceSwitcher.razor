@@ -1,7 +1,11 @@
+@using KrakenDeploy.Server.Core.Domain.Security
 @using KrakenDeploy.Server.Core.Domain.Spaces
 @using KrakenDeploy.Server.Data.Services
+@using Microsoft.AspNetCore.Components.Authorization
 @inject SpaceService SpaceSvc
 @inject ISpaceContext SpaceContext
+@inject IPermissionEvaluator Perms
+@inject AuthenticationStateProvider AuthProvider
 @inject NavigationManager Nav
 
 @* Hidden entirely when only the Default Space exists — keeps the on-prem
@@ -24,19 +28,23 @@
 
     protected override async Task OnInitializedAsync()
     {
-        // Cross-Space query — Space itself is platform-level (not ISpaceScoped)
-        // so the global filter doesn't apply here.
+        // Show only the Active Spaces the user can actually access — the hard
+        // tenant boundary. Space is platform-level (not ISpaceScoped) so the
+        // global filter doesn't apply; we filter explicitly by the accessible set.
+        var user = (await AuthProvider.GetAuthenticationStateAsync()).User;
+        var accessible = await Perms.GetAccessibleSpaceIdsAsync(user);
         _spaces = (await SpaceSvc.GetAllAsync())
-            .Where(s => s.Status == SpaceStatus.Active)
+            .Where(s => s.Status == SpaceStatus.Active && accessible.Contains(s.Id))
             .ToList();
 
         _currentSpaceId = SpaceContext.CurrentSpaceId;
 
-        // Defensive: if the cookie points at an archived/deleted Space, snap
-        // back to Default so subsequent queries don't return zero rows.
+        // Snap the selection to an accessible Space if the resolved one isn't in
+        // the list (e.g. cookie pointed elsewhere). Prefer the Default Space when
+        // the user can access it.
         if (_spaces.Count > 0 && _spaces.All(s => s.Id != _currentSpaceId))
         {
-            _currentSpaceId = _spaces.First(s => s.IsDefault).Id;
+            _currentSpaceId = (_spaces.FirstOrDefault(s => s.IsDefault) ?? _spaces[0]).Id;
         }
     }
 

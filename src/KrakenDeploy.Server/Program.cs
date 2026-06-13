@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Claims;
 using System.Text;
 using Hangfire;
 using Hangfire.PostgreSql;
@@ -1050,11 +1051,16 @@ public static class Program
         // ── Project API (CLI / REST) ─────────────────────────────────────────
         // ── Spaces API ──────────────────────────────────────────────────────────
         app.MapGet("/api/spaces",
-            async (SpaceService spaceSvc, CancellationToken ct) =>
-                Results.Ok(await spaceSvc.GetAllAsync(ct).ConfigureAwait(false))
-        ).RequireAuthorization(); // List of accessible Spaces — any authenticated user
-                                  // can see the Spaces they belong to (filtered server-side
-                                  // when membership lands; for now: all Spaces).
+            async (ClaimsPrincipal user, SpaceService spaceSvc,
+                   IPermissionEvaluator perms, CancellationToken ct) =>
+            {
+                // Hard tenant boundary: list only the Spaces the caller can access
+                // (all Active Spaces for system admins; otherwise the Spaces they
+                // reach via real team membership). Never the full cross-Space list.
+                var accessible = await perms.GetAccessibleSpaceIdsAsync(user, ct).ConfigureAwait(false);
+                var spaces = await spaceSvc.GetAllAsync(ct).ConfigureAwait(false);
+                return Results.Ok(spaces.Where(s => accessible.Contains(s.Id)).ToList());
+            }).RequireAuthorization();
 
         // Switch the active Space — sets the kraken-active-space cookie. Two
         // entry points:
@@ -1075,22 +1081,38 @@ public static class Program
             Guid spaceId,
             string? returnUrl,
             SpaceService spaceSvc,
+            IPermissionEvaluator perms,
             HttpContext http,
             CancellationToken ct,
             bool redirect)
         {
-            // Validate the Space exists. Membership / authorization checks
-            // come with the M10 Permission/Role/Team model — for now any
-            // authenticated user can switch to any Space.
+            // On any deny the browser-facing GET must redirect somewhere safe
+            // (never a raw 403 — that AccessDenied-redirects to /login); the
+            // programmatic POST returns a precise status.
+            static IResult Deny(bool redirect, IResult apiResult)
+                => redirect ? Results.Redirect("/") : apiResult;
+
             var space = await spaceSvc.GetAsync(spaceId, ct).ConfigureAwait(false);
             if (space is null)
             {
-                return Results.NotFound(new { error = "Space not found." });
+                return Deny(redirect, Results.NotFound(new { error = "Space not found." }));
             }
 
             if (space.Status != SpaceStatus.Active)
             {
-                return Results.BadRequest(new { error = $"Space is {space.Status} and cannot be selected." });
+                return Deny(redirect, Results.BadRequest(
+                    new { error = $"Space is {space.Status} and cannot be selected." }));
+            }
+
+            // Hard tenant boundary: only members (or system admins) may activate a
+            // Space. Without this gate, setting the cookie scopes both reads (EF
+            // global filter) and permission checks to the chosen Space — a
+            // cross-tenant leak. StatusCode(403), not Forbid(), so the API doesn't
+            // 302 to /login.
+            var accessible = await perms.GetAccessibleSpaceIdsAsync(http.User, ct).ConfigureAwait(false);
+            if (!accessible.Contains(spaceId))
+            {
+                return Deny(redirect, Results.StatusCode(StatusCodes.Status403Forbidden));
             }
 
             http.Response.Cookies.Append(
@@ -1117,22 +1139,30 @@ public static class Program
         }
 
         app.MapPost("/api/spaces/switch/{spaceId:guid}",
-            (Guid spaceId, SpaceService spaceSvc, HttpContext http, CancellationToken ct)
-                => SwitchSpaceAsync(spaceId, returnUrl: null, spaceSvc, http, ct, redirect: false))
-            .RequireAuthorization(); // Selecting a space is an identity action,
-                                     // not a Permission — gated by membership when that lands.
+            (Guid spaceId, SpaceService spaceSvc, IPermissionEvaluator perms,
+             HttpContext http, CancellationToken ct)
+                => SwitchSpaceAsync(spaceId, returnUrl: null, spaceSvc, perms, http, ct, redirect: false))
+            .RequireAuthorization(); // Selecting a space is an identity action, not a
+                                     // Permission — but it IS gated by Space membership.
 
         app.MapGet("/space/switch",
-            (Guid id, string? returnUrl, SpaceService spaceSvc, HttpContext http, CancellationToken ct)
-                => SwitchSpaceAsync(id, returnUrl, spaceSvc, http, ct, redirect: true))
+            (Guid id, string? returnUrl, SpaceService spaceSvc, IPermissionEvaluator perms,
+             HttpContext http, CancellationToken ct)
+                => SwitchSpaceAsync(id, returnUrl, spaceSvc, perms, http, ct, redirect: true))
             .RequireAuthorization();
 
         app.MapPost("/api/spaces",
-            async (CreateSpaceRequest req, SpaceService spaceSvc, CancellationToken ct) =>
+            async (CreateSpaceRequest req, ClaimsPrincipal user,
+                   SpaceService spaceSvc, CancellationToken ct) =>
             {
                 try
                 {
-                    var space = await spaceSvc.CreateAsync(req.Slug, req.Name, req.Description, ct)
+                    // Anti-lockout: seed the creator into the new Space's "Space
+                    // Managers" team so a non-admin creator isn't shut out by the
+                    // hard tenant boundary. System admins reach it via AdministerSystem.
+                    var creatorId = Guid.TryParse(user.FindFirstValue(ClaimTypes.NameIdentifier), out var uid)
+                        ? uid : (Guid?)null;
+                    var space = await spaceSvc.CreateAsync(req.Slug, req.Name, req.Description, creatorId, ct)
                         .ConfigureAwait(false);
                     return Results.Created($"/api/spaces/{space.Id}", space);
                 }

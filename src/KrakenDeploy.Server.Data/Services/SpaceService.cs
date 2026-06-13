@@ -1,5 +1,6 @@
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Projects;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using Microsoft.EntityFrameworkCore;
 
@@ -103,8 +104,18 @@ public class SpaceService(IDbContextFactory<KrakenDbContext> dbFactory)
         return group;
     }
 
+    /// <summary>
+    /// Creates a Space, seeds its built-in teams, and (when
+    /// <paramref name="creatorUserId"/> is supplied) adds that user to the new
+    /// Space's "Space Managers" team. The membership is the anti-lockout step:
+    /// after the hard-tenant-boundary fix a non-admin creator would otherwise be
+    /// locked out of the Space they just made (system admins keep access via
+    /// <see cref="Permission.AdministerSystem"/>). CLI / seed callers pass
+    /// <c>null</c>.
+    /// </summary>
     public async Task<Space> CreateAsync(
-        string slug, string name, string? description, CancellationToken ct = default)
+        string slug, string name, string? description,
+        Guid? creatorUserId = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(slug);
         ArgumentException.ThrowIfNullOrEmpty(name);
@@ -137,6 +148,25 @@ public class SpaceService(IDbContextFactory<KrakenDbContext> dbFactory)
         var rbacSeeder = new BuiltInRbacSeeder(dbFactory,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<BuiltInRbacSeeder>.Instance);
         await rbacSeeder.SeedSpaceTeamsAsync(space.Id, ct).ConfigureAwait(false);
+
+        // Anti-lockout: make the creator a Space Manager of the new Space.
+        if (creatorUserId is { } uid)
+        {
+            var managersTeamId = BuiltInRbacSeeder.SpaceManagersTeamId(space.Id);
+            var alreadyMember = await db.TeamMembers
+                .AnyAsync(m => m.TeamId == managersTeamId && m.UserId == uid, ct)
+                .ConfigureAwait(false);
+            if (!alreadyMember)
+            {
+                db.TeamMembers.Add(new TeamMember
+                {
+                    TeamId   = managersTeamId,
+                    UserId   = uid,
+                    AddedUtc = DateTimeOffset.UtcNow,
+                });
+                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            }
+        }
 
         return space;
     }

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Security.Claims;
 using KrakenDeploy.Server.Core.Domain.Security;
+using KrakenDeploy.Server.Core.Domain.Spaces;
 using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data.Services;
@@ -120,6 +121,60 @@ public sealed class PermissionEvaluator(
             }
         }
         return perms;
+    }
+
+    public async Task<IReadOnlySet<Guid>> GetAccessibleSpaceIdsAsync(
+        ClaimsPrincipal user, CancellationToken ct = default)
+    {
+        var userId = TryGetUserId(user);
+        if (userId is null)
+        {
+            return new HashSet<Guid>();
+        }
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // AdministerSystem reaches every Active Space.
+        if (await UserIsSystemAdminAsync(user, bypassCache: false, ct).ConfigureAwait(false))
+        {
+            var allActive = await db.Spaces
+                .Where(s => s.Status == SpaceStatus.Active)
+                .Select(s => s.Id)
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+            return allActive.ToHashSet();
+        }
+
+        var teamIds = await GetUserTeamIdsAsync(db, userId.Value, ct).ConfigureAwait(false);
+        if (teamIds.Count == 0)
+        {
+            return new HashSet<Guid>();
+        }
+
+        // Distinct Space-scoped assignments reachable via real membership. A null
+        // SpaceId pins no Space (system-wide grant) so it's excluded here.
+        var assignedSpaceIds = await db.RoleAssignments
+            .IgnoreQueryFilters() // RoleAssignment isn't ISpaceScoped; be explicit
+            .Where(a => teamIds.Contains(a.TeamId) && a.SpaceId != null)
+            .Select(a => a.SpaceId!.Value)
+            .Distinct()
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        if (assignedSpaceIds.Count == 0)
+        {
+            return new HashSet<Guid>();
+        }
+
+        // Keep only Active Spaces (a member of a Suspended/Archived Space can't
+        // act in it).
+        var activeAccessible = await db.Spaces
+            .Where(s => s.Status == SpaceStatus.Active && assignedSpaceIds.Contains(s.Id))
+            .Select(s => s.Id)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        return activeAccessible.ToHashSet();
     }
 
     // ── Cached assignment fetch ───────────────────────────────────────────────

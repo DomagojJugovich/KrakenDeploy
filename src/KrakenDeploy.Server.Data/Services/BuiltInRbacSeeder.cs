@@ -260,6 +260,14 @@ public class BuiltInRbacSeeder(
     }
 
     /// <summary>
+    /// Stable Guid of the per-Space "Space Managers" built-in team. Exposed so
+    /// <see cref="SpaceService.CreateAsync"/> can add the creating user to it
+    /// (anti-lockout) without re-deriving the hash convention.
+    /// </summary>
+    public static Guid SpaceManagersTeamId(Guid spaceId) =>
+        DeterministicSpaceTeamId(spaceId, "space-managers");
+
+    /// <summary>
     /// Generates a stable Guid for a per-Space built-in team given the Space ID
     /// and the team's slug. Deterministic so re-seeding doesn't create
     /// duplicates and so reference-by-Guid works across re-seeds.

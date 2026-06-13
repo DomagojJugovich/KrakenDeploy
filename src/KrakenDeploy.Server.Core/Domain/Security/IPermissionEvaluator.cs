@@ -44,4 +44,23 @@ public interface IPermissionEvaluator
         ClaimsPrincipal user,
         PermissionScope scope = default,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// Returns the set of Space ids <paramref name="user"/> may access. The
+    /// authoritative source for the hard tenant boundary: every <em>Active</em>
+    /// Space when the user holds <see cref="Permission.AdministerSystem"/>;
+    /// otherwise the Active Spaces they reach through a <em>real</em> team
+    /// membership (explicit <c>TeamMember</c>, external-group match, or a
+    /// per-Space "Everyone" team they belong to). System-wide role assignments
+    /// (<c>RoleAssignment.SpaceId == null</c>) pin no Space and are excluded —
+    /// they are only meaningful for the AdministerSystem short-circuit above.
+    /// <para>
+    /// Used to gate the Space switcher, the <c>/api/spaces</c> listing, and the
+    /// active-space cookie/circuit resolution. Returns an empty set for an
+    /// anonymous or unknown principal.
+    /// </para>
+    /// </summary>
+    Task<IReadOnlySet<Guid>> GetAccessibleSpaceIdsAsync(
+        ClaimsPrincipal user,
+        CancellationToken ct = default);
 }
