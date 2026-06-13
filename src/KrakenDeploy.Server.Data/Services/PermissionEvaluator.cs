@@ -172,7 +172,7 @@ public sealed class PermissionEvaluator(
     private static async Task<HashSet<Guid>> GetUserTeamIdsAsync(
         KrakenDbContext db, Guid userId, CancellationToken ct)
     {
-        // a. Explicit team_members rows
+        // a. Explicit team_members rows.
         var explicitTeams = await db.TeamMembers
             .Where(m => m.UserId == userId)
             .Select(m => m.TeamId)
@@ -181,21 +181,7 @@ public sealed class PermissionEvaluator(
 
         var teamIds = new HashSet<Guid>(explicitTeams);
 
-        // b. The system-level "Everyone" team (every authenticated user is a
-        //    virtual member). Per-Space "Everyone" teams matter too — they're
-        //    flagged with IsEveryoneTeam = true.
-        var everyoneTeams = await db.Teams
-            .Where(t => t.IsEveryoneTeam)
-            .Select(t => t.Id)
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
-
-        foreach (var t in everyoneTeams)
-        {
-            teamIds.Add(t);
-        }
-
-        // c. External-group matches via TeamExternalGroup.
+        // b. External-group matches via TeamExternalGroup.
         //    Group memberships are persisted on ApplicationUser.ExternalGroups
         //    at OIDC sign-in time so they survive Identity security-stamp
         //    refreshes.  We query the DB here rather than relying on cookie
@@ -227,6 +213,33 @@ public sealed class PermissionEvaluator(
             {
                 teamIds.Add(t);
             }
+        }
+
+        // c. "Everyone" teams. The SYSTEM-level Everyone team (SpaceId == null) is
+        //    a virtual team every authenticated user belongs to. A per-Space
+        //    Everyone team must NOT be virtual-for-all: doing so hands every user
+        //    that team's Space-scoped ProjectViewer grant on EVERY Space — total
+        //    cross-tenant read. Include a per-Space Everyone team ONLY for Spaces
+        //    the user is a real member of (i.e. belongs to a concrete team scoped
+        //    to that Space via a/b above). System admins are unaffected:
+        //    HasPermission/GetPermissions short-circuit before assignment lookup.
+        var memberSpaceIds = await db.Teams
+            .Where(t => teamIds.Contains(t.Id) && t.SpaceId != null)
+            .Select(t => t.SpaceId!.Value)
+            .Distinct()
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        var everyoneTeams = await db.Teams
+            .Where(t => t.IsEveryoneTeam
+                     && (t.SpaceId == null || memberSpaceIds.Contains(t.SpaceId!.Value)))
+            .Select(t => t.Id)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        foreach (var t in everyoneTeams)
+        {
+            teamIds.Add(t);
         }
 
         return teamIds;
