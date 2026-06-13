@@ -26,6 +26,12 @@
     <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Exposes the path-safety classifier + managed-dir marker name to the
+         test project (pure, side-effect-free unit tests for the purge guard). -->
+    <InternalsVisibleTo Include="KrakenDeploy.Steps.OctopusTentaclePackage.Tests" />
+  </ItemGroup>
+
   <Import Project="..\KrakenStepPackage.targets" />
 
 </Project>

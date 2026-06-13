@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using Grpc.Core;
 using Grpc.Net.Client;
 using KrakenDeploy.Contracts.Grpc;
@@ -82,6 +83,7 @@ public sealed class GrpcPackageDownloader(
 
         long totalBytesReceived = 0;
         bool isDelta            = false;
+        string? expectedSha     = null;
 
         await using (var tempFile = new FileStream(
             tempPath, FileMode.Create, FileAccess.Write, FileShare.None,
@@ -91,6 +93,9 @@ public sealed class GrpcPackageDownloader(
             {
                 if (chunk.IsLast)
                 {
+                    // Trailer carries the full-zip SHA-256 (non-delta, non-resumed).
+                    expectedSha = chunk.Sha256;
+                    isDelta     = chunk.IsDelta;
                     break;
                 }
 
@@ -134,7 +139,26 @@ public sealed class GrpcPackageDownloader(
             File.Move(tempPath, finalPath, overwrite: true);
         }
 
-        // ── 5. Cache the resulting zip ────────────────────────────────────────
+        // ── 5. Verify integrity BEFORE caching/extracting ─────────────────────
+        // Full downloads carry a trailer SHA-256; a mismatch (truncation, transit
+        // corruption, tampering) must never reach the cache or get extracted. Delta
+        // transfers are already verified end-to-end by Octodiff's DeltaApplier.
+        if (!isDelta && !string.IsNullOrEmpty(expectedSha))
+        {
+            var actualSha = await ComputeSha256Async(finalPath, ct).ConfigureAwait(false);
+            if (!string.Equals(actualSha, expectedSha, StringComparison.OrdinalIgnoreCase))
+            {
+                TryDelete(finalPath);
+                throw new InvalidOperationException(
+                    $"Package {packageId} v{version} failed SHA-256 integrity verification " +
+                    $"(expected {expectedSha}, computed {actualSha}); refusing to cache or extract it.");
+            }
+            logger.LogInformation(
+                "Package {PackageId} v{Version} passed SHA-256 integrity verification.",
+                packageId, version);
+        }
+
+        // ── 6. Cache the resulting zip ────────────────────────────────────────
         await cache.StoreAsync(packageId, version, finalPath, ct).ConfigureAwait(false);
 
         logger.LogInformation(
@@ -159,6 +183,32 @@ public sealed class GrpcPackageDownloader(
             new DeltaApplier { SkipHashCheck = false }
                 .Apply(basis, new BinaryDeltaReader(delta, new NullProgressReporter()), output);
         }, ct);
+
+    // ── Integrity ───────────────────────────────────────────────────────────
+
+    private static async Task<string> ComputeSha256Async(string path, CancellationToken ct)
+    {
+        await using var fs = new FileStream(
+            path, FileMode.Open, FileAccess.Read, FileShare.Read,
+            bufferSize: 81920, useAsync: true);
+        var hash = await SHA256.HashDataAsync(fs, ct).ConfigureAwait(false);
+        return Convert.ToHexStringLower(hash);
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+            // Best-effort cleanup of a rejected download.
+        }
+    }
 
     // ── Staging helper ────────────────────────────────────────────────────────
 

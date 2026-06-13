@@ -40,6 +40,11 @@ message DownloadChunk {
     bool   is_last     = 3;
     // True when the stream contains Octodiff delta bytes rather than the raw zip.
     bool   is_delta    = 4;
+    // SHA-256 of the full zip, lower-case hex. Populated only on the LAST chunk
+    // of a NON-delta, non-resumed transfer; empty otherwise. The agent verifies
+    // the assembled zip before caching/extracting. Delta transfers are integrity-
+    // checked end-to-end by Octodiff's DeltaApplier instead.
+    string sha256      = 5;
 }
 
 // ── Step-package delivery (Phase D-5) ──────────────────────────────────────

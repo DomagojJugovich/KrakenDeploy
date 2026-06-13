@@ -96,6 +96,33 @@ public sealed class JsonConfigurationVariablesPackageTests : IDisposable
         logs.Should().Contain(l => l.Item1 == "warning" && l.Item2.Contains("No JSON config targets"));
     }
 
+    [Theory]
+    [InlineData("../outside.json")]   // exact path traversal
+    [InlineData("../*.json")]          // glob traversal
+    public async Task Does_not_transform_files_outside_the_extract_dir(string pattern)
+    {
+        // Package is extracted to a subdirectory; a file sits OUTSIDE it. A
+        // targets pattern must not escape ExtractDir (write-anywhere -> RCE).
+        var extractDir = Path.Combine(_workspace, "pkg");
+        Directory.CreateDirectory(extractDir);
+        var outside = Path.Combine(_workspace, "outside.json");
+        await File.WriteAllTextAsync(outside, """{ "Secret": "keep" }""");
+
+        var logs = new List<(string, string)>();
+        var ctx  = NewContext(
+            extractDir: extractDir,
+            config: new() { ["Octopus.Action.Package.JsonConfigurationVariablesTargets"] = pattern },
+            variables: new() { ["Secret"] = "pwned" },
+            logs: logs);
+
+        var ok = await new JsonConfigurationVariablesStepHandler().HandleAsync(ctx, CancellationToken.None);
+
+        ok.Should().BeTrue();
+        JsonNode.Parse(await File.ReadAllTextAsync(outside))!["Secret"]!.GetValue<string>()
+            .Should().Be("keep", "a targets pattern must not resolve outside ExtractDir");
+        logs.Should().Contain(l => l.Item1 == "warning" && l.Item2.Contains("No files matched"));
+    }
+
     [Fact]
     public void Built_manifest_has_correct_id_and_executor_type()
     {

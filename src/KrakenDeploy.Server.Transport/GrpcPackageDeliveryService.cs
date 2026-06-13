@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Security.Cryptography;
 using Grpc.Core;
 using KrakenDeploy.Contracts.Grpc;
 using KrakenDeploy.Server.Core.Domain.Packages;
@@ -142,8 +143,11 @@ public sealed class GrpcPackageDeliveryService(
 
         await using (delta)
         {
+            // No trailer hash for deltas: Octodiff's DeltaApplier verifies the
+            // reconstructed zip end-to-end on the agent (SkipHashCheck = false).
             await StreamFromAsync(
-                delta, isDelta: true, totalBytes: delta.Length, responseStream, ct)
+                delta, isDelta: true, totalBytes: delta.Length, emitHash: false,
+                responseStream, ct)
                 .ConfigureAwait(false);
         }
     }
@@ -174,8 +178,13 @@ public sealed class GrpcPackageDeliveryService(
             fileStream.Seek(resumeOffset, SeekOrigin.Begin);
         }
 
+        // Only emit the integrity hash when this transfer covers the WHOLE file.
+        // A resumed transfer streams a partial range, so its on-the-fly hash
+        // wouldn't match the full zip — suppress it then (the current agent never
+        // resumes; verification still applies to the normal full path).
         await StreamFromAsync(
-            fileStream, isDelta: false, totalBytes: reportedSize, responseStream, ct)
+            fileStream, isDelta: false, totalBytes: reportedSize,
+            emitHash: resumeOffset == 0, responseStream, ct)
             .ConfigureAwait(false);
     }
 
@@ -185,6 +194,7 @@ public sealed class GrpcPackageDeliveryService(
         Stream source,
         bool isDelta,
         long totalBytes,
+        bool emitHash,
         IServerStreamWriter<DownloadChunk> responseStream,
         CancellationToken ct)
     {
@@ -192,8 +202,12 @@ public sealed class GrpcPackageDeliveryService(
         var isFirst = true;
         int bytesRead;
 
+        using var sha = emitHash ? SHA256.Create() : null;
+
         while ((bytesRead = await source.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
         {
+            sha?.TransformBlock(buffer, 0, bytesRead, null, 0);
+
             var chunk = new DownloadChunk
             {
                 Data       = Google.Protobuf.ByteString.CopyFrom(buffer, 0, bytesRead),
@@ -206,14 +220,23 @@ public sealed class GrpcPackageDeliveryService(
             isFirst = false;
         }
 
+        var digest = string.Empty;
+        if (sha is not null)
+        {
+            sha.TransformFinalBlock([], 0, 0);
+            digest = Convert.ToHexStringLower(sha.Hash!);
+        }
+
         // Explicit end-of-stream marker so the agent does not depend solely on
-        // gRPC stream completion for finalisation.
+        // gRPC stream completion for finalisation. Carries the full-zip SHA-256
+        // on a non-delta, non-resumed transfer.
         await responseStream.WriteAsync(
             new DownloadChunk
             {
                 Data    = Google.Protobuf.ByteString.Empty,
                 IsLast  = true,
                 IsDelta = isDelta,
+                Sha256  = digest,
             }, ct).ConfigureAwait(false);
     }
 }

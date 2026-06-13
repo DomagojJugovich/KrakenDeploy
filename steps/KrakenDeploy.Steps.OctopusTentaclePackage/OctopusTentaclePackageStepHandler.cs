@@ -56,22 +56,56 @@ public sealed class OctopusTentaclePackageStepHandler : IStepHandler
             }
             else
             {
+                // Canonicalise (resolves '..', symlink-relative segments) before any
+                // safety check so a traversal can't dress a system path up as benign.
+                var fullCustomDir = Path.GetFullPath(customDir);
+
+                // The directory is Octostache-evaluated from deployment variables,
+                // so a hostile/typo'd value could point at a system path. Purge is
+                // a recursive delete — refuse to deploy to a protected path at all.
+                if (IsProtectedSystemPath(fullCustomDir))
+                {
+                    await context.LogAsync("error",
+                        $"Refusing to deploy to protected system path '{fullCustomDir}'. " +
+                        "CustomInstallationDirectory must not be a drive root, the Windows " +
+                        "directory, System32, Program Files, or a POSIX system directory.")
+                        .ConfigureAwait(false);
+                    return false;
+                }
+
                 var purge = ParseBool(context.Step.Config.GetValueOrDefault(
                     "Octopus.Action.Package.CustomInstallationDirectoryShouldBePurgedBeforeDeployment"));
 
                 if (purge)
                 {
-                    var exclusions = ParseExclusions(
-                        context.Step.Config.GetValueOrDefault(
-                            "Octopus.Action.Package.CustomInstallationDirectoryPurgeExclusions"));
-                    await PurgeDirectoryAsync(customDir, exclusions, context.LogAsync, ct).ConfigureAwait(false);
+                    if (IsKrakenManaged(fullCustomDir))
+                    {
+                        var exclusions = ParseExclusions(
+                            context.Step.Config.GetValueOrDefault(
+                                "Octopus.Action.Package.CustomInstallationDirectoryPurgeExclusions"));
+                        await PurgeDirectoryAsync(fullCustomDir, exclusions, context.LogAsync, ct)
+                            .ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        // Refuse to purge a directory KrakenDeploy didn't create — it
+                        // may hold pre-existing data the operator never meant us to
+                        // wipe. The marker is written after our first deploy below, so
+                        // subsequent redeploys to a KrakenDeploy-managed dir do purge.
+                        await context.LogAsync("warning",
+                            $"Skipping purge of '{fullCustomDir}': not a KrakenDeploy-managed " +
+                            "directory (no marker present). KrakenDeploy only purges " +
+                            "directories it created; deploying without purging.")
+                            .ConfigureAwait(false);
+                    }
                 }
 
                 await context.LogAsync("info",
-                    $"Copying package contents to '{customDir}'.").ConfigureAwait(false);
+                    $"Copying package contents to '{fullCustomDir}'.").ConfigureAwait(false);
 
-                CopyDirectory(context.ExtractDir, customDir);
-                workingDir = customDir;
+                CopyDirectory(context.ExtractDir, fullCustomDir);
+                MarkKrakenManaged(fullCustomDir);
+                workingDir = fullCustomDir;
             }
         }
         else
@@ -210,6 +244,113 @@ public sealed class OctopusTentaclePackageStepHandler : IStepHandler
                 await log("warning",
                     $"Failed to delete '{entry}' during purge: {ex.Message}").ConfigureAwait(false);
             }
+        }
+    }
+
+    // ── CustomInstallationDirectory safety ───────────────────────────────────
+
+    /// <summary>
+    /// Marker file KrakenDeploy drops in a custom install directory it has
+    /// deployed to. Its presence is the signal that the directory is
+    /// KrakenDeploy-managed and therefore safe to purge on redeploy.
+    /// </summary>
+    internal const string ManagedMarkerFileName = ".kraken-managed";
+
+    private static readonly StringComparison PathComparison =
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+    /// <summary>
+    /// True when <paramref name="fullPath"/> (already canonicalised) is a drive /
+    /// filesystem root, or is — or is an ancestor of — a well-known OS directory
+    /// (Windows, System32, SysWOW64, Program Files, or a POSIX system dir).
+    /// Purging or deploying into any of these is never legitimate.
+    /// </summary>
+    internal static bool IsProtectedSystemPath(string fullPath)
+    {
+        var normalized = Path.TrimEndingDirectorySeparator(fullPath);
+        if (string.IsNullOrEmpty(normalized))
+        {
+            return true;
+        }
+
+        // Drive / filesystem root (e.g. "C:\" or "/").
+        var root = Path.TrimEndingDirectorySeparator(Path.GetPathRoot(normalized) ?? string.Empty);
+        if (string.Equals(normalized, root, PathComparison))
+        {
+            return true;
+        }
+
+        foreach (var protectedDir in ProtectedDirectories())
+        {
+            if (string.IsNullOrEmpty(protectedDir))
+            {
+                continue;
+            }
+            var p = Path.TrimEndingDirectorySeparator(protectedDir);
+            // Equal to a protected dir, OR an ancestor of one (purging an ancestor
+            // wipes the protected dir too).
+            if (string.Equals(normalized, p, PathComparison) || IsAncestorOf(normalized, p))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static IEnumerable<string> ProtectedDirectories()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            yield return Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            yield return Environment.GetFolderPath(Environment.SpecialFolder.System);       // System32
+            yield return Environment.GetFolderPath(Environment.SpecialFolder.SystemX86);    // SysWOW64
+            yield return Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            yield return Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        }
+        else
+        {
+            // Common POSIX system roots (the agent may run on Linux).
+            yield return "/bin";
+            yield return "/boot";
+            yield return "/dev";
+            yield return "/etc";
+            yield return "/lib";
+            yield return "/proc";
+            yield return "/root";
+            yield return "/sbin";
+            yield return "/sys";
+            yield return "/usr";
+            yield return "/var";
+        }
+    }
+
+    private static bool IsAncestorOf(string ancestor, string descendant)
+    {
+        if (descendant.Length <= ancestor.Length
+            || !descendant.StartsWith(ancestor, PathComparison))
+        {
+            return false;
+        }
+        // Real path-boundary match so "C:\Win" isn't treated as an ancestor of "C:\Windows".
+        return descendant[ancestor.Length] == Path.DirectorySeparatorChar
+            || descendant[ancestor.Length] == Path.AltDirectorySeparatorChar;
+    }
+
+    private static bool IsKrakenManaged(string directory)
+        => File.Exists(Path.Combine(directory, ManagedMarkerFileName));
+
+    private static void MarkKrakenManaged(string directory)
+    {
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(directory, ManagedMarkerFileName),
+                "This directory is managed by KrakenDeploy and may be purged on redeploy.\n");
+        }
+        catch
+        {
+            // Best-effort: a missing marker only means the NEXT deploy won't purge
+            // (it warns and deploys without purging) — never fatal.
         }
     }
 

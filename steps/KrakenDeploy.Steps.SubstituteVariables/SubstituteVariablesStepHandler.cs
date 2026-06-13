@@ -102,21 +102,30 @@ public sealed class SubstituteVariablesStepHandler : IStepHandler
                   .Select(p => p.Trim())
                   .Where(p => !string.IsNullOrEmpty(p))];
 
+    private static readonly StringComparison PathComparison =
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
     private static List<string> ResolveGlob(string baseDir, string pattern)
     {
+        // The pattern is operator-supplied config; canonicalise everything and
+        // confine it to the extracted package so "../../etc/*" can't escape
+        // ExtractDir and substitute (write) into arbitrary files.
+        var baseFull = Path.TrimEndingDirectorySeparator(Path.GetFullPath(baseDir));
+
         // Support simple * and **/* patterns via Directory.GetFiles.
         if (!pattern.Contains('*') && !pattern.Contains('?'))
         {
-            var exact = Path.Combine(baseDir, pattern);
-            return File.Exists(exact) ? [exact] : [];
+            var exact = Path.GetFullPath(Path.Combine(baseDir, pattern));
+            return IsWithinBase(baseFull, exact) && File.Exists(exact) ? [exact] : [];
         }
 
         var lastSlash = pattern.LastIndexOfAny(['/', '\\']);
-        var dir       = lastSlash >= 0 ? Path.Combine(baseDir, pattern[..lastSlash]) : baseDir;
+        var dirPart   = lastSlash >= 0 ? pattern[..lastSlash] : string.Empty;
         var fileGlob  = lastSlash >= 0 ? pattern[(lastSlash + 1)..] : pattern;
         var recursive = pattern.Contains("**");
 
-        if (!Directory.Exists(dir))
+        var dir = Path.GetFullPath(Path.Combine(baseDir, dirPart));
+        if (!IsWithinBase(baseFull, dir) || !Directory.Exists(dir))
         {
             return [];
         }
@@ -125,6 +134,22 @@ public sealed class SubstituteVariablesStepHandler : IStepHandler
             ? SearchOption.AllDirectories
             : SearchOption.TopDirectoryOnly;
 
-        return [.. Directory.GetFiles(dir, fileGlob, option)];
+        // Filter results too, in case a symlink under dir points outside the package.
+        return [.. Directory.GetFiles(dir, fileGlob, option)
+                            .Where(f => IsWithinBase(baseFull, Path.GetFullPath(f)))];
+    }
+
+    /// <summary>True when <paramref name="candidateFull"/> is the base directory itself or sits inside it.</summary>
+    private static bool IsWithinBase(string baseFull, string candidateFull)
+    {
+        var c = Path.TrimEndingDirectorySeparator(candidateFull);
+        if (string.Equals(c, baseFull, PathComparison))
+        {
+            return true;
+        }
+        return c.Length > baseFull.Length
+            && c.StartsWith(baseFull, PathComparison)
+            && (c[baseFull.Length] == Path.DirectorySeparatorChar
+                || c[baseFull.Length] == Path.AltDirectorySeparatorChar);
     }
 }

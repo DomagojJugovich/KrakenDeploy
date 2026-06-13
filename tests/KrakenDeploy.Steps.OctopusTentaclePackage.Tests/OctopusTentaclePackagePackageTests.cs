@@ -127,6 +127,9 @@ public sealed class OctopusTentaclePackageStepHandlerTests : IDisposable
         var customDir = Path.Combine(_root, "install");
         Directory.CreateDirectory(customDir);
         await File.WriteAllTextAsync(Path.Combine(customDir, "OldFile.txt"), "obsolete");
+        // Mark it KrakenDeploy-managed (as a prior deploy would) so purge runs —
+        // KrakenDeploy refuses to purge directories it didn't create.
+        MarkManaged(customDir);
 
         var config = new Dictionary<string, string>
         {
@@ -151,6 +154,7 @@ public sealed class OctopusTentaclePackageStepHandlerTests : IDisposable
         Directory.CreateDirectory(Path.Combine(customDir, "App_Data"));
         await File.WriteAllTextAsync(Path.Combine(customDir, "App_Data", "uploads.bin"), "keep me");
         await File.WriteAllTextAsync(Path.Combine(customDir, "OldFile.txt"), "delete me");
+        MarkManaged(customDir);
 
         var config = new Dictionary<string, string>
         {
@@ -166,6 +170,111 @@ public sealed class OctopusTentaclePackageStepHandlerTests : IDisposable
         File.Exists(Path.Combine(customDir, "OldFile.txt")).Should().BeFalse();
         File.Exists(Path.Combine(customDir, "App_Data", "uploads.bin")).Should().BeTrue(
             "App_Data was excluded from purge");
+    }
+
+    // ── CustomInstallationDirectory purge safety (CAT 3 hardening) ──────────
+
+    [Fact]
+    public async Task Purge_is_skipped_when_directory_is_not_kraken_managed()
+    {
+        // A directory KrakenDeploy didn't create (no marker) must NOT be purged —
+        // it may hold pre-existing operator data.
+        var (extractDir, _) = StageExtractedPackage();
+        var customDir = Path.Combine(_root, "preexisting-app");
+        Directory.CreateDirectory(customDir);
+        await File.WriteAllTextAsync(Path.Combine(customDir, "important.dat"), "do not delete");
+
+        var config = new Dictionary<string, string>
+        {
+            ["Octopus.Action.EnabledFeatures"] = "Octopus.Features.CustomDirectory",
+            ["Octopus.Action.Package.CustomInstallationDirectory"] = customDir,
+            ["Octopus.Action.Package.CustomInstallationDirectoryShouldBePurgedBeforeDeployment"] = "True",
+        };
+
+        var result = await Run(config, extractDir);
+
+        result.Success.Should().BeTrue();
+        File.Exists(Path.Combine(customDir, "important.dat"))
+            .Should().BeTrue("KrakenDeploy must not purge a directory it didn't create");
+        result.Logs.Should().Contain(l =>
+            l.Level == "warning" && l.Message.Contains("not a KrakenDeploy-managed"));
+        // The package was still deployed, and the dir is now marked managed.
+        File.Exists(Path.Combine(customDir, "Web.config")).Should().BeTrue();
+        File.Exists(Path.Combine(customDir, OctopusTentaclePackageStepHandler.ManagedMarkerFileName))
+            .Should().BeTrue("a successful deploy marks the dir managed for next time");
+    }
+
+    [Fact]
+    public async Task First_deploy_writes_the_managed_marker()
+    {
+        var (extractDir, _) = StageExtractedPackage();
+        var customDir = Path.Combine(_root, "fresh-install");
+
+        var config = new Dictionary<string, string>
+        {
+            ["Octopus.Action.EnabledFeatures"] = "Octopus.Features.CustomDirectory",
+            ["Octopus.Action.Package.CustomInstallationDirectory"] = customDir,
+        };
+
+        var result = await Run(config, extractDir);
+
+        result.Success.Should().BeTrue();
+        File.Exists(Path.Combine(customDir, OctopusTentaclePackageStepHandler.ManagedMarkerFileName))
+            .Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(false)] // a normal nested install dir is fine
+    [InlineData(true)]  // a protected system path must be refused
+    public async Task Deploy_to_protected_system_path_is_refused(bool protectedPath)
+    {
+        var (extractDir, _) = StageExtractedPackage();
+        // Use the drive/filesystem root of the temp path as the protected target;
+        // the guard returns false BEFORE any purge/copy, so nothing is touched.
+        var root = Path.GetPathRoot(Path.GetFullPath(_root))!;
+        var customDir = protectedPath ? root : Path.Combine(_root, "ok-install");
+
+        var config = new Dictionary<string, string>
+        {
+            ["Octopus.Action.EnabledFeatures"] = "Octopus.Features.CustomDirectory",
+            ["Octopus.Action.Package.CustomInstallationDirectory"] = customDir,
+        };
+
+        var result = await Run(config, extractDir);
+
+        result.Success.Should().Be(!protectedPath);
+        if (protectedPath)
+        {
+            result.Logs.Should().Contain(l =>
+                l.Level == "error" && l.Message.Contains("protected system path"));
+        }
+    }
+
+    [Fact]
+    public void IsProtectedSystemPath_classifies_system_paths()
+    {
+        // Pure classification — no filesystem side effects.
+        OctopusTentaclePackageStepHandler.IsProtectedSystemPath(
+            Path.GetPathRoot(Path.GetFullPath(_root))!).Should().BeTrue("drive/fs root");
+        OctopusTentaclePackageStepHandler.IsProtectedSystemPath(
+            Path.Combine(_root, "app", "v1")).Should().BeFalse("a normal nested dir");
+
+        if (OperatingSystem.IsWindows())
+        {
+            OctopusTentaclePackageStepHandler.IsProtectedSystemPath(
+                Environment.GetFolderPath(Environment.SpecialFolder.Windows)).Should().BeTrue();
+            OctopusTentaclePackageStepHandler.IsProtectedSystemPath(
+                Environment.SystemDirectory).Should().BeTrue("System32");
+            var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            OctopusTentaclePackageStepHandler.IsProtectedSystemPath(pf).Should().BeTrue("Program Files");
+            OctopusTentaclePackageStepHandler.IsProtectedSystemPath(Path.Combine(pf, "MyApp"))
+                .Should().BeFalse("a subdirectory under Program Files is a valid install target");
+        }
+        else
+        {
+            OctopusTentaclePackageStepHandler.IsProtectedSystemPath("/etc").Should().BeTrue();
+            OctopusTentaclePackageStepHandler.IsProtectedSystemPath("/usr/local/myapp").Should().BeFalse();
+        }
     }
 
     // ── ConfigurationVariables ────────────────────────────────────────────
@@ -461,6 +570,11 @@ public sealed class OctopusTentaclePackageStepHandlerTests : IDisposable
         File.WriteAllText(configPath, xml);
         return (dir, configPath);
     }
+
+    /// <summary>Drops the KrakenDeploy-managed marker so purge is allowed (mimics a prior deploy).</summary>
+    private static void MarkManaged(string dir)
+        => File.WriteAllText(
+            Path.Combine(dir, OctopusTentaclePackageStepHandler.ManagedMarkerFileName), "test");
 
     private static async Task<(bool Success, List<(string Level, string Message)> Logs)> Run(
         Dictionary<string, string> config,

@@ -105,6 +105,34 @@ public sealed class SubstituteVariablesPackageTests : IDisposable
         (await File.ReadAllTextAsync(Path.Combine(subDir, "b.txt"))).Should().Be("Bye world");
     }
 
+    [Theory]
+    [InlineData("../outside.txt")]   // exact path traversal
+    [InlineData("../*.txt")]          // glob traversal
+    public async Task Does_not_substitute_files_outside_the_extract_dir(string pattern)
+    {
+        // Package is extracted to a subdirectory; a file sits OUTSIDE it. A
+        // TargetFiles pattern must not escape ExtractDir (write-anywhere -> RCE).
+        var extractDir = Path.Combine(_workspace, "pkg");
+        Directory.CreateDirectory(extractDir);
+        var outside = Path.Combine(_workspace, "outside.txt");
+        await File.WriteAllTextAsync(outside, "secret #{Name}");
+
+        var handler = new SubstituteVariablesStepHandler();
+        var logs    = new List<(string, string)>();
+        var ctx     = NewContext(
+            extractDir: extractDir,
+            config: new() { ["Octopus.Action.SubstituteInFiles.TargetFiles"] = pattern },
+            variables: new() { ["Name"] = "pwned" },
+            logs: logs);
+
+        var ok = await handler.HandleAsync(ctx, CancellationToken.None);
+
+        ok.Should().BeTrue();
+        (await File.ReadAllTextAsync(outside)).Should().Be("secret #{Name}",
+            "a TargetFiles pattern must not resolve outside ExtractDir");
+        logs.Should().Contain(l => l.Item1 == "warning" && l.Item2.Contains("No files matched"));
+    }
+
     [Fact]
     public void Built_archive_lands_at_expected_path()
         => FindBuiltArchive().Should().NotBeNull(
