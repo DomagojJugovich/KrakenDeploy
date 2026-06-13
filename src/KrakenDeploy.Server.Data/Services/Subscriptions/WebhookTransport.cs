@@ -95,6 +95,19 @@ public sealed class WebhookTransport(
             return EventTransportResult.Failure("Webhook url is empty.");
         }
 
+        // SSRF guard — refuse delivery to loopback / link-local / metadata
+        // addresses. Internal RFC1918 hosts stay reachable (on-prem webhook
+        // receivers legitimately live there).
+        var ssrfRefusal = await Net.SsrfGuard
+            .ValidateOutboundUrlAsync(config.Url, ct).ConfigureAwait(false);
+        if (ssrfRefusal is not null)
+        {
+            logger.LogWarning(
+                "Webhook delivery blocked by SSRF guard: sub={SubId} event={EventId}: {Reason}",
+                subscription.Id, auditEvent.Id, ssrfRefusal);
+            return EventTransportResult.Failure(ssrfRefusal);
+        }
+
         // Build payload.
         var serverUri = configuration["Server:BaseUrl"];
         var payload = new SubscriptionPayloadEnvelope(
