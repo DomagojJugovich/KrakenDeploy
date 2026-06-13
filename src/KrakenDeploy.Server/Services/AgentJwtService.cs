@@ -13,6 +13,12 @@ namespace KrakenDeploy.Server.Services;
 /// </summary>
 public sealed class AgentJwtService
 {
+    /// <summary>Token issuer — stamped on issue; enforced once agents rotate.</summary>
+    public const string Issuer = "KrakenDeploy";
+
+    /// <summary>Token audience — stamped on issue; enforced once agents rotate.</summary>
+    public const string Audience = "KrakenDeploy.Agent";
+
     private readonly SymmetricSecurityKey _key;
     private readonly TimeProvider _timeProvider;
     private static readonly TimeSpan TokenLifetime = TimeSpan.FromDays(365);
@@ -26,7 +32,15 @@ public sealed class AgentJwtService
             ?? throw new InvalidOperationException(
                 "Agent:JwtSigningKey is not configured.");
 
-        _key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(raw));
+        var keyBytes = Encoding.UTF8.GetBytes(raw);
+        if (keyBytes.Length < 32)
+        {
+            // HS256 requires a >=256-bit key; refuse a weak (brute-forceable) one.
+            throw new InvalidOperationException(
+                "Agent:JwtSigningKey must be at least 32 bytes (256 bits) for HS256.");
+        }
+
+        _key = new SymmetricSecurityKey(keyBytes);
         _timeProvider = timeProvider;
     }
 
@@ -47,6 +61,8 @@ public sealed class AgentJwtService
             ]),
             NotBefore = now,
             Expires = now.Add(TokenLifetime),
+            Issuer = Issuer,
+            Audience = Audience,
             SigningCredentials = new SigningCredentials(
                 _key,
                 SecurityAlgorithms.HmacSha256),

@@ -223,6 +223,17 @@ public static class Program
                 "Set it in appsettings or user-secrets (minimum 32 characters for HS256).");
         }
 
+        var agentJwtKeyBytes = Encoding.UTF8.GetBytes(agentJwtKey);
+        if (agentJwtKeyBytes.Length < 32)
+        {
+            // HS256 needs a >=256-bit (32-byte) key. A shorter key only throws at
+            // sign/validate time (IDX10653); fail fast at startup and refuse the
+            // weak key that makes agent tokens offline-brute-forceable / forgeable.
+            throw new InvalidOperationException(
+                "Agent:JwtSigningKey must be at least 32 bytes (256 bits) for HS256. " +
+                "Generate one with Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).");
+        }
+
         // CLI API-key scheme — validated against ApiKey:Key configuration.
         // When ApiKey:Key is not configured the handler returns NoResult() harmlessly.
         builder.Services.AddAuthentication()
@@ -235,8 +246,14 @@ public static class Program
                 options.TokenValidationParameters = new TokenValidationParameters
                 {
                     ValidateIssuerSigningKey = true,
-                    IssuerSigningKey = new SymmetricSecurityKey(
-                        Encoding.UTF8.GetBytes(agentJwtKey)),
+                    IssuerSigningKey = new SymmetricSecurityKey(agentJwtKeyBytes),
+                    // Issuer/Audience are stamped on newly issued tokens (see
+                    // AgentJwtService) but NOT yet enforced here: already-issued
+                    // long-lived tokens carry no iss/aud and would be rejected.
+                    // Flip ValidateIssuer/Audience to true after an agent
+                    // re-registration window so old tokens have rotated out.
+                    ValidIssuer = AgentJwtService.Issuer,
+                    ValidAudience = AgentJwtService.Audience,
                     ValidateIssuer = false,
                     ValidateAudience = false,
                     ClockSkew = TimeSpan.FromMinutes(2),
@@ -571,9 +588,7 @@ public static class Program
                 return Results.Redirect("/login?error=unknown_provider");
             }
 
-            var safeReturn = !string.IsNullOrEmpty(returnUrl)
-                && Uri.IsWellFormedUriString(returnUrl, UriKind.Relative)
-                ? returnUrl : "/";
+            var safeReturn = KrakenDeploy.Server.Web.LocalRedirect.MakeSafe(returnUrl);
 
             var props = new AuthenticationProperties { RedirectUri = safeReturn };
             await http.ChallengeAsync(provider, props).ConfigureAwait(false);
@@ -1093,9 +1108,8 @@ public static class Program
             if (redirect)
             {
                 // Only allow same-origin returnUrls — never trust user-supplied
-                // absolute URLs (open-redirect attack).
-                var safe = !string.IsNullOrEmpty(returnUrl) && returnUrl.StartsWith('/')
-                    ? returnUrl : "/";
+                // absolute or protocol-relative URLs (open-redirect attack).
+                var safe = KrakenDeploy.Server.Web.LocalRedirect.MakeSafe(returnUrl);
                 return Results.Redirect(safe);
             }
 

@@ -240,12 +240,9 @@
 
     private string GetSafeReturnUrl()
     {
-        if (string.IsNullOrEmpty(ReturnUrl))
-        {
-            return "/";
-        }
-
-        return Uri.IsWellFormedUriString(ReturnUrl, UriKind.Relative) ? ReturnUrl : "/";
+        // Defeats open-redirect: rejects absolute and protocol-relative
+        // ("//evil.com", "/\evil.com") return urls, collapsing them to "/".
+        return KrakenDeploy.Server.Web.LocalRedirect.MakeSafe(ReturnUrl);
     }
 
     private sealed class LoginModel
