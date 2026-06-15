@@ -13,22 +13,28 @@ namespace KrakenDeploy.Server.Transport;
 /// positive integer in <c>Config["Octopus.Action.MaxParallelism"]</c>.
 ///
 /// <para>
-/// <strong>Semantic:</strong> Phase 2 batches a wave's target fan-out in
-/// chunks of N when N &lt; <c>deployment.Targets.Count</c>. The batches
-/// run sequentially; a Required failure inside batch K stops batches
-/// K+1..end (gives canary-ish behaviour at wave granularity). Between
-/// waves the standard sequential gate still applies. Server-side waves
-/// ignore MaxParallelism — they run once regardless.
+/// <strong>Semantic:</strong> batches a wave's target fan-out into windows
+/// of N when N &lt; <c>deployment.Targets.Count</c>. The windows run
+/// SEQUENTIALLY (targets within a window run in parallel), so N is a
+/// concurrency / blast-radius cap. It is NOT a canary gate: a Required
+/// failure inside window K does NOT stop windows K+1..end — every window of
+/// the wave runs. The failing target is dropped, but that drop / soft-
+/// failure is applied to the alive set only at the NEXT wave (the per-target
+/// drop-out in <c>DeploymentWorker</c>), not between windows — condition
+/// evaluation for the whole wave happens up front, before batching. Between
+/// waves the standard sequential barrier applies; server-side waves ignore
+/// MaxParallelism and run once regardless.
 /// </para>
 ///
 /// <para>
-/// <strong>Wave-level batching, not group-region canary:</strong> the
-/// simpler semantic ships in Phase 2 because (1) it's a useful concurrency
-/// cap on its own, (2) the implementation is bounded, (3) it's forward-
-/// compatible — full group-region canary (every wave of a rolling group
-/// completes on batch K before batch K+1 starts) can layer on later
-/// without changing the property. Imported Octopus rolling steps land in
-/// this same shape; the cap value carries over verbatim.
+/// <strong>Canary:</strong> to stop a rollout when an early target fails,
+/// model the validating step as a SEPARATE EARLIER wave (its own barrier)
+/// before the rolling group — its failure drops the target (or, in the
+/// Atomic <c>DeploymentFailureMode</c>, flips the deployment-global failing
+/// state) before the rolling wave starts. Full group-region canary (every
+/// wave of a rolling group completes on window K before window K+1 starts)
+/// could layer on later without changing this resolver. Imported Octopus
+/// rolling steps land in this same shape; the cap value carries over verbatim.
 /// </para>
 /// </summary>
 public static class RollingWindowResolver
