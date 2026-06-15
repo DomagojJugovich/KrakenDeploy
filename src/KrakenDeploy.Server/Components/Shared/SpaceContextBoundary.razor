@@ -1,7 +1,6 @@
 @using KrakenDeploy.Server.Spaces
 @using KrakenDeploy.Server.Core.Domain.Common
 @implements IDisposable
-@inject IHttpContextAccessor Http
 @inject HttpSpaceContext SpaceCtx
 @inject IPermissionEvaluator Perms
 @inject AuthenticationStateProvider AuthProvider
@@ -9,11 +8,15 @@
 
 @*
     Carries the active Space across the prerender -> interactive-circuit boundary.
-    During prerender HttpContext (and the validated Space in HttpContext.Items) is
-    available; the circuit has neither, so we persist the validated id and, on the
-    circuit, RE-VALIDATE it against the user's accessible Spaces before any
-    Space-scoped query runs. Child content is gated on the circuit until that
-    completes so pages never load against a stale/default Space.
+    On the prerender (RendererInfo.IsInteractive == false) the resolution
+    middleware has stamped the validated Space into HttpContext.Items; we capture
+    it and persist it. On the interactive circuit we recover that hint and
+    RE-VALIDATE it against the user's accessible Spaces, then push it into the
+    circuit-scoped HttpSpaceContext via SetResolved. Child content is gated until
+    that completes so pages never load against a stale/Default Space. We branch on
+    RendererInfo, NOT HttpContext: IHttpContextAccessor can stay non-null on the
+    circuit's first render, which previously made both renders take the prerender
+    branch — so SetResolved never ran and the circuit fell back to Default.
 *@
 @if (_ready)
 {
@@ -31,7 +34,11 @@
 
     protected override async Task OnInitializedAsync()
     {
-        if (Http.HttpContext is not null)
+        // Branch on the render context, NOT on HttpContext: IHttpContextAccessor
+        // can stay non-null on the interactive circuit's first render, so a
+        // null-check would take the prerender branch on the circuit too and
+        // never SetResolved (the active Space would fall back to Default).
+        if (!RendererInfo.IsInteractive)
         {
             // SSR / prerender: the resolution middleware already validated the
             // active Space into HttpContext.Items. Capture it (HttpSpaceContext
@@ -45,9 +52,11 @@
         }
         else
         {
-            // Interactive circuit: no HttpContext, so no cookie. Recover the
-            // carried candidate and re-validate it — the persisted blob is
-            // client-tamperable, so honour it only if the user can access it.
+            // Interactive circuit: the cookie isn't readable here (and
+            // HttpContext, if present, carries no validated Space for this
+            // render). Recover the carried candidate and RE-VALIDATE it — the
+            // persisted blob is client-tamperable, so honour it only if the user
+            // can access it; otherwise it falls back per ActiveSpaceResolver.
             var candidate = Pcs.TryTakeFromJson<Guid>(CarryKey, out var carried)
                 ? carried
                 : (Guid?)null;
