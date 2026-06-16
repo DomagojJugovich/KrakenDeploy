@@ -1,4 +1,5 @@
-@page "/projects/{Slug}/tenants"
+@page "/s/{SpaceSlug}/projects/{Slug}/tenants"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
 
@@ -57,7 +58,7 @@
             </RadzenText>
             <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
                 Define tenants from the
-                <RadzenLink Path="/tenants" Text="top-level Tenants page" />
+                <RadzenLink Path="@Sp("/tenants")" Text="top-level Tenants page" />
                 first, then connect them to the project here.
             </RadzenText>
         </RadzenCard>

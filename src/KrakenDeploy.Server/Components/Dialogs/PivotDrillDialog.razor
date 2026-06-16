@@ -58,6 +58,6 @@ else
     private void Open(DeploymentFact fact)
     {
         Dialog.Close();
-        Nav.NavigateTo($"/deployments/{fact.DeploymentId}");
+        Nav.NavigateTo(Nav.Sp($"/deployments/{fact.DeploymentId}"));
     }
 }

@@ -1,52 +1,58 @@
 @* Sidebar navigation. Inherits the app's global InteractiveServer render mode
    (set on Routes in App.razor), so the panel-menu expand/collapse chevrons have
-   a circuit to handle clicks. *@
+   a circuit to handle clicks.
+
+   Every Path is Space-prefixed via Nav.Sp(...) so navigation stays inside the
+   current tab's Space (/s/{slug}/…). The slug is read from the URL, not
+   ISpaceContext: this chrome renders before the routed page sets the ambient
+   Space, so the context would race. *@
+@inject NavigationManager Nav
 
 <RadzenPanelMenu>
-    <RadzenPanelMenuItem Text="Dashboard" Icon="dashboard" Path="/" />
+    <RadzenPanelMenuItem Text="Dashboard" Icon="dashboard" Path="@Nav.Sp("/")" />
 
     <RadzenPanelMenuItem Text="Deploy" Icon="rocket_launch" Expanded="true">
-        <RadzenPanelMenuItem Text="Projects"     Icon="folder_open"  Path="/projects" />
-        <RadzenPanelMenuItem Text="Releases"     Icon="tag"          Path="/releases" />
-        <RadzenPanelMenuItem Text="Deployments"  Icon="play_circle"  Path="/deployments" />
+        <RadzenPanelMenuItem Text="Projects"     Icon="folder_open"  Path="@Nav.Sp("/projects")" />
+        <RadzenPanelMenuItem Text="Releases"     Icon="tag"          Path="@Nav.Sp("/releases")" />
+        <RadzenPanelMenuItem Text="Deployments"  Icon="play_circle"  Path="@Nav.Sp("/deployments")" />
     </RadzenPanelMenuItem>
 
     <RadzenPanelMenuItem Text="Infrastructure" Icon="dns" Expanded="true">
-        <RadzenPanelMenuItem Text="Targets"      Icon="computer"     Path="/targets" />
-        <RadzenPanelMenuItem Text="Environments" Icon="layers"       Path="/environments" />
-        <RadzenPanelMenuItem Text="Tenants"      Icon="people"       Path="/tenants" />
-        <RadzenPanelMenuItem Text="Ad-hoc actions" Icon="terminal"   Path="/adhoc" />
+        <RadzenPanelMenuItem Text="Targets"      Icon="computer"     Path="@Nav.Sp("/targets")" />
+        <RadzenPanelMenuItem Text="Environments" Icon="layers"       Path="@Nav.Sp("/environments")" />
+        <RadzenPanelMenuItem Text="Tenants"      Icon="people"       Path="@Nav.Sp("/tenants")" />
+        <RadzenPanelMenuItem Text="Ad-hoc actions" Icon="terminal"   Path="@Nav.Sp("/adhoc")" />
     </RadzenPanelMenuItem>
 
     <RadzenPanelMenuItem Text="Library" Icon="library_books" Expanded="true">
-        <RadzenPanelMenuItem Text="Packages"         Icon="inventory_2"             Path="/packages" />
-        <RadzenPanelMenuItem Text="Variable Sets"    Icon="data_object"             Path="/variable-sets" />
-        <RadzenPanelMenuItem Text="Step Templates"   Icon="extension"               Path="/step-templates" />
-        <RadzenPanelMenuItem Text="Lifecycles"       Icon="timeline"                Path="/lifecycles" />
-        <RadzenPanelMenuItem Text="Runbooks"         Icon="menu_book"               Path="/runbooks" />
+        <RadzenPanelMenuItem Text="Packages"         Icon="inventory_2"             Path="@Nav.Sp("/packages")" />
+        <RadzenPanelMenuItem Text="Variable Sets"    Icon="data_object"             Path="@Nav.Sp("/variable-sets")" />
+        <RadzenPanelMenuItem Text="Step Templates"   Icon="extension"               Path="@Nav.Sp("/step-templates")" />
+        <RadzenPanelMenuItem Text="Lifecycles"       Icon="timeline"                Path="@Nav.Sp("/lifecycles")" />
+        <RadzenPanelMenuItem Text="Runbooks"         Icon="menu_book"               Path="@Nav.Sp("/runbooks")" />
     </RadzenPanelMenuItem>
 
     <RadzenPanelMenuItem Text="Configuration" Icon="admin_panel_settings">
-        <RadzenPanelMenuItem Text="Spaces"              Icon="workspaces"  Path="/configuration/spaces" />
-        <RadzenPanelMenuItem Text="Users"               Icon="person"      Path="/configuration/users" />
-        <RadzenPanelMenuItem Text="Teams"               Icon="groups"      Path="/configuration/teams" />
-        <RadzenPanelMenuItem Text="Roles"               Icon="badge"       Path="/configuration/roles" />
-        <RadzenPanelMenuItem Text="Identity Providers"  Icon="vpn_key"     Path="/configuration/identity-providers" />
-        <RadzenPanelMenuItem Text="License Usage"       Icon="speed"       Path="/configuration/license-usage" />
-        <RadzenPanelMenuItem Text="SMTP"                Icon="outgoing_mail" Path="/configuration/smtp" />
-        <RadzenPanelMenuItem Text="Features"            Icon="tune"        Path="/configuration/features" />
-        <RadzenPanelMenuItem Text="Deployment Freezes"  Icon="ac_unit"     Path="/configuration/freezes" />
-        <RadzenPanelMenuItem Text="Diagnostics"         Icon="monitor_heart" Path="/configuration/diagnostics" />
-        <RadzenPanelMenuItem Text="Maintenance"         Icon="construction" Path="/configuration/maintenance" />
-        <RadzenPanelMenuItem Text="Backup"              Icon="cloud_download" Path="/configuration/backup" />
-        <RadzenPanelMenuItem Text="Performance"         Icon="query_stats" Path="/configuration/performance" />
-        <RadzenPanelMenuItem Text="Subscriptions"       Icon="notifications_active" Path="/configuration/subscriptions" />
-        <RadzenPanelMenuItem Text="Test Permissions"    Icon="science"     Path="/configuration/test-permissions" />
+        <RadzenPanelMenuItem Text="Spaces"              Icon="workspaces"  Path="@Nav.Sp("/configuration/spaces")" />
+        <RadzenPanelMenuItem Text="Users"               Icon="person"      Path="@Nav.Sp("/configuration/users")" />
+        <RadzenPanelMenuItem Text="Teams"               Icon="groups"      Path="@Nav.Sp("/configuration/teams")" />
+        <RadzenPanelMenuItem Text="Roles"               Icon="badge"       Path="@Nav.Sp("/configuration/roles")" />
+        <RadzenPanelMenuItem Text="Identity Providers"  Icon="vpn_key"     Path="@Nav.Sp("/configuration/identity-providers")" />
+        <RadzenPanelMenuItem Text="License Usage"       Icon="speed"       Path="@Nav.Sp("/configuration/license-usage")" />
+        <RadzenPanelMenuItem Text="SMTP"                Icon="outgoing_mail" Path="@Nav.Sp("/configuration/smtp")" />
+        <RadzenPanelMenuItem Text="Features"            Icon="tune"        Path="@Nav.Sp("/configuration/features")" />
+        <RadzenPanelMenuItem Text="Deployment Freezes"  Icon="ac_unit"     Path="@Nav.Sp("/configuration/freezes")" />
+        <RadzenPanelMenuItem Text="Diagnostics"         Icon="monitor_heart" Path="@Nav.Sp("/configuration/diagnostics")" />
+        <RadzenPanelMenuItem Text="Maintenance"         Icon="construction" Path="@Nav.Sp("/configuration/maintenance")" />
+        <RadzenPanelMenuItem Text="Backup"              Icon="cloud_download" Path="@Nav.Sp("/configuration/backup")" />
+        <RadzenPanelMenuItem Text="Performance"         Icon="query_stats" Path="@Nav.Sp("/configuration/performance")" />
+        <RadzenPanelMenuItem Text="Subscriptions"       Icon="notifications_active" Path="@Nav.Sp("/configuration/subscriptions")" />
+        <RadzenPanelMenuItem Text="Test Permissions"    Icon="science"     Path="@Nav.Sp("/configuration/test-permissions")" />
     </RadzenPanelMenuItem>
 
     <RadzenPanelMenuItem Text="System" Icon="settings_applications" Expanded="true">
-        <RadzenPanelMenuItem Text="Tasks"       Icon="task"            Path="/tasks" />
-        <RadzenPanelMenuItem Text="Audit"       Icon="history"         Path="/audit" />
-        <RadzenPanelMenuItem Text="AI Settings" Icon="psychology"      Path="/settings/ai" />
+        <RadzenPanelMenuItem Text="Tasks"       Icon="task"            Path="@Nav.Sp("/tasks")" />
+        <RadzenPanelMenuItem Text="Audit"       Icon="history"         Path="@Nav.Sp("/audit")" />
+        <RadzenPanelMenuItem Text="AI Settings" Icon="psychology"      Path="@Nav.Sp("/settings/ai")" />
     </RadzenPanelMenuItem>
 </RadzenPanelMenu>

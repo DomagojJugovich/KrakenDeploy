@@ -1,4 +1,5 @@
-@page "/configuration/performance"
+@page "/s/{SpaceSlug}/configuration/performance"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
 
@@ -72,7 +73,7 @@
                         Emits <code>Deployment.Slow</code> and
                         <code>DeploymentStep.Slow</code> audit events when the
                         run / step exceeds the threshold. Pair with a
-                        Subscription (<a href="/configuration/subscriptions">Subscriptions</a>)
+                        Subscription (<a href="@Sp("/configuration/subscriptions")">Subscriptions</a>)
                         to route to email / webhook / runbook / AI inspection.
                         Set to <strong>0</strong> to disable.
                     </RadzenText>
@@ -127,7 +128,7 @@
                     <RadzenAlert AlertStyle="AlertStyle.Info" Variant="Variant.Flat"
                                  Shade="Shade.Lighter" AllowClose="false" Icon="tune">
                         The master kill-switch for audit-log retention lives on the
-                        <a href="/configuration/features">Features page</a>
+                        <a href="@Sp("/configuration/features")">Features page</a>
                         (<code>audit.purge-enabled</code>) — flip it off to pause
                         the purge without losing the day count above.
                     </RadzenAlert>

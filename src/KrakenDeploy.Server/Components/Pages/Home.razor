@@ -1,4 +1,5 @@
-@page "/"
+@page "/s/{SpaceSlug}"
+@inherits SpaceScopedComponentBase
 @attribute [Authorize]
 @using System.Text.Json
 @using System.Text.Json.Serialization
@@ -22,7 +23,7 @@
         <RadzenButton Text="Refresh" Icon="refresh" ButtonStyle="ButtonStyle.Light"
                       Variant="Variant.Filled" Click="@RefreshAsync" />
         <RadzenButton Text="Deploy" Icon="rocket_launch" ButtonStyle="ButtonStyle.Primary"
-                      Variant="Variant.Filled" Click="@(() => Nav.NavigateTo("/projects"))" />
+                      Variant="Variant.Filled" Click="@(() => Nav.NavigateTo(Sp("/projects")))" />
     </div>
 </div>
 
@@ -86,7 +87,7 @@ else
         <div class="kr-card">
             <div class="kr-card-head">
                 <h3>Recent deployments</h3>
-                <a class="primary-link" href="/deployments">View all</a>
+                <a class="primary-link" href="@Sp("/deployments")">View all</a>
             </div>
             @if (s.Recent.Count == 0)
             {
@@ -107,7 +108,7 @@ else
                     <tbody>
                         @foreach (var d in s.Recent)
                         {
-                            <tr class="clickable" @onclick="@(() => Nav.NavigateTo($"/deployments/{d.Id}"))">
+                            <tr class="clickable" @onclick="@(() => Nav.NavigateTo(Sp($"/deployments/{d.Id}")))">
                                 <td><StatusPill Deployment="d.Status" /></td>
                                 <td>
                                     <span class="cell-strong">@(d.Release?.Project?.Name ?? "—")</span>
@@ -138,7 +139,7 @@ else
                 {
                     @foreach (var d in s.Attention)
                     {
-                        <a class="attn-row" href="@($"/deployments/{d.Id}")">
+                        <a class="attn-row" href="@Sp($"/deployments/{d.Id}")">
                             <StatusPill Deployment="d.Status" />
                             <div class="attn-body">
                                 <div class="attn-title">

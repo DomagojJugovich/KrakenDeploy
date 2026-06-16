@@ -1,4 +1,5 @@
-@page "/lifecycles/{Id:guid}"
+@page "/s/{SpaceSlug}/lifecycles/{Id:guid}"
+@inherits SpaceScopedComponentBase
 @attribute [Authorize]
 @using KrakenDeploy.Server.Core.Domain.Lifecycles
 @using KrakenDeploy.Server.Core.Domain.Environments
@@ -18,7 +19,7 @@
 }
 
 <div class="rz-display-flex rz-align-items-center rz-mb-4" style="gap:1rem">
-    <RadzenButton Icon="arrow_back" Variant="Variant.Text" Click="@(() => Nav.NavigateTo("/lifecycles"))" />
+    <RadzenButton Icon="arrow_back" Variant="Variant.Text" Click="@(() => Nav.NavigateTo(Sp("/lifecycles")))" />
     <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1">@_lifecycle.Name</RadzenText>
 </div>
 
@@ -161,7 +162,7 @@
                       Click="@SaveAsync" />
     </RequirePermission>
     <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
-                  Click="@(() => Nav.NavigateTo("/lifecycles"))" />
+                  Click="@(() => Nav.NavigateTo(Sp("/lifecycles")))" />
 </RadzenStack>
 
 @code {

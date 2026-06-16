@@ -1,4 +1,5 @@
-@page "/projects"
+@page "/s/{SpaceSlug}/projects"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
 
@@ -113,7 +114,7 @@ else
                                 <span class="kraken-proj-cell">
                                     <span class="kraken-proj-tile"><RadzenIcon Icon="language" /></span>
                                     <span>
-                                        <a class="primary-link" href="@($"/projects/{p.Slug}")">@p.Name</a>
+                                        <a class="primary-link" href="@Sp($"/projects/{p.Slug}")">@p.Name</a>
                                         <span class="mono cell-muted" style="display:block; font-size:12px;">@p.Slug</span>
                                     </span>
                                 </span>
@@ -123,7 +124,7 @@ else
                                 <td class="kraken-matrix-cell">
                                     @if (p.Cells.TryGetValue(env.Id, out var cell))
                                     {
-                                        <a class="kraken-matrix-celllink" href="@($"/deployments/{cell.DeploymentId}")">
+                                        <a class="kraken-matrix-celllink" href="@Sp($"/deployments/{cell.DeploymentId}")">
                                             <span class="@StatusClass(cell.Status)">
                                                 <RadzenIcon Icon="@StatusIcon(cell.Status)"
                                                             class="@(cell.Status == DeploymentStatus.Running ? "spin" : null)" />

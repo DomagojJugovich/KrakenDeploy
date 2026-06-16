@@ -1,4 +1,5 @@
-@page "/runbooks"
+@page "/s/{SpaceSlug}/runbooks"
+@inherits SpaceScopedComponentBase
 @attribute [Authorize]
 @using KrakenDeploy.Server.Core.Domain.Projects
 @using KrakenDeploy.Server.Core.Domain.Runbooks
@@ -72,7 +73,7 @@ else
                     AllowPaging="true" PageSize="20"
                     AllowSorting="true"
                     AllowColumnResize="true"
-                    RowClick="@(args => { if (args.Data is { } r) Nav.NavigateTo($"/runbooks/{r.Id}"); })"
+                    RowClick="@(args => { if (args.Data is { } r) Nav.NavigateTo(Sp($"/runbooks/{r.Id}")); })"
                     EmptyText="No runbooks yet — create one to automate tasks without a release.">
         <Columns>
             <RadzenDataGridColumn TItem="Runbook" Property="Name" Title="Name" />

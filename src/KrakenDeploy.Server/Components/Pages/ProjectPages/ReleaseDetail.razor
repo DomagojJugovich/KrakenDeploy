@@ -1,4 +1,5 @@
-@page "/projects/{Slug}/releases/{ReleaseId:guid}"
+@page "/s/{SpaceSlug}/projects/{Slug}/releases/{ReleaseId:guid}"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
 
@@ -28,7 +29,7 @@
     else
     {
         <div class="toolbar">
-            <RadzenLink Path="@($"/projects/{Slug}/releases")" class="kraken-back-link">
+            <RadzenLink Path="@Sp($"/projects/{Slug}/releases")" class="kraken-back-link">
                 <RadzenIcon Icon="arrow_back" /> All releases
             </RadzenLink>
         </div>
@@ -87,7 +88,7 @@
                     </RadzenDataGridColumn>
                     <RadzenDataGridColumn TItem="Deployment" Title="Environment" Width="160px" Sortable="false">
                         <Template Context="d">
-                            <a class="primary-link" href="@($"/deployments/{d.Id}")">@d.Environment.Name</a>
+                            <a class="primary-link" href="@Sp($"/deployments/{d.Id}")">@d.Environment.Name</a>
                         </Template>
                     </RadzenDataGridColumn>
                     <RadzenDataGridColumn TItem="Deployment" Title="Tenant" Width="180px" Sortable="false">

@@ -1,4 +1,5 @@
-@page "/projects/{Slug}/settings"
+@page "/s/{SpaceSlug}/projects/{Slug}/settings"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
 
@@ -203,7 +204,7 @@
             // If the slug changed, the URL is now stale — redirect.
             if (_form.Slug != _project.Slug)
             {
-                Nav.NavigateTo($"/projects/{_form.Slug}/settings");
+                Nav.NavigateTo(Sp($"/projects/{_form.Slug}/settings"));
             }
             else
             {
@@ -231,7 +232,7 @@
         await ProjectSvc.DeleteAsync(_project.Id);
         Notifications.Notify(NotificationSeverity.Success, "Deleted",
             "Project was removed.", 3000);
-        Nav.NavigateTo("/projects");
+        Nav.NavigateTo(Sp("/projects"));
     }
 
     private sealed class FormModel

@@ -17,6 +17,8 @@ public sealed class DefaultSpaceContext : ISpaceContext
 
     public Guid CurrentSpaceId => _overrides.Count > 0 ? _overrides.Peek() : WellKnown.DefaultSpaceId;
 
+    public string CurrentSpaceSlug => WellKnown.DefaultSpaceSlug;
+
     public IDisposable WithSpace(Guid spaceId)
     {
         _overrides.Push(spaceId);

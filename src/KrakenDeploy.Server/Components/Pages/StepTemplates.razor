@@ -1,4 +1,5 @@
-@page "/step-templates"
+@page "/s/{SpaceSlug}/step-templates"
+@inherits SpaceScopedComponentBase
 @attribute [Authorize]
 @using KrakenDeploy.Server.Core.Domain.StepTemplates
 @using KrakenDeploy.Server.Data.Services
@@ -20,7 +21,7 @@
     <RadzenColumn class="rz-text-align-end">
         <RadzenButton Icon="travel_explore" ButtonStyle="ButtonStyle.Light"
                       Text="Browse Community" class="rz-mr-2"
-                      Click="@(() => Nav.NavigateTo("/step-templates/community"))" />
+                      Click="@(() => Nav.NavigateTo(Sp("/step-templates/community")))" />
         <RequirePermission Permission="Permission.StepTemplateCreate">
             <RadzenButton Icon="cloud_download" ButtonStyle="ButtonStyle.Light"
                           Text="Import Octopus dump" class="rz-mr-2"

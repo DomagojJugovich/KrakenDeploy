@@ -1,4 +1,5 @@
-@page "/audit"
+@page "/s/{SpaceSlug}/audit"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
 @using KrakenDeploy.Server.Core.Domain.Audit

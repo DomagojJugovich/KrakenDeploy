@@ -1,4 +1,5 @@
-@page "/tasks"
+@page "/s/{SpaceSlug}/tasks"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
 @using KrakenDeploy.Server.Services
@@ -215,7 +216,9 @@
             return;
         }
 
-        Nav.NavigateTo(row.DetailUrl, forceLoad: row.ExternalNav);
+        // ExternalNav targets (e.g. the Hangfire dashboard) leave the Blazor app
+        // and must stay bare; in-app targets get the active Space prefix.
+        Nav.NavigateTo(row.ExternalNav ? row.DetailUrl : Sp(row.DetailUrl), forceLoad: row.ExternalNav);
     }
 
     private static string Stamp(DateTimeOffset? t) =>

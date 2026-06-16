@@ -1,4 +1,5 @@
-@page "/deployments"
+@page "/s/{SpaceSlug}/deployments"
+@inherits SpaceScopedComponentBase
 @attribute [Authorize]
 @inject DeploymentService DeploymentSvc
 @inject EnvironmentService EnvironmentSvc
@@ -44,7 +45,7 @@
 
 <KrakenGrid SettingsKey="deployments" @ref="_grid" Data="@_filtered" TItem="Deployment"
                 AllowPaging="true" PageSize="25" AllowSorting="true" AllowColumnResize="true"
-                RowClick="@(args => { if (args.Data is { } d) Nav.NavigateTo($"/deployments/{d.Id}"); })"
+                RowClick="@(args => { if (args.Data is { } d) Nav.NavigateTo(Sp($"/deployments/{d.Id}")); })"
                 GridLines="DataGridGridLines.Horizontal"
                 EmptyText="No deployments match the current filters.">
     <Columns>

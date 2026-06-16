@@ -1,4 +1,5 @@
-@page "/projects/{Slug}/process"
+@page "/s/{SpaceSlug}/projects/{Slug}/process"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
 
@@ -306,7 +307,7 @@
                     </RadzenText>
                     <RadzenButton Text="Change" ButtonStyle="ButtonStyle.Light"
                                   Size="ButtonSize.ExtraSmall"
-                                  Click="@(() => Nav.NavigateTo("/lifecycles"))" />
+                                  Click="@(() => Nav.NavigateTo(Sp("/lifecycles")))" />
                 </RadzenStack>
                 @if (_lifecycle is not null)
                 {
@@ -335,7 +336,7 @@
                     </RadzenText>
                     <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
                         Lifecycles can be defined
-                        <RadzenLink Path="/lifecycles" Text="here" />.
+                        <RadzenLink Path="@Sp("/lifecycles")" Text="here" />.
                     </RadzenText>
                 }
             </RadzenCard>

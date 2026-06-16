@@ -1,4 +1,5 @@
-@page "/tenants/{Id:guid}"
+@page "/s/{SpaceSlug}/tenants/{Id:guid}"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
 @using KrakenDeploy.Server.Core.Domain.Tenants
@@ -17,7 +18,7 @@
 }
 
 <div class="rz-display-flex rz-align-items-center rz-mb-4" style="gap:1rem">
-    <RadzenButton Icon="arrow_back" Variant="Variant.Text" Click="@(() => Nav.NavigateTo("/tenants"))" />
+    <RadzenButton Icon="arrow_back" Variant="Variant.Text" Click="@(() => Nav.NavigateTo(Sp("/tenants")))" />
     <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1">@_tenant.Name</RadzenText>
     <RadzenBadge Text="@_tenant.Slug" BadgeStyle="BadgeStyle.Light" />
 </div>

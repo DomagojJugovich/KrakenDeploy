@@ -1,4 +1,5 @@
-@page "/adhoc"
+@page "/s/{SpaceSlug}/adhoc"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize(Policy = "perm:AdhocActionsExecute")]
 
@@ -42,7 +43,7 @@
 {
     <RadzenAlert AlertStyle="AlertStyle.Info" Shade="Shade.Lighter" AllowClose="false">
         Ad-hoc agent actions are <strong>disabled</strong> for this Space.
-        Enable on <a href="/settings/ai">AI Settings</a>.
+        Enable on <a href="@Sp("/settings/ai")">AI Settings</a>.
     </RadzenAlert>
 }
 else
@@ -54,7 +55,7 @@ else
             <RadzenDataGridColumn TItem="AdhocSessionListItem" Title="Prompt">
                 <Template Context="s">
                     <RadzenStack Gap="0.1rem">
-                        <RadzenLink Path="@($"/adhoc/{s.Id}")" Text="@Truncate(s.Prompt, 80)" />
+                        <RadzenLink Path="@Sp($"/adhoc/{s.Id}")" Text="@Truncate(s.Prompt, 80)" />
                         <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
                             @s.CreatedByDisplay · @s.CreatedUtc.LocalDateTime.ToString("yyyy-MM-dd HH:mm")
                         </RadzenText>
@@ -106,7 +107,7 @@ else
 
         if (result is Guid sessionId)
         {
-            Nav.NavigateTo($"/adhoc/{sessionId}");
+            Nav.NavigateTo(Sp($"/adhoc/{sessionId}"));
         }
     }
 

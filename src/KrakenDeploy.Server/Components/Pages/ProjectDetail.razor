@@ -1,4 +1,5 @@
-@page "/projects/{Slug}"
+@page "/s/{SpaceSlug}/projects/{Slug}"
+@inherits SpaceScopedComponentBase
 @attribute [Authorize]
 @inject NavigationManager Nav
 
@@ -9,5 +10,5 @@
     [Parameter] public string Slug { get; set; } = "";
 
     protected override void OnInitialized()
-        => Nav.NavigateTo($"/projects/{Slug}/dashboard", replace: true);
+        => Nav.NavigateTo(Sp($"/projects/{Slug}/dashboard"), replace: true);
 }

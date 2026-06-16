@@ -1,4 +1,5 @@
-@page "/lifecycles"
+@page "/s/{SpaceSlug}/lifecycles"
+@inherits SpaceScopedComponentBase
 @attribute [Authorize]
 @using KrakenDeploy.Server.Core.Domain.Lifecycles
 @using KrakenDeploy.Server.Data.Services
@@ -40,7 +41,7 @@
                 AllowPaging="true" PageSize="20"
                 AllowSorting="true"
                 AllowColumnResize="true"
-                RowClick="@(args => { if (args.Data is { } l) Nav.NavigateTo($"/lifecycles/{l.Id}"); })"
+                RowClick="@(args => { if (args.Data is { } l) Nav.NavigateTo(Sp($"/lifecycles/{l.Id}")); })"
                 EmptyText="No lifecycles yet — create one to define promotion rules.">
     <Columns>
         <RadzenDataGridColumn TItem="Lifecycle" Property="Name" Title="Name" />

@@ -30,7 +30,7 @@ else if (_project is not null)
     <PageTitle>@_project.Name - KrakenDeploy</PageTitle>
 
     <div class="breadcrumb">
-        <a href="/projects">Projects</a>
+        <a href="@Nav.Sp("/projects")">Projects</a>
         <RadzenIcon Icon="chevron_right" />
         <span>@_project.Name</span>
     </div>
@@ -160,5 +160,5 @@ else if (_project is not null)
         _loaded = true;
     }
 
-    private string Sub(string segment) => $"/projects/{Slug}/{segment}";
+    private string Sub(string segment) => Nav.Sp($"/projects/{Slug}/{segment}");
 }

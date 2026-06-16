@@ -140,12 +140,13 @@ public static class Program
             .AddSignInManager();
 
         // ── Space context (HTTP-aware override of DefaultSpaceContext) ───────
-        // Active-Space resolution. ActiveSpaceResolutionMiddleware validates the
-        // kraken-active-space cookie against the user's accessible Spaces and
-        // stamps the result into HttpContext.Items; SpaceContextBoundary carries
-        // and re-validates it onto the interactive circuit. Registered as the
-        // concrete type (with the interface forwarded to the same instance) so
-        // those callers can push the resolved Space via SetResolved.
+        // Active-Space resolution. The Space rides in the URL (/s/{slug}/…) as a
+        // route param: SpaceScopedComponentBase validates it against the user's
+        // accessible Spaces and pushes it via SetResolved, on both the prerender
+        // and the interactive circuit. Registered as the concrete type (with the
+        // interface forwarded to the same instance) so the page base can call
+        // SetResolved. The /api surface (no page route) falls back to the Default
+        // Space — CLI/agent callers are Default-scoped.
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddScoped<HttpSpaceContext>();
         builder.Services.AddScoped<ISpaceContext>(sp => sp.GetRequiredService<HttpSpaceContext>());
@@ -563,11 +564,13 @@ public static class Program
         // limiter is configured, so this only affects endpoints that opt in.
         app.UseRateLimiter();
 
-        // Resolve + validate the active Space for this request (cookie vs the
-        // user's accessible Spaces) into HttpContext.Items, before any Space-aware
-        // middleware (maintenance gate, MCP gate) or endpoint reads it. After auth
-        // so HttpContext.User is populated; skips static assets / negotiate.
-        app.UseMiddleware<KrakenDeploy.Server.Spaces.ActiveSpaceResolutionMiddleware>();
+        // Space-in-URL routing: the active Space is the first path segment
+        // (/s/{slug}/…), a real @page route param that each page's
+        // SpaceScopedComponentBase validates + applies. This middleware only
+        // redirects a BARE page path (clean entry URL, old bookmark, post-login
+        // returnUrl) to the Default Space — no cookie, no last-used memory. Skips
+        // the API/framework/auth/static surface (SpaceRouting.IsSpaceAgnostic).
+        app.UseMiddleware<KrakenDeploy.Server.Spaces.SpaceUrlRedirectMiddleware>();
 
         // M11.B — per-Space MCP-enabled gate. Path-scoped to /mcp so other
         // endpoints sharing the API key (the /api/* surface) keep working
@@ -1103,12 +1106,6 @@ public static class Program
                 return Results.Ok(spaces.Where(s => accessible.Contains(s.Id)).ToList());
             }).RequireAuthorization();
 
-        // Switch the active Space — sets the kraken-active-space cookie. Two
-        // entry points:
-        //   POST /api/spaces/switch/{id} — for programmatic / API clients
-        //   GET  /space/switch?id={id}    — for the Blazor SpaceSwitcher
-        //                                   (browser nav with full reload so
-        //                                    DI scopes pick up the new context)
         // Resolve the calling agent's authoritative target id from its AgentJwt
         // NameIdentifier claim. Never trust a target/deployment id taken from the
         // route or body — an agent must only act on its own target's work.
@@ -1118,79 +1115,11 @@ public static class Program
             return Guid.TryParse(raw, out var id) ? id : null;
         }
 
-        static async Task<IResult> SwitchSpaceAsync(
-            Guid spaceId,
-            string? returnUrl,
-            SpaceService spaceSvc,
-            IPermissionEvaluator perms,
-            HttpContext http,
-            CancellationToken ct,
-            bool redirect)
-        {
-            // On any deny the browser-facing GET must redirect somewhere safe
-            // (never a raw 403 — that AccessDenied-redirects to /login); the
-            // programmatic POST returns a precise status.
-            static IResult Deny(bool redirect, IResult apiResult)
-                => redirect ? Results.Redirect("/") : apiResult;
-
-            var space = await spaceSvc.GetAsync(spaceId, ct).ConfigureAwait(false);
-            if (space is null)
-            {
-                return Deny(redirect, Results.NotFound(new { error = "Space not found." }));
-            }
-
-            if (space.Status != SpaceStatus.Active)
-            {
-                return Deny(redirect, Results.BadRequest(
-                    new { error = $"Space is {space.Status} and cannot be selected." }));
-            }
-
-            // Hard tenant boundary: only members (or system admins) may activate a
-            // Space. Without this gate, setting the cookie scopes both reads (EF
-            // global filter) and permission checks to the chosen Space — a
-            // cross-tenant leak. StatusCode(403), not Forbid(), so the API doesn't
-            // 302 to /login.
-            var accessible = await perms.GetAccessibleSpaceIdsAsync(http.User, ct).ConfigureAwait(false);
-            if (!accessible.Contains(spaceId))
-            {
-                return Deny(redirect, Results.StatusCode(StatusCodes.Status403Forbidden));
-            }
-
-            http.Response.Cookies.Append(
-                HttpSpaceContext.ActiveSpaceCookieName,
-                spaceId.ToString(),
-                new CookieOptions
-                {
-                    HttpOnly = true,
-                    Secure   = http.Request.IsHttps,
-                    SameSite = SameSiteMode.Lax,
-                    Path     = "/",
-                    Expires  = DateTimeOffset.UtcNow.AddDays(365),
-                });
-
-            if (redirect)
-            {
-                // Only allow same-origin returnUrls — never trust user-supplied
-                // absolute or protocol-relative URLs (open-redirect attack).
-                var safe = KrakenDeploy.Server.Web.LocalRedirect.MakeSafe(returnUrl);
-                return Results.Redirect(safe);
-            }
-
-            return Results.Ok(new { spaceId, space.Slug, space.Name });
-        }
-
-        app.MapPost("/api/spaces/switch/{spaceId:guid}",
-            (Guid spaceId, SpaceService spaceSvc, IPermissionEvaluator perms,
-             HttpContext http, CancellationToken ct)
-                => SwitchSpaceAsync(spaceId, returnUrl: null, spaceSvc, perms, http, ct, redirect: false))
-            .RequireAuthorization(); // Selecting a space is an identity action, not a
-                                     // Permission — but it IS gated by Space membership.
-
-        app.MapGet("/space/switch",
-            (Guid id, string? returnUrl, SpaceService spaceSvc, IPermissionEvaluator perms,
-             HttpContext http, CancellationToken ct)
-                => SwitchSpaceAsync(id, returnUrl, spaceSvc, perms, http, ct, redirect: true))
-            .RequireAuthorization();
+        // Switching the active Space is now a plain navigation to /s/{slug}/… —
+        // no server endpoint needed. The slug is validated against the caller's
+        // accessible Spaces (the hard tenant boundary) by
+        // SpaceScopedComponentBase on every page; SpaceUrlRedirectMiddleware only
+        // 302-redirects a bare path to the Default Space (no cookie, no last-used).
 
         app.MapPost("/api/spaces",
             async (CreateSpaceRequest req, ClaimsPrincipal user,
@@ -1238,9 +1167,9 @@ public static class Program
         // ── AI settings (Phase M11.A.6.3) ───────────────────────────────────
         // Per-Space AI provider + budget + feature flags. The {id} route param
         // is the Space id, but the actual scoping happens via ISpaceContext
-        // (which is driven by the kraken-active-space cookie / route).
-        // Keeping {id} in the URL makes the endpoint trivially CLIable + URL-greppable
-        // even though the server's authoritative SpaceId is the ambient one.
+        // (the ambient Space — driven by the /s/{slug} route in the browser; the
+        // /api surface itself is Default-scoped). Keeping {id} in the URL makes the
+        // endpoint trivially CLIable + URL-greppable.
         app.MapGet("/api/spaces/{id:guid}/ai-settings",
             async (Guid id,
                    KrakenDeploy.Server.Data.Services.Ai.SpaceAiSettingsService svc,

@@ -1,4 +1,5 @@
-@page "/configuration/license-usage"
+@page "/s/{SpaceSlug}/configuration/license-usage"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
 
@@ -38,7 +39,7 @@
                 <strong>No valid license loaded.</strong>
                 <span>
                     Upload a license key in
-                    <RadzenLink Path="/settings/license" Text="Settings → License" />
+                    <RadzenLink Path="@Sp("/settings/license")" Text="Settings → License" />
                     to see usage gauges. Without a license, the cap defaults
                     refuse new targets and users.
                 </span>
@@ -87,7 +88,7 @@
                               Variant="Variant.Outlined"
                               Size="ButtonSize.Small"
                               Style="margin-left: auto;"
-                              Click="@(() => Nav.NavigateTo("/settings/license"))" />
+                              Click="@(() => Nav.NavigateTo(Sp("/settings/license")))" />
             </RadzenStack>
         </RadzenCard>
 

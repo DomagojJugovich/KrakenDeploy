@@ -31,6 +31,13 @@ public interface ISpaceContext
     Guid CurrentSpaceId { get; }
 
     /// <summary>
+    /// Slug of the current Space — used to build Space-prefixed UI links
+    /// (<c>/s/{slug}/…</c>). Falls back to <see cref="Common.WellKnown.DefaultSpaceSlug"/>
+    /// when no Space is resolved (workers / CLI / tests don't build links).
+    /// </summary>
+    string CurrentSpaceSlug { get; }
+
+    /// <summary>
     /// Pushes a temporary Space override for the duration of the returned scope.
     /// Used by Hangfire workers, tests, and administrative operations that act on
     /// a specific Space regardless of the request's resolved active Space.

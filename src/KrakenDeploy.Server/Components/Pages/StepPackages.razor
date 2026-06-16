@@ -1,4 +1,5 @@
-@page "/step-packages"
+@page "/s/{SpaceSlug}/step-packages"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
 
@@ -64,7 +65,7 @@
                     <Columns>
                         <RadzenDataGridColumn TItem="StepPackage" Property="Name" Title="Package">
                             <Template Context="p">
-                                <RadzenLink Path="@($"/step-packages/{p.Name}/usage")"
+                                <RadzenLink Path="@Sp($"/step-packages/{p.Name}/usage")"
                                             Text="@p.Name"
                                             title="See every step pinned to this package + bulk-upgrade." />
                             </Template>

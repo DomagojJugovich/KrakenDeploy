@@ -1,4 +1,5 @@
-@page "/projects/{Slug}/variable-preview"
+@page "/s/{SpaceSlug}/projects/{Slug}/variable-preview"
+@inherits SpaceScopedComponentBase
 @attribute [Authorize]
 
 <ProjectShell Slug="@Slug">

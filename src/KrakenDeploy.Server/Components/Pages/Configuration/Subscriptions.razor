@@ -1,4 +1,5 @@
-@page "/configuration/subscriptions"
+@page "/s/{SpaceSlug}/configuration/subscriptions"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
 
@@ -29,7 +30,7 @@
 
 <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
     Route audit events to webhooks, runbook triggers, AI diagnosis, or email.
-    Matching happens once per audit row — see <RadzenLink Path="/audit" Text="Audit log" />
+    Matching happens once per audit row — see <RadzenLink Path="@Sp("/audit")" Text="Audit log" />
     for the full event stream. System-wide rows appear at the top with a
     badge and can only be edited by system administrators.
 </RadzenText>

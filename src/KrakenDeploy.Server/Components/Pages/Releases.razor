@@ -1,4 +1,5 @@
-@page "/releases"
+@page "/s/{SpaceSlug}/releases"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
 
@@ -42,7 +43,7 @@
             <Template Context="r">
                 @if (r.Project is not null)
                 {
-                    <a class="primary-link mono" href="@($"/projects/{r.Project.Slug}/releases/{r.Id}")">@r.Version</a>
+                    <a class="primary-link mono" href="@Sp($"/projects/{r.Project.Slug}/releases/{r.Id}")">@r.Version</a>
                 }
                 else
                 {
@@ -54,7 +55,7 @@
             <Template Context="r">
                 @if (r.Project is not null)
                 {
-                    <a class="primary-link" href="@($"/projects/{r.Project.Slug}")">@r.Project.Name</a>
+                    <a class="primary-link" href="@Sp($"/projects/{r.Project.Slug}")">@r.Project.Name</a>
                 }
                 else
                 {

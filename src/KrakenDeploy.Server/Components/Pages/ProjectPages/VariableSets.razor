@@ -1,4 +1,5 @@
-@page "/projects/{Slug}/variable-sets"
+@page "/s/{SpaceSlug}/projects/{Slug}/variable-sets"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
 @using KrakenDeploy.Server.Core.Domain.Variables
@@ -18,7 +19,7 @@
         Library variable sets included in this project. Included sets overlay their
         variables onto this project's own variables — sets lower in the list are
         overlaid first, and this project's own variables always win on conflicts.
-        Manage the library at <RadzenLink Path="/variable-sets" Text="Variable Sets" />.
+        Manage the library at <RadzenLink Path="@Sp("/variable-sets")" Text="Variable Sets" />.
     </RadzenText>
 
     @if (!_loaded)
@@ -57,7 +58,7 @@
             <Columns>
                 <RadzenDataGridColumn TItem="VariableSet" Title="Name">
                     <Template Context="s">
-                        <RadzenLink Path="@($"/variable-sets/{s.Id}")" Text="@s.Name" />
+                        <RadzenLink Path="@Sp($"/variable-sets/{s.Id}")" Text="@s.Name" />
                     </Template>
                 </RadzenDataGridColumn>
                 <RadzenDataGridColumn TItem="VariableSet" Property="Description" Title="Description" />

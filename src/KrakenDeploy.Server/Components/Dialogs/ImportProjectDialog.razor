@@ -4,6 +4,7 @@
 @inject ProcessService ProcessSvc
 @inject DialogService DialogService
 @inject UiActionGuard Guard
+@inject NavigationManager Nav
 
 <RadzenStack Gap="1rem">
     <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
@@ -51,7 +52,7 @@
         <RadzenCard>
             <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-2">Import summary</RadzenText>
             <div class="rz-grid-table" style="grid-template-columns: auto 1fr;">
-                <span class="rz-color-secondary">Project</span><span><a class="primary-link" href="@($"/projects/{_createdSlug}")">@_name</a></span>
+                <span class="rz-color-secondary">Project</span><span><a class="primary-link" href="@Nav.Sp($"/projects/{_createdSlug}")">@_name</a></span>
                 <span class="rz-color-secondary">Steps</span><span>@_result.Imported imported</span>
                 <span class="rz-color-secondary">Warnings</span><span>@_result.Warnings.Count</span>
             </div>

@@ -1,4 +1,5 @@
-@page "/configuration/teams/{Id:guid}"
+@page "/s/{SpaceSlug}/configuration/teams/{Id:guid}"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
 @using KrakenDeploy.Server.Core.Domain.Environments
@@ -25,7 +26,7 @@
 else
 {
     <RadzenBreadCrumb class="rz-mb-3">
-        <RadzenBreadCrumbItem Path="/configuration/teams" Text="Teams" />
+        <RadzenBreadCrumbItem Path="@Sp("/configuration/teams")" Text="Teams" />
         <RadzenBreadCrumbItem Text="@_team.Name" />
     </RadzenBreadCrumb>
 
@@ -364,7 +365,7 @@ else
         _team = await TeamSvc.GetAsync(Id);
         if (_team is null)
         {
-            Nav.NavigateTo("/configuration/teams");
+            Nav.NavigateTo(Sp("/configuration/teams"));
             return;
         }
 

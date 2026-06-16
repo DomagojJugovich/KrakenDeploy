@@ -1,4 +1,5 @@
-@page "/runbooks/{Id:guid}"
+@page "/s/{SpaceSlug}/runbooks/{Id:guid}"
+@inherits SpaceScopedComponentBase
 @attribute [Authorize]
 @using KrakenDeploy.Contracts.Steps
 @using KrakenDeploy.Server.Components.Dialogs
@@ -26,7 +27,7 @@
 
 <div class="rz-display-flex rz-align-items-center rz-mb-4" style="gap:1rem">
     <RadzenButton Icon="arrow_back" Variant="Variant.Text"
-                  Click="@(() => Nav.NavigateTo("/runbooks"))" />
+                  Click="@(() => Nav.NavigateTo(Sp("/runbooks")))" />
     <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1">@_runbook.Name</RadzenText>
     <RadzenBadge Text="@(_runbook.Project?.Name ?? "?")" BadgeStyle="BadgeStyle.Light" />
     <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" style="margin-left:auto">

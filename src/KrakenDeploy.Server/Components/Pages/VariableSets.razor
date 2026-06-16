@@ -1,4 +1,5 @@
-@page "/variable-sets"
+@page "/s/{SpaceSlug}/variable-sets"
+@inherits SpaceScopedComponentBase
 @attribute [Authorize]
 @using KrakenDeploy.Server.Core.Domain.Variables
 @using KrakenDeploy.Server.Data.Services
@@ -45,7 +46,7 @@
 <KrakenGrid SettingsKey="variable-sets" Data="@_sets" TItem="VariableSet"
                 AllowPaging="true" PageSize="20"
                 AllowSorting="true" AllowColumnResize="true"
-                RowClick="@(args => { if (args.Data is { } s) Nav.NavigateTo($"/variable-sets/{s.Id}"); })"
+                RowClick="@(args => { if (args.Data is { } s) Nav.NavigateTo(Sp($"/variable-sets/{s.Id}")); })"
                 EmptyText="No library variable sets yet — create one to share variables across projects.">
     <Columns>
         <RadzenDataGridColumn TItem="VariableSet" Property="Name" Title="Name" />

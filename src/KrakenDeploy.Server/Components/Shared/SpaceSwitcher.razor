@@ -1,9 +1,11 @@
 @using KrakenDeploy.Server.Core.Domain.Security
 @using KrakenDeploy.Server.Core.Domain.Spaces
 @using KrakenDeploy.Server.Data.Services
+@using KrakenDeploy.Server.Spaces
 @using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.AspNetCore.Components.Routing
+@implements IDisposable
 @inject SpaceService SpaceSvc
-@inject ISpaceContext SpaceContext
 @inject IPermissionEvaluator Perms
 @inject AuthenticationStateProvider AuthProvider
 @inject NavigationManager Nav
@@ -14,7 +16,7 @@
 {
     <RadzenDropDown TValue="Guid"
                     Data="@_spaces"
-                    Value="@_currentSpaceId"
+                    Value="@CurrentSpaceId"
                     ValueProperty="Id"
                     TextProperty="Name"
                     Change="@OnSpaceChanged"
@@ -24,7 +26,23 @@
 
 @code {
     private List<Space> _spaces = [];
-    private Guid _currentSpaceId;
+
+    // The selected Space is derived from the URL slug — the single source of truth.
+    // We deliberately do NOT read ISpaceContext here: this switcher lives in the
+    // layout chrome, which renders before the routed page sets the ambient Space,
+    // so reading the context races and flips the dropdown back to Default on the
+    // interactive circuit (the "blink to Default" bug).
+    private Guid CurrentSpaceId
+    {
+        get
+        {
+            var slug = Nav.CurrentSpaceSlug();
+            var match = _spaces.FirstOrDefault(s => s.Slug == slug);
+            return match?.Id
+                ?? (_spaces.FirstOrDefault(s => s.IsDefault) ?? _spaces.FirstOrDefault())?.Id
+                ?? Guid.Empty;
+        }
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -37,25 +55,34 @@
             .Where(s => s.Status == SpaceStatus.Active && accessible.Contains(s.Id))
             .ToList();
 
-        _currentSpaceId = SpaceContext.CurrentSpaceId;
-
-        // Snap the selection to an accessible Space if the resolved one isn't in
-        // the list (e.g. cookie pointed elsewhere). Prefer the Default Space when
-        // the user can access it.
-        if (_spaces.Count > 0 && _spaces.All(s => s.Id != _currentSpaceId))
-        {
-            _currentSpaceId = (_spaces.FirstOrDefault(s => s.IsDefault) ?? _spaces[0]).Id;
-        }
+        // Keep the dropdown in sync if the URL Space changes under us (e.g. an
+        // in-app link into another Space within the same circuit).
+        Nav.LocationChanged += OnLocationChanged;
     }
+
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs e) =>
+        InvokeAsync(StateHasChanged);
 
     private void OnSpaceChanged(object value)
     {
-        if (value is Guid newSpaceId && newSpaceId != _currentSpaceId)
+        if (value is not Guid newSpaceId)
         {
-            // Switch via the API endpoint so the cookie is set, then full
-            // reload so server-side state (DI scopes, query filters) picks up
-            // the new active Space everywhere.
-            Nav.NavigateTo($"/space/switch?id={newSpaceId}", forceLoad: true);
+            return;
         }
+        var target = _spaces.FirstOrDefault(s => s.Id == newSpaceId);
+        if (target is null || target.Id == CurrentSpaceId)
+        {
+            return;
+        }
+
+        // Switching Space is a plain navigation to the new Space's URL root — the
+        // Space then rides in the URL (per-tab, refresh-stable). We go to the root
+        // (not the current page) so we never land on a detail URL whose entity
+        // lives in the OLD Space. forceLoad tears down the circuit so a clean one
+        // resolves the new Space; SpaceScopedComponentBase re-validates the slug
+        // against the caller's accessible Spaces on arrival.
+        Nav.NavigateTo(SpaceRouting.BuildPath(target.Slug, "/"), forceLoad: true);
     }
+
+    public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
 }

@@ -1,4 +1,5 @@
-@page "/step-templates/community"
+@page "/s/{SpaceSlug}/step-templates/community"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
 
@@ -36,7 +37,7 @@
                           IsBusy="@_refreshing" Click="@RefreshAsync" />
         </RequirePermission>
         <RadzenButton Icon="arrow_back" Text="Back to library" ButtonStyle="ButtonStyle.Light"
-                      Click="@(() => Nav.NavigateTo("/step-templates"))" />
+                      Click="@(() => Nav.NavigateTo(Sp("/step-templates")))" />
     </RadzenStack>
 </RadzenStack>
 

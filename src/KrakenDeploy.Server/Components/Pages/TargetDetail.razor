@@ -1,4 +1,5 @@
-@page "/targets/{Id:guid}"
+@page "/s/{SpaceSlug}/targets/{Id:guid}"
+@inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
 @using KrakenDeploy.Server.Core.Domain.Audit
@@ -28,7 +29,7 @@
 else
 {
     <div class="toolbar">
-        <RadzenLink Path="/targets" class="kraken-back-link">
+        <RadzenLink Path="@Sp("/targets")" class="kraken-back-link">
             <RadzenIcon Icon="arrow_back" /> Deployment Targets
         </RadzenLink>
     </div>
@@ -379,7 +380,7 @@ else
                                 </RadzenDataGridColumn>
                                 <RadzenDataGridColumn TItem="Deployment" Title="Project" Width="200px" Sortable="false">
                                     <Template Context="d">
-                                        <a class="primary-link" href="@($"/deployments/{d.Id}")">@d.Release.Project.Name</a>
+                                        <a class="primary-link" href="@Sp($"/deployments/{d.Id}")">@d.Release.Project.Name</a>
                                     </Template>
                                 </RadzenDataGridColumn>
                                 <RadzenDataGridColumn TItem="Deployment" Title="Release" Width="150px" Sortable="false">
