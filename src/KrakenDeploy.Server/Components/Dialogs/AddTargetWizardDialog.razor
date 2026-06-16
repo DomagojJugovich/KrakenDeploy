@@ -210,8 +210,7 @@
         {
             var roles = ParseRoles(_rolesRaw);
             var (target, token) = await RegistrationSvc
-                .CreateAsync(_name.Trim(), roles, _transportMode)
-                .ConfigureAwait(false);
+                .CreateAsync(_name.Trim(), roles, _transportMode);
 
             _createdTarget = target;
             _plainToken = token;

@@ -804,8 +804,7 @@
 
         // M13.F.5: gate advanced Execution card on the feature flag.
         _showAdvancedFields = await FeatureFlags
-            .IsEnabledAsync("ui.show-advanced-step-fields")
-            .ConfigureAwait(false);
+            .IsEnabledAsync("ui.show-advanced-step-fields");
 
         // "First step" determination — used by the Run Condition picker
         // to hide the Failure option + adjust the Success label. On Edit,
@@ -841,9 +840,9 @@
                 _startTrigger                = dStep.StartTrigger;
             }
 
-            await LoadPackageVersionsAsync(Step.StepPackageName).ConfigureAwait(false);
+            await LoadPackageVersionsAsync(Step.StepPackageName);
 
-            _schema = await ResolveSchemaAsync(Step.StepType).ConfigureAwait(false);
+            _schema = await ResolveSchemaAsync(Step.StepType);
 
             // Seed _values from existing Step.Config (overlaying schema
             // defaults where Config has no entry yet).
@@ -893,7 +892,7 @@
             else if (!string.IsNullOrWhiteSpace(ActionType))
             {
                 _stepType = ActionType;
-                _schema   = await ResolveSchemaAsync(ActionType).ConfigureAwait(false);
+                _schema   = await ResolveSchemaAsync(ActionType);
 
                 if (_schema is not null)
                 {
@@ -911,12 +910,12 @@
             if (!string.IsNullOrWhiteSpace(_stepType))
             {
                 var pin = await StepPackageRes
-                    .ResolveLatestForStepTypeAsync(_stepType).ConfigureAwait(false);
+                    .ResolveLatestForStepTypeAsync(_stepType);
                 if (pin is not null)
                 {
                     _stepPackageName    = pin.Name;
                     _stepPackageVersion = pin.Version;
-                    await LoadPackageVersionsAsync(pin.Name).ConfigureAwait(false);
+                    await LoadPackageVersionsAsync(pin.Name);
                 }
             }
         }
@@ -967,7 +966,7 @@
         if (Step is not null)
         {
             _selectedParentStepId = Step.ParentStepId;
-            await LoadAvailableParentsAsync(Step).ConfigureAwait(false);
+            await LoadAvailableParentsAsync(Step);
         }
         else
         {
@@ -986,11 +985,11 @@
             var projectIdForVars = await Host.ResolveProjectIdAsync(
                 containerId: ProjectId,
                 processId:   Step?.ProcessId,
-                ct:          default).ConfigureAwait(false);
+                ct:          default);
             if (projectIdForVars is not null)
             {
                 var allVars = await VariableSvc
-                    .GetVariablesAsync(projectIdForVars.Value).ConfigureAwait(false);
+                    .GetVariablesAsync(projectIdForVars.Value);
                 _arrayVariableNames = allVars
                     .Where(v => string.Equals(v.Type, "StringArray",
                                               StringComparison.OrdinalIgnoreCase))
@@ -1004,7 +1003,7 @@
         // per-Space process assistant is enabled. Fail-closed on error.
         try
         {
-            var aiSettings = await AiSettingsSvc.GetAsync().ConfigureAwait(false);
+            var aiSettings = await AiSettingsSvc.GetAsync();
             _assistantEnabled = aiSettings.AssistantEnabled;
         }
         catch
@@ -1034,8 +1033,7 @@
         {
             _schema.Properties.TryGetValue(_explainFieldKey, out var field);
             var text = await AssistantSvc.ExplainFieldAsync(
-                _stepType, _explainFieldKey, field?.Label, field?.HelpText)
-                .ConfigureAwait(false);
+                _stepType, _explainFieldKey, field?.Label, field?.HelpText);
             _explainCache[_explainFieldKey] = text;
             _explainText = text;
         }
@@ -1137,8 +1135,7 @@
         }
 
         var siblings = await Host
-            .GetProcessStepsAsync(editing.ProcessId, default)
-            .ConfigureAwait(false);
+            .GetProcessStepsAsync(editing.ProcessId, default);
         if (siblings.Count == 0)
         {
             _availableParents = [];
@@ -1186,7 +1183,7 @@
             return;
         }
 
-        var rows = await StepPackageSvc.GetVersionsAsync(packageName).ConfigureAwait(false);
+        var rows = await StepPackageSvc.GetVersionsAsync(packageName);
         _availableVersions = StepPackageResolver.OrderByHighestSemver(rows.Select(r => r.Version));
         _versionRows = rows.ToDictionary(r => r.Version, StringComparer.OrdinalIgnoreCase);
     }
@@ -1235,7 +1232,7 @@
         }
 
         // Either no per-version schema or it failed to load → fall back.
-        newSchema ??= await ResolveSchemaAsync(_stepType).ConfigureAwait(false);
+        newSchema ??= await ResolveSchemaAsync(_stepType);
 
         // Diff the property sets so we know what to carry over and what to
         // warn about. Schemas can be null when no built-in covers the step
@@ -1295,7 +1292,7 @@
         // Fall back to a community-library template's parameter schema.
         try
         {
-            var all = await TemplateSvc.GetAllAsync().ConfigureAwait(false);
+            var all = await TemplateSvc.GetAllAsync();
             var match = all.FirstOrDefault(t =>
                 t.ActionType.Equals(stepType, StringComparison.OrdinalIgnoreCase));
             if (match is not null)
@@ -1523,7 +1520,7 @@
                     _stepPackageName, _stepPackageVersion,
                     executionKnobs,
                     parentUpdate,
-                    default).ConfigureAwait(false);
+                    default);
             }
             else
             {
@@ -1544,7 +1541,7 @@
                     _stepPackageName, _stepPackageVersion,
                     executionKnobs,
                     parentStepId: _selectedParentStepId,
-                    ct: default).ConfigureAwait(false);
+                    ct: default);
             }
             Dialog.Close(true);
         }
