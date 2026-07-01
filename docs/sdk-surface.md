@@ -146,9 +146,11 @@ above.
 - **MINOR** — additive only. New types, new optional members, new widget
   ids. Existing plugin DLLs continue to load.
 - **MAJOR** — breaking changes (rename / remove / signature change). The
-  agent verifies `manifest.minKrakenAgent` against its own version; loads
-  fail with a clear error when a plugin requires a newer SDK than the
-  agent ships.
+  agent is intended to verify `manifest.minKrakenAgent` against its own
+  version and fail the load with a clear error when a plugin requires a
+  newer SDK than the agent ships. **Not yet enforced** — the `minKrakenAgent`
+  manifest field exists, but `StepPackageLoader` does not compare it today;
+  the gate lands with the D-2 versioning policy.
 
 ## Plugin loading model (preview — see D-4)
 

@@ -139,8 +139,11 @@ On Windows, use Task Scheduler to run the backup command nightly.
 
 1. **Stop the server** (stop the service or `docker compose stop`).
 2. **Install the new version** (new MSI, new Docker image, or new binaries).
-3. **Start the server** — migrations apply automatically on startup. No manual
-   `database setup` needed on upgrades.
+3. **Apply migrations** — run `database setup` (idempotent; applies pending
+   migrations and re-seeds built-ins). Automatic startup migration runs **only**
+   in the `Development` environment, so a production upgrade requires this
+   explicit step.
+4. **Start the server.**
 
 ## Rollback Procedure
 
