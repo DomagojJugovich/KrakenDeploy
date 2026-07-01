@@ -6,8 +6,14 @@ namespace KrakenDeploy.Server.Transport;
 /// </summary>
 public interface IAgentConnectionRegistry
 {
-    /// <summary>Records a new agent connection.</summary>
-    void Add(string connectionId, Guid targetId);
+    /// <summary>
+    /// Records a new agent connection. <paramref name="accountId"/> is the business
+    /// account the connection resolved to at connect (host-derived, multi-account);
+    /// <c>Guid.Empty</c> in single-instance mode. Recorded so dispatch can assert a
+    /// target's live connection belongs to the dispatching account (P3-8 Phase 5
+    /// cross-account guard).
+    /// </summary>
+    void Add(string connectionId, Guid targetId, Guid accountId = default);
 
     /// <summary>
     /// Removes the connection and returns the associated target ID.
@@ -23,6 +29,13 @@ public interface IAgentConnectionRegistry
 
     /// <summary>Returns the connection ID for a target, or <c>null</c> if offline.</summary>
     string? GetConnectionId(Guid targetId);
+
+    /// <summary>
+    /// Returns the business account recorded for the target's live connection
+    /// (<c>Guid.Empty</c> in single-instance mode), or <c>null</c> if the target has
+    /// no active connection. Used by the dispatch cross-account guard.
+    /// </summary>
+    Guid? GetAccountForTarget(Guid targetId);
 
     /// <summary>Total number of currently connected agents.</summary>
     int Count { get; }

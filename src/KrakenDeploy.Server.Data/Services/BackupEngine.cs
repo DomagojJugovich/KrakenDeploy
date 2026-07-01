@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
+using KrakenDeploy.Server.Core.Domain.Accounts;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
@@ -24,6 +25,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// </summary>
 public sealed class BackupEngine(
     IConfiguration configuration,
+    IAccountContext accountContext,
     ILogger<BackupEngine> logger,
     TimeProvider time)
 {
@@ -48,11 +50,17 @@ public sealed class BackupEngine(
 
         try
         {
-            var connectionString = configuration.GetConnectionString("KrakenDb");
+            // Multi-account: dump the ACTIVE account's tenant DB (the engine runs under
+            // WithAccount via the per-account backup job), so the bundle is that account's
+            // data only. Single-instance: the fixed KrakenDb. Never the shared base DB
+            // when an account is resolved.
+            var connectionString = accountContext.IsResolved
+                ? accountContext.ConnectionString
+                : configuration.GetConnectionString("KrakenDb");
             if (string.IsNullOrWhiteSpace(connectionString))
             {
                 return Fail(started, stopwatch.Elapsed,
-                    "ConnectionStrings:KrakenDb is not configured.");
+                    "No backup connection string resolved (ConnectionStrings:KrakenDb / active account).");
             }
 
             var pgDumpPath = FindPgDump();
@@ -66,7 +74,8 @@ public sealed class BackupEngine(
             // Bundle layout matches the CLI exactly so existing restore
             // tooling + on-prem-guide cron jobs stay compatible.
             var timestamp = started.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-            var bundleDir = Path.Combine(targetDirectory, $"kraken-backup-{timestamp}");
+            var effectiveTarget = ResolveEffectiveTarget(targetDirectory);
+            var bundleDir = Path.Combine(effectiveTarget, $"kraken-backup-{timestamp}");
             Directory.CreateDirectory(bundleDir);
 
             var csBuilder = new Npgsql.NpgsqlConnectionStringBuilder(connectionString);
@@ -107,11 +116,20 @@ public sealed class BackupEngine(
             }
 
             // ── Data directory ─────────────────────────────────────────
+            // Per-account (multi-account): copy ONLY the account's segregated file slice
+            // ({DataPath}/accounts/{accountId} — its packages + artifacts, kept separate by
+            // LocalPackageStore/LocalArtifactStore). Platform-global material (the Data
+            // Protection key ring, license) lives at the DataPath root and is deliberately
+            // NOT in a tenant bundle. Single-instance: copy the whole DataPath as before.
             var dataPath = configuration["Server:DataPath"] ?? "data";
-            if (Directory.Exists(dataPath))
+            var sourceDataDir = accountContext.IsResolved
+                ? Path.Combine(dataPath, "accounts", accountContext.CurrentAccountId.ToString())
+                : dataPath;
+            var includeDataDirectory = Directory.Exists(sourceDataDir);
+            if (includeDataDirectory)
             {
                 var dataBackupDir = Path.Combine(bundleDir, "data");
-                CopyDirectoryRecursive(dataPath, dataBackupDir);
+                CopyDirectoryRecursive(sourceDataDir, dataBackupDir);
             }
 
             // ── Manifest ───────────────────────────────────────────────
@@ -121,8 +139,13 @@ public sealed class BackupEngine(
                 Timestamp:     timestamp,
                 ServerVersion: serverVersion,
                 DatabaseFile:  "database.sql",
-                DataDirectory: Directory.Exists(dataPath) ? "data" : null,
-                ConnectionInfo: new BackupConnectionInfo(host, port, db));
+                DataDirectory: includeDataDirectory ? "data" : null,
+                ConnectionInfo: new BackupConnectionInfo(host, port, db),
+                // Stamp the owning account (multi-account) so restore can refuse to load
+                // this bundle into a DIFFERENT account's database. Null single-instance.
+                Account: accountContext.IsResolved
+                    ? new BackupAccount(accountContext.Subdomain, accountContext.CurrentAccountId)
+                    : null);
             var manifestJson = JsonSerializer.Serialize(manifest, ManifestJsonOptions);
             await File.WriteAllTextAsync(Path.Combine(bundleDir, "manifest.json"),
                 manifestJson, ct).ConfigureAwait(false);
@@ -163,9 +186,12 @@ public sealed class BackupEngine(
             throw new ArgumentOutOfRangeException(nameof(keepLast),
                 "Prune retention must be positive; pass 0 in BackupSettings to disable pruning instead.");
         }
-        if (!Directory.Exists(targetDirectory)) { return 0; }
+        // Prune within the SAME account-namespaced subdirectory the bundles were written
+        // to, so one account's prune never deletes another account's bundles.
+        var effectiveTarget = ResolveEffectiveTarget(targetDirectory);
+        if (!Directory.Exists(effectiveTarget)) { return 0; }
 
-        var bundles = Directory.GetDirectories(targetDirectory, "kraken-backup-*")
+        var bundles = Directory.GetDirectories(effectiveTarget, "kraken-backup-*")
             .OrderByDescending(d => d)        // timestamp sort → newest first
             .Skip(keepLast)
             .ToList();
@@ -179,6 +205,17 @@ public sealed class BackupEngine(
         }
         return bundles.Count;
     }
+
+    /// <summary>
+    /// The directory bundles are written to / pruned within. Per-account (multi-account)
+    /// it is namespaced by the active account's subdomain so two accounts using the same
+    /// configured <c>TargetDirectory</c> never collide and pruning never crosses accounts;
+    /// single-instance it is the configured directory unchanged.
+    /// </summary>
+    private string ResolveEffectiveTarget(string targetDirectory)
+        => accountContext.IsResolved
+            ? Path.Combine(targetDirectory, accountContext.Subdomain)
+            : targetDirectory;
 
     private static BackupResult Fail(DateTimeOffset startedUtc, TimeSpan elapsed, string message)
         => new(Succeeded:   false,
@@ -256,9 +293,14 @@ public sealed class BackupEngine(
         string ServerVersion,
         string DatabaseFile,
         string? DataDirectory,
-        BackupConnectionInfo ConnectionInfo);
+        BackupConnectionInfo ConnectionInfo,
+        BackupAccount? Account);
 
     private sealed record BackupConnectionInfo(string Host, int Port, string Database);
+
+    /// <summary>The business account a multi-account bundle belongs to (null
+    /// single-instance). Read by restore to prevent cross-account restores.</summary>
+    private sealed record BackupAccount(string Subdomain, Guid Id);
 }
 
 /// <summary>Result of a single backup run. Mutually-exclusive

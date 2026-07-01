@@ -290,17 +290,17 @@ else
                                                  Gap="0.25rem" Style="flex-wrap:wrap">
                                         @foreach (var id in a.ProjectIds)
                                         {
-                                            <RadzenBadge Text="@($"Project:{id.ToString()[..8]}…")"
+                                            <RadzenBadge Text="@($"Project: {ProjectName(id)}")"
                                                          BadgeStyle="BadgeStyle.Info" IsPill="true" />
                                         }
                                         @foreach (var id in a.EnvironmentIds)
                                         {
-                                            <RadzenBadge Text="@($"Env:{id.ToString()[..8]}…")"
+                                            <RadzenBadge Text="@($"Env: {EnvName(id)}")"
                                                          BadgeStyle="BadgeStyle.Light" IsPill="true" />
                                         }
                                         @foreach (var id in a.TenantIds)
                                         {
-                                            <RadzenBadge Text="@($"Tenant:{id.ToString()[..8]}…")"
+                                            <RadzenBadge Text="@($"Tenant: {TenantName(id)}")"
                                                          BadgeStyle="BadgeStyle.Warning" IsPill="true" />
                                         }
                                     </RadzenStack>
@@ -382,6 +382,12 @@ else
         _allEnvironments = await EnvironmentSvc.GetAllOrderedAsync();
         _allTenants      = await TenantSvc.GetAllAsync();
     }
+
+    // Resolve a scope id to its display name using the already-loaded reference
+    // lists; falls back to a short id prefix when the entity is gone.
+    private string ProjectName(Guid id) => _allProjects.FirstOrDefault(p => p.Id == id)?.Name ?? $"{id.ToString()[..8]}…";
+    private string EnvName(Guid id) => _allEnvironments.FirstOrDefault(e => e.Id == id)?.Name ?? $"{id.ToString()[..8]}…";
+    private string TenantName(Guid id) => _allTenants.FirstOrDefault(t => t.Id == id)?.Name ?? $"{id.ToString()[..8]}…";
 
     private async Task LoadRolesAsync()
         => _allRoles = await RoleSvc.GetAllAsync();

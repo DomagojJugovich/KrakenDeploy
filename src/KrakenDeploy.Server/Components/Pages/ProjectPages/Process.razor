@@ -34,7 +34,8 @@
         <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
             <RequirePermission Permission="Permission.ReleaseCreate">
                 <RadzenButton Text="Create Release" Icon="add_circle_outline"
-                              ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small" />
+                              ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                              Click="OpenCreateReleaseAsync" />
             </RequirePermission>
             <RequirePermission Permission="Permission.ProcessEdit">
                 <RadzenButton Text="Import from Octopus" Icon="cloud_download"
@@ -547,6 +548,30 @@
             if (latest is not null) { map[name] = latest; }
         }
         _latestInstalledByPackage = map;
+    }
+
+    private async Task OpenCreateReleaseAsync()
+    {
+        if (_project is null) return;
+
+        var result = await Dialog.OpenAsync<CreateReleaseDialog>(
+            "Create release",
+            new Dictionary<string, object?>
+            {
+                [nameof(CreateReleaseDialog.ProjectId)] = _project.Id,
+            },
+            new DialogOptions { Width = "560px" });
+
+        if (result is true)
+        {
+            Notifications.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Success,
+                Summary = "Created",
+                Detail = "Release was created.",
+                Duration = 3000,
+            });
+        }
     }
 
     private async Task OpenImportDeploymentProcessAsync()

@@ -211,6 +211,7 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
             new OwnershipNullUiHubContext(),
             new FalseSubPlanRegistry(),
             new OwnershipNeverUsedAdhocRegistry(),
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             NullLogger<AgentHub>.Instance)
         {
             Context = new OwnershipFakeHubCallerContext(actingTargetId),

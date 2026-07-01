@@ -6,6 +6,9 @@
 .github/
 .vs/
 .idea/
+# Claude Code session data + git worktrees — never build input; a stale worktree
+# here is a second full repo copy that would otherwise bloat the build context.
+.claude/
 **/TestResults/
 artifacts/
 *.user

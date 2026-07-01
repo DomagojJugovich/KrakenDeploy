@@ -1,3 +1,4 @@
+using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services.Ai.Diagnosis;
 using Microsoft.Extensions.DependencyInjection;
@@ -27,27 +28,56 @@ public sealed class DeploymentDiagnosisWorker(
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await foreach (var deploymentId in channel.Reader.ReadAllAsync(stoppingToken))
+        await foreach (var item in channel.Reader.ReadAllAsync(stoppingToken))
         {
-            _ = DiagnoseAsync(deploymentId, stoppingToken);
+            _ = DiagnoseAsync(item, stoppingToken);
         }
     }
 
-    private async Task DiagnoseAsync(Guid deploymentId, CancellationToken ct)
+    private async Task DiagnoseAsync(TenantWorkItem item, CancellationToken ct)
     {
         try
         {
-            await using var scope = scopeFactory.CreateAsyncScope();
-            var service = scope.ServiceProvider.GetRequiredService<DeploymentDiagnosisService>();
-            await service.DiagnoseAsync(deploymentId, ct).ConfigureAwait(false);
+            // Single-instance: run directly. Multi-account: resolve the account and
+            // run under it (the diagnosis service's DbContext inherits via AsyncLocal).
+            if (item.AccountId == Guid.Empty)
+            {
+                await DiagnoseCoreAsync(item.Id, ct).ConfigureAwait(false);
+                return;
+            }
+
+            await using var accountScope = scopeFactory.CreateAsyncScope();
+            var account = await accountScope.ServiceProvider
+                .GetRequiredService<IAccountResolver>()
+                .ResolveByIdAsync(item.AccountId, ct)
+                .ConfigureAwait(false);
+            if (account is null)
+            {
+                logger.LogError(
+                    "DeploymentDiagnosisWorker: account {AccountId} not found for deployment {DeploymentId}.",
+                    item.AccountId, item.Id);
+                return;
+            }
+
+            using (accountScope.ServiceProvider.GetRequiredService<IAccountContext>().WithAccount(account))
+            {
+                await DiagnoseCoreAsync(item.Id, ct).ConfigureAwait(false);
+            }
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // DiagnoseAsync already swallows AI / assembly errors; this is the
+            // DiagnoseCoreAsync already swallows AI / assembly errors; this is the
             // last-resort net so a surprise (e.g. DI resolution) doesn't kill
             // the reader loop.
             logger.LogError(ex,
-                "Unhandled error diagnosing deployment {DeploymentId}.", deploymentId);
+                "Unhandled error diagnosing deployment {DeploymentId}.", item.Id);
         }
+    }
+
+    private async Task DiagnoseCoreAsync(Guid deploymentId, CancellationToken ct)
+    {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var service = scope.ServiceProvider.GetRequiredService<DeploymentDiagnosisService>();
+        await service.DiagnoseAsync(deploymentId, ct).ConfigureAwait(false);
     }
 }

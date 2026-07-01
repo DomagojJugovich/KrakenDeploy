@@ -28,9 +28,13 @@ using KrakenDeploy.Server.Core.Domain.StepTemplates;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Spaces;
+using KrakenDeploy.Server.Accounts;
+using KrakenDeploy.Server.Core.Domain.Accounts;
+using KrakenDeploy.ControlPlane;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
@@ -129,7 +133,28 @@ public static class Program
                 "Set ConnectionStrings:KrakenDb in appsettings.{Environment}.json or via user-secrets.");
 
         var dataPath = builder.Configuration["Server:DataPath"] ?? "data";
-        builder.Services.AddKrakenDeployData(connectionString, dataPath);
+
+        // SaaS multi-account layer is opt-in (MultiAccount:Enabled). When off, the
+        // platform runs single-instance exactly as before: one fixed tenant DB, no
+        // subdomain resolution, no control plane.
+        var multiAccountEnabled = builder.Configuration.GetValue(
+            $"{MultiAccountOptions.SectionName}:{nameof(MultiAccountOptions.Enabled)}", false);
+
+        if (multiAccountEnabled)
+        {
+            // Tenant connection is resolved per request from the active account
+            // (subdomain → catalog → secret); the catalog is its own database.
+            var catalogConnectionString = builder.Configuration.GetConnectionString("Catalog")
+                ?? throw new InvalidOperationException(
+                    "MultiAccount is enabled but connection string 'Catalog' is not configured. " +
+                    "Set ConnectionStrings:Catalog.");
+            builder.Services.AddKrakenControlPlane(builder.Configuration, catalogConnectionString, dataPath);
+            builder.Services.AddKrakenDeployData(connectionString, dataPath, multiAccount: true);
+        }
+        else
+        {
+            builder.Services.AddKrakenDeployData(connectionString, dataPath);
+        }
         // Registers IKrakenAi + KrakenAiClientFactory + prompt sanitiser/cost
         // catalog. AddKrakenDeployData already registered the DB-backed
         // IKrakenAiSettingsProvider / IKrakenAiCallSink / IBudgetTracker, so
@@ -150,6 +175,22 @@ public static class Program
         builder.Services.AddHttpContextAccessor();
         builder.Services.AddScoped<HttpSpaceContext>();
         builder.Services.AddScoped<ISpaceContext>(sp => sp.GetRequiredService<HttpSpaceContext>());
+
+        // ── Account context (multi-account / SaaS only) ──────────────────────
+        // The active account rides in the host subdomain. AccountResolutionMiddleware
+        // resolves it and pins it here (fail closed); the account-aware tenant
+        // DbContextFactory reads the connection string from it. Mirrors the Space
+        // context one level up.
+        if (multiAccountEnabled)
+        {
+            builder.Services.AddScoped<HttpAccountContext>();
+            builder.Services.AddScoped<IAccountContext>(
+                sp => sp.GetRequiredService<HttpAccountContext>());
+            // Per-account scheduled-backup runner (job body + startup reconcile). Only
+            // needed in multi-account; injects singleton-safe deps so it carries no
+            // captive dependency.
+            builder.Services.AddTransient<AccountBackupRunner>();
+        }
 
         // Rate limiting — SCOPED TO /api/agents/register ONLY (applied via
         // .RequireRateLimiting below). Deliberately NOT a global limiter: gov
@@ -242,9 +283,18 @@ public static class Program
         builder.Services.AddAuthentication()
             .AddCookie(IdentityConstants.ExternalScheme);
 
-        // Register one OIDC scheme per enabled IdentityProvider in the DB.
-        // Silently no-ops if DB isn't ready yet (first-run before migration).
-        OidcRegistrar.RegisterSchemes(builder);
+        // External OIDC SSO. Single-instance: one global scheme per enabled
+        // IdentityProvider, registered at startup. Multi-account (SaaS): per-tenant
+        // schemes synthesized per request from the resolved account's own DB (see
+        // docs/saas-per-account-sso.md). Both no-op gracefully when no providers exist.
+        if (multiAccountEnabled)
+        {
+            OidcRegistrar.RegisterMultiAccountSchemes(builder);
+        }
+        else
+        {
+            OidcRegistrar.RegisterSchemes(builder);
+        }
 
         // Agent JWT bearer — separate scheme so it doesn't conflict with the
         // cookie auth used by the Blazor UI.
@@ -311,26 +361,33 @@ public static class Program
             });
 
         // ── SignalR & transport ──────────────────────────────────────────────
-        builder.Services.AddSignalR(options =>
+        var signalR = builder.Services.AddSignalR(options =>
         {
             options.MaximumReceiveMessageSize = 1_048_576; // 1 MiB — control plane only
         });
 
+        // P3-8 — agent-transport account identity (multi-account only). The filter
+        // resolves the account from the connection's host (host-derived) and pins it
+        // for every AgentHub event/invocation, fail-closed. Single-instance installs
+        // never add it and run unchanged.
+        if (multiAccountEnabled)
+        {
+            builder.Services.AddSingleton<AgentAccountHubFilter>();
+            signalR.AddHubOptions<AgentHub>(options => options.AddFilter<AgentAccountHubFilter>());
+        }
+
         builder.Services.AddGrpc();
 
-        // Agent connection registry: InMemory for single-server; Postgres-backed
-        // for HA pair. Set Server:HaMode to "Postgres" in the 2-node configuration.
-        if (string.Equals(builder.Configuration["Server:HaMode"], "Postgres", StringComparison.OrdinalIgnoreCase))
-        {
-            var connStr = builder.Configuration.GetConnectionString("KrakenDb")
-                ?? throw new InvalidOperationException("ConnectionStrings:KrakenDb is required for HA mode.");
-            builder.Services.AddSingleton<IAgentConnectionRegistry>(
-                _ => new PostgresAgentConnectionRegistry(connStr));
-        }
-        else
-        {
-            builder.Services.AddSingleton<IAgentConnectionRegistry, InMemoryAgentConnectionRegistry>();
-        }
+        // Agent connection registry: in-memory in all modes. Connection lookups are
+        // node-local; an agent that drops simply reconnects and re-registers, so the
+        // state is self-healing and needs no persistence. The earlier Postgres-backed
+        // HA variant only ever WROTE an agent_connections table that nothing read (all
+        // reads are node-local) — dead weight, not a cross-node lookup, so it was
+        // removed. HA correctness rests on sticky-session routing; a genuine cross-node
+        // registry needs a SignalR backplane (e.g. Redis) and is deferred until then.
+        // The in-memory registry still tracks the per-connection account so the dispatch
+        // cross-account guard (P3-8 Phase 5) works.
+        builder.Services.AddSingleton<IAgentConnectionRegistry, InMemoryAgentConnectionRegistry>();
         builder.Services.AddSingleton<AgentJwtService>();
         builder.Services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
         builder.Services.AddSingleton<TargetStatusPublisher>();
@@ -341,9 +398,19 @@ public static class Program
         // free of the JWT / RSA dependency chain.
         builder.Services.AddSingleton<ILicenseGate>(
             sp => sp.GetRequiredService<LicenseService>());
-        // Cached snapshot of target + user counts for the banner. Scoped so
-        // the cache lives across requests but is bounded to one DI tree.
-        builder.Services.AddSingleton<LicenseUsageCounter>();
+        // Cached snapshot of target + user counts for the banner. In multi-account,
+        // Scoped (bounded to one account's request/circuit) — a process-wide Singleton
+        // serves one tenant's counts to another (cross-account leak). Single-instance
+        // keeps the shared Singleton cache. Mirrors the cache services scoped in
+        // AddKrakenDeployData; a per-account-keyed cache is the deferred P3-5 step.
+        if (multiAccountEnabled)
+        {
+            builder.Services.AddScoped<LicenseUsageCounter>();
+        }
+        else
+        {
+            builder.Services.AddSingleton<LicenseUsageCounter>();
+        }
         builder.Services.AddSingleton<DiagnosticsService>();
         // Backup schedule applicator (M13.G). Scoped because it pulls
         // BackupService (scoped) which pulls the DbContextFactory.
@@ -452,15 +519,22 @@ public static class Program
             });
 
         // ── Hangfire ─────────────────────────────────────────────────────────
-        // Storage on Postgres (same database as the app — Hangfire auto-creates
-        // its own schema).  The background server executes recurring jobs in the
-        // same process; split to a dedicated worker in a future scale-out.
+        // Storage on Postgres (Hangfire auto-creates its own schema). The recurring
+        // schedule is control-plane fan-out (PerAccountRecurringJobRunner enumerates the
+        // catalog and runs each job under WithAccount), so in multi-account the job store
+        // lives in the CATALOG / control-plane DB — never a per-tenant DB and never the
+        // shared base KrakenDb (which holds nothing tenant-specific under DB-per-account).
+        // Single-instance keeps it in KrakenDb (the one app DB). Catalog is validated
+        // non-null in the multi-account branch above.
+        var hangfireConnectionString = multiAccountEnabled
+            ? builder.Configuration.GetConnectionString("Catalog")!
+            : connectionString;
         builder.Services.AddHangfire(config => config
             .SetDataCompatibilityLevel(CompatibilityLevel.Version_180)
             .UseSimpleAssemblyNameTypeSerializer()
             .UseRecommendedSerializerSettings()
             .UsePostgreSqlStorage(opt =>
-                opt.UseNpgsqlConnection(connectionString)));
+                opt.UseNpgsqlConnection(hangfireConnectionString)));
 
         // Hangfire worker count — read from PerformanceSettings (M13.F.3).
         // Hangfire's WorkerCount is a builder-time setting; changes from the
@@ -508,7 +582,16 @@ public static class Program
         // ── Build & configure pipeline ────────────────────────────────────────
         var app = builder.Build();
 
-        if (app.Environment.IsDevelopment())
+        if (app.Environment.IsDevelopment() && multiAccountEnabled)
+        {
+            // Multi-account dev seed: migrate the catalog, ensure a dev shard, and
+            // provision demo accounts (each provisions + migrates + seeds its own
+            // tenant DB). The single-DB seed below is skipped — there is no single
+            // tenant DB in this mode.
+            await ControlPlaneDevSeed.SeedAsync(app.Services, app.Configuration, app.Logger)
+                .ConfigureAwait(false);
+        }
+        else if (app.Environment.IsDevelopment())
         {
             await using var scope = app.Services.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
@@ -557,20 +640,29 @@ public static class Program
                 "in {Elapsed:0.0} ms";
         });
 
+        // Cross-customer boundary (multi-account / SaaS only): resolve the active
+        // account from the request subdomain and pin it onto IAccountContext BEFORE
+        // authentication — Identity loads the user from the per-account tenant DB
+        // (users are isolated per account, D4/D9), so the account (and thus the
+        // tenant connection) must be resolved first. Fails closed on unknown subdomains.
+        if (multiAccountEnabled)
+        {
+            app.UseMiddleware<AccountResolutionMiddleware>();
+        }
+
+        // Space-in-URL routing: redirect a BARE page path (clean entry URL, old
+        // bookmark, post-login returnUrl) to the Default Space — BEFORE auth, so the
+        // auth challenge fires on the real /s/{slug}/… page and 302-redirects to
+        // /login (a bare "/" would otherwise 401 without redirecting). Skips the
+        // API/framework/auth/static surface (SpaceRouting.IsSpaceAgnostic).
+        app.UseMiddleware<KrakenDeploy.Server.Spaces.SpaceUrlRedirectMiddleware>();
+
         app.UseAuthentication();
         app.UseAuthorization();
 
         // Enforces the per-endpoint "agent-register" policy below. No global
         // limiter is configured, so this only affects endpoints that opt in.
         app.UseRateLimiter();
-
-        // Space-in-URL routing: the active Space is the first path segment
-        // (/s/{slug}/…), a real @page route param that each page's
-        // SpaceScopedComponentBase validates + applies. This middleware only
-        // redirects a BARE page path (clean entry URL, old bookmark, post-login
-        // returnUrl) to the Default Space — no cookie, no last-used memory. Skips
-        // the API/framework/auth/static surface (SpaceRouting.IsSpaceAgnostic).
-        app.UseMiddleware<KrakenDeploy.Server.Spaces.SpaceUrlRedirectMiddleware>();
 
         // M11.B — per-Space MCP-enabled gate. Path-scoped to /mcp so other
         // endpoints sharing the API key (the /api/* surface) keep working
@@ -614,6 +706,7 @@ public static class Program
             string? returnUrl,
             HttpContext http,
             IAuthenticationSchemeProvider schemeProvider,
+            KrakenDeploy.Server.Core.Domain.Accounts.IAccountContext accountContext,
             KrakenDeploy.Server.Data.Services.FeatureFlagService featureFlags) =>
         {
             // M13.F.5 master kill-switch — when OFF, refuse the challenge
@@ -629,6 +722,19 @@ public static class Program
 
             var scheme = await schemeProvider.GetSchemeAsync(provider);
             if (scheme is null || !provider.StartsWith("oidc_", StringComparison.Ordinal))
+            {
+                return Results.Redirect("/login?error=unknown_provider");
+            }
+
+            // Multi-account defense in depth: the requested scheme must belong to the
+            // account resolved from the host, so one tenant's login page cannot initiate
+            // another tenant's IdP challenge. (The OIDC correlation cookie is host-only,
+            // so a cross-account challenge would fail at callback anyway — we reject it up
+            // front and explicitly.)
+            if (accountContext.IsResolved
+                && KrakenDeploy.Server.Auth.OidcRegistrar.TryParseMultiAccountScheme(
+                       provider, out var schemeAccountId, out _)
+                && schemeAccountId != accountContext.CurrentAccountId)
             {
                 return Results.Redirect("/login?error=unknown_provider");
             }
@@ -679,331 +785,20 @@ public static class Program
                     target.Id, jwt, target.TransportMode.ToString()));
             }).AllowAnonymous().RequireRateLimiting("agent-register");
 
-        // ── Agent REST API (non-SignalR transports: Direct, Polling) ──────────────
-        // Mirrors the SignalR hub methods so DirectServerLink and PollingServerLink
-        // can communicate with the server via plain HTTP.
-        //
-        // Heartbeat: POST /api/agents/heartbeat
-        app.MapPost("/api/agents/heartbeat",
-            async (
-                HeartbeatRequest req,
-                KrakenDbContext db,
-                TargetStatusPublisher statusPub,
-                TimeProvider timeProvider,
-                HttpContext http,
-                CancellationToken ct) =>
-            {
-                var targetIdClaim = http.User.FindFirst(
-                    System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
-                if (targetIdClaim is null || !Guid.TryParse(targetIdClaim, out var targetId))
-                {
-                    return Results.Unauthorized();
-                }
+        // NOTE: the agent REST API (heartbeat / status / logs / complete /
+        // pending-work) that mirrored the SignalR hub for the Direct and Polling
+        // transports was removed — KrakenDeploy is SignalR-only for live agents,
+        // which use the hub methods on AgentHub directly.
 
-                var target = await db.DeploymentTargets
-                    .FindAsync(new object[] { targetId }, ct)
-                    .ConfigureAwait(false);
-                if (target is null)
-                {
-                    return Results.NotFound();
-                }
-
-                var now = timeProvider.GetUtcNow();
-                target.LastSeenUtc = now;
-                if (req.MachineName is not null)
-                {
-                    target.MachineName = req.MachineName;
-                }
-
-                if (req.OperatingSystem is not null)
-                {
-                    target.OperatingSystem = req.OperatingSystem;
-                }
-
-                if (req.AgentVersion is not null)
-                {
-                    target.AgentVersion = req.AgentVersion;
-                }
-                await db.SaveChangesAsync(ct).ConfigureAwait(false);
-
-                // If the target was offline, transition to Online.
-                if (target.Status != TargetStatus.Online)
-                {
-                    target.Status = TargetStatus.Online;
-                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
-                    await statusPub.PublishAsync(targetId, TargetStatus.Online, now)
-                        .ConfigureAwait(false);
-                }
-
-                return Results.NoContent();
-            }).RequireAuthorization("AgentJwt");
-
-        // Report status: POST /api/agents/status
-        app.MapPost("/api/agents/status",
-            async (
-                HttpContext http,
-                KrakenDbContext db,
-                CancellationToken ct) =>
-            {
-                var targetIdClaim = http.User.FindFirst(
-                    System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
-                if (targetIdClaim is null || !Guid.TryParse(targetIdClaim, out var targetId))
-                {
-                    return Results.Unauthorized();
-                }
-
-                // Read the status string from the request body.
-                string status;
-                using (var reader = new System.IO.StreamReader(http.Request.Body))
-                {
-                    status = await reader.ReadToEndAsync(ct).ConfigureAwait(false);
-                }
-
-                var target = await db.DeploymentTargets
-                    .FindAsync(new object[] { targetId }, ct)
-                    .ConfigureAwait(false);
-                if (target is null)
-                {
-                    return Results.NotFound();
-                }
-
-                if (status.Contains("ShuttingDown", StringComparison.OrdinalIgnoreCase))
-                {
-                    target.Status = TargetStatus.Offline;
-                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
-                }
-
-                return Results.NoContent();
-            }).RequireAuthorization("AgentJwt");
-
-        // Append a log line: POST /api/deployments/{id:guid}/logs
-        app.MapPost("/api/deployments/{id:guid}/logs",
-            async (
-                Guid id,
-                DeploymentLogLineRequest req,
-                KrakenDbContext db,
-                TimeProvider timeProvider,
-                HttpContext http,
-                CancellationToken ct) =>
-            {
-                var claimTargetId = GetAgentTargetId(http);
-                if (claimTargetId is null)
-                {
-                    return Results.StatusCode(403);
-                }
-
-                var deployment = await db.Deployments.FindAsync(new object[] { id }, ct)
-                    .ConfigureAwait(false);
-                if (deployment is null)
-                {
-                    // Try runbook runs.
-                    var run = await db.RunbookRuns.FindAsync(new object[] { id }, ct)
-                        .ConfigureAwait(false);
-                    if (run is null)
-                    {
-                        return Results.NotFound();
-                    }
-
-                    // Ownership: only the run's own target may append its logs.
-                    if (run.TargetId != claimTargetId)
-                    {
-                        return Results.StatusCode(403);
-                    }
-
-                    var runEntry = new KrakenDeploy.Server.Core.Domain.Runbooks.RunbookRunLogEntry
-                    {
-                        RunbookRunId = id,
-                        Level = req.Level,
-                        Message = req.Message,
-                        Timestamp = timeProvider.GetUtcNow(),
-                    };
-                    db.RunbookRunLogEntries.Add(runEntry);
-                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
-                    return Results.NoContent();
-                }
-
-                // Ownership: only a target assigned to this deployment may append its logs.
-                if (deployment.TargetId != claimTargetId
-                    && !await db.DeploymentTargetAssignments
-                        .AnyAsync(a => a.DeploymentId == id && a.TargetId == claimTargetId.Value, ct)
-                        .ConfigureAwait(false))
-                {
-                    return Results.StatusCode(403);
-                }
-
-                var entry = new KrakenDeploy.Server.Core.Domain.Deployments.DeploymentLogEntry
-                {
-                    DeploymentId = id,
-                    Level = req.Level,
-                    Message = req.Message,
-                    Timestamp = timeProvider.GetUtcNow(),
-                };
-                db.DeploymentLogEntries.Add(entry);
-                await db.SaveChangesAsync(ct).ConfigureAwait(false);
-                return Results.NoContent();
-            }).RequireAuthorization("AgentJwt");
-
-        // Complete a deployment: POST /api/deployments/{id:guid}/complete
-        app.MapPost("/api/deployments/{id:guid}/complete",
-            async (
-                Guid id,
-                CompleteDeploymentRequest req,
-                KrakenDbContext db,
-                TimeProvider timeProvider,
-                TargetStatusPublisher statusPub,
-                HttpContext http,
-                CancellationToken ct) =>
-            {
-                var claimTargetId = GetAgentTargetId(http);
-                if (claimTargetId is null)
-                {
-                    return Results.StatusCode(403);
-                }
-
-                var deployment = await db.Deployments.FindAsync(new object[] { id }, ct)
-                    .ConfigureAwait(false);
-                if (deployment is null)
-                {
-                    // Try runbook runs.
-                    var run = await db.RunbookRuns.FindAsync(new object[] { id }, ct)
-                        .ConfigureAwait(false);
-                    if (run is null)
-                    {
-                        return Results.NotFound();
-                    }
-
-                    // Ownership: only the run's own target may complete it.
-                    if (run.TargetId != claimTargetId)
-                    {
-                        return Results.StatusCode(403);
-                    }
-
-                    run.Status = req.Success
-                        ? KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Succeeded
-                        : KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Failed;
-                    run.CompletedUtc = timeProvider.GetUtcNow();
-                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
-                    return Results.NoContent();
-                }
-
-                // Ownership: only a target assigned to this deployment may complete it.
-                if (deployment.TargetId != claimTargetId
-                    && !await db.DeploymentTargetAssignments
-                        .AnyAsync(a => a.DeploymentId == id && a.TargetId == claimTargetId.Value, ct)
-                        .ConfigureAwait(false))
-                {
-                    return Results.StatusCode(403);
-                }
-
-                deployment.Status = req.Success
-                    ? KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Succeeded
-                    : KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Failed;
-                deployment.CompletedUtc = timeProvider.GetUtcNow();
-                await db.SaveChangesAsync(ct).ConfigureAwait(false);
-                return Results.NoContent();
-            }).RequireAuthorization("AgentJwt");
-
-        // Pending work (polling mode): GET /api/agents/pending-work/{targetId:guid}
-        app.MapGet("/api/agents/pending-work/{targetId:guid}",
-            async (
-                Guid targetId,
-                KrakenDbContext db,
-                VariableService variableSvc,
-                HttpContext http,
-                CancellationToken ct) =>
-            {
-                // Ownership: an agent may only poll work for its OWN target. The
-                // route id is untrusted; the authoritative target is the JWT
-                // NameIdentifier claim. A token for target A must not pull target
-                // B's queued plan (which carries decrypted sensitive variables).
-                if (GetAgentTargetId(http) != targetId)
-                {
-                    return Results.StatusCode(403);
-                }
-
-                // Find the next Queued deployment for this target.
-                var deployment = await db.Deployments
-                    .Where(d => d.TargetId == targetId
-                        && d.Status == KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Queued)
-                    .OrderBy(d => d.CreatedUtc)
-                    .FirstOrDefaultAsync(ct)
-                    .ConfigureAwait(false);
-
-                if (deployment is null)
-                {
-                    return Results.Ok(new { pending = false });
-                }
-
-                var release = await db.Releases
-                    .Include(r => r.ProcessSnapshot)
-                    .FirstOrDefaultAsync(r => r.Id == deployment.ReleaseId, ct)
-                    .ConfigureAwait(false);
-
-                if (release is null)
-                {
-                    return Results.Ok(new { pending = false });
-                }
-
-                // Build the deployment plan (same as DeploymentWorker)
-                var project = await db.Projects
-                    .FindAsync(new object[] { release.ProjectId }, ct)
-                    .ConfigureAwait(false);
-                var env = await db.Environments
-                    .FindAsync(new object[] { deployment.EnvironmentId }, ct)
-                    .ConfigureAwait(false);
-
-                var target = await db.DeploymentTargets
-                    .FindAsync(new object[] { deployment.TargetId!.Value }, ct)
-                    .ConfigureAwait(false);
-
-                var variables = await variableSvc
-                    .ResolveAsync(release.ProjectId, deployment.EnvironmentId,
-                        deployment.TargetId!.Value, target?.Roles ?? [],
-                        deployment.TenantId, release.ChannelId, ct: ct)
-                    .ConfigureAwait(false);
-
-                // Split resolved variables into scalar and array.
-                // StringArray values from ResolveAsync are JSON arrays like ["a","b"].
-                var flatVars = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                var arrayVars = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
-
-                foreach (var (name, value) in variables)
-                {
-                    try
-                    {
-                        var items = System.Text.Json.JsonSerializer.Deserialize<string[]>(value);
-                        if (items is not null)
-                        {
-                            arrayVars[name] = items;
-                            flatVars[name] = string.Join(", ", items);
-                            continue;
-                        }
-                    }
-                    catch (System.Text.Json.JsonException) { }
-
-                    flatVars[name] = value;
-                }
-
-                var steps = release.ProcessSnapshot
-                    .OrderBy(s => s.SortOrder)
-                    .Select(s => new KrakenDeploy.Contracts.DeploymentStepPlan(
-                        Index: s.SortOrder,
-                        Name: s.Name,
-                        StepType: s.StepType,
-                        PackageId: s.PackageId ?? "",
-                        PackageVersion: s.PackageVersion ?? "",
-                        Config: s.Config ?? new Dictionary<string, string>(StringComparer.Ordinal)))
-                    .ToArray();
-
-                var plan = new KrakenDeploy.Contracts.DeploymentPlan(
-                    DeploymentId: deployment.Id,
-                    EnvironmentName: env?.Name ?? "",
-                    Steps: steps,
-                    Variables: flatVars,
-                    ArrayVariables: arrayVars);
-
-                return Results.Ok(new { pending = true, plan });
-            }).RequireAuthorization("AgentJwt");
+        // Agent auto-update endpoints authenticate via the API-key OR agent-JWT scheme.
+        // Pass a BUILT policy, not scheme-name strings: RequireAuthorization(params string[])
+        // treats its args as POLICY names, and no "ApiKey"/"AgentJwt" policy is registered
+        // (those are authentication schemes) — the string overload therefore 500s at the
+        // authorization middleware ("AuthorizationPolicy named 'ApiKey' was not found").
+        var agentUpdateAuthPolicy = new AuthorizationPolicyBuilder(
+                ApiKeyAuthenticationHandler.SchemeName, "AgentJwt")
+            .RequireAuthenticatedUser()
+            .Build();
 
         // Agent auto-update — returns whether a newer agent version is available
         // for the given runtime identifier. Called periodically by connected agents.
@@ -1051,7 +846,7 @@ public static class Program
                     updateAvailable ? $"/api/agents/download/{rid}" : null,
                     ridInfo.SizeBytes,
                     updateAvailable ? ridInfo.Sha256 : null));
-            }).RequireAuthorization(ApiKeyAuthenticationHandler.SchemeName, "AgentJwt");
+            }).RequireAuthorization(agentUpdateAuthPolicy);
 
         // Agent binary download — serves the self-contained agent archive for the
         // given RID. The caller must already know the RID from the update-info response.
@@ -1067,7 +862,7 @@ public static class Program
                 var (stream, fileName, contentType) = download.Value;
                 return Results.Stream(stream, contentType, fileName,
                     enableRangeProcessing: true);
-            }).RequireAuthorization(ApiKeyAuthenticationHandler.SchemeName, "AgentJwt");
+            }).RequireAuthorization(agentUpdateAuthPolicy);
 
         app.MapGet("/healthz",
             async (
@@ -1105,15 +900,6 @@ public static class Program
                 var spaces = await spaceSvc.GetAllAsync(ct).ConfigureAwait(false);
                 return Results.Ok(spaces.Where(s => accessible.Contains(s.Id)).ToList());
             }).RequireAuthorization();
-
-        // Resolve the calling agent's authoritative target id from its AgentJwt
-        // NameIdentifier claim. Never trust a target/deployment id taken from the
-        // route or body — an agent must only act on its own target's work.
-        static Guid? GetAgentTargetId(HttpContext http)
-        {
-            var raw = http.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
-            return Guid.TryParse(raw, out var id) ? id : null;
-        }
 
         // Switching the active Space is now a plain navigation to /s/{slug}/… —
         // no server endpoint needed. The slug is validated against the caller's
@@ -2596,25 +2382,49 @@ public static class Program
         // Register Hangfire recurring jobs after the app is built so the storage
         // is fully initialised.  Safe to call multiple times (AddOrUpdate is
         // idempotent) — on each restart the schedule is refreshed.
-        HangfireJobRegistrar.RegisterRecurringJobs();
+        if (multiAccountEnabled)
+        {
+            // Per-account fan-out: each per-tenant recurring job runs once per active
+            // account (inside a WithAccount scope). Re-uses the single-tenant job ids,
+            // so AddOrUpdate also REPLACES any stale schedule a prior single-tenant run
+            // persisted in Hangfire storage (those would otherwise keep firing without
+            // a resolved account).
+            HangfireJobRegistrar.RegisterPerAccountRecurringJobs();
+        }
+        else
+        {
+            HangfireJobRegistrar.RegisterRecurringJobs();
+        }
 
-        // Apply the operator-controlled backup schedule (M13.G). The cron
-        // lives in BackupSettings, not in the Registrar above, so this needs
-        // its own Apply pass at startup. The settings page calls Apply again
-        // after every save.
+        // Apply the operator-controlled backup schedule (M13.G). The cron lives in
+        // BackupSettings, not in the Registrar above, so this needs its own Apply pass at
+        // startup. The settings page calls Apply again after every save.
+        // Multi-account: each active account owns a per-account backup job
+        // (kraken.backup:{accountId}) reconciled from its own BackupSettings, run under
+        // WithAccount against its tenant DB. Single-instance: the single kraken.backup job.
         await using (var scope = app.Services.CreateAsyncScope())
         {
             try
             {
-                await scope.ServiceProvider
-                    .GetRequiredService<BackupScheduler>()
-                    .ApplyAsync()
-                    .ConfigureAwait(false);
+                if (multiAccountEnabled)
+                {
+                    await scope.ServiceProvider
+                        .GetRequiredService<AccountBackupRunner>()
+                        .ReconcileSchedulesAsync(CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    await scope.ServiceProvider
+                        .GetRequiredService<BackupScheduler>()
+                        .ApplyAsync()
+                        .ConfigureAwait(false);
+                }
             }
             catch (Exception ex)
             {
                 app.Logger.LogWarning(ex,
-                    "Failed to apply backup schedule at startup — UI can " +
+                    "Failed to apply backup schedule(s) at startup — UI can " +
                     "re-save settings to retry.");
             }
         }
@@ -2692,7 +2502,17 @@ public static class Program
     /// </summary>
     private static int ResolveHangfireWorkerCount(WebApplicationBuilder builder)
     {
-        var connectionString = builder.Configuration.GetConnectionString("Default");
+        // The Hangfire worker count is a single-process/platform knob. Multi-account has
+        // no single tenant DB to read it from — reading an arbitrary tenant's
+        // PerformanceSettings would be wrong — so use the default. Single-instance reads
+        // PerformanceSettings from the app DB. (This previously read the never-configured
+        // "Default" connection name, so the knob never took effect — the real key is
+        // "KrakenDb".)
+        var multiAccount = builder.Configuration.GetValue(
+            $"{MultiAccountOptions.SectionName}:{nameof(MultiAccountOptions.Enabled)}", false);
+        var connectionString = multiAccount
+            ? null
+            : builder.Configuration.GetConnectionString("KrakenDb");
         if (string.IsNullOrWhiteSpace(connectionString))
         {
             return KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings.DefaultHangfireWorkerCount;

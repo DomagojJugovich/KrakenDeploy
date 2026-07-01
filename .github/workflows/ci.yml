@@ -82,5 +82,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Run smoke test
+      - name: Run smoke test (single-instance)
         run: bash scripts/smoke-test.sh
+
+      # Multi-account (SaaS, DB-per-account) real-agent smoke. Runs in the SAME
+      # job so the server/agent image layers built above are cached and reused
+      # (a separate job runs on a fresh runner with no Docker cache, doubling the
+      # ~image build cost). Each script tears its own compose stack down on exit.
+      - name: Run smoke test (multi-account SaaS)
+        run: bash scripts/smoke-multiaccount.sh

@@ -120,7 +120,10 @@ public sealed class CrossSpaceParentScopingTests(PostgresFixture postgres)
     public async Task PackageService_does_not_read_open_or_delete_other_space()
     {
         var g = await SeedAsync();
-        var svc = new PackageService(postgres, new LocalPackageStore(Path.GetTempPath()), TimeProvider.System);
+        var svc = new PackageService(
+            postgres,
+            new LocalPackageStore(Path.GetTempPath(), new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext()),
+            TimeProvider.System);
 
         (await svc.GetAsync(g.PackageId)).Should().BeNull(
             "a package in another Space must be invisible by id");

@@ -127,7 +127,8 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
     public async Task DeleteStepAsync_cannot_delete_other_space_runbook_step()
     {
         var g = await SeedOtherSpaceGraphAsync();
-        var svc = new RunbookService(postgres, new RunbookRunChannel());
+        var svc = new RunbookService(postgres, new RunbookRunChannel(),
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
 
         (await svc.DeleteStepAsync(g.RunbookStepId)).Should().BeFalse(
             "DELETE /api/runbook-steps/{stepId} must not delete another Space's step");
@@ -162,7 +163,8 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
     public async Task RunbookAddStepAsync_throws_for_other_space_runbook_and_creates_no_process()
     {
         var runbookId = await SeedOtherSpaceRunbookAsync();
-        var svc = new RunbookService(postgres, new RunbookRunChannel());
+        var svc = new RunbookService(postgres, new RunbookRunChannel(),
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
 
         Func<Task> act = () => svc.AddStepAsync(
             runbookId, "x", "Kraken.Script", "pkg", [], new Dictionary<string, string>());

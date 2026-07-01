@@ -42,7 +42,8 @@ public sealed class MaintenanceMiddleware(RequestDelegate next)
         "/_blazor",                // SignalR transport for Blazor server
         "/_framework",             // Blazor framework assets
         "/_content",               // Razor component-library assets
-        "/api/agents",             // agent <-> server transport
+        "/api/agents",             // agent bootstrap: register / update-info / download
+        "/hubs/agent",             // agent <-> server SignalR transport (the live link)
         "/healthz",                // monitoring keeps watching
         "/api/diagnostics",        // ops can still pull diagnostics zip
         "/hangfire",               // job dashboard for the operator

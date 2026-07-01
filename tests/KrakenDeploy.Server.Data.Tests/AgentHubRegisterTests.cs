@@ -109,6 +109,7 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
             new NullUiHubContext(),
             new NeverUsedPendingSubPlanRegistry(),
             new NeverUsedPendingAdhocRegistry(),
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             NullLogger<AgentHub>.Instance);
 
         hub.Context = new FakeHubCallerContext(targetId);

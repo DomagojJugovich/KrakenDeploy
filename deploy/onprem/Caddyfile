@@ -49,7 +49,9 @@
     }
 
     # ── gRPC — HTTP/2 required, bidirectional streaming ──────────────
-    handle /kraken.* {
+    # Proto package `krakendeploy.v1` → wire paths /krakendeploy.v1.<Service>/<Method>.
+    # (A /kraken.* matcher never matches these and would drop gRPC to the h1 fallback.)
+    handle /krakendeploy.v1.* {
         reverse_proxy h2c://kraken-server:5080 {
             header_up X-Forwarded-Proto {scheme}
             header_up X-Forwarded-For {remote_host}

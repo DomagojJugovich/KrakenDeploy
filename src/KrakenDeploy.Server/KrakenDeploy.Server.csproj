@@ -79,20 +79,15 @@
       <Private>false</Private>
       <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
     </ProjectReference>
+    <ProjectReference Include="..\KrakenDeploy.ControlPlane\KrakenDeploy.ControlPlane.csproj" />
   </ItemGroup>
 
-  <Target Name="CollectBuiltInStepPackages"
-          AfterTargets="Build">
+  <Target Name="CollectBuiltInStepPackages" AfterTargets="Build">
     <ItemGroup>
       <_KrakenSeedPackages Include="..\..\steps\**\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
     </ItemGroup>
-    <Copy SourceFiles="@(_KrakenSeedPackages)"
-          DestinationFolder="$(OutputPath)seed\step-packages\"
-          SkipUnchangedFiles="true"
-          Condition="'@(_KrakenSeedPackages)' != ''" />
-    <Message Importance="high"
-             Text="Seeded %(_KrakenSeedPackages.Filename)%(_KrakenSeedPackages.Extension) → $(OutputPath)seed\step-packages\"
-             Condition="'@(_KrakenSeedPackages)' != ''" />
+    <Copy SourceFiles="@(_KrakenSeedPackages)" DestinationFolder="$(OutputPath)seed\step-packages\" SkipUnchangedFiles="true" Condition="'@(_KrakenSeedPackages)' != ''" />
+    <Message Importance="high" Text="Seeded %(_KrakenSeedPackages.Filename)%(_KrakenSeedPackages.Extension) → $(OutputPath)seed\step-packages\" Condition="'@(_KrakenSeedPackages)' != ''" />
   </Target>
 
 </Project>

@@ -18,9 +18,9 @@ namespace KrakenDeploy.Server.Data;
 /// </summary>
 public sealed class DeploymentDiagnosisChannel
 {
-    private readonly Channel<Guid> _inner =
-        Channel.CreateUnbounded<Guid>(new UnboundedChannelOptions { SingleReader = true });
+    private readonly Channel<TenantWorkItem> _inner =
+        Channel.CreateUnbounded<TenantWorkItem>(new UnboundedChannelOptions { SingleReader = true });
 
-    public ChannelWriter<Guid> Writer => _inner.Writer;
-    public ChannelReader<Guid> Reader => _inner.Reader;
+    public ChannelWriter<TenantWorkItem> Writer => _inner.Writer;
+    public ChannelReader<TenantWorkItem> Reader => _inner.Reader;
 }

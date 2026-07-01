@@ -7,6 +7,7 @@
 @inject TenantService TenantSvc
 @inject NotificationService Notify
 @inject UiActionGuard Guard
+@inject DialogService Dialog
 
 <PageTitle>Tenants - KrakenDeploy</PageTitle>
 
@@ -129,6 +130,12 @@
     private async Task DeleteAsync(Tenant tenant)
     {
         if (!await Guard.AllowAsync(Permission.TenantDelete)) return;
+
+        var confirmed = await Dialog.Confirm(
+            $"Delete tenant \"{tenant.Name}\"? This also removes its tag sets, tags and target associations. This cannot be undone.",
+            "Delete tenant",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+        if (confirmed != true) return;
 
         var deleted = await TenantSvc.DeleteAsync(tenant.Id);
         if (deleted)

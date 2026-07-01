@@ -1,8 +1,10 @@
 using System.Threading.Channels;
+using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Packages;
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Spaces;
+using KrakenDeploy.Server.Data.Accounts;
 using KrakenDeploy.Server.Data.ArtifactStorage;
 using KrakenDeploy.Server.Data.Identity;
 using KrakenDeploy.Server.Data.Interceptors;
@@ -23,7 +25,8 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddKrakenDeployData(
         this IServiceCollection services,
         string connectionString,
-        string dataPath = "data")
+        string dataPath = "data",
+        bool multiAccount = false)
     {
         services.TryAddTimeProvider();
         services.AddSingleton<AuditableEntityInterceptor>();
@@ -42,8 +45,32 @@ public static class ServiceCollectionExtensions
         services.TryAddScoped<ISpaceContext, DefaultSpaceContext>();
         services.AddScoped<SpaceScopingInterceptor>();
 
+        // Default account context: multi-account OFF. Ensures the tenant DbContext
+        // always has an IAccountContext to construct against (the EF factory resolves
+        // ctor params via the container). The Server replaces this with
+        // HttpAccountContext when MultiAccount:Enabled is set.
+        services.TryAddScoped<IAccountContext, DisabledAccountContext>();
+        // No-op resolver so AccountBoundary can inject IAccountResolver
+        // unconditionally; the control plane replaces it with the catalog resolver.
+        services.TryAddScoped<IAccountResolver, NullAccountResolver>();
+
+        // No-op OIDC scheme-cache evictor so IdentityProviderService can depend on it
+        // unconditionally; the Server replaces it with a real evictor when multi-account
+        // is enabled (single-instance OIDC applies edits on restart — nothing to evict).
+        services.TryAddScoped<KrakenDeploy.Server.Core.Domain.Security.IOidcSchemeCacheInvalidator,
+                              KrakenDeploy.Server.Data.Identity.NullOidcSchemeCacheInvalidator>();
+
+        // In multi-account (SaaS) mode the tenant connection string is per-account:
+        // the provider resolves IAccountContext from the scoped `sp` and returns the
+        // active account's connection. The Scoped factory lifetime makes this safe —
+        // a user stays in one account per circuit (D4), so the per-scope options cache
+        // holds the right connection. When no provider is supplied (on-prem / CLI /
+        // tests) the fixed connection string is used — behaviour is unchanged.
         services.AddDbContextFactory<KrakenDbContext>((sp, options) =>
         {
+            // Single-instance / fallback connection. In multi-account mode the
+            // connection is overridden per request in KrakenDbContext.OnConfiguring
+            // from the resolved IAccountContext (the factory is Scoped and injects it).
             options.UseNpgsql(connectionString);
             options.UseSnakeCaseNamingConvention();
             options.AddInterceptors(
@@ -52,17 +79,29 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<SpaceScopingInterceptor>());
         }, ServiceLifetime.Scoped);
 
-        // Package store — local filesystem for M2.
-        services.AddSingleton<IPackageStore>(_ => new LocalPackageStore(dataPath));
-
-        // Artifact store — local filesystem for M5.5.
-        services.AddSingleton<IArtifactStore>(_ => new LocalArtifactStore(dataPath));
+        // Package + artifact stores — local filesystem. In multi-account they are SCOPED
+        // and namespace their file tree by the active account (resolved from the scope's
+        // IAccountContext) so no two tenants share storage; single-instance keeps the flat
+        // shared singleton. All consumers are scoped/per-call, so scoping the stores adds
+        // no captive dependency.
+        if (multiAccount)
+        {
+            services.AddScoped<IPackageStore>(sp =>
+                new LocalPackageStore(dataPath, sp.GetRequiredService<IAccountContext>()));
+            services.AddScoped<IArtifactStore>(sp =>
+                new LocalArtifactStore(dataPath, sp.GetRequiredService<IAccountContext>()));
+        }
+        else
+        {
+            services.AddSingleton<IPackageStore>(_ => new LocalPackageStore(dataPath, new DisabledAccountContext()));
+            services.AddSingleton<IArtifactStore>(_ => new LocalArtifactStore(dataPath, new DisabledAccountContext()));
+        }
         services.AddScoped<ArtifactService>();
 
         // In-process deployment dispatch queue.
         // Unbounded: a server restart drops in-flight Queued deployments; they will
         // be re-queued on next startup (handled at startup in a future polish pass).
-        services.AddSingleton(Channel.CreateUnbounded<Guid>(
+        services.AddSingleton(Channel.CreateUnbounded<TenantWorkItem>(
             new UnboundedChannelOptions { SingleReader = true }));
 
         services.AddScoped<SpaceService>();
@@ -154,18 +193,37 @@ public static class ServiceCollectionExtensions
         services.AddScoped<SmtpSettingsService>();
         services.AddSingleton<KrakenDeploy.Server.Core.Domain.Features.IFeatureCatalog,
                               KrakenDeploy.Server.Core.Domain.Features.BuiltInFeatureCatalog>();
-        // Singleton because the cache must persist across requests — the
-        // service opens its own DbContext per call via the factory.
-        services.AddSingleton<FeatureFlagService>();
-        services.AddSingleton<DeploymentFreezeService>();
-        // Maintenance mode (M13.A.3) — singleton so the cached state is
-        // shared across requests; the middleware hits GetStateAsync on
-        // every non-exempt write request.
-        services.AddSingleton<MaintenanceModeService>();
-        // Performance + retention knobs (M13.F.3) — singleton so the
-        // 30 s cache is shared across consumers (Hangfire jobs, the
-        // DeploymentWorker, the page itself).
-        services.AddSingleton<PerformanceSettingsService>();
+
+        // These cache services open a tenant DbContext via the factory. In SaaS
+        // multi-account mode the tenant connection is resolved per request from the
+        // active account, so a process-wide Singleton (with a single shared cache)
+        // can't serve multiple tenants — and its captured factory would resolve the
+        // account from the root scope (unset → throws). Register them Scoped when
+        // multi-account is active so each request resolves its own account's DB
+        // (the cache becomes per-request; a per-account-keyed cache is a later
+        // optimisation). Single-instance installs keep the shared Singleton cache.
+        if (multiAccount)
+        {
+            services.AddScoped<FeatureFlagService>();
+            services.AddScoped<DeploymentFreezeService>();
+            services.AddScoped<MaintenanceModeService>();
+            services.AddScoped<PerformanceSettingsService>();
+        }
+        else
+        {
+            // Singleton because the cache must persist across requests — the
+            // service opens its own DbContext per call via the factory.
+            services.AddSingleton<FeatureFlagService>();
+            services.AddSingleton<DeploymentFreezeService>();
+            // Maintenance mode (M13.A.3) — singleton so the cached state is
+            // shared across requests; the middleware hits GetStateAsync on
+            // every non-exempt write request.
+            services.AddSingleton<MaintenanceModeService>();
+            // Performance + retention knobs (M13.F.3) — singleton so the
+            // 30 s cache is shared across consumers (Hangfire jobs, the
+            // DeploymentWorker, the page itself).
+            services.AddSingleton<PerformanceSettingsService>();
+        }
         // Helper recurring jobs call to short-circuit during maintenance.
         services.AddScoped<MaintenancePause>();
         services.AddScoped<EventSubscriptionService>();

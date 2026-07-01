@@ -88,10 +88,12 @@ public abstract class SpaceScopedComponentBase : ComponentBase
         }
 
         var space = await Spaces.GetBySlugAsync(slug);
+        System.Security.Claims.ClaimsPrincipal? user = null;
+        IReadOnlySet<Guid>? accessible = null;
         if (space is not null && space.Status == SpaceStatus.Active)
         {
-            var user = (await AuthProvider.GetAuthenticationStateAsync()).User;
-            var accessible = await Perms.GetAccessibleSpaceIdsAsync(user);
+            user = (await AuthProvider.GetAuthenticationStateAsync()).User;
+            accessible = await Perms.GetAccessibleSpaceIdsAsync(user);
             if (accessible.Contains(space.Id))
             {
                 SpaceCtx.SetResolved(space.Id, space.Slug);
@@ -102,13 +104,18 @@ public abstract class SpaceScopedComponentBase : ComponentBase
         // Unknown / inactive / inaccessible slug → bounce to a Space the user can
         // actually use. forceLoad so the request re-runs and a clean circuit
         // resolves the new Space; the URL never lies about the rendered Space.
-        await RedirectToUsableSpaceAsync(slug);
+        // Reuse the already-resolved auth state + accessible set so the known-but-
+        // inaccessible path doesn't recompute the (non-trivial) permission query.
+        await RedirectToUsableSpaceAsync(slug, user, accessible);
     }
 
-    private async Task RedirectToUsableSpaceAsync(string requestedSlug)
+    private async Task RedirectToUsableSpaceAsync(
+        string requestedSlug,
+        System.Security.Claims.ClaimsPrincipal? user = null,
+        IReadOnlySet<Guid>? accessible = null)
     {
-        var user = (await AuthProvider.GetAuthenticationStateAsync()).User;
-        var accessible = await Perms.GetAccessibleSpaceIdsAsync(user);
+        user ??= (await AuthProvider.GetAuthenticationStateAsync()).User;
+        accessible ??= await Perms.GetAccessibleSpaceIdsAsync(user);
         var fallback = await SpaceResolution.ResolveAccessibleSlugAsync(Spaces, accessible);
 
         if (fallback is null)

@@ -87,7 +87,7 @@
                     <Template Context="t">
                         <RadzenStack Orientation="Orientation.Horizontal"
                                      AlignItems="AlignItems.Center" Gap="0.5rem">
-                            <div class="kraken-tenant-avatar">@TenantInitials(t.Name)</div>
+                            <div class="kraken-tenant-avatar">@KrakenText.Initials(t.Name)</div>
                             <strong>@t.Name</strong>
                         </RadzenStack>
                     </Template>
@@ -205,12 +205,4 @@
             $"'{t.Name}' was disconnected.", 3000);
     }
 
-    private static string TenantInitials(string name)
-    {
-        var parts = name.Split([' ', '-', '_'],
-            StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 0) return "?";
-        if (parts.Length == 1) return parts[0][..Math.Min(2, parts[0].Length)].ToUpperInvariant();
-        return $"{parts[0][0]}{parts[1][0]}".ToUpperInvariant();
-    }
 }

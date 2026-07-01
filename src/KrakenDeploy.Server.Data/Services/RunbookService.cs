@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Releases;
@@ -31,6 +32,7 @@ public interface IRunbookTrigger
 public class RunbookService(
     IDbContextFactory<KrakenDbContext> dbFactory,
     RunbookRunChannel runbookQueue,
+    IAccountContext accountContext,
     StepPackageResolver? stepPackageResolver = null)
     : IRunbookTrigger, IStepEditingHost
 {
@@ -428,7 +430,10 @@ public class RunbookService(
         db.RunbookRuns.Add(run);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
-        await runbookQueue.Writer.WriteAsync(run.Id, ct).ConfigureAwait(false);
+        var accountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;
+        await runbookQueue.Writer
+            .WriteAsync(new TenantWorkItem(accountId, run.Id), ct)
+            .ConfigureAwait(false);
 
         return run;
     }

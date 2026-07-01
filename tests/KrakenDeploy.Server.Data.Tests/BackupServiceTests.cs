@@ -262,6 +262,7 @@ public sealed class BackupServiceTests(PostgresFixture postgres)
             .Build();
 
         var engine = new BackupEngine(config,
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             NullLogger<BackupEngine>.Instance, TimeProvider.System);
         return new BackupService(postgres, engine,
             NullLogger<BackupService>.Instance, TimeProvider.System);
@@ -284,6 +285,7 @@ public sealed class BackupServiceTests(PostgresFixture postgres)
             .Build();
 
         var engine = new BackupEngine(config,
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             NullLogger<BackupEngine>.Instance, TimeProvider.System);
         return new BackupService(postgres, engine,
             NullLogger<BackupService>.Instance, TimeProvider.System);

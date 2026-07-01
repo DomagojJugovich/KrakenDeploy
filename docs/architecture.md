@@ -234,7 +234,7 @@ Reproducibility: `ReleaseService.CreateAsync` calls `PinReferencedPackagesAsync`
 | A new step type | Add an `IStepHandler` to `KrakenDeploy.Agent/Deployment/StepHandlers/`. Register in `Program.cs`. Optionally seed a `StepTemplate` from `BuiltInStepTemplateSeeder` so it appears in the UI step picker. |
 | A new Octopus system variable | Add a line to the right section in `OctopusSystemVariablesBuilder`. If the value isn't yet available, emit empty string with a `// TODO(kraken-equivalent)` comment so the gap is grep-auditable. |
 | A new step config key | Add a constant to the matching `Kraken<X>ConfigKeys` static class in `KrakenDeploy.Contracts/Steps/`. Keep names Octopus-compatible (`Octopus.Action.*`) when there's a sensible existing name to mirror. |
-| A new agent transport | Implement `IServerLink` in `KrakenDeploy.Agent.Transport`. Existing impls: `SignalRServerLink` (reverse-tunnel), `DirectServerLink` (LAN), `PollingServerLink` (restricted networks). |
+| A new agent transport | Implement `IServerLink` in `KrakenDeploy.Agent.Transport`. The only live transport is `SignalRServerLink` (agent-initiated reverse tunnel; the server pushes work back over the same full-duplex connection). Air-gapped targets use the agentless OfflineDrop path instead. |
 | A new background job | Add to Hangfire setup in `Program.cs` (`RecurringJob.AddOrUpdate(...)`). Existing jobs in `KrakenDeploy.Server/Services/RecurringJobs/`. |
 
 ## Step composition — child steps + ForEach (M15)

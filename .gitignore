@@ -153,9 +153,22 @@ license-private-key.xml
 license-public-key.xml
 
 # =====================================================================
-# ASP.NET Data Protection key ring (runtime secret — never commit)
+# Server runtime DataPath (never commit) — the dev Server:DataPath tree holds
+# the ASP.NET Data Protection key ring, the FileSecretStore's plaintext
+# catalog-secrets.json (tenant connection strings), and local package/artifact
+# storage. All runtime state, some of it sensitive. The DP subfolder rule is
+# kept for clarity but the whole dir is ignored.
 # =====================================================================
+src/KrakenDeploy.Server/data/
 src/KrakenDeploy.Server/data/dataprotection-keys/
+# FileSecretStore plaintext secret map, wherever a DataPath places it.
+**/catalog-secrets.json
+
+# =====================================================================
+# Smoke-test logs (large, transient)
+# =====================================================================
+smoke.log
+smoke*.log
 
 # =====================================================================
 # Claude Code auto-memory (session-local)

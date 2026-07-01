@@ -44,14 +44,7 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
             return [];
         }
 
-        return set.Variables
-            .Select(v => new VariableDto(
-                v.Id,
-                v.Name,
-                v.Type == VariableType.Sensitive ? "***" : v.Value,
-                v.Type.ToString(),
-                v.Scope))
-            .ToList();
+        return set.Variables.Select(ToDto).ToList();
     }
 
     /// <summary>
@@ -284,15 +277,18 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
             return [];
         }
 
-        return set.Variables
-            .Select(v => new VariableDto(
-                v.Id,
-                v.Name,
-                v.Type == VariableType.Sensitive ? "***" : v.Value,
-                v.Type.ToString(),
-                v.Scope))
-            .ToList();
+        return set.Variables.Select(ToDto).ToList();
     }
+
+    // Projects a Variable entity to its DTO, redacting sensitive values. Shared
+    // by GetVariablesAsync and GetVariablesInSetAsync so the redaction rule lives
+    // in one place.
+    private static VariableDto ToDto(Variable v) => new(
+        v.Id,
+        v.Name,
+        v.Type == VariableType.Sensitive ? "***" : v.Value,
+        v.Type.ToString(),
+        v.Scope);
 
     /// <summary>Creates a variable directly in a given set (project or library).</summary>
     public async Task<Variable> CreateVariableInSetAsync(

@@ -1,7 +1,9 @@
 using Hangfire.AspNetCore;
 using Hangfire.Dashboard;
+using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Security;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace KrakenDeploy.Server.Hangfire;
 
@@ -9,6 +11,16 @@ namespace KrakenDeploy.Server.Hangfire;
 /// Restricts the Hangfire dashboard to users who hold the
 /// <see cref="Permission.AdministerSystem"/> permission (i.e. System Administrators).
 /// Unauthenticated requests and insufficient-permission requests are denied.
+/// <para>
+/// In multi-account mode the Hangfire job store is a SINGLE shared control-plane store,
+/// so the dashboard shows platform-wide job state spanning every account. The
+/// <see cref="Permission.AdministerSystem"/> permission is resolved from the active
+/// account's tenant database, so a per-account System Administrator must NOT be able to
+/// open it — that would disclose other accounts' scheduler state. The dashboard is
+/// therefore denied on any tenant subdomain and reachable only on the control-plane host
+/// (which, until a control-plane admin surface exists, leaves it effectively closed in
+/// multi-account — fail safe). Single-instance mode is unchanged: one store, one admin.
+/// </para>
 /// </summary>
 public sealed class HangfireDashboardAuthFilter : IDashboardAuthorizationFilter
 {
@@ -17,7 +29,23 @@ public sealed class HangfireDashboardAuthFilter : IDashboardAuthorizationFilter
         // GetHttpContext() is the Hangfire.AspNetCore extension on DashboardContext.
         var http = context.GetHttpContext();
 
-        if (http is null || http.User.Identity?.IsAuthenticated != true)
+        if (http is null)
+        {
+            return false;
+        }
+
+        // Multi-account: the dashboard reflects the shared control-plane store, so deny it
+        // on tenant subdomains regardless of the caller's (per-account) permissions — a
+        // tenant admin must not see platform-wide / cross-account job state. Only the
+        // control-plane host may reach it. No-op in single-instance (Enabled == false).
+        var options = http.RequestServices.GetService<IOptions<MultiAccountOptions>>();
+        if (options?.Value.Enabled == true
+            && HostParser.ExtractSubdomain(http.Request.Host.Host, options.Value.BaseDomain) is not null)
+        {
+            return false;
+        }
+
+        if (http.User.Identity?.IsAuthenticated != true)
         {
             return false;
         }

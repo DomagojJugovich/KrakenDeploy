@@ -1,14 +1,20 @@
+using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Packages;
 
 namespace KrakenDeploy.Server.Data.Storage;
 
 /// <summary>
-/// Stores package files on the local filesystem under
-/// <c>{DataPath}/packages/{packageId}/{version}/{fileName}</c>.
+/// Stores package files on the local filesystem. Single-instance:
+/// <c>{DataPath}/packages/{packageId}/{version}/{fileName}</c>. Multi-account: namespaced
+/// by the active account so no two tenants share a file tree —
+/// <c>{DataPath}/accounts/{accountId}/packages/…</c>. The account id (not the subdomain)
+/// keys the path so a subdomain rename never orphans a stored file.
 /// </summary>
-public sealed class LocalPackageStore(string dataPath) : IPackageStore
+public sealed class LocalPackageStore(string dataPath, IAccountContext accountContext) : IPackageStore
 {
-    private string RootPath => Path.Combine(dataPath, "packages");
+    private string RootPath => accountContext.IsResolved
+        ? Path.Combine(dataPath, "accounts", accountContext.CurrentAccountId.ToString(), "packages")
+        : Path.Combine(dataPath, "packages");
 
     public async Task<string> StoreAsync(
         string packageId, string version, string fileName,

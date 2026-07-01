@@ -758,9 +758,7 @@ else
 
     private static string TransportLabel(TransportMode m) => m switch
     {
-        TransportMode.Reverse     => "Polling agent",
-        TransportMode.Direct      => "Direct (listening)",
-        TransportMode.Polling     => "Polling agent",
+        TransportMode.Reverse     => "Reverse (SignalR)",
         TransportMode.OfflineDrop => "Offline drop",
         _                          => m.ToString(),
     };

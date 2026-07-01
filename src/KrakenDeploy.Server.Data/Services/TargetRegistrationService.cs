@@ -143,7 +143,15 @@ public class TargetRegistrationService(
         var hash = Hash(plainToken);
         var now = timeProvider.GetUtcNow();
 
+        // IgnoreQueryFilters: enrollment is the anonymous /api/agents/register path,
+        // which has no real Space context (HttpSpaceContext falls back to the Default
+        // Space), so the global Space filter would hide a target created in a
+        // non-Default Space and that target could never enroll. The high-entropy
+        // registration-key hash IS the authorization here, so a Space-agnostic lookup
+        // by hash is correct; the matched target's own Space is used for everything
+        // after.
         var target = await db.DeploymentTargets
+            .IgnoreQueryFilters()
             .FirstOrDefaultAsync(
                 t => t.RegistrationKeyHash == hash
                   && t.RegistrationTokenExpiresUtc > now,

@@ -10,6 +10,7 @@
 @inject IAuditLog Audit
 @inject NotificationService Notify
 @inject ILogger<License> Log
+@inject UiActionGuard Guard
 
 <PageTitle>License - KrakenDeploy</PageTitle>
 
@@ -123,6 +124,7 @@
     private async Task ActivateAsync()
     {
         if (string.IsNullOrWhiteSpace(_licenseText)) { return; }
+        if (!await Guard.AllowAsync(Permission.ConfigureServer)) { return; }
         _saving = true;
         try
         {

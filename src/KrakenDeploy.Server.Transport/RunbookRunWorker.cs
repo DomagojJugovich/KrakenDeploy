@@ -1,5 +1,6 @@
 using System.Text.Json;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Data;
@@ -29,15 +30,50 @@ public sealed class RunbookRunWorker(
     ILogger<RunbookRunWorker> logger)
     : BackgroundService
 {
+    // The dispatching account for the in-flight run, set per fire-and-forget dispatch
+    // so concurrent dispatches don't clobber each other; read by the Phase 5 guard.
+    private readonly AsyncLocal<Guid> _dispatchAccountId = new();
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await foreach (var runId in queue.Reader.ReadAllAsync(stoppingToken))
+        await foreach (var item in queue.Reader.ReadAllAsync(stoppingToken))
         {
-            _ = DispatchAsync(runId, stoppingToken);
+            _ = DispatchAsync(item, stoppingToken);
         }
     }
 
-    private async Task DispatchAsync(Guid runId, CancellationToken ct)
+    // Resolve the run's account (multi-account) and run the dispatch under it; the
+    // account flows via AsyncLocal into DispatchCoreAsync's scope. Guid.Empty
+    // (single-instance) uses the fixed connection.
+    private async Task DispatchAsync(TenantWorkItem item, CancellationToken ct)
+    {
+        _dispatchAccountId.Value = item.AccountId;
+        if (item.AccountId == Guid.Empty)
+        {
+            await DispatchCoreAsync(item.Id, ct).ConfigureAwait(false);
+            return;
+        }
+
+        await using var accountScope = scopeFactory.CreateAsyncScope();
+        var account = await accountScope.ServiceProvider
+            .GetRequiredService<IAccountResolver>()
+            .ResolveByIdAsync(item.AccountId, ct)
+            .ConfigureAwait(false);
+        if (account is null)
+        {
+            logger.LogError(
+                "RunbookRunWorker: account {AccountId} not found for run {RunId}.",
+                item.AccountId, item.Id);
+            return;
+        }
+
+        using (accountScope.ServiceProvider.GetRequiredService<IAccountContext>().WithAccount(account))
+        {
+            await DispatchCoreAsync(item.Id, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async Task DispatchCoreAsync(Guid runId, CancellationToken ct)
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
@@ -91,6 +127,24 @@ public sealed class RunbookRunWorker(
             if (connectionId is null)
             {
                 await FailAsync(db, run, "Target is offline.", ct).ConfigureAwait(false);
+                return;
+            }
+
+            // P3-8 Phase 5 — cross-account dispatch guard (defense-in-depth). A live
+            // connection whose recorded account differs from this run's dispatch
+            // account must never receive the plan (structurally impossible given
+            // globally-unique target ids validated at connect; fail closed regardless).
+            if (_dispatchAccountId.Value != Guid.Empty
+                && registry.GetAccountForTarget(run.TargetId.Value) != _dispatchAccountId.Value)
+            {
+                logger.LogError(
+                    "Cross-account dispatch blocked for runbook run {Run}: target {Target}'s " +
+                    "live connection belongs to account {ConnectionAccount}, not the dispatch " +
+                    "account {DispatchAccount}.",
+                    run.Id, run.TargetId.Value,
+                    registry.GetAccountForTarget(run.TargetId.Value), _dispatchAccountId.Value);
+                await FailAsync(db, run, "Cross-account connection blocked at dispatch.", ct)
+                    .ConfigureAwait(false);
                 return;
             }
 

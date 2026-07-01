@@ -1,0 +1,45 @@
+@using KrakenDeploy.Server.Core.Domain.Accounts
+@inject IAccountContext AccountCtx
+@inject IAccountResolver AccountResolver
+@inject NavigationManager Nav
+
+@ChildContent
+
+@code {
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    // Carries the active account into the interactive circuit. SSR / request scopes
+    // already see the account via HttpContext.Items (set by AccountResolutionMiddleware
+    // and read by HttpAccountContext), but the interactive circuit has no HttpContext —
+    // so here we resolve the account from the connection host (available via
+    // NavigationManager in the circuit) and pin it on the circuit-scoped
+    // IAccountContext, mirroring how SpaceScopedComponentBase resolves the Space from
+    // the URL. No-op in single-instance mode (DisabledAccountContext + NullAccountResolver).
+    //
+    // Resolved in SetParametersAsync BEFORE base (which renders ChildContent), so the
+    // account is in place before any page's OnInitializedAsync issues a tenant query.
+    // No .ConfigureAwait(false): lifecycle awaits must resume on the renderer's Dispatcher.
+    public override async Task SetParametersAsync(ParameterView parameters)
+    {
+        parameters.SetParameterProperties(this);
+        await ResolveAccountAsync();
+        await base.SetParametersAsync(ParameterView.Empty);
+    }
+
+    private async Task ResolveAccountAsync()
+    {
+        if (AccountCtx.IsResolved)
+        {
+            return;
+        }
+
+        if (Uri.TryCreate(Nav.Uri, UriKind.Absolute, out var uri))
+        {
+            var account = await AccountResolver.ResolveAsync(uri.Host);
+            if (account is not null)
+            {
+                AccountCtx.SetResolved(account);
+            }
+        }
+    }
+}

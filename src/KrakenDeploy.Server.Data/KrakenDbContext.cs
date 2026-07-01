@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Ai;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Channels;
@@ -27,7 +28,8 @@ namespace KrakenDeploy.Server.Data;
 
 public class KrakenDbContext(
     DbContextOptions<KrakenDbContext> options,
-    ISpaceContext spaceContext)
+    ISpaceContext spaceContext,
+    IAccountContext? accountContext = null)
     : IdentityUserContext<ApplicationUser, Guid>(options)
 {
     // We use IdentityUserContext (not IdentityDbContext) because we have our
@@ -35,6 +37,13 @@ public class KrakenDbContext(
     // — Identity-managed roles via IdentityRole<Guid> would clash with our
     // domain Role and add a parallel permission system we don't use.
     private readonly ISpaceContext _spaceContext = spaceContext;
+
+    // Non-null only in SaaS multi-account mode (injected by the Scoped factory from
+    // the request/operation scope). When present, the tenant connection is taken
+    // from the resolved account in OnConfiguring, so a context binds to the active
+    // account's database. Null for single-instance installs, CLI, migrations, and
+    // tests, which use the connection baked into the options.
+    private readonly IAccountContext? _accountContext = accountContext;
 
     public DbSet<Space> Spaces => Set<Space>();
     public DbSet<Project> Projects => Set<Project>();
@@ -119,6 +128,24 @@ public class KrakenDbContext(
     /// immediately on the next query — no model rebuild required.
     /// </summary>
     public Guid CurrentSpaceId => _spaceContext.CurrentSpaceId;
+
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        base.OnConfiguring(optionsBuilder);
+
+        // SaaS multi-account: bind to the active account's tenant database. The
+        // factory is Scoped and injects the request/operation-scoped IAccountContext,
+        // so this resolves the right tenant per request. Returns null in single-
+        // instance mode (no override); throws if multi-account is on but no account is
+        // resolved (cross-customer boundary — fail closed). The naming convention +
+        // interceptors configured on the factory options are preserved; only the
+        // connection is overridden.
+        var tenantConnectionString = _accountContext?.ResolveTenantConnectionString();
+        if (tenantConnectionString is not null)
+        {
+            optionsBuilder.UseNpgsql(tenantConnectionString);
+        }
+    }
 
     protected override void OnModelCreating(ModelBuilder builder)
     {

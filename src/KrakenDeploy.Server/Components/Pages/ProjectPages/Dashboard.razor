@@ -112,8 +112,8 @@
                                         @if (rel.Cells.TryGetValue(env.Id, out var cell))
                                         {
                                             <a class="kraken-matrix-celllink" href="@Sp($"/deployments/{cell.DeploymentId}")">
-                                                <span class="@StatusClass(cell.Status)">
-                                                    <RadzenIcon Icon="@StatusIcon(cell.Status)"
+                                                <span class="@DeploymentStatusVisuals.CssClass(cell.Status)">
+                                                    <RadzenIcon Icon="@DeploymentStatusVisuals.Icon(cell.Status)"
                                                                 class="@(cell.Status == DeploymentStatus.Running ? "spin" : null)" />
                                                 </span>
                                                 <div>
@@ -174,7 +174,7 @@
                                     <RadzenStack Orientation="Orientation.Horizontal"
                                                  AlignItems="AlignItems.Center" Gap="0.6rem">
                                         <div class="kraken-tenant-avatar">
-                                            @TenantInitials(tenant.Name)
+                                            @KrakenText.Initials(tenant.Name)
                                         </div>
                                         <span class="kraken-tenant-name">@tenant.Name</span>
                                     </RadzenStack>
@@ -192,8 +192,8 @@
                                         else
                                         {
                                             <div class="kraken-matrix-rel">
-                                                <span class="@StatusClass(cell.Status)">
-                                                    <RadzenIcon Icon="@StatusIcon(cell.Status)"
+                                                <span class="@DeploymentStatusVisuals.CssClass(cell.Status)">
+                                                    <RadzenIcon Icon="@DeploymentStatusVisuals.Icon(cell.Status)"
                                                                 class="@(cell.Status == DeploymentStatus.Running ? "spin" : null)" />
                                                 </span>
                                                 <div>
@@ -285,36 +285,4 @@
             Notifications.Notify(NotificationSeverity.Success, "Created", "Release was created.", 3000);
         }
     }
-
-    private static string TenantInitials(string name)
-    {
-        var parts = name.Split([' ', '-', '_'],
-            StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length == 0) return "?";
-        if (parts.Length == 1) return parts[0][..Math.Min(2, parts[0].Length)].ToUpperInvariant();
-        return $"{parts[0][0]}{parts[1][0]}".ToUpperInvariant();
-    }
-
-    private static string StatusIcon(DeploymentStatus s) => s switch
-    {
-        DeploymentStatus.Succeeded             => "check",
-        DeploymentStatus.SucceededWithWarnings => "warning_amber",
-        DeploymentStatus.Failed                => "close",
-        DeploymentStatus.Cancelled             => "block",
-        DeploymentStatus.Running               => "autorenew",
-        DeploymentStatus.Queued                => "schedule",
-        DeploymentStatus.PendingOfflineResult  => "cloud_off",
-        _                                       => "help",
-    };
-
-    private static string StatusClass(DeploymentStatus s) => s switch
-    {
-        DeploymentStatus.Succeeded             => "kraken-matrix-status kraken-matrix-status--ok",
-        DeploymentStatus.SucceededWithWarnings => "kraken-matrix-status kraken-matrix-status--warn",
-        DeploymentStatus.Failed                => "kraken-matrix-status kraken-matrix-status--err",
-        DeploymentStatus.Cancelled             => "kraken-matrix-status kraken-matrix-status--cancelled",
-        DeploymentStatus.Running               => "kraken-matrix-status kraken-matrix-status--running",
-        DeploymentStatus.PendingOfflineResult  => "kraken-matrix-status kraken-matrix-status--offline",
-        _                                       => "kraken-matrix-status kraken-matrix-status--pending",
-    };
 }

@@ -1,0 +1,137 @@
+# KrakenDeploy — SaaS multi-account edge (Caddy)
+# =============================================================================
+# This is the MULTI-ACCOUNT (SaaS) edge. It is SEPARATE from deploy/caddy and
+# deploy/onprem, which stay single-host (one named host, HTTP-01) for the
+# on-prem / single-node product. Do NOT merge them — on-prem boxes have no
+# public wildcard DNS and no DNS-provider credentials.
+#
+# Every account is a subdomain of the platform base domain
+# (acme.krakendeploy.com, globex.krakendeploy.com, …). All subdomains point at
+# the SAME app tier, which resolves the account from the Host header
+# (AccountResolutionMiddleware → CatalogAccountResolver). So the edge needs:
+#   • one wildcard TLS cert  *.krakendeploy.com   (DNS-01 — HTTP-01 cannot issue
+#     wildcards), and
+#   • the client Host PRESERVED upstream (do NOT set `header_up Host`), because
+#     account resolution reads Request.Host.
+#
+# PREREQUISITES
+#  1. DNS: a wildcard record  *.{$DOMAIN} → <app-tier IP/LB>  (RFC 4592 catch-all;
+#     this does NOT cover the apex — add a separate {$DOMAIN} record too).
+#  2. A Caddy build that INCLUDES the DNS-provider plugin for the ACME DNS-01
+#     challenge (the stock caddy image does not):
+#        xcaddy build --with github.com/caddy-dns/cloudflare    (or route53/azure/…)
+#  3. A least-privilege DNS API token in {$CADDY_DNS_TOKEN} (zone edit only).
+#  4. Reserved hosts (www, api, auth, app, signup, admin, static) stay control-
+#     plane — an explicit site block overrides the wildcard (RFC 4592).
+#  5. HA: run 2+ Caddy nodes behind a floating/reserved IP (keepalived/VRRP) or
+#     an L4 LB — a single edge node is a fleet-wide SPOF.
+# =============================================================================
+
+{
+    email {$ACME_EMAIL}
+}
+
+# ── Apex + reserved control-plane hosts → control plane ──────────────────────
+# Explicit blocks classify these as control-plane and keep them OUT of the
+# tenant namespace. (The apex is NOT covered by the *. wildcard.)
+{$DOMAIN}, www.{$DOMAIN}, app.{$DOMAIN}, auth.{$DOMAIN}, signup.{$DOMAIN} {
+    encode gzip zstd
+    reverse_proxy controlplane:5080 {
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-For {remote_host}
+    }
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy strict-origin-when-cross-origin
+    }
+}
+
+# ── Every account subdomain → app tier ───────────────────────────────────────
+*.{$DOMAIN} {
+    encode gzip zstd
+
+    log {
+        output file /var/log/caddy/kraken.log {
+            roll_size 50mb
+            roll_keep 10
+            roll_keep_for 720h
+        }
+        format json
+    }
+
+    # Wildcard TLS via DNS-01 (HTTP-01 cannot issue *. certs). Replace `cloudflare`
+    # with the real provider compiled into this Caddy build.
+    tls {
+        dns cloudflare {$CADDY_DNS_TOKEN}
+    }
+
+    # Handle blocks identical to the single-host edge. CRITICAL: none of these set
+    # `header_up Host` — the client Host (acme.krakendeploy.com) MUST reach the app
+    # so account resolution works, including for the agent SignalR/gRPC paths.
+
+    # SignalR hubs (agent control-plane + UI) — WebSocket upgrade, long-lived.
+    handle /hubs/* {
+        reverse_proxy kraken-server:5080 {
+            flush_interval -1
+            header_up X-Forwarded-Proto {scheme}
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+
+    # Blazor Server interactive circuit — WebSocket.
+    handle /_blazor* {
+        reverse_proxy kraken-server:5080 {
+            flush_interval -1
+            header_up X-Forwarded-Proto {scheme}
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+
+    # gRPC (package / step-package / artifact delivery) — HTTP/2 over h2c to the backend.
+    # Proto package is `krakendeploy.v1`, so wire paths are /krakendeploy.v1.<Service>/<Method>
+    # (NOT /kraken.* — that literal prefix never matches and would drop gRPC to the h1 fallback).
+    handle /krakendeploy.v1.* {
+        reverse_proxy h2c://kraken-server:5080 {
+            header_up X-Forwarded-Proto {scheme}
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+
+    # Everything else.
+    handle {
+        reverse_proxy kraken-server:5080 {
+            header_up X-Forwarded-Proto {scheme}
+            header_up X-Forwarded-For {remote_host}
+        }
+    }
+
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy strict-origin-when-cross-origin
+    }
+}
+
+# =============================================================================
+# HA / blue-green note (multi-node SaaS): in the slot/blue-green topology the
+# wildcard block's reverse_proxy targets the app NODES with node affinity and
+# per-node YARP owns release→slot routing — Caddy stays version-agnostic and
+# DB-free (must NOT match __Host-kd_ver or read the catalog: that would force a
+# config reload per deploy and force-close live WebSockets). Example:
+#
+#   *.{$DOMAIN} {
+#       tls { dns cloudflare {$CADDY_DNS_TOKEN} }
+#       reverse_proxy app-node-1:8080 app-node-2:8080 app-node-3:8080 {
+#           lb_policy cookie kd_node
+#           health_uri /healthz
+#           flush_interval -1
+#           header_up X-Forwarded-Proto {scheme}
+#           header_up X-Forwarded-For {remote_host}
+#       }
+#   }
+#
+# See docs/blue-green-slot-deployment.md and docs/saas-multi-account-architecture.md §11/§13.
+# Custom domains (white-label, e.g. deploy.acme.hr) use on-demand TLS gated by a
+# catalog `ask` endpoint — NOT covered here (the wildcard cert handles *.{$DOMAIN}).
+# =============================================================================

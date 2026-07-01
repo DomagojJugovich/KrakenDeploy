@@ -9,7 +9,10 @@ namespace KrakenDeploy.Server.Data.Services;
 /// at rest via <see cref="IEncryptionService"/>. A null/empty secret on
 /// <see cref="UpdateAsync"/> means "keep the existing secret unchanged".
 /// </summary>
-public class IdentityProviderService(IDbContextFactory<KrakenDbContext> dbFactory, IEncryptionService encryption)
+public class IdentityProviderService(
+    IDbContextFactory<KrakenDbContext> dbFactory,
+    IEncryptionService encryption,
+    IOidcSchemeCacheInvalidator schemeCache)
 {
     public async Task<List<IdentityProvider>> GetAllAsync(CancellationToken ct = default)
     {
@@ -54,6 +57,7 @@ public class IdentityProviderService(IDbContextFactory<KrakenDbContext> dbFactor
 
         db.IdentityProviders.Add(idp);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        schemeCache.Invalidate(idp.Id);
         return idp;
     }
 
@@ -93,6 +97,7 @@ public class IdentityProviderService(IDbContextFactory<KrakenDbContext> dbFactor
         idp.IsEnabled          = isEnabled;
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        schemeCache.Invalidate(idp.Id);
         return idp;
     }
 
@@ -111,6 +116,7 @@ public class IdentityProviderService(IDbContextFactory<KrakenDbContext> dbFactor
 
         db.IdentityProviders.Remove(idp);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        schemeCache.Invalidate(id);
         return true;
     }
 }

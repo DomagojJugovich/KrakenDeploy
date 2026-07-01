@@ -1,6 +1,7 @@
 @using KrakenDeploy.Server.Data.Services
 @inject StepTemplateService TemplateSvc
 @inject DialogService DialogService
+@inject UiActionGuard Guard
 
 <RadzenStack Gap="1rem">
     <RadzenFormField Text="Name" Variant="Variant.Outlined" style="width:100%">
@@ -48,6 +49,12 @@
         if (string.IsNullOrWhiteSpace(_actionType))
         {
             _error = "Action Type is required.";
+            return;
+        }
+
+        if (!await Guard.AllowAsync(Permission.StepTemplateCreate))
+        {
+            _error = "You no longer have permission to create step templates.";
             return;
         }
 

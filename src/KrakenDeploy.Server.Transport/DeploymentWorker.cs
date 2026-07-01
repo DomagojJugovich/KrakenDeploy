@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Execution;
+using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Processes;
@@ -42,7 +43,7 @@ namespace KrakenDeploy.Server.Transport;
 /// </para>
 /// </summary>
 public sealed class DeploymentWorker(
-    Channel<Guid> queue,
+    Channel<TenantWorkItem> queue,
     IAgentConnectionRegistry registry,
     IHubContext<AgentHub, IAgentHubClient> agentHub,
     ServerScriptStepRunner serverRunner,
@@ -53,12 +54,17 @@ public sealed class DeploymentWorker(
     ILogger<DeploymentWorker> logger)
     : BackgroundService
 {
+    // Account id of the dispatch currently on this async flow. AsyncLocal so
+    // concurrent fire-and-forget dispatches don't clobber each other; read by
+    // FailAsync to tag the AI-diagnosis work item with the right account.
+    private readonly AsyncLocal<Guid> _dispatchAccountId = new();
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await foreach (var deploymentId in queue.Reader.ReadAllAsync(stoppingToken))
+        await foreach (var item in queue.Reader.ReadAllAsync(stoppingToken))
         {
             // Process fire-and-forget; don't block the reader loop.
-            _ = DispatchAsync(deploymentId, stoppingToken);
+            _ = DispatchAsync(item, stoppingToken);
         }
     }
 
@@ -70,10 +76,42 @@ public sealed class DeploymentWorker(
     /// fire-and-forget — DO NOT call directly from production paths.
     /// </summary>
     internal Task DispatchForTestAsync(Guid deploymentId, CancellationToken ct)
-        => DispatchAsync(deploymentId, ct);
+        => DispatchCoreAsync(Guid.Empty, deploymentId, ct);
 
-    private async Task DispatchAsync(Guid deploymentId, CancellationToken ct)
+    // Resolve the work item's account (multi-account) and run the dispatch under it;
+    // the account flows via AsyncLocal into DispatchCoreAsync's scope AND the
+    // server-side step runners it opens. Guid.Empty (single-instance) uses the fixed
+    // connection.
+    private async Task DispatchAsync(TenantWorkItem item, CancellationToken ct)
     {
+        if (item.AccountId == Guid.Empty)
+        {
+            await DispatchCoreAsync(item.AccountId, item.Id, ct).ConfigureAwait(false);
+            return;
+        }
+
+        await using var accountScope = scopeFactory.CreateAsyncScope();
+        var account = await accountScope.ServiceProvider
+            .GetRequiredService<IAccountResolver>()
+            .ResolveByIdAsync(item.AccountId, ct)
+            .ConfigureAwait(false);
+        if (account is null)
+        {
+            logger.LogError(
+                "DeploymentWorker: account {AccountId} not found for deployment {DeploymentId}.",
+                item.AccountId, item.Id);
+            return;
+        }
+
+        using (accountScope.ServiceProvider.GetRequiredService<IAccountContext>().WithAccount(account))
+        {
+            await DispatchCoreAsync(item.AccountId, item.Id, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async Task DispatchCoreAsync(Guid accountId, Guid deploymentId, CancellationToken ct)
+    {
+        _dispatchAccountId.Value = accountId;
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var spaceContext = scope.ServiceProvider.GetRequiredService<ISpaceContext>();
@@ -993,7 +1031,7 @@ public sealed class DeploymentWorker(
         // TryWrite on an unbounded channel — never blocks finalisation.
         if (deployment.StartedUtc is not null)
         {
-            diagnosisChannel.Writer.TryWrite(deployment.Id);
+            diagnosisChannel.Writer.TryWrite(new TenantWorkItem(_dispatchAccountId.Value, deployment.Id));
         }
     }
 
@@ -2215,21 +2253,45 @@ public sealed class DeploymentWorker(
             }
 
             var connectionId = registry.GetConnectionId(target.Id);
+
+            // P3-8 Phase 5 — cross-account dispatch guard (defense-in-depth). The
+            // connection's account is recorded at connect (host-derived). In multi-
+            // account a live connection whose account differs from this deployment's
+            // account must never receive the plan. Structurally this cannot happen
+            // (a target id is globally unique and validated against the connecting
+            // account's DB at connect), so a hit here means an upstream invariant
+            // broke — block it like an offline target rather than push cross-tenant.
+            string? dropError = null;
             if (connectionId is null)
             {
-                // Phase 3 — record an offline drop-out (instead of aborting).
-                // Steps tab gets one Failed outcome per remaining step so
-                // operators can see "this target dropped at wave X".
-                var offlineAt = DateTimeOffset.UtcNow;
+                dropError = "Target agent offline at dispatch time.";
+            }
+            else if (_dispatchAccountId.Value != Guid.Empty
+                     && registry.GetAccountForTarget(target.Id) != _dispatchAccountId.Value)
+            {
+                logger.LogError(
+                    "Cross-account dispatch blocked for deployment {Deployment}: target " +
+                    "{Target}'s live connection belongs to account {ConnectionAccount}, not " +
+                    "the dispatch account {DispatchAccount}; dropping target.",
+                    deployment.Id, target.Id,
+                    registry.GetAccountForTarget(target.Id), _dispatchAccountId.Value);
+                dropError = "Cross-account connection blocked at dispatch.";
+            }
+
+            if (dropError is not null)
+            {
+                // Record a drop-out (instead of aborting). Steps tab gets one Failed
+                // outcome per remaining step so operators see "dropped at wave X".
+                var droppedAt = DateTimeOffset.UtcNow;
                 foreach (var p in stepsToRun)
                 {
                     var snap = ctx.SnapshotByPlanIndex[p.Index];
                     await UpsertStepOutcomeAsync(
                         db, deployment.Id, p.Index, snap.Name,
                         StepOutcomeKind.Failed, attemptCount: 0,
-                        errorMessage: "Target agent offline at dispatch time.",
+                        errorMessage: dropError,
                         startedUtc:   null,
-                        completedUtc: offlineAt,
+                        completedUtc: droppedAt,
                         isServerSide: false,
                         required:     snap.Required, ct,
                         targetId:     target.Id).ConfigureAwait(false);
@@ -2239,7 +2301,7 @@ public sealed class DeploymentWorker(
                     Target:   target,
                     Reason:   DropReason.AgentOffline,
                     StepName: null,
-                    Error:    "Target agent offline at dispatch time."));
+                    Error:    dropError));
                 continue;
             }
 

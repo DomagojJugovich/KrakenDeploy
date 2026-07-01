@@ -554,6 +554,7 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
 
         var service = new AdhocSessionService(
             postgres, genSvc, verdictSvc, keyProvider, dispatcher,
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             audit, config, TimeProvider.System, logger);
         return new Harness(service);
     }
@@ -606,7 +607,7 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
     private sealed class FakeAdhocDispatcher : IAdhocDispatcher
     {
         public Task<IReadOnlyList<AdhocPerTargetResult>> DispatchAsync(
-            AdhocSession session, AdhocIteration iteration,
+            AdhocSession session, AdhocIteration iteration, Guid dispatchAccountId,
             CancellationToken ct, TimeSpan? timeout = null)
         {
             var ids = JsonSerializer.Deserialize<List<Guid>>(session.FrozenTargetSetJson) ?? [];

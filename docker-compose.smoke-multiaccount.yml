@@ -1,0 +1,110 @@
+# KrakenDeploy — multi-account (SaaS, DB-per-account) real-agent smoke test.
+# =============================================================================
+# Proves the SHIPPED agent binary, pointed at its account SUBDOMAIN, host-derives
+# its business account and registers + goes Online in the CORRECT tenant database
+# — with no cross-account leakage. Complements the in-process transport E2E
+# (tests/.../MultiAccountAgentTransportE2ETests.cs) by exercising the real image,
+# real DB-per-account provisioning, and a real network hop.
+#
+# ROUTING (deliberately Caddy-free)
+#  The server carries two Docker network ALIASES, acme.kraken.local and
+#  globex.kraken.local, both pointing at the one server container. Each agent's
+#  Server:Url targets its own subdomain alias, so the HubConnection / registration
+#  Host header IS the account key: AccountResolutionMiddleware + AgentAccountHubFilter
+#  → CatalogAccountResolver → HostParser.ExtractSubdomain(host, "kraken.local").
+#  No wildcard TLS / DNS-01 plugin is needed for a local HTTP smoke; the SaaS edge
+#  (deploy/saas/Caddyfile) is validated separately.
+#
+# SEED
+#  In Development + MultiAccount, ControlPlaneDevSeed provisions the acme + globex
+#  demo accounts (each creates + migrates + seeds its own kraken_acct_<sub> DB)
+#  before Kestrel starts serving — so the first healthy response already implies
+#  both tenant DBs exist.
+services:
+  postgres:
+    image: postgres:16-alpine
+    # POSTGRES_DB pre-creates the catalog DB so Hangfire (multi-account uses the
+    # Catalog connection for its storage) finds it on first boot. The maintenance
+    # 'postgres' DB is always created by initdb too — that is the CREATE DATABASE
+    # (shard-admin) connection used to provision each kraken_acct_<sub> tenant DB.
+    environment:
+      POSTGRES_DB: krakendeploy_catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:5080
+      # DB-per-account: catalog + every tenant DB live on this one Postgres.
+      #  KrakenDb   — required by the startup config guard; in multi-account it is
+      #               NOT the tenant DB (that is resolved per request). The dev seed
+      #               falls back to it as the shard-admin (CREATE DATABASE) conn, so
+      #               it points at the 'postgres' maintenance DB (superuser => CREATEDB).
+      #  Catalog    — the control-plane account registry (+ Hangfire storage).
+      #  ShardAdmin — explicit CREATE DATABASE connection for tenant provisioning.
+      ConnectionStrings__KrakenDb: "Host=postgres;Port=5432;Database=postgres;Username=postgres;Password=postgres"
+      ConnectionStrings__Catalog: "Host=postgres;Port=5432;Database=krakendeploy_catalog;Username=postgres;Password=postgres"
+      ConnectionStrings__ShardAdmin: "Host=postgres;Port=5432;Database=postgres;Username=postgres;Password=postgres"
+      MultiAccount__Enabled: "true"
+      MultiAccount__BaseDomain: "kraken.local"
+      Agent__JwtSigningKey: "smoke-test-only-jwt-signing-key-at-least-32-characters-!"
+      # FileSecretStore + local artifact/package storage write under Server:DataPath.
+      # /app is root-owned and the image runs as the unprivileged 'kraken' user, so
+      # point it at a writable location.
+      Server__DataPath: "/tmp/kraken-data"
+    ports:
+      - "5080:5080"
+    networks:
+      default:
+        # The two account subdomains resolve to this one server container. The
+        # Host header the agent sends is what selects the account — see ROUTING.
+        aliases:
+          - acme.kraken.local
+          - globex.kraken.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # /healthz opens a tenant KrakenDbContext, which fails closed on a host that
+      # resolves to NO account (the apex 'localhost'). Probe through a provisioned
+      # subdomain so readiness ALSO proves the account was seeded + its DB migrated.
+      test: ["CMD", "curl", "-sf", "-H", "Host: acme.kraken.local", "http://localhost:5080/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 30       # up to 150 s of counted retries: catalog + 2 tenant-DB migrations on first boot
+      start_period: 40s
+
+  agent-acme:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      Server__Url: http://acme.kraken.local:5080
+      # Injected by scripts/smoke-multiaccount.sh after minting a token in acme's DB.
+      Server__RegistrationToken: ${SMOKE_TOKEN_ACME:-}
+    depends_on:
+      server:
+        condition: service_healthy
+
+  agent-globex:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    environment:
+      DOTNET_ENVIRONMENT: Development
+      Server__Url: http://globex.kraken.local:5080
+      Server__RegistrationToken: ${SMOKE_TOKEN_GLOBEX:-}
+    depends_on:
+      server:
+        condition: service_healthy

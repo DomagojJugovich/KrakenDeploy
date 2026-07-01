@@ -16,7 +16,7 @@
                         <SpaceSwitcher />
                         <ThemeToggle />
                         <div class="kraken-user-chip">
-                            <span class="kraken-user-avatar">@Initials(context.User.Identity?.Name)</span>
+                            <span class="kraken-user-avatar">@KrakenText.Initials(context.User.Identity?.Name)</span>
                             <span class="kraken-user-email">@context.User.Identity?.Name</span>
                         </div>
                         <form method="post" action="/logout" style="display:inline;">
@@ -56,25 +56,4 @@
     private bool _sidebarExpanded = true;
 
     private string EnvironmentName => Configuration["Environment:Name"] ?? "dev";
-
-    /// <summary>Up to two uppercase initials for the header avatar, derived from
-    /// the user's display name or email local-part (e.g. "domagoj.jugovic@…" → "DJ").</summary>
-    private static string Initials(string? name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-        {
-            return "?";
-        }
-
-        var local = name.Contains('@') ? name[..name.IndexOf('@')] : name;
-        var parts = local.Split([' ', '.', '_', '-'], StringSplitOptions.RemoveEmptyEntries);
-
-        var initials = parts.Length >= 2
-            ? $"{parts[0][0]}{parts[1][0]}"
-            : parts.Length == 1
-                ? (parts[0].Length >= 2 ? parts[0][..2] : parts[0])
-                : "?";
-
-        return initials.ToUpperInvariant();
-    }
 }

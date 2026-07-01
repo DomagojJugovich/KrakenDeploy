@@ -85,7 +85,7 @@
                             <RadzenButton Icon="format_list_bulleted"
                                           ButtonStyle="ButtonStyle.Light"
                                           Size="ButtonSize.Small"
-                                          Click="@(args => OpenArrayEditorForNewAsync(args))"
+                                          Click="@(args => OpenArrayEditorForNew(args))"
                                           title="Edit as list" />
                         </RadzenStack>
                     }
@@ -105,7 +105,7 @@
                 <div class="kraken-newvar-scope">
                     <RadzenLabel Text="Scope" />
                     <button type="button" class="kraken-newvar-scope-btn"
-                            @onclick="@(args => OpenNewScopePopupAsync(args))">
+                            @onclick="@(args => OpenNewScopePopup(args))">
                         @ScopeLabelForNew()
                     </button>
                 </div>
@@ -163,7 +163,7 @@
                                 <RadzenButton Icon="format_list_bulleted"
                                               ButtonStyle="ButtonStyle.Light"
                                               Size="ButtonSize.ExtraSmall"
-                                              Click="@(args => OpenArrayEditorAsync(args, v))"
+                                              Click="@(args => OpenArrayEditor(args, v))"
                                               @onclick:stopPropagation="true"
                                               title="Edit as list" />
                             </RadzenStack>
@@ -188,7 +188,7 @@
                                 <RadzenButton Icon="format_list_bulleted"
                                               ButtonStyle="ButtonStyle.Light"
                                               Size="ButtonSize.ExtraSmall"
-                                              Click="@(args => OpenArrayEditorAsync(args, v))"
+                                              Click="@(args => OpenArrayEditor(args, v))"
                                               @onclick:stopPropagation="true"
                                               title="Edit as list" />
                             </RadzenStack>
@@ -219,7 +219,7 @@
                                 class="@(v.Scope.IsUnscoped
                                          ? "kraken-vargrid-link kraken-scope-unbound-btn"
                                          : "kraken-scope-chip-btn")"
-                                @onclick="@(args => OpenScopePopupAsync(args, v))"
+                                @onclick="@(args => OpenScopePopup(args, v))"
                                 @onclick:stopPropagation="true">
                             @if (v.Scope.IsUnscoped)
                             {
@@ -753,7 +753,7 @@
 
     // ── Scope popup ────────────────────────────────────────────────────────
 
-    private void OpenScopePopupAsync(MouseEventArgs args, Variable v)
+    private void OpenScopePopup(MouseEventArgs args, Variable v)
     {
         _popupEditingVar = v;
         SeedPopupFromScope(v.Scope);
@@ -761,7 +761,7 @@
         _popupOpen = true;
     }
 
-    private void OpenNewScopePopupAsync(MouseEventArgs args)
+    private void OpenNewScopePopup(MouseEventArgs args)
     {
         // null _popupEditingVar signals "scope edit for the staged new-row"
         _popupEditingVar = null;
@@ -982,7 +982,7 @@
         }
     }
 
-    private void OpenArrayEditorAsync(MouseEventArgs args, Variable v)
+    private void OpenArrayEditor(MouseEventArgs args, Variable v)
     {
         _arrayEditingVar = v;
         _arrayLines = string.Join("\n", ParseArrayJson(v.Value));
@@ -990,7 +990,7 @@
         _arrayPopupOpen = true;
     }
 
-    private void OpenArrayEditorForNewAsync(MouseEventArgs args)
+    private void OpenArrayEditorForNew(MouseEventArgs args)
     {
         _arrayEditingVar = null;
         _arrayLines = string.Join("\n", ParseArrayJson(_newValue));

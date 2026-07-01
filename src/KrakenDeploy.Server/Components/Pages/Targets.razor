@@ -186,7 +186,7 @@
     {
         _filtered = _riskFilter is { } r
             ? _targets.Where(t => t.RiskLevel == r).ToList()
-            : _targets;
+            : _targets.ToList();
 
         _countOnline = _targets.Count(t => t.Status == TargetStatus.Online);
         _countOffline = _targets.Count(t => t.Status == TargetStatus.Offline);

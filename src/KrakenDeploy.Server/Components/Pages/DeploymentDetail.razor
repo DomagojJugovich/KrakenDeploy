@@ -1,5 +1,6 @@
 @page "/s/{SpaceSlug}/deployments/{Id:guid}"
 @inherits SpaceScopedComponentBase
+@rendermode InteractiveServer
 @attribute [Authorize]
 @using System.Text.Json
 @using KrakenDeploy.Server.Core.Domain.Ai

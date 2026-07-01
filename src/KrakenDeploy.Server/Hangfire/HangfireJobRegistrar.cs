@@ -1,4 +1,5 @@
 using Hangfire;
+using KrakenDeploy.ControlPlane.Provisioning;
 using KrakenDeploy.Server.Data.Jobs;
 
 namespace KrakenDeploy.Server.Hangfire;
@@ -104,5 +105,37 @@ public static class HangfireJobRegistrar
             job => job.ExecuteAsync(CancellationToken.None),
             Cron.Minutely(),
             new RecurringJobOptions { TimeZone = utc });
+    }
+
+    /// <summary>
+    /// Multi-account (SaaS) variant: registers the SAME recurring-job ids but with a
+    /// per-account fan-out body (<see cref="PerAccountRecurringJobRunner"/>), so each
+    /// per-tenant job runs once per active account inside a <c>WithAccount</c> scope.
+    /// Re-using the ids means <c>AddOrUpdate</c> REPLACES any stale single-tenant
+    /// schedule persisted by an earlier single-tenant run — so they stop firing
+    /// without an account. Call this instead of <see cref="RegisterRecurringJobs"/>
+    /// when <c>MultiAccount:Enabled</c> is set.
+    /// </summary>
+    public static void RegisterPerAccountRecurringJobs()
+    {
+        var utc = TimeZoneInfo.Utc;
+
+        void Fanout<TJob>(string id, string cron) =>
+            RecurringJob.AddOrUpdate<PerAccountRecurringJobRunner>(
+                id,
+                runner => runner.RunForAllAccountsAsync(
+                    typeof(TJob).AssemblyQualifiedName!, CancellationToken.None),
+                cron,
+                new RecurringJobOptions { TimeZone = utc });
+
+        Fanout<AuditRetentionJob>("kraken.audit-retention", Cron.Daily(3, 0));
+        Fanout<AiCallLogRetentionJob>("kraken.ai-call-log-retention", Cron.Daily(3, 15));
+        Fanout<AgentLastSeenOfflineJob>("kraken.agent-last-seen-offline", "*/5 * * * *");
+        Fanout<RegistrationTokenExpiryJob>("kraken.registration-token-expiry", Cron.Daily(2, 0));
+        Fanout<ScheduledDeploymentDispatchJob>("kraken.scheduled-deployment-dispatch", Cron.Minutely());
+        Fanout<StepTemplateCatalogPollJob>("kraken.step-template-catalog-poll", Cron.Hourly());
+        Fanout<StepPackageCatalogPollJob>("kraken.step-package-catalog-poll", Cron.Hourly());
+        Fanout<SubscriptionPollerJob>(SubscriptionPollerJob.RecurringJobId, Cron.Minutely());
+        Fanout<EmailDigestFlushJob>(EmailDigestFlushJob.RecurringJobId, Cron.Minutely());
     }
 }

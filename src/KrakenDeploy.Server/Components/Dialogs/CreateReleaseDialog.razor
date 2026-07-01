@@ -80,7 +80,11 @@
     {
         _errorMessage = null;
 
-        if (!await Guard.AllowAsync(Permission.ReleaseCreate)) return;
+        if (!await Guard.AllowAsync(Permission.ReleaseCreate))
+        {
+            _errorMessage = "You no longer have permission to create releases.";
+            return;
+        }
 
         try
         {

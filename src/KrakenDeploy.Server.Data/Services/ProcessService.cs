@@ -184,14 +184,17 @@ public class ProcessService(
             ParentStepId                = parentStepId,
         };
 
+        // M15 — validate the resulting step tree in memory BEFORE persisting, so
+        // an invalid mutation (cycle, leaf-with-children, group-with-leaf-config)
+        // is rejected without ever writing a corrupt row. The editor's catch
+        // surfaces the errors; the caller can re-load to roll the UI back.
+        var existingSteps = await db.DeploymentSteps
+            .Where(s => s.ProcessId == process.Id)
+            .ToListAsync(ct).ConfigureAwait(false);
+        EnsureValid([.. existingSteps, step]);
+
         db.DeploymentSteps.Add(step);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
-
-        // M15 — run the structural validator after the row lands. If
-        // validation fails (cycle, leaf-with-children, group-with-leaf-config),
-        // throw so the editor's catch can surface the errors. The caller
-        // can re-load the process to roll the UI back to its prior state.
-        await EnsureValidAsync(db, process.Id, ct).ConfigureAwait(false);
 
         return step;
     }
@@ -270,11 +273,17 @@ public class ProcessService(
                 : newSiblings.Max(s => s.SortOrder) + 1;
         }
 
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-
         // M15 — structural validation as defence in depth. Same pattern as
-        // AddStepAsync: throw if the resulting tree violates an invariant.
-        await EnsureValidAsync(db, step.ProcessId, ct).ConfigureAwait(false);
+        // AddStepAsync: validate the resulting tree BEFORE persisting so an
+        // invalid mutation is rejected without writing a corrupt row. The
+        // tracked `step` instance carries the pending edits, so the query
+        // returns it with the mutation applied (EF identity resolution).
+        var processSteps = await db.DeploymentSteps
+            .Where(s => s.ProcessId == step.ProcessId)
+            .ToListAsync(ct).ConfigureAwait(false);
+        EnsureValid(processSteps);
+
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         return step;
     }
@@ -546,13 +555,11 @@ public class ProcessService(
     /// SaveChanges so callers see the error before the UI re-renders. The
     /// editor surfaces the message inline + reverts its local state.
     /// </summary>
-    private static async Task EnsureValidAsync(
-        KrakenDbContext db, Guid processId, CancellationToken ct)
+    // Validates the full step set of a process in memory and throws if any
+    // structural invariant is violated. Callers run this BEFORE persisting so an
+    // invalid mutation never reaches the database.
+    private static void EnsureValid(IEnumerable<DeploymentStep> steps)
     {
-        var steps = await db.DeploymentSteps
-            .Where(s => s.ProcessId == processId)
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
         var result = ProcessValidator.Validate(steps);
         if (!result.IsValid)
         {
@@ -603,12 +610,12 @@ public sealed record ImportDeploymentProcessResult(
 
 /// <summary>
 /// M15 — thrown by <see cref="ProcessService.AddStepAsync"/> /
-/// <see cref="ProcessService.UpdateStepAsync"/> when the post-save state
-/// of the process violates a <see cref="ProcessValidator"/> rule. The
-/// row write has already happened by the time this throws; the caller
-/// (typically the editor) should re-read the process and surface the
-/// errors to the operator. <see cref="Result"/> carries the full list of
-/// errors so the UI can show them all at once.
+/// <see cref="ProcessService.UpdateStepAsync"/> when the resulting state
+/// of the process would violate a <see cref="ProcessValidator"/> rule.
+/// Validation runs BEFORE the write commits, so no invalid row is
+/// persisted; the caller (typically the editor) should surface the errors
+/// to the operator and may re-read to roll the UI back. <see cref="Result"/>
+/// carries the full list of errors so the UI can show them all at once.
 /// </summary>
 public sealed class ProcessValidationException(ProcessValidator.Result result)
     : InvalidOperationException(BuildMessage(result))

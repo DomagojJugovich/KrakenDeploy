@@ -27,11 +27,11 @@ namespace KrakenDeploy.Agent.StepPackages;
 ///     download itself so the agent's deployment path stays linear.
 ///   </item>
 ///   <item>
-///     Reads + validates <c>manifest.json</c>, then verifies the package
-///     SHA-256 of the on-disk archive (when present) against the signature
-///     placeholder. Real RSA-SHA256 verification is identical to the
-///     server-side upload check in <c>StepPackageService</c> — implemented
-///     as a hook so the same recipe lands in both places at the same time.
+///     Reads + validates <c>manifest.json</c>, then verifies the package's
+///     RSA-SHA256 signature against the trusted public key — the same check
+///     as the server-side upload validation in <c>StepPackageService</c>.
+///     Unsigned packages are rejected unless
+///     <c>StepPackages:AllowUnsignedLoads</c> is set.
 ///   </item>
 ///   <item>
 ///     Creates a collectible <see cref="AssemblyLoadContext"/> per
@@ -159,8 +159,9 @@ public sealed class StepPackageLoader(
             return null;
         }
 
-        // Signature placeholder — mirror of the server-side hook in
-        // StepPackageService.VerifySignatureAsync. Same opt-in flag.
+        // RSA-SHA256 signature verification — mirrors the server-side check in
+        // StepPackageService. Rejects unsigned packages unless the
+        // StepPackages:AllowUnsignedLoads opt-in flag is set.
         if (!VerifySignature(packageDir, manifest))
         {
             return null;

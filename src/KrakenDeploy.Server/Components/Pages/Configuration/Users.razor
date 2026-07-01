@@ -86,7 +86,7 @@
         <RadzenDataGridColumn TItem="ApplicationUser" Property="Email" Title="Email" />
         <RadzenDataGridColumn TItem="ApplicationUser" Property="UserName" Title="Username"
                               Width="220px" />
-        <RadzenDataGridColumn TItem="ApplicationUser" Title="Email" Width="130px"
+        <RadzenDataGridColumn TItem="ApplicationUser" Title="Email status" Width="130px"
                               Filterable="false" Sortable="false">
             <Template Context="u">
                 @if (u.Kind == UserKind.ServiceAccount)

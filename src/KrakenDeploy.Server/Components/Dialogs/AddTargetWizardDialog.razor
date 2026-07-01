@@ -2,6 +2,8 @@
 @inject TargetRegistrationService RegistrationSvc
 @inject NavigationManager Nav
 @inject UiActionGuard Guard
+@inject IJSRuntime JS
+@inject NotificationService Notify
 
 <div style="min-width:540px; padding:0.25rem 0;">
 
@@ -49,17 +51,11 @@
                                        Orientation="Orientation.Vertical"
                                        Style="margin-top:0.5rem;">
                     <Items>
-                        <RadzenRadioButtonListItem Text="Reverse (recommended)"
-                                                   Description="Agent initiates the connection to the server — works through firewalls and NAT."
+                        <RadzenRadioButtonListItem Text="Reverse (SignalR)"
+                                                   Description="Agent opens a persistent outbound connection to the server — works through firewalls and NAT. The server pushes work back down the same connection."
                                                    Value="TransportMode.Reverse" />
-                        <RadzenRadioButtonListItem Text="Direct (SSH / WinRM)"
-                                                   Description="Server connects directly to the agent. Requires the agent port to be reachable."
-                                                   Value="TransportMode.Direct" />
-                        <RadzenRadioButtonListItem Text="Polling"
-                                                   Description="Agent polls the server for work. Useful in highly restricted networks."
-                                                   Value="TransportMode.Polling" />
                         <RadzenRadioButtonListItem Text="Offline Drop"
-                                                   Description="No agent installed. Server generates a drop bundle for manual execution on the target."
+                                                   Description="No agent installed. Server generates a drop bundle for manual execution on an air-gapped target."
                                                    Value="TransportMode.OfflineDrop" />
                     </Items>
                 </RadzenRadioButtonList>
@@ -204,7 +200,12 @@
 
     private async Task CreateTargetAsync()
     {
-        if (!await Guard.AllowAsync(Permission.MachineCreate)) return;
+        if (!await Guard.AllowAsync(Permission.MachineCreate))
+        {
+            Notify.Notify(NotificationSeverity.Error, "Permission denied",
+                "You do not have permission to create deployment targets.", 4000);
+            return;
+        }
         _creating = true;
         try
         {
@@ -224,11 +225,17 @@
 
     private async Task CopyTokenAsync()
     {
-        // Clipboard write requires JS interop — use NavigationManager base URI for the
-        // command strings, and a simple workaround: select-all in the text box.
-        // Full clipboard JS can be wired in Phase 8 if desired.
-        await Task.CompletedTask;
-        _copied = true;
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", _plainToken);
+            _copied = true;
+        }
+        catch
+        {
+            // Clipboard API is unavailable in insecure contexts or when permission is denied.
+            Notify.Notify(NotificationSeverity.Warning, "Copy failed",
+                "Could not access the clipboard. Select the token and copy it manually.", 4000);
+        }
     }
 
     // ── Install command strings ──────────────────────────────────

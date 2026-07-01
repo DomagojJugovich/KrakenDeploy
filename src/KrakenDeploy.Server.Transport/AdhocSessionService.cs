@@ -1,5 +1,6 @@
 using System.Text.Json;
 using KrakenDeploy.Contracts.Adhoc;
+using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Ai;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Targets;
@@ -64,6 +65,7 @@ public sealed class AdhocSessionService(
     AdhocVerdictService verdict,
     AdhocSigningKeyProvider signingKey,
     IAdhocDispatcher dispatcher,
+    IAccountContext accountContext,
     IAuditLog auditLog,
     IConfiguration config,
     TimeProvider clock,
@@ -320,7 +322,10 @@ public sealed class AdhocSessionService(
         iter.Status = AdhocIterationStatus.Executing;
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
-        var results = await dispatcher.DispatchAsync(session, iter, ct).ConfigureAwait(false);
+        // Pass the dispatching account so the dispatcher can fail-closed against a target
+        // whose live connection belongs to a different account (Guid.Empty = single-instance).
+        var dispatchAccountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;
+        var results = await dispatcher.DispatchAsync(session, iter, dispatchAccountId, ct).ConfigureAwait(false);
 
         iter.ResultsJson = JsonSerializer.Serialize(results);
         iter.Status      = AdhocIterationStatus.Completed;

@@ -135,8 +135,9 @@ public sealed class McpToolTests(PostgresFixture postgres)
         var release = await SeedReleaseAsync(project.Id, "1.0");
         var sourceId = await SeedDeploymentAsync(release.Id, env.Id, DeploymentStatus.Failed, target);
         var audit = new SpyAuditLog();
-        var queue = Channel.CreateUnbounded<Guid>();
-        var service = new DeploymentService(postgres, queue, TimeProvider.System);
+        var queue = Channel.CreateUnbounded<KrakenDeploy.Server.Data.TenantWorkItem>();
+        var service = new DeploymentService(postgres, queue, TimeProvider.System,
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
 
         var result = await DeploymentTools.RetryDeploymentAsync(
             postgres, service, audit, sourceId, CancellationToken.None);
@@ -155,8 +156,9 @@ public sealed class McpToolTests(PostgresFixture postgres)
     [Fact]
     public async Task retry_deployment_throws_for_unknown_id()
     {
-        var queue = Channel.CreateUnbounded<Guid>();
-        var service = new DeploymentService(postgres, queue, TimeProvider.System);
+        var queue = Channel.CreateUnbounded<KrakenDeploy.Server.Data.TenantWorkItem>();
+        var service = new DeploymentService(postgres, queue, TimeProvider.System,
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
 
         var act = async () => await DeploymentTools.RetryDeploymentAsync(
             postgres, service, new SpyAuditLog(), Guid.NewGuid(), CancellationToken.None);

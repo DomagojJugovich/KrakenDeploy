@@ -200,7 +200,9 @@ public sealed class AdhocMcpToolTests(PostgresFixture postgres)
         var audit = new RecordingAuditLog(postgres);
         var sessionService = new AdhocSessionService(
             postgres, genSvc, verdictSvc, keyProvider,
-            new FakeAdhocDispatcher(), audit, config, TimeProvider.System,
+            new FakeAdhocDispatcher(),
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
+            audit, config, TimeProvider.System,
             NullLogger<AdhocSessionService>.Instance);
 
         var perms = new FakePermissionEvaluator(grantPermission);
@@ -271,7 +273,7 @@ public sealed class AdhocMcpToolTests(PostgresFixture postgres)
     private sealed class FakeAdhocDispatcher : IAdhocDispatcher
     {
         public Task<IReadOnlyList<AdhocPerTargetResult>> DispatchAsync(
-            AdhocSession session, AdhocIteration iteration,
+            AdhocSession session, AdhocIteration iteration, Guid dispatchAccountId,
             CancellationToken ct, TimeSpan? timeout = null)
             => Task.FromResult<IReadOnlyList<AdhocPerTargetResult>>([]);
     }

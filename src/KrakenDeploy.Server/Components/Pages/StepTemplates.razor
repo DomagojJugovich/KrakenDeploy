@@ -45,7 +45,7 @@
     </RadzenColumn>
 </RadzenRow>
 
-<KrakenGrid SettingsKey="step-templates" AllowColumnResize="true" @ref="_grid"
+<KrakenGrid SettingsKey="step-templates" AllowColumnResize="true"
                 Data="@_templates"
                 TItem="StepTemplate"
                 AllowFiltering="true"
@@ -108,7 +108,6 @@
 </KrakenGrid>
 
 @code {
-    private RadzenDataGrid<StepTemplate> _grid = default!;
     private List<StepTemplate> _templates = [];
     private bool _loading = true;
 

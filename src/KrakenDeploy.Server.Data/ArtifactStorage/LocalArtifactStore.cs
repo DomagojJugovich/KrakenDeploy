@@ -1,12 +1,19 @@
+using KrakenDeploy.Server.Core.Domain.Accounts;
+
 namespace KrakenDeploy.Server.Data.ArtifactStorage;
 
 /// <summary>
-/// Stores deployment artifact files on the local filesystem under
-/// <c>{dataPath}/artifacts/{deploymentId}/{stepName}/{fileName}</c>.
+/// Stores deployment artifact files on the local filesystem. Single-instance:
+/// <c>{dataPath}/artifacts/{deploymentId}/{stepName}/{fileName}</c>. Multi-account:
+/// namespaced by the active account so no two tenants share a file tree —
+/// <c>{dataPath}/accounts/{accountId}/artifacts/…</c>. The account id (not the subdomain)
+/// keys the path so a subdomain rename never orphans a stored file.
 /// </summary>
-public sealed class LocalArtifactStore(string dataPath) : IArtifactStore
+public sealed class LocalArtifactStore(string dataPath, IAccountContext accountContext) : IArtifactStore
 {
-    private string RootPath => Path.Combine(dataPath, "artifacts");
+    private string RootPath => accountContext.IsResolved
+        ? Path.Combine(dataPath, "accounts", accountContext.CurrentAccountId.ToString(), "artifacts")
+        : Path.Combine(dataPath, "artifacts");
 
     /// <inheritdoc/>
     public async Task<string> SaveAsync(

@@ -6,10 +6,12 @@
 @using KrakenDeploy.Server.Data.Identity
 @using KrakenDeploy.Server.Data.Services
 @using KrakenDeploy.Server.Core.Domain.Security
+@using KrakenDeploy.Server.Core.Domain.Accounts
 @using Microsoft.AspNetCore.Identity
 @inject SignInManager<ApplicationUser> SignInManager
 @inject UserManager<ApplicationUser> UserManager
 @inject IdentityProviderService IdpSvc
+@inject IAccountContext AccountCtx
 @inject FeatureFlagService FeatureFlags
 @inject NavigationManager Navigation
 @inject ILogger<Login> Logger
@@ -56,7 +58,12 @@
             {
                 @foreach (var idp in _oidcProviders)
                 {
-                    var challengeUrl = $"/login/external?provider={OidcRegistrar.SchemeName(idp.Id)}&returnUrl={Uri.EscapeDataString(ReturnUrl ?? "/")}";
+                    // Multi-account: the scheme is per-tenant (oidc_{accountId}_{providerId});
+                    // single-instance: oidc_{providerId}. The account is resolved from the host.
+                    var schemeName = AccountCtx.IsResolved
+                        ? OidcRegistrar.SchemeName(AccountCtx.CurrentAccountId, idp.Id)
+                        : OidcRegistrar.SchemeName(idp.Id);
+                    var challengeUrl = $"/login/external?provider={schemeName}&returnUrl={Uri.EscapeDataString(ReturnUrl ?? "/")}";
                     <a class="oidc-btn" href="@challengeUrl">
                         <span class="oidc-mark">@(idp.Name.Length > 0 ? idp.Name[0].ToString().ToUpperInvariant() : "?")</span>
                         <span>Continue with @idp.Name</span>

@@ -191,6 +191,8 @@
 
     private async Task RejectAsync()
     {
+        if (!await Guard.AllowAsync(Permission.AdhocActionsExecute)) return;
+
         _error = null;
         _busy = true;
         try

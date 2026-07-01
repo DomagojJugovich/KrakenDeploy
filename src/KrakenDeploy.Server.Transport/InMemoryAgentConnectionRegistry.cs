@@ -14,11 +14,13 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
     // read/write asymmetry is acceptable (a brief inconsistency window is harmless).
     private readonly ConcurrentDictionary<string, Guid> _byConnection = new();
     private readonly ConcurrentDictionary<Guid, string> _byTarget = new();
+    private readonly ConcurrentDictionary<Guid, Guid> _accountByTarget = new();
 
-    public void Add(string connectionId, Guid targetId)
+    public void Add(string connectionId, Guid targetId, Guid accountId = default)
     {
         _byConnection[connectionId] = targetId;
         _byTarget[targetId] = connectionId;
+        _accountByTarget[targetId] = accountId;
     }
 
     public bool TryRemove(string connectionId, out Guid targetId)
@@ -29,6 +31,7 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
         }
 
         _byTarget.TryRemove(targetId, out _);
+        _accountByTarget.TryRemove(targetId, out _);
         return true;
     }
 
@@ -39,6 +42,9 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
 
     public string? GetConnectionId(Guid targetId)
         => _byTarget.TryGetValue(targetId, out var connId) ? connId : null;
+
+    public Guid? GetAccountForTarget(Guid targetId)
+        => _accountByTarget.TryGetValue(targetId, out var accountId) ? accountId : null;
 
     public int Count => _byConnection.Count;
 }

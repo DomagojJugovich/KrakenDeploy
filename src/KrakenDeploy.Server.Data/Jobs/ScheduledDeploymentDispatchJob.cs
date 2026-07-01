@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -20,8 +21,9 @@ namespace KrakenDeploy.Server.Data.Jobs;
 /// </summary>
 public sealed class ScheduledDeploymentDispatchJob(
     IDbContextFactory<KrakenDbContext> dbFactory,
-    Channel<Guid> deploymentQueue,
+    Channel<TenantWorkItem> deploymentQueue,
     TimeProvider time,
+    IAccountContext accountContext,
     ILogger<ScheduledDeploymentDispatchJob> logger)
 {
     public async Task ExecuteAsync(CancellationToken ct)
@@ -58,10 +60,13 @@ public sealed class ScheduledDeploymentDispatchJob(
 
         // Write IDs to the in-process dispatch channel.  DeploymentWorker picks
         // them up and runs them exactly as it would an immediately-dispatched one.
+        // Runs inside the per-account fan-out (WithAccount) in multi-account mode, so
+        // CurrentAccountId is this account; Guid.Empty in single-instance mode.
+        var accountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;
         foreach (var id in dueIds)
         {
             await deploymentQueue.Writer
-                .WriteAsync(id, ct)
+                .WriteAsync(new TenantWorkItem(accountId, id), ct)
                 .ConfigureAwait(false);
         }
 

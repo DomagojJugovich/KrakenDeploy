@@ -1,5 +1,6 @@
 @page "/s/{SpaceSlug}/deployments"
 @inherits SpaceScopedComponentBase
+@rendermode InteractiveServer
 @attribute [Authorize]
 @inject DeploymentService DeploymentSvc
 @inject EnvironmentService EnvironmentSvc

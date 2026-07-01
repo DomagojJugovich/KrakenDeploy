@@ -1,7 +1,11 @@
+using System.Security.Cryptography;
+using System.Text;
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Licensing;
+using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data.Services;
+using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data.Tests;
 
@@ -78,6 +82,59 @@ public class TargetRegistrationServiceTests(PostgresFixture postgres) : IClassFi
         var result = await futureSvc.ValidateAndConsumeTokenAsync(token);
 
         result.Should().BeNull(because: "the token expired 1 h before this validation attempt");
+    }
+
+    [Fact]
+    public async Task ValidateAndConsume_finds_target_in_non_default_space()
+    {
+        // P3-8 prerequisite bug. Enrollment hits the anonymous /api/agents/register
+        // endpoint, which has no real Space context — the ambient ISpaceContext falls
+        // back to the Default Space. A target created in a NON-Default Space would then
+        // be hidden by the global Space query filter and could never enroll. The fix is
+        // a filter-free lookup (the high-entropy token hash is the authorization), which
+        // this test pins: a target inserted directly into another Space must still
+        // validate through the Default-Space-scoped service.
+        var otherSpace = Guid.NewGuid();
+        var token = "p38-non-default-" + Guid.NewGuid().ToString("N");
+
+        // Same hashing the service applies (SHA-256, lowercase hex of the UTF-8 token).
+        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token)))
+            .ToLowerInvariant();
+
+        await using (var db = postgres.CreateContext())
+        {
+            // The non-Default Space must exist (deployment_targets.space_id FK).
+            db.Spaces.Add(new Space
+            {
+                Id = otherSpace,
+                Slug = "p38-space-" + otherSpace.ToString("N")[..8],
+                Name = "P3-8 Non-Default Space",
+            });
+
+            // SpaceId is caller-set here, so the SpaceScopingInterceptor preserves it on
+            // insert (it only auto-stamps an empty SpaceId, and blocks later moves).
+            db.DeploymentTargets.Add(new DeploymentTarget
+            {
+                SpaceId = otherSpace,
+                Name = "p38-non-default",
+                Roles = ["web"],
+                TransportMode = TransportMode.Reverse,
+                Status = TargetStatus.Unknown,
+                RegistrationKeyHash = hash,
+                RegistrationTokenExpiresUtc = DateTimeOffset.UtcNow.AddHours(1),
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var svc = new TargetRegistrationService(postgres, TimeProvider.System, FakeLicenseGate.Unlimited);
+
+        var result = await svc.ValidateAndConsumeTokenAsync(token);
+
+        result.Should().NotBeNull(because:
+            "enrollment must find a target regardless of its Space — the lookup ignores " +
+            "query filters so a non-Default-Space target can still register");
+        result!.SpaceId.Should().Be(otherSpace);
+        result.RegistrationKeyHash.Should().BeNull(because: "the token is consumed on first use");
     }
 
     [Fact]

@@ -24,9 +24,53 @@ namespace KrakenDeploy.Server.Auth;
 public static class OidcRegistrar
 {
     /// <summary>
-    /// Derives the ASP.NET Core authentication scheme name for a given provider.
+    /// Derives the ASP.NET Core authentication scheme name for a given provider
+    /// (single-instance: one global DB, providerId alone is unique).
     /// </summary>
     public static string SchemeName(Guid providerId) => $"oidc_{providerId:N}";
+
+    /// <summary>
+    /// Multi-account scheme name. The accountId is encoded so the dynamic options
+    /// configurer can resolve the owning tenant database directly; it is the immutable
+    /// catalog account id (not the subdomain), so the name — and the IdP-registered
+    /// redirect URI — survive subdomain renames / white-label custom domains.
+    /// </summary>
+    public static string SchemeName(Guid accountId, Guid providerId) =>
+        $"oidc_{accountId:N}_{providerId:N}";
+
+    /// <summary>
+    /// Sentinel scheme that registers the <c>OpenIdConnectHandler</c> + framework
+    /// post-configure machinery once in multi-account mode. It is never emitted by the
+    /// login page nor challengeable (the dynamic scheme provider also excludes it from
+    /// request-handler resolution), so its options are never resolved.
+    /// </summary>
+    public const string MultiAccountTemplateScheme = "__oidc_mt_template__";
+
+    /// <summary>
+    /// Parses a multi-account OIDC scheme name (<c>oidc_{accountId:N}_{providerId:N}</c>).
+    /// Returns false for single-instance names (<c>oidc_{providerId:N}</c>) and anything
+    /// that is not a per-account OIDC scheme.
+    /// </summary>
+    public static bool TryParseMultiAccountScheme(
+        string? name, out Guid accountId, out Guid providerId)
+    {
+        accountId = Guid.Empty;
+        providerId = Guid.Empty;
+        if (string.IsNullOrEmpty(name) || !name.StartsWith("oidc_", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        // "oidc_" + 32-hex account + "_" + 32-hex provider.
+        var rest = name.AsSpan("oidc_".Length);
+        if (rest.Length != 32 + 1 + 32 || rest[32] != '_')
+        {
+            return false;
+        }
+
+        return Guid.TryParseExact(rest[..32], "N", out accountId)
+            && Guid.TryParseExact(rest[33..], "N", out providerId);
+    }
 
     /// <summary>
     /// Loads all enabled <see cref="IdentityProvider"/> rows and wires up one
@@ -36,7 +80,21 @@ public static class OidcRegistrar
     /// </summary>
     public static void RegisterSchemes(WebApplicationBuilder builder)
     {
-        var connectionString = builder.Configuration.GetConnectionString("Default");
+        // Multi-account: external IdPs are per-tenant (each account's own DB), so they
+        // cannot be registered as process-wide startup schemes — a scheme is global,
+        // tenants/IdPs added after startup wouldn't be picked up, and the startup query
+        // has no resolved account. Per-account SSO is a separate Phase-4 design (central
+        // auth domain / per-account customer SSO). Skip global registration here.
+        if (builder.Configuration.GetValue("MultiAccount:Enabled", false))
+        {
+            return;
+        }
+
+        // Guard: only proceed when the app DB is configured. (This previously read the
+        // never-configured "Default" connection name, which silently disabled ALL
+        // external OIDC login even in single-instance — the real key is "KrakenDb".
+        // The value is only a presence check; the KrakenDbContext below comes from DI.)
+        var connectionString = builder.Configuration.GetConnectionString("KrakenDb");
         if (string.IsNullOrWhiteSpace(connectionString))
         {
             return;
@@ -48,15 +106,20 @@ public static class OidcRegistrar
             return;
         }
 
-        // Build a throw-away scope to query the DB.  The data project's
-        // DefaultSpaceContext is registered by AddKrakenDeployData and
-        // satisfies ISpaceContext without an HTTP request in scope.
-        using var tempProvider = builder.Services.BuildServiceProvider(
-            new ServiceProviderOptions { ValidateScopes = false });
-        using var scope = tempProvider.CreateScope();
-
-        var db         = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
-        var encryption = scope.ServiceProvider.GetRequiredService<IEncryptionService>();
+        // Query the DB by constructing the context + encryption DIRECTLY — do NOT call
+        // builder.Services.BuildServiceProvider() here. Building the full provider during
+        // composition resolves (and FREEZES) Serilog's logger before the real
+        // builder.Build(), which then throws "the logger is already frozen". Constructing
+        // the context directly avoids that (mirrors ResolveHangfireWorkerCount). The
+        // pass-through DefaultSpaceContext satisfies ISpaceContext; no account override is
+        // needed (this path is single-instance only — multi-account returned above).
+        using var db = new KrakenDbContext(
+            new DbContextOptionsBuilder<KrakenDbContext>()
+                .UseNpgsql(connectionString)
+                .UseSnakeCaseNamingConvention()
+                .Options,
+            new KrakenDeploy.Server.Data.Spaces.DefaultSpaceContext());
+        var encryption = new KrakenDeploy.Server.Data.Encryption.AesEncryptionService(masterKey);
 
         List<IdentityProvider> providers;
         try
@@ -71,12 +134,10 @@ public static class OidcRegistrar
         catch (Exception ex)
         {
             // DB not yet migrated / not reachable — skip OIDC; local login still works.
-            var logger = scope.ServiceProvider
-                .GetRequiredService<ILoggerFactory>().CreateLogger(nameof(OidcRegistrar));
-            logger.LogWarning(ex,
-                "OIDC scheme registration skipped — could not query IdentityProviders " +
-                "({Message}). Local-account login is still available.",
-                ex.Message);
+            // ILogger isn't built yet at composition time, so write to the console.
+            Console.Error.WriteLine(
+                $"OIDC scheme registration skipped — could not query IdentityProviders " +
+                $"({ex.Message}). Local-account login is still available.");
             return;
         }
 
@@ -139,9 +200,57 @@ public static class OidcRegistrar
         }
     }
 
+    // ── Multi-account (SaaS) dynamic per-tenant registration ──────────────────
+
+    /// <summary>
+    /// Multi-account counterpart to <see cref="RegisterSchemes"/>. Instead of one
+    /// startup scheme per provider from a single DB, it registers the OIDC handler
+    /// machinery ONCE (a sentinel template scheme) plus the request-time
+    /// <see cref="PerAccountOidcSchemeProvider"/> and tenant-keyed
+    /// <see cref="PerAccountOidcConfigureOptions"/>, so each tenant's IdPs are resolved
+    /// per request from that account's own database. See
+    /// <c>docs/saas-per-account-sso.md</c>.
+    /// </summary>
+    public static void RegisterMultiAccountSchemes(WebApplicationBuilder builder)
+    {
+        // Register the OpenIdConnectHandler + framework post-configure once via a
+        // sentinel scheme whose options are never resolved (the scheme provider excludes
+        // it from request-handler resolution, and the login page never emits it). Dummy
+        // Authority/CallbackPath keep it benign even if its options were ever resolved.
+        builder.Services.AddAuthentication()
+            .AddOpenIdConnect(MultiAccountTemplateScheme, options =>
+            {
+                options.Authority    = "https://oidc-template.invalid";
+                options.ClientId     = "unused";
+                options.CallbackPath = "/__oidc_mt_unused__";
+            });
+
+        // Dynamic per-tenant options: configures any oidc_{accountId}_{providerId} name
+        // from the owning account's DB when IOptionsMonitor first resolves it.
+        builder.Services.AddSingleton<
+            Microsoft.Extensions.Options.IConfigureOptions<OpenIdConnectOptions>,
+            PerAccountOidcConfigureOptions>();
+
+        // Per-account enabled-provider cache (backs the scheme provider's existence
+        // checks so the auth middleware never hits the tenant DB on the hot path).
+        // AddMemoryCache is idempotent (TryAdd) — the catalog resolver also uses it.
+        builder.Services.AddMemoryCache();
+        builder.Services.AddSingleton<PerAccountOidcProviderCache>();
+
+        // Replace the default scheme provider with the request-time decorator that
+        // synthesizes per-tenant OIDC schemes for the resolved account.
+        builder.Services.AddSingleton<IAuthenticationSchemeProvider, PerAccountOidcSchemeProvider>();
+
+        // Real scheme-cache evictor (overrides the no-op default registered by
+        // AddKrakenDeployData) so an IdP edit applies without a restart.
+        builder.Services.AddScoped<
+            KrakenDeploy.Server.Core.Domain.Security.IOidcSchemeCacheInvalidator,
+            OidcSchemeCacheInvalidator>();
+    }
+
     // ── Event handler factory ─────────────────────────────────────────────────
 
-    private static OpenIdConnectEvents BuildEvents(
+    internal static OpenIdConnectEvents BuildEvents(
         Guid idpId,
         string idpName,
         string scheme,

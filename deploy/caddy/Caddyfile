@@ -52,10 +52,12 @@
     }
 
     # ── gRPC — HTTP/2 required, bidirectional streaming ──────────────
-    # The gRPC routes are /kraken.PackageDelivery/* and
-    # /kraken.ArtifactUpload/* by convention. Caddy negotiates H2C
-    # to the backend via h2c:// transport so gRPC streaming works.
-    handle /kraken.* {
+    # The proto package is `krakendeploy.v1`, so gRPC wire paths are
+    # /krakendeploy.v1.PackageDelivery/*, /krakendeploy.v1.StepPackageDelivery/*,
+    # /krakendeploy.v1.ArtifactUpload/* (the csharp_namespace does NOT affect the wire
+    # path). A /kraken.* matcher never matches these. Caddy negotiates H2C to the
+    # backend via h2c:// transport so gRPC streaming works.
+    handle /krakendeploy.v1.* {
         reverse_proxy h2c://kraken-server:5080 {
             header_up X-Forwarded-Proto {scheme}
             header_up X-Forwarded-For {remote_host}

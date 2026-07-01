@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Tenants;
 using Microsoft.EntityFrameworkCore;
@@ -10,8 +11,9 @@ namespace KrakenDeploy.Server.Data.Services;
 /// </summary>
 public class DeploymentService(
     IDbContextFactory<KrakenDbContext> dbFactory,
-    Channel<Guid> deploymentQueue,
-    TimeProvider time)
+    Channel<TenantWorkItem> deploymentQueue,
+    TimeProvider time,
+    IAccountContext accountContext)
 {
     // ── Create ─────────────────────────────────────────────────────────────
 
@@ -89,21 +91,18 @@ public class DeploymentService(
                 }
             }
         }
-        if (targetIds.Count > 1)
+        // Validate every target id exists (the set always includes the primary
+        // targetId) BEFORE inserting the deployment, so a bogus or cross-Space id
+        // fails fast here with a clear message instead of opaquely at dispatch.
+        var existing = await db.DeploymentTargets
+            .Where(t => targetIds.Contains(t.Id))
+            .Select(t => t.Id)
+            .ToListAsync(ct).ConfigureAwait(false);
+        var missing = targetIds.Where(id => !existing.Contains(id)).ToList();
+        if (missing.Count > 0)
         {
-            // Validate every additional target exists in the same Space
-            // BEFORE inserting the deployment so we don't leave a half-
-            // created multi-target deployment if an id is bogus.
-            var existing = await db.DeploymentTargets
-                .Where(t => targetIds.Contains(t.Id))
-                .Select(t => t.Id)
-                .ToListAsync(ct).ConfigureAwait(false);
-            var missing = targetIds.Where(id => !existing.Contains(id)).ToList();
-            if (missing.Count > 0)
-            {
-                throw new InvalidOperationException(
-                    $"Target(s) not found: {string.Join(", ", missing)}.");
-            }
+            throw new InvalidOperationException(
+                $"Target(s) not found: {string.Join(", ", missing)}.");
         }
 
         // Enforce lifecycle phase gate (throws if gate not satisfied).
@@ -143,7 +142,10 @@ public class DeploymentService(
             scheduledFor.Value > time.GetUtcNow();
         if (!isScheduledForFuture)
         {
-            await deploymentQueue.Writer.WriteAsync(deployment.Id, ct).ConfigureAwait(false);
+            var accountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;
+            await deploymentQueue.Writer
+                .WriteAsync(new TenantWorkItem(accountId, deployment.Id), ct)
+                .ConfigureAwait(false);
         }
 
         return deployment;

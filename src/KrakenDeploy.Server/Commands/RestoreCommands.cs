@@ -1,32 +1,40 @@
 using System.Diagnostics;
 using System.Text.Json;
-using KrakenDeploy.Server.Data;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Hosting;
+using KrakenDeploy.ControlPlane;
+using KrakenDeploy.Server.Core.Domain.Accounts;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace KrakenDeploy.Server.Commands;
 
 /// <summary>
-/// CLI subcommand <c>restore</c>. Restores a backup bundle created by
-/// <c>backup</c> — runs the SQL dump and copies the data directory back.
+/// CLI subcommand <c>restore</c>. Restores a backup bundle created by <c>backup</c> —
+/// runs the SQL dump and copies the data directory back.
+/// <para>
+/// Multi-account: pass <c>--account &lt;subdomain&gt;</c> to restore into that account's
+/// tenant database + file slice (<c>{DataPath}/accounts/{accountId}</c>). The bundle's
+/// manifest records the account it was taken from, and restore <b>refuses</b> to load a
+/// bundle into a different account (prevents a catastrophic cross-tenant overwrite).
+/// Single-instance: omit <c>--account</c> — restores into the configured <c>KrakenDb</c>
+/// and the flat data directory exactly as before.
+/// </para>
 /// </summary>
 internal static class RestoreCommands
 {
     public static async Task<int> RunAsync(string[] args, string contentRoot)
     {
         string? from = null;
+        string? account = null;
 
         for (var i = 0; i < args.Length - 1; i++)
         {
-            if (args[i] == "--from")
-            {
-                from = args[i + 1];
-            }
+            if (args[i] == "--from") { from = args[i + 1]; }
+            else if (args[i] == "--account") { account = args[i + 1]; }
         }
 
         if (from is null)
         {
-            Console.Error.WriteLine("Usage: restore --from <backup-directory>");
+            Console.Error.WriteLine("Usage: restore --from <backup-directory> [--account <subdomain>]");
             return 1;
         }
 
@@ -73,18 +81,80 @@ internal static class RestoreCommands
             return 1;
         }
 
-        // ── Restore database ───────────────────────────────────────────────────
+        // ── Resolve the target database + data root ─────────────────────────────
         var builder = CliHost.CreateBuilder(contentRoot);
-        var connectionString = builder.Configuration.GetConnectionString("KrakenDb");
+        var multiAccount = builder.Configuration.GetValue("MultiAccount:Enabled", false);
 
-        if (string.IsNullOrWhiteSpace(connectionString))
+        string connectionString;
+        string dataTargetRoot;
+
+        if (multiAccount)
         {
-            Console.Error.WriteLine(
-                "ConnectionStrings:KrakenDb is not configured. " +
-                "Set it in appsettings.{Environment}.json or via env var.");
-            return 1;
+            if (account is null)
+            {
+                Console.Error.WriteLine(
+                    "Multi-account mode: --account <subdomain> is required so the bundle is " +
+                    "restored into the correct tenant database.");
+                return 1;
+            }
+
+            var catalogConn = builder.Configuration.GetConnectionString("Catalog");
+            if (string.IsNullOrWhiteSpace(catalogConn))
+            {
+                Console.Error.WriteLine("ConnectionStrings:Catalog is not configured (required for --account).");
+                return 1;
+            }
+
+            var baseDomain = builder.Configuration["MultiAccount:BaseDomain"] ?? "localhost";
+            var dataPath = builder.Configuration["Server:DataPath"] ?? "data";
+
+            builder.Services.AddKrakenControlPlane(builder.Configuration, catalogConn, dataPath);
+
+            using var app = builder.Build();
+            await using var scope = app.Services.CreateAsyncScope();
+            var resolver = scope.ServiceProvider.GetRequiredService<IAccountResolver>();
+            var resolved = await resolver.ResolveAsync($"{account}.{baseDomain}").ConfigureAwait(false);
+            if (resolved is null)
+            {
+                Console.Error.WriteLine($"Account '{account}' was not found or is not active in the catalog.");
+                return 1;
+            }
+
+            // Cross-account safety: never restore a bundle into a different account.
+            if (manifest.Account is not null &&
+                !string.Equals(manifest.Account.Subdomain, resolved.Subdomain, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.Error.WriteLine(
+                    $"Refusing to restore: this bundle belongs to account '{manifest.Account.Subdomain}', " +
+                    $"not '{resolved.Subdomain}'. Restoring it would overwrite the wrong tenant.");
+                return 1;
+            }
+
+            if (manifest.Account is null)
+            {
+                Console.Error.WriteLine(
+                    $"Warning: bundle has no account stamp (older or single-instance backup) — " +
+                    $"cannot verify it belongs to '{account}'. Proceeding into account '{resolved.Subdomain}'.");
+            }
+
+            connectionString = resolved.ConnectionString;
+            dataTargetRoot = Path.Combine(dataPath, "accounts", resolved.Id.ToString());
+        }
+        else
+        {
+            var cs = builder.Configuration.GetConnectionString("KrakenDb");
+            if (string.IsNullOrWhiteSpace(cs))
+            {
+                Console.Error.WriteLine(
+                    "ConnectionStrings:KrakenDb is not configured. " +
+                    "Set it in appsettings.{Environment}.json or via env var.");
+                return 1;
+            }
+            connectionString = cs;
+            dataTargetRoot = builder.Configuration["Server:DataPath"] ?? "data";
         }
 
+        // ── Restore database ───────────────────────────────────────────────────
         var csBuilder = new Npgsql.NpgsqlConnectionStringBuilder(connectionString);
         var host = csBuilder.Host ?? "localhost";
         var db = csBuilder.Database ?? "krakendeploy";
@@ -126,7 +196,7 @@ internal static class RestoreCommands
             return 1;
         }
 
-        Console.WriteLine("Database restored.");
+        Console.WriteLine($"Database restored into '{db}'.");
 
         // ── Restore data directory ─────────────────────────────────────────────
         if (manifest.DataDirectory is not null)
@@ -134,10 +204,9 @@ internal static class RestoreCommands
             var sourceData = Path.Combine(from, manifest.DataDirectory);
             if (Directory.Exists(sourceData))
             {
-                var dataPath = builder.Configuration["Server:DataPath"] ?? "data";
-                if (Directory.Exists(dataPath))
+                if (Directory.Exists(dataTargetRoot))
                 {
-                    Console.Write($"Data directory '{dataPath}' already exists. Overwrite? [y/N]: ");
+                    Console.Write($"Data directory '{dataTargetRoot}' already exists. Overwrite? [y/N]: ");
                     var answer = Console.ReadLine()?.Trim().ToLowerInvariant();
                     if (answer != "y" && answer != "yes")
                     {
@@ -147,8 +216,8 @@ internal static class RestoreCommands
                     }
                 }
 
-                CopyDirectoryRecursive(sourceData, dataPath);
-                Console.WriteLine("Data directory restored.");
+                CopyDirectoryRecursive(sourceData, dataTargetRoot);
+                Console.WriteLine($"Data directory restored into '{dataTargetRoot}'.");
             }
         }
 
@@ -174,5 +243,9 @@ internal static class RestoreCommands
         string Timestamp,
         string ServerVersion,
         string DatabaseFile,
-        string? DataDirectory);
+        string? DataDirectory,
+        BackupAccount? Account);
+
+    /// <summary>The account a multi-account bundle belongs to (null single-instance).</summary>
+    private sealed record BackupAccount(string Subdomain, Guid Id);
 }

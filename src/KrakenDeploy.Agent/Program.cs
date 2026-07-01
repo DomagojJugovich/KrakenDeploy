@@ -87,21 +87,13 @@ static async Task<int> RunAsync(string[] args)
     builder.Services.AddSingleton<AgentIdentityStore>();
     builder.Services.AddSingleton<MachineInfoCollector>();
     builder.Services.AddSingleton<SignalRServerLink>();
-    builder.Services.AddSingleton<DirectServerLink>();
-    builder.Services.AddSingleton<PollingServerLink>();
 
-    // Select the active IServerLink based on the transport mode returned by the
-    // server during registration.  SignalR is the default (Reverse mode).
-    builder.Services.AddSingleton<IServerLink>(sp =>
-    {
-        var ctx = sp.GetRequiredService<AgentContext>();
-        return ctx.TransportMode switch
-        {
-            "Direct" => sp.GetRequiredService<DirectServerLink>(),
-            "Polling" => sp.GetRequiredService<PollingServerLink>(),
-            _ => sp.GetRequiredService<SignalRServerLink>(),
-        };
-    });
+    // SignalR (Reverse mode) is the only live-agent transport: the agent opens a
+    // persistent outbound connection to the server, and the server pushes work back
+    // down that same full-duplex connection (no inbound port on the agent). Air-
+    // gapped targets use OfflineDrop, which runs server-side with no agent link.
+    builder.Services.AddSingleton<IServerLink>(
+        sp => sp.GetRequiredService<SignalRServerLink>());
 
     // Package cache — stored under {dataPath}/package-cache/{packageId}/{version}/
     builder.Services.AddSingleton<IPackageCache>(sp =>

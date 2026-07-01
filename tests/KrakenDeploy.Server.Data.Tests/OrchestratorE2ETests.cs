@@ -205,7 +205,10 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
         (await harness.GetDeploymentAsync(deploymentId)).Status.Should().Be(DeploymentStatus.Failed);
         harness.DiagnosisChannel.Reader.TryRead(out var enqueued).Should().BeTrue(
             because: "a started deployment that failed should queue an AI diagnosis");
-        enqueued.Should().Be(deploymentId);
+        // The channel now carries TenantWorkItem(AccountId, Id); single-instance
+        // harness leaves AccountId == Guid.Empty.
+        enqueued.Id.Should().Be(deploymentId);
+        enqueued.AccountId.Should().Be(Guid.Empty);
     }
 
     // ── Phase 1b — non-required failure → SucceededWithWarnings ─────────────

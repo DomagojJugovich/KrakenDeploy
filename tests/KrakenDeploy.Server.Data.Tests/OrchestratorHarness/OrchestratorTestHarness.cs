@@ -114,7 +114,7 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         _services = services.BuildServiceProvider();
 
         _worker = new DeploymentWorker(
-            queue:                 Channel.CreateUnbounded<Guid>(),
+            queue:                 Channel.CreateUnbounded<KrakenDeploy.Server.Data.TenantWorkItem>(),
             registry:              _connectionRegistry,
             agentHub:              _services.GetRequiredService<IHubContext<AgentHub, IAgentHubClient>>(),
             serverRunner:          _services.GetRequiredService<ServerScriptStepRunner>(),

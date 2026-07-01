@@ -31,9 +31,12 @@ namespace KrakenDeploy.Server.Transport;
 /// </summary>
 public interface IAdhocDispatcher
 {
-    /// <summary>See <see cref="AdhocDispatcher.DispatchAsync"/>.</summary>
+    /// <summary>See <see cref="AdhocDispatcher.DispatchAsync"/>. <paramref name="dispatchAccountId"/>
+    /// is the dispatching business account (multi-account) or <see cref="Guid.Empty"/>
+    /// (single-instance); used to fail-closed against a target whose live connection
+    /// belongs to a different account.</summary>
     Task<IReadOnlyList<AdhocPerTargetResult>> DispatchAsync(
-        AdhocSession session, AdhocIteration iteration,
+        AdhocSession session, AdhocIteration iteration, Guid dispatchAccountId,
         CancellationToken ct, TimeSpan? timeout = null);
 }
 
@@ -71,6 +74,7 @@ public sealed class AdhocDispatcher(
     public async Task<IReadOnlyList<AdhocPerTargetResult>> DispatchAsync(
         AdhocSession session,
         AdhocIteration iteration,
+        Guid dispatchAccountId,
         CancellationToken ct,
         TimeSpan? timeout = null)
     {
@@ -106,7 +110,7 @@ public sealed class AdhocDispatcher(
         foreach (var targetId in targetIds)
         {
             tasks.Add(DispatchToTargetAsync(
-                session.Id, iteration.IterNumber, targetId, command,
+                session.Id, iteration.IterNumber, targetId, dispatchAccountId, command,
                 effectiveTimeout, ct));
         }
 
@@ -115,7 +119,7 @@ public sealed class AdhocDispatcher(
     }
 
     private async Task<AdhocPerTargetResult> DispatchToTargetAsync(
-        Guid sessionId, int iterNumber, Guid targetId,
+        Guid sessionId, int iterNumber, Guid targetId, Guid dispatchAccountId,
         AdhocScriptCommand command, TimeSpan timeout, CancellationToken ct)
     {
         var connectionId = connections.GetConnectionId(targetId);
@@ -133,6 +137,31 @@ public sealed class AdhocDispatcher(
                 Stdout:     string.Empty,
                 Stderr:     string.Empty,
                 AgentError: "Agent offline at dispatch."));
+        }
+
+        // P3-8 Phase 5 — cross-account dispatch guard (parity with DeploymentWorker /
+        // RunbookRunWorker). A live connection whose recorded account differs from the
+        // dispatching account must never receive the script. Defense-in-depth — target
+        // ids are globally unique and validated at agent connect — so return a per-target
+        // AgentError (not throw) to match the offline short-circuit and keep Task.WhenAll
+        // from deadlocking. Guid.Empty (single-instance, or an account-less connection) =>
+        // skip the guard.
+        if (dispatchAccountId != Guid.Empty
+            && connections.GetAccountForTarget(targetId) != dispatchAccountId)
+        {
+            logger.LogError(
+                "AdhocDispatcher: cross-account dispatch blocked for target {TargetId} " +
+                "(session {SessionId} iter {Iter}) — connection account {ConnAccount} is not " +
+                "the dispatch account {DispatchAccount}.",
+                targetId, sessionId, iterNumber,
+                connections.GetAccountForTarget(targetId), dispatchAccountId);
+            return new AdhocPerTargetResult(targetId, new AdhocScriptResult(
+                SessionId:  sessionId,
+                IterNumber: iterNumber,
+                ExitCode:   -1,
+                Stdout:     string.Empty,
+                Stderr:     string.Empty,
+                AgentError: "Cross-account connection blocked at dispatch."));
         }
 
         var tcs = new TaskCompletionSource<AdhocScriptResult>(

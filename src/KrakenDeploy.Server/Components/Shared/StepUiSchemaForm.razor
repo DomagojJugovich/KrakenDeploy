@@ -6,10 +6,9 @@
     edits. No dialog chrome (no title, no Cancel/Save buttons) — the caller
     composes that around it.
 
-    Used by SchemaDrivenStepFormDialog (modal chrome on top) and StepFormDialog
-    (common Step fields + this form + dialog chrome). Centralising the
-    rendering logic here keeps both consumers DRY and lets future surfaces —
-    e.g. an inline "edit step" panel — reuse the same Razor.
+    Used by StepFormDialog (common Step fields + this form + dialog chrome).
+    Centralising the rendering logic here keeps the consumer DRY and lets
+    future surfaces — e.g. an inline "edit step" panel — reuse the same Razor.
 *@
 
 @{

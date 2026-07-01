@@ -51,7 +51,7 @@ public sealed class AdhocDispatcherTests
         var iteration = SignedIteration();
         iteration.ScriptSignature = null;
 
-        var act = async () => await dispatcher.DispatchAsync(session, iteration, CancellationToken.None);
+        var act = async () => await dispatcher.DispatchAsync(session, iteration, Guid.Empty, CancellationToken.None);
         await act.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*no signature*");
     }
@@ -66,7 +66,7 @@ public sealed class AdhocDispatcherTests
             NullLogger<AdhocDispatcher>.Instance);
 
         var results = await dispatcher.DispatchAsync(
-            SessionWithTargets(), SignedIteration(), CancellationToken.None);
+            SessionWithTargets(), SignedIteration(), Guid.Empty, CancellationToken.None);
 
         results.Should().BeEmpty();
     }
@@ -93,7 +93,7 @@ public sealed class AdhocDispatcherTests
             NullLogger<AdhocDispatcher>.Instance);
 
         var results = await dispatcher.DispatchAsync(
-            SessionWithTargets(inSetA, inSetB), SignedIteration(), CancellationToken.None);
+            SessionWithTargets(inSetA, inSetB), SignedIteration(), Guid.Empty, CancellationToken.None);
 
         results.Should().HaveCount(2);
         var expectedConnections = ExpectedConnAB;
@@ -117,7 +117,7 @@ public sealed class AdhocDispatcherTests
             NullLogger<AdhocDispatcher>.Instance);
 
         var results = await dispatcher.DispatchAsync(
-            SessionWithTargets(online, offline), SignedIteration(), CancellationToken.None);
+            SessionWithTargets(online, offline), SignedIteration(), Guid.Empty, CancellationToken.None);
 
         results.Should().HaveCount(2);
         results.Where(r => r.Result.AgentError is not null).Should().ContainSingle(
@@ -146,7 +146,7 @@ public sealed class AdhocDispatcherTests
         var session = SessionWithTargets(a, b);
         var iteration = SignedIteration(script: "Get-Date", sig: "sig-xyz");
 
-        var results = await dispatcher.DispatchAsync(session, iteration, CancellationToken.None);
+        var results = await dispatcher.DispatchAsync(session, iteration, Guid.Empty, CancellationToken.None);
 
         results.Should().HaveCount(2);
         results.Should().AllSatisfy(r =>
@@ -169,7 +169,7 @@ public sealed class AdhocDispatcherTests
             new ThrowingPusher(), NullLogger<AdhocDispatcher>.Instance);
 
         var results = await dispatcher.DispatchAsync(
-            SessionWithTargets(t), SignedIteration(), CancellationToken.None);
+            SessionWithTargets(t), SignedIteration(), Guid.Empty, CancellationToken.None);
 
         results.Should().ContainSingle();
         results[0].TargetId.Should().Be(t);
@@ -194,10 +194,59 @@ public sealed class AdhocDispatcherTests
         };
 
         var act = async () => await dispatcher.DispatchAsync(
-            session, SignedIteration(), CancellationToken.None);
+            session, SignedIteration(), Guid.Empty, CancellationToken.None);
 
         await act.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*FrozenTargetSetJson*");
+    }
+
+    [Fact]
+    public async Task Dispatch_blocks_target_whose_connection_belongs_to_another_account()
+    {
+        // P3-8 Phase 5 — cross-account guard. A live connection recorded under account A
+        // must not receive a script dispatched under account B.
+        var accountA = Guid.NewGuid();
+        var accountB = Guid.NewGuid();
+        var target   = Guid.NewGuid();
+
+        var connections = new InMemoryAgentConnectionRegistry();
+        connections.Add("conn-a", target, accountA); // connection belongs to account A
+
+        var pending = new PendingAdhocRegistry();
+        var pusher = new RecordingPusher(connections, pending);
+        var dispatcher = new AdhocDispatcher(connections, pending, pusher,
+            NullLogger<AdhocDispatcher>.Instance);
+
+        var results = await dispatcher.DispatchAsync(
+            SessionWithTargets(target), SignedIteration(), accountB, CancellationToken.None);
+
+        results.Should().ContainSingle();
+        results[0].TargetId.Should().Be(target);
+        results[0].Result.AgentError.Should().NotBeNull().And.Contain("Cross-account");
+        pusher.PushedConnections.Should().BeEmpty(
+            "a cross-account target must never receive the script");
+    }
+
+    [Fact]
+    public async Task Dispatch_allows_target_when_dispatch_account_matches_connection()
+    {
+        var account = Guid.NewGuid();
+        var target  = Guid.NewGuid();
+
+        var connections = new InMemoryAgentConnectionRegistry();
+        connections.Add("conn-a", target, account);
+
+        var pending = new PendingAdhocRegistry();
+        var pusher = new RecordingPusher(connections, pending);
+        var dispatcher = new AdhocDispatcher(connections, pending, pusher,
+            NullLogger<AdhocDispatcher>.Instance);
+
+        var results = await dispatcher.DispatchAsync(
+            SessionWithTargets(target), SignedIteration(), account, CancellationToken.None);
+
+        results.Should().ContainSingle();
+        results[0].Result.AgentError.Should().BeNull();
+        pusher.PushedConnections.Should().ContainSingle().And.Contain("conn-a");
     }
 
     // ── Fakes ───────────────────────────────────────────────────────────────

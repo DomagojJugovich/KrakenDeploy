@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Contracts.Adhoc;
+using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data;
 using Microsoft.AspNetCore.Authorization;
@@ -27,6 +28,7 @@ public sealed class AgentHub(
     IHubContext<UiHub, IUiHubClient> uiHub,
     IPendingSubPlanRegistry subPlans,
     IPendingAdhocRegistry adhocPending,
+    IAccountContext accountContext,
     ILogger<AgentHub> logger)
     : Hub<IAgentHubClient>, IAgentHubServer
 {
@@ -44,37 +46,51 @@ public sealed class AgentHub(
             return;
         }
 
-        registry.Add(Context.ConnectionId, targetId.Value);
-
         await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
         // The target id is the authenticated agent's own NameIdentifier; load it
         // filter-free since the hub has no ambient Space and the global filter
-        // would otherwise hide a target that lives in a non-Default Space.
+        // would otherwise hide a target that lives in a non-Default Space. In
+        // multi-account mode AgentAccountHubFilter has already pinned this
+        // connection's account, so this reads the correct tenant database.
         var target = await db.DeploymentTargets
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(t => t.Id == targetId.Value)
             .ConfigureAwait(false);
 
-        if (target is not null)
+        if (target is null)
         {
-            target.Status = TargetStatus.Online;
-            target.LastSeenUtc = timeProvider.GetUtcNow();
-            await db.SaveChangesAsync().ConfigureAwait(false);
-
-            logger.LogInformation(
-                "Target {TargetId} connected (conn {ConnectionId}); marked Online.",
-                targetId.Value, Context.ConnectionId);
-
-            await statusPublisher
-                .PublishAsync(targetId.Value, TargetStatus.Online, target.LastSeenUtc)
-                .ConfigureAwait(false);
-        }
-        else
-        {
+            // Fail closed: a connection whose target does not exist is rejected, not
+            // left registered. It is either a stale credential (target deleted) or —
+            // in multi-account — an agent that reached the wrong account: the target
+            // id is globally unique, so a foreign target simply is not in this
+            // account's database. (Pre-P3-8 this only logged and stayed connected.)
             logger.LogWarning(
-                "Target {TargetId} connected but was not found in the database.",
-                targetId.Value);
+                "Target {TargetId} connected (conn {ConnectionId}) but was not found; aborting.",
+                targetId.Value, Context.ConnectionId);
+            Context.Abort();
+            return;
         }
+
+        // Register only after the target is positively resolved (in the right account).
+        // Record the connection's account (host-derived, pinned by AgentAccountHubFilter
+        // before this runs; Guid.Empty single-instance) so dispatch can assert a target's
+        // live connection belongs to the dispatching account (P3-8 Phase 5).
+        registry.Add(
+            Context.ConnectionId,
+            targetId.Value,
+            accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty);
+
+        target.Status = TargetStatus.Online;
+        target.LastSeenUtc = timeProvider.GetUtcNow();
+        await db.SaveChangesAsync().ConfigureAwait(false);
+
+        logger.LogInformation(
+            "Target {TargetId} connected (conn {ConnectionId}); marked Online.",
+            targetId.Value, Context.ConnectionId);
+
+        await statusPublisher
+            .PublishAsync(targetId.Value, TargetStatus.Online, target.LastSeenUtc)
+            .ConfigureAwait(false);
 
         await base.OnConnectedAsync().ConfigureAwait(false);
     }
