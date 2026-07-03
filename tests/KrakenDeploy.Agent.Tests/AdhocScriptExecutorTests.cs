@@ -181,7 +181,7 @@ public sealed class AdhocScriptExecutorTests
 
         // Rest of IServerLink — unused by the executor.
         public bool IsConnected => true;
-        public Task StartAsync(string serverUrl, string agentJwt, CancellationToken ct) => Task.CompletedTask;
+        public Task StartAsync(string serverUrl, string agentJwt, string? releaseId, CancellationToken ct) => Task.CompletedTask;
         public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
         public Task RegisterAsync(AgentRegistrationRequest request, CancellationToken ct) => Task.CompletedTask;
         public Task HeartbeatAsync(HeartbeatRequest request, CancellationToken ct) => Task.CompletedTask;

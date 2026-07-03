@@ -24,7 +24,7 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
 
     public bool IsConnected => _connection?.State == HubConnectionState.Connected;
 
-    public async Task StartAsync(string serverUrl, string agentJwt, CancellationToken ct)
+    public async Task StartAsync(string serverUrl, string agentJwt, string? releaseId, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrEmpty(serverUrl);
         ArgumentException.ThrowIfNullOrEmpty(agentJwt);
@@ -36,6 +36,15 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
             {
                 // Deliver JWT via query string so it survives the WebSocket upgrade.
                 options.AccessTokenProvider = () => Task.FromResult<string?>(agentJwt);
+
+                // Blue-green version pin (X-KD-Release) — the per-node router uses
+                // it to keep this agent on its release's slot across reconnects
+                // (docs/blue-green-slot-deployment.md §3). Options persist across
+                // automatic reconnects, so the pin rides every (re)connect.
+                if (!string.IsNullOrWhiteSpace(releaseId))
+                {
+                    options.Headers["X-KD-Release"] = releaseId;
+                }
             })
             .WithAutomaticReconnect()
             .Build();

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>KrakenDeploy.Router</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Direct forwarding (IHttpForwarder) — no proxy config, no config reloads
+         (docs/blue-green-slot-deployment.md D-bg-3/D-bg-7). -->
+    <PackageReference Include="Yarp.ReverseProxy" />
+    <!-- Raw catalog reads (two tables). Deliberately NOT a project reference to
+         KrakenDeploy.ControlPlane: the router must stay a minimal deployable and
+         carry no EF/Identity/Server.Data graph. -->
+    <PackageReference Include="Npgsql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="KrakenDeploy.Router.Tests" />
+  </ItemGroup>
+
+</Project>

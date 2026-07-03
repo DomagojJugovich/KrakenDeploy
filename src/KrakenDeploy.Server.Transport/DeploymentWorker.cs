@@ -51,6 +51,7 @@ public sealed class DeploymentWorker(
     IPendingSubPlanRegistry subPlans,
     IServiceScopeFactory scopeFactory,
     DeploymentDiagnosisChannel diagnosisChannel,
+    InFlightWorkGauge inFlightGauge,
     ILogger<DeploymentWorker> logger)
     : BackgroundService
 {
@@ -63,9 +64,17 @@ public sealed class DeploymentWorker(
     {
         await foreach (var item in queue.Reader.ReadAllAsync(stoppingToken))
         {
-            // Process fire-and-forget; don't block the reader loop.
-            _ = DispatchAsync(item, stoppingToken);
+            // Process fire-and-forget; don't block the reader loop. Each dispatch
+            // is tracked by the in-flight gauge so a Draining blue-green slot can
+            // report when this instance's orchestration work hits zero (§5/§9).
+            _ = TrackedDispatchAsync(item, stoppingToken);
         }
+    }
+
+    private async Task TrackedDispatchAsync(TenantWorkItem item, CancellationToken ct)
+    {
+        using var tracking = inFlightGauge.Track();
+        await DispatchAsync(item, ct).ConfigureAwait(false);
     }
 
     /// <summary>

@@ -59,7 +59,7 @@ public sealed class ServerLinkHostedService(
                 Task.Run(() => adhocExecutor.HandleAsync(cmd), stoppingToken));
 
             await serverLink
-                .StartAsync(serverUrl, identity.AgentToken, stoppingToken)
+                .StartAsync(serverUrl, identity.AgentToken, identity.ReleaseId, stoppingToken)
                 .ConfigureAwait(false);
 
             logger.LogInformation("Connected to server {ServerUrl}.", serverUrl);

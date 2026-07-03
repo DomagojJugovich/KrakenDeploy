@@ -1,0 +1,127 @@
+# KrakenDeploy — blue-green slot-deployment smoke test.
+# =============================================================================
+# Proves the per-node slot ROUTER end-to-end (docs/blue-green-slot-deployment.md):
+# two real server instances ("releases") run side by side over the SAME
+# catalog + tenant databases; the router pins sessions by the kd_ver cookie /
+# X-KD-Release header, a default flip moves NEW sessions without moving pinned
+# ones, and a retire re-pins stragglers to the default.
+#
+# Topology = one app node's slice of §6: router + two slots. The Caddy edge is
+# out of scope here (validated separately); requests hit the router port the
+# way Caddy would deliver them (Host preserved).
+#
+# Multi-account mode is ON — the release registry is control-plane scope and
+# the slotted topology is the SaaS one (D-bg-5). Slot instances get their
+# release id via Release__Id, which /slot-metrics reports back.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: krakendeploy_catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # Slot 1 — the first "release". Boots first so the dev seed (catalog migrate +
+  # acme/globex provisioning) runs exactly once; slot-b waits for it.
+  slot-a:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    environment: &slot-env
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:5080
+      ConnectionStrings__KrakenDb: "Host=postgres;Port=5432;Database=postgres;Username=postgres;Password=postgres"
+      ConnectionStrings__Catalog: "Host=postgres;Port=5432;Database=krakendeploy_catalog;Username=postgres;Password=postgres"
+      ConnectionStrings__ShardAdmin: "Host=postgres;Port=5432;Database=postgres;Username=postgres;Password=postgres"
+      MultiAccount__Enabled: "true"
+      MultiAccount__BaseDomain: "kraken.local"
+      Agent__JwtSigningKey: "smoke-test-only-jwt-signing-key-at-least-32-characters-!"
+      # SHARED across both slots (volume below): co-located slot instances of one
+      # node must see one DataPath — the FileSecretStore's catalog-secrets.json
+      # (the catalog row holds only the secret REF), the Data Protection key ring
+      # (cookies must validate across releases), and the package/artifact store.
+      # The image pre-creates /var/lib/krakendeploy chowned to the kraken user so
+      # the named volume is writable by the non-root process.
+      Server__DataPath: "/var/lib/krakendeploy"
+      # Best-effort push-invalidation target for `releases flip/retire` run via
+      # docker compose exec in this container (failures are non-fatal by design).
+      # The ops token must match the router's Router__OpsToken.
+      Releases__RouterInvalidateUrls__0: "http://router:8080"
+      Releases__RouterOpsToken: "smoke-ops-token"
+      Release__Id: ${SMOKE_RELEASE_A:-rel-a}
+    volumes:
+      - kraken-data:/var/lib/krakendeploy
+    networks:
+      default:
+        aliases:
+          - slot-a
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-H", "Host: acme.kraken.local", "http://localhost:5080/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+  # Slot 2 — the second "release" of the same build (release identity comes from
+  # Release__Id; a real deploy would run a different binary here).
+  slot-b:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    environment:
+      <<: *slot-env
+      Release__Id: ${SMOKE_RELEASE_B:-rel-b}
+    volumes:
+      - kraken-data:/var/lib/krakendeploy
+    networks:
+      default:
+        aliases:
+          - slot-b
+    depends_on:
+      slot-a:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "-H", "Host: acme.kraken.local", "http://localhost:5080/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+  router:
+    build:
+      context: .
+      dockerfile: Dockerfile.router
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Catalog: "Host=postgres;Port=5432;Database=krakendeploy_catalog;Username=postgres;Password=postgres"
+      Router__CacheTtlSeconds: "2"
+      Router__OpsToken: "smoke-ops-token"
+      Router__Slots__1: "http://slot-a:5080"
+      Router__Slots__2: "http://slot-b:5080"
+    ports:
+      - "8080:8080"
+    depends_on:
+      slot-a:
+        condition: service_healthy
+      slot-b:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/kd-router/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+volumes:
+  # One node's shared DataPath — both slot instances read/write the same secret
+  # store, DP key ring, and package/artifact tree (see slot-a environment note).
+  kraken-data:

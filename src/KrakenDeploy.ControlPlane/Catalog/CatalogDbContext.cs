@@ -15,6 +15,12 @@ public class CatalogDbContext(DbContextOptions<CatalogDbContext> options)
 
     public DbSet<Shard> Shards => Set<Shard>();
 
+    /// <summary>Blue-green release registry (docs/blue-green-slot-deployment.md §4).</summary>
+    public DbSet<AppRelease> AppReleases => Set<AppRelease>();
+
+    /// <summary>Platform-global settings, e.g. the current default release pointer.</summary>
+    public DbSet<PlatformSetting> PlatformSettings => Set<PlatformSetting>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);

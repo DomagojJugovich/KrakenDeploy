@@ -112,6 +112,9 @@ public static class SpaceRouting
         "/hubs",
         "/hangfire",
         "/healthz",
+        // Blue-green slot telemetry — an infra probe endpoint like /healthz
+        // (queried by the drain-watcher), never a Space-scoped page.
+        "/slot-metrics",
         "/mcp",
         "/login",
         "/logout",

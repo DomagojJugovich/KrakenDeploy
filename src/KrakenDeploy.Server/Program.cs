@@ -71,6 +71,8 @@ public static class Program
                     return await RestoreCommands.RunAsync(args.AsSpan(1).ToArray(), cliContentRoot).ConfigureAwait(false);
                 case "seed-demo":
                     return await SeedDemoCommands.RunAsync(args.AsSpan(1).ToArray(), cliContentRoot).ConfigureAwait(false);
+                case "releases":
+                    return await ReleaseCommands.RunAsync(args.AsSpan(1).ToArray(), cliContentRoot).ConfigureAwait(false);
             }
         }
 
@@ -190,6 +192,9 @@ public static class Program
             // needed in multi-account; injects singleton-safe deps so it carries no
             // captive dependency.
             builder.Services.AddTransient<AccountBackupRunner>();
+            // Blue-green §8-6: when this instance's release turns Draining, stop its
+            // Hangfire server so new background work runs on the Active release.
+            builder.Services.AddHostedService<KrakenDeploy.Server.Hangfire.DrainModeHangfireStopper>();
         }
 
         // Rate limiting — SCOPED TO /api/agents/register ONLY (applied via
@@ -424,6 +429,14 @@ public static class Program
         builder.Services.AddScoped<ServerTasksService>();
         builder.Services.AddHostedService<DeploymentWorker>();
         builder.Services.AddHostedService<RunbookRunWorker>();
+        // Blue-green slot telemetry (docs/blue-green-slot-deployment.md §5): the
+        // in-flight dispatch gauge + live circuit counter this instance reports on
+        // /slot-metrics so a Draining release can be retired at zero. The counter is
+        // one shared singleton, surfaced to Blazor via the CircuitHandler service.
+        builder.Services.AddSingleton<InFlightWorkGauge>();
+        builder.Services.AddSingleton<KrakenDeploy.Server.Telemetry.CircuitCounter>();
+        builder.Services.AddSingleton<Microsoft.AspNetCore.Components.Server.Circuits.CircuitHandler>(
+            sp => sp.GetRequiredService<KrakenDeploy.Server.Telemetry.CircuitCounter>());
         builder.Services.AddSingleton<ServerScriptStepRunner>();
         builder.Services.AddSingleton<DeployReleaseStepRunner>();
         builder.Services.AddSingleton<IPendingSubPlanRegistry, PendingSubPlanRegistry>();
@@ -863,6 +876,24 @@ public static class Program
                 return Results.Stream(stream, contentType, fileName,
                     enableRangeProcessing: true);
             }).RequireAuthorization(agentUpdateAuthPolicy);
+
+        // Blue-green slot telemetry (docs/blue-green-slot-deployment.md §5): this
+        // instance's live-circuit + in-flight-dispatch counts, plus the release id
+        // it runs (stamped per slot instance via Release:Id / Release__Id env at
+        // deploy time). Queried by the drain-watcher directly on the slot's own
+        // port — deliberately touches NO tenant DbContext so it answers on any
+        // host in any mode. Numbers only; anonymous like /healthz.
+        app.MapGet("/slot-metrics",
+            (
+                IConfiguration config,
+                KrakenDeploy.Server.Telemetry.CircuitCounter circuits,
+                InFlightWorkGauge inFlight) =>
+                Results.Ok(new
+                {
+                    release = config["Release:Id"],
+                    activeCircuits = circuits.ActiveCircuits,
+                    inFlightDeployments = inFlight.Count,
+                })).AllowAnonymous();
 
         app.MapGet("/healthz",
             async (

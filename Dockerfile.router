@@ -1,0 +1,33 @@
+# ── Build stage ──────────────────────────────────────────────────────────────
+# The router has NO project references (Yarp + Npgsql only), so the build
+# context slice is just the router source + repo build props.
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+
+COPY Directory.Build.props Directory.Packages.props global.json .editorconfig ./
+COPY src/KrakenDeploy.Router/ ./src/KrakenDeploy.Router/
+
+RUN dotnet restore src/KrakenDeploy.Router/KrakenDeploy.Router.csproj
+
+RUN dotnet publish src/KrakenDeploy.Router/KrakenDeploy.Router.csproj \
+    --configuration Release \
+    --no-restore \
+    --output /app
+
+# ── Runtime stage ─────────────────────────────────────────────────────────────
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+WORKDIR /app
+
+# curl for the Docker health check; run as a non-root user.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --system kraken \
+ && useradd --system --gid kraken kraken
+
+COPY --from=build /app ./
+
+USER kraken
+EXPOSE 8080
+
+ENTRYPOINT ["dotnet", "KrakenDeploy.Router.dll"]

@@ -137,5 +137,18 @@ public static class HangfireJobRegistrar
         Fanout<StepPackageCatalogPollJob>("kraken.step-package-catalog-poll", Cron.Hourly());
         Fanout<SubscriptionPollerJob>(SubscriptionPollerJob.RecurringJobId, Cron.Minutely());
         Fanout<EmailDigestFlushJob>(EmailDigestFlushJob.RecurringJobId, Cron.Minutely());
+
+        // Blue-green drain-watcher — PLATFORM-global, not a per-account fan-out:
+        // it reads the control-plane release registry and probes slot instances
+        // over HTTP (no tenant DB). Retires a Draining release once its slots
+        // report zero circuits + zero in-flight work (§5/§9 of the design).
+        // Every slot instance registers this same id against the shared catalog
+        // Hangfire storage, so it runs once per minute fleet-wide regardless of
+        // which instance picks it up.
+        RecurringJob.AddOrUpdate<KrakenDeploy.ControlPlane.Releases.ReleaseDrainWatcher>(
+            "kraken.release-drain-watch",
+            watcher => watcher.ExecuteAsync(CancellationToken.None),
+            Cron.Minutely(),
+            new RecurringJobOptions { TimeZone = utc });
     }
 }

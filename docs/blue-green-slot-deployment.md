@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | `Draft` |
+| **Status** | `Approved` — implemented 2026-07-02 (registry + per-node router + telemetry + CLI orchestration + drain-watcher + agent pin echo); smoke-verified end-to-end. See [Implementation notes](#implementation-notes). |
 | **Applies to** | SaaS / multi-node HA, pooled app tier (any slot serves any account) |
 | **Scope** | Routine **additive** migrations. Breaking changes use the per-shard `UPGRADING` + queue-quiesce + straddle-release path (see the self-upgrade section); this scheme carries those releases but does not provide their schema safety. |
 | **Render mode** | Interactive Server. Monolith (Blazor Server UI **+** orchestrator + Hangfire) is versioned as a single unit — **not** decoupled. |
@@ -142,3 +142,25 @@ They compose, and the design is forgiving because `kd_ver` pins a **release, not
 - **D-bg-5** Single-node local installs need neither slots nor YARP (stop → migrate → start). Slots + YARP are the SaaS / multi-node-HA mechanism.
 - **D-bg-6** Front (Caddy) and app tiers are **separate machines**, and **only app nodes hold DB credentials** — the internet-facing front holds none. The front tier must be **HA** (two or more Caddy nodes behind a floating/reserved IP or L4 LB); a single front node is a fleet-wide SPOF.
 - **D-bg-7** Caddy is **version-agnostic** (edge + node affinity only). All release/slot routing lives in a **per-node YARP co-located with the three slots**, so the slot decision is localhost and the front needs no catalog/DB access.
+
+## Implementation notes
+
+Implemented 2026-07-02. Component map:
+
+| Design element | Implementation |
+|---|---|
+| §4 release registry + default pointer | Catalog tables `app_releases` + `platform_settings` (`current_default_release`), migration `AddReleaseRegistry`. Entity is `AppRelease` (the tenant domain already has an unrelated `Release`); status stored as int, not text. A filtered unique index enforces at most one non-Retired release per slot at the DB. |
+| §5 orchestration writes | `ReleaseRegistry` (ControlPlane) — register/flip/retire, each transition serialized fleet-wide by a Postgres advisory transaction lock (concurrent CLI/watcher transitions cannot strand a second Active release or point the default at a Retired one). Driven by the `releases register\|flip\|retire\|status` CLI verbs (multi-account only, D-bg-5). |
+| §6 per-node router | `KrakenDeploy.Router` — YARP **direct forwarding** (`IHttpForwarder`), not a dynamic `IProxyConfigProvider`: no proxy config exists at all, so a flip can never trigger a config reload (strictly stronger than D-bg-3). Preserves the client `Host` (account resolution). Catalog snapshot cached with a short TTL; degrade-stale is non-blocking (try-acquire refresh + failure back-off), so a catalog outage never serializes ingress. |
+| §3 cookie/header | As designed, plus: over plain HTTP (dev/smoke) the cookie degrades to `kd_ver` (browsers refuse `__Host-` without `Secure`); the explicit `X-KD-Release` header outranks a cookie; a **`Deploying` release is reachable via the header only** — a browser cookie can never land on a build that has not passed its health-gate. |
+| §5 slot telemetry | `/slot-metrics` on each slot instance (`{release, activeCircuits, inFlightDeployments}` — `CircuitCounter` + `InFlightWorkGauge`, release id from `Release:Id` stamped per slot at deploy). **Internal-only**: the router refuses to forward it; the drain-watcher probes slot ports directly. |
+| §8-6 / §9 drain + retire | Hangfire job `kraken.release-drain-watch` retires a Draining release only when all its configured slot instances report zero circuits + zero in-flight work (probe failure or a release-id mismatch defers — never guess). §8-6 ("no new work") is enforced for background work by `DrainModeHangfireStopper`: a Draining instance stops its Hangfire server, so the shared schedule keeps running on Active instances. Manual `releases retire` cannot verify emptiness and says so — the watcher is the verified path. |
+| Agent pin | Registration captures the router's `X-KD-Release` response header into `AgentIdentity.ReleaseId`; the hub connection echoes it so a mid-drain reconnect lands back on the slot holding the agent's in-flight orchestration state. |
+| Ops surfaces | `POST /kd-router/invalidate` (push cache invalidation on flip/retire) requires the `Router:OpsToken` shared secret and is disabled without one — the router sits behind a pass-everything edge. |
+
+**Requirements learned from the end-to-end smoke** (`scripts/smoke-bluegreen.sh`, CI: blue-green step of the smoke job):
+
+- **Co-located slot instances MUST share the node's `Server:DataPath`** (one volume): the file secret store (`catalog-secrets.json` — the catalog holds only the secret ref), the Data Protection key ring (cookies must validate across releases or every flip logs everyone out), and the package/artifact tree. The server image pre-creates `/var/lib/krakendeploy` chowned to the app user as the canonical mount point.
+- Infra probe endpoints must be Space-agnostic (`/slot-metrics` joined `/healthz` in `SpaceRouting.AgnosticPrefixes`), or the Space-URL redirect middleware 302s them into `/s/{slug}/…`.
+
+**Accepted nuance:** a session pinned to a Draining release can still *initiate* new deployments from its circuit (the UI POST rides the pinned connection). That is inherent to circuit pinning; `drain_deadline` bounds it, and in-flight work still always completes (§9).

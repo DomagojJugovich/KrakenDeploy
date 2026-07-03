@@ -43,6 +43,18 @@
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.1" />
     <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
     <PackageVersion Include="EFCore.NamingConventions" Version="10.0.0" />
+    <!-- Raw ADO.NET driver — used directly by KrakenDeploy.Router, which reads
+         two catalog tables and deliberately avoids the EF/Server.Data project
+         graph to stay a minimal deployable. EFCore.PG resolves its own Npgsql
+         transitively; this central pin keeps both on the same line. -->
+    <PackageVersion Include="Npgsql" Version="10.0.3" />
+  </ItemGroup>
+
+  <ItemGroup Label="Reverse proxy (blue-green slot router)">
+    <!-- Per-node release→slot router (docs/blue-green-slot-deployment.md).
+         Direct forwarding via IHttpForwarder — no proxy config exists, so a
+         default-release flip can never trigger a config reload (D-bg-3). -->
+    <PackageVersion Include="Yarp.ReverseProxy" Version="2.3.0" />
   </ItemGroup>
 
   <ItemGroup Label="UI components">

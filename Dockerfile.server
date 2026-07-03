@@ -31,11 +31,17 @@ FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
 # curl is needed for the Docker health check; run as a non-root user.
+# /var/lib/krakendeploy is the canonical containerised Server:DataPath mount
+# point, pre-created and chowned so a named volume mounted there inherits the
+# kraken user's ownership (a fresh named volume is otherwise root-owned and the
+# non-root process cannot write the secret store / DP key ring / packages).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd --system kraken \
- && useradd --system --gid kraken kraken
+ && useradd --system --gid kraken kraken \
+ && mkdir -p /var/lib/krakendeploy \
+ && chown kraken:kraken /var/lib/krakendeploy
 
 COPY --from=build /app ./
 

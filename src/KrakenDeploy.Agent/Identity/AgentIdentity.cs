@@ -22,4 +22,14 @@ public sealed class AgentIdentity
     /// Defaults to <c>Reverse</c> for backward compatibility.
     /// </summary>
     public string TransportMode { get; set; } = "Reverse";
+
+    /// <summary>
+    /// Blue-green version pin captured from the router's <c>X-KD-Release</c>
+    /// response header at registration time (multi-node SaaS; null on
+    /// single-instance installs, where no router exists). Echoed as a request
+    /// header on the hub connection so a mid-drain reconnect lands back on the
+    /// slot holding this agent's in-flight orchestration state. A stale pin is
+    /// harmless — the router falls back to the current default release.
+    /// </summary>
+    public string? ReleaseId { get; set; }
 }

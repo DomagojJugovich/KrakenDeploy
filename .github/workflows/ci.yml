@@ -91,3 +91,10 @@ jobs:
       # ~image build cost). Each script tears its own compose stack down on exit.
       - name: Run smoke test (multi-account SaaS)
         run: bash scripts/smoke-multiaccount.sh
+
+      # Blue-green slot-router smoke: two live "releases" behind the per-node
+      # router — cookie pinning, pre-flip health-gate, flip, drain, retire
+      # (docs/blue-green-slot-deployment.md §8). Reuses the server image layers
+      # built above; adds only the small router image.
+      - name: Run smoke test (blue-green slot router)
+        run: bash scripts/smoke-bluegreen.sh

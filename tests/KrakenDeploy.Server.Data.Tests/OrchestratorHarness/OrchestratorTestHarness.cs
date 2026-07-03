@@ -126,6 +126,9 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             // unbounded channel. DiagnosisChannel exposes the written ids for
             // tests that want to assert the trigger fired.
             diagnosisChannel:      DiagnosisChannel,
+            // Blue-green slot telemetry — a fresh gauge per harness; tests may
+            // assert in-flight counts but the default harness ignores it.
+            inFlightGauge:         new InFlightWorkGauge(),
             logger:                NullLogger<DeploymentWorker>.Instance);
     }
 

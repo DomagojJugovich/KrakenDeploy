@@ -27,6 +27,7 @@ public sealed class RunbookRunWorker(
     IAgentConnectionRegistry registry,
     IHubContext<AgentHub, IAgentHubClient> agentHub,
     IServiceScopeFactory scopeFactory,
+    InFlightWorkGauge inFlightGauge,
     ILogger<RunbookRunWorker> logger)
     : BackgroundService
 {
@@ -38,8 +39,16 @@ public sealed class RunbookRunWorker(
     {
         await foreach (var item in queue.Reader.ReadAllAsync(stoppingToken))
         {
-            _ = DispatchAsync(item, stoppingToken);
+            // Tracked by the in-flight gauge so a Draining blue-green slot can
+            // report when this instance's orchestration work hits zero (§5/§9).
+            _ = TrackedDispatchAsync(item, stoppingToken);
         }
+    }
+
+    private async Task TrackedDispatchAsync(TenantWorkItem item, CancellationToken ct)
+    {
+        using var tracking = inFlightGauge.Track();
+        await DispatchAsync(item, ct).ConfigureAwait(false);
     }
 
     // Resolve the run's account (multi-account) and run the dispatch under it; the

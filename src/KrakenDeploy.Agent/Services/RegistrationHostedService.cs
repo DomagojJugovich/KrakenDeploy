@@ -124,12 +124,24 @@ public sealed class RegistrationHostedService(
                     return null;
                 }
 
+                // Blue-green version pin: behind the per-node slot router the
+                // registration response carries X-KD-Release (the release that
+                // served this request). Persist it so the hub connection echoes
+                // it and stays on that release across reconnects. Absent when no
+                // router is in play (single-instance) — stays null.
+                string? releaseId = null;
+                if (response.Headers.TryGetValues("X-KD-Release", out var releaseHeader))
+                {
+                    releaseId = releaseHeader.FirstOrDefault();
+                }
+
                 return new AgentIdentity
                 {
                     AgentId = result.AgentId,
                     AgentToken = result.AgentJwt,
                     ServerUrl = opts.Url,
                     TransportMode = result.TransportMode,
+                    ReleaseId = releaseId,
                 };
             }
             catch (OperationCanceledException)

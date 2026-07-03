@@ -1,11 +1,13 @@
 using KrakenDeploy.ControlPlane.Accounts;
 using KrakenDeploy.ControlPlane.Catalog;
 using KrakenDeploy.ControlPlane.Provisioning;
+using KrakenDeploy.ControlPlane.Releases;
 using KrakenDeploy.ControlPlane.Secrets;
 using KrakenDeploy.Server.Core.Domain.Accounts;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace KrakenDeploy.ControlPlane;
 
@@ -50,6 +52,22 @@ public static class ControlPlaneServiceCollectionExtensions
         // Transient so Hangfire's activator creates it per execution; it opens its
         // own per-account scopes via IServiceScopeFactory.
         services.AddTransient<PerAccountRecurringJobRunner>();
+
+        // Blue-green release registry writes (register/flip/retire). TimeProvider
+        // via TryAdd so a host that already registered one (or a test fake) wins.
+        services.TryAddSingleton(TimeProvider.System);
+        services.AddScoped<ReleaseRegistry>();
+
+        // Drain-watcher (kraken.release-drain-watch): transient for Hangfire's
+        // activator; short-timeout named client for the /slot-metrics probes.
+        services.AddTransient<ReleaseDrainWatcher>();
+        // Own-release drain check (singleton: holds a 15s cache over the catalog).
+        services.AddSingleton<SlotDrainGuard>();
+        services.AddHttpClient(ReleaseDrainWatcher.HttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(5);
+            client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+        });
 
         return services;
     }
