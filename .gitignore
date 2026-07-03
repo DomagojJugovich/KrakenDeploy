@@ -36,6 +36,11 @@
 [Dd]ebugPublic/
 [Rr]elease/
 [Rr]eleases/
+# The blue-green release-registry SOURCE folder collides with the build-output
+# pattern above — re-include it (build outputs stay ignored via bin/ + obj/).
+# NOTE: a negation must target the DIRECTORY; files inside an ignored dir
+# cannot be re-included individually.
+!src/**/[Rr]eleases/
 x64/
 x86/
 [Aa][Rr][Mm]/
