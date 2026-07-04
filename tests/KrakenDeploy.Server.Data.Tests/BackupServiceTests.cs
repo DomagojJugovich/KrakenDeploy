@@ -1,4 +1,5 @@
 using FluentAssertions;
+using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Backup;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
@@ -265,7 +266,7 @@ public sealed class BackupServiceTests(PostgresFixture postgres)
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             NullLogger<BackupEngine>.Instance, TimeProvider.System);
         return new BackupService(postgres, engine,
-            NullLogger<BackupService>.Instance, TimeProvider.System);
+            NullLogger<BackupService>.Instance, TimeProvider.System, new NoopAuditLog());
     }
 
     /// <summary>
@@ -273,7 +274,7 @@ public sealed class BackupServiceTests(PostgresFixture postgres)
     /// <see cref="BackupEngine.RunAsync"/> fails fast — independent of
     /// whether pg_dump happens to be on the test host's PATH.
     /// </summary>
-    private BackupService NewSvcWithBadConnection()
+    private BackupService NewSvcWithBadConnection(IAuditLog? audit = null)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -288,6 +289,47 @@ public sealed class BackupServiceTests(PostgresFixture postgres)
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             NullLogger<BackupEngine>.Instance, TimeProvider.System);
         return new BackupService(postgres, engine,
-            NullLogger<BackupService>.Instance, TimeProvider.System);
+            NullLogger<BackupService>.Instance, TimeProvider.System, audit ?? new NoopAuditLog());
+    }
+
+    [Fact]
+    public async Task RunOnceAsync_audits_from_the_service_so_scheduled_runs_are_recorded()
+    {
+        // The audit used to live only in the Razor "Run now" handler, so
+        // Hangfire scheduled runs left no trail. It now fires inside
+        // RunOnceAsync — assert the service itself emits the event.
+        var audit = new RecordingAuditLog();
+        var svc = NewSvcWithBadConnection(audit);
+        await svc.UpsertSettingsAsync(new BackupSettings
+        {
+            TargetDirectory = Path.Combine(Path.GetTempPath(), $"kraken-backup-test-{Guid.NewGuid():N}"),
+        });
+
+        await svc.RunOnceAsync("Scheduled");
+
+        audit.Events.Should().ContainSingle()
+            .Which.Should().Be(AuditEventType.BackupFailed,
+                "a bad-connection run fails, and the SERVICE (not just the UI) must audit it");
+    }
+
+    private sealed class NoopAuditLog : IAuditLog
+    {
+        public Task RecordAsync(
+            string eventType, string? subjectType = null, string? subjectId = null,
+            string? subjectName = null, string? details = null, Guid? userId = null,
+            string? userDisplay = null, CancellationToken ct = default) => Task.CompletedTask;
+    }
+
+    private sealed class RecordingAuditLog : IAuditLog
+    {
+        public List<string> Events { get; } = [];
+        public Task RecordAsync(
+            string eventType, string? subjectType = null, string? subjectId = null,
+            string? subjectName = null, string? details = null, Guid? userId = null,
+            string? userDisplay = null, CancellationToken ct = default)
+        {
+            Events.Add(eventType);
+            return Task.CompletedTask;
+        }
     }
 }

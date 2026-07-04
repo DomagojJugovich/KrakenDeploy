@@ -108,7 +108,9 @@
                     <button type="submit" class="login-submit">Sign in</button>
 
                     <div class="login-foot">
-                        <a class="login-link" href="/forgot-password">Forgot password?</a>
+                        @* Self-service password reset isn't implemented (no
+                           /forgot-password route exists); an admin resets via
+                           Configuration → Users. Don't render a dead link. *@
                         <span class="login-ver">MIT</span>
                     </div>
                 </EditForm>

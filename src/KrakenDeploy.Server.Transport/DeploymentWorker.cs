@@ -686,6 +686,14 @@ public sealed class DeploymentWorker(
             await EmitTargetSlowAuditsIfNeededAsync(
                 scope.ServiceProvider, deployment, ct).ConfigureAwait(false);
 
+            // ── Per-step slow audit (M13.F.3) ────────────────────────────
+            // Each DeploymentStepOutcome's own duration is compared against
+            // SlowStepThresholdMinutes; one DeploymentStep.Slow audit per slow
+            // step. Threshold = 0 disables. (Previously the knob was persisted
+            // + editable but nothing ever emitted the event — now wired.)
+            await EmitSlowStepAuditsIfNeededAsync(
+                scope.ServiceProvider, deployment, ct).ConfigureAwait(false);
+
             logger.LogInformation(
                 "Deployment {Id} completed ({ServerSteps} server step(s), {TargetSteps} target step(s)).",
                 deployment.Id, serverStepCount, targetStepCount);
@@ -1394,6 +1402,65 @@ public sealed class DeploymentWorker(
                         CultureInfo.InvariantCulture,
                         "TargetId={0}, Target={1}, DurationMinutes={2:F1}, ThresholdMinutes={3}",
                         t.TargetId, name, duration, threshold),
+                    ct: ct).ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+            // Best-effort, same policy as EmitSlowDeploymentAuditIfNeededAsync.
+        }
+    }
+
+    /// <summary>
+    /// M13.F.3 — emits one <see cref="AuditEventType.DeploymentStepSlow"/> per
+    /// step whose own duration (<c>CompletedUtc − StartedUtc</c> on its
+    /// <see cref="DeploymentStepOutcome"/>) exceeded
+    /// <c>SlowStepThresholdMinutes</c>. Lets operators pinpoint the specific
+    /// slow step even when the deployment/target stayed under the coarser
+    /// deployment threshold. Threshold = 0 disables. Best-effort — a lookup
+    /// hiccup never fails an otherwise-successful deployment.
+    /// </summary>
+    private static async Task EmitSlowStepAuditsIfNeededAsync(
+        IServiceProvider sp,
+        Deployment deployment,
+        CancellationToken ct)
+    {
+        try
+        {
+            var performance = sp.GetRequiredService<
+                KrakenDeploy.Server.Data.Services.PerformanceSettingsService>();
+            var settings = await performance.GetAsync(ct).ConfigureAwait(false);
+            var threshold = settings.SlowStepThresholdMinutes;
+            if (threshold <= 0)
+            {
+                return;
+            }
+
+            await using var db = await sp
+                .GetRequiredService<IDbContextFactory<KrakenDbContext>>()
+                .CreateDbContextAsync(ct).ConfigureAwait(false);
+
+            var slowSteps = await db.DeploymentStepOutcomes
+                .Where(o => o.DeploymentId == deployment.Id && o.StartedUtc != null)
+                .Select(o => new { o.StepIndex, o.StepName, o.TargetId, o.StartedUtc, o.CompletedUtc })
+                .ToListAsync(ct).ConfigureAwait(false);
+
+            var audit = sp.GetRequiredService<IAuditLog>();
+            foreach (var s in slowSteps)
+            {
+                var duration = (s.CompletedUtc - s.StartedUtc!.Value).TotalMinutes;
+                if (duration < threshold)
+                {
+                    continue;
+                }
+                await audit.RecordAsync(
+                    AuditEventType.DeploymentStepSlow,
+                    subjectType: "Deployment",
+                    subjectId:   deployment.Id.ToString(),
+                    details:     string.Format(
+                        CultureInfo.InvariantCulture,
+                        "StepIndex={0}, Step={1}, TargetId={2}, DurationMinutes={3:F1}, ThresholdMinutes={4}",
+                        s.StepIndex, s.StepName, s.TargetId, duration, threshold),
                     ct: ct).ConfigureAwait(false);
             }
         }

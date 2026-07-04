@@ -1,3 +1,5 @@
+using System.Globalization;
+using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Backup;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -15,7 +17,8 @@ public sealed class BackupService(
     IDbContextFactory<KrakenDbContext> dbFactory,
     BackupEngine engine,
     ILogger<BackupService> logger,
-    TimeProvider time)
+    TimeProvider time,
+    IAuditLog audit)
 {
     /// <summary>Loads the persisted settings or returns a default-shaped
     /// row when none exist (first-run convenience — operator sees the
@@ -111,6 +114,33 @@ public sealed class BackupService(
             tracked.ErrorMessage    = result.Error;
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
             run = tracked;
+        }
+
+        // Audit here (the SHARED path) so BOTH the UI "Run now" and the
+        // Hangfire scheduled job record a Backup.Completed/Failed event —
+        // previously only the Razor handler audited, so scheduled runs left
+        // no audit trail.
+        if (run.Outcome == BackupOutcome.Success)
+        {
+            await audit.RecordAsync(
+                AuditEventType.BackupCompleted,
+                subjectType: "BackupRun",
+                subjectId:   run.Id.ToString(),
+                details: string.Format(CultureInfo.InvariantCulture,
+                    "Bundle={0}, Size={1} B, Duration={2:F0} ms, TriggeredBy={3}",
+                    run.BundlePath, run.BundleSizeBytes,
+                    run.Duration?.TotalMilliseconds ?? 0, run.TriggeredBy),
+                ct: ct).ConfigureAwait(false);
+        }
+        else
+        {
+            await audit.RecordAsync(
+                AuditEventType.BackupFailed,
+                subjectType: "BackupRun",
+                subjectId:   run.Id.ToString(),
+                details: string.Format(CultureInfo.InvariantCulture,
+                    "TriggeredBy={0}, Error={1}", run.TriggeredBy, run.ErrorMessage),
+                ct: ct).ConfigureAwait(false);
         }
 
         // Prune AFTER a successful run, never on failure (operator might

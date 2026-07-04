@@ -219,7 +219,7 @@ public static class OidcRegistrar
                 }
 
                 options.Events = BuildEvents(idpId, idpName, scheme,
-                    autoProvision, groupClaimName);
+                    autoProvision, groupClaimName, idp.DefaultTeamId);
             });
         }
     }
@@ -279,7 +279,8 @@ public static class OidcRegistrar
         string idpName,
         string scheme,
         bool autoProvision,
-        string groupClaimName)
+        string groupClaimName,
+        Guid? defaultTeamId)
     {
         return new OpenIdConnectEvents
         {
@@ -412,6 +413,44 @@ public static class OidcRegistrar
                     logger.LogInformation(
                         "OIDC [{Scheme}]: JIT-provisioned user {Email} (provider {IdpName}).",
                         scheme, email, idpName);
+
+                    // Auto-add the new user to the provider's default team, as the
+                    // IdentityProvider.DefaultTeamId doc promises (previously the
+                    // column was stored + configurable but never applied). Best-
+                    // effort: a missing/duplicate team membership must not fail the
+                    // sign-in. Only on JIT creation — existing users keep their teams.
+                    if (defaultTeamId is { } teamId)
+                    {
+                        try
+                        {
+                            await using var db = await services
+                                .GetRequiredService<IDbContextFactory<KrakenDbContext>>()
+                                .CreateDbContextAsync();
+                            var teamExists = await db.Teams.AnyAsync(t => t.Id == teamId);
+                            if (teamExists)
+                            {
+                                db.Set<TeamMember>().Add(new TeamMember
+                                {
+                                    TeamId = teamId,
+                                    UserId = user.Id,
+                                    AddedUtc = DateTimeOffset.UtcNow,
+                                });
+                                await db.SaveChangesAsync();
+                            }
+                            else
+                            {
+                                logger.LogWarning(
+                                    "OIDC [{Scheme}]: DefaultTeamId {TeamId} no longer exists — " +
+                                    "JIT user {Email} not added to a default team.", scheme, teamId, email);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogWarning(ex,
+                                "OIDC [{Scheme}]: failed to add JIT user {Email} to default team {TeamId}.",
+                                scheme, email, teamId);
+                        }
+                    }
                 }
 
                 // Link the external login on first sign-in via this provider so
