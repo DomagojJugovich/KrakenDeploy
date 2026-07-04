@@ -210,6 +210,11 @@ public enum Permission
     /// <summary>View/manage every user's API keys (admin).</summary>
     ApiKeyViewAll         = 1310,
     ApiKeyDeleteAll       = 1311,
+    /// <summary>Mint/revoke keys for SERVICE accounts (admin). Deliberately
+    /// does NOT cover minting for other humans — a key minted-for-you is
+    /// indistinguishable from you in the audit log, which breaks
+    /// non-repudiation; humans mint their own via <see cref="ApiKeyCreate"/>.</summary>
+    ApiKeyCreateOthers    = 1312,
 
     // ── Identity Provider (1400–1499) ───────────────────────────────────────
 

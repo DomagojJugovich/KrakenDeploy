@@ -57,7 +57,10 @@ docker compose exec kraken-server \
 | `POSTGRES_PASSWORD` | yes | Postgres superuser password |
 | `ENCRYPTION_KEY` | yes | Base64-encoded 32-byte AES-256-GCM master key |
 | `AGENT_JWT_KEY` | yes | At least 32 chars for HS256 agent JWT signing |
-| `API_KEY` | no | CLI API key; omit to disable API-key auth |
+
+CLI/API keys are per-user (M13.C.4) — mint them in the UI (Configuration →
+API Keys) or with `dotnet KrakenDeploy.Server.dll apikeys create` inside the
+server container; there is no shared `API_KEY` environment variable anymore.
 
 ## Persistent data
 

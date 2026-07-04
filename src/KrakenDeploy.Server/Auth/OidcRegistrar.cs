@@ -119,7 +119,6 @@ public static class OidcRegistrar
                 .UseSnakeCaseNamingConvention()
                 .Options,
             new KrakenDeploy.Server.Data.Spaces.DefaultSpaceContext());
-        var encryption = new KrakenDeploy.Server.Data.Encryption.AesEncryptionService(masterKey);
 
         List<IdentityProvider> providers;
         try
@@ -146,6 +145,30 @@ public static class OidcRegistrar
             return;
         }
 
+        // Envelope encryption (M13.D.2): unwrap the DEK with the KEK (masterKey)
+        // using the directly-constructed context, then decrypt client secrets
+        // with the DEK. Mirrors the direct-construction discipline above (no
+        // BuildServiceProvider). No DEK row ⇒ nothing to decrypt.
+        byte[] dek;
+        try
+        {
+            var dekRow = db.DataEncryptionKeys.AsNoTracking()
+                .FirstOrDefault(k => k.AccountId == null);
+            if (dekRow is null)
+            {
+                return;
+            }
+            dek = KrakenDeploy.Server.Data.Encryption.DekProvider.Unwrap(
+                Convert.FromBase64String(masterKey), dekRow.WrappedDek);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"OIDC scheme registration skipped — could not unwrap the data-encryption key " +
+                $"({ex.Message}). Local-account login is still available.");
+            return;
+        }
+
         var authBuilder = builder.Services.AddAuthentication();
 
         foreach (var idp in providers)
@@ -153,7 +176,8 @@ public static class OidcRegistrar
             string secret;
             try
             {
-                secret = encryption.Decrypt(idp.ClientSecretEncrypted!);
+                secret = KrakenDeploy.Contracts.Crypto.AesGcmCipher.Decrypt(
+                    dek, idp.ClientSecretEncrypted!);
             }
             catch
             {

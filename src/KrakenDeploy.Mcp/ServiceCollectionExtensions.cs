@@ -15,11 +15,13 @@ namespace KrakenDeploy.Mcp;
 /// <strong>Wire model:</strong> in-process server, hosted inside the main
 /// <c>KrakenDeploy.Server</c> ASP.NET pipeline. The endpoint is mapped at
 /// <c>/mcp</c> via <see cref="EndpointRouteBuilderExtensions.MapKrakenMcp"/>.
-/// All MCP calls reuse the existing <c>ApiKey</c> authentication scheme
-/// (the same <c>X-Api-Key</c> header the CLI uses) so a single key
-/// configured under <c>ApiKey:Key</c> opens both surfaces. Per-Space
-/// <c>McpEnabled</c> gating on <c>SpaceAiSettings</c> is applied at the
-/// endpoint level — see <see cref="EndpointRouteBuilderExtensions"/>.
+/// All MCP calls reuse the <c>ApiKey</c> authentication scheme (the same
+/// <c>X-Api-Key</c> header the CLI uses) carrying a per-user key (M13.C.4)
+/// — the caller authenticates AS the key's owning user and mutating tools
+/// gate on the owner's real permissions. Per-Space <c>McpEnabled</c> gating
+/// on <c>SpaceAiSettings</c> is applied at the endpoint level (keyed by a
+/// restricted key's bound Space) — see
+/// <see cref="EndpointRouteBuilderExtensions"/>.
 /// </para>
 /// <para>
 /// <strong>Tools + Resources discovery:</strong> the

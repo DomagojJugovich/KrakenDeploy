@@ -29,6 +29,8 @@ public sealed class AuditLogInterceptor(
         "SecurityStamp",
         "ConcurrencyStamp",
         "HmacKeyEncrypted",
+        "KeyHash",
+        "WrappedDek",
     ];
 
     // Audit-bookkeeping columns. Excluded from snapshots so they don't

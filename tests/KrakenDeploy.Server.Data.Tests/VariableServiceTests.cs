@@ -21,7 +21,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     private const string DevMasterKey = "S3Jha2VuRGVwbG95RGV2TWFzdGVyS2V5MzJCeXRlcyE=";
 
     private static VariableService CreateService(IDbContextFactory<KrakenDbContext> factory)
-        => new(factory, new AesEncryptionService(DevMasterKey));
+        => new(factory, TestCrypto.Service(DevMasterKey));
 
     // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -93,7 +93,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         variable.Value.Should().NotBe("s3cr3t!", because: "sensitive vars must be encrypted at rest");
 
         // Round-trip: decrypt stored value.
-        var crypto = new AesEncryptionService(DevMasterKey);
+        var crypto = TestCrypto.Service(DevMasterKey);
         crypto.Decrypt(variable.Value).Should().Be("s3cr3t!");
     }
 
@@ -288,7 +288,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         updated!.Value.Should().NotBe("updated-secret",
             because: "sensitive vars must be encrypted at rest after update");
 
-        var crypto = new AesEncryptionService(DevMasterKey);
+        var crypto = TestCrypto.Service(DevMasterKey);
         crypto.Decrypt(updated.Value).Should().Be("updated-secret");
     }
 

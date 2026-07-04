@@ -6,6 +6,8 @@ using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Data.Accounts;
 using KrakenDeploy.Server.Data.ArtifactStorage;
+using KrakenDeploy.Server.Data.Encryption;
+using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data.Identity;
 using KrakenDeploy.Server.Data.Interceptors;
 using KrakenDeploy.Server.Data.Jobs;
@@ -22,6 +24,23 @@ namespace KrakenDeploy.Server.Data;
 
 public static class ServiceCollectionExtensions
 {
+    /// <summary>
+    /// Registers envelope encryption (M13.D.2): the <see cref="IDekProvider"/>
+    /// singleton (holds the KEK, caches the unwrapped DEK) + the
+    /// <see cref="IEncryptionService"/> that keys off it. Both the web host and
+    /// every CLI command call this with the KEK from <c>Encryption:MasterKey</c>,
+    /// so there is a single wiring point. First-boot DEK generation is a separate
+    /// explicit step (<see cref="IDekProvider.EnsureDekAsync"/>) run after migrate.
+    /// </summary>
+    public static IServiceCollection AddKrakenDeployEncryption(
+        this IServiceCollection services, string kekBase64)
+    {
+        services.AddSingleton<IDekProvider>(sp =>
+            new DekProvider(sp.GetRequiredService<IServiceScopeFactory>(), kekBase64));
+        services.AddSingleton<IEncryptionService, AesEncryptionService>();
+        return services;
+    }
+
     public static IServiceCollection AddKrakenDeployData(
         this IServiceCollection services,
         string connectionString,
@@ -185,6 +204,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<BuiltInRbacSeeder>();
         services.AddScoped<IPermissionEvaluator, PermissionEvaluator>();
         services.AddScoped<UserService>();
+        services.AddScoped<ApiKeyService>();
+        // Pure in-memory throttle gate (no DbContext capture) — safe as a
+        // singleton in both modes: it stores only keyId→timestamp, and the
+        // actual last-used UPDATE rides the caller's account-routed context.
+        services.AddSingleton<ApiKeyUsageTracker>();
         services.AddScoped<TeamService>();
         services.AddScoped<RoleService>();
         services.AddScoped<IdentityProviderService>();

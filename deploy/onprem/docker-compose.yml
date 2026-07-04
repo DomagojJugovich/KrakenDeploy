@@ -69,7 +69,6 @@ services:
       Server__DataPath: /data
       Agent__JwtSigningKey: ${AGENT_JWT_KEY:?Required — minimum 32 characters}
       Encryption__MasterKey: ${ENCRYPTION_KEY:?Required — base64-encoded 32 bytes}
-      ApiKey__Key: ${API_KEY:-}
       KRAKEN_LICENSE_KEY: ${KRAKEN_LICENSE_KEY:-}
       AgentUpdate__BinariesPath: /data/agents
       Server__HaMode: ${HA_MODE:-}

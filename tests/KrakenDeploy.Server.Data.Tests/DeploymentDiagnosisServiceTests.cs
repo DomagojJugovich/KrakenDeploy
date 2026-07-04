@@ -129,7 +129,7 @@ public sealed class DeploymentDiagnosisServiceTests(PostgresFixture postgres)
         var curators = new StepConfigCuratorRegistry(
             new IStepConfigCurator[] { new ScriptStepConfigCurator() },
             new DefaultStepConfigCurator());
-        var encryption = new AesEncryptionService(
+        var encryption = TestCrypto.Service(
             Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)));
         var assembler = new DiagnosisContextAssembler(
             postgres,

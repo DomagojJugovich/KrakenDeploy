@@ -1,9 +1,11 @@
 using System.ComponentModel;
 using System.Text.Json;
 using KrakenDeploy.Server.Core.Domain.Audit;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Data.Services.Ai.ContextBuilders;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
@@ -129,15 +131,24 @@ public sealed class DeploymentTools
     [Description(
         "Re-run a deployment: creates a NEW deployment of the same release " +
         "to the same environment + target set. Returns the new deployment " +
-        "id. Requires deployment-execute rights (enforced by the API key's " +
-        "principal).")]
+        "id. Requires the DeploymentCreate permission — evaluated against " +
+        "the API key's owning user (and its bound Space when the key is " +
+        "Space-restricted).")]
     public static async Task<RetryDeploymentResultDto> RetryDeploymentAsync(
         IDbContextFactory<KrakenDbContext> dbFactory,
         DeploymentService deploymentService,
+        IPermissionEvaluator permissions,
+        IHttpContextAccessor httpContext,
         IAuditLog audit,
         [Description("The deployment id (GUID) to re-run.")] Guid deploymentId,
         CancellationToken ct)
     {
+        // The one mutating deployment tool — closes the M11.B deferral: the
+        // description used to CLAIM enforcement that didn't exist.
+        await McpToolAuth.EnsureAsync(
+            permissions, httpContext, "retry_deployment", Permission.DeploymentCreate, audit, ct)
+            .ConfigureAwait(false);
+
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var source = await db.Deployments.AsNoTracking()
             .Include(d => d.Targets)

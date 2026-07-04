@@ -232,7 +232,7 @@ public sealed class EmailDigestFlushJobTests(PostgresFixture postgres)
     private async Task SeedUnreachableSmtpAsync()
     {
         var svc = new SmtpSettingsService(
-            postgres, new AesEncryptionService(Base64Key),
+            postgres, TestCrypto.Service(Base64Key),
             NullLogger<SmtpSettingsService>.Instance);
         await svc.UpsertAsync(new SmtpSettings
         {
@@ -248,7 +248,7 @@ public sealed class EmailDigestFlushJobTests(PostgresFixture postgres)
     private EmailDigestFlushJob NewJob()
     {
         var smtp = new SmtpSettingsService(
-            postgres, new AesEncryptionService(Base64Key),
+            postgres, TestCrypto.Service(Base64Key),
             NullLogger<SmtpSettingsService>.Instance);
         var sender = new EmailDigestSender(smtp);
         var audit = new SilentAuditLog();
@@ -262,7 +262,7 @@ public sealed class EmailDigestFlushJobTests(PostgresFixture postgres)
     private EventDispatcher NewDispatcher()
     {
         var smtp = new SmtpSettingsService(
-            postgres, new AesEncryptionService(Base64Key),
+            postgres, TestCrypto.Service(Base64Key),
             NullLogger<SmtpSettingsService>.Instance);
         return new EventDispatcher(
             postgres,

@@ -136,6 +136,7 @@ public sealed class PermissionTests
     [InlineData(Permission.ApiKeyDelete,        1303)]
     [InlineData(Permission.ApiKeyViewAll,       1310)]
     [InlineData(Permission.ApiKeyDeleteAll,     1311)]
+    [InlineData(Permission.ApiKeyCreateOthers,  1312)]
     // Identity Provider
     [InlineData(Permission.IdentityProviderView,   1400)]
     [InlineData(Permission.IdentityProviderCreate, 1401)]
@@ -178,7 +179,7 @@ public sealed class PermissionTests
 
         // Count from the [Theory]/[InlineData] entries above. If you add new
         // ones, bump this number.
-        const int expectedCoverage = 116;
+        const int expectedCoverage = 117;
 
         allMembers.Should().Be(expectedCoverage,
             "the stability theory must cover every Permission member; " +

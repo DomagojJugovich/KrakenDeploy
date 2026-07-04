@@ -32,6 +32,7 @@ internal static class UserCommands
     {
         string? email = null;
         string? password = null;
+        string? account = null;
 
         for (var i = 0; i < args.Length - 1; i++)
         {
@@ -43,25 +44,39 @@ internal static class UserCommands
             {
                 password = args[i + 1];
             }
+            else if (args[i] == "--account")
+            {
+                account = args[i + 1];
+            }
         }
 
         if (string.IsNullOrWhiteSpace(email) || string.IsNullOrEmpty(password))
         {
-            Console.Error.WriteLine("Usage: users create-admin --email <e> --password <p>");
+            Console.Error.WriteLine("Usage: users create-admin --email <e> --password <p> [--account <subdomain>]");
             return 1;
         }
 
         var builder = CliHost.CreateBuilder(contentRoot);
-        var connectionString = builder.Configuration.GetConnectionString("KrakenDb")
-            ?? throw new InvalidOperationException(
-                "Connection string 'KrakenDb' is not configured. " +
-                "Set ConnectionStrings:KrakenDb in appsettings.{Environment}.json or via user-secrets.");
+
+        // Single-instance binds to KrakenDb; multi-account requires --account and binds
+        // to that tenant's DB via the catalog (mirrors `restore --account`). Without
+        // this guard, multi-account would migrate + seed an admin into the stale
+        // fallback KrakenDb — a silent write to the wrong database.
+        var connectionString = await CliHost
+            .ResolveTenantConnectionStringAsync(builder, contentRoot, account)
+            .ConfigureAwait(false);
+        if (connectionString is null)
+        {
+            return 1; // the resolver already printed the reason
+        }
 
         builder.Services.AddKrakenDeployData(connectionString);
         builder.Services.AddKrakenDeployIdentityCore();
-        builder.Services.AddSingleton<IEncryptionService>(
-            _ => new AesEncryptionService(
-                Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32))));
+        // create-admin never encrypts — register envelope encryption only so the
+        // DI graph resolves. The DEK is loaded lazily on first Encrypt/Decrypt,
+        // which never happens here, so a throwaway KEK is harmless.
+        builder.Services.AddKrakenDeployEncryption(
+            Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
 
         using var host = builder.Build();
         await using var scope = host.Services.CreateAsyncScope();
@@ -135,7 +150,9 @@ internal static class UserCommands
         stream.WriteLine("Usage: KrakenDeploy.Server users <subcommand> [options]");
         stream.WriteLine();
         stream.WriteLine("Subcommands:");
-        stream.WriteLine("  create-admin --email <e> --password <p>   Create the initial admin user.");
+        stream.WriteLine("  create-admin --email <e> --password <p> [--account <subdomain>]");
+        stream.WriteLine("      Create (or verify) an admin user. In multi-account mode --account is");
+        stream.WriteLine("      required and targets that tenant's database.");
         return success ? 0 : 1;
     }
 

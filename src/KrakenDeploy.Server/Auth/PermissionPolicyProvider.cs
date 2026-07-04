@@ -45,7 +45,15 @@ public sealed class PermissionPolicyProvider : IAuthorizationPolicyProvider
             var permName = policyName[PolicyPrefix.Length..];
             if (Enum.TryParse<Permission>(permName, ignoreCase: false, out var permission))
             {
+                // Schemes must be named HERE, not only on the fallback policy:
+                // a policy with auth metadata bypasses the fallback entirely,
+                // and a schemeless policy runs only the DEFAULT scheme (the
+                // cookie) — X-Api-Key callers would be 302'd to /login on
+                // every perm: endpoint (verified empirically on .NET 10).
                 var policy = new AuthorizationPolicyBuilder()
+                    .AddAuthenticationSchemes(
+                        Microsoft.AspNetCore.Identity.IdentityConstants.ApplicationScheme,
+                        ApiKeyAuthenticationHandler.SchemeName)
                     .RequireAuthenticatedUser()
                     .AddRequirements(new PermissionRequirement(permission))
                     .Build();

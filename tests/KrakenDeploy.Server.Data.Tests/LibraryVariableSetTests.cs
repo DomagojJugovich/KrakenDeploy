@@ -24,7 +24,7 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
     private const string DevMasterKey = "S3Jha2VuRGVwbG95RGV2TWFzdGVyS2V5MzJCeXRlcyE=";
 
     private static VariableService NewSvc(IDbContextFactory<KrakenDbContext> f)
-        => new(f, new AesEncryptionService(DevMasterKey));
+        => new(f, TestCrypto.Service(DevMasterKey));
 
     // ── CRUD ────────────────────────────────────────────────────────────────
 

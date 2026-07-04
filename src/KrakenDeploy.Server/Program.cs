@@ -71,6 +71,10 @@ public static class Program
                     return await RestoreCommands.RunAsync(args.AsSpan(1).ToArray(), cliContentRoot).ConfigureAwait(false);
                 case "seed-demo":
                     return await SeedDemoCommands.RunAsync(args.AsSpan(1).ToArray(), cliContentRoot).ConfigureAwait(false);
+                case "apikeys":
+                    return await ApiKeyCommands.RunAsync(args.AsSpan(1).ToArray(), cliContentRoot).ConfigureAwait(false);
+                case "encryption":
+                    return await EncryptionCommands.RunAsync(args.AsSpan(1).ToArray(), cliContentRoot).ConfigureAwait(false);
                 case "releases":
                     return await ReleaseCommands.RunAsync(args.AsSpan(1).ToArray(), cliContentRoot).ConfigureAwait(false);
             }
@@ -246,7 +250,25 @@ public static class Program
                 "Sensitive variables encrypted in this session will be unreadable after restart.");
         }
 
-        builder.Services.AddSingleton<IEncryptionService>(_ => new AesEncryptionService(masterKey));
+        // Envelope encryption (M13.D.2): masterKey is the KEK; it wraps a
+        // DB-resident DEK that actually encrypts data. First-boot DEK generation
+        // runs after migrate (dev-boot below; `database setup` for prod).
+        //
+        // FAIL CLOSED under multi-account: the DEK subsystem is single-instance
+        // only. DekProvider is a process-wide singleton caching ONE DEK, so a
+        // DB-per-account build would serve the first tenant's DEK to every
+        // tenant — cross-customer decrypt failures + silent write corruption —
+        // and tenant DBs are never provisioned a DEK anyway. Per-account,
+        // account-keyed DEK is deferred; refuse rather than corrupt.
+        if (multiAccountEnabled)
+        {
+            throw new InvalidOperationException(
+                "Envelope encryption (M13.D.2) does not yet support MultiAccount:Enabled. The DEK is a " +
+                "single process-wide instance, not per-tenant: a shared DekProvider would cache one " +
+                "tenant's DEK and serve it to all (cross-customer boundary breach), and provisioned " +
+                "tenant DBs have no DEK row. Run single-instance until per-account DEK lands.");
+        }
+        builder.Services.AddKrakenDeployEncryption(masterKey);
 
         // ── Data Protection ─────────────────────────────────────────────────
         // Persist the key ring so auth cookies + antiforgery tokens survive
@@ -322,8 +344,10 @@ public static class Program
                 "Generate one with Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).");
         }
 
-        // CLI API-key scheme — validated against ApiKey:Key configuration.
-        // When ApiKey:Key is not configured the handler returns NoResult() harmlessly.
+        // Per-user API-key scheme (M13.C.4) — the X-Api-Key header is hashed
+        // and resolved against the api_keys table; the principal is the key's
+        // OWNER (real NameIdentifier → real RBAC). Missing header → NoResult()
+        // so cookie/OIDC auth still chains.
         builder.Services.AddAuthentication()
             .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(
                 ApiKeyAuthenticationHandler.SchemeName, _ => { });
@@ -470,17 +494,24 @@ public static class Program
             builder.Configuration.GetSection("AgentUpdate"));
 
         // ── Authorization ────────────────────────────────────────────────────
-        // The fallback policy covers all endpoints that call RequireAuthorization().
-        // Specifying multiple schemes here tells the authorization middleware to try
-        // each one in turn; the first success wins.  AgentJwt is handled separately
-        // via [Authorize(AuthenticationSchemes = "AgentJwt")] on AgentHub.
+        // Cookie-or-ApiKey must be named on BOTH policies:
+        //  - the FALLBACK policy covers endpoints with no auth metadata at all;
+        //  - the DEFAULT policy covers bare .RequireAuthorization() / [Authorize]
+        //    endpoints (/mcp, /api/spaces, /logout, UiHub). A policy without
+        //    schemes runs only the DEFAULT scheme (the cookie), so X-Api-Key
+        //    callers were 302'd to /login there — verified empirically on
+        //    .NET 10. perm:{Permission} policies name the same pair inside
+        //    PermissionPolicyProvider. AgentJwt stays separate via
+        //    [Authorize(AuthenticationSchemes = "AgentJwt")] on AgentHub.
+        var cookieOrApiKey = new AuthorizationPolicyBuilder()
+            .AddAuthenticationSchemes(
+                IdentityConstants.ApplicationScheme,
+                ApiKeyAuthenticationHandler.SchemeName)
+            .RequireAuthenticatedUser()
+            .Build();
         builder.Services.AddAuthorizationBuilder()
-            .SetFallbackPolicy(new AuthorizationPolicyBuilder()
-                .AddAuthenticationSchemes(
-                    IdentityConstants.ApplicationScheme,
-                    ApiKeyAuthenticationHandler.SchemeName)
-                .RequireAuthenticatedUser()
-                .Build());
+            .SetDefaultPolicy(cookieOrApiKey)
+            .SetFallbackPolicy(cookieOrApiKey);
 
         // Permission policy provider — builds a one-requirement policy on
         // demand for any policy name "perm:{Permission}". Means we don't have
@@ -610,6 +641,12 @@ public static class Program
             var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
             await db.Database.MigrateAsync().ConfigureAwait(false);
 
+            // Envelope encryption (M13.D.2): generate the wrapped DEK on first
+            // boot + eagerly unwrap it (fail-fast if the KEK is wrong). Must run
+            // after migrate (the table must exist) and before anything encrypts.
+            await scope.ServiceProvider.GetRequiredService<IDekProvider>()
+                .EnsureDekAsync().ConfigureAwait(false);
+
             // Defensive: ensure the Default Space exists. The AddSpacesFoundation
             // migration seeds it, but a fresh DB created by `EnsureCreated()` (or
             // a corrupted seed) would leave us without one.
@@ -640,6 +677,18 @@ public static class Program
         {
             app.UseExceptionHandler("/Error", createScopeForErrors: true);
             app.UseHsts();
+        }
+
+        // The shared static key died with M13.C.4 — per-user keys replace it.
+        // A leftover value is inert (the handler never reads it), but the
+        // operator clearly expects it to work, so say so loudly.
+        if (!string.IsNullOrWhiteSpace(app.Configuration["ApiKey:Key"]))
+        {
+            app.Logger.LogWarning(
+                "ApiKey:Key is configured but NO LONGER USED — per-user API keys " +
+                "replaced the shared static key (M13.C.4). Remove the config value " +
+                "and mint keys via Configuration → API Keys or " +
+                "'KrakenDeploy.Server.dll apikeys create'.");
         }
 
         app.UseHttpsRedirection();

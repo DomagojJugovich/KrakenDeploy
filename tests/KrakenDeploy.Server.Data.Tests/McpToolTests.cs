@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Threading.Channels;
 using FluentAssertions;
 using KrakenDeploy.Mcp.Tools;
@@ -7,9 +8,11 @@ using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Environments;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Data.Services.Ai.ContextBuilders;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol;
 
@@ -140,7 +143,8 @@ public sealed class McpToolTests(PostgresFixture postgres)
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
 
         var result = await DeploymentTools.RetryDeploymentAsync(
-            postgres, service, audit, sourceId, CancellationToken.None);
+            postgres, service, new AllowAllEvaluator(), AuthedAccessor(), audit,
+            sourceId, CancellationToken.None);
 
         result.NewDeploymentId.Should().NotBe(sourceId);
         result.SourceDeploymentId.Should().Be(sourceId);
@@ -161,9 +165,98 @@ public sealed class McpToolTests(PostgresFixture postgres)
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
 
         var act = async () => await DeploymentTools.RetryDeploymentAsync(
-            postgres, service, new SpyAuditLog(), Guid.NewGuid(), CancellationToken.None);
+            postgres, service, new AllowAllEvaluator(), AuthedAccessor(), new SpyAuditLog(),
+            Guid.NewGuid(), CancellationToken.None);
 
         await act.Should().ThrowAsync<McpException>();
+    }
+
+    [Fact]
+    public async Task retry_deployment_denies_a_caller_without_DeploymentCreate()
+    {
+        // The M11.B deferral, closed: the tool description always CLAIMED
+        // enforcement — now it exists. A principal whose evaluator denies
+        // DeploymentCreate must be rejected before any DB read.
+        var queue = Channel.CreateUnbounded<KrakenDeploy.Server.Data.TenantWorkItem>();
+        var service = new DeploymentService(postgres, queue, TimeProvider.System,
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
+        var audit = new SpyAuditLog();
+
+        var act = async () => await DeploymentTools.RetryDeploymentAsync(
+            postgres, service, new DenyAllEvaluator(), AuthedAccessor(), audit,
+            Guid.NewGuid(), CancellationToken.None);
+
+        (await act.Should().ThrowAsync<McpException>())
+            .WithMessage("*DeploymentCreate*");
+        audit.LastDetails.Should().Contain("permission-denied");
+    }
+
+    [Fact]
+    public async Task retry_deployment_rejects_an_anonymous_caller()
+    {
+        var queue = Channel.CreateUnbounded<KrakenDeploy.Server.Data.TenantWorkItem>();
+        var service = new DeploymentService(postgres, queue, TimeProvider.System,
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
+
+        var anonymous = new HttpContextAccessor
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(new ClaimsIdentity()),
+            },
+        };
+
+        var act = async () => await DeploymentTools.RetryDeploymentAsync(
+            postgres, service, new AllowAllEvaluator(), anonymous, new SpyAuditLog(),
+            Guid.NewGuid(), CancellationToken.None);
+
+        (await act.Should().ThrowAsync<McpException>())
+            .WithMessage("*no authenticated principal*");
+    }
+
+    // ── Auth fakes for the gated tool ─────────────────────────────────────
+
+    private static HttpContextAccessor AuthedAccessor() => new()
+    {
+        HttpContext = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity(
+            [
+                new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                new Claim(ClaimTypes.Name, "mcp-test@laus.hr"),
+            ], authenticationType: "test")),
+        },
+    };
+
+    private sealed class AllowAllEvaluator : IPermissionEvaluator
+    {
+        public Task<bool> HasPermissionAsync(
+            ClaimsPrincipal user, Permission permission, PermissionScope scope = default,
+            bool bypassCache = false, CancellationToken ct = default) => Task.FromResult(true);
+
+        public Task<IReadOnlySet<Permission>> GetPermissionsAsync(
+            ClaimsPrincipal user, PermissionScope scope = default, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlySet<Permission>>(
+                new HashSet<Permission>(Enum.GetValues<Permission>()));
+
+        public Task<IReadOnlySet<Guid>> GetAccessibleSpaceIdsAsync(
+            ClaimsPrincipal user, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlySet<Guid>>(new HashSet<Guid>());
+    }
+
+    private sealed class DenyAllEvaluator : IPermissionEvaluator
+    {
+        public Task<bool> HasPermissionAsync(
+            ClaimsPrincipal user, Permission permission, PermissionScope scope = default,
+            bool bypassCache = false, CancellationToken ct = default) => Task.FromResult(false);
+
+        public Task<IReadOnlySet<Permission>> GetPermissionsAsync(
+            ClaimsPrincipal user, PermissionScope scope = default, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlySet<Permission>>(new HashSet<Permission>());
+
+        public Task<IReadOnlySet<Guid>> GetAccessibleSpaceIdsAsync(
+            ClaimsPrincipal user, CancellationToken ct = default)
+            => Task.FromResult<IReadOnlySet<Guid>>(new HashSet<Guid>());
     }
 
     // ── Seeding ──────────────────────────────────────────────────────────
@@ -239,6 +332,7 @@ public sealed class McpToolTests(PostgresFixture postgres)
     private sealed class SpyAuditLog : IAuditLog
     {
         public (string, string?) Last { get; private set; }
+        public string? LastDetails { get; private set; }
 
         public Task RecordAsync(
             string eventType, string? subjectType = null, string? subjectId = null,
@@ -246,6 +340,7 @@ public sealed class McpToolTests(PostgresFixture postgres)
             string? userDisplay = null, CancellationToken ct = default)
         {
             Last = (eventType, subjectId);
+            LastDetails = details;
             return Task.CompletedTask;
         }
     }

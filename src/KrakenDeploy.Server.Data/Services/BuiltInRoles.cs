@@ -304,6 +304,9 @@ internal static class BuiltInRoles
         Permission.ApiKeyView, Permission.ApiKeyCreate,
         Permission.ApiKeyEdit, Permission.ApiKeyDelete,
         Permission.ApiKeyViewAll, Permission.ApiKeyDeleteAll,
+        // Service-account key minting only — never keys for other humans
+        // (non-repudiation; see the Permission.ApiKeyCreateOthers doc).
+        Permission.ApiKeyCreateOthers,
 
         // ── Identity Provider ────────────────────────────────────────────
         Permission.IdentityProviderView, Permission.IdentityProviderCreate,

@@ -27,7 +27,7 @@ internal static class DatabaseCommands
         {
             "create" => await CreateAsync(args.AsSpan(1).ToArray()).ConfigureAwait(false),
             "setup" => await SetupAsync(args.AsSpan(1).ToArray(), contentRoot).ConfigureAwait(false),
-            "status" => await StatusAsync(contentRoot).ConfigureAwait(false),
+            "status" => await StatusAsync(args.AsSpan(1).ToArray(), contentRoot).ConfigureAwait(false),
             "--help" or "-h" or "help" => PrintTopLevelUsage(success: true),
             _ => UnknownSubcommand(args[0])
         };
@@ -105,6 +105,7 @@ internal static class DatabaseCommands
     private static async Task<int> SetupAsync(string[] args, string contentRoot)
     {
         string? connectionString = null;
+        string? account = null;
 
         for (var i = 0; i < args.Length - 1; i++)
         {
@@ -112,35 +113,63 @@ internal static class DatabaseCommands
             {
                 connectionString = args[i + 1];
             }
+            else if (args[i] == "--account")
+            {
+                account = args[i + 1];
+            }
         }
 
+        // An explicit --connection-string wins in any mode (operator names the exact
+        // DB). Otherwise resolve per mode: single-instance → KrakenDb; multi-account →
+        // the tenant named by --account. NOTE: in multi-account, tenant schemas are
+        // normally migrated by provisioning / fleet-migrate — this is the manual
+        // per-tenant escape hatch, not the primary path.
         if (connectionString is null)
         {
-            var fallbackBuilder = CliHost.CreateBuilder(contentRoot);
-            connectionString = fallbackBuilder.Configuration.GetConnectionString("KrakenDb");
-        }
-
-        if (string.IsNullOrWhiteSpace(connectionString))
-        {
-            Console.Error.WriteLine(
-                "Usage: database setup --connection-string \"<cs>\"\n" +
-                "  or set ConnectionStrings:KrakenDb in appsettings.{Environment}.json.");
-            return 1;
+            var resolveBuilder = CliHost.CreateBuilder(contentRoot);
+            connectionString = await CliHost
+                .ResolveTenantConnectionStringAsync(resolveBuilder, contentRoot, account)
+                .ConfigureAwait(false);
+            if (connectionString is null)
+            {
+                return 1; // the resolver already printed the reason
+            }
         }
 
         try
         {
             var builder = CliHost.CreateBuilder(contentRoot);
-            // Register encryption so AddKrakenDeployData services (VariableService,
-            // IdentityProviderService, etc.) can resolve IEncryptionService.
+            // Register envelope encryption (KEK from config) so AddKrakenDeployData
+            // services (VariableService, IdentityProviderService, etc.) can resolve
+            // IEncryptionService. The DEK is generated + wrapped under this KEK
+            // after migrate below.
             var encKey = builder.Configuration["Encryption:MasterKey"];
             if (string.IsNullOrWhiteSpace(encKey))
             {
+                // Refuse OUTSIDE Development. Provisioning the DEK under an
+                // ephemeral random KEK (discarded on exit) would permanently and
+                // unrecoverably lock the DB — the DEK could never be unwrapped
+                // again. Mirror the web host's non-Dev fail-fast (Program.cs).
+                var env = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT")
+                    ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
+                    ?? "Development";
+                if (!string.Equals(env, "Development", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.Error.WriteLine(
+                        "Encryption:MasterKey (the KEK) is not configured. Refusing to provision a DEK " +
+                        "under an ephemeral key outside Development — it would be permanently unrecoverable. " +
+                        "Set a base64-encoded 32-byte key (Encryption__MasterKey) before running 'database setup'.");
+                    return 1;
+                }
+
                 encKey = Convert.ToBase64String(
                     System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+                Console.WriteLine(
+                    "WARNING: Encryption:MasterKey not set — provisioning the DEK under an EPHEMERAL " +
+                    "Development key. It is UNRECOVERABLE after this process exits; set a real key for any " +
+                    "database you intend to keep.");
             }
-            builder.Services.AddSingleton<IEncryptionService>(
-                _ => new KrakenDeploy.Server.Data.Encryption.AesEncryptionService(encKey));
+            builder.Services.AddKrakenDeployEncryption(encKey);
             builder.Services.AddKrakenDeployData(connectionString);
             builder.Services.AddKrakenDeployIdentityCore();
 
@@ -151,6 +180,15 @@ internal static class DatabaseCommands
 
             Console.Write("Applying migrations... ");
             await db.Database.MigrateAsync().ConfigureAwait(false);
+            Console.WriteLine("done.");
+
+            // Envelope encryption: generate + cache the wrapped DEK (idempotent).
+            // This is the real prod first-boot path — the web host's prod branch
+            // does not migrate/seed.
+            Console.Write("Provisioning data-encryption key... ");
+            await scope.ServiceProvider
+                .GetRequiredService<KrakenDeploy.Server.Data.Encryption.IDekProvider>()
+                .EnsureDekAsync().ConfigureAwait(false);
             Console.WriteLine("done.");
 
             Console.Write("Seeding Default Space... ");
@@ -179,17 +217,26 @@ internal static class DatabaseCommands
         }
     }
 
-    private static async Task<int> StatusAsync(string contentRoot)
+    private static async Task<int> StatusAsync(string[] args, string contentRoot)
     {
-        var builder = CliHost.CreateBuilder(contentRoot);
-        var connectionString = builder.Configuration.GetConnectionString("KrakenDb");
-
-        if (string.IsNullOrWhiteSpace(connectionString))
+        string? account = null;
+        for (var i = 0; i < args.Length - 1; i++)
         {
-            Console.Error.WriteLine(
-                "ConnectionStrings:KrakenDb is not configured. " +
-                "Set it in appsettings.{Environment}.json or via the ConnectionStrings__KrakenDb env var.");
-            return 1;
+            if (args[i] == "--account")
+            {
+                account = args[i + 1];
+            }
+        }
+
+        // Single-instance → KrakenDb; multi-account → the tenant named by --account
+        // (no single KrakenDb to report on).
+        var builder = CliHost.CreateBuilder(contentRoot);
+        var connectionString = await CliHost
+            .ResolveTenantConnectionStringAsync(builder, contentRoot, account)
+            .ConfigureAwait(false);
+        if (connectionString is null)
+        {
+            return 1; // the resolver already printed the reason
         }
 
         try
@@ -245,8 +292,13 @@ internal static class DatabaseCommands
         stream.WriteLine();
         stream.WriteLine("Subcommands:");
         stream.WriteLine("  create   Create the Postgres database (connects to 'postgres' maintenance db).");
-        stream.WriteLine("  setup    Apply migrations + seed data. Idempotent — safe on upgrades.");
-        stream.WriteLine("  status   Check connectivity and pending migrations.");
+        stream.WriteLine("  setup    [--connection-string <cs> | --account <subdomain>]");
+        stream.WriteLine("           Apply migrations + seed data. Idempotent — safe on upgrades.");
+        stream.WriteLine("  status   [--account <subdomain>]");
+        stream.WriteLine("           Check connectivity and pending migrations.");
+        stream.WriteLine();
+        stream.WriteLine("  In multi-account mode --account selects the tenant DB (there is no single");
+        stream.WriteLine("  KrakenDb); tenant schemas are normally migrated by provisioning / fleet-migrate.");
         return success ? 0 : 1;
     }
 

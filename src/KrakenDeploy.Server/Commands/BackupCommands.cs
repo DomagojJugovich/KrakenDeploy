@@ -21,6 +21,7 @@ internal static class BackupCommands
     public static async Task<int> RunAsync(string[] args, string contentRoot)
     {
         string? to = null;
+        string? account = null;
 
         for (var i = 0; i < args.Length - 1; i++)
         {
@@ -28,23 +29,57 @@ internal static class BackupCommands
             {
                 to = args[i + 1];
             }
+            else if (args[i] == "--account")
+            {
+                account = args[i + 1];
+            }
         }
 
         if (to is null)
         {
-            Console.Error.WriteLine("Usage: backup --to <output-directory>");
+            Console.Error.WriteLine("Usage: backup --to <output-directory> [--account <subdomain>]");
             return 1;
         }
 
         var builder = CliHost.CreateBuilder(contentRoot);
-        var connectionString = builder.Configuration.GetConnectionString("KrakenDb");
+        var multiAccount = builder.Configuration.GetValue("MultiAccount:Enabled", false);
+        var dataPath = builder.Configuration["Server:DataPath"] ?? "data";
 
-        if (string.IsNullOrWhiteSpace(connectionString))
+        string connectionString;
+        string dataSourceRoot;
+        BackupAccount? manifestAccount;
+
+        if (multiAccount)
         {
-            Console.Error.WriteLine(
-                "ConnectionStrings:KrakenDb is not configured. " +
-                "Set it in appsettings.{Environment}.json or via env var.");
-            return 1;
+            // Symmetric with `restore --account`: dump the tenant's own database and
+            // back up only its file slice, stamping the manifest so restore can verify
+            // the bundle before loading it into a tenant.
+            var resolved = await CliHost.ResolveTenantAccountAsync(contentRoot, account).ConfigureAwait(false);
+            if (resolved is null)
+            {
+                return 1; // the resolver already printed the reason
+            }
+
+            connectionString = resolved.ConnectionString;
+            // NOT the flat data root — in multi-account that holds every tenant's files
+            // plus the control-plane secret store. Restore expects this same slice.
+            dataSourceRoot = Path.Combine(dataPath, "accounts", resolved.Id.ToString());
+            manifestAccount = new BackupAccount(resolved.Subdomain, resolved.Id);
+        }
+        else
+        {
+            var cs = builder.Configuration.GetConnectionString("KrakenDb");
+            if (string.IsNullOrWhiteSpace(cs))
+            {
+                Console.Error.WriteLine(
+                    "ConnectionStrings:KrakenDb is not configured. " +
+                    "Set it in appsettings.{Environment}.json or via env var.");
+                return 1;
+            }
+
+            connectionString = cs;
+            dataSourceRoot = dataPath;
+            manifestAccount = null;
         }
 
         try
@@ -99,16 +134,15 @@ internal static class BackupCommands
 
             Console.WriteLine($"Database dumped to {dumpFile}");
 
-            var dataPath = builder.Configuration["Server:DataPath"] ?? "data";
-            if (Directory.Exists(dataPath))
+            if (Directory.Exists(dataSourceRoot))
             {
                 var dataBackupDir = Path.Combine(backupDir, "data");
-                CopyDirectoryRecursive(dataPath, dataBackupDir);
+                CopyDirectoryRecursive(dataSourceRoot, dataBackupDir);
                 Console.WriteLine($"Data directory copied to {dataBackupDir}");
             }
             else
             {
-                Console.WriteLine("No data/ directory found — skipping.");
+                Console.WriteLine($"No data directory at '{dataSourceRoot}' — skipping.");
             }
 
             var serverVersion = typeof(Program).Assembly.GetName().Version?.ToString() ?? "0.0.0";
@@ -116,8 +150,9 @@ internal static class BackupCommands
                 Timestamp: timestamp,
                 ServerVersion: serverVersion,
                 DatabaseFile: "database.sql",
-                DataDirectory: Directory.Exists(dataPath) ? "data" : null,
-                ConnectionInfo: new BackupConnectionInfo(host, port, db));
+                DataDirectory: Directory.Exists(dataSourceRoot) ? "data" : null,
+                ConnectionInfo: new BackupConnectionInfo(host, port, db),
+                Account: manifestAccount);
             var manifestJson = JsonSerializer.Serialize(manifest, ManifestJsonOptions);
             await File.WriteAllTextAsync(Path.Combine(backupDir, "manifest.json"), manifestJson)
                 .ConfigureAwait(false);
@@ -199,7 +234,13 @@ internal static class BackupCommands
         string ServerVersion,
         string DatabaseFile,
         string? DataDirectory,
-        BackupConnectionInfo ConnectionInfo);
+        BackupConnectionInfo ConnectionInfo,
+        BackupAccount? Account);
 
     private sealed record BackupConnectionInfo(string Host, int Port, string Database);
+
+    // Must match RestoreCommands' BackupManifest.Account (same JSON shape) so
+    // `restore --account` can verify the bundle belongs to the target tenant.
+    // Null for single-instance bundles.
+    private sealed record BackupAccount(string Subdomain, Guid Id);
 }

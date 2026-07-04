@@ -1,6 +1,7 @@
 using System.Text.Json;
 using KrakenDeploy.Server.Core.Domain.Ai;
 using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Data;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -24,8 +25,11 @@ public static class EndpointRouteBuilderExtensions
     /// Maps the MCP Streamable HTTP transport at <paramref name="path"/>
     /// (default <c>/mcp</c>) with API-key auth attached. Pair with
     /// <see cref="ApplicationBuilderExtensions.UseKrakenMcpEnabledGate"/>
-    /// in the middleware pipeline before <c>UseRouting</c> to enforce the
-    /// per-Space MCP-enabled flag.
+    /// in the middleware pipeline AFTER <c>UseAuthentication</c>/
+    /// <c>UseAuthorization</c> (and, in multi-account, after
+    /// <c>AccountResolutionMiddleware</c>) so the gate can resolve the calling
+    /// account + the API key's bound Space to enforce the per-Space
+    /// MCP-enabled flag.
     /// <para>
     /// The split (gate in middleware, endpoint in routing) exists because
     /// <see cref="ModelContextProtocol.AspNetCore.McpEndpointRouteBuilderExtensions.MapMcp"/>
@@ -76,13 +80,13 @@ public static class ApplicationBuilderExtensions
 /// <see cref="SpaceAiSettings.McpEnabled"/> for the calling Space and
 /// short-circuits with 403 when the flag is off.
 /// <para>
-/// <strong>v1 simplification</strong>: the current
-/// <c>ApiKeyAuthenticationHandler</c> issues a single shared CLI-style
-/// principal without a Space claim, so the gate always reads the Default
-/// Space's settings. When M13.C.4 introduces per-user API keys with Space
-/// scope, this middleware will switch to the API key's bound Space —
-/// same gate, different lookup. The 30-second DB-row cache keeps the hot
-/// path cheap even on busy MCP sessions.
+/// The calling Space is the API key's bound Space when the key carries a
+/// Space restriction (M13.C.4), else the Default Space. The middleware runs
+/// BEFORE endpoint authorization, so the ApiKey principal is not on
+/// <c>HttpContext.User</c> yet — it triggers the scheme explicitly via
+/// <c>AuthenticateAsync</c> (the result is request-cached by the framework,
+/// so the later policy evaluation reuses it — no double DB hit). Per-Space
+/// results sit in a 30-second cache to keep the hot path cheap.
 /// </para>
 /// </summary>
 public sealed class McpEnabledGateMiddleware(
@@ -91,19 +95,26 @@ public sealed class McpEnabledGateMiddleware(
     ILogger<McpEnabledGateMiddleware> logger)
 {
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(30);
-    private static readonly Lock Gate = new();
-    private static (bool Enabled, DateTimeOffset RefreshedUtc)? _cached;
+
+    // Keyed by (account, space) — NOT space alone. In multi-account every
+    // tenant DB shares the same WellKnown.DefaultSpaceId constant, so a
+    // space-only key would serve account A's McpEnabled flag to account B
+    // (cross-tenant poisoning). The account is Guid.Empty in single-instance.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<
+        (Guid Account, Guid Space), (bool Enabled, DateTimeOffset RefreshedUtc)> Cache = new();
 
     public async Task InvokeAsync(HttpContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        var enabled = await ResolveMcpEnabledAsync(context.RequestAborted).ConfigureAwait(false);
+        var spaceId = await ResolveCallingSpaceAsync(context).ConfigureAwait(false);
+        var enabled = await ResolveMcpEnabledAsync(spaceId, context.RequestAborted).ConfigureAwait(false);
         if (!enabled)
         {
             logger.LogWarning(
-                "MCP request rejected: per-Space McpEnabled flag is OFF. " +
-                "Toggle it on at /configuration/ai-settings to allow MCP traffic.");
+                "MCP request rejected: McpEnabled flag is OFF for Space {SpaceId}. " +
+                "Toggle it on at /configuration/ai-settings to allow MCP traffic.",
+                spaceId);
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             context.Response.ContentType = "application/json";
             var body = JsonSerializer.Serialize(new
@@ -117,36 +128,58 @@ public sealed class McpEnabledGateMiddleware(
         await next(context).ConfigureAwait(false);
     }
 
-    private async Task<bool> ResolveMcpEnabledAsync(CancellationToken ct)
+    /// <summary>The bound Space of a restricted API key, else Default.</summary>
+    private static async Task<Guid> ResolveCallingSpaceAsync(HttpContext context)
     {
-        lock (Gate)
+        // Bare-HttpContext harnesses (and any pipeline without authentication
+        // wired) have no IAuthenticationService — treat as an unrestricted
+        // caller rather than throwing. In production the scheme always exists.
+        if (context.RequestServices?.GetService<
+                Microsoft.AspNetCore.Authentication.IAuthenticationService>() is null)
         {
-            if (_cached is { } cached
-                && DateTimeOffset.UtcNow - cached.RefreshedUtc < CacheTtl)
-            {
-                return cached.Enabled;
-            }
+            return WellKnown.DefaultSpaceId;
         }
 
+        var auth = await Microsoft.AspNetCore.Authentication.AuthenticationHttpContextExtensions
+            .AuthenticateAsync(context, KrakenAuthSchemes.ApiKey).ConfigureAwait(false);
+        var claim = auth.Succeeded
+            ? auth.Principal.FindFirst(KrakenClaimTypes.ApiKeySpace)?.Value
+            : null;
+        return claim is not null && Guid.TryParse(claim, out var spaceId)
+            ? spaceId
+            : WellKnown.DefaultSpaceId;
+    }
+
+    private async Task<bool> ResolveMcpEnabledAsync(Guid spaceId, CancellationToken ct)
+    {
         await using var scope = scopeFactory.CreateAsyncScope();
+
+        // Compound the cache key with the active account so the shared
+        // DefaultSpaceId can't leak one tenant's flag to another. IsResolved
+        // never throws (unlike CurrentAccountId); Guid.Empty in single-instance.
+        var accountCtx = scope.ServiceProvider
+            .GetService<KrakenDeploy.Server.Core.Domain.Accounts.IAccountContext>();
+        var accountId = accountCtx?.IsResolved == true ? accountCtx.CurrentAccountId : Guid.Empty;
+        var key = (accountId, spaceId);
+
+        if (Cache.TryGetValue(key, out var cached)
+            && DateTimeOffset.UtcNow - cached.RefreshedUtc < CacheTtl)
+        {
+            return cached.Enabled;
+        }
+
         var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var enabled = await db.SpaceAiSettings
             .IgnoreQueryFilters() // the gate looks across the SpaceScopingInterceptor
-            .Where(s => s.SpaceId == WellKnown.DefaultSpaceId)
+            .Where(s => s.SpaceId == spaceId)
             .Select(s => s.McpEnabled)
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
 
-        lock (Gate)
-        {
-            _cached = (enabled, DateTimeOffset.UtcNow);
-        }
+        Cache[key] = (enabled, DateTimeOffset.UtcNow);
         return enabled;
     }
 
     /// <summary>Test-only: clear the in-memory enable-flag cache so a
     /// flag-toggle in a test takes effect immediately.</summary>
-    internal static void ClearCacheForTest()
-    {
-        lock (Gate) { _cached = null; }
-    }
+    internal static void ClearCacheForTest() => Cache.Clear();
 }

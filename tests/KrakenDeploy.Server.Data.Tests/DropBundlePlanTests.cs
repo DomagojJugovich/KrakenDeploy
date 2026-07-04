@@ -32,7 +32,7 @@ public sealed class DropBundlePlanTests(PostgresFixture postgres) : IClassFixtur
 
     private DropBundleService NewSvc()
         => new(postgres, new NoopPackageStore(),
-               new AesEncryptionService(DevMasterKey),
+               TestCrypto.Service(DevMasterKey),
                NullLogger<DropBundleService>.Instance);
 
     [Fact]

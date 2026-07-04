@@ -122,10 +122,11 @@ public sealed class DbKrakenAiSettingsProvider(
         }
         catch (Exception ex)
         {
-            // Wrap with context but rethrow — an unreadable key means
-            // either the encryption master key was rotated without a
-            // re-encryption pass on the settings rows, OR the row was
-            // tampered with. Both deserve operator visibility.
+            // Wrap with context but rethrow — under envelope encryption
+            // (M13.D.2) an unreadable value means the DEK is wrong/corrupt
+            // (a rotation re-encrypts all rows atomically, so it's no longer
+            // "rotated without a re-encryption pass") OR the row was tampered
+            // with. Both deserve operator visibility.
             logger.LogError(ex,
                 "Failed to decrypt SpaceAiSettings.ApiKeyEncrypted for Space {SpaceId}. " +
                 "The wrapper will surface this as a hard failure on the next AI call.",

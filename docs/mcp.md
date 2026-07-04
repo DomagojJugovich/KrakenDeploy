@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Status** | Approved |
-| **Version** | 1.0 (M11.B) |
-| **Last updated** | 2026-05-27 |
+| **Version** | 1.1 (M11.B + M13.C.4 per-user keys) |
+| **Last updated** | 2026-07-03 |
 | **Applies to** | KrakenDeploy server `/mcp` endpoint + the `kraken-mcp` stdio proxy |
 | **Technologies** | `ModelContextProtocol` 1.3.0 (C# SDK), Streamable HTTP transport, .NET 10 |
 
@@ -25,18 +25,23 @@ MCP is **off by default**. Two things gate it:
 1. **Per-Space flag** — turn on *MCP* in **Configuration → AI Settings**
    (`SpaceAiSettings.McpEnabled`). With it off, every `/mcp` request gets
    `403` with a clear JSON body. Toggling it off is the kill switch — it
-   doesn't remove the API key.
-2. **API key** — MCP reuses the server's existing API-key scheme. Set
-   `ApiKey:Key` in the server config; clients send it in the `X-Api-Key`
-   header. The `kraken-mcp` proxy injects it for you.
+   doesn't remove the API key. For a **Space-restricted** key the gate reads
+   the key's bound Space; unrestricted keys are gated on the Default Space.
+2. **API key** — a **per-user** key (M13.C.4): mint one under
+   **Configuration → API Keys** (or `apikeys create` on the server box) and
+   send it in the `X-Api-Key` header. The `kraken-mcp` proxy injects it for
+   you. The key authenticates AS its owning user — every permission check
+   resolves the owner's real team/role grants, so an MCP client can never do
+   more than the key's owner. Mint keys for a **service account** to give an
+   MCP client its own least-privilege identity and audit trail.
 
-> **v1 single-key caveat.** Today the API key is a single shared
-> CLI-style credential with no per-user permission scoping, so an MCP
-> client effectively has the same access the `kraken` CLI does, scoped to
-> the **Default Space**. Granular per-user keys with Space binding + a real
-> `DeploymentExecute` gate on `retry_deployment` arrive with M13.C.4. Until
-> then, treat an MCP API key as a full-access credential and rely on the
-> audit trail (every resource read + tool call writes an `Mcp.*` audit row).
+> **Authorization notes.** `retry_deployment` (the one mutating tool)
+> requires `Permission.DeploymentCreate` on the caller; the ad-hoc tools
+> require `AdhocActionsExecute` as before. A Space-restricted key is denied
+> everything outside its bound Space. Two deferred resources remain
+> unimplemented: `deployments/{id}/artifacts/{name}` and
+> `step-packages/{name}/{version}/manifest` (no tool has needed them).
+> Every resource read + tool call still writes an `Mcp.*` audit row.
 
 ---
 
@@ -152,11 +157,12 @@ values — a changed value could be a secret.
 
 | Symptom | Likely cause |
 |---|---|
-| `403 — MCP server is disabled for this Space` | The per-Space *MCP* flag is off. Enable it in Configuration → AI Settings. |
-| `401` on connect | Missing/wrong `X-Api-Key`. Check `KRAKEN_API_KEY` / `--key` matches the server's `ApiKey:Key`. |
+| `403 — MCP server is disabled for this Space` | The per-Space *MCP* flag is off (for a restricted key: in the key's bound Space). Enable it in Configuration → AI Settings. |
+| `401` on connect | Missing/wrong/revoked/expired `X-Api-Key`. Check `KRAKEN_API_KEY` / `--key` carries a live per-user key (Configuration → API Keys); the server log names the precise reason. |
 | `kraken-mcp: --server must be an absolute http(s) URL` | Pass a full URL, e.g. `https://kraken.du.laus.hr` (no trailing `/mcp` — the proxy appends it). |
 | Client shows no tools | Confirm the client launched `kraken-mcp` (check its MCP logs) and the server build includes the MCP endpoint (`/mcp` mapped). |
-| Tool returns "No deployment found" | The id/slug doesn't exist in the **Default Space** (v1 scopes to Default). |
+| Tool returns "No deployment found" | The id/slug doesn't exist in the Space the request resolves to — a Space-restricted key sees only its bound Space; an unrestricted key resolves to the Default Space for Space-scoped lookups. |
+| `403 — Caller does not have Permission.DeploymentCreate` (retry) / `AdhocActionsExecute` (adhoc) | The key's owning account lacks the permission in any Space it can reach. Grant it (a per-Space grant is enough for an unrestricted key; a restricted key needs it in its bound Space). |
 
 ---
 
