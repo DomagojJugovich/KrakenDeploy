@@ -146,8 +146,9 @@ public sealed class ApiKeyService(
     public async Task<List<ApiKeyInfo>> GetForUserAsync(Guid userId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        return await QueryInfos(db)
-            .Where(k => k.UserId == userId)
+        // Filter the ApiKey entity BEFORE projecting: EF can't translate a
+        // .Where pushed onto a projection that contains correlated subqueries.
+        return await ProjectInfos(db, db.ApiKeys.AsNoTracking().Where(k => k.UserId == userId))
             .ToListAsync(ct).ConfigureAwait(false);
     }
 
@@ -155,7 +156,7 @@ public sealed class ApiKeyService(
     public async Task<List<ApiKeyInfo>> GetAllAsync(CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        return await QueryInfos(db).ToListAsync(ct).ConfigureAwait(false);
+        return await ProjectInfos(db, db.ApiKeys.AsNoTracking()).ToListAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -340,27 +341,39 @@ public sealed class ApiKeyService(
         return false;
     }
 
-    private static IQueryable<ApiKeyInfo> QueryInfos(KrakenDbContext db) =>
-        from k in db.ApiKeys.AsNoTracking()
-        join u in db.Users.AsNoTracking() on k.UserId equals u.Id into users
-        from u in users.DefaultIfEmpty()
-        join s in db.Spaces.IgnoreQueryFilters().AsNoTracking()
-            on k.SpaceId equals (Guid?)s.Id into spaces
-        from s in spaces.DefaultIfEmpty()
-        orderby k.CreatedUtc descending
-        select new ApiKeyInfo(
-            k.Id,
-            k.UserId,
-            u != null ? u.UserName ?? "(unknown)" : "(deleted user)",
-            k.Name,
-            k.Prefix,
-            k.Scope,
-            k.SpaceId,
-            s != null ? s.Name : null,
-            k.CreatedUtc,
-            k.ExpiresUtc,
-            k.LastUsedUtc,
-            k.RevokedUtc);
+    // Correlated subqueries rather than query-syntax LEFT JOINs: EF Core's
+    // relational provider can't translate a manual GroupJoin+DefaultIfEmpty
+    // chain keyed on the nullable SpaceId (k.SpaceId == (Guid?)s.Id), so the
+    // page threw InvalidOperationException. Scalar subqueries translate cleanly.
+    // UserName three-way semantics preserved: existing row → UserName or
+    // "(unknown)"; no row → "(deleted user)". Spaces ignore query filters
+    // because the key's bound Space may sit outside the caller's access set.
+    // The source query is filtered by the caller BEFORE projection — a .Where
+    // over this projection (it carries subqueries) does not translate.
+    private static IQueryable<ApiKeyInfo> ProjectInfos(KrakenDbContext db, IQueryable<ApiKey> keys) =>
+        keys
+            .OrderByDescending(k => k.CreatedUtc)
+            .Select(k => new ApiKeyInfo(
+                k.Id,
+                k.UserId,
+                db.Users.AsNoTracking()
+                    .Where(u => u.Id == k.UserId)
+                    .Select(u => u.UserName ?? "(unknown)")
+                    .FirstOrDefault() ?? "(deleted user)",
+                k.Name,
+                k.Prefix,
+                k.Scope,
+                k.SpaceId,
+                k.SpaceId == null
+                    ? null
+                    : db.Spaces.IgnoreQueryFilters().AsNoTracking()
+                        .Where(s => s.Id == k.SpaceId)
+                        .Select(s => s.Name)
+                        .FirstOrDefault(),
+                k.CreatedUtc,
+                k.ExpiresUtc,
+                k.LastUsedUtc,
+                k.RevokedUtc));
 }
 
 /// <summary>

@@ -216,6 +216,64 @@ public sealed class ApiKeyServiceTests(PostgresFixture postgres)
         found.IsActive(DateTimeOffset.UtcNow).Should().BeFalse();
     }
 
+    // ── List / grid projection (drives the API Keys page) ───────────────────
+
+    [Fact]
+    public async Task GetAll_and_GetForUser_translate_and_project_owner_and_space_names()
+    {
+        // Regression: QueryInfos originally used a query-syntax double LEFT JOIN
+        // (GroupJoin+DefaultIfEmpty keyed on the nullable SpaceId) that compiled
+        // but threw InvalidOperationException when Npgsql tried to translate it,
+        // so the API Keys page crashed on open. This pins that the grid query
+        // runs against the real relational provider and projects both the
+        // owner name and the bound Space name.
+        var owner = await SeedUserAsync("olivia");
+
+        Guid spaceId;
+        await using (var db = postgres.CreateContext())
+        {
+            var space = new Space { Slug = $"s-{Guid.NewGuid():N}", Name = "Ops" };
+            db.Spaces.Add(space);
+            await db.SaveChangesAsync();
+            spaceId = space.Id;
+        }
+
+        var svc = BuildService();
+        await svc.CreateAsync(owner.Id, "unrestricted");
+        await svc.CreateAsync(owner.Id, "space-bound", spaceId: spaceId);
+
+        // GetAllAsync — must translate (previously threw here) and project names.
+        var all = await svc.GetAllAsync();
+        all.Should().HaveCount(2);
+        all.Should().OnlyContain(r => r.UserName == "olivia");
+        all.Should().ContainSingle(r => r.Name == "space-bound")
+            .Which.SpaceName.Should().Be("Ops");
+        all.Should().ContainSingle(r => r.Name == "unrestricted")
+            .Which.SpaceName.Should().BeNull("an unrestricted key has no bound Space");
+
+        // GetForUserAsync — the .Where over the projection must translate too.
+        (await svc.GetForUserAsync(owner.Id)).Should().HaveCount(2);
+        (await svc.GetForUserAsync(Guid.NewGuid())).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetAll_labels_an_orphaned_key_as_deleted_user()
+    {
+        // Exercises the CASE/COALESCE owner-name branch: a key whose owner row
+        // is gone must project "(deleted user)" — not throw, not drop the row.
+        var user = await SeedUserAsync("pete");
+        var svc = BuildService();
+        await svc.CreateAsync(user.Id, "orphan-grid");
+
+        await using (var db = postgres.CreateContext())
+        {
+            await db.Users.Where(u => u.Id == user.Id).ExecuteDeleteAsync();
+        }
+
+        (await svc.GetAllAsync()).Should().ContainSingle()
+            .Which.UserName.Should().Be("(deleted user)");
+    }
+
     // ── Revocation ──────────────────────────────────────────────────────────
 
     [Fact]
