@@ -1,5 +1,6 @@
 @page "/s/{SpaceSlug}/lifecycles"
 @inherits SpaceScopedComponentBase
+@rendermode InteractiveServer
 @attribute [Authorize]
 @using KrakenDeploy.Server.Core.Domain.Lifecycles
 @using KrakenDeploy.Server.Data.Services
@@ -10,14 +11,18 @@
 
 <PageTitle>Lifecycles - KrakenDeploy</PageTitle>
 
-<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
-             JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-4">
-    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">Lifecycles</RadzenText>
-    <RequirePermission Permission="Permission.LifecycleCreate">
-        <RadzenButton Text="New Lifecycle" Icon="add_circle_outline" ButtonStyle="ButtonStyle.Primary"
-                      Click="@(() => { _createOpen = true; _name = ""; _description = null; })" />
-    </RequirePermission>
-</RadzenStack>
+<div class="page-head">
+    <div>
+        <h1 class="page-title">Lifecycles</h1>
+        <p class="page-sub">Promotion phases &amp; retention · @_lifecycles.Count lifecycle@(_lifecycles.Count == 1 ? "" : "s")</p>
+    </div>
+    <div class="page-head-actions">
+        <RequirePermission Permission="Permission.LifecycleCreate">
+            <RadzenButton Text="New Lifecycle" Icon="add_circle_outline" ButtonStyle="ButtonStyle.Primary"
+                          Click="@(() => { _createOpen = true; _name = ""; _description = null; })" />
+        </RequirePermission>
+    </div>
+</div>
 
 @if (_createOpen)
 {

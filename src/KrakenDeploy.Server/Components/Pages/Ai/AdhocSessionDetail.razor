@@ -136,7 +136,7 @@ else
                         </RadzenText>
                     }
 
-                    <pre style="background:#f5f5f5;padding:0.5rem;border-radius:4px;
+                    <pre style="background:var(--surface-2);border:1px solid var(--surface-3);padding:0.5rem;border-radius:4px;
                                 font-family: ui-monospace, Consolas, monospace; font-size: 0.85rem;
                                 max-height: 320px; overflow:auto; white-space: pre-wrap;"><code>@iter.GeneratedScript</code></pre>
 
@@ -168,11 +168,11 @@ else
                                     <Template Context="r">
                                         @if (!string.IsNullOrEmpty(r.AgentError))
                                         {
-                                            <RadzenText TextStyle="TextStyle.Caption" Style="color:#b00020;">@r.AgentError</RadzenText>
+                                            <RadzenText TextStyle="TextStyle.Caption" Style="color:var(--rz-danger);">@r.AgentError</RadzenText>
                                         }
                                         else if (!string.IsNullOrEmpty(r.Stderr))
                                         {
-                                            <pre style="margin:0;white-space:pre-wrap;color:#b00020;font-family:ui-monospace,Consolas,monospace;font-size:0.8rem;">@Truncate(r.Stderr, 600)</pre>
+                                            <pre style="margin:0;white-space:pre-wrap;color:var(--rz-danger);font-family:ui-monospace,Consolas,monospace;font-size:0.8rem;">@Truncate(r.Stderr, 600)</pre>
                                         }
                                     </Template>
                                 </RadzenDataGridColumn>

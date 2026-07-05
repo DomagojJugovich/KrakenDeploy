@@ -1,5 +1,6 @@
 @page "/s/{SpaceSlug}/step-templates"
 @inherits SpaceScopedComponentBase
+@rendermode InteractiveServer
 @attribute [Authorize]
 @using KrakenDeploy.Server.Core.Domain.StepTemplates
 @using KrakenDeploy.Server.Data.Services
@@ -11,30 +12,28 @@
 
 <PageTitle>Step Templates - KrakenDeploy</PageTitle>
 
-<RadzenRow class="rz-mb-4" AlignItems="AlignItems.Center" JustifyContent="JustifyContent.SpaceBetween">
-    <RadzenColumn>
-        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">Step Templates</RadzenText>
-        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-            Reusable step templates — Octopus Community Library compatible.
-        </RadzenText>
-    </RadzenColumn>
-    <RadzenColumn class="rz-text-align-end">
+<div class="page-head">
+    <div>
+        <h1 class="page-title">Step Templates</h1>
+        <p class="page-sub">Reusable step templates — Octopus Community Library compatible · @_templates.Count template@(_templates.Count == 1 ? "" : "s")</p>
+    </div>
+    <div class="page-head-actions">
         <RadzenButton Icon="travel_explore" ButtonStyle="ButtonStyle.Light"
-                      Text="Browse Community" class="rz-mr-2"
+                      Text="Browse Community"
                       Click="@(() => Nav.NavigateTo(Sp("/step-templates/community")))" />
         <RequirePermission Permission="Permission.StepTemplateCreate">
             <RadzenButton Icon="cloud_download" ButtonStyle="ButtonStyle.Light"
-                          Text="Import Octopus dump" class="rz-mr-2"
+                          Text="Import Octopus dump"
                           Click="@ShowImportOctopusApiDialog" />
         </RequirePermission>
         <RequirePermission Permission="Permission.StepTemplateCreate">
             <RadzenButton Icon="folder_open" ButtonStyle="ButtonStyle.Light"
-                          Text="Import folder" class="rz-mr-2"
+                          Text="Import folder"
                           Click="@ShowImportFolderDialog" />
         </RequirePermission>
         <RequirePermission Permission="Permission.StepTemplateCreate">
             <RadzenButton Icon="upload_file" ButtonStyle="ButtonStyle.Light"
-                          Text="Import JSON" class="rz-mr-2"
+                          Text="Import JSON"
                           Click="@ShowImportDialog" />
         </RequirePermission>
         <RequirePermission Permission="Permission.StepTemplateCreate">
@@ -42,8 +41,8 @@
                           Text="New Template"
                           Click="@ShowCreateDialog" />
         </RequirePermission>
-    </RadzenColumn>
-</RadzenRow>
+    </div>
+</div>
 
 <KrakenGrid SettingsKey="step-templates" AllowColumnResize="true"
                 Data="@_templates"

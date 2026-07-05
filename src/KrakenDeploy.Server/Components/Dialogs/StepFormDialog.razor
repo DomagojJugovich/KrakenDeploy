@@ -579,7 +579,8 @@
                     @if (!string.IsNullOrEmpty(_scriptSuggestion))
                     {
                         <pre style="margin:0; white-space:pre-wrap; word-break:break-word;
-                                    background:#1e1e1e; color:#d4d4d4; padding:0.75rem;
+                                    background:var(--surface-2); color:var(--text);
+                                    border:1px solid var(--surface-3); padding:0.75rem;
                                     border-radius:4px; max-height:320px; overflow-y:auto;
                                     font-family:var(--rz-mono-font, monospace); font-size:0.85rem;">@_scriptSuggestion</pre>
                     }
