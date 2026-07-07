@@ -1,0 +1,306 @@
+@using KrakenDeploy.Server.Core.Domain.Deployments
+@using KrakenDeploy.Server.Core.Domain.Environments
+@using KrakenDeploy.Server.Core.Domain.Releases
+@using KrakenDeploy.Server.Core.Domain.Security
+@using KrakenDeploy.Server.Core.Domain.Targets
+@using KrakenDeploy.Server.Core.Domain.Tenants
+@using KrakenDeploy.Server.Core.Domain.Spaces
+@using KrakenDeploy.Server.Spaces
+@inject DialogService Dialog
+@inject NavigationManager Nav
+@inject ReleaseService ReleaseSvc
+@inject EnvironmentService EnvironmentSvc
+@inject TargetService TargetSvc
+@inject TenantService TenantSvc
+@inject DeploymentService DeploymentSvc
+@inject UiActionGuard Guard
+@inject ISpaceContext SpaceCtx
+
+@*
+    Trigger a deployment of a release. Gathers the target environment, one or
+    more targets (rolling), an optional tenant, an optional scheduled start,
+    and the multi-target failure mode. The lifecycle gate + existence checks
+    are enforced server-side by DeploymentService.CreateAsync — errors surface
+    inline rather than being re-implemented here.
+*@
+
+<div style="min-width: 560px; padding: 0.25rem 0;">
+    @if (_loading)
+    {
+        <RadzenProgressBarCircular ShowValue="false" Mode="ProgressBarMode.Indeterminate"
+                                   Size="ProgressBarCircularSize.Small" />
+    }
+    else if (_loadError is not null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false">
+            Could not load the deploy dialog: @_loadError
+        </RadzenAlert>
+        <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End">
+            <RadzenButton Text="Close" ButtonStyle="ButtonStyle.Light"
+                          Click="@(_ => Dialog.Close(false))" />
+        </RadzenStack>
+    }
+    else if (_environments.Count == 0)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+            No environments are defined in this Space. Define an environment before deploying.
+        </RadzenAlert>
+        <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End">
+            <RadzenButton Text="Close" ButtonStyle="ButtonStyle.Light"
+                          Click="@(_ => Dialog.Close(false))" />
+        </RadzenStack>
+    }
+    else
+    {
+        <RadzenStack Gap="1rem">
+            <div>
+                <RadzenLabel Text="Environment *" />
+                <RadzenDropDown TValue="Guid?" @bind-Value="_environmentId"
+                                Change="@(_ => OnEnvironmentChanged())"
+                                Data="@_environments" TextProperty="Name" ValueProperty="Id"
+                                Placeholder="Select an environment" Style="width: 100%;" />
+            </div>
+
+            <div>
+                <RadzenLabel Text="Target(s) *" />
+                <RadzenDropDown TValue="IEnumerable<Guid>" @bind-Value="_selectedTargetIds"
+                                Data="@EligibleTargets" TextProperty="Name" ValueProperty="Id"
+                                Multiple="true" Chips="true" AllowClear="true" AllowFiltering="true"
+                                FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                Disabled="@(_environmentId is null)"
+                                Placeholder="@(_environmentId is null
+                                    ? "Pick an environment first"
+                                    : "Select target(s)")"
+                                Style="width: 100%;" />
+                @if (_environmentId is not null && EligibleTargets.Count == 0)
+                {
+                    <RadzenText TextStyle="TextStyle.Caption" class="kraken-validation-error">
+                        No targets serve this environment. Assign a target to it first
+                        (target → Settings → Environments).
+                    </RadzenText>
+                }
+                else if (SelectedCount > 1)
+                {
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                        Rolling deployment across @SelectedCount targets.
+                    </RadzenText>
+                }
+            </div>
+
+            @if (_tenants.Count > 0)
+            {
+                <div>
+                    <RadzenLabel Text="Tenant" />
+                    <RadzenDropDown TValue="Guid?" @bind-Value="_tenantId"
+                                    Data="@_tenants" TextProperty="Name" ValueProperty="Id"
+                                    AllowClear="true" AllowFiltering="true"
+                                    FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                    Placeholder="(untenanted)" Style="width: 100%;" />
+                </div>
+            }
+
+            <div>
+                <RadzenLabel Text="Scheduled start" />
+                <RadzenDatePicker TValue="DateTime?" @bind-Value="_scheduledFor"
+                                  ShowTime="true" MinutesStep="5"
+                                  DateFormat="yyyy-MM-dd HH:mm" AllowClear="true"
+                                  Placeholder="(deploy now)" Style="width: 100%;" />
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                    Leave empty to deploy immediately. A future time queues the deployment
+                    (interpreted in the server's time zone).
+                </RadzenText>
+            </div>
+
+            @if (SelectedCount > 1)
+            {
+                <div>
+                    <RadzenLabel Text="On target failure" />
+                    <RadzenDropDown TValue="DeploymentFailureMode" @bind-Value="_failureMode"
+                                    Data="@_failureModes" TextProperty="Label" ValueProperty="Mode"
+                                    Style="width: 100%;" />
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                        @(_failureMode == DeploymentFailureMode.Atomic
+                            ? "Any target failing fails the whole deployment; survivors run cleanup steps."
+                            : "A failing target is dropped; the remaining targets continue.")
+                    </RadzenText>
+                </div>
+            }
+
+            @if (_error is not null)
+            {
+                <div class="kraken-login-error rz-text-body2">@_error</div>
+            }
+
+            <RadzenStack Orientation="Orientation.Horizontal"
+                         JustifyContent="JustifyContent.End" Gap="0.5rem">
+                <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                              Click="@(_ => Dialog.Close(false))" Disabled="@_submitting" />
+                <RadzenButton Text="@(_scheduledFor is null ? "Deploy" : "Schedule")"
+                              Icon="rocket_launch" ButtonStyle="ButtonStyle.Primary"
+                              Click="DeployAsync" IsBusy="@_submitting" Disabled="@_submitting"
+                              BusyText="Queuing…" />
+            </RadzenStack>
+        </RadzenStack>
+    }
+</div>
+
+@code {
+    /// <summary>The release to deploy.</summary>
+    [Parameter] public Guid ReleaseId { get; set; }
+
+    /// <summary>Optional environment to pre-select (e.g. from a matrix cell).</summary>
+    [Parameter] public Guid? PresetEnvironmentId { get; set; }
+
+    private Release? _release;
+    private List<DeploymentEnvironment> _environments = [];
+    private List<DeploymentTarget> _allTargets = [];
+    private List<Tenant> _tenants = [];
+
+    private Guid? _environmentId;
+    private IEnumerable<Guid> _selectedTargetIds = [];
+    private Guid? _tenantId;
+    private DateTime? _scheduledFor;
+    private DeploymentFailureMode _failureMode = DeploymentFailureMode.BestEffort;
+
+    private bool _loading = true;
+    private bool _submitting;
+    private string? _loadError;   // OnInitialized failure — shown as a full alert
+    private string? _error;       // submit failure — shown inline in the form
+
+    // A record (not a ValueTuple) so Radzen's reflection-based TextProperty/
+    // ValueProperty resolve real members — tuples expose only Item1/Item2 at
+    // runtime, which garbles the labels and throws on selection.
+    private sealed record FailureModeOption(DeploymentFailureMode Mode, string Label);
+
+    private readonly FailureModeOption[] _failureModes =
+    [
+        new(DeploymentFailureMode.BestEffort, "Best effort — drop failed target, continue"),
+        new(DeploymentFailureMode.Atomic, "Atomic — fail all on any target failure"),
+    ];
+
+    private List<DeploymentTarget> EligibleTargets =>
+        _environmentId is { } envId
+            ? _allTargets.Where(t => t.Environments.Any(e => e.Id == envId)).ToList()
+            : [];
+
+    private int SelectedCount => _selectedTargetIds?.Count() ?? 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _release = await ReleaseSvc.GetAsync(ReleaseId);
+            _environments = await EnvironmentSvc.GetAllOrderedAsync();
+            _allTargets = await TargetSvc.GetAllWithEnvironmentsAsync();
+            _tenants = await TenantSvc.GetAllAsync();
+
+            if (PresetEnvironmentId is { } pre && _environments.Any(e => e.Id == pre))
+            {
+                _environmentId = pre;
+            }
+        }
+        catch (Exception ex)
+        {
+            _loadError = ex.Message;
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    // Dropping the environment invalidates any targets no longer eligible.
+    private void OnEnvironmentChanged()
+    {
+        var eligible = EligibleTargets.Select(t => t.Id).ToHashSet();
+        _selectedTargetIds = _selectedTargetIds.Where(eligible.Contains).ToList();
+    }
+
+    private async Task DeployAsync()
+    {
+        // Synchronous re-entrancy guard. The busy state is bound to _submitting,
+        // but between the first await below and the re-render the Deploy button
+        // stays enabled — a double-click would otherwise queue TWO deployments.
+        // Set the flag before any await; the finally always clears it.
+        if (_submitting) return;
+        _submitting = true;
+        _error = null;
+
+        try
+        {
+            if (_release is null)
+            {
+                _error = "Release could not be loaded.";
+                return;
+            }
+            if (_environmentId is not { } envId)
+            {
+                _error = "Select an environment.";
+                return;
+            }
+
+            var targetIds = _selectedTargetIds?.ToList() ?? [];
+            if (targetIds.Count == 0)
+            {
+                _error = "Select at least one target.";
+                return;
+            }
+
+            DateTimeOffset? scheduled = null;
+            if (_scheduledFor is { } dt)
+            {
+                var unspecified = DateTime.SpecifyKind(dt, DateTimeKind.Unspecified);
+                scheduled = new DateTimeOffset(unspecified, TimeZoneInfo.Local.GetUtcOffset(unspecified));
+                if (scheduled <= DateTimeOffset.UtcNow)
+                {
+                    _error = "Scheduled start must be in the future (clear it to deploy now).";
+                    return;
+                }
+            }
+
+            // Authoritative, never-stale permission re-check at the SPECIFIC scope
+            // (project + environment + tenant) — not just the Space. A grant scoped
+            // to another project/environment must NOT be able to deploy here.
+            // SpaceId MUST be set: the evaluator filters assignments by SpaceId, so
+            // omitting it would fetch only system-wide grants and wrongly deny.
+            // Guard fires its own denial toast on failure.
+            var scope = new PermissionScope(
+                SpaceId:       SpaceCtx.CurrentSpaceId,
+                ProjectId:     _release.ProjectId,
+                EnvironmentId: envId,
+                TenantId:      _tenantId);
+            if (!await Guard.AllowAsync(Permission.DeploymentCreate, scope))
+            {
+                return;
+            }
+
+            var additional = targetIds.Skip(1).ToList();
+            var deployment = await DeploymentSvc.CreateAsync(
+                releaseId:           ReleaseId,
+                environmentId:       envId,
+                targetId:            targetIds[0],
+                tenantId:            _tenantId,
+                scheduledFor:        scheduled,
+                additionalTargetIds: additional.Count > 0 ? additional : null,
+                failureMode:         _failureMode);
+
+            Dialog.Close(true);
+            Nav.NavigateTo(Nav.Sp($"/deployments/{deployment.Id}"));
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Expected domain failures: lifecycle gate, missing target/tenant, etc.
+            _error = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            // Unexpected (DbUpdateException, transient Npgsql, …) — surface inline
+            // rather than letting it tear down the Blazor circuit.
+            _error = $"Deployment could not be queued: {ex.Message}";
+        }
+        finally
+        {
+            _submitting = false;
+        }
+    }
+}

@@ -111,24 +111,44 @@
                                     <td class="kraken-matrix-cell">
                                         @if (rel.Cells.TryGetValue(env.Id, out var cell))
                                         {
-                                            <a class="kraken-matrix-celllink" href="@Sp($"/deployments/{cell.DeploymentId}")">
-                                                <span class="@DeploymentStatusVisuals.CssClass(cell.Status)">
-                                                    <RadzenIcon Icon="@DeploymentStatusVisuals.Icon(cell.Status)"
-                                                                class="@(cell.Status == DeploymentStatus.Running ? "spin" : null)" />
-                                                </span>
-                                                <div>
-                                                    <div class="kraken-matrix-cell-version">@rel.Version</div>
-                                                    <div class="kraken-matrix-cell-time">
-                                                        @(cell.Status == DeploymentStatus.Running
-                                                            ? "deploying…"
-                                                            : cell.When.ToLocalTime().ToString("dd MMM HH:mm"))
+                                            <div class="kraken-matrix-cell-filled">
+                                                <a class="kraken-matrix-celllink" href="@Sp($"/deployments/{cell.DeploymentId}")">
+                                                    <span class="@DeploymentStatusVisuals.CssClass(cell.Status)">
+                                                        <RadzenIcon Icon="@DeploymentStatusVisuals.Icon(cell.Status)"
+                                                                    class="@(cell.Status == DeploymentStatus.Running ? "spin" : null)" />
+                                                    </span>
+                                                    <div>
+                                                        <div class="kraken-matrix-cell-version">@rel.Version</div>
+                                                        <div class="kraken-matrix-cell-time">
+                                                            @(cell.Status == DeploymentStatus.Running
+                                                                ? "deploying…"
+                                                                : cell.When.ToLocalTime().ToString("dd MMM HH:mm"))
+                                                        </div>
                                                     </div>
-                                                </div>
-                                            </a>
+                                                </a>
+                                                <RequirePermission Permission="Permission.DeploymentCreate">
+                                                    <button type="button" class="kraken-matrix-deploy kraken-matrix-deploy-hover"
+                                                            title="Deploy @rel.Version to @env.Name again"
+                                                            @onclick="@(() => OpenDeployAsync(rel.ReleaseId, env.Id))">
+                                                        <RadzenIcon Icon="rocket_launch" />
+                                                    </button>
+                                                </RequirePermission>
+                                            </div>
                                         }
                                         else
                                         {
-                                            <span class="kraken-matrix-empty">—</span>
+                                            <RequirePermission Permission="Permission.DeploymentCreate">
+                                                <ChildContent>
+                                                    <button type="button" class="kraken-matrix-deploy"
+                                                            title="Deploy @rel.Version to @env.Name"
+                                                            @onclick="@(() => OpenDeployAsync(rel.ReleaseId, env.Id))">
+                                                        <RadzenIcon Icon="rocket_launch" />
+                                                    </button>
+                                                </ChildContent>
+                                                <Fallback>
+                                                    <span class="kraken-matrix-empty">—</span>
+                                                </Fallback>
+                                            </RequirePermission>
                                         }
                                     </td>
                                 }
@@ -139,8 +159,10 @@
             </div>
             <div class="kraken-matrix-hint">
                 <RadzenIcon Icon="info" />
-                Click any cell to open that deployment. Promote a release by deploying it
-                to the next environment in the lifecycle.
+                Click a filled cell to open that deployment, or the
+                <RadzenIcon Icon="rocket_launch" Style="font-size:14px;vertical-align:middle;" />
+                in an empty cell to deploy that release there. Deployments must satisfy
+                the lifecycle gate.
             </div>
         }
 
@@ -283,6 +305,24 @@
         {
             await OnParametersSetAsync();
             Notifications.Notify(NotificationSeverity.Success, "Created", "Release was created.", 3000);
+        }
+    }
+
+    private async Task OpenDeployAsync(Guid releaseId, Guid environmentId)
+    {
+        var result = await Dialog.OpenAsync<DeployReleaseDialog>(
+            "Deploy release",
+            new Dictionary<string, object?>
+            {
+                [nameof(DeployReleaseDialog.ReleaseId)] = releaseId,
+                [nameof(DeployReleaseDialog.PresetEnvironmentId)] = environmentId,
+            },
+            new DialogOptions { Width = "640px" });
+
+        // Dialog navigates to the new deployment on success; refresh if we stay.
+        if (result is true)
+        {
+            await OnParametersSetAsync();
         }
     }
 }

@@ -1243,6 +1243,47 @@ table.dg tbody tr.row-accent td:first-child { box-shadow: inset 3px 0 0 var(--c,
     color: var(--text-3);
 }
 
+/* Deploy affordance shown in an empty matrix cell (permitted users only).
+   Faint by default so empty cells stay quiet; brightens on hover. */
+.kraken-matrix-deploy {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-3);
+    opacity: 0.45;
+    cursor: pointer;
+    transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.kraken-matrix-deploy:hover {
+    opacity: 1;
+    color: var(--primary, var(--rz-primary));
+    background: var(--surface-2);
+}
+.kraken-matrix-deploy .rzi { font-size: 17px; }
+
+/* Filled cell: status link + a re-deploy button revealed on cell hover. */
+.kraken-matrix-cell-filled {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.kraken-matrix-cell-filled .kraken-matrix-celllink {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.kraken-matrix-deploy-hover {
+    flex: 0 0 auto;
+    opacity: 0;
+}
+.kraken-matrix-cell:hover .kraken-matrix-deploy-hover { opacity: 0.5; }
+.kraken-matrix-cell:hover .kraken-matrix-deploy-hover:hover { opacity: 1; }
+
 .kraken-matrix-version {
     font-weight: 600;
     font-size: 0.875rem;

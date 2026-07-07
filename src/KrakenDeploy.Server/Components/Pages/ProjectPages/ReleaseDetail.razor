@@ -10,6 +10,7 @@
 @inject DeploymentService DeploymentSvc
 @inject NotificationService Notifications
 @inject UiActionGuard Guard
+@inject DialogService Dialog
 
 <PageTitle>@(_release?.Version ?? "Release") - KrakenDeploy</PageTitle>
 
@@ -48,7 +49,7 @@
                 </div>
                 <RadzenBadge Text="@(_release.Channel?.Name ?? "Default")"
                              BadgeStyle="BadgeStyle.Info" IsPill="true" />
-                <div style="margin-left:auto; display:flex; gap:18px; color: var(--text-3); font-size: 13px;">
+                <div style="margin-left:auto; display:flex; gap:18px; align-items:center; color: var(--text-3); font-size: 13px;">
                     <span title="Process steps frozen into this release">
                         <RadzenIcon Icon="account_tree" Style="font-size:16px;" />
                         @_release.ProcessSnapshot.Count step@(_release.ProcessSnapshot.Count == 1 ? "" : "s")
@@ -61,6 +62,11 @@
                             ? "no variable snapshot"
                             : $"{_release.VariableSnapshot.Count} variable(s) pinned")
                     </span>
+                    <RequirePermission Permission="Permission.DeploymentCreate">
+                        <RadzenButton Text="Deploy" Icon="rocket_launch"
+                                      ButtonStyle="ButtonStyle.Primary" Variant="Variant.Filled"
+                                      Click="OpenDeployAsync" />
+                    </RequirePermission>
                 </div>
             </RadzenStack>
             @if (!string.IsNullOrWhiteSpace(_release.ReleaseNotes))
@@ -193,6 +199,26 @@
             {
                 yield return (child, i, 1);
             }
+        }
+    }
+
+    private async Task OpenDeployAsync()
+    {
+        if (_release is null) return;
+        var result = await Dialog.OpenAsync<DeployReleaseDialog>(
+            $"Deploy {_release.Version}",
+            new Dictionary<string, object?>
+            {
+                [nameof(DeployReleaseDialog.ReleaseId)] = _release.Id,
+            },
+            new DialogOptions { Width = "640px" });
+
+        // The dialog navigates to the new deployment on success; if the user
+        // cancels navigation or returns, refresh the list defensively.
+        if (result is true)
+        {
+            _deployments = await DeploymentSvc.GetForReleaseAsync(ReleaseId);
+            StateHasChanged();
         }
     }
 

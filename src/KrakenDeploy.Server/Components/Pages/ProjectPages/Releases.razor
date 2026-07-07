@@ -131,6 +131,19 @@
                         }
                     </Template>
                 </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="Release" Title="Deploy" Width="140px"
+                                      Sortable="false" Filterable="false"
+                                      TextAlign="TextAlign.Center">
+                    <Template Context="r">
+                        <RequirePermission Permission="Permission.DeploymentCreate">
+                            <RadzenButton Icon="rocket_launch" Text="Deploy"
+                                          ButtonStyle="ButtonStyle.Primary" Variant="Variant.Flat"
+                                          Size="ButtonSize.Small" Style="width: 110px;"
+                                          title="Deploy this release"
+                                          Click="@(() => OpenDeployAsync(r))" />
+                        </RequirePermission>
+                    </Template>
+                </RadzenDataGridColumn>
                 <RadzenDataGridColumn TItem="Release" Title="" Width="160px"
                                       Sortable="false" Filterable="false">
                     <Template Context="r">
@@ -210,6 +223,23 @@
             await ReloadAsync();
             Notifications.Notify(NotificationSeverity.Success, "Created",
                 "Release was created.", 3000);
+        }
+    }
+
+    private async Task OpenDeployAsync(Release release)
+    {
+        var result = await Dialog.OpenAsync<DeployReleaseDialog>(
+            $"Deploy {release.Version}",
+            new Dictionary<string, object?>
+            {
+                [nameof(DeployReleaseDialog.ReleaseId)] = release.Id,
+            },
+            new DialogOptions { Width = "640px" });
+
+        // The dialog navigates to the new deployment on success; refresh if we stay.
+        if (result is true)
+        {
+            await ReloadAsync();
         }
     }
 

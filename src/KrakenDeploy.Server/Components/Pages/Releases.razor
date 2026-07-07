@@ -4,6 +4,7 @@
 @attribute [Authorize]
 
 @inject ReleaseService ReleaseSvc
+@inject DialogService Dialog
 
 <PageTitle>Releases - KrakenDeploy</PageTitle>
 
@@ -84,6 +85,17 @@
                 }
             </Template>
         </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="Release" Title="Deploy" Width="140px" Sortable="false"
+                              Filterable="false" TextAlign="TextAlign.Center">
+            <Template Context="r">
+                <RequirePermission Permission="Permission.DeploymentCreate">
+                    <RadzenButton Icon="rocket_launch" Text="Deploy"
+                                  ButtonStyle="ButtonStyle.Primary" Variant="Variant.Flat"
+                                  Size="ButtonSize.Small" Style="width: 110px;"
+                                  title="Deploy this release" Click="@(() => OpenDeployAsync(r))" />
+                </RequirePermission>
+            </Template>
+        </RadzenDataGridColumn>
     </Columns>
 </KrakenGrid>
 
@@ -111,6 +123,17 @@
     };
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    private async Task OpenDeployAsync(Release r)
+    {
+        await Dialog.OpenAsync<DeployReleaseDialog>(
+            $"Deploy {r.Version}",
+            new Dictionary<string, object?>
+            {
+                [nameof(DeployReleaseDialog.ReleaseId)] = r.Id,
+            },
+            new DialogOptions { Width = "640px" });
+    }
 
     private async Task LoadAsync()
     {
