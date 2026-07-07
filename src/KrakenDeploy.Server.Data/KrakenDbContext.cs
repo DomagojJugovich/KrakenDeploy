@@ -91,6 +91,8 @@ public class KrakenDbContext(
         => Set<KrakenDeploy.Server.Core.Domain.Analytics.PivotView>();
     public DbSet<KrakenDeploy.Server.Core.Domain.Projects.ProjectDashboardView> ProjectDashboardViews
         => Set<KrakenDeploy.Server.Core.Domain.Projects.ProjectDashboardView>();
+    public DbSet<KrakenDeploy.Server.Core.Domain.Dashboards.DashboardLayout> DashboardLayouts
+        => Set<KrakenDeploy.Server.Core.Domain.Dashboards.DashboardLayout>();
     public DbSet<KrakenDeploy.Server.Core.Domain.Subscriptions.SubscriptionPollerState> SubscriptionPollerStates
         => Set<KrakenDeploy.Server.Core.Domain.Subscriptions.SubscriptionPollerState>();
     public DbSet<KrakenDeploy.Server.Core.Domain.Subscriptions.EmailDigestOutboxEntry> EmailDigestOutbox

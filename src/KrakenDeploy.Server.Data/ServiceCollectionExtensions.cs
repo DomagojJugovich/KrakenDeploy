@@ -135,6 +135,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<DashboardService>();
         services.AddScoped<PivotViewService>();
         services.AddScoped<ProjectDashboardViewService>();
+        services.AddScoped<DashboardLayoutService>();
         services.AddScoped<ProjectTransferService>();
         services.AddScoped<VariableService>();
         services.AddScoped<StepTemplateService>();
