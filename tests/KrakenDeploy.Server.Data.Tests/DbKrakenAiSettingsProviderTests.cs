@@ -183,7 +183,7 @@ public sealed class DbKrakenAiSettingsProviderTests(PostgresFixture postgres)
             NullLogger<DbKrakenAiSettingsProvider>.Instance);
 
     private static AesEncryptionService NewEncryptionService() =>
-        new(Convert.ToBase64String(
+        TestCrypto.Service(Convert.ToBase64String(
             System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
 
     private async Task SeedSettingsAsync(SpaceAiSettings row)

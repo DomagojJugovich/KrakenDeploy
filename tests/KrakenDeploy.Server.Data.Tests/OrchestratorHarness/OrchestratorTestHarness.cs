@@ -79,7 +79,7 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         //    extension method doesn't register it; Program.cs does that
         //    explicitly from the appsettings master key. Tests use a fixed
         //    in-memory key so encrypted variable round-trips are deterministic. ──
-        services.AddSingleton<IEncryptionService>(_ => new AesEncryptionService(
+        services.AddSingleton<IEncryptionService>(_ => TestCrypto.Service(
             Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))));
 
         // ── IConfiguration with no values — the orchestrator reads

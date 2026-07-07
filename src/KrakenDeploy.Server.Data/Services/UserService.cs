@@ -157,6 +157,14 @@ public class UserService(
         db.TeamMembers.RemoveRange(memberships);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
+        // API keys authenticate AS this user — they must die with the account
+        // (Users.razor's delete confirm explicitly promises this). Same
+        // manual-cleanup convention as team memberships above.
+        await db.ApiKeys
+            .Where(k => k.UserId == id)
+            .ExecuteDeleteAsync(ct)
+            .ConfigureAwait(false);
+
         var result = await userManager.DeleteAsync(user).ConfigureAwait(false);
         return result.Succeeded;
     }

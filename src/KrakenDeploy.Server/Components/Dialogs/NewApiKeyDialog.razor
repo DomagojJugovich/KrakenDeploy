@@ -1,0 +1,233 @@
+@using System.Security.Claims
+@using KrakenDeploy.Server.Core.Domain.Security
+@using KrakenDeploy.Server.Core.Domain.Spaces
+@using Microsoft.AspNetCore.Components.Authorization
+@using Microsoft.JSInterop
+
+@inject ApiKeyService ApiKeySvc
+@inject SpaceService SpaceSvc
+@inject IPermissionEvaluator Perms
+@inject AuthenticationStateProvider AuthProvider
+@inject DialogService Dialog
+@inject NotificationService Notify
+@inject UiActionGuard Guard
+@inject IJSRuntime JS
+
+<RadzenStack Gap="1rem">
+    @if (_created is null)
+    {
+        @if (TargetUserId is not null)
+        {
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                Minting a key for service account <code>@TargetUserName</code>.
+                The key authenticates AS that account — grant it permissions by
+                adding the account to teams.
+            </RadzenText>
+        }
+        else
+        {
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                The key authenticates as you, with your permissions, for the
+                <code>kraken</code> CLI, MCP clients and the REST API
+                (<code>X-Api-Key</code> header).
+            </RadzenText>
+        }
+
+        <RadzenFormField Text="Purpose *" style="width:100%">
+            <RadzenTextBox @bind-Value="_name" Placeholder="CI pipeline" style="width:100%" />
+        </RadzenFormField>
+
+        <RadzenFormField Text="Expires" style="width:100%">
+            <RadzenSelectBar @bind-Value="_expiryDays" TValue="int" Size="ButtonSize.Small">
+                <Items>
+                    <RadzenSelectBarItem Text="30 days" Value="30" />
+                    <RadzenSelectBarItem Text="90 days" Value="90" />
+                    <RadzenSelectBarItem Text="1 year" Value="365" />
+                    <RadzenSelectBarItem Text="Never" Value="0" />
+                </Items>
+            </RadzenSelectBar>
+        </RadzenFormField>
+
+        @if (_spaces.Count > 1)
+        {
+            <RadzenFormField Text="Restrict to Space (optional)" style="width:100%">
+                <RadzenDropDown @bind-Value="_spaceId" TValue="Guid?"
+                                Data="@_spaces" ValueProperty="Id" TextProperty="Name"
+                                AllowClear="true" Placeholder="No restriction"
+                                style="width:100%" />
+            </RadzenFormField>
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                A restricted key is denied everything outside that Space — even
+                if the owning account has wider access. Blast-radius control
+                for CI keys.
+            </RadzenText>
+        }
+
+        @if (!string.IsNullOrEmpty(_errorMessage))
+        {
+            <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="false">@_errorMessage</RadzenAlert>
+        }
+    }
+    else
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+            <strong>Copy this key now.</strong> It is shown exactly once — only
+            its hash is stored, so it cannot be recovered later.
+        </RadzenAlert>
+
+        <div>
+            <RadzenLabel Text="API key" />
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+                <RadzenTextBox Value="@_created.PlainToken"
+                               ReadOnly="true"
+                               Style="width:100%; font-family:monospace; font-size:0.85rem;"
+                               aria-label="API key" />
+                <RadzenButton Icon="content_copy"
+                              ButtonStyle="ButtonStyle.Light"
+                              title="Copy key"
+                              Click="@CopyKeyAsync" />
+            </RadzenStack>
+            @if (_copied)
+            {
+                <div class="rz-text-caption" style="color:var(--rz-success); margin-top:0.25rem;">
+                    ✓ Copied to clipboard
+                </div>
+            }
+        </div>
+
+        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+            Use it as <code>X-Api-Key</code>, via <code>kraken --api-key</code>,
+            or the <code>KRAKEN_API_KEY</code> environment variable.
+        </RadzenText>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" JustifyContent="JustifyContent.End">
+        @if (_created is null)
+        {
+            <RadzenButton Text="Create" ButtonStyle="ButtonStyle.Primary" IsBusy="@_busy" Click="CreateAsync" />
+            <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light" Click="@(() => Dialog.Close(false))" />
+        }
+        else
+        {
+            @* No Cancel once the secret is shown — the key exists. *@
+            <RadzenButton Text="Done" ButtonStyle="ButtonStyle.Primary" Click="@(() => Dialog.Close(true))" />
+        }
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    /// <summary>When set, the key is minted for this SERVICE account instead
+    /// of the current user (requires <see cref="Permission.ApiKeyCreateOthers"/>).
+    /// Humans always mint their own keys — non-repudiation.</summary>
+    [Parameter] public Guid? TargetUserId { get; set; }
+    [Parameter] public string? TargetUserName { get; set; }
+    /// <summary>Must be true when <see cref="TargetUserId"/> is set — the
+    /// dialog refuses to mint for another HUMAN account.</summary>
+    [Parameter] public bool TargetIsServiceAccount { get; set; }
+
+    private string _name = "";
+    private int _expiryDays = 90;
+    private Guid? _spaceId;
+    private string _errorMessage = "";
+    private bool _busy;
+    private bool _copied;
+    private CreatedApiKey? _created;
+    private List<Space> _spaces = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Restriction choices = Active Spaces the CURRENT operator can reach
+        // (same recipe as the Space switcher). The key's effective rights are
+        // still the owner's grants — this list only bounds the cage.
+        var user = (await AuthProvider.GetAuthenticationStateAsync()).User;
+        var accessible = await Perms.GetAccessibleSpaceIdsAsync(user);
+        _spaces = (await SpaceSvc.GetAllAsync())
+            .Where(s => s.Status == SpaceStatus.Active && accessible.Contains(s.Id))
+            .ToList();
+    }
+
+    private async Task CreateAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            _errorMessage = "Purpose is required.";
+            return;
+        }
+
+        // The interactive caller — passed to the service as the minting
+        // caller so the non-repudiation invariant is enforced server-side,
+        // not just by the TargetIsServiceAccount UI flag.
+        var caller = (await AuthProvider.GetAuthenticationStateAsync()).User;
+        if (!Guid.TryParse(caller.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var callerId))
+        {
+            _errorMessage = "Could not resolve your user id — sign in again.";
+            return;
+        }
+
+        Guid ownerId;
+        if (TargetUserId is { } target)
+        {
+            // Minting for another principal: service accounts only. A key
+            // minted for another human is indistinguishable from them in the
+            // audit trail — that's an impersonation primitive, not a feature.
+            // (The service re-checks owner.Kind too — this is the UI guard.)
+            if (!TargetIsServiceAccount)
+            {
+                _errorMessage = "Keys can only be minted for service accounts, " +
+                                "never for other users.";
+                return;
+            }
+            if (!await Guard.AllowAsync(Permission.ApiKeyCreateOthers))
+            {
+                return;
+            }
+            ownerId = target;
+        }
+        else
+        {
+            if (!await Guard.AllowAsync(Permission.ApiKeyCreate))
+            {
+                return;
+            }
+            ownerId = callerId;
+        }
+
+        _busy = true;
+        _errorMessage = "";
+        try
+        {
+            var expires = _expiryDays > 0
+                ? DateTimeOffset.UtcNow.AddDays(_expiryDays)
+                : (DateTimeOffset?)null;
+            _created = await ApiKeySvc.CreateAsync(
+                ownerId, _name.Trim(), expires, _spaceId, mintingCallerId: callerId);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _errorMessage = ex.Message;
+        }
+        catch (ArgumentException ex)
+        {
+            _errorMessage = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task CopyKeyAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("navigator.clipboard.writeText", _created!.PlainToken);
+            _copied = true;
+        }
+        catch
+        {
+            // Clipboard API is unavailable in insecure contexts or when permission is denied.
+            Notify.Notify(NotificationSeverity.Warning, "Copy failed",
+                "Could not access the clipboard. Select the key and copy it manually.", 4000);
+        }
+    }
+}

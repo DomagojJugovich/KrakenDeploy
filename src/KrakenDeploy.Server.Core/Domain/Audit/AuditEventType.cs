@@ -19,7 +19,25 @@ public static class AuditEventType
 
     // ── Security ──────────────────────────────────────────────────────────────
     public const string PermissionDenied  = "Security.PermissionDenied";
-    public const string ApiKeyUsed        = "Security.ApiKeyUsed";
+
+    /// <summary>A per-user API key was minted (M13.C.4). Details: key name +
+    /// prefix hint + owner + expiry + Space restriction — never the token.
+    /// Per-use rows are deliberately NOT written; <c>api_keys.last_used_utc</c>
+    /// covers usage without flooding the audit table.</summary>
+    public const string ApiKeyCreated     = "Security.ApiKeyCreated";
+    /// <summary>A per-user API key was revoked. Details: key name + prefix
+    /// hint + owner. Revocation is immediate — the auth handler re-reads the
+    /// row on every request.</summary>
+    public const string ApiKeyRevoked     = "Security.ApiKeyRevoked";
+
+    /// <summary>The key-encryption key (KEK / <c>Encryption:MasterKey</c>) was
+    /// rotated: the DEK was re-wrapped under a new KEK, no data re-encrypted
+    /// (M13.D.2). Details: never the key material — just that it happened.</summary>
+    public const string EncryptionKekRotated = "Security.EncryptionKekRotated";
+    /// <summary>The data-encryption key (DEK) was rotated: a new DEK was
+    /// generated and every secret re-encrypted under it in one transaction
+    /// (M13.D.2). Details: per-store re-encryption counts, never plaintext.</summary>
+    public const string EncryptionDekRotated = "Security.EncryptionDekRotated";
 
     /// <summary>An offline-drop target's per-target HMAC signing key was
     /// (re)generated. Rotation invalidates in-flight bundles. Details: target id.</summary>

@@ -275,26 +275,16 @@
             var run = await BackupSvc.RunOnceAsync(triggeredBy: "User");
             await ReloadHistoryAsync();
 
+            // Audit is emitted inside BackupSvc.RunOnceAsync (shared by the
+            // Hangfire scheduled path too), so we only handle the UI toast here.
             if (run.Outcome == BackupOutcome.Success)
             {
-                await Audit.RecordAsync(
-                    AuditEventType.BackupCompleted,
-                    subjectType: "BackupRun",
-                    subjectId:   run.Id.ToString(),
-                    details:     $"Bundle={run.BundlePath}, Size={run.BundleSizeBytes} B, " +
-                                 $"Duration={(run.Duration?.TotalMilliseconds ?? 0):F0} ms, " +
-                                 $"TriggeredBy={run.TriggeredBy}");
                 Notify.Notify(NotificationSeverity.Success, "Backup complete",
                     $"{FormatBytes(run.BundleSizeBytes)} in {FormatDuration(run.Duration ?? TimeSpan.Zero)}.",
                     5000);
             }
             else
             {
-                await Audit.RecordAsync(
-                    AuditEventType.BackupFailed,
-                    subjectType: "BackupRun",
-                    subjectId:   run.Id.ToString(),
-                    details:     $"TriggeredBy={run.TriggeredBy}, Error={run.ErrorMessage}");
                 Notify.Notify(NotificationSeverity.Error, "Backup failed",
                     run.ErrorMessage ?? "Unknown error", 10000);
             }

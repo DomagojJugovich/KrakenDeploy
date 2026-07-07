@@ -75,10 +75,11 @@ public sealed class AgentHub(
         // Record the connection's account (host-derived, pinned by AgentAccountHubFilter
         // before this runs; Guid.Empty single-instance) so dispatch can assert a target's
         // live connection belongs to the dispatching account (P3-8 Phase 5).
+        var accountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;
         registry.Add(
             Context.ConnectionId,
             targetId.Value,
-            accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty);
+            accountId);
 
         target.Status = TargetStatus.Online;
         target.LastSeenUtc = timeProvider.GetUtcNow();
@@ -89,7 +90,7 @@ public sealed class AgentHub(
             targetId.Value, Context.ConnectionId);
 
         await statusPublisher
-            .PublishAsync(targetId.Value, TargetStatus.Online, target.LastSeenUtc)
+            .PublishAsync(targetId.Value, TargetStatus.Online, target.LastSeenUtc, accountId)
             .ConfigureAwait(false);
 
         await base.OnConnectedAsync().ConfigureAwait(false);
@@ -113,9 +114,15 @@ public sealed class AgentHub(
                     targetId);
             }
 
+            // Capture the account now, while AgentAccountHubFilter still has it pinned
+            // (Guid.Empty single-instance) — the deferred task needs it to scope the UI
+            // push to this tenant's group. The task's tenant DB write rides the same
+            // account via the ambient AsyncLocal captured into its ExecutionContext.
+            var accountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;
+
             // Fire-and-forget with 30 s grace period so brief reconnects don't flicker.
             _ = MarkOfflineAfterGraceAsync(
-                targetId, scopeFactory, registry, statusPublisher, timeProvider, logger);
+                targetId, accountId, scopeFactory, registry, statusPublisher, timeProvider, logger);
         }
 
         await base.OnDisconnectedAsync(exception).ConfigureAwait(false);
@@ -602,6 +609,7 @@ public sealed class AgentHub(
 
     private static async Task MarkOfflineAfterGraceAsync(
         Guid targetId,
+        Guid accountId,
         IServiceScopeFactory scopeFactory,
         IAgentConnectionRegistry registry,
         TargetStatusPublisher statusPublisher,
@@ -640,7 +648,7 @@ public sealed class AgentHub(
                 "Target {TargetId} marked Offline after 30 s grace period.", targetId);
 
             await statusPublisher
-                .PublishAsync(targetId, TargetStatus.Offline, target.LastSeenUtc)
+                .PublishAsync(targetId, TargetStatus.Offline, target.LastSeenUtc, accountId)
                 .ConfigureAwait(false);
         }
         catch (Exception ex)

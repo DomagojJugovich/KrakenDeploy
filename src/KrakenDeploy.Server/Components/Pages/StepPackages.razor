@@ -14,17 +14,19 @@
 
 <PageTitle>Step Packages</PageTitle>
 
-<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
-             JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-4">
-    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
-        Step Packages
-    </RadzenText>
-    <RequirePermission Permission="Permission.StepPackageManage">
-        <RadzenButton Text="Upload" Icon="cloud_upload" Size="ButtonSize.Small"
-                      ButtonStyle="ButtonStyle.Primary"
-                      Click="OpenUploadAsync" />
-    </RequirePermission>
-</RadzenStack>
+<div class="page-head">
+    <div>
+        <h1 class="page-title">Step Packages</h1>
+        <p class="page-sub">Installed <code>.kdeploy-step</code> plugins · @_packages.Count installed</p>
+    </div>
+    <div class="page-head-actions">
+        <RequirePermission Permission="Permission.StepPackageManage">
+            <RadzenButton Text="Upload" Icon="cloud_upload"
+                          ButtonStyle="ButtonStyle.Primary"
+                          Click="OpenUploadAsync" />
+        </RequirePermission>
+    </div>
+</div>
 
 <RadzenTabs @bind-SelectedIndex="_activeTab">
     <Tabs>

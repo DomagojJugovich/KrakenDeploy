@@ -55,6 +55,16 @@ public sealed class PermissionEvaluator(
         bool bypassCache = false,
         CancellationToken ct = default)
     {
+        // A Space-restricted API key (M13.C.4) is caged to its bound Space —
+        // checked BEFORE the sysadmin short-circuit so an admin-owned
+        // restricted key stays caged. System-wide checks (null SpaceId in the
+        // scope) are denied too: a restricted key must never exercise
+        // instance-wide permissions.
+        if (IsOutsideApiKeyRestriction(user, scope))
+        {
+            return false;
+        }
+
         // AdministerSystem is god mode — short-circuits every check, regardless
         // of scope. Granted by being on a team whose role assignments include
         // that permission.
@@ -93,6 +103,13 @@ public sealed class PermissionEvaluator(
     {
         var userId = TryGetUserId(user);
         if (userId is null)
+        {
+            return new HashSet<Permission>();
+        }
+
+        // Space-restricted API key outside its Space → no permissions at all
+        // (mirrors HasPermissionAsync's cage).
+        if (IsOutsideApiKeyRestriction(user, scope))
         {
             return new HashSet<Permission>();
         }
@@ -142,7 +159,7 @@ public sealed class PermissionEvaluator(
                 .Select(s => s.Id)
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
-            return allActive.ToHashSet();
+            return ApplyApiKeyRestriction(user, allActive.ToHashSet());
         }
 
         var teamIds = await GetUserTeamIdsAsync(db, userId.Value, ct).ConfigureAwait(false);
@@ -174,7 +191,73 @@ public sealed class PermissionEvaluator(
             .ToListAsync(ct)
             .ConfigureAwait(false);
 
-        return activeAccessible.ToHashSet();
+        return ApplyApiKeyRestriction(user, activeAccessible.ToHashSet());
+    }
+
+    /// <summary>
+    /// The Space a request is caged to, IFF it authenticated via a
+    /// Space-restricted API key. Read ONLY from the identity whose
+    /// AuthenticationType is the ApiKey scheme — never a bare claim lookup.
+    /// <para>
+    /// ASP.NET Core's <c>IPolicyEvaluator</c> authenticates every scheme named
+    /// on a policy and MERGES each success into <c>HttpContext.User</c>
+    /// (<c>SecurityHelper.MergeUserPrincipal</c>). Our default/fallback/perm:
+    /// policies all name both the cookie and ApiKey schemes, so a cookie
+    /// session that also carries a stray restricted <c>X-Api-Key</c> would end
+    /// up with the <c>kraken:apikey_space</c> claim merged onto the
+    /// cookie-primary principal — a plain <c>FindFirst</c> would then silently
+    /// cage a legitimate browser session. Matching by AuthenticationType keeps
+    /// the cage scoped to genuine API-key requests.
+    /// </para>
+    /// </summary>
+    private static Guid? GetApiKeyRestriction(ClaimsPrincipal user)
+    {
+        // The restriction must come from an identity that authenticated via the
+        // ApiKey scheme — never a bare claim lookup.
+        var apiKeyIdentity = user.Identities.FirstOrDefault(
+            i => string.Equals(i.AuthenticationType, KrakenAuthSchemes.ApiKey, StringComparison.Ordinal));
+        if (apiKeyIdentity is null)
+        {
+            return null;
+        }
+
+        // If the request ALSO authenticated interactively (cookie / OIDC), that
+        // browser session is authoritative and a stray restricted X-Api-Key
+        // header must NOT silently cage it. IPolicyEvaluator merges every
+        // succeeding scheme's identity into the principal, so honour the cage
+        // only for a PURE API-key request (no other authenticated identity).
+        var hasInteractiveIdentity = user.Identities.Any(i =>
+            i.IsAuthenticated
+            && !string.Equals(i.AuthenticationType, KrakenAuthSchemes.ApiKey, StringComparison.Ordinal));
+        if (hasInteractiveIdentity)
+        {
+            return null;
+        }
+
+        var raw = apiKeyIdentity.FindFirst(KrakenClaimTypes.ApiKeySpace)?.Value;
+        return Guid.TryParse(raw, out var space) ? space : null;
+    }
+
+    /// <summary>
+    /// True when the request authenticated with a Space-restricted API key and
+    /// the requested scope falls outside that Space (including system-wide
+    /// scopes). See <see cref="GetApiKeyRestriction"/>.
+    /// </summary>
+    private static bool IsOutsideApiKeyRestriction(ClaimsPrincipal user, PermissionScope scope)
+    {
+        var restrictedSpace = GetApiKeyRestriction(user);
+        return restrictedSpace is not null && scope.SpaceId != restrictedSpace;
+    }
+
+    /// <summary>Caps an accessible-Space set to a restricted key's one Space.</summary>
+    private static HashSet<Guid> ApplyApiKeyRestriction(ClaimsPrincipal user, HashSet<Guid> spaces)
+    {
+        if (GetApiKeyRestriction(user) is { } restrictedSpace)
+        {
+            spaces.IntersectWith([restrictedSpace]);
+        }
+
+        return spaces;
     }
 
     // ── Cached assignment fetch ───────────────────────────────────────────────

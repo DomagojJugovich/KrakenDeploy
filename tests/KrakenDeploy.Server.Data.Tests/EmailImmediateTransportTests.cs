@@ -184,7 +184,7 @@ public sealed class EmailImmediateTransportTests(PostgresFixture postgres)
 
     private SmtpSettingsService NewSmtpService() =>
         new(postgres,
-            new AesEncryptionService(Base64Key),
+            TestCrypto.Service(Base64Key),
             NullLogger<SmtpSettingsService>.Instance);
 
     private static SmtpSettings EnabledSmtp() => new()

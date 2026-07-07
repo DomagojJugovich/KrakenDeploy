@@ -46,7 +46,7 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
     public async Task GetVariableAsync_does_not_return_other_space_variable()
     {
         var g = await SeedOtherSpaceGraphAsync();
-        var svc = new VariableService(postgres, new AesEncryptionService(DevMasterKey));
+        var svc = new VariableService(postgres, TestCrypto.Service(DevMasterKey));
 
         (await svc.GetVariableAsync(g.VariableId)).Should().BeNull(
             "a Variable in another Space must be invisible from the default Space");
@@ -56,7 +56,7 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
     public async Task UpdateVariableAsync_cannot_modify_other_space_variable()
     {
         var g = await SeedOtherSpaceGraphAsync();
-        var svc = new VariableService(postgres, new AesEncryptionService(DevMasterKey));
+        var svc = new VariableService(postgres, TestCrypto.Service(DevMasterKey));
 
         var result = await svc.UpdateVariableAsync(
             g.VariableId, "hacked", "hacked", VariableType.Text, null);
@@ -70,7 +70,7 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
     public async Task DeleteVariableAsync_cannot_delete_other_space_variable()
     {
         var g = await SeedOtherSpaceGraphAsync();
-        var svc = new VariableService(postgres, new AesEncryptionService(DevMasterKey));
+        var svc = new VariableService(postgres, TestCrypto.Service(DevMasterKey));
 
         (await svc.DeleteVariableAsync(g.VariableId)).Should().BeFalse(
             "DeleteVariableAsync(FindAsync) must not delete another Space's variable");

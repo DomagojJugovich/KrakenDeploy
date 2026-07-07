@@ -38,7 +38,7 @@ public sealed class ReleaseVariableSnapshotTests(PostgresFixture postgres)
     private const string DevMasterKey = "S3Jha2VuRGVwbG95RGV2TWFzdGVyS2V5MzJCeXRlcyE=";
 
     private static VariableService NewVarService(IDbContextFactory<KrakenDbContext> f)
-        => new(f, new AesEncryptionService(DevMasterKey));
+        => new(f, TestCrypto.Service(DevMasterKey));
 
     // ── ReleaseService.CreateAsync ────────────────────────────────────────
 

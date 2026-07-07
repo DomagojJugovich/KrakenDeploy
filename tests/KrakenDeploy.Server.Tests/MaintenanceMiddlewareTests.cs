@@ -31,12 +31,18 @@ public sealed class MaintenanceMiddlewareTests
     [InlineData("/hangfire/jobs/enqueued",             true)]
     [InlineData("/configuration/maintenance",          true, "the page that turns maintenance off")]
     [InlineData("/api/maintenance",                    true, "API counterpart")]
+    // ── Space-prefixed forms (/s/{slug}/…) must still be exempt: the real
+    //    maintenance page lives at /s/{slug}/configuration/maintenance ──
+    [InlineData("/s/default/configuration/maintenance", true, "space-prefixed maintenance page")]
+    [InlineData("/s/acme/configuration/maintenance",    true, "space-prefixed for a named account")]
     // ── Non-exempt paths (will be blocked for non-bypass callers) ──
     [InlineData("/api/projects",                       false)]
     [InlineData("/api/audit/export.csv",               false, "audit export is GET so the middleware skips on method anyway, but path-wise non-exempt")]
     [InlineData("/configuration/users",                false)]
+    [InlineData("/s/acme/configuration/users",         false, "space-prefixed non-exempt stays blocked")]
     [InlineData("/projects/foo",                       false)]
     [InlineData("/",                                   false, "root not exempt — only specific paths bypass")]
+    [InlineData("/s/acme",                             false, "space root with no sub-path is not exempt")]
     public void IsExemptPath_classifies_known_paths(
         string path, bool expectedExempt, string? _ = null)
     {

@@ -227,7 +227,7 @@ public sealed class SmtpSettingsServiceTests(PostgresFixture postgres)
 
     private SmtpSettingsService NewSvc() =>
         new(postgres,
-            new AesEncryptionService(Base64Key),
+            TestCrypto.Service(Base64Key),
             NullLogger<SmtpSettingsService>.Instance);
 
     private static SmtpSettings SampleSettings() => new()

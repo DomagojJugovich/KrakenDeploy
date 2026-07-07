@@ -1,5 +1,6 @@
 @page "/s/{SpaceSlug}/projects/{Slug}/runbooks"
 @inherits SpaceScopedComponentBase
+@rendermode InteractiveServer
 @attribute [Authorize]
 
 <ProjectShell Slug="@Slug">

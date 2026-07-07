@@ -38,7 +38,6 @@ Internet → :80/:443 → Caddy → kraken-server:5080 → Postgres:5432
 | `POSTGRES_PASSWORD` | Yes | Postgres superuser password |
 | `AGENT_JWT_KEY` | Yes | Minimum 32 chars — agent authentication signing key |
 | `ENCRYPTION_KEY` | Yes | Base64 32 bytes — AES-256-GCM master key for sensitive variables |
-| `API_KEY` | No | CLI/API key for external tooling |
 | `KRAKEN_LICENSE_KEY` | No | License key (can also be uploaded via UI) |
 | `DOMAIN` | No | Public domain for auto-HTTPS (defaults to localhost) |
 | `HA_MODE` | No | Set to "Postgres" for a 2-node HA pair |

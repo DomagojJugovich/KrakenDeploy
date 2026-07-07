@@ -1,5 +1,6 @@
 @page "/s/{SpaceSlug}/runbooks/{Id:guid}"
 @inherits SpaceScopedComponentBase
+@rendermode InteractiveServer
 @attribute [Authorize]
 @using KrakenDeploy.Contracts.Steps
 @using KrakenDeploy.Server.Components.Dialogs
@@ -244,7 +245,7 @@
                     <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-2">
                         Log — @_selectedRun.Environment?.Name / @_selectedRun.Target?.Name
                     </RadzenText>
-                    <div style="font-family:monospace;font-size:0.82rem;background:#1e1e1e;color:#d4d4d4;
+                    <div style="font-family:monospace;font-size:0.82rem;background:var(--surface-2);color:var(--text);border:1px solid var(--surface-3);
                                  padding:1rem;border-radius:4px;max-height:400px;overflow-y:auto">
                         @if (_selectedRunLogs.Count == 0)
                         {

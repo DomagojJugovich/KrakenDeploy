@@ -111,8 +111,34 @@ public sealed class MaintenanceMiddleware(RequestDelegate next)
             cancellationToken: context.RequestAborted).ConfigureAwait(false);
     }
 
-    internal static bool IsExemptPath(string path) =>
-        ExemptPathPrefixes.Any(p => path.StartsWith(p, StringComparison.OrdinalIgnoreCase));
+    internal static bool IsExemptPath(string path)
+    {
+        if (ExemptPathPrefixes.Any(p => path.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        // Space-scoped pages ride at /s/{slug}/… — the bare exempt prefixes
+        // (e.g. /configuration/maintenance) would otherwise never match the
+        // real /s/acme/configuration/maintenance path, so the page that turns
+        // maintenance OFF wouldn't be exempt. Strip the /s/{slug} prefix and
+        // re-test. (Harmless if it exempts a non-existent /s/{slug}/login-style
+        // path — that just 404s; maintenance mode is a write-guard, not auth.)
+        var stripped = StripSpacePrefix(path);
+        return stripped is not null
+            && ExemptPathPrefixes.Any(p => stripped.StartsWith(p, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>"/s/{slug}/rest" → "/rest"; null when there is no Space prefix.</summary>
+    private static string? StripSpacePrefix(string path)
+    {
+        if (!path.StartsWith("/s/", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+        var slashAfterSlug = path.IndexOf('/', 3);
+        return slashAfterSlug < 0 ? null : path[slashAfterSlug..];
+    }
 
     private static async Task<bool> CallerHasBypassAsync(
         HttpContext context, IPermissionEvaluator evaluator)

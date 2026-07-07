@@ -1,0 +1,223 @@
+@page "/s/{SpaceSlug}/configuration/api-keys"
+@inherits SpaceScopedComponentBase
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using System.Security.Claims
+@using KrakenDeploy.Server.Core.Domain.Security
+@using Microsoft.AspNetCore.Components.Authorization
+
+@inject ApiKeyService ApiKeySvc
+@inject DialogService Dialog
+@inject NotificationService Notify
+@inject UiActionGuard Guard
+@inject AuthenticationStateProvider AuthProvider
+
+<PageTitle>API Keys - KrakenDeploy</PageTitle>
+
+<RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+             Gap="1rem" class="rz-mb-4" Style="flex-wrap:wrap">
+    <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-0">API Keys</RadzenText>
+
+    <RequirePermission Permission="Permission.ApiKeyCreate">
+        <RadzenButton Icon="key" Text="New API Key"
+                      ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                      Click="NewKeyAsync" />
+    </RequirePermission>
+
+    <RequirePermission Permission="Permission.ApiKeyViewAll">
+        <RadzenSelectBar @bind-Value="_view" TValue="KeyViewFilter"
+                         Size="ButtonSize.Small" Style="margin-left:auto"
+                         Change="@((KeyViewFilter _) => ReloadAsync())">
+            <Items>
+                <RadzenSelectBarItem Text="My keys" Value="KeyViewFilter.Mine" />
+                <RadzenSelectBarItem Text="All keys" Value="KeyViewFilter.All" />
+            </Items>
+        </RadzenSelectBar>
+    </RequirePermission>
+</RadzenStack>
+
+@if (_view == KeyViewFilter.All)
+{
+    <RadzenAlert AlertStyle="AlertStyle.Info" Variant="Variant.Flat"
+                 Shade="Shade.Lighter" AllowClose="false" class="rz-mb-2">
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                     AlignItems="AlignItems.Center">
+            <RadzenIcon Icon="filter_alt" />
+            <span>
+                Showing <strong>every user's</strong> keys —
+                @_keys.Count key@(_keys.Count == 1 ? "" : "s") across the instance.
+            </span>
+            <RadzenButton Text="Show mine"
+                          Size="ButtonSize.ExtraSmall"
+                          Variant="Variant.Text"
+                          Click="@(async () => { _view = KeyViewFilter.Mine; await ReloadAsync(); })" />
+        </RadzenStack>
+    </RadzenAlert>
+}
+
+<KrakenGrid SettingsKey="api-keys" Data="@_keys" TItem="ApiKeyInfo"
+            AllowPaging="true" PageSize="25"
+            AllowSorting="true"
+            AllowFiltering="true" FilterMode="FilterMode.Simple"
+            AllowColumnResize="true"
+            EmptyText="@EmptyText">
+    <Columns>
+        <RadzenDataGridColumn TItem="ApiKeyInfo" Property="Name" Title="Name" />
+        <RadzenDataGridColumn TItem="ApiKeyInfo" Property="Prefix" Title="Key" Width="190px">
+            <Template Context="k">
+                <code style="font-size:0.85rem;">@k.Hint</code>
+            </Template>
+        </RadzenDataGridColumn>
+        @if (_view == KeyViewFilter.All)
+        {
+            <RadzenDataGridColumn TItem="ApiKeyInfo" Property="UserName" Title="Owner" />
+        }
+        <RadzenDataGridColumn TItem="ApiKeyInfo" Property="SpaceName" Title="Space" Width="140px">
+            <Template Context="k">
+                @if (k.SpaceName is null)
+                {
+                    <span class="rz-color-secondary">—</span>
+                }
+                else
+                {
+                    <RadzenBadge Text="@k.SpaceName" BadgeStyle="BadgeStyle.Secondary" IsPill="true" />
+                }
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="ApiKeyInfo" Title="Status" Width="110px" UniqueID="status"
+                              Sortable="false" Filterable="false">
+            <Template Context="k">
+                <RadzenBadge Text="@StatusText(k)" BadgeStyle="@StatusStyle(k)" IsPill="true" />
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="ApiKeyInfo" Property="CreatedUtc" Title="Created" Width="150px">
+            <Template Context="k">
+                <span class="mono cell-muted">@k.CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</span>
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="ApiKeyInfo" Property="ExpiresUtc" Title="Expires" Width="130px">
+            <Template Context="k">
+                <span class="mono cell-muted">@(k.ExpiresUtc?.ToLocalTime().ToString("yyyy-MM-dd") ?? "never")</span>
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="ApiKeyInfo" Property="LastUsedUtc" Title="Last used" Width="150px">
+            <Template Context="k">
+                <span class="mono cell-muted">@(k.LastUsedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")</span>
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="ApiKeyInfo" Width="70px" UniqueID="actions"
+                              Filterable="false" Sortable="false" TextAlign="TextAlign.Right">
+            <Template Context="k">
+                @if (!k.IsRevoked)
+                {
+                    @* Render gate matches RevokeAsync's authoritative guard:
+                       own key → ApiKeyDelete (ambient Space); other → the
+                       admin atom checked system-wide. *@
+                    <RequirePermission Permission="@(k.UserId == _currentUserId ? Permission.ApiKeyDelete : Permission.ApiKeyDeleteAll)"
+                                       Scope="@(k.UserId == _currentUserId ? null : new PermissionScope())">
+                        <RadzenButton Icon="block" ButtonStyle="ButtonStyle.Danger"
+                                      Size="ButtonSize.ExtraSmall" Variant="Variant.Flat"
+                                      title="Revoke key"
+                                      Click="@(() => RevokeAsync(k))" />
+                    </RequirePermission>
+                }
+            </Template>
+        </RadzenDataGridColumn>
+    </Columns>
+</KrakenGrid>
+
+@code {
+    private enum KeyViewFilter { Mine, All }
+
+    private KeyViewFilter _view = KeyViewFilter.Mine;
+    private List<ApiKeyInfo> _keys = [];
+    private Guid _currentUserId;
+
+    private string EmptyText => _view == KeyViewFilter.Mine
+        ? "You have no API keys yet. Mint one to use the kraken CLI or MCP."
+        : "No API keys exist on this instance.";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var user = (await AuthProvider.GetAuthenticationStateAsync()).User;
+        var idRaw = user.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        _currentUserId = Guid.TryParse(idRaw, out var id) ? id : Guid.Empty;
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        // Server-side re-check of the cross-user view (UiActionGuard pattern):
+        // the RequirePermission around the My/All toggle is only a render gate,
+        // so re-verify ApiKeyViewAll before fetching everyone's keys. Falls
+        // back to the caller's own keys on denial rather than leaking.
+        //
+        // System-wide scope (new PermissionScope() = null SpaceId): GetAllAsync
+        // is NOT Space-filtered (ApiKey isn't ISpaceScoped), so it discloses
+        // every Space's keys. A per-Space grant of ApiKeyViewAll must NOT
+        // unlock that — only a system-wide assignment (or AdministerSystem)
+        // may. Mirrors MaintenanceMiddleware's BypassMaintenance check.
+        if (_view == KeyViewFilter.All
+            && !await Guard.AllowAsync(Permission.ApiKeyViewAll, new PermissionScope()))
+        {
+            _view = KeyViewFilter.Mine;
+        }
+
+        _keys = _view == KeyViewFilter.All
+            ? await ApiKeySvc.GetAllAsync()
+            : await ApiKeySvc.GetForUserAsync(_currentUserId);
+        StateHasChanged();
+    }
+
+    private async Task NewKeyAsync()
+    {
+        var result = await Dialog.OpenAsync<NewApiKeyDialog>(
+            "New API Key",
+            new Dictionary<string, object?>(),
+            new DialogOptions { Width = "560px" });
+        if (result is true)
+        {
+            await ReloadAsync();
+        }
+    }
+
+    private async Task RevokeAsync(ApiKeyInfo key)
+    {
+        // Own key → ApiKeyDelete at the ambient Space; someone else's → the
+        // admin atom checked SYSTEM-WIDE (the service isn't Space-filtered, so
+        // a per-Space ApiKeyDeleteAll grant must not authorize revoking keys
+        // across every Space).
+        var isOwn = key.UserId == _currentUserId;
+        var required = isOwn ? Permission.ApiKeyDelete : Permission.ApiKeyDeleteAll;
+        var scope = isOwn ? (PermissionScope?)null : new PermissionScope();
+        if (!await Guard.AllowAsync(required, scope))
+        {
+            return;
+        }
+
+        var confirmed = await Dialog.Confirm(
+            $"Revoke API key '{key.Name}' ({key.Hint})? Anything using it stops " +
+            "authenticating immediately. This cannot be undone.",
+            "Confirm Revoke",
+            new ConfirmOptions { OkButtonText = "Revoke", CancelButtonText = "Cancel" });
+        if (confirmed != true)
+        {
+            return;
+        }
+
+        await ApiKeySvc.RevokeAsync(key.Id);
+        await ReloadAsync();
+        Notify.Notify(NotificationSeverity.Success, "Key revoked",
+            $"'{key.Name}' no longer authenticates.", 4000);
+    }
+
+    private static string StatusText(ApiKeyInfo k) =>
+        k.IsRevoked ? "Revoked"
+        : k.IsExpired(DateTimeOffset.UtcNow) ? "Expired"
+        : "Active";
+
+    private static BadgeStyle StatusStyle(ApiKeyInfo k) =>
+        k.IsRevoked ? BadgeStyle.Danger
+        : k.IsExpired(DateTimeOffset.UtcNow) ? BadgeStyle.Warning
+        : BadgeStyle.Success;
+}

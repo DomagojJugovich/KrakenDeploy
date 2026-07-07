@@ -1,0 +1,135 @@
+using KrakenDeploy.Contracts.Crypto;
+using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.Variables;
+using Microsoft.EntityFrameworkCore;
+
+namespace KrakenDeploy.Server.Data.Encryption;
+
+/// <summary>
+/// The DEK-rotation re-encryption walk (M13.D.2): decrypts every secret under
+/// the old DEK and re-encrypts it under the new one, on a tracked context, in
+/// the caller's transaction. Extracted from the CLI so it is directly testable.
+/// <para>
+/// Two invariants the walk depends on:
+/// </para>
+/// <list type="number">
+///   <item><b><c>IgnoreQueryFilters()</c> everywhere</b> — the caller (CLI) has no
+///     active Space, so the global Space filter would silently skip
+///     <c>ISpaceScoped</c> rows and leave them under the old DEK.</item>
+///   <item><b>JSONB props are reassigned / flagged modified</b> — the jsonb value
+///     converter has no <c>ValueComparer</c>, so in-place edits are invisible to
+///     change tracking; the release-snapshot list is rebuilt+reassigned and the
+///     offline-drop config is flagged <c>IsModified</c>.</item>
+/// </list>
+/// <para>
+/// The completeness of the store list here is guarded by a reflection test that
+/// fails CI if a new <c>*Encrypted</c> domain property appears un-walked.
+/// </para>
+/// </summary>
+public static class DekRotationWalk
+{
+    /// <summary>
+    /// Re-encrypts every secret store from <paramref name="oldDek"/> to
+    /// <paramref name="newDek"/>. Does NOT save — the caller owns the
+    /// transaction + <c>SaveChanges</c> + the wrapped-DEK swap.
+    /// </summary>
+    public static async Task<DekReEncryptCounts> ReEncryptAllAsync(
+        KrakenDbContext db, byte[] oldDek, byte[] newDek, CancellationToken ct = default)
+    {
+        static string Re(byte[] o, byte[] n, string cipher) =>
+            AesGcmCipher.Encrypt(n, AesGcmCipher.Decrypt(o, cipher));
+
+        var c = new DekReEncryptCounts();
+
+        // 1. Live sensitive variables (scalar column).
+        var vars = await db.Variables.IgnoreQueryFilters()
+            .Where(v => v.Type == VariableType.Sensitive).ToListAsync(ct).ConfigureAwait(false);
+        foreach (var v in vars)
+        {
+            if (!string.IsNullOrEmpty(v.Value)) { v.Value = Re(oldDek, newDek, v.Value); c.Variables++; }
+        }
+
+        // 2. Release variable snapshots (JSONB — rebuild + REASSIGN the list).
+        var releases = await db.Releases.IgnoreQueryFilters().ToListAsync(ct).ConfigureAwait(false);
+        foreach (var release in releases)
+        {
+            if (release.VariableSnapshot.Count == 0) { continue; }
+            var rewritten = new List<VariableSnapshot>(release.VariableSnapshot.Count);
+            var touched = false;
+            foreach (var s in release.VariableSnapshot)
+            {
+                if (s.Type == VariableType.Sensitive && !string.IsNullOrEmpty(s.Value))
+                {
+                    rewritten.Add(new VariableSnapshot
+                    {
+                        Name = s.Name, Value = Re(oldDek, newDek, s.Value),
+                        Type = s.Type, Scope = s.Scope, Layer = s.Layer,
+                    });
+                    touched = true;
+                    c.SnapshotEntries++;
+                }
+                else
+                {
+                    rewritten.Add(s);
+                }
+            }
+            if (touched) { release.VariableSnapshot = rewritten; c.Releases++; }
+        }
+
+        // 3. AI provider keys.
+        var ai = await db.SpaceAiSettings.IgnoreQueryFilters()
+            .Where(s => s.ApiKeyEncrypted != null).ToListAsync(ct).ConfigureAwait(false);
+        foreach (var s in ai) { s.ApiKeyEncrypted = Re(oldDek, newDek, s.ApiKeyEncrypted!); c.AiSettings++; }
+
+        // 4. OIDC client secrets.
+        var idps = await db.IdentityProviders.IgnoreQueryFilters()
+            .Where(i => i.ClientSecretEncrypted != null).ToListAsync(ct).ConfigureAwait(false);
+        foreach (var i in idps) { i.ClientSecretEncrypted = Re(oldDek, newDek, i.ClientSecretEncrypted!); c.IdentityProviders++; }
+
+        // 5. Server-wide SMTP password.
+        var smtp = await db.SmtpSettings.IgnoreQueryFilters()
+            .Where(s => s.PasswordEncrypted != null).ToListAsync(ct).ConfigureAwait(false);
+        foreach (var s in smtp) { s.PasswordEncrypted = Re(oldDek, newDek, s.PasswordEncrypted!); c.Smtp++; }
+
+        // 6. Offline-drop config (JSONB — mutate in place + flag modified, since the
+        //    converter has no ValueComparer so change tracking won't notice otherwise).
+        var targets = await db.DeploymentTargets.IgnoreQueryFilters()
+            .Where(t => t.OfflineDropConfig != null).ToListAsync(ct).ConfigureAwait(false);
+        foreach (var t in targets)
+        {
+            var cfg = t.OfflineDropConfig!;
+            var any = false;
+            if (!string.IsNullOrEmpty(cfg.HmacKeyEncrypted)) { cfg.HmacKeyEncrypted = Re(oldDek, newDek, cfg.HmacKeyEncrypted); any = true; }
+            if (!string.IsNullOrEmpty(cfg.BundleKeyEncrypted)) { cfg.BundleKeyEncrypted = Re(oldDek, newDek, cfg.BundleKeyEncrypted); any = true; }
+            if (!string.IsNullOrEmpty(cfg.SmtpPasswordEncrypted)) { cfg.SmtpPasswordEncrypted = Re(oldDek, newDek, cfg.SmtpPasswordEncrypted); any = true; }
+            if (!string.IsNullOrEmpty(cfg.WebhookSecretEncrypted)) { cfg.WebhookSecretEncrypted = Re(oldDek, newDek, cfg.WebhookSecretEncrypted); any = true; }
+            if (!string.IsNullOrEmpty(cfg.FileSharePasswordEncrypted)) { cfg.FileSharePasswordEncrypted = Re(oldDek, newDek, cfg.FileSharePasswordEncrypted); any = true; }
+            if (any)
+            {
+                db.Entry(t).Property(x => x.OfflineDropConfig).IsModified = true;
+                c.OfflineDropFields++;
+            }
+        }
+
+        return c;
+    }
+}
+
+/// <summary>Per-store re-encryption counts for the operator summary + audit.</summary>
+public sealed class DekReEncryptCounts
+{
+    public int Variables { get; set; }
+    public int Releases { get; set; }
+    public int SnapshotEntries { get; set; }
+    public int AiSettings { get; set; }
+    public int IdentityProviders { get; set; }
+    public int Smtp { get; set; }
+    public int OfflineDropFields { get; set; }
+
+    public int Total => Variables + SnapshotEntries + AiSettings + IdentityProviders + Smtp + OfflineDropFields;
+
+    public string Summary =>
+        $"{Variables} variables, {SnapshotEntries} snapshot entries across {Releases} releases, " +
+        $"{AiSettings} AI keys, {IdentityProviders} OIDC secrets, {Smtp} SMTP, " +
+        $"{OfflineDropFields} offline-drop targets";
+}

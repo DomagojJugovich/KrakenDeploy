@@ -123,6 +123,15 @@ public sealed class SpacesTests
             // Singleton row for instance-wide performance + retention
             // knobs (M13.F.3) — server-wide tuning dials; not per-Space.
             "PerformanceSettings",
+            // Per-user API keys (M13.C.4) — platform-level rows keyed by
+            // owning user (like AuditEntry). SpaceId is an OPTIONAL
+            // restriction column, not a tenancy partition, so the entity is
+            // deliberately not ISpaceScoped (an ISpaceScoped ApiKey would be
+            // hidden by the global Space filter at auth time — wrong).
+            "ApiKey",
+            // Wrapped data-encryption key (M13.D.2) — platform-level crypto
+            // material, one instance-wide row; never Space-partitioned.
+            "DataEncryptionKey",
         };
 
         var assembly = typeof(Project).Assembly;

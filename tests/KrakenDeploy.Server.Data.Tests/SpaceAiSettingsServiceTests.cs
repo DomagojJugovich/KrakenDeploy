@@ -273,7 +273,7 @@ public sealed class SpaceAiSettingsServiceTests(PostgresFixture postgres)
             NullLogger<SpaceAiSettingsService>.Instance);
 
     private static AesEncryptionService NewEncryptionService() =>
-        new(Convert.ToBase64String(
+        TestCrypto.Service(Convert.ToBase64String(
             System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
 
     private static AiCallLog NewLog(

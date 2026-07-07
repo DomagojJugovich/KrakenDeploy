@@ -25,13 +25,43 @@ internal static class SeedDemoCommands
         var clear = args.Contains("--clear");
 
         var builder = CliHost.CreateBuilder(contentRoot);
-        var connectionString = builder.Configuration.GetConnectionString("KrakenDb")
-            ?? throw new InvalidOperationException("Connection string 'KrakenDb' is not configured.");
+
+        // seed-demo writes fake demo data (Grad Dubrovnik, Argosy Web, demo targets, …)
+        // into the Default Space. It is a dev-only single-instance tool; in multi-account
+        // mode (production SaaS) resolving a real tenant and filling it with demo garbage
+        // is a footgun, so refuse outright rather than offer --account.
+        if (builder.Configuration.GetValue("MultiAccount:Enabled", false))
+        {
+            Console.Error.WriteLine(
+                "seed-demo is a dev-only single-instance tool and is not supported in " +
+                "multi-account mode (it would write demo data into a real tenant database).");
+            return 1;
+        }
+
+        var connectionString = builder.Configuration.GetConnectionString("KrakenDb");
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            Console.Error.WriteLine(
+                "ConnectionStrings:KrakenDb is not configured. " +
+                "Set it in appsettings.{Environment}.json or via env var.");
+            return 1;
+        }
 
         builder.Services.AddKrakenDeployData(connectionString);
-        builder.Services.AddSingleton<IEncryptionService>(
-            _ => new AesEncryptionService(
-                Convert.ToBase64String(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32))));
+        // seed-demo DOES create sensitive variables → it must have a real DEK.
+        // Use the configured KEK if present, else a random one. seed-demo is a
+        // DEV-ONLY throwaway, so an ephemeral KEK is acceptable — but warn, since
+        // the DEK it provisions is unrecoverable once this process exits.
+        var seedKek = builder.Configuration["Encryption:MasterKey"];
+        if (string.IsNullOrWhiteSpace(seedKek))
+        {
+            seedKek = Convert.ToBase64String(
+                System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+            Console.WriteLine(
+                "WARNING: Encryption:MasterKey not set — using an ephemeral KEK. The provisioned DEK " +
+                "is unrecoverable after this process exits (fine for a throwaway demo DB).");
+        }
+        builder.Services.AddKrakenDeployEncryption(seedKek);
 
         using var host = builder.Build();
         await using var scope = host.Services.CreateAsyncScope();
@@ -39,6 +69,7 @@ internal static class SeedDemoCommands
 
         var db = sp.GetRequiredService<KrakenDbContext>();
         await db.Database.MigrateAsync().ConfigureAwait(false);
+        await sp.GetRequiredService<IDekProvider>().EnsureDekAsync().ConfigureAwait(false);
         await sp.GetRequiredService<SpaceService>().EnsureDefaultAsync().ConfigureAwait(false);
 
         var dbFactory = sp.GetRequiredService<IDbContextFactory<KrakenDbContext>>();

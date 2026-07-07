@@ -111,7 +111,7 @@ public sealed class DeployReleaseStepTimeoutTests(PostgresFixture postgres)
         //    (for the child create). ──────────────────────────────────────────
         var services = new ServiceCollection();
         services.AddKrakenDeployData(postgres.ConnectionString);
-        services.AddSingleton<IEncryptionService>(_ => new AesEncryptionService(
+        services.AddSingleton<IEncryptionService>(_ => TestCrypto.Service(
             Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))));
         services.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
         services.AddSingleton(NullLoggerFactory.Instance);

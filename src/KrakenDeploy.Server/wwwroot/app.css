@@ -636,6 +636,33 @@ html, body {
 @media (max-width: 1000px) { .dash-split { grid-template-columns: 1fr; } }
 .dash-side { display: flex; flex-direction: column; gap: var(--gap); }
 
+/* ── Dashboard tile layout (RadzenTileLayout) — Home dashboard ── */
+.dash-tiles { margin-top: var(--section-gap); }
+/* The tile item is a transparent positioning shell; our .stat / .kr-card provide
+   the visuals. !important is required: app.css is served fingerprinted and loses the
+   cascade to Radzen's theme .rz-tile-layout-item rule despite higher specificity
+   (verified via live computed-style inspection). Scoped to .dash-tiles so no other
+   RadzenTileLayout is affected. */
+.dash-tiles .rz-tile-layout-item {
+    background: transparent !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+}
+.dash-tiles .rz-tile-layout-item-content {
+    padding: 0 !important;
+    height: 100%;
+    overflow: auto;
+}
+.dash-tiles .rz-tile-layout-item .stat,
+.dash-tiles .rz-tile-layout-item .kr-card { height: 100%; margin: 0; }
+.dash-tiles .rz-tile-layout-item .kr-card { overflow: auto; }
+/* Drag affordance only shows in edit mode (Radzen renders the header when CanMove). */
+.dash-tiles .rz-tile-layout-item-header { min-height: 26px; }
+/* Never let the fixed 12-col grid break page layout on narrow viewports. */
+@media (max-width: 900px) { .dash-tiles { overflow-x: auto; } }
+
 /* ── Attention list ── */
 .attn-row {
     display: flex; align-items: flex-start; gap: 12px;

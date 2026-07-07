@@ -79,7 +79,7 @@ public sealed class PerAccountOidcConfigureOptions(IServiceScopeFactory scopeFac
             }
 
             options.Events = OidcRegistrar.BuildEvents(
-                idp.Id, idp.Name, name!, idp.AutoProvisionUsers, idp.GroupClaimName);
+                idp.Id, idp.Name, name!, idp.AutoProvisionUsers, idp.GroupClaimName, idp.DefaultTeamId);
         }
     }
 

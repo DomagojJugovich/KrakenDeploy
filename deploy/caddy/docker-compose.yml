@@ -47,8 +47,7 @@ services:
         Username=kraken;Password=${POSTGRES_PASSWORD:-kraken-dev-password}
       Server__DataPath: /data
       Agent__JwtSigningKey: ${AGENT_JWT_KEY:-change-me-at-least-32-characters-long-!!}
-      Encryption__MasterKey: ${ENCRYPTION_KEY}
-      ApiKey__Key: ${API_KEY:-}
+      Encryption__MasterKey: ${ENCRYPTION_KEY:?Required — base64-encoded 32-byte KEK; an unset key permanently locks the encrypted DB}
       AgentUpdate__BinariesPath: /data/agents
       DOTNET_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://0.0.0.0:5080

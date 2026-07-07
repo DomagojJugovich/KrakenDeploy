@@ -17,9 +17,10 @@ namespace KrakenDeploy.Server.Core.Domain.Releases;
 /// Sensitive values stay encrypted in the snapshot — <see cref="Value"/>
 /// holds the same AES-256-GCM ciphertext that lives in the source
 /// <see cref="Variable"/>. Decryption still happens at deployment-resolve
-/// time. The snapshot survives a project's later variable edits; it does
-/// NOT automatically survive an encryption-key rotation (the key used to
-/// encrypt the ciphertext must remain available).
+/// time. The snapshot survives a project's later variable edits AND survives
+/// key rotation: a KEK rotation never touches data, and a DEK rotation
+/// re-encrypts these snapshot values in the same atomic pass as live
+/// variables (M13.D.2, <c>DekRotationWalk</c>).
 /// </para>
 /// </summary>
 public sealed class VariableSnapshot

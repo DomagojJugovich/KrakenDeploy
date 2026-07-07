@@ -172,46 +172,19 @@ public sealed class AdhocTools
 
     /// <summary>
     /// Checks the caller's API-key principal has
-    /// <see cref="Permission.AdhocActionsExecute"/> in the active Space.
-    /// Returns the resolved user id + display for audit + ownership stamping.
-    /// Throws <see cref="McpException"/> with a 403-shaped message on failure.
+    /// <see cref="Permission.AdhocActionsExecute"/> (in the key's bound Space
+    /// when restricted, else system-wide). Delegates to the shared
+    /// <see cref="McpToolAuth"/> gate; throws <see cref="McpException"/> with
+    /// a 403-shaped message on failure.
     /// </summary>
-    private static async Task<(Guid UserId, string Display)> EnsureAuthorisedAsync(
+    private static Task<(Guid UserId, string Display)> EnsureAuthorisedAsync(
         IPermissionEvaluator permissions,
         IHttpContextAccessor httpContext,
         string toolName,
         IAuditLog audit,
         CancellationToken ct)
-    {
-        var user = httpContext.HttpContext?.User;
-        if (user is null || user.Identity?.IsAuthenticated != true)
-        {
-            await McpAudit.ToolInvokedAsync(audit, toolName, "(no principal)", "unauthorised", ct)
-                .ConfigureAwait(false);
-            throw new McpException(
-                "MCP request has no authenticated principal — verify the X-Api-Key " +
-                "header carries a key bound to an operator with AdhocActionsExecute.");
-        }
-
-        var allowed = await permissions
-            .HasPermissionAsync(user, Permission.AdhocActionsExecute, new PermissionScope(), ct: ct)
-            .ConfigureAwait(false);
-        if (!allowed)
-        {
-            var who = user.Identity?.Name ?? "(unknown)";
-            await McpAudit.ToolInvokedAsync(audit, toolName, $"user={who}", "permission-denied", ct)
-                .ConfigureAwait(false);
-            throw new McpException(
-                "Caller does not have Permission.AdhocActionsExecute. Ad-hoc actions are " +
-                "the single-approver-gated surface (M11.E.5); a separate operator may need " +
-                "to grant your API key the AdhocActionsExecute permission first.");
-        }
-
-        var userIdRaw = user.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        var userId = Guid.TryParse(userIdRaw, out var u) ? u : Guid.Empty;
-        var display = user.Identity?.Name ?? "mcp-client";
-        return (userId, display);
-    }
+        => McpToolAuth.EnsureAsync(
+            permissions, httpContext, toolName, Permission.AdhocActionsExecute, audit, ct);
 
     private static AdhocMode ParseMode(string raw)
     {

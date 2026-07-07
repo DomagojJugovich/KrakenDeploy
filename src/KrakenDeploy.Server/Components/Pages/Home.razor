@@ -7,6 +7,7 @@
 @using KrakenDeploy.Server.Core.Domain.Analytics
 @inject DashboardService DashboardSvc
 @inject PivotViewService PivotViewSvc
+@inject DashboardLayoutService DashboardLayoutSvc
 @inject DialogService Dialog
 @inject NotificationService Notifications
 @inject AuthenticationStateProvider AuthState
@@ -20,6 +21,21 @@
         <p class="page-sub">@(_summary?.SpaceName ?? "…") · all projects</p>
     </div>
     <div class="page-head-actions">
+        @if (_summary is not null)
+        {
+            @if (_editMode)
+            {
+                <RadzenButton Text="Reset" Icon="restart_alt" ButtonStyle="ButtonStyle.Light"
+                              Variant="Variant.Filled" Click="@ResetLayoutAsync" />
+                <RadzenButton Text="Done" Icon="check" ButtonStyle="ButtonStyle.Success"
+                              Variant="Variant.Filled" Click="@ToggleEditMode" />
+            }
+            else
+            {
+                <RadzenButton Text="Customize" Icon="dashboard_customize" ButtonStyle="ButtonStyle.Light"
+                              Variant="Variant.Filled" Click="@ToggleEditMode" />
+            }
+        }
         <RadzenButton Text="Refresh" Icon="refresh" ButtonStyle="ButtonStyle.Light"
                       Variant="Variant.Filled" Click="@RefreshAsync" />
         <RadzenButton Text="Deploy" Icon="rocket_launch" ButtonStyle="ButtonStyle.Primary"
@@ -35,100 +51,119 @@ else
 {
     var s = _summary;
 
-    @* ── Stat cards ── *@
-    <div class="stat-grid">
-        <div class="stat st--ok">
-            <span class="stat-strip"></span>
-            <div class="stat-row">
-                <div class="stat-ic"><RadzenIcon Icon="dns" /></div>
-                <div>
-                    <div class="stat-val">@($"{s.TargetsOnline}/{s.TargetsTotal}")</div>
-                    <div class="stat-label">Targets online</div>
+    @* ── Rearrangeable tiles — per-user layout persisted via DashboardLayoutService.
+       Read-only until "Customize" toggles EditMode; each move/resize commit fires
+       Change → save. The tile item is a transparent positioning shell so our
+       existing .stat / .kr-card visuals show through (see .dash-tiles in app.css). ── *@
+    <div class="dash-tiles">
+    <RadzenTileLayout @key="_layoutEpoch" Columns="12" RowHeight="92" Gap="10"
+                      EditMode="_editMode" Change="@(_ => OnLayoutChangedAsync())">
+
+        <RadzenTileLayoutItem @bind-Col="_tiles[TileTargetsOnline].Col" @bind-Row="_tiles[TileTargetsOnline].Row"
+                              @bind-ColSpan="_tiles[TileTargetsOnline].ColSpan" @bind-RowSpan="_tiles[TileTargetsOnline].RowSpan">
+            <div class="stat st--ok">
+                <span class="stat-strip"></span>
+                <div class="stat-row">
+                    <div class="stat-ic"><RadzenIcon Icon="dns" /></div>
+                    <div>
+                        <div class="stat-val">@($"{s.TargetsOnline}/{s.TargetsTotal}")</div>
+                        <div class="stat-label">Targets online</div>
+                    </div>
                 </div>
             </div>
-        </div>
+        </RadzenTileLayoutItem>
 
-        <div class="stat st--run">
-            <span class="stat-strip"></span>
-            <div class="stat-row">
-                <div class="stat-ic"><RadzenIcon Icon="rocket_launch" /></div>
-                <div>
-                    <div class="stat-val">@s.DeploymentsToday</div>
-                    <div class="stat-label">Deployments today</div>
+        <RadzenTileLayoutItem @bind-Col="_tiles[TileDeploymentsToday].Col" @bind-Row="_tiles[TileDeploymentsToday].Row"
+                              @bind-ColSpan="_tiles[TileDeploymentsToday].ColSpan" @bind-RowSpan="_tiles[TileDeploymentsToday].RowSpan">
+            <div class="stat st--run">
+                <span class="stat-strip"></span>
+                <div class="stat-row">
+                    <div class="stat-ic"><RadzenIcon Icon="rocket_launch" /></div>
+                    <div>
+                        <div class="stat-val">@s.DeploymentsToday</div>
+                        <div class="stat-label">Deployments today</div>
+                    </div>
                 </div>
             </div>
-        </div>
+        </RadzenTileLayoutItem>
 
-        <div class="stat st--fail">
-            <span class="stat-strip"></span>
-            <div class="stat-row">
-                <div class="stat-ic"><RadzenIcon Icon="error" /></div>
-                <div>
-                    <div class="stat-val">@s.Failed24h</div>
-                    <div class="stat-label">Failed (24h)</div>
+        <RadzenTileLayoutItem @bind-Col="_tiles[TileFailed24h].Col" @bind-Row="_tiles[TileFailed24h].Row"
+                              @bind-ColSpan="_tiles[TileFailed24h].ColSpan" @bind-RowSpan="_tiles[TileFailed24h].RowSpan">
+            <div class="stat st--fail">
+                <span class="stat-strip"></span>
+                <div class="stat-row">
+                    <div class="stat-ic"><RadzenIcon Icon="error" /></div>
+                    <div>
+                        <div class="stat-val">@s.Failed24h</div>
+                        <div class="stat-label">Failed (24h)</div>
+                    </div>
                 </div>
             </div>
-        </div>
+        </RadzenTileLayoutItem>
 
-        <div class="stat st--offline">
-            <span class="stat-strip"></span>
-            <div class="stat-row">
-                <div class="stat-ic"><RadzenIcon Icon="cloud_off" /></div>
-                <div>
-                    <div class="stat-val">@s.PendingOffline</div>
-                    <div class="stat-label">Pending offline</div>
+        <RadzenTileLayoutItem @bind-Col="_tiles[TilePendingOffline].Col" @bind-Row="_tiles[TilePendingOffline].Row"
+                              @bind-ColSpan="_tiles[TilePendingOffline].ColSpan" @bind-RowSpan="_tiles[TilePendingOffline].RowSpan">
+            <div class="stat st--offline">
+                <span class="stat-strip"></span>
+                <div class="stat-row">
+                    <div class="stat-ic"><RadzenIcon Icon="cloud_off" /></div>
+                    <div>
+                        <div class="stat-val">@s.PendingOffline</div>
+                        <div class="stat-label">Pending offline</div>
+                    </div>
                 </div>
             </div>
-        </div>
-    </div>
+        </RadzenTileLayoutItem>
 
-    @* ── Recent (left) + Attention & Environment health (right) ── *@
-    <div class="dash-split">
-        <div class="kr-card">
-            <div class="kr-card-head">
-                <h3>Recent deployments</h3>
-                <a class="primary-link" href="@Sp("/deployments")">View all</a>
-            </div>
-            @if (s.Recent.Count == 0)
-            {
-                <div class="kr-empty">No deployments yet.</div>
-            }
-            else
-            {
-                <table class="dg">
-                    <thead>
-                        <tr>
-                            <th>Status</th>
-                            <th>Project / Release</th>
-                            <th>Environment</th>
-                            <th>Target</th>
-                            <th>Time</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @foreach (var d in s.Recent)
-                        {
-                            <tr class="clickable" @onclick="@(() => Nav.NavigateTo(Sp($"/deployments/{d.Id}")))">
-                                <td><StatusPill Deployment="d.Status" /></td>
-                                <td>
-                                    <span class="cell-strong">@(d.Release?.Project?.Name ?? "—")</span>
-                                    <span class="mono cell-muted">&nbsp;@(d.Release?.Version)</span>
-                                </td>
-                                <td>
-                                    <span class="env-cell @EnvColor(d.Environment?.Name)">
-                                        <span class="dot"></span>@(d.Environment?.Name ?? "—")
-                                    </span>
-                                </td>
-                                <td>@TargetLabel(d)</td>
-                                <td class="mono cell-muted">@TimeLabel(d)</td>
+        <RadzenTileLayoutItem @bind-Col="_tiles[TileRecent].Col" @bind-Row="_tiles[TileRecent].Row"
+                              @bind-ColSpan="_tiles[TileRecent].ColSpan" @bind-RowSpan="_tiles[TileRecent].RowSpan">
+            <div class="kr-card">
+                <div class="kr-card-head">
+                    <h3>Recent deployments</h3>
+                    <a class="primary-link" href="@Sp("/deployments")">View all</a>
+                </div>
+                @if (s.Recent.Count == 0)
+                {
+                    <div class="kr-empty">No deployments yet.</div>
+                }
+                else
+                {
+                    <table class="dg">
+                        <thead>
+                            <tr>
+                                <th>Status</th>
+                                <th>Project / Release</th>
+                                <th>Environment</th>
+                                <th>Target</th>
+                                <th>Time</th>
                             </tr>
-                        }
-                    </tbody>
-                </table>
-            }
-        </div>
+                        </thead>
+                        <tbody>
+                            @foreach (var d in s.Recent)
+                            {
+                                <tr class="clickable" @onclick="@(() => Nav.NavigateTo(Sp($"/deployments/{d.Id}")))">
+                                    <td><StatusPill Deployment="d.Status" /></td>
+                                    <td>
+                                        <span class="cell-strong">@(d.Release?.Project?.Name ?? "—")</span>
+                                        <span class="mono cell-muted">&nbsp;@(d.Release?.Version)</span>
+                                    </td>
+                                    <td>
+                                        <span class="env-cell @EnvColor(d.Environment?.Name)">
+                                            <span class="dot"></span>@(d.Environment?.Name ?? "—")
+                                        </span>
+                                    </td>
+                                    <td>@TargetLabel(d)</td>
+                                    <td class="mono cell-muted">@TimeLabel(d)</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+            </div>
+        </RadzenTileLayoutItem>
 
-        <div class="dash-side">
+        <RadzenTileLayoutItem @bind-Col="_tiles[TileAttention].Col" @bind-Row="_tiles[TileAttention].Row"
+                              @bind-ColSpan="_tiles[TileAttention].ColSpan" @bind-RowSpan="_tiles[TileAttention].RowSpan">
             <div class="kr-card">
                 <div class="kr-card-head"><h3>Needs attention</h3></div>
                 @if (s.Attention.Count == 0)
@@ -153,7 +188,10 @@ else
                     }
                 }
             </div>
+        </RadzenTileLayoutItem>
 
+        <RadzenTileLayoutItem @bind-Col="_tiles[TileEnvironmentHealth].Col" @bind-Row="_tiles[TileEnvironmentHealth].Row"
+                              @bind-ColSpan="_tiles[TileEnvironmentHealth].ColSpan" @bind-RowSpan="_tiles[TileEnvironmentHealth].RowSpan">
             <div class="kr-card">
                 <div class="kr-card-head"><h3>Environment health</h3></div>
                 @if (s.Environments.Count == 0)
@@ -175,7 +213,9 @@ else
                     }
                 }
             </div>
-        </div>
+        </RadzenTileLayoutItem>
+
+    </RadzenTileLayout>
     </div>
 
     @* ── Analytics — OLAP-style pivot over deployment facts ── *@
@@ -274,7 +314,156 @@ else
     private DashboardSummary? _summary;
     private Dictionary<string, int> _envColor = new(StringComparer.OrdinalIgnoreCase);
 
-    protected override async Task OnInitializedAsync() => await LoadAsync();
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        await LoadLayoutAsync();
+    }
+
+    // ── Tile layout (RadzenTileLayout) — per-user, DB-persisted ──────────────
+
+    private const string DashboardKey = "space-home";
+
+    // Bump when the tile set changes incompatibly: a saved layout with a different
+    // version is ignored and the default is used (safe re-flow).
+    private const int LayoutVersion = 1;
+
+    // Stable tile ids — persisted, never rename.
+    private const string TileTargetsOnline = "targets-online";
+    private const string TileDeploymentsToday = "deployments-today";
+    private const string TileFailed24h = "failed-24h";
+    private const string TilePendingOffline = "pending-offline";
+    private const string TileRecent = "recent-deployments";
+    private const string TileAttention = "needs-attention";
+    private const string TileEnvironmentHealth = "environment-health";
+
+    private bool _editMode;
+    private int _layoutEpoch;
+    private Task? _pendingSave; // in-flight layout save, so Reset can await it first
+    private Dictionary<string, TilePos> _tiles = DefaultTilePositions();
+
+    // Default arrangement on the 12-column grid.
+    private static Dictionary<string, TilePos> DefaultTilePositions() => new()
+    {
+        [TileTargetsOnline]     = new TilePos { Col = 1,  Row = 1, ColSpan = 3, RowSpan = 1 },
+        [TileDeploymentsToday]  = new TilePos { Col = 4,  Row = 1, ColSpan = 3, RowSpan = 1 },
+        [TileFailed24h]         = new TilePos { Col = 7,  Row = 1, ColSpan = 3, RowSpan = 1 },
+        [TilePendingOffline]    = new TilePos { Col = 10, Row = 1, ColSpan = 3, RowSpan = 1 },
+        [TileRecent]            = new TilePos { Col = 1,  Row = 2, ColSpan = 8, RowSpan = 5 },
+        [TileAttention]         = new TilePos { Col = 9,  Row = 2, ColSpan = 4, RowSpan = 3 },
+        [TileEnvironmentHealth] = new TilePos { Col = 9,  Row = 5, ColSpan = 4, RowSpan = 2 },
+    };
+
+    private void ToggleEditMode() => _editMode = !_editMode;
+
+    private async Task LoadLayoutAsync()
+    {
+        await EnsureUserAsync();
+        if (_userId is not { } userId)
+        {
+            return;
+        }
+
+        var saved = await DashboardLayoutSvc.GetForUserAsync(userId, DashboardKey);
+        if (saved is null)
+        {
+            return; // no saved layout → keep defaults
+        }
+
+        try
+        {
+            var state = JsonSerializer.Deserialize<TileLayoutState>(saved.Definition, LayoutJson);
+            if (state is null || state.Version != LayoutVersion)
+            {
+                return; // stale/incompatible → keep defaults (safe re-flow)
+            }
+
+            // Overlay saved positions onto the current default set: known tiles take
+            // their saved place; tiles added since keep their default; tiles no longer
+            // defined are dropped.
+            var positions = DefaultTilePositions();
+            foreach (var t in state.Tiles)
+            {
+                if (positions.ContainsKey(t.TileId))
+                {
+                    positions[t.TileId] = new TilePos
+                    {
+                        Col = t.Col, Row = t.Row, ColSpan = t.ColSpan, RowSpan = t.RowSpan,
+                    };
+                }
+            }
+            _tiles = positions;
+        }
+        catch (JsonException)
+        {
+            // Corrupt definition → keep defaults.
+        }
+    }
+
+    private async Task OnLayoutChangedAsync()
+    {
+        // Persist only deliberate edits. Change fires once per move/resize commit
+        // (on pointer-up), so it's one write per gesture — no per-pointer chatter.
+        if (!_editMode || _userId is not { } userId)
+        {
+            return;
+        }
+
+        var state = new TileLayoutState(
+            LayoutVersion,
+            _tiles.Select(kv => new TileState(
+                kv.Key, kv.Value.Col, kv.Value.Row, kv.Value.ColSpan, kv.Value.RowSpan)).ToList());
+
+        // Track the in-flight write so a concurrent Reset can await it before
+        // clearing — otherwise this save could land after the clear and silently
+        // undo the reset (Change fires on pointer-up; Reset can be clicked mid-save).
+        var save = DashboardLayoutSvc.UpsertAsync(userId, DashboardKey, JsonSerializer.Serialize(state, LayoutJson));
+        _pendingSave = save;
+        await save;
+    }
+
+    private async Task ResetLayoutAsync()
+    {
+        // Let any in-flight save finish first so it can't re-persist the old layout
+        // after we clear it.
+        if (_pendingSave is { } pending)
+        {
+            try { await pending; }
+            catch { /* a faulted save is moot — we're discarding the layout anyway */ }
+        }
+
+        _tiles = DefaultTilePositions();
+        _layoutEpoch++; // remount the layout so items re-seed from the defaults
+        if (_userId is { } userId)
+        {
+            await DashboardLayoutSvc.ClearAsync(userId, DashboardKey);
+        }
+    }
+
+    private async Task EnsureUserAsync()
+    {
+        if (_userId is not null)
+        {
+            return;
+        }
+        var authState = await AuthState.GetAuthenticationStateAsync();
+        if (Guid.TryParse(authState.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out var id))
+        {
+            _userId = id;
+        }
+    }
+
+    private sealed class TilePos
+    {
+        public int Col { get; set; }
+        public int Row { get; set; }
+        public int ColSpan { get; set; }
+        public int RowSpan { get; set; }
+    }
+
+    private sealed record TileLayoutState(int Version, List<TileState> Tiles);
+
+    private sealed record TileState(string TileId, int Col, int Row, int ColSpan, int RowSpan);
 
     private async Task LoadAsync()
     {
@@ -330,6 +519,7 @@ else
     private PivotLayout _layout = PivotFields.Default();
     private string _pivotKey = "default";
     private List<PivotView> _views = [];
+    private bool _viewsLoaded;
     private Guid? _selectedViewId;
     private Guid? _userId;
 
@@ -352,15 +542,11 @@ else
         _factsLoading = true;
         try
         {
-            if (_userId is null)
+            await EnsureUserAsync();
+            if (_userId is { } uid && !_viewsLoaded)
             {
-                var state = await AuthState.GetAuthenticationStateAsync();
-                var claim = state.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                if (Guid.TryParse(claim, out var id))
-                {
-                    _userId = id;
-                    _views = await PivotViewSvc.GetForUserAsync(id);
-                }
+                _views = await PivotViewSvc.GetForUserAsync(uid);
+                _viewsLoaded = true;
             }
 
             _facts = await DashboardSvc.GetDeploymentFactsAsync(
