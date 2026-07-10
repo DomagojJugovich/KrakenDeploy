@@ -135,6 +135,7 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             // Blue-green slot telemetry — a fresh gauge per harness; tests may
             // assert in-flight counts but the default harness ignores it.
             inFlightGauge:         new InFlightWorkGauge(),
+            timeProvider:          TimeProvider.System,
             logger:                NullLogger<DeploymentWorker>.Instance);
     }
 
@@ -249,9 +250,12 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             throw new ArgumentException("Need at least one target.", nameof(targets));
         }
         await using var db = _postgres.CreateContext();
+        var projectId = await db.Releases.IgnoreQueryFilters()
+            .Where(r => r.Id == releaseId).Select(r => r.ProjectId).FirstAsync();
         var deployment = new Deployment
         {
             SpaceId       = WellKnown.DefaultSpaceId,
+            ProjectId     = projectId,
             ReleaseId     = releaseId,
             EnvironmentId = environmentId,
             Status        = DeploymentStatus.Queued,
@@ -266,9 +270,9 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         var now = DateTimeOffset.UtcNow;
         for (var i = 0; i < targets.Count; i++)
         {
-            db.DeploymentTargetAssignments.Add(new DeploymentTargetAssignment
+            db.TaskTargetAssignments.Add(new TaskTargetAssignment
             {
-                DeploymentId = deployment.Id,
+                TaskId       = deployment.Id,
                 TargetId     = targets[i].Id,
                 AddedUtc     = now.AddMicroseconds(i),
             });
@@ -318,10 +322,13 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
     /// lets a focused test drive <c>AppendConcurrentLogAsync</c> from genuinely
     /// parallel tasks to prove it's safe under concurrent DbContext use.
     /// </summary>
-    internal Task AppendConcurrentLogForTestAsync(
+    internal static Task AppendConcurrentLogForTestAsync(
         Guid deploymentId, LogSequencer logSeq, string level, string message,
         CancellationToken ct = default)
-        => _worker.AppendConcurrentLogAsync(deploymentId, logSeq, level, message, ct);
+    {
+        _ = deploymentId; // the sequencer now carries the task id
+        return logSeq.AppendAsync(-1, null, level, message, ct);
+    }
 
     // ── Query helpers ───────────────────────────────────────────────────────
 
@@ -332,11 +339,11 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         return d ?? throw new InvalidOperationException($"Deployment {id} not found.");
     }
 
-    public async Task<List<DeploymentStepOutcome>> GetOutcomesAsync(Guid deploymentId)
+    public async Task<List<TaskStepOutcome>> GetOutcomesAsync(Guid deploymentId)
     {
         await using var db = _postgres.CreateContext();
-        return await db.DeploymentStepOutcomes
-            .Where(o => o.DeploymentId == deploymentId)
+        return await db.TaskStepOutcomes
+            .Where(o => o.TaskId == deploymentId)
             .OrderBy(o => o.StepIndex).ThenBy(o => o.TargetId)
             .ToListAsync();
     }

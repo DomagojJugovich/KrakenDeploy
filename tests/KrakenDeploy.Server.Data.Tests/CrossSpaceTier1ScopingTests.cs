@@ -121,7 +121,7 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
 
         (await svc.RemoveStepAsync(g.DeploymentStepId)).Should().BeFalse(
             "the process step delete-by-id must not reach across Spaces");
-        await AssertStillExistsAsync<DeploymentStep>(g.DeploymentStepId);
+        await AssertStillExistsAsync<ProcessStep>(g.DeploymentStepId);
     }
 
     // ── RunbookStep (tier-1) — the DELETE /api/runbook-steps/{id} vector ─────
@@ -131,11 +131,12 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
     {
         var g = await SeedOtherSpaceGraphAsync();
         var svc = new RunbookService(postgres, new RunbookRunChannel(),
+            TimeProvider.System,
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
 
         (await svc.DeleteStepAsync(g.RunbookStepId)).Should().BeFalse(
             "DELETE /api/runbook-steps/{stepId} must not delete another Space's step");
-        await AssertStillExistsAsync<RunbookStep>(g.RunbookStepId);
+        await AssertStillExistsAsync<ProcessStep>(g.RunbookStepId);
     }
 
     // ── Create-path hardening: GetOrCreate must not create for a foreign parent ─
@@ -157,8 +158,8 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
             "creating a process/step for a project in another Space must be refused");
 
         await using var raw = postgres.CreateContext();
-        (await raw.DeploymentProcesses.IgnoreQueryFilters()
-                .CountAsync(p => p.ProjectId == projectId))
+        (await raw.Processes.IgnoreQueryFilters()
+                .CountAsync(p => p.OwnerKind == ProcessOwnerKind.Project && p.OwnerId == projectId))
             .Should().Be(0, "no process may be created in the caller's Space for a foreign project");
     }
 
@@ -167,6 +168,7 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
     {
         var runbookId = await SeedOtherSpaceRunbookAsync();
         var svc = new RunbookService(postgres, new RunbookRunChannel(),
+            TimeProvider.System,
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
 
         Func<Task> act = () => svc.AddStepAsync(
@@ -176,8 +178,8 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
             "creating a process/step for a runbook in another Space must be refused");
 
         await using var raw = postgres.CreateContext();
-        (await raw.RunbookProcesses.IgnoreQueryFilters()
-                .CountAsync(p => p.RunbookId == runbookId))
+        (await raw.Processes.IgnoreQueryFilters()
+                .CountAsync(p => p.OwnerKind == ProcessOwnerKind.Runbook && p.OwnerId == runbookId))
             .Should().Be(0, "no process may be created in the caller's Space for a foreign runbook");
     }
 
@@ -239,28 +241,28 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
         db.Tags.Add(tag);
 
         // Deployment process + step.
-        var dprocess = new DeploymentProcess { SpaceId = OtherSpaceId, ProjectId = project.Id };
-        db.DeploymentProcesses.Add(dprocess);
+        var dprocess = new Process { SpaceId = OtherSpaceId, OwnerKind = ProcessOwnerKind.Project, OwnerId = project.Id };
+        db.Processes.Add(dprocess);
         await db.SaveChangesAsync();
-        var dstep = new DeploymentStep
+        var dstep = new ProcessStep
         {
             SpaceId = OtherSpaceId, ProcessId = dprocess.Id, Name = "t1-step",
             StepType = "Kraken.Script", PackageId = "pkg",
         };
-        db.DeploymentSteps.Add(dstep);
+        db.ProcessSteps.Add(dstep);
 
         // Runbook process + step.
         var runbook = new Runbook { SpaceId = OtherSpaceId, ProjectId = project.Id, Name = "t1-runbook" };
         db.Runbooks.Add(runbook);
         await db.SaveChangesAsync();
-        var rprocess = new RunbookProcess { SpaceId = OtherSpaceId, RunbookId = runbook.Id };
-        db.RunbookProcesses.Add(rprocess);
+        var rprocess = new Process { SpaceId = OtherSpaceId, OwnerKind = ProcessOwnerKind.Runbook, OwnerId = runbook.Id };
+        db.Processes.Add(rprocess);
         await db.SaveChangesAsync();
-        var rstep = new RunbookStep
+        var rstep = new ProcessStep
         {
             SpaceId = OtherSpaceId, ProcessId = rprocess.Id, Name = "t1-rstep", StepType = "Kraken.Script",
         };
-        db.RunbookSteps.Add(rstep);
+        db.ProcessSteps.Add(rstep);
 
         await db.SaveChangesAsync();
 

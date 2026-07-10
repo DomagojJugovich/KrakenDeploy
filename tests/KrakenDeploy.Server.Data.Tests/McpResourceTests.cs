@@ -31,11 +31,11 @@ public sealed class McpResourceTests(PostgresFixture postgres)
         await using var db = postgres.CreateContext();
         // FK-safe delete order: log entries → deployments → releases +
         // environments → process → projects.
-        await db.DeploymentLogEntries.IgnoreQueryFilters().ExecuteDeleteAsync();
+        await db.TaskLogLive.IgnoreQueryFilters().ExecuteDeleteAsync();
         await db.Deployments.IgnoreQueryFilters().ExecuteDeleteAsync();
         await db.Releases.IgnoreQueryFilters().ExecuteDeleteAsync();
         await db.Environments.IgnoreQueryFilters().ExecuteDeleteAsync();
-        await db.DeploymentProcesses.IgnoreQueryFilters().ExecuteDeleteAsync();
+        await db.Processes.IgnoreQueryFilters().ExecuteDeleteAsync();
         await db.Projects.IgnoreQueryFilters().ExecuteDeleteAsync();
     }
 
@@ -142,12 +142,13 @@ public sealed class McpResourceTests(PostgresFixture postgres)
         var project = new Project { SpaceId = WellKnown.DefaultSpaceId, Name = "Argosy", Slug = "argosy" };
         db.Projects.Add(project);
         await db.SaveChangesAsync();
-        db.DeploymentProcesses.Add(new DeploymentProcess
+        db.Processes.Add(new Process
         {
-            ProjectId = project.Id,
+            OwnerKind = ProcessOwnerKind.Project,
+            OwnerId = project.Id,
             Steps =
             {
-                new DeploymentStep
+                new ProcessStep
                 {
                     Id        = Guid.NewGuid(),
                     Name      = "Deploy",
@@ -183,14 +184,14 @@ public sealed class McpResourceTests(PostgresFixture postgres)
         await db.SaveChangesAsync();
         var deployment = new Deployment
         {
-            SpaceId = WellKnown.DefaultSpaceId, ReleaseId = release.Id,
+            SpaceId = WellKnown.DefaultSpaceId, ProjectId = project.Id, ReleaseId = release.Id,
             EnvironmentId = env.Id, Status = DeploymentStatus.Succeeded,
         };
         db.Deployments.Add(deployment);
         await db.SaveChangesAsync();
-        db.DeploymentLogEntries.AddRange(
-            new DeploymentLogEntry { DeploymentId = deployment.Id, Sequence = 0, Timestamp = DateTimeOffset.UtcNow, Level = "info", Message = "line one" },
-            new DeploymentLogEntry { DeploymentId = deployment.Id, Sequence = 1, Timestamp = DateTimeOffset.UtcNow, Level = "info", Message = "line two" });
+        db.TaskLogLive.AddRange(
+            new TaskLogLiveEntry { TaskId = deployment.Id, StepIndex = 0, TargetId = null, Sequence = 0, Timestamp = DateTimeOffset.UtcNow, Level = "info", Message = "line one" },
+            new TaskLogLiveEntry { TaskId = deployment.Id, StepIndex = 0, TargetId = null, Sequence = 1, Timestamp = DateTimeOffset.UtcNow, Level = "info", Message = "line two" });
         await db.SaveChangesAsync();
         return deployment.Id;
     }

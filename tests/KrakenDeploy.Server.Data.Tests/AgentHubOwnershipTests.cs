@@ -93,11 +93,11 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
         var g = await SeedAsync(harness);
 
         await BuildHub(postgres, g.Foreign.Id)
-            .AppendLogAsync(g.DeploymentId, "Information", "injected");
+            .AppendLogAsync(g.DeploymentId, 0, "Information", "injected");
 
         await using var db = harness.CreateContext();
-        (await db.DeploymentLogEntries.IgnoreQueryFilters()
-            .CountAsync(e => e.DeploymentId == g.DeploymentId))
+        (await db.TaskLogLive.IgnoreQueryFilters()
+            .CountAsync(e => e.TaskId == g.DeploymentId))
             .Should().Be(0, "a foreign agent must not inject log lines into another target's deployment");
     }
 
@@ -110,11 +110,11 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
         // secondary (join-only) must be allowed — all wave targets log against
         // the same deployment id.
         await BuildHub(postgres, g.Secondary.Id)
-            .AppendLogAsync(g.DeploymentId, "Information", "legit");
+            .AppendLogAsync(g.DeploymentId, 0, "Information", "legit");
 
         await using var db = harness.CreateContext();
-        (await db.DeploymentLogEntries.IgnoreQueryFilters()
-            .CountAsync(e => e.DeploymentId == g.DeploymentId))
+        (await db.TaskLogLive.IgnoreQueryFilters()
+            .CountAsync(e => e.TaskId == g.DeploymentId))
             .Should().Be(1);
     }
 
@@ -131,8 +131,8 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
             outputVariables: new Dictionary<string, string> { ["Injected"] = "evil" });
 
         await using var db = harness.CreateContext();
-        (await db.DeploymentOutputVariables.IgnoreQueryFilters()
-            .CountAsync(o => o.DeploymentId == g.DeploymentId))
+        (await db.TaskOutputVariables.IgnoreQueryFilters()
+            .CountAsync(o => o.TaskId == g.DeploymentId))
             .Should().Be(0, "a foreign agent must not inject output variables that later steps consume");
     }
 
@@ -147,8 +147,8 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
             outputVariables: new Dictionary<string, string> { ["Url"] = "https://x" });
 
         await using var db = harness.CreateContext();
-        (await db.DeploymentOutputVariables.IgnoreQueryFilters()
-            .CountAsync(o => o.DeploymentId == g.DeploymentId))
+        (await db.TaskOutputVariables.IgnoreQueryFilters()
+            .CountAsync(o => o.TaskId == g.DeploymentId))
             .Should().Be(1);
     }
 
@@ -161,13 +161,13 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
         var g = await SeedAsync(harness);
         await using var db = harness.CreateContext();
 
-        (await AgentDeploymentOwnership.ConnectionOwnsDeploymentAsync(db, g.DeploymentId, g.Foreign.Id))
+        (await AgentDeploymentOwnership.ConnectionOwnsTaskAsync(db, g.DeploymentId, g.Foreign.Id))
             .Should().BeFalse("an unassigned target does not own the deployment");
-        (await AgentDeploymentOwnership.ConnectionOwnsDeploymentAsync(db, g.DeploymentId, g.Primary.Id))
+        (await AgentDeploymentOwnership.ConnectionOwnsTaskAsync(db, g.DeploymentId, g.Primary.Id))
             .Should().BeTrue("the legacy primary target owns the deployment");
-        (await AgentDeploymentOwnership.ConnectionOwnsDeploymentAsync(db, g.DeploymentId, g.Secondary.Id))
+        (await AgentDeploymentOwnership.ConnectionOwnsTaskAsync(db, g.DeploymentId, g.Secondary.Id))
             .Should().BeTrue("a join-set (secondary wave) target owns the deployment");
-        (await AgentDeploymentOwnership.ConnectionOwnsDeploymentAsync(db, Guid.NewGuid(), g.Primary.Id))
+        (await AgentDeploymentOwnership.ConnectionOwnsTaskAsync(db, Guid.NewGuid(), g.Primary.Id))
             .Should().BeFalse("an unknown deployment id is owned by no one");
     }
 

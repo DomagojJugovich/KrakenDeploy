@@ -35,8 +35,8 @@ public sealed class DeploymentDiagnosisServiceTests(PostgresFixture postgres)
     {
         await using var db = postgres.CreateContext();
         await db.DeploymentDiagnoses.IgnoreQueryFilters().ExecuteDeleteAsync();
-        await db.DeploymentStepOutcomes.IgnoreQueryFilters().ExecuteDeleteAsync();
-        await db.DeploymentLogEntries.IgnoreQueryFilters().ExecuteDeleteAsync();
+        await db.TaskStepOutcomes.IgnoreQueryFilters().ExecuteDeleteAsync();
+        await db.TaskLogLive.IgnoreQueryFilters().ExecuteDeleteAsync();
         await db.Deployments.IgnoreQueryFilters().ExecuteDeleteAsync();
         await db.Releases.IgnoreQueryFilters().ExecuteDeleteAsync();
         await db.Environments.IgnoreQueryFilters().ExecuteDeleteAsync();
@@ -178,23 +178,24 @@ public sealed class DeploymentDiagnosisServiceTests(PostgresFixture postgres)
 
         var deployment = new Deployment
         {
-            SpaceId = WellKnown.DefaultSpaceId, ReleaseId = release.Id, EnvironmentId = env.Id,
+            SpaceId = WellKnown.DefaultSpaceId, ProjectId = project.Id,
+            ReleaseId = release.Id, EnvironmentId = env.Id,
             Status = DeploymentStatus.Failed,
             StartedUtc = DateTimeOffset.UtcNow, CompletedUtc = DateTimeOffset.UtcNow,
         };
         db.Deployments.Add(deployment);
         await db.SaveChangesAsync();
 
-        db.DeploymentStepOutcomes.Add(new DeploymentStepOutcome
+        db.TaskStepOutcomes.Add(new TaskStepOutcome
         {
-            DeploymentId = deployment.Id, StepIndex = 0, StepName = "Start service",
+            TaskId = deployment.Id, StepIndex = 0, StepName = "Start service",
             Outcome = StepOutcomeKind.Failed, Required = true, AttemptCount = 1,
             ErrorMessage = "service failed to start", CompletedUtc = DateTimeOffset.UtcNow,
         });
-        db.DeploymentLogEntries.AddRange(
-            new DeploymentLogEntry { DeploymentId = deployment.Id, Sequence = 0, Timestamp = DateTimeOffset.UtcNow, Level = "info", Message = "starting" },
-            new DeploymentLogEntry { DeploymentId = deployment.Id, Sequence = 1, Timestamp = DateTimeOffset.UtcNow, Level = "info", Message = "binding port 8080" },
-            new DeploymentLogEntry { DeploymentId = deployment.Id, Sequence = 2, Timestamp = DateTimeOffset.UtcNow, Level = "error", Message = "ERROR: port in use" });
+        db.TaskLogLive.AddRange(
+            new TaskLogLiveEntry { TaskId = deployment.Id, StepIndex = 0, TargetId = null, Sequence = 0, Timestamp = DateTimeOffset.UtcNow, Level = "info", Message = "starting" },
+            new TaskLogLiveEntry { TaskId = deployment.Id, StepIndex = 0, TargetId = null, Sequence = 1, Timestamp = DateTimeOffset.UtcNow, Level = "info", Message = "binding port 8080" },
+            new TaskLogLiveEntry { TaskId = deployment.Id, StepIndex = 0, TargetId = null, Sequence = 2, Timestamp = DateTimeOffset.UtcNow, Level = "error", Message = "ERROR: port in use" });
         await db.SaveChangesAsync();
         return deployment.Id;
     }

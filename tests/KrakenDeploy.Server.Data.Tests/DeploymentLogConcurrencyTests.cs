@@ -38,7 +38,7 @@ public sealed class DeploymentLogConcurrencyTests(PostgresFixture postgres)
     {
         await using var harness = new OrchestratorTestHarness(postgres);
 
-        // Minimal FK chain — DeploymentLogEntry.DeploymentId is an enforced FK,
+        // Minimal FK chain — TaskLogLiveEntry.TaskId is an enforced FK,
         // so the log rows need a real Deployment to hang off.
         var project = await harness.SeedProjectAsync();
         var env = await harness.SeedEnvironmentAsync();
@@ -47,9 +47,9 @@ public sealed class DeploymentLogConcurrencyTests(PostgresFixture postgres)
         var deploymentId = await harness.CreateDeploymentAsync(release.Id, env.Id, targets);
 
         // One LogSequencer per dispatch, shared across the parallel writers —
-        // exactly how the orchestrator wires it.
-        var deployment = await harness.GetDeploymentAsync(deploymentId);
-        var logSeq = new LogSequencer(deployment);
+        // exactly how the orchestrator wires it (new ctor: scope factory +
+        // TimeProvider + task id; the sequencer allocates via TaskLogService).
+        var logSeq = new LogSequencer(postgres.ScopeFactory, TimeProvider.System, deploymentId);
 
         const int writers = 64;
 
@@ -62,7 +62,7 @@ public sealed class DeploymentLogConcurrencyTests(PostgresFixture postgres)
             .Select(_ => Task.Run(async () =>
             {
                 await gate.Task.ConfigureAwait(false);
-                await harness.AppendConcurrentLogForTestAsync(
+                await OrchestratorTestHarness.AppendConcurrentLogForTestAsync(
                     deploymentId, logSeq, "info", "concurrent log line").ConfigureAwait(false);
             }))
             .ToArray();
@@ -74,8 +74,8 @@ public sealed class DeploymentLogConcurrencyTests(PostgresFixture postgres)
         await Task.WhenAll(writes);
 
         await using var db = harness.CreateContext();
-        var entries = await db.DeploymentLogEntries
-            .Where(e => e.DeploymentId == deploymentId)
+        var entries = await db.TaskLogLive
+            .Where(e => e.TaskId == deploymentId)
             .ToListAsync();
 
         entries.Should().HaveCount(writers,

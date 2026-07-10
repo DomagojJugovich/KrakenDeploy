@@ -42,13 +42,13 @@ public sealed class CrossSpaceScopingTests(PostgresFixture postgres)
 
         // Read path runs under the default Space → the other Space's artifact
         // must not leak (this is the IDOR that was open before the fix).
-        var visible = await svc.GetByDeploymentAsync(deploymentId);
+        var visible = await svc.GetByTaskAsync(deploymentId);
         visible.Should().BeEmpty();
 
         // It does exist though — just walled off by Space.
         await using var raw = postgres.CreateContext();
-        var all = await raw.DeploymentArtifacts.IgnoreQueryFilters()
-            .Where(a => a.DeploymentId == deploymentId)
+        var all = await raw.TaskArtifacts.IgnoreQueryFilters()
+            .Where(a => a.TaskId == deploymentId)
             .ToListAsync();
         all.Should().ContainSingle().Which.SpaceId.Should().Be(OtherSpaceId);
     }
@@ -63,37 +63,46 @@ public sealed class CrossSpaceScopingTests(PostgresFixture postgres)
         // same contract every agent write site relies on).
         await using (var seed = postgres.CreateContext())
         {
-            seed.DeploymentLogEntries.Add(new DeploymentLogEntry
+            seed.TaskLogLive.Add(new TaskLogLiveEntry
             {
-                SpaceId = OtherSpaceId, DeploymentId = deploymentId,
+                TaskId = deploymentId, StepIndex = 0, TargetId = null,
                 Sequence = 0, Timestamp = DateTimeOffset.UtcNow, Level = "info", Message = "x",
             });
-            seed.DeploymentStepOutcomes.Add(new DeploymentStepOutcome
+            seed.TaskStepOutcomes.Add(new TaskStepOutcome
             {
-                SpaceId = OtherSpaceId, DeploymentId = deploymentId,
+                SpaceId = OtherSpaceId, TaskId = deploymentId,
                 StepIndex = 0, StepName = "s", Outcome = StepOutcomeKind.Succeeded,
                 AttemptCount = 1, CompletedUtc = DateTimeOffset.UtcNow,
             });
-            seed.DeploymentOutputVariables.Add(new DeploymentOutputVariable
+            seed.TaskOutputVariables.Add(new TaskOutputVariable
             {
-                SpaceId = OtherSpaceId, DeploymentId = deploymentId,
+                SpaceId = OtherSpaceId, TaskId = deploymentId,
                 StepName = "s", Name = "k", Value = "v", CapturedUtc = DateTimeOffset.UtcNow,
             });
             await seed.SaveChangesAsync();
         }
 
-        // Default-Space context: the global filter hides all three.
+        // Default-Space context: the ISpaceScoped children (step outcomes, output
+        // variables) are hidden directly by the global query filter.
         await using var db = postgres.CreateContext();
-        (await db.DeploymentLogEntries.CountAsync(l => l.DeploymentId == deploymentId))
+        (await db.TaskStepOutcomes.CountAsync(o => o.TaskId == deploymentId))
             .Should().Be(0);
-        (await db.DeploymentStepOutcomes.CountAsync(o => o.DeploymentId == deploymentId))
-            .Should().Be(0);
-        (await db.DeploymentOutputVariables.CountAsync(v => v.DeploymentId == deploymentId))
+        (await db.TaskOutputVariables.CountAsync(v => v.TaskId == deploymentId))
             .Should().Be(0);
 
-        // …but they're present cross-Space and correctly stamped.
-        (await db.DeploymentLogEntries.IgnoreQueryFilters()
-            .CountAsync(l => l.DeploymentId == deploymentId && l.SpaceId == OtherSpaceId))
+        // The hybrid log tables are deliberately NOT ISpaceScoped (scope inherits
+        // via TaskId), so a direct query is not filtered — but the parent task IS
+        // Space-filtered, so the log is unreachable via any legitimate task-resolved
+        // read path from another Space.
+        (await db.ServerTasks.CountAsync(t => t.Id == deploymentId))
+            .Should().Be(0, "the parent task is hidden under the Default Space");
+
+        // …the children are present + correctly stamped when read cross-Space.
+        (await db.TaskStepOutcomes.IgnoreQueryFilters()
+            .CountAsync(o => o.TaskId == deploymentId && o.SpaceId == OtherSpaceId))
+            .Should().Be(1);
+        (await db.TaskLogLive.IgnoreQueryFilters()
+            .CountAsync(l => l.TaskId == deploymentId))
             .Should().Be(1);
     }
 
@@ -138,7 +147,7 @@ public sealed class CrossSpaceScopingTests(PostgresFixture postgres)
 
         var deployment = new Deployment
         {
-            SpaceId = OtherSpaceId, ReleaseId = release.Id, EnvironmentId = env.Id,
+            SpaceId = OtherSpaceId, ProjectId = project.Id, ReleaseId = release.Id, EnvironmentId = env.Id,
             Status = DeploymentStatus.Succeeded,
         };
         db.Deployments.Add(deployment);

@@ -393,8 +393,8 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
                       "now that the worker scopes its unit of work to the deployment's Space");
         deployment.SpaceId.Should().Be(NonDefaultSpaceId);
 
-        var outcomes = await db.DeploymentStepOutcomes.IgnoreQueryFilters()
-            .Where(o => o.DeploymentId == deploymentId)
+        var outcomes = await db.TaskStepOutcomes.IgnoreQueryFilters()
+            .Where(o => o.TaskId == deploymentId)
             .ToListAsync();
         outcomes.Should().HaveCount(2);
         outcomes.Should().AllSatisfy(o =>
@@ -482,6 +482,7 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
         var deployment = new Deployment
         {
             SpaceId       = spaceId,
+            ProjectId     = project.Id,
             ReleaseId     = release.Id,
             EnvironmentId = env.Id,
             Status        = DeploymentStatus.Queued,
@@ -495,9 +496,9 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
         var addedUtc = DateTimeOffset.UtcNow;
         for (var i = 0; i < targets.Count; i++)
         {
-            db.DeploymentTargetAssignments.Add(new DeploymentTargetAssignment
+            db.TaskTargetAssignments.Add(new TaskTargetAssignment
             {
-                DeploymentId = deployment.Id,
+                TaskId       = deployment.Id,
                 TargetId     = targets[i].Id,
                 AddedUtc     = addedUtc.AddMicroseconds(i),
             });

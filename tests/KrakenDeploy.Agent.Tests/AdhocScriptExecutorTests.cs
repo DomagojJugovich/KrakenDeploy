@@ -186,7 +186,7 @@ public sealed class AdhocScriptExecutorTests
         public Task RegisterAsync(AgentRegistrationRequest request, CancellationToken ct) => Task.CompletedTask;
         public Task HeartbeatAsync(HeartbeatRequest request, CancellationToken ct) => Task.CompletedTask;
         public Task ReportStatusAsync(string status, CancellationToken ct) => Task.CompletedTask;
-        public Task AppendLogAsync(Guid deploymentId, string level, string message, CancellationToken ct) => Task.CompletedTask;
+        public Task AppendLogAsync(Guid deploymentId, int stepIndex, string level, string message, CancellationToken ct) => Task.CompletedTask;
         public Task CompleteDeploymentAsync(Guid deploymentId, bool success, string? errorMessage, CancellationToken ct) => Task.CompletedTask;
         public Task ReportStepCompletedAsync(Guid deploymentId, int stepIndex, string stepName, bool success,
             string? errorMessage, IReadOnlyDictionary<string, string> outputVariables, CancellationToken ct) => Task.CompletedTask;

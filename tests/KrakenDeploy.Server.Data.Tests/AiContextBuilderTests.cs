@@ -23,8 +23,8 @@ public sealed class AiContextBuilderTests(PostgresFixture postgres)
     public async Task InitializeAsync()
     {
         await using var db = postgres.CreateContext();
-        await db.DeploymentLogEntries.IgnoreQueryFilters().ExecuteDeleteAsync();
-        await db.DeploymentTargetAssignments.IgnoreQueryFilters().ExecuteDeleteAsync();
+        await db.TaskLogLive.IgnoreQueryFilters().ExecuteDeleteAsync();
+        await db.TaskTargetAssignments.IgnoreQueryFilters().ExecuteDeleteAsync();
         await db.Deployments.IgnoreQueryFilters().ExecuteDeleteAsync();
         await db.Releases.IgnoreQueryFilters().ExecuteDeleteAsync();
         await db.Environments.IgnoreQueryFilters().ExecuteDeleteAsync();
@@ -79,10 +79,10 @@ public sealed class AiContextBuilderTests(PostgresFixture postgres)
         {
             for (var i = 0; i < 10; i++)
             {
-                db.DeploymentLogEntries.Add(new DeploymentLogEntry
+                db.TaskLogLive.Add(new TaskLogLiveEntry
                 {
-                    DeploymentId = depId, Sequence = i, Timestamp = DateTimeOffset.UtcNow,
-                    Level = "info", Message = $"line {i}",
+                    TaskId = depId, StepIndex = 0, TargetId = null, Sequence = i,
+                    Timestamp = DateTimeOffset.UtcNow, Level = "info", Message = $"line {i}",
                 });
             }
             await db.SaveChangesAsync();
@@ -262,9 +262,12 @@ public sealed class AiContextBuilderTests(PostgresFixture postgres)
         Guid releaseId, Guid envId, DeploymentStatus status, DeploymentTarget? target = null)
     {
         await using var db = postgres.CreateContext();
+        var projectId = await db.Releases
+            .Where(r => r.Id == releaseId).Select(r => r.ProjectId).FirstAsync();
         var d = new Deployment
         {
-            SpaceId = WellKnown.DefaultSpaceId, ReleaseId = releaseId, EnvironmentId = envId,
+            SpaceId = WellKnown.DefaultSpaceId, ProjectId = projectId,
+            ReleaseId = releaseId, EnvironmentId = envId,
             Status = status,
             StartedUtc = DateTimeOffset.UtcNow, CompletedUtc = DateTimeOffset.UtcNow,
         };
@@ -272,9 +275,9 @@ public sealed class AiContextBuilderTests(PostgresFixture postgres)
         await db.SaveChangesAsync();
         if (target is not null)
         {
-            db.DeploymentTargetAssignments.Add(new DeploymentTargetAssignment
+            db.TaskTargetAssignments.Add(new TaskTargetAssignment
             {
-                DeploymentId = d.Id, TargetId = target.Id, AddedUtc = DateTimeOffset.UtcNow,
+                TaskId = d.Id, TargetId = target.Id, AddedUtc = DateTimeOffset.UtcNow,
             });
             await db.SaveChangesAsync();
         }

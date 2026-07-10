@@ -278,6 +278,7 @@ public sealed class DropBundlePlanTests(PostgresFixture postgres) : IClassFixtur
         var deployment = new Deployment
         {
             Id = deploymentId,
+            ProjectId = project.Id,
             ReleaseId = release.Id,
             Release = release,
             EnvironmentId = env.Id,
@@ -285,10 +286,10 @@ public sealed class DropBundlePlanTests(PostgresFixture postgres) : IClassFixtur
         };
         deployment.Targets =
         [
-            new DeploymentTargetAssignment
+            new TaskTargetAssignment
             {
-                DeploymentId = deploymentId,
-                Deployment   = deployment,
+                TaskId       = deploymentId,
+                Task         = deployment,
                 TargetId     = target.Id,
                 Target       = target,
                 AddedUtc     = DateTimeOffset.UtcNow,

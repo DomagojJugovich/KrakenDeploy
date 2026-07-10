@@ -63,9 +63,14 @@ public sealed class SpacesTests
             // site, since that path has no real Space context). The entries
             // below remain genuinely transitive: read only via a Space-scoped
             // parent's navigation, never queried/mutated directly by id/FK.
-            // M-RollingDeployments groundwork — join row between a
-            // Deployment and its targets. Scope inherits via DeploymentId.
-            "DeploymentTargetAssignment",
+            // Join row between a task and its targets. Scope inherits via TaskId.
+            "TaskTargetAssignment",
+            // Hybrid task-log tables (staging + compacted blob). Deliberately NOT
+            // ISpaceScoped — scope inherits via TaskId; kept off the highest-volume
+            // tables so they carry no redundant space_id column/index. Every read
+            // resolves the parent task under the Space filter first.
+            "TaskLogLiveEntry",
+            "TaskStepLog",
             "LifecyclePhase",
             "StepSnapshot",
             "StepTemplateParameter",

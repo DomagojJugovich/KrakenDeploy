@@ -16,7 +16,7 @@ public sealed class StepExecutionKnobsTests
     [Fact]
     public void DeploymentStep_defaults_match_pre_M14_semantics()
     {
-        var step = new DeploymentStep
+        var step = new ProcessStep
         {
             Name      = "x",
             StepType  = "Kraken.Script",
@@ -43,7 +43,7 @@ public sealed class StepExecutionKnobsTests
         // pass knobs. It MUST match the entity's defaults or service-
         // created steps would behave differently from API-created ones.
         var knobs = StepExecutionKnobs.Default;
-        var step = new DeploymentStep
+        var step = new ProcessStep
         {
             Name      = "x",
             StepType  = "Kraken.Script",
@@ -62,7 +62,7 @@ public sealed class StepExecutionKnobsTests
     [Fact]
     public void StepExecutionKnobs_From_DeploymentStep_round_trips()
     {
-        var step = new DeploymentStep
+        var step = new ProcessStep
         {
             Name                        = "x",
             StepType                    = "Kraken.Script",

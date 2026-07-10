@@ -72,9 +72,9 @@ public sealed class StepPackageBulkUpgradeTests(PostgresFixture postgres)
         result.TargetVersion.Should().Be("2.0.0");
 
         await using var db = postgres.CreateContext();
-        (await db.DeploymentSteps.FindAsync(bumpedId))!
+        (await db.ProcessSteps.FindAsync(bumpedId))!
             .StepPackageVersion.Should().Be("2.0.0");
-        (await db.DeploymentSteps.FindAsync(leftAlone))!
+        (await db.ProcessSteps.FindAsync(leftAlone))!
             .StepPackageVersion.Should().Be("1.0.0", "unticked rows aren't touched");
     }
 
@@ -96,7 +96,7 @@ public sealed class StepPackageBulkUpgradeTests(PostgresFixture postgres)
         result.Touched.Should().Be(1);
 
         await using var db = postgres.CreateContext();
-        (await db.RunbookSteps.FindAsync(rbStep))!
+        (await db.ProcessSteps.FindAsync(rbStep))!
             .StepPackageVersion.Should().Be("2.0.0");
     }
 
@@ -140,7 +140,7 @@ public sealed class StepPackageBulkUpgradeTests(PostgresFixture postgres)
 
         // Source row stays unchanged on the failed call.
         await using var db = postgres.CreateContext();
-        (await db.DeploymentSteps.FindAsync(stepId))!
+        (await db.ProcessSteps.FindAsync(stepId))!
             .StepPackageVersion.Should().Be("1.0.0");
     }
 
@@ -190,16 +190,16 @@ public sealed class StepPackageBulkUpgradeTests(PostgresFixture postgres)
         Guid projectId, string stepName, string pkgName, string pkgVersion)
     {
         await using var db = postgres.CreateContext();
-        var process = await db.DeploymentProcesses
-            .FirstOrDefaultAsync(p => p.ProjectId == projectId);
+        var process = await db.Processes
+            .FirstOrDefaultAsync(p => p.OwnerKind == ProcessOwnerKind.Project && p.OwnerId == projectId);
         if (process is null)
         {
-            process = new DeploymentProcess { ProjectId = projectId };
-            db.DeploymentProcesses.Add(process);
+            process = new Process { OwnerKind = ProcessOwnerKind.Project, OwnerId = projectId };
+            db.Processes.Add(process);
             await db.SaveChangesAsync();
         }
 
-        var step = new DeploymentStep
+        var step = new ProcessStep
         {
             ProcessId          = process.Id,
             Name               = stepName,
@@ -211,7 +211,7 @@ public sealed class StepPackageBulkUpgradeTests(PostgresFixture postgres)
             StepPackageName    = pkgName,
             StepPackageVersion = pkgVersion,
         };
-        db.DeploymentSteps.Add(step);
+        db.ProcessSteps.Add(step);
         await db.SaveChangesAsync();
         return step.Id;
     }
@@ -221,21 +221,26 @@ public sealed class StepPackageBulkUpgradeTests(PostgresFixture postgres)
     {
         await using var db = postgres.CreateContext();
         var runbook = await db.Runbooks
-            .Include(r => r.Process)
             .FirstOrDefaultAsync(r => r.ProjectId == projectId);
         if (runbook is null)
         {
             runbook = new Runbook { ProjectId = projectId, Name = "RB" };
             db.Runbooks.Add(runbook);
             await db.SaveChangesAsync();
-            runbook.Process = new RunbookProcess { RunbookId = runbook.Id };
-            db.RunbookProcesses.Add(runbook.Process);
+        }
+
+        var process = await db.Processes.FirstOrDefaultAsync(
+            p => p.OwnerKind == ProcessOwnerKind.Runbook && p.OwnerId == runbook.Id);
+        if (process is null)
+        {
+            process = new Process { OwnerKind = ProcessOwnerKind.Runbook, OwnerId = runbook.Id };
+            db.Processes.Add(process);
             await db.SaveChangesAsync();
         }
 
-        var step = new RunbookStep
+        var step = new ProcessStep
         {
-            ProcessId          = runbook.Process!.Id,
+            ProcessId          = process.Id,
             Name               = stepName,
             StepType           = pkgName,
             PackageId          = "",
@@ -245,7 +250,7 @@ public sealed class StepPackageBulkUpgradeTests(PostgresFixture postgres)
             StepPackageName    = pkgName,
             StepPackageVersion = pkgVersion,
         };
-        db.RunbookSteps.Add(step);
+        db.ProcessSteps.Add(step);
         await db.SaveChangesAsync();
         return step.Id;
     }

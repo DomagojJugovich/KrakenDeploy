@@ -25,7 +25,7 @@ public sealed class ProcessContextBuilderTests(PostgresFixture postgres)
     {
         await using var db = postgres.CreateContext();
         await db.Releases.IgnoreQueryFilters().ExecuteDeleteAsync();
-        await db.DeploymentProcesses.IgnoreQueryFilters().ExecuteDeleteAsync();
+        await db.Processes.IgnoreQueryFilters().ExecuteDeleteAsync();
         await db.Projects.IgnoreQueryFilters().ExecuteDeleteAsync();
     }
 
@@ -46,12 +46,13 @@ public sealed class ProcessContextBuilderTests(PostgresFixture postgres)
             db.Projects.Add(project);
             await db.SaveChangesAsync();
 
-            db.DeploymentProcesses.Add(new DeploymentProcess
+            db.Processes.Add(new Process
             {
-                ProjectId = project.Id,
+                OwnerKind = ProcessOwnerKind.Project,
+                OwnerId = project.Id,
                 Steps =
                 {
-                    new DeploymentStep
+                    new ProcessStep
                     {
                         Id        = groupId,
                         Name      = "Rolling group",
@@ -64,7 +65,7 @@ public sealed class ProcessContextBuilderTests(PostgresFixture postgres)
                             ["Octopus.Action.MaxParallelism"] = "2",
                         },
                     },
-                    new DeploymentStep
+                    new ProcessStep
                     {
                         Id           = Guid.NewGuid(),
                         Name         = "Deploy site",
@@ -78,7 +79,7 @@ public sealed class ProcessContextBuilderTests(PostgresFixture postgres)
                             ["Kraken.IIS.SiteName"] = "Argosy",
                         },
                     },
-                    new DeploymentStep
+                    new ProcessStep
                     {
                         Id        = Guid.NewGuid(),
                         Name      = "Notify",

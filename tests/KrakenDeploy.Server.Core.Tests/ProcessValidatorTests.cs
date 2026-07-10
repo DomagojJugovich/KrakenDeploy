@@ -149,14 +149,14 @@ public sealed class ProcessValidatorTests
         result.IsValid.Should().BeTrue();
     }
 
-    // ── M15 follow-up: validator works for RunbookStep too ─────────────
+    // ── M15 follow-up: validator works for ProcessStep too ─────────────
 
     [Fact]
-    public void Validator_works_for_RunbookStep_via_IComposableStep()
+    public void Validator_works_for_ProcessStep_via_IComposableStep()
     {
         // The same validator + the same rules apply to runbook step
-        // composition. Pin the cross-entity contract: RunbookStep
-        // implements IComposableStep, so IEnumerable<RunbookStep>
+        // composition. Pin the cross-entity contract: ProcessStep
+        // implements IComposableStep, so IEnumerable<ProcessStep>
         // passes covariantly to Validate.
         var group = NewRunbookLeaf("My runbook group",
             stepType: KrakenStepTypes.StepGroup);
@@ -167,11 +167,11 @@ public sealed class ProcessValidatorTests
 
         result.IsValid.Should().BeTrue(
             "the validator must accept the same happy-path tree on " +
-            "RunbookStep that it accepts on DeploymentStep");
+            "ProcessStep that it accepts on ProcessStep");
     }
 
     [Fact]
-    public void Validator_rejects_RunbookStep_leaf_with_children()
+    public void Validator_rejects_ProcessStep_leaf_with_children()
     {
         // The LeafTypeHasChildren rule applies symmetrically — a runbook
         // leaf step (Kraken.Script) cannot have child steps either.
@@ -185,7 +185,7 @@ public sealed class ProcessValidatorTests
             && e.StepId == parent.Id);
     }
 
-    private static RunbookStep NewRunbookLeaf(
+    private static ProcessStep NewRunbookLeaf(
         string name,
         string stepType = "Kraken.Script",
         Guid? parentId = null) => new()
@@ -202,7 +202,7 @@ public sealed class ProcessValidatorTests
 
     // ── helper ─────────────────────────────────────────────────────────
 
-    private static DeploymentStep NewLeaf(
+    private static ProcessStep NewLeaf(
         string name,
         string stepType = "Kraken.Script",
         Guid? parentId = null) => new()

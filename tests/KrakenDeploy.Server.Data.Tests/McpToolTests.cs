@@ -32,7 +32,7 @@ public sealed class McpToolTests(PostgresFixture postgres)
     public async Task InitializeAsync()
     {
         await using var db = postgres.CreateContext();
-        await db.DeploymentTargetAssignments.IgnoreQueryFilters().ExecuteDeleteAsync();
+        await db.TaskTargetAssignments.IgnoreQueryFilters().ExecuteDeleteAsync();
         await db.Deployments.IgnoreQueryFilters().ExecuteDeleteAsync();
         await db.Releases.IgnoreQueryFilters().ExecuteDeleteAsync();
         await db.Environments.IgnoreQueryFilters().ExecuteDeleteAsync();
@@ -313,9 +313,12 @@ public sealed class McpToolTests(PostgresFixture postgres)
         Guid releaseId, Guid envId, DeploymentStatus status, DeploymentTarget? target = null)
     {
         await using var db = postgres.CreateContext();
+        var projectId = await db.Releases
+            .Where(r => r.Id == releaseId).Select(r => r.ProjectId).FirstAsync();
         var d = new Deployment
         {
-            SpaceId = WellKnown.DefaultSpaceId, ReleaseId = releaseId, EnvironmentId = envId,
+            SpaceId = WellKnown.DefaultSpaceId, ProjectId = projectId,
+            ReleaseId = releaseId, EnvironmentId = envId,
             Status = status,
             StartedUtc = DateTimeOffset.UtcNow, CompletedUtc = DateTimeOffset.UtcNow,
         };
@@ -323,9 +326,9 @@ public sealed class McpToolTests(PostgresFixture postgres)
         await db.SaveChangesAsync();
         if (target is not null)
         {
-            db.DeploymentTargetAssignments.Add(new DeploymentTargetAssignment
+            db.TaskTargetAssignments.Add(new TaskTargetAssignment
             {
-                DeploymentId = d.Id, TargetId = target.Id, AddedUtc = DateTimeOffset.UtcNow,
+                TaskId = d.Id, TargetId = target.Id, AddedUtc = DateTimeOffset.UtcNow,
             });
             await db.SaveChangesAsync();
         }

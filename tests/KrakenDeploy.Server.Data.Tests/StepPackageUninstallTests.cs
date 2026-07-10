@@ -98,9 +98,9 @@ public sealed class StepPackageUninstallTests(PostgresFixture postgres)
         // Remove the live step so only the release snapshot keeps the pin alive.
         await using (var db = postgres.CreateContext())
         {
-            var step = await db.DeploymentSteps
-                .FirstAsync(s => s.Process.ProjectId == projectId);
-            db.DeploymentSteps.Remove(step);
+            var step = await db.ProcessSteps
+                .FirstAsync(s => s.Process.OwnerKind == ProcessOwnerKind.Project && s.Process.OwnerId == projectId);
+            db.ProcessSteps.Remove(step);
             await db.SaveChangesAsync();
         }
 
@@ -162,11 +162,11 @@ public sealed class StepPackageUninstallTests(PostgresFixture postgres)
         Guid projectId, string stepType, string pkgName, string pkgVersion)
     {
         await using var db = postgres.CreateContext();
-        var process = new DeploymentProcess { ProjectId = projectId };
-        db.DeploymentProcesses.Add(process);
+        var process = new Process { OwnerKind = ProcessOwnerKind.Project, OwnerId = projectId };
+        db.Processes.Add(process);
         await db.SaveChangesAsync();
 
-        db.DeploymentSteps.Add(new DeploymentStep
+        db.ProcessSteps.Add(new ProcessStep
         {
             ProcessId          = process.Id,
             Name               = "S1",

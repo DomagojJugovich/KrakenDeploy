@@ -1,6 +1,7 @@
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
 using KrakenDeploy.Server.Core.Domain.Subscriptions;
 using KrakenDeploy.Server.Data.Services;
@@ -175,7 +176,7 @@ public sealed class RunbookTransportTests
                 Id            = Guid.NewGuid(),
                 RunbookId     = runbookId,
                 EnvironmentId = environmentId,
-                TargetId      = targetId,
+                Targets       = [new TaskTargetAssignment { TargetId = targetId, AddedUtc = DateTimeOffset.UtcNow }],
                 TenantId      = tenantId,
             });
         }

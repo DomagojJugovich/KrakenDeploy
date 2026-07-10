@@ -94,9 +94,10 @@ public sealed class DeployReleaseStepTimeoutTests(PostgresFixture postgres)
             var parent = new Deployment
             {
                 SpaceId       = WellKnown.DefaultSpaceId,
+                ProjectId     = childProject.Id,
                 ReleaseId     = childRelease.Id,
                 EnvironmentId = env.Id,
-                Targets       = [new DeploymentTargetAssignment
+                Targets       = [new TaskTargetAssignment
                 {
                     TargetId = target.Id,
                     AddedUtc = DateTimeOffset.UtcNow,
