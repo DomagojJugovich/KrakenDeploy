@@ -32,6 +32,17 @@ public sealed class DeploymentStepOutcomeConfiguration
         builder.Property(x => x.Required).IsRequired();
         builder.Property(x => x.TargetId);
 
+        // Real FK (was a bare column that could dangle after target deletes).
+        // Restrict matches the assignments join + runbook_runs: execution
+        // history pins its targets; deletion goes through the archived-flag
+        // escape hatch (fix 4), never by orphaning history rows. No
+        // navigation property — outcomes are read per deployment, and the
+        // detail page resolves names through the deployment's target set.
+        builder.HasOne<Core.Domain.Targets.DeploymentTarget>()
+            .WithMany()
+            .HasForeignKey(x => x.TargetId)
+            .OnDelete(DeleteBehavior.Restrict);
+
         builder.HasOne(x => x.Deployment)
             .WithMany()
             .HasForeignKey(x => x.DeploymentId)

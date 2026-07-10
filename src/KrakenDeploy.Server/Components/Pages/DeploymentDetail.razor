@@ -670,16 +670,9 @@ else
 
         if (!await Guard.AllowAsync(Permission.DeploymentCreate)) return;
 
-        // Reproduce the source deployment's target set: the multi-target join is
-        // authoritative post-Phase-1a; fall back to the legacy single-target FK.
-        var targetIds = Deployment.Targets?
-            .Where(a => a.Target is not null)
-            .Select(a => a.TargetId)
-            .ToList() ?? [];
-        if (targetIds.Count == 0 && Deployment.TargetId is { } legacy)
-        {
-            targetIds.Add(legacy);
-        }
+        // Reproduce the source deployment's target set from the assignments
+        // join (first-assigned first, so the redeploy keeps the same primary).
+        var targetIds = Deployment.ResolvedTargets().Select(t => t.Id).ToList();
 
         // The dialog navigates to the new deployment on success; nothing to do here.
         await DialogService.OpenAsync<DeployReleaseDialog>(
@@ -758,16 +751,12 @@ else
     private string DownloadUrl(Guid artifactId)
         => $"/api/deployments/{Id}/artifacts/{artifactId}/download";
 
-    // ── M-RollingDeployments Phase 3 — multi-target rendering helpers ────
+    // ── Multi-target rendering helpers ────────────────────────────────────
     //
-    // The deployment-detail page now has to surface BOTH the legacy single-
-    // target field (Deployment.Target — kept by the orchestrator for back-
-    // compat) AND the multi-target join (Deployment.Targets — populated
-    // by Phase 1a's migration + Phase 1b's CreateAsync extension). The
-    // helpers below reconcile the two so single-target deployments render
-    // identically to pre-Phase-1a and multi-target deployments get a clean
-    // "N targets" summary in the header + per-row target names in the
-    // Steps tab.
+    // The assignments join (Deployment.Targets) is the single authority for
+    // the target set. Single-target deployments render the target's name;
+    // multi-target deployments get a "N targets" summary in the header +
+    // per-row target names in the Steps tab.
 
     private int MultiTargetCount => Deployment?.Targets?.Count ?? 0;
 
@@ -776,40 +765,24 @@ else
         get
         {
             if (Deployment is null) { return "—"; }
-            var fromJoin = Deployment.Targets
-                ?.Where(a => a.Target is not null)
-                .Select(a => a.Target!.Name)
-                .ToList() ?? [];
-            if (fromJoin.Count == 0)
+            var names = Deployment.TargetNames();
+            if (names.Count <= 1)
             {
-                return Deployment.Target?.Name ?? "—";
-            }
-            if (fromJoin.Count == 1)
-            {
-                return fromJoin[0];
+                return names.Count == 0 ? "—" : names[0];
             }
             // Multi-target: short list with "N targets" prefix for at-a-
             // glance scan, full names follow so operators can read which
             // machines are in scope without expanding anything.
-            return $"{fromJoin.Count} targets: {string.Join(", ", fromJoin)}";
+            return $"{names.Count} targets: {string.Join(", ", names)}";
         }
     }
 
     private string TargetNameOf(Guid targetId)
     {
-        if (Deployment is null) { return targetId.ToString()[..8]; }
-        var fromJoin = Deployment.Targets
-            ?.FirstOrDefault(a => a.TargetId == targetId)
+        var name = Deployment?.Targets
+            .FirstOrDefault(a => a.TargetId == targetId)
             ?.Target?.Name;
-        if (!string.IsNullOrEmpty(fromJoin)) { return fromJoin; }
-        // Fallback to legacy Deployment.Target when the row's TargetId
-        // matches it (single-target deployment whose Targets join row was
-        // somehow stripped post-migration — defensive).
-        if (Deployment.Target is not null && Deployment.Target.Id == targetId)
-        {
-            return Deployment.Target.Name;
-        }
-        return targetId.ToString()[..8];
+        return string.IsNullOrEmpty(name) ? targetId.ToString()[..8] : name;
     }
 
     // Maps a deployment status to the StatusPill colour family (.st--*) for the

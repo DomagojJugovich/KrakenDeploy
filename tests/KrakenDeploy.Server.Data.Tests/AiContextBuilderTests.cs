@@ -265,7 +265,7 @@ public sealed class AiContextBuilderTests(PostgresFixture postgres)
         var d = new Deployment
         {
             SpaceId = WellKnown.DefaultSpaceId, ReleaseId = releaseId, EnvironmentId = envId,
-            Status = status, TargetId = target?.Id,
+            Status = status,
             StartedUtc = DateTimeOffset.UtcNow, CompletedUtc = DateTimeOffset.UtcNow,
         };
         db.Deployments.Add(d);

@@ -32,10 +32,14 @@ public class RunbookRunConfiguration : IEntityTypeConfiguration<RunbookRun>
             .HasForeignKey(x => x.EnvironmentId)
             .OnDelete(DeleteBehavior.Restrict);
 
+        // Restrict, not SetNull: runbook runs are execution history — a
+        // target that has run history must not be deletable out from under
+        // it (nulling the FK silently orphans the run's attribution). The
+        // soft-disable escape hatch (target archived flag) is fix 4.
         builder.HasOne(x => x.Target)
             .WithMany()
             .HasForeignKey(x => x.TargetId)
-            .OnDelete(DeleteBehavior.SetNull);
+            .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasOne(x => x.Tenant)
             .WithMany()

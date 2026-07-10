@@ -157,7 +157,6 @@ public sealed class DeploymentWorker(
                 .Include(d => d.Release)
                     .ThenInclude(r => r.Project)
                 .Include(d => d.Environment)
-                .Include(d => d.Target)
                 .Include(d => d.Targets)
                     .ThenInclude(a => a.Target!)
                 .Include(d => d.Tenant)
@@ -193,23 +192,14 @@ public sealed class DeploymentWorker(
             // sequencer.
             var logSeq = new LogSequencer(deployment);
 
-            // ── M-RollingDeployments Phase 1b — resolve the target SET ──
-            // The join collection is the source of truth post-Phase 1a.
-            // Legacy single-target deployments still set deployment.Target +
-            // deployment.TargetId; Phase 1a's migration backfilled the join
-            // so reading deployment.Targets covers both shapes. Fallback
-            // path: a deployment row whose join was deleted by hand still
-            // dispatches single-target via the legacy nav.
-            var targets = deployment.Targets
-                .Where(a => a.Target is not null)
-                .Select(a => a.Target!)
-                .ToList();
-            if (targets.Count == 0 && deployment.Target is not null)
-            {
-                targets.Add(deployment.Target);
-            }
+            // ── Resolve the target SET ──────────────────────────────────
+            // The assignments join is the single authority (the transitional
+            // deployments.target_id column is gone). First-assigned first —
+            // targets[0] is the canonical target for server-wave machine
+            // variables.
+            var targets = deployment.ResolvedTargets();
 
-            if (deployment.TargetId is null && targets.Count == 0)
+            if (targets.Count == 0)
             {
                 await FailAsync(db, deployment, "No target assigned to deployment.", ct)
                     .ConfigureAwait(false);
@@ -277,24 +267,27 @@ public sealed class DeploymentWorker(
 
             // ── Offline drop path ───────────────────────────────────────────
             // Single-target by design — the bundle is a physical artifact
-            // for a specific machine. Phase 1b refuses multi-target offline
-            // drops; the per-machine bundle multiplication is a polish item
-            // (no operator demand surfaced yet, and the offline-drop
-            // workflow's manual delivery channel makes it an odd fit for
-            // fan-out semantics anyway).
-            if (deployment.Target?.TransportMode == TransportMode.OfflineDrop)
+            // for a specific machine. Multi-target offline drops are refused;
+            // the per-machine bundle multiplication is a polish item (no
+            // operator demand surfaced yet, and the offline-drop workflow's
+            // manual delivery channel makes it an odd fit for fan-out
+            // semantics anyway). Checked against ANY target in the set — a
+            // mixed set (online + offline-drop) can't dispatch sensibly
+            // either way, so it fails with the same message instead of
+            // silently treating the offline machine as an online agent.
+            if (targets.Any(t => t.TransportMode == TransportMode.OfflineDrop))
             {
                 if (targets.Count > 1)
                 {
                     await FailAsync(db, deployment,
                         "Offline-drop deployments must target a single machine. " +
                         "This deployment has multiple targets in its assignment set; " +
-                        "either remove the extra targets or switch the primary " +
+                        "either remove the extra targets or switch the offline-drop " +
                         "target's TransportMode away from OfflineDrop.", ct)
                         .ConfigureAwait(false);
                     return;
                 }
-                await DispatchOfflineDropAsync(scope.ServiceProvider, db, deployment, ct)
+                await DispatchOfflineDropAsync(scope.ServiceProvider, db, deployment, targets[0], ct)
                     .ConfigureAwait(false);
                 return;
             }
@@ -580,16 +573,15 @@ public sealed class DeploymentWorker(
                 if (wave.Kind == WavePartitioner.WaveKind.Server)
                 {
                     // ── Server wave ─────────────────────────────────────
-                    // M-RollingDeployments Phase 1b: server waves run ONCE,
-                    // using the canonical (== first) target's variable bag
-                    // for system + machine vars and the legacy
-                    // deployment.Target for the role filter
-                    // (StepAppliesToTarget). Server steps are deployment-
-                    // scoped — DeployRelease cascade, manual interventions,
-                    // … — so we deliberately preserve the single-execution
-                    // semantic. Operators authoring server steps in a
-                    // multi-target deployment see the canonical target's
-                    // machine context (same as today's single-target).
+                    // Server waves run ONCE, using the canonical (== first-
+                    // assigned) target's variable bag for system + machine
+                    // vars; the role filter (StepAppliesToTarget) passes when
+                    // ANY assigned target matches. Server steps are
+                    // deployment-scoped — DeployRelease cascade, manual
+                    // interventions, … — so we deliberately preserve the
+                    // single-execution semantic. Operators authoring server
+                    // steps in a multi-target deployment see the canonical
+                    // target's machine context (same as single-target).
                     var serverOutcomes = await RunServerWaveAsync(
                         wave, canonicalCtx.SnapshotByPlanIndex, hasFailed,
                         canonicalCtx.VarDict, deployment, db, auditLog, logSeq,
@@ -786,7 +778,8 @@ public sealed class DeploymentWorker(
     // ── Offline drop ─────────────────────────────────────────────────────
 
     private async Task DispatchOfflineDropAsync(
-        IServiceProvider sp, KrakenDbContext db, Deployment deployment, CancellationToken ct)
+        IServiceProvider sp, KrakenDbContext db, Deployment deployment,
+        DeploymentTarget target, CancellationToken ct)
     {
         string bundlePath;
         try
@@ -796,7 +789,7 @@ public sealed class DeploymentWorker(
             // (OfflineDropBundleBuilder). Precondition failures throw so the
             // dispatch path can map them to the terminal Failed status below.
             bundlePath = await offlineBundleBuilder
-                .GenerateOfflineBundleAsync(sp, deployment, ct).ConfigureAwait(false);
+                .GenerateOfflineBundleAsync(sp, deployment, target, ct).ConfigureAwait(false);
         }
         catch (InvalidOperationException ex)
         {
@@ -832,13 +825,13 @@ public sealed class DeploymentWorker(
             deployment.Id, bundlePath);
 
         // Attempt delivery if configured (non-Manual).
-        await DeliverDropBundleAsync(sp, deployment, dataPath, ct).ConfigureAwait(false);
+        await DeliverDropBundleAsync(deployment, target, dataPath, ct).ConfigureAwait(false);
     }
 
     private async Task DeliverDropBundleAsync(
-        IServiceProvider sp, Deployment deployment, string dataPath, CancellationToken ct)
+        Deployment deployment, DeploymentTarget target, string dataPath, CancellationToken ct)
     {
-        var deliveryChannel = deployment.Target?.OfflineDropConfig?.DeliveryChannel
+        var deliveryChannel = target.OfflineDropConfig?.DeliveryChannel
             ?? OfflineDropDeliveryChannel.Manual;
 
         if (deliveryChannel == OfflineDropDeliveryChannel.Manual ||
@@ -852,10 +845,10 @@ public sealed class DeploymentWorker(
             switch (deliveryChannel)
             {
                 case OfflineDropDeliveryChannel.Webhook:
-                    await DeliverViaWebhookAsync(deployment, dataPath, ct).ConfigureAwait(false);
+                    await DeliverViaWebhookAsync(deployment, target, dataPath, ct).ConfigureAwait(false);
                     break;
                 case OfflineDropDeliveryChannel.FileShareDrop:
-                    await DeliverViaFileShareAsync(deployment, dataPath, ct).ConfigureAwait(false);
+                    await DeliverViaFileShareAsync(deployment, target, dataPath, ct).ConfigureAwait(false);
                     break;
                 case OfflineDropDeliveryChannel.Email:
                     logger.LogWarning(
@@ -876,9 +869,9 @@ public sealed class DeploymentWorker(
     }
 
     private async Task DeliverViaWebhookAsync(
-        Deployment deployment, string dataPath, CancellationToken ct)
+        Deployment deployment, DeploymentTarget target, string dataPath, CancellationToken ct)
     {
-        var webhookUrl = deployment.Target?.OfflineDropConfig?.WebhookUrl;
+        var webhookUrl = target.OfflineDropConfig?.WebhookUrl;
         if (string.IsNullOrEmpty(webhookUrl))
         {
             return;
@@ -904,9 +897,9 @@ public sealed class DeploymentWorker(
     }
 
     private async Task DeliverViaFileShareAsync(
-        Deployment deployment, string dataPath, CancellationToken ct)
+        Deployment deployment, DeploymentTarget target, string dataPath, CancellationToken ct)
     {
-        var targetPath = deployment.Target?.OfflineDropConfig?.FileSharePath;
+        var targetPath = target.OfflineDropConfig?.FileSharePath;
         if (string.IsNullOrEmpty(targetPath))
         {
             return;
@@ -1008,11 +1001,12 @@ public sealed class DeploymentWorker(
     }
 
     /// <summary>
-    /// Encapsulates "Run on Server on behalf of each deployment target" role
-    /// filtering for our one-target-per-deployment model: when a server step
-    /// has <c>TargetRoles</c>, only execute it if the deployment's target has
-    /// at least one of those roles. A server step without roles always
-    /// applies (it's a pure "Run on Server" step).
+    /// "Run on Server on behalf of each deployment target" role filtering:
+    /// when a server step has <c>TargetRoles</c>, only execute it if ANY of
+    /// the deployment's assigned targets has at least one of those roles
+    /// (server steps run once per deployment, so one qualifying target in
+    /// the set is enough). A server step without roles always applies (it's
+    /// a pure "Run on Server" step). Requires the Targets join loaded.
     /// </summary>
     private static bool StepAppliesToTarget(Deployment deployment, DeploymentStepPlan step)
     {
@@ -1020,13 +1014,9 @@ public sealed class DeploymentWorker(
         {
             return true;
         }
-        var targetRoles = deployment.Target?.Roles ?? [];
-        if (targetRoles.Count == 0)
-        {
-            return false;
-        }
-        return step.TargetRoles.Any(r =>
-            targetRoles.Contains(r, StringComparer.OrdinalIgnoreCase));
+        return deployment.ResolvedTargets().Any(t =>
+            step.TargetRoles.Any(r =>
+                t.Roles.Contains(r, StringComparer.OrdinalIgnoreCase)));
     }
 
     // M15.2: SubstituteConfig moved into DeploymentPlanFlattener so it

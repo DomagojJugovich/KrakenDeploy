@@ -58,7 +58,7 @@ public sealed class DropBundlePlanTests(PostgresFixture postgres) : IClassFixtur
             Variables: new Dictionary<string, string> { ["Greeting"] = "Hello" },
             ArrayVariables: new Dictionary<string, string[]>());
 
-        var deployment = BuildDeployment(deploymentId);
+        var (deployment, target) = BuildDeployment(deploymentId);
 
         // A fake step-package archive on disk for the resolver to point at.
         var archiveDir = Path.Combine(Path.GetTempPath(), "kraken-steppkg", Guid.NewGuid().ToString("N"));
@@ -71,9 +71,9 @@ public sealed class DropBundlePlanTests(PostgresFixture postgres) : IClassFixtur
         try
         {
             var rel = await NewSvc().GenerateAsync(
-                deployment, plan, bundleKey,
+                deployment, target, plan, bundleKey,
                 stepPackageArchivePath: (n, v) => n == "kraken.script" && v == "1.0.0" ? archivePath : null,
-                dataPath);
+                dataPath: dataPath);
 
             using var zip = ZipFile.OpenRead(DropBundleService.GetFullPath(rel, dataPath));
 
@@ -124,8 +124,9 @@ public sealed class DropBundlePlanTests(PostgresFixture postgres) : IClassFixtur
         Directory.CreateDirectory(dataPath);
         try
         {
+            var (deployment, target) = BuildDeployment(deploymentId);
             var rel = await NewSvc().GenerateAsync(
-                BuildDeployment(deploymentId), plan, bundleKey,
+                deployment, target, plan, bundleKey,
                 (_, _) => archivePath, dataPath);
             using var zip = ZipFile.OpenRead(DropBundleService.GetFullPath(rel, dataPath));
             var enc = ReadEntry(zip, OfflineBundleLayout.EncryptedPlanFile);
@@ -166,8 +167,9 @@ public sealed class DropBundlePlanTests(PostgresFixture postgres) : IClassFixtur
         Directory.CreateDirectory(dataPath);
         try
         {
+            var (deployment, target) = BuildDeployment(deploymentId);
             var rel = await NewSvc().GenerateAsync(
-                BuildDeployment(deploymentId), plan, bundleKey, (_, _) => archivePath,
+                deployment, target, plan, bundleKey, (_, _) => archivePath,
                 dataPath, runnerStageDir: stageDir);
             using var zip = ZipFile.OpenRead(DropBundleService.GetFullPath(rel, dataPath));
 
@@ -204,8 +206,9 @@ public sealed class DropBundlePlanTests(PostgresFixture postgres) : IClassFixtur
         try
         {
             // runnerStageDir points at a non-existent dir → embedding skipped.
+            var (deployment, target) = BuildDeployment(deploymentId);
             var rel = await NewSvc().GenerateAsync(
-                BuildDeployment(deploymentId), plan, bundleKey,
+                deployment, target, plan, bundleKey,
                 (_, _) => Path.Combine(archiveDir, "package.kdeploy-step"),
                 dataPath, runnerStageDir: Path.Combine(dataPath, "no-runner"));
             using var zip = ZipFile.OpenRead(DropBundleService.GetFullPath(rel, dataPath));
@@ -236,8 +239,9 @@ public sealed class DropBundlePlanTests(PostgresFixture postgres) : IClassFixtur
         try
         {
             // Resolver returns null → no archive on the server.
+            var (deployment, target) = BuildDeployment(deploymentId);
             var act = async () => await NewSvc().GenerateAsync(
-                BuildDeployment(deploymentId), plan, bundleKey, (_, _) => null, dataPath);
+                deployment, target, plan, bundleKey, (_, _) => null, dataPath);
             await act.Should().ThrowAsync<InvalidOperationException>();
         }
         finally
@@ -262,22 +266,35 @@ public sealed class DropBundlePlanTests(PostgresFixture postgres) : IClassFixtur
         catch { /* best effort */ }
     }
 
-    private static Deployment BuildDeployment(Guid deploymentId)
+    /// <summary>The deployment plus its single offline-drop target — callers
+    /// pass both to <c>GenerateAsync</c>, mirroring how the worker resolves
+    /// the target from the assignments join before building a bundle.</summary>
+    private static (Deployment Deployment, DeploymentTarget Target) BuildDeployment(Guid deploymentId)
     {
         var project = new Project { Slug = "proj", Name = "Proj", SpaceId = Guid.NewGuid() };
         var release = new Release { ProjectId = project.Id, Project = project, Version = "1.0.0" };
         var env = new DeploymentEnvironment { Name = "Production", Slug = "production" };
         var target = new DeploymentTarget { Name = "OfflineBox", TransportMode = TransportMode.OfflineDrop };
-        return new Deployment
+        var deployment = new Deployment
         {
             Id = deploymentId,
             ReleaseId = release.Id,
             Release = release,
             EnvironmentId = env.Id,
             Environment = env,
-            TargetId = target.Id,
-            Target = target,
         };
+        deployment.Targets =
+        [
+            new DeploymentTargetAssignment
+            {
+                DeploymentId = deploymentId,
+                Deployment   = deployment,
+                TargetId     = target.Id,
+                Target       = target,
+                AddedUtc     = DateTimeOffset.UtcNow,
+            },
+        ];
+        return (deployment, target);
     }
 
     private sealed class NoopPackageStore : IPackageStore

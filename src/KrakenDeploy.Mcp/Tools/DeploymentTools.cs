@@ -159,25 +159,27 @@ public sealed class DeploymentTools
                 $"deploymentId={deploymentId}", "not-found", ct).ConfigureAwait(false);
             throw new McpException($"No deployment found with id '{deploymentId}'.");
         }
-        if (source.TargetId is null)
+
+        // Reproduce the source's target set from the assignments join,
+        // first-assigned first so the retry keeps the same primary target.
+        var targetIds = source.Targets
+            .OrderBy(a => a.AddedUtc).ThenBy(a => a.TargetId)
+            .Select(a => a.TargetId)
+            .ToList();
+        if (targetIds.Count == 0)
         {
             await McpAudit.ToolInvokedAsync(audit, "retry_deployment",
                 $"deploymentId={deploymentId}", "no-target", ct).ConfigureAwait(false);
             throw new McpException("Source deployment has no target — cannot retry.");
         }
 
-        var additionalTargetIds = source.Targets
-            .Select(a => a.TargetId)
-            .Where(id => id != source.TargetId.Value)
-            .ToList();
-
         var child = await deploymentService.CreateAsync(
             releaseId:           source.ReleaseId,
             environmentId:       source.EnvironmentId,
-            targetId:            source.TargetId.Value,
+            targetId:            targetIds[0],
             tenantId:            source.TenantId,
             scheduledFor:        null,
-            additionalTargetIds: additionalTargetIds,
+            additionalTargetIds: targetIds.Skip(1).ToList(),
             ct:                  ct).ConfigureAwait(false);
 
         await McpAudit.ToolInvokedAsync(audit, "retry_deployment",

@@ -38,17 +38,19 @@ public class DeploymentConfiguration : IEntityTypeConfiguration<Deployment>
             .HasForeignKey(x => x.EnvironmentId)
             .OnDelete(DeleteBehavior.Restrict);
 
-        builder.HasOne(x => x.Target)
-            .WithMany()
-            .HasForeignKey(x => x.TargetId)
-            .OnDelete(DeleteBehavior.SetNull);
+        // Targets: exclusively via the deployment_target_assignments join
+        // (DeploymentTargetAssignmentConfiguration, delete = Restrict). The
+        // transitional deployments.target_id column was dropped in the
+        // 2026-07 schema hardening — one authority, one delete policy.
 
         builder.HasOne(x => x.Tenant)
             .WithMany()
             .HasForeignKey(x => x.TenantId)
             .OnDelete(DeleteBehavior.SetNull);
 
-        builder.HasIndex(x => new { x.ReleaseId, x.EnvironmentId, x.TargetId });
+        // Serves the release×environment matrix cells ("latest deployment of
+        // release R into environment E") and lifecycle-gate condition checks.
+        builder.HasIndex(x => new { x.ReleaseId, x.EnvironmentId });
 
         // Parent-deployment link — set when an Octopus.DeployRelease step in
         // another deployment triggered this one. SetNull on delete so deleting

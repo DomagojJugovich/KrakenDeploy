@@ -1,7 +1,6 @@
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Environments;
 using KrakenDeploy.Server.Core.Domain.Releases;
-using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Tenants;
 
 namespace KrakenDeploy.Server.Core.Domain.Deployments;
@@ -14,24 +13,16 @@ public class Deployment : AuditableEntity, ISpaceScoped
     public Release Release { get; set; } = null!;
     public Guid EnvironmentId { get; set; }
     public DeploymentEnvironment Environment { get; set; } = null!;
-    public Guid? TargetId { get; set; }
-    public DeploymentTarget? Target { get; set; }
 
     /// <summary>
-    /// M-RollingDeployments groundwork — the deployment's target SET.
-    /// Pre-this-milestone every deployment had exactly one target (via
-    /// <see cref="TargetId"/>); the join entity lifts that constraint
-    /// so multi-target deployments become possible. The upgrade
-    /// migration backfills one row per existing
-    /// <see cref="TargetId"/>; new code can populate the collection
-    /// for multi-target dispatch when the orchestrator rewrite lands.
-    /// <para>
-    /// During the transition (this commit), the legacy
-    /// <see cref="TargetId"/> + <see cref="Target"/> nav stay the
-    /// source of truth for the orchestrator + every existing
-    /// per-target code path. Reading from the join collection is
-    /// safe but not yet exercised on the dispatch hot path.
-    /// </para>
+    /// The deployment's target SET — the single authority for "which
+    /// targets does this deployment hit". Exactly one row for classic
+    /// single-target deployments, N rows for rolling/parallel fan-out.
+    /// (The transitional <c>TargetId</c> column that used to duplicate the
+    /// first assignment was dropped in the 2026-07 schema hardening;
+    /// rows are ordered by <see cref="DeploymentTargetAssignment.AddedUtc"/>,
+    /// so the first-assigned target is the canonical one where a single
+    /// representative is needed, e.g. server-wave machine variables.)
     /// </summary>
     public ICollection<DeploymentTargetAssignment> Targets { get; set; } = [];
     public Guid? TenantId { get; set; }

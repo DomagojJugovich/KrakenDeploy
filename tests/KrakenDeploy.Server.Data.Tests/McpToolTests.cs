@@ -150,10 +150,13 @@ public sealed class McpToolTests(PostgresFixture postgres)
         result.SourceDeploymentId.Should().Be(sourceId);
 
         await using var db = postgres.CreateContext();
-        var newDep = await db.Deployments.FirstOrDefaultAsync(d => d.Id == result.NewDeploymentId);
+        var newDep = await db.Deployments
+            .Include(d => d.Targets)
+            .FirstOrDefaultAsync(d => d.Id == result.NewDeploymentId);
         newDep.Should().NotBeNull();
         newDep!.ReleaseId.Should().Be(release.Id);
-        newDep.TargetId.Should().Be(target.Id);
+        newDep.Targets.Select(a => a.TargetId).Should().BeEquivalentTo([target.Id],
+            "the retry must reproduce the source's target set via the assignments join");
         audit.Last.Item1.Should().Be(AuditEventType.McpToolInvoked);
     }
 
@@ -313,7 +316,7 @@ public sealed class McpToolTests(PostgresFixture postgres)
         var d = new Deployment
         {
             SpaceId = WellKnown.DefaultSpaceId, ReleaseId = releaseId, EnvironmentId = envId,
-            Status = status, TargetId = target?.Id,
+            Status = status,
             StartedUtc = DateTimeOffset.UtcNow, CompletedUtc = DateTimeOffset.UtcNow,
         };
         db.Deployments.Add(d);

@@ -125,9 +125,8 @@ public sealed class DashboardService(
                 .ConfigureAwait(false))
             .ToDictionary(x => x.EnvId, x => x.Count);
 
-        var envTargetPairs = await db.Deployments
-            .Where(d => d.TargetId != null)
-            .Select(d => new { d.EnvironmentId, TargetId = d.TargetId!.Value })
+        var envTargetPairs = await db.DeploymentTargetAssignments
+            .Select(a => new { a.Deployment.EnvironmentId, a.TargetId })
             .Distinct()
             .ToListAsync(ct)
             .ConfigureAwait(false);
@@ -365,7 +364,13 @@ public sealed class DashboardService(
                 Environment = d.Environment.Name,
                 Release = d.Release.Version,
                 Channel = d.Release.Channel != null ? d.Release.Channel.Name : null,
-                Target = d.Target != null ? d.Target.Name : null,
+                // Pivot facts are one row per deployment; attribute it to the
+                // first-assigned (canonical) target, matching what the old
+                // single-target column recorded.
+                Target = d.Targets
+                    .OrderBy(a => a.AddedUtc).ThenBy(a => a.TargetId)
+                    .Select(a => a.Target!.Name)
+                    .FirstOrDefault(),
                 d.Status,
                 d.CreatedUtc,
                 d.StartedUtc,
@@ -406,7 +411,7 @@ public sealed class DashboardService(
             .AsNoTracking()
             .Include(d => d.Release).ThenInclude(r => r.Project)
             .Include(d => d.Environment)
-            .Include(d => d.Target);
+            .Include(d => d.Targets).ThenInclude(a => a.Target);
 }
 
 /// <summary>One deployment, flattened for pivoting (dimensions + summable measures).</summary>

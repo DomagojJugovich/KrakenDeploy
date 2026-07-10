@@ -144,16 +144,5 @@ public sealed class DeploymentDiffBuilder(IDbContextFactory<KrakenDbContext> dbF
         return new VariableDeltaDto(added, removed, changed);
     }
 
-    private static List<string> TargetNames(Deployment d)
-    {
-        var names = d.Targets
-            .Where(a => a.Target is not null)
-            .Select(a => a.Target!.Name)
-            .ToList();
-        if (names.Count == 0 && d.Target is not null)
-        {
-            names.Add(d.Target.Name);
-        }
-        return names;
-    }
+    private static List<string> TargetNames(Deployment d) => d.TargetNames();
 }

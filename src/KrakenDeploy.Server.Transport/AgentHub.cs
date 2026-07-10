@@ -485,7 +485,7 @@ public sealed class AgentHub(
         // output-variable rows so they aren't mis-scoped to the Default Space.
         var deploymentScope = await db.Deployments.IgnoreQueryFilters()
             .Where(d => d.Id == deploymentId)
-            .Select(d => new { d.SpaceId, d.TargetId })
+            .Select(d => new { d.SpaceId })
             .FirstOrDefaultAsync().ConfigureAwait(false);
         if (deploymentScope is null)
         {
@@ -500,11 +500,9 @@ public sealed class AgentHub(
         // output variables — otherwise a foreign agent could inject outputs that
         // later steps consume.
         if (connectionTargetId is null
-            || !(deploymentScope.TargetId == connectionTargetId
-                 || await db.DeploymentTargetAssignments.IgnoreQueryFilters()
-                        .AnyAsync(a => a.DeploymentId == deploymentId
-                                       && a.TargetId == connectionTargetId.Value)
-                        .ConfigureAwait(false)))
+            || !await AgentDeploymentOwnership
+                   .ConnectionOwnsDeploymentAsync(db, deploymentId, connectionTargetId.Value)
+                   .ConfigureAwait(false))
         {
             logger.LogWarning(
                 "ReportStepCompleted rejected: target {Target} is not assigned to deployment {Id}.",

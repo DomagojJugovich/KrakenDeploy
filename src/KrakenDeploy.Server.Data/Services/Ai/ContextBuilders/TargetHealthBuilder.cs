@@ -48,10 +48,9 @@ public sealed class TargetHealthBuilder(IDbContextFactory<KrakenDbContext> dbFac
         }
 
         // Most recent deployment that ran against this target (via the
-        // multi-target join OR the legacy single-target column).
+        // assignments join — the single authority for the target set).
         var lastDeployment = await db.Deployments.AsNoTracking()
-            .Where(d => d.TargetId == target.Id
-                     || d.Targets.Any(a => a.TargetId == target.Id))
+            .Where(d => d.Targets.Any(a => a.TargetId == target.Id))
             .OrderByDescending(d => d.CreatedUtc)
             .Select(d => new { d.Status, d.CompletedUtc, d.CreatedUtc })
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
@@ -89,7 +88,7 @@ public sealed class TargetHealthBuilder(IDbContextFactory<KrakenDbContext> dbFac
         if (!string.IsNullOrWhiteSpace(environmentName))
         {
             q = q.Where(t => db.Deployments.Any(d =>
-                (d.TargetId == t.Id || d.Targets.Any(a => a.TargetId == t.Id))
+                d.Targets.Any(a => a.TargetId == t.Id)
                 && d.Environment.Name == environmentName));
         }
 

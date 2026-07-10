@@ -26,16 +26,13 @@ public class DeploymentService(
     /// Enforces the lifecycle gate if the release has a channel with a lifecycle.
     ///
     /// <para>
-    /// M-RollingDeployments Phase 1b: <paramref name="additionalTargetIds"/>
-    /// extends the deployment's target set beyond the legacy
-    /// <paramref name="targetId"/>. When provided, the deployment dispatches
-    /// against the union (primary + additional) — the orchestrator walks the
-    /// <c>Deployment.Targets</c> join collection. The legacy
-    /// <paramref name="targetId"/> stays the source of truth for code paths
-    /// that haven't been upgraded yet (offline-drop, role-filter on server
-    /// waves) and is also seeded into the join collection. Pass <c>null</c>
-    /// or an empty list (the default) for single-target deployments —
-    /// existing callers are unchanged.
+    /// The target set is the union of <paramref name="targetId"/> (the
+    /// primary — always first) and <paramref name="additionalTargetIds"/>,
+    /// persisted exclusively as <c>deployment_target_assignments</c> rows
+    /// (the transitional <c>deployments.target_id</c> column is gone). The
+    /// primary is the canonical target: server waves resolve machine
+    /// variables against the first-assigned target. Pass <c>null</c> or an
+    /// empty list (the default) for single-target deployments.
     /// </para>
     /// </summary>
     public async Task<Deployment> CreateAsync(
@@ -75,11 +72,10 @@ public class DeploymentService(
             }
         }
 
-        // ── M-RollingDeployments Phase 1b — build the target id set ─────
-        // Primary targetId is always part of the set (the legacy column +
-        // first join row). Additional ids extend it; duplicates are
-        // de-duplicated. Distinct against the primary so adding it twice
-        // is a no-op.
+        // ── Build the target id set ─────────────────────────────────────
+        // Primary targetId is always part of the set (the first join row).
+        // Additional ids extend it; duplicates are de-duplicated. Distinct
+        // against the primary so adding it twice is a no-op.
         var targetIds = new List<Guid> { targetId };
         if (additionalTargetIds is not null)
         {
@@ -112,7 +108,6 @@ public class DeploymentService(
         {
             ReleaseId = releaseId,
             EnvironmentId = environmentId,
-            TargetId = targetId,
             TenantId = tenantId,
             Status = DeploymentStatus.Queued,
             FailureMode = failureMode,
@@ -122,17 +117,20 @@ public class DeploymentService(
         db.Deployments.Add(deployment);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
-        // Seed the M-RollingDeployments join collection. The legacy
-        // TargetId column is also kept in sync above for code paths that
-        // haven't been upgraded yet.
+        // Persist the target set. AddedUtc gets a strictly increasing
+        // MICROSECOND per row so assignment ORDER survives the DB round-trip
+        // (Postgres timestamptz stores microseconds — sub-µs ticks would
+        // collapse to equal values). Readers
+        // (DeploymentTargetSetExtensions.ResolvedTargets) sort by it and
+        // treat the first-assigned target as canonical.
         var now = time.GetUtcNow();
-        foreach (var id in targetIds)
+        for (var i = 0; i < targetIds.Count; i++)
         {
             db.DeploymentTargetAssignments.Add(new DeploymentTargetAssignment
             {
                 DeploymentId = deployment.Id,
-                TargetId     = id,
-                AddedUtc     = now,
+                TargetId     = targetIds[i],
+                AddedUtc     = now.AddMicroseconds(i),
             });
         }
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
@@ -222,7 +220,7 @@ public class DeploymentService(
         var q = db.Deployments
             .Include(d => d.Release).ThenInclude(r => r.Project)
             .Include(d => d.Environment)
-            .Include(d => d.Target)
+            .Include(d => d.Targets).ThenInclude(a => a.Target)
             .Include(d => d.Tenant)
             .AsQueryable();
 
@@ -239,8 +237,8 @@ public class DeploymentService(
     }
 
     /// <summary>Deployments that ran on one target (newest first, bounded) —
-    /// powers the target-detail Deployments tab. Matches both the legacy
-    /// single-target FK and the multi-target join.</summary>
+    /// powers the target-detail Deployments tab. Matches via the
+    /// assignments join, the single authority for the target set.</summary>
     public async Task<List<Deployment>> GetForTargetAsync(
         Guid targetId, int limit = 100, CancellationToken ct = default)
     {
@@ -249,8 +247,7 @@ public class DeploymentService(
             .Include(d => d.Release).ThenInclude(r => r.Project)
             .Include(d => d.Environment)
             .Include(d => d.Tenant)
-            .Where(d => d.TargetId == targetId
-                     || d.Targets.Any(a => a.TargetId == targetId))
+            .Where(d => d.Targets.Any(a => a.TargetId == targetId))
             .OrderByDescending(d => d.CreatedUtc)
             .Take(limit)
             .ToListAsync(ct)
@@ -265,7 +262,7 @@ public class DeploymentService(
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         return await db.Deployments
             .Include(d => d.Environment)
-            .Include(d => d.Target)
+            .Include(d => d.Targets).ThenInclude(a => a.Target)
             .Include(d => d.Tenant)
             .Where(d => d.ReleaseId == releaseId)
             .OrderByDescending(d => d.CreatedUtc)
@@ -276,14 +273,12 @@ public class DeploymentService(
     public async Task<Deployment?> GetAsync(Guid id, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        // M-RollingDeployments Phase 3 — include the multi-target join so
-        // the deployment-detail page can render the target set + map per-
-        // outcome TargetIds to human-readable names without a second
-        // round-trip.
+        // Include the multi-target join so the deployment-detail page can
+        // render the target set + map per-outcome TargetIds to
+        // human-readable names without a second round-trip.
         return await db.Deployments
             .Include(d => d.Release).ThenInclude(r => r.Project)
             .Include(d => d.Environment)
-            .Include(d => d.Target)
             .Include(d => d.Targets).ThenInclude(a => a.Target!)
             .Include(d => d.LogEntries.OrderBy(l => l.Sequence))
             .FirstOrDefaultAsync(d => d.Id == id, ct);

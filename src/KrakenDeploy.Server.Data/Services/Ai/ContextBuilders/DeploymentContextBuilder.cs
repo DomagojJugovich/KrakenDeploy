@@ -111,15 +111,7 @@ public sealed class DeploymentContextBuilder(IDbContextFactory<KrakenDbContext> 
 
     private static DeploymentSummaryDto ToSummary(Deployment d)
     {
-        var targetNames = d.Targets
-            .Where(a => a.Target is not null)
-            .Select(a => a.Target!.Name)
-            .ToList();
-        // Fall back to the legacy single-target nav for joinless rows.
-        if (targetNames.Count == 0 && d.Target is not null)
-        {
-            targetNames.Add(d.Target.Name);
-        }
+        var targetNames = d.TargetNames();
 
         return new DeploymentSummaryDto(
             Id:              d.Id,

@@ -89,14 +89,18 @@ public sealed class DeployReleaseStepTimeoutTests(PostgresFixture postgres)
             await db.SaveChangesAsync();
 
             // Parent deployment: the runner only reads its SpaceId / EnvironmentId
-            // / TargetId / Targets / TenantId, so reuse the child release for the
-            // FK and point it at the seeded environment + target.
+            // / Targets / TenantId, so reuse the child release for the FK and
+            // point it at the seeded environment + target (via the join).
             var parent = new Deployment
             {
                 SpaceId       = WellKnown.DefaultSpaceId,
                 ReleaseId     = childRelease.Id,
                 EnvironmentId = env.Id,
-                TargetId      = target.Id,
+                Targets       = [new DeploymentTargetAssignment
+                {
+                    TargetId = target.Id,
+                    AddedUtc = DateTimeOffset.UtcNow,
+                }],
                 Status        = DeploymentStatus.Running,
             };
             db.Deployments.Add(parent);

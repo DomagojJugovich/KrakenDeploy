@@ -484,15 +484,7 @@ else
     private string EnvColor(string? name)
         => name is not null && _envColor.TryGetValue(name, out var i) ? $"env-c{i % 6}" : "env-c0";
 
-    private static string TargetLabel(Deployment d)
-    {
-        if (d.Target is not null)
-        {
-            return d.Target.Name;
-        }
-        var count = d.Targets?.Count ?? 0;
-        return count > 0 ? $"{count} targets" : "—";
-    }
+    private static string TargetLabel(Deployment d) => d.TargetLabel();
 
     private static string TimeLabel(Deployment d)
     {

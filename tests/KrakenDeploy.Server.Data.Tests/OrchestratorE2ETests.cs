@@ -484,19 +484,22 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
             SpaceId       = spaceId,
             ReleaseId     = release.Id,
             EnvironmentId = env.Id,
-            TargetId      = targets[0].Id,
             Status        = DeploymentStatus.Queued,
         };
         db.Deployments.Add(deployment);
         await db.SaveChangesAsync();
 
-        foreach (var t in targets)
+        // Strictly increasing AddedUtc microseconds (timestamptz precision)
+        // preserve assignment order (targets[0] = canonical), mirroring
+        // DeploymentService.CreateAsync.
+        var addedUtc = DateTimeOffset.UtcNow;
+        for (var i = 0; i < targets.Count; i++)
         {
             db.DeploymentTargetAssignments.Add(new DeploymentTargetAssignment
             {
                 DeploymentId = deployment.Id,
-                TargetId     = t.Id,
-                AddedUtc     = DateTimeOffset.UtcNow,
+                TargetId     = targets[i].Id,
+                AddedUtc     = addedUtc.AddMicroseconds(i),
             });
         }
         await db.SaveChangesAsync();

@@ -18,8 +18,8 @@ namespace KrakenDeploy.Server.Transport;
 /// still be allowed — gating on "active deployment" would false-deny it.
 /// </para>
 /// <para>
-/// The target→deployment→release hops are SQL (real columns: <c>Deployment.TargetId</c>
-/// and the <c>deployment_target_assignments</c> join, filter-free — the agent
+/// The target→deployment→release hops are SQL (the
+/// <c>deployment_target_assignments</c> join, filter-free — the agent
 /// control plane has no ambient Space). The last hop release→package is NOT
 /// SQL-queryable: <c>Release.ProcessSnapshot</c> is an opaque jsonb-via-ValueConverter
 /// string, so the snapshots are materialised and scanned in memory. This runs at
@@ -95,21 +95,18 @@ public static class AgentPackageEntitlement
 
     /// <summary>
     /// The release process-snapshots of every deployment dispatched to
-    /// <paramref name="targetId"/> (via the legacy <c>Deployment.TargetId</c> OR the
-    /// assignment join). Release ids are resolved in SQL; the snapshots are then
-    /// materialised (jsonb → CLR) for in-memory scanning.
+    /// <paramref name="targetId"/> (via the assignment join — the single
+    /// authority for the target set). Release ids are resolved in SQL; the
+    /// snapshots are then materialised (jsonb → CLR) for in-memory scanning.
     /// </summary>
     private static async Task<List<List<StepSnapshot>>> ReachableSnapshotsAsync(
         KrakenDbContext db, Guid targetId, CancellationToken ct)
     {
-        var legacy = db.Deployments.IgnoreQueryFilters()
-            .Where(d => d.TargetId == targetId)
-            .Select(d => d.ReleaseId);
-        var viaJoin = db.DeploymentTargetAssignments.IgnoreQueryFilters()
+        var releaseIds = await db.DeploymentTargetAssignments.IgnoreQueryFilters()
             .Where(a => a.TargetId == targetId)
-            .Select(a => a.Deployment.ReleaseId);
-
-        var releaseIds = await legacy.Union(viaJoin).ToListAsync(ct).ConfigureAwait(false);
+            .Select(a => a.Deployment.ReleaseId)
+            .Distinct()
+            .ToListAsync(ct).ConfigureAwait(false);
         if (releaseIds.Count == 0)
         {
             return [];

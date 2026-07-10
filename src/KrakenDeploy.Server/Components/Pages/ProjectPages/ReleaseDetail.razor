@@ -116,7 +116,7 @@
                         <Template Context="d">@(d.Tenant?.Name ?? "—")</Template>
                     </RadzenDataGridColumn>
                     <RadzenDataGridColumn TItem="Deployment" Title="Target" Width="180px" Sortable="false">
-                        <Template Context="d">@(d.Target?.Name ?? "—")</Template>
+                        <Template Context="d">@d.TargetLabel()</Template>
                     </RadzenDataGridColumn>
                     <RadzenDataGridColumn TItem="Deployment" Property="CreatedUtc" Title="Started"
                                           Width="170px" FormatString="{0:g}" />

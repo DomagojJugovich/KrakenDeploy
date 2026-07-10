@@ -45,7 +45,7 @@ public class OfflineResultService(
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var deployment = await db.Deployments
-            .Include(d => d.Target)
+            .Include(d => d.Targets).ThenInclude(a => a.Target!)
             .Include(d => d.LogEntries)
             .FirstOrDefaultAsync(d => d.Id == deploymentId, ct)
             .ConfigureAwait(false)
@@ -58,6 +58,11 @@ public class OfflineResultService(
                 "not 'PendingOfflineResult'. Only pending offline deployments accept result bundles.");
         }
 
+        // Offline drops are single-target by design; the deployment's one
+        // assignment carries the bundle/HMAC keys the result is verified
+        // against, and its id is stamped onto the ingested step outcomes.
+        var target = deployment.ResolvedTargets().FirstOrDefault();
+
         // Copy to a seekable memory stream so ZipArchive can read it
         using var ms = new MemoryStream();
         await resultBundle.CopyToAsync(ms, ct).ConfigureAwait(false);
@@ -66,7 +71,7 @@ public class OfflineResultService(
         using var archive = new ZipArchive(ms, ZipArchiveMode.Read);
 
         // ── Validate HMAC signature ─────────────────────────────────────────
-        var hmacKey = GetHmacKey(deployment.Target);
+        var hmacKey = GetHmacKey(target);
         if (hmacKey is not null)
         {
             var manifestEntry = archive.GetEntry("manifest.json")
@@ -132,7 +137,7 @@ public class OfflineResultService(
             // The result drives DB writes, and it travels back over an untrusted
             // channel — verify its signature against the per-target bundle key
             // when one is configured.
-            var bundleKey = GetBundleKey(deployment.Target);
+            var bundleKey = GetBundleKey(target);
             if (bundleKey is not null)
             {
                 var sigEntry = archive.GetEntry(OfflineBundleLayout.ResultSignatureFile)
@@ -185,7 +190,7 @@ public class OfflineResultService(
                         CompletedUtc = completedUtc,
                         IsServerSide = false,
                         Required     = step.Required,
-                        TargetId     = deployment.TargetId,
+                        TargetId     = target?.Id,
                     });
 
                     foreach (var (name, value) in step.OutputVariables)

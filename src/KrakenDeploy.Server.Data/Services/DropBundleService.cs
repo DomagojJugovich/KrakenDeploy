@@ -7,6 +7,7 @@ using KrakenDeploy.Contracts.Crypto;
 using KrakenDeploy.Contracts.Offline;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Packages;
+using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -73,8 +74,14 @@ public class DropBundleService(
     /// <c>(name, version)</c> pair, or <c>null</c> if not installed. Wired to
     /// <c>StepPackageService.TryGetArchivePath</c>.
     /// </param>
+    /// <param name="target">
+    /// The deployment's single assigned offline-drop target, resolved from
+    /// the assignments join by the caller (offline drops are single-target
+    /// by design).
+    /// </param>
     public async Task<string> GenerateAsync(
         Deployment deployment,
+        DeploymentTarget target,
         DeploymentPlan plan,
         byte[] bundleKey,
         Func<string, string, string?> stepPackageArchivePath,
@@ -83,14 +90,13 @@ public class DropBundleService(
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(deployment);
+        ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(bundleKey);
         ArgumentNullException.ThrowIfNull(stepPackageArchivePath);
         ArgumentNullException.ThrowIfNull(deployment.Release);
         ArgumentNullException.ThrowIfNull(deployment.Environment);
-        ArgumentNullException.ThrowIfNull(deployment.Target);
 
-        var target = deployment.Target;
         var release = deployment.Release;
 
         // ── Manifest (non-sensitive metadata only; signed for integrity) ─────
@@ -158,7 +164,7 @@ public class DropBundleService(
 
             // Entrypoint: bootstrap scripts + README, and (best-effort) the
             // self-contained runner so the bundle runs without .NET installed.
-            await AddRunnerAndBootstrapAsync(archive, deployment, runnerStageDir, ct)
+            await AddRunnerAndBootstrapAsync(archive, deployment, target, runnerStageDir, ct)
                 .ConfigureAwait(false);
 
             // HMAC signature of the metadata.
@@ -317,11 +323,12 @@ public class DropBundleService(
     /// PATH, and the bundle is just smaller.
     /// </summary>
     private async Task AddRunnerAndBootstrapAsync(
-        ZipArchive archive, Deployment deployment, string? runnerStageDir, CancellationToken ct)
+        ZipArchive archive, Deployment deployment, DeploymentTarget target,
+        string? runnerStageDir, CancellationToken ct)
     {
         AddTextEntry(archive, "run.cmd", WindowsBootstrap);
         AddTextEntry(archive, "run.sh", LinuxBootstrap);
-        AddTextEntry(archive, "README.txt", BuildReadme(deployment));
+        AddTextEntry(archive, "README.txt", BuildReadme(deployment, target));
 
         if (string.IsNullOrEmpty(runnerStageDir) || !Directory.Exists(runnerStageDir))
         {
@@ -384,14 +391,14 @@ public class DropBundleService(
         "fi\n" +
         "\"$RUNNER\" --run-offline-drop \"$BUNDLE\" --key-file \"$BUNDLE/bundle.key\"\n";
 
-    private static string BuildReadme(Deployment deployment) =>
+    private static string BuildReadme(Deployment deployment, DeploymentTarget target) =>
         $"""
         KrakenDeploy offline drop bundle
         ================================
         Deployment: {deployment.Id}
         Project:    {deployment.Release.Project?.Name ?? ""}
         Release:    {deployment.Release.Version}
-        Target:     {deployment.Target?.Name ?? ""}
+        Target:     {target.Name}
 
         To run on the offline target:
 

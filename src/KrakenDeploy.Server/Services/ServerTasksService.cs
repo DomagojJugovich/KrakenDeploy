@@ -161,7 +161,9 @@ public sealed class ServerTasksService(
             Title = sb.ToString(),
             Project = project,
             Environment = env,
-            Target = d.Target?.Name,
+            Target = d.TargetNames() is { Count: > 0 } names
+                ? (names.Count == 1 ? names[0] : $"{names.Count} targets")
+                : null,
             Tenant = tenant,
             StartedUtc = d.StartedUtc,
             CompletedUtc = d.CompletedUtc,

@@ -213,7 +213,10 @@ internal static class SeedDemoCommands
                 SpaceId = WellKnown.DefaultSpaceId,
                 ReleaseId = rel[project],
                 EnvironmentId = env,
-                TargetId = targetId,
+                // Target set lives exclusively in the assignments join.
+                Targets = targetId is { } t
+                    ? [new DeploymentTargetAssignment { TargetId = t, AddedUtc = now }]
+                    : [],
                 Status = status,
                 StartedUtc = status == DeploymentStatus.Queued ? null : started,
                 CompletedUtc = durationSec is { } d ? started.AddSeconds(d) : null,
@@ -367,7 +370,9 @@ internal static class SeedDemoCommands
                         SpaceId = WellKnown.DefaultSpaceId,
                         ReleaseId = rel.Id,
                         EnvironmentId = envs[e],
-                        TargetId = targetId,
+                        Targets = targetId is { } t
+                            ? [new DeploymentTargetAssignment { TargetId = t, AddedUtc = now }]
+                            : [],
                         Status = status,
                         StartedUtc = started,
                         CompletedUtc = started.AddMinutes(3),

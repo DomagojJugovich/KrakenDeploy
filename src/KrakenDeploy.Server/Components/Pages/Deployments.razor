@@ -226,7 +226,7 @@
             q = q.Where(d =>
                 (d.Release?.Project?.Name?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
                 || (d.Release?.Version?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
-                || (d.Target?.Name?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false)
+                || d.TargetNames().Any(n => n.Contains(s, StringComparison.OrdinalIgnoreCase))
                 || (d.Environment?.Name?.Contains(s, StringComparison.OrdinalIgnoreCase) ?? false));
         }
 
@@ -237,15 +237,7 @@
     private string EnvColor(Guid envId)
         => _envColor.TryGetValue(envId, out var i) ? $"env-c{i % 6}" : "env-c0";
 
-    private static string TargetLabel(Deployment d)
-    {
-        if (d.Target is not null)
-        {
-            return d.Target.Name;
-        }
-        var count = d.Targets?.Count ?? 0;
-        return count > 0 ? $"{count} targets" : "—";
-    }
+    private static string TargetLabel(Deployment d) => d.TargetLabel();
 
     private static string Duration(Deployment d)
     {

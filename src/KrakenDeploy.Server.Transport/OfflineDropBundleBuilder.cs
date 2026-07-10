@@ -37,8 +37,11 @@ public sealed class OfflineDropBundleBuilder(ILogger<OfflineDropBundleBuilder> l
     /// Builds (or rebuilds) the drop bundle for an already-loaded offline-drop
     /// <paramref name="deployment"/> and returns the relative bundle path.
     /// The <paramref name="deployment"/> must have its <c>Release</c>
-    /// (+ <c>Project</c>, snapshots), <c>Environment</c>, and <c>Target</c>
-    /// (+ <c>OfflineDropConfig</c>) navigations loaded.
+    /// (+ <c>Project</c>, snapshots) and <c>Environment</c> navigations
+    /// loaded; <paramref name="target"/> is the deployment's single assigned
+    /// offline-drop target (+ <c>OfflineDropConfig</c>) — offline drops are
+    /// single-target by design, and the caller resolves it from the
+    /// assignments join.
     /// <para>
     /// Does NOT mutate the deployment row, transition status, or deliver the
     /// bundle — the caller owns those. Throws
@@ -49,10 +52,12 @@ public sealed class OfflineDropBundleBuilder(ILogger<OfflineDropBundleBuilder> l
     /// </para>
     /// </summary>
     public async Task<string> GenerateOfflineBundleAsync(
-        IServiceProvider sp, Deployment deployment, CancellationToken ct = default)
+        IServiceProvider sp, Deployment deployment, DeploymentTarget target,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(sp);
         ArgumentNullException.ThrowIfNull(deployment);
+        ArgumentNullException.ThrowIfNull(target);
 
         var variableService = sp.GetRequiredService<VariableService>();
         var dropBundleService = sp.GetRequiredService<DropBundleService>();
@@ -74,7 +79,7 @@ public sealed class OfflineDropBundleBuilder(ILogger<OfflineDropBundleBuilder> l
 
         // Per-target bundle encryption key (provisioned when the target was
         // configured as offline-drop). Without it we can't produce plan.enc.
-        var bundleKeyEnc = deployment.Target!.OfflineDropConfig?.BundleKeyEncrypted;
+        var bundleKeyEnc = target.OfflineDropConfig?.BundleKeyEncrypted;
         if (string.IsNullOrEmpty(bundleKeyEnc))
         {
             throw new InvalidOperationException(
@@ -91,7 +96,7 @@ public sealed class OfflineDropBundleBuilder(ILogger<OfflineDropBundleBuilder> l
             .OrderBy(s => s.SortOrder)
             .ToArray();
         var ctx = await DeploymentWorker.BuildTargetDispatchContextAsync(
-            logger, deployment, deployment.Target, snapshotSteps, variableService,
+            logger, deployment, target, snapshotSteps, variableService,
             serverBaseUrl, dbFactory, ct).ConfigureAwait(false);
 
         // Required ForEach that couldn't resolve its collection aborts here,
@@ -136,14 +141,14 @@ public sealed class OfflineDropBundleBuilder(ILogger<OfflineDropBundleBuilder> l
         string? runnerStageDir = null;
         if (perfSettings.EmbedOfflineRunner)
         {
-            var rid = (deployment.Target.OperatingSystem ?? "")
+            var rid = (target.OperatingSystem ?? "")
                 .Contains("windows", StringComparison.OrdinalIgnoreCase)
                     ? "win-x64" : "linux-x64";
             runnerStageDir = Path.Combine(dataPath, "offline-runner", rid);
         }
 
         return await dropBundleService
-            .GenerateAsync(deployment, plan, bundleKey,
+            .GenerateAsync(deployment, target, plan, bundleKey,
                 stepPackages.TryGetArchivePath, dataPath, runnerStageDir, ct: ct)
             .ConfigureAwait(false);
     }
@@ -170,17 +175,22 @@ public sealed class OfflineDropBundleBuilder(ILogger<OfflineDropBundleBuilder> l
         var deployment = await db.Deployments
             .Include(d => d.Release).ThenInclude(r => r.Project)
             .Include(d => d.Environment)
-            .Include(d => d.Target)
+            .Include(d => d.Targets).ThenInclude(a => a.Target!)
             .Include(d => d.Tenant)
             .FirstOrDefaultAsync(d => d.Id == deploymentId, ct)
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Deployment {deploymentId} not found.");
 
-        if (deployment.Target?.TransportMode != TransportMode.OfflineDrop)
+        // Offline drops are single-target by design (the dispatch path
+        // refuses multi-target sets), so the deployment's one assignment is
+        // the bundle's target.
+        var targets = deployment.ResolvedTargets();
+        if (targets.Count != 1 || targets[0].TransportMode != TransportMode.OfflineDrop)
         {
             throw new InvalidOperationException(
                 "Only offline-drop deployments have a drop bundle to regenerate.");
         }
+        var target = targets[0];
         if (deployment.Status != DeploymentStatus.PendingOfflineResult)
         {
             throw new InvalidOperationException(
@@ -188,7 +198,7 @@ public sealed class OfflineDropBundleBuilder(ILogger<OfflineDropBundleBuilder> l
                 $"its offline result (current status: {deployment.Status}).");
         }
 
-        var path = await GenerateOfflineBundleAsync(sp, deployment, ct).ConfigureAwait(false);
+        var path = await GenerateOfflineBundleAsync(sp, deployment, target, ct).ConfigureAwait(false);
 
         // The path is deterministic ({dataPath}/drop-bundles/{id}/drop-{id}.zip)
         // and the file was overwritten in place, so DropBundlePath is unchanged
