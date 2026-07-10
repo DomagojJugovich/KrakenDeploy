@@ -6,6 +6,9 @@
 @using Microsoft.EntityFrameworkCore
 
 @inject KrakenDeploy.Server.Data.KrakenDbContext Db
+@inject ISpaceContext SpaceCtx
+@inject IPermissionEvaluator Perms
+@inject AuthenticationStateProvider AuthProvider
 @inject NavigationManager Nav
 @inject DialogService DialogService
 
@@ -77,6 +80,22 @@
                 <RadzenTextBox @bind-Value="_subjectTypeFilter"
                                Placeholder="e.g. Project" />
             </RadzenFormField>
+
+            @if (_canIncludeSystem)
+            {
+                @* Sysadmin-only: audit rows with no Space (license uploads,
+                   KEK rotations, sign-ins). The flag is re-validated
+                   server-side in LoadDataAsync and by the export endpoint —
+                   this rendering gate is UI convenience, not authorization. *@
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                             AlignItems="AlignItems.Center" class="rz-pb-2">
+                    <RadzenSwitch @bind-Value="_includeSystemEvents"
+                                  Change="@((bool _) => ApplyFiltersAsync())" />
+                    <RadzenText TextStyle="TextStyle.Body2" class="rz-mb-0">
+                        Include system events
+                    </RadzenText>
+                </RadzenStack>
+            }
 
             <RadzenButton Icon="search" Text="Search"
                           ButtonStyle="ButtonStyle.Primary"
@@ -195,6 +214,12 @@
     private string _userFilter       = "";
     private string _subjectTypeFilter = "";
 
+    // System-event visibility (rows with SpaceId == null). The toggle is
+    // rendered only for AdministerSystem holders and re-validated at query
+    // time — see BuildQueryAsync.
+    private bool _canIncludeSystem;
+    private bool _includeSystemEvents;
+
     private RenderFragment _unauthorized =>
         @<div class="rz-p-4">
             <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true">
@@ -202,11 +227,14 @@
             </RadzenAlert>
         </div>;
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
         // Default date range: last 30 days
         _to   = DateTime.Today;
         _from = DateTime.Today.AddDays(-30);
+
+        var user = (await AuthProvider.GetAuthenticationStateAsync()).User;
+        _canIncludeSystem = await Perms.HasPermissionAsync(user, Permission.AdministerSystem);
     }
 
     private async Task LoadDataAsync(LoadDataArgs args)
@@ -214,7 +242,7 @@
         _loading = true;
         try
         {
-            var query = BuildQuery();
+            var query = await BuildQueryAsync();
 
             _totalCount = await query.CountAsync();
 
@@ -248,41 +276,50 @@
         }
     }
 
-    private IQueryable<AuditEntry> BuildQuery()
+    /// <summary>
+    /// Builds the grid query through the audit choke point
+    /// (<see cref="AuditExportService.ApplyScopedFilter"/>): active Space only,
+    /// plus system rows (SpaceId == null) when the sysadmin toggle is on.
+    /// The toggle is re-validated server-side here (UiActionGuard pattern) —
+    /// the rendering gate alone must never authorize the wider query, because
+    /// a long-lived circuit can outlive an AdministerSystem revocation.
+    /// </summary>
+    private async Task<IQueryable<AuditEntry>> BuildQueryAsync()
     {
-        var q = Db.AuditEntries.IgnoreQueryFilters().AsQueryable();
-
-        if (_from.HasValue)
+        var includeSystem = false;
+        if (_includeSystemEvents)
         {
-            var fromUtc = new DateTimeOffset(DateTime.SpecifyKind(_from.Value.Date, DateTimeKind.Utc));
-            q = q.Where(e => e.OccurredUtc >= fromUtc);
+            var user = (await AuthProvider.GetAuthenticationStateAsync()).User;
+            includeSystem = await Perms.HasPermissionAsync(user, Permission.AdministerSystem);
         }
 
-        if (_to.HasValue)
-        {
-            var toUtc = new DateTimeOffset(DateTime.SpecifyKind(_to.Value.Date.AddDays(1), DateTimeKind.Utc));
-            q = q.Where(e => e.OccurredUtc < toUtc);
-        }
+        return AuditExportService.ApplyScopedFilter(
+            Db.AuditEntries.AsNoTracking(), BuildFilter(includeSystem));
+    }
 
-        if (!string.IsNullOrWhiteSpace(_eventTypeFilter))
-        {
-            var f = _eventTypeFilter.Trim();
-            q = q.Where(e => e.EventType.Contains(f));
-        }
+    /// <summary>
+    /// The page's filter state as the shared <see cref="AuditExportService.Filter"/>
+    /// shape. The "to" boundary is pushed to the next day so the exclusive
+    /// comparison includes everything from the chosen day. SpaceIds carries the
+    /// active Space, already validated by <c>SpaceScopedComponentBase</c>.
+    /// </summary>
+    private AuditExportService.Filter BuildFilter(bool includeSystemRows)
+    {
+        DateTimeOffset? fromUtc = _from.HasValue
+            ? new DateTimeOffset(DateTime.SpecifyKind(_from.Value.Date, DateTimeKind.Utc))
+            : null;
+        DateTimeOffset? toUtc = _to.HasValue
+            ? new DateTimeOffset(DateTime.SpecifyKind(_to.Value.Date.AddDays(1), DateTimeKind.Utc))
+            : null;
 
-        if (!string.IsNullOrWhiteSpace(_userFilter))
-        {
-            var f = _userFilter.Trim();
-            q = q.Where(e => e.UserDisplay.Contains(f));
-        }
-
-        if (!string.IsNullOrWhiteSpace(_subjectTypeFilter))
-        {
-            var f = _subjectTypeFilter.Trim();
-            q = q.Where(e => e.SubjectType != null && e.SubjectType.Contains(f));
-        }
-
-        return q;
+        return new AuditExportService.Filter(
+            SpaceIds:            [SpaceCtx.CurrentSpaceId],
+            IncludeSystemRows:   includeSystemRows,
+            FromUtc:             fromUtc,
+            ToUtcExclusive:      toUtc,
+            EventTypeContains:   string.IsNullOrWhiteSpace(_eventTypeFilter)   ? null : _eventTypeFilter.Trim(),
+            UserDisplayContains: string.IsNullOrWhiteSpace(_userFilter)        ? null : _userFilter.Trim(),
+            SubjectTypeContains: string.IsNullOrWhiteSpace(_subjectTypeFilter) ? null : _subjectTypeFilter.Trim());
     }
 
     private async Task ApplyFiltersAsync()
@@ -298,6 +335,7 @@
         _eventTypeFilter   = "";
         _userFilter        = "";
         _subjectTypeFilter = "";
+        _includeSystemEvents = false;
         _to   = DateTime.Today;
         _from = DateTime.Today.AddDays(-30);
         _ = ApplyFiltersAsync();
@@ -333,13 +371,24 @@
     /// <summary>
     /// Builds an export URL with the current filter values as query
     /// parameters. <paramref name="suffix"/> selects the format (".csv" or
-    /// ".json"). The "to" boundary mirrors the page's BuildQuery() — it's
+    /// ".json"). The "to" boundary mirrors the page's BuildFilter() — it's
     /// pushed to the next day so the endpoint's exclusive comparison
     /// includes everything from the chosen day.
+    /// The active Space rides along explicitly ("space=") because the /api
+    /// surface has no ambient Space; the endpoint re-validates it against the
+    /// caller's accessible Spaces, and "includeSystem" against AdministerSystem.
     /// </summary>
     private string BuildExportUrl(string suffix)
     {
-        var qs = new List<string>();
+        var qs = new List<string>
+        {
+            $"space={SpaceCtx.CurrentSpaceId}",
+        };
+
+        if (_includeSystemEvents && _canIncludeSystem)
+        {
+            qs.Add("includeSystem=true");
+        }
 
         if (_from.HasValue)
         {

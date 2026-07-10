@@ -1505,25 +1505,17 @@ public static class Program
         // Two endpoints — CSV (Excel-friendly) + JSON (round-trippable) —
         // both stream the filtered audit rows directly to the response body
         // without buffering the full result set. Filter params mirror the
-        // /audit page UI: from/to/eventType/user/subjectType.
-
-        static AuditExportService.Filter ParseAuditExportFilter(HttpRequest req)
-        {
-            DateTimeOffset? Parse(string? s)
-                => string.IsNullOrWhiteSpace(s)
-                    ? null
-                    : DateTimeOffset.Parse(s, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal);
-
-            // The page UI sends "to" as an inclusive day boundary; the
-            // service treats it as exclusive (< toUtc). Caller already
-            // adds the +1 day, so we just pass it through.
-            return new AuditExportService.Filter(
-                FromUtc:              Parse(req.Query["from"]),
-                ToUtcExclusive:       Parse(req.Query["to"]),
-                EventTypeContains:    req.Query["eventType"].FirstOrDefault(),
-                UserDisplayContains:  req.Query["user"].FirstOrDefault(),
-                SubjectTypeContains:  req.Query["subjectType"].FirstOrDefault());
-        }
+        // /audit page UI: space/includeSystem/from/to/eventType/user/subjectType.
+        //
+        // Deliberately RequireAuthorization() rather than
+        // RequirePermission(EventView): perm: policies evaluate against the
+        // ambient Space, and /api requests always resolve to the Default
+        // Space — the gate would test EventView in the WRONG Space (denying
+        // legitimate Space-B operators, and proving nothing about the Space
+        // actually being exported). AuditExportEndpoint.ResolveFilterAsync
+        // performs the real per-Space checks: accessible-Space membership,
+        // EventView scoped to the requested Space, and AdministerSystem for
+        // includeSystem.
 
         // ── Diagnostics zip download (M13.A.2) ───────────────────────────────
         // Permission-gated on ConfigureServer (same tier as License / SMTP /
@@ -1542,28 +1534,40 @@ public static class Program
             }).RequirePermission(Permission.ConfigureServer);
 
         app.MapGet("/api/audit/export.csv",
-            async (HttpContext ctx, AuditExportService svc) =>
+            async (HttpContext ctx, AuditExportService svc, IPermissionEvaluator perms) =>
             {
-                var filter = ParseAuditExportFilter(ctx.Request);
+                var (filter, error) = await AuditExportEndpoint.ResolveFilterAsync(
+                    ctx.Request, ctx.User, perms, ctx.RequestAborted).ConfigureAwait(false);
+                if (error is not null)
+                {
+                    return error;
+                }
                 var stamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
                 ctx.Response.ContentType = "text/csv; charset=utf-8";
                 ctx.Response.Headers.ContentDisposition =
                     $"attachment; filename=\"audit-{stamp}.csv\"";
-                await svc.WriteCsvAsync(ctx.Response.Body, filter, ctx.RequestAborted)
+                await svc.WriteCsvAsync(ctx.Response.Body, filter!, ctx.RequestAborted)
                     .ConfigureAwait(false);
-            }).RequirePermission(Permission.EventView);
+                return Results.Empty;
+            }).RequireAuthorization();
 
         app.MapGet("/api/audit/export.json",
-            async (HttpContext ctx, AuditExportService svc) =>
+            async (HttpContext ctx, AuditExportService svc, IPermissionEvaluator perms) =>
             {
-                var filter = ParseAuditExportFilter(ctx.Request);
+                var (filter, error) = await AuditExportEndpoint.ResolveFilterAsync(
+                    ctx.Request, ctx.User, perms, ctx.RequestAborted).ConfigureAwait(false);
+                if (error is not null)
+                {
+                    return error;
+                }
                 var stamp = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
                 ctx.Response.ContentType = "application/json; charset=utf-8";
                 ctx.Response.Headers.ContentDisposition =
                     $"attachment; filename=\"audit-{stamp}.json\"";
-                await svc.WriteJsonAsync(ctx.Response.Body, filter, ctx.RequestAborted)
+                await svc.WriteJsonAsync(ctx.Response.Body, filter!, ctx.RequestAborted)
                     .ConfigureAwait(false);
-            }).RequirePermission(Permission.EventView);
+                return Results.Empty;
+            }).RequireAuthorization();
 
         app.MapGet("/api/step-templates/{id:guid}/export",
             async (Guid id, StepTemplateService svc, CancellationToken ct) =>

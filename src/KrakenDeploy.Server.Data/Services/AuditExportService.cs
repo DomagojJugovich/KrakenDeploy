@@ -18,16 +18,104 @@ namespace KrakenDeploy.Server.Data.Services;
 /// The filter parameters mirror the <c>Audit.razor</c> page's filter UI so
 /// "Export" delivers exactly what the operator sees on screen.
 /// </para>
+/// <para>
+/// This class is also the single query choke point for reading audit rows:
+/// <see cref="AuditEntry"/> is not <c>ISpaceScoped</c> (no global query
+/// filter), so every read of <c>db.AuditEntries</c> must go through
+/// <see cref="ApplySpaceVisibility"/> / <see cref="ApplyScopedFilter"/> —
+/// or carry a comment justifying why not. Audit rows contain full
+/// before/after entity snapshots; an unscoped read is a cross-Space data
+/// leak.
+/// </para>
 /// </summary>
 public sealed class AuditExportService(IDbContextFactory<KrakenDbContext> dbFactory)
 {
-    /// <summary>Filter shape shared between the page and the export endpoints.</summary>
+    /// <summary>
+    /// Filter shape shared between the page and the export endpoints.
+    /// <para>
+    /// <paramref name="SpaceIds"/> is required and positional on purpose: a
+    /// <see cref="Filter"/> cannot be constructed without a Space decision.
+    /// Callers must only pass Space ids the current user is entitled to —
+    /// validated against <c>IPermissionEvaluator.GetAccessibleSpaceIdsAsync</c>
+    /// (the page's Space is validated by <c>SpaceScopedComponentBase</c>;
+    /// the export endpoints validate explicitly).
+    /// </para>
+    /// <para>
+    /// <paramref name="IncludeSystemRows"/> adds rows with <c>SpaceId IS NULL</c>
+    /// (platform-level events: license uploads, KEK rotations, sign-ins …).
+    /// It must only be set <c>true</c> after verifying the caller holds
+    /// <c>Permission.AdministerSystem</c>.
+    /// </para>
+    /// </summary>
     public sealed record Filter(
+        IReadOnlyCollection<Guid> SpaceIds,
+        bool            IncludeSystemRows,
         DateTimeOffset? FromUtc,
         DateTimeOffset? ToUtcExclusive,
         string?         EventTypeContains,
         string?         UserDisplayContains,
         string?         SubjectTypeContains);
+
+    /// <summary>
+    /// THE audit Space-visibility choke point. Restricts <paramref name="source"/>
+    /// to rows whose <c>SpaceId</c> is in <paramref name="spaceIds"/>, plus —
+    /// only when <paramref name="includeSystemRows"/> — rows with no Space
+    /// (platform-level events). Every audit read must flow through here.
+    /// </summary>
+    public static IQueryable<AuditEntry> ApplySpaceVisibility(
+        IQueryable<AuditEntry> source,
+        IReadOnlyCollection<Guid> spaceIds,
+        bool includeSystemRows)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(spaceIds);
+
+        // List<T> so EF translates Contains to "= ANY(@spaceIds)".
+        var ids = spaceIds as List<Guid> ?? spaceIds.ToList();
+        return source.Where(e =>
+            (e.SpaceId != null && ids.Contains(e.SpaceId.Value))
+            || (includeSystemRows && e.SpaceId == null));
+    }
+
+    /// <summary>
+    /// Composes the full scoped audit query: Space visibility first, then the
+    /// date/text filters. Shared by the <c>Audit.razor</c> page grid and both
+    /// export formats so screen and download can never disagree on which rows
+    /// the caller may see.
+    /// </summary>
+    public static IQueryable<AuditEntry> ApplyScopedFilter(
+        IQueryable<AuditEntry> source, Filter f)
+    {
+        ArgumentNullException.ThrowIfNull(f);
+
+        var q = ApplySpaceVisibility(source, f.SpaceIds, f.IncludeSystemRows);
+        if (f.FromUtc.HasValue)
+        {
+            var from = f.FromUtc.Value;
+            q = q.Where(e => e.OccurredUtc >= from);
+        }
+        if (f.ToUtcExclusive.HasValue)
+        {
+            var to = f.ToUtcExclusive.Value;
+            q = q.Where(e => e.OccurredUtc < to);
+        }
+        if (!string.IsNullOrWhiteSpace(f.EventTypeContains))
+        {
+            var s = f.EventTypeContains.Trim();
+            q = q.Where(e => e.EventType.Contains(s));
+        }
+        if (!string.IsNullOrWhiteSpace(f.UserDisplayContains))
+        {
+            var s = f.UserDisplayContains.Trim();
+            q = q.Where(e => e.UserDisplay.Contains(s));
+        }
+        if (!string.IsNullOrWhiteSpace(f.SubjectTypeContains))
+        {
+            var s = f.SubjectTypeContains.Trim();
+            q = q.Where(e => e.SubjectType != null && e.SubjectType.Contains(s));
+        }
+        return q;
+    }
 
     /// <summary>
     /// Writes a CSV file to <paramref name="output"/>. The file starts with
@@ -60,7 +148,7 @@ public sealed class AuditExportService(IDbContextFactory<KrakenDbContext> dbFact
         ])).ConfigureAwait(false);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var query = ApplyFilter(db.AuditEntries.IgnoreQueryFilters(), filter)
+        var query = ApplyScopedFilter(db.AuditEntries.AsNoTracking(), filter)
             .OrderByDescending(e => e.OccurredUtc)
             .AsAsyncEnumerable();
 
@@ -106,7 +194,7 @@ public sealed class AuditExportService(IDbContextFactory<KrakenDbContext> dbFact
         json.WriteStartArray();
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var query = ApplyFilter(db.AuditEntries.IgnoreQueryFilters(), filter)
+        var query = ApplyScopedFilter(db.AuditEntries.AsNoTracking(), filter)
             .OrderByDescending(e => e.OccurredUtc)
             .AsAsyncEnumerable();
 
@@ -152,37 +240,6 @@ public sealed class AuditExportService(IDbContextFactory<KrakenDbContext> dbFact
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
-
-    private static IQueryable<AuditEntry> ApplyFilter(
-        IQueryable<AuditEntry> q, Filter f)
-    {
-        if (f.FromUtc.HasValue)
-        {
-            var from = f.FromUtc.Value;
-            q = q.Where(e => e.OccurredUtc >= from);
-        }
-        if (f.ToUtcExclusive.HasValue)
-        {
-            var to = f.ToUtcExclusive.Value;
-            q = q.Where(e => e.OccurredUtc < to);
-        }
-        if (!string.IsNullOrWhiteSpace(f.EventTypeContains))
-        {
-            var s = f.EventTypeContains.Trim();
-            q = q.Where(e => e.EventType.Contains(s));
-        }
-        if (!string.IsNullOrWhiteSpace(f.UserDisplayContains))
-        {
-            var s = f.UserDisplayContains.Trim();
-            q = q.Where(e => e.UserDisplay.Contains(s));
-        }
-        if (!string.IsNullOrWhiteSpace(f.SubjectTypeContains))
-        {
-            var s = f.SubjectTypeContains.Trim();
-            q = q.Where(e => e.SubjectType != null && e.SubjectType.Contains(s));
-        }
-        return q;
-    }
 
     /// <summary>
     /// RFC 4180 escape: empty string for null; wrap in double quotes when the

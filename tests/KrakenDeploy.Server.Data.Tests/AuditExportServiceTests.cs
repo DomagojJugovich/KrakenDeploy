@@ -2,7 +2,6 @@ using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Audit;
-using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
 
@@ -23,6 +22,10 @@ public sealed class AuditExportServiceTests(PostgresFixture postgres)
     private static readonly DateTimeOffset BaseTime =
         new(2026, 5, 1, 12, 0, 0, TimeSpan.Zero);
 
+    /// <summary>The Space every test row lives in unless a test says otherwise —
+    /// the Filter's SpaceIds is required, so every export is Space-scoped.</summary>
+    private static readonly Guid TestSpaceId = Guid.NewGuid();
+
     public async Task InitializeAsync()
     {
         await using var db = postgres.CreateContext();
@@ -38,6 +41,7 @@ public sealed class AuditExportServiceTests(PostgresFixture postgres)
             new AuditEntry
             {
                 Id           = Guid.CreateVersion7(),
+                SpaceId      = TestSpaceId,
                 EventType    = "Project.Created",
                 UserDisplay  = "alice@laus.hr",
                 OccurredUtc  = BaseTime,
@@ -49,6 +53,7 @@ public sealed class AuditExportServiceTests(PostgresFixture postgres)
             new AuditEntry
             {
                 Id           = Guid.CreateVersion7(),
+                SpaceId      = TestSpaceId,
                 EventType    = "Project.Updated",
                 UserDisplay  = "bob@laus.hr",
                 OccurredUtc  = BaseTime.AddMinutes(1),
@@ -61,7 +66,7 @@ public sealed class AuditExportServiceTests(PostgresFixture postgres)
         var svc = new AuditExportService(postgres);
 
         using var ms = new MemoryStream();
-        await svc.WriteCsvAsync(ms, EmptyFilter, CancellationToken.None);
+        await svc.WriteCsvAsync(ms, ScopedFilter, CancellationToken.None);
 
         var bytes = ms.ToArray();
         // UTF-8 BOM is EF BB BF — Excel relies on it to pick UTF-8.
@@ -90,6 +95,7 @@ public sealed class AuditExportServiceTests(PostgresFixture postgres)
         await SeedAsync(new AuditEntry
         {
             Id           = Guid.CreateVersion7(),
+            SpaceId      = TestSpaceId,
             EventType    = "License.Uploaded",
             UserDisplay  = "ops",
             OccurredUtc  = BaseTime,
@@ -98,7 +104,7 @@ public sealed class AuditExportServiceTests(PostgresFixture postgres)
 
         var svc = new AuditExportService(postgres);
         using var ms = new MemoryStream();
-        await svc.WriteCsvAsync(ms, EmptyFilter, CancellationToken.None);
+        await svc.WriteCsvAsync(ms, ScopedFilter, CancellationToken.None);
 
         var text = Encoding.UTF8.GetString(ms.ToArray());
         text.Should().Contain(
@@ -114,6 +120,7 @@ public sealed class AuditExportServiceTests(PostgresFixture postgres)
             new AuditEntry
             {
                 Id           = Guid.CreateVersion7(),
+                SpaceId      = TestSpaceId,
                 EventType    = "First",
                 UserDisplay  = "u",
                 OccurredUtc  = BaseTime,
@@ -121,6 +128,7 @@ public sealed class AuditExportServiceTests(PostgresFixture postgres)
             new AuditEntry
             {
                 Id           = Guid.CreateVersion7(),
+                SpaceId      = TestSpaceId,
                 EventType    = "Second",
                 UserDisplay  = "u",
                 OccurredUtc  = BaseTime.AddSeconds(30),
@@ -128,7 +136,7 @@ public sealed class AuditExportServiceTests(PostgresFixture postgres)
 
         var svc = new AuditExportService(postgres);
         using var ms = new MemoryStream();
-        await svc.WriteJsonAsync(ms, EmptyFilter, CancellationToken.None);
+        await svc.WriteJsonAsync(ms, ScopedFilter, CancellationToken.None);
 
         var json = Encoding.UTF8.GetString(ms.ToArray());
         using var doc = JsonDocument.Parse(json);
@@ -151,6 +159,7 @@ public sealed class AuditExportServiceTests(PostgresFixture postgres)
         await SeedAsync(new AuditEntry
         {
             Id           = Guid.CreateVersion7(),
+            SpaceId      = TestSpaceId,
             EventType    = "Project.Modified",
             UserDisplay  = "u",
             OccurredUtc  = BaseTime,
@@ -160,7 +169,7 @@ public sealed class AuditExportServiceTests(PostgresFixture postgres)
 
         var svc = new AuditExportService(postgres);
         using var ms = new MemoryStream();
-        await svc.WriteJsonAsync(ms, EmptyFilter, CancellationToken.None);
+        await svc.WriteJsonAsync(ms, ScopedFilter, CancellationToken.None);
 
         var json = Encoding.UTF8.GetString(ms.ToArray());
         using var doc = JsonDocument.Parse(json);
@@ -181,12 +190,7 @@ public sealed class AuditExportServiceTests(PostgresFixture postgres)
             EntryAt(BaseTime.AddMinutes(2),"User.SignedIn",   "u"));
 
         var svc = new AuditExportService(postgres);
-        var filter = new AuditExportService.Filter(
-            FromUtc:             null,
-            ToUtcExclusive:      null,
-            EventTypeContains:   "Project",
-            UserDisplayContains: null,
-            SubjectTypeContains: null);
+        var filter = ScopedFilter with { EventTypeContains = "Project" };
 
         using var ms = new MemoryStream();
         await svc.WriteJsonAsync(ms, filter, CancellationToken.None);
@@ -205,12 +209,11 @@ public sealed class AuditExportServiceTests(PostgresFixture postgres)
             EntryAt(BaseTime.AddDays(2),  "Future", "u"));
 
         var svc = new AuditExportService(postgres);
-        var filter = new AuditExportService.Filter(
-            FromUtc:             BaseTime,
-            ToUtcExclusive:      BaseTime.AddDays(2), // excludes Future
-            EventTypeContains:   null,
-            UserDisplayContains: null,
-            SubjectTypeContains: null);
+        var filter = ScopedFilter with
+        {
+            FromUtc        = BaseTime,
+            ToUtcExclusive = BaseTime.AddDays(2), // excludes Future
+        };
 
         using var ms = new MemoryStream();
         await svc.WriteJsonAsync(ms, filter, CancellationToken.None);
@@ -229,58 +232,118 @@ public sealed class AuditExportServiceTests(PostgresFixture postgres)
         var svc = new AuditExportService(postgres);
 
         using var csvStream = new MemoryStream();
-        await svc.WriteCsvAsync(csvStream, EmptyFilter, CancellationToken.None);
+        await svc.WriteCsvAsync(csvStream, ScopedFilter, CancellationToken.None);
         var csv = Encoding.UTF8.GetString(csvStream.ToArray());
         csv.TrimEnd().Should().EndWith("Details",
             "header-only when no rows match — must not throw");
 
         using var jsonStream = new MemoryStream();
-        await svc.WriteJsonAsync(jsonStream, EmptyFilter, CancellationToken.None);
+        await svc.WriteJsonAsync(jsonStream, ScopedFilter, CancellationToken.None);
         var json = Encoding.UTF8.GetString(jsonStream.ToArray());
         json.Should().Be("[]",
             "empty array is a valid JSON document; consumers can parse it");
     }
 
     [Fact]
-    public async Task Export_includes_rows_from_all_Spaces()
+    public async Task Export_excludes_other_space_and_system_rows()
     {
-        // The page uses IgnoreQueryFilters because audit-readers expect a
-        // cross-Space view (filtering by Space is a planned UI feature, not
-        // an implicit default). Pin that the export honours the same
-        // contract — otherwise a Space switcher in the page header would
-        // silently filter the export too.
+        // The 2026-07 audit-leak fix: exports are caged to the Filter's
+        // SpaceIds. A Space-A operator must see neither Space B's rows nor
+        // NULL-Space (platform) rows — audit entries carry full before/after
+        // entity snapshots, so an unscoped export is a cross-tenant leak.
+        // Exercise BOTH formats: they build their queries independently.
         var spaceB = Guid.NewGuid();
 
         await SeedAsync(
             new AuditEntry
             {
                 Id          = Guid.CreateVersion7(),
-                EventType   = "A",
+                EventType   = "Mine",
                 UserDisplay = "u",
                 OccurredUtc = BaseTime,
-                SpaceId     = WellKnown.DefaultSpaceId,
+                SpaceId     = TestSpaceId,
             },
             new AuditEntry
             {
                 Id          = Guid.CreateVersion7(),
-                EventType   = "B",
+                EventType   = "OtherSpace",
                 UserDisplay = "u",
                 OccurredUtc = BaseTime.AddMinutes(1),
                 SpaceId     = spaceB,
+            },
+            new AuditEntry
+            {
+                Id          = Guid.CreateVersion7(),
+                EventType   = "SystemEvent",
+                UserDisplay = "System",
+                OccurredUtc = BaseTime.AddMinutes(2),
+                SpaceId     = null,
+            });
+
+        var svc = new AuditExportService(postgres);
+
+        using var jsonStream = new MemoryStream();
+        await svc.WriteJsonAsync(jsonStream, ScopedFilter, CancellationToken.None);
+        using var doc = JsonDocument.Parse(Encoding.UTF8.GetString(jsonStream.ToArray()));
+        doc.RootElement.GetArrayLength().Should().Be(1,
+            "only the caller's own Space row may appear in the JSON export");
+        doc.RootElement[0].GetProperty("eventType").GetString().Should().Be("Mine");
+
+        using var csvStream = new MemoryStream();
+        await svc.WriteCsvAsync(csvStream, ScopedFilter, CancellationToken.None);
+        var csv = Encoding.UTF8.GetString(csvStream.ToArray());
+        csv.Should().Contain("Mine");
+        csv.Should().NotContain("OtherSpace",
+            "the CSV export must not leak another Space's rows");
+        csv.Should().NotContain("SystemEvent",
+            "NULL-Space rows require IncludeSystemRows (sysadmin only)");
+    }
+
+    [Fact]
+    public async Task IncludeSystemRows_adds_null_space_rows_but_not_other_spaces()
+    {
+        // The sysadmin "include system events" path: IncludeSystemRows widens
+        // the export to platform rows (SpaceId == null) — and ONLY those.
+        // Another Space's rows stay invisible even to this wider filter.
+        var spaceB = Guid.NewGuid();
+
+        await SeedAsync(
+            EntryAt(BaseTime,               "Mine",        "u"),
+            new AuditEntry
+            {
+                Id          = Guid.CreateVersion7(),
+                EventType   = "OtherSpace",
+                UserDisplay = "u",
+                OccurredUtc = BaseTime.AddMinutes(1),
+                SpaceId     = spaceB,
+            },
+            new AuditEntry
+            {
+                Id          = Guid.CreateVersion7(),
+                EventType   = "SystemEvent",
+                UserDisplay = "System",
+                OccurredUtc = BaseTime.AddMinutes(2),
+                SpaceId     = null,
             });
 
         var svc = new AuditExportService(postgres);
         using var ms = new MemoryStream();
-        await svc.WriteJsonAsync(ms, EmptyFilter, CancellationToken.None);
+        await svc.WriteJsonAsync(ms, ScopedFilter with { IncludeSystemRows = true },
+            CancellationToken.None);
 
         using var doc = JsonDocument.Parse(Encoding.UTF8.GetString(ms.ToArray()));
-        doc.RootElement.GetArrayLength().Should().Be(2,
-            "both Space-A and Space-B rows must appear");
+        var types = Enumerable.Range(0, doc.RootElement.GetArrayLength())
+            .Select(i => doc.RootElement[i].GetProperty("eventType").GetString())
+            .ToList();
+        types.Should().BeEquivalentTo(["SystemEvent", "Mine"],
+            "IncludeSystemRows adds NULL-Space rows only — never other Spaces'");
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
-    private static readonly AuditExportService.Filter EmptyFilter = new(
+    private static readonly AuditExportService.Filter ScopedFilter = new(
+        SpaceIds:            [TestSpaceId],
+        IncludeSystemRows:   false,
         FromUtc:             null,
         ToUtcExclusive:      null,
         EventTypeContains:   null,
@@ -291,6 +354,7 @@ public sealed class AuditExportServiceTests(PostgresFixture postgres)
         new()
         {
             Id          = Guid.CreateVersion7(),
+            SpaceId     = TestSpaceId,
             EventType   = eventType,
             UserDisplay = user,
             OccurredUtc = when,
