@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Data;
+using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
@@ -45,16 +46,14 @@ public sealed class DeploymentLogResource
             throw new McpException($"No deployment found with id '{deploymentId}'.");
         }
 
-        var lines = await db.DeploymentLogEntries.AsNoTracking()
-            .Where(l => l.DeploymentId == deploymentId)
-            .OrderBy(l => l.Sequence)
-            .Select(l => new { l.Sequence, l.Timestamp, l.Level, l.Message })
-            .ToListAsync(ct).ConfigureAwait(false);
+        // Stitched from compacted step blobs + live staging, in sequence order.
+        var lines = await TaskLogService.ReadAllAsync(db, deploymentId, ct).ConfigureAwait(false);
 
         var sb = new StringBuilder();
         foreach (var line in lines)
         {
-            sb.AppendLine(JsonSerializer.Serialize(line, Json));
+            sb.AppendLine(JsonSerializer.Serialize(
+                new { line.Sequence, line.Timestamp, line.Level, line.Message }, Json));
         }
 
         await McpAudit.ResourceReadAsync(audit, uri, $"ok ({lines.Count} lines)", ct)

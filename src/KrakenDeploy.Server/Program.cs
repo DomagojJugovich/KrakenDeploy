@@ -1858,7 +1858,9 @@ public static class Program
                     return Results.NotFound();
                 }
 
-                var entries = d.LogEntries
+                // Stitched from compacted step blobs + live staging, sequence-ordered.
+                var log = await deploymentSvc.GetLogAsync(id, ct).ConfigureAwait(false);
+                var entries = log
                     .Where(e => e.Sequence >= from)
                     .OrderBy(e => e.Sequence)
                     .Select(e => new
@@ -1941,7 +1943,7 @@ public static class Program
         // ── Artifact API ─────────────────────────────────────────────────────────
         app.MapGet("/api/deployments/{id:guid}/artifacts",
             async (Guid id, ArtifactService artifactSvc, CancellationToken ct) =>
-                Results.Ok(await artifactSvc.GetByDeploymentAsync(id, ct).ConfigureAwait(false))
+                Results.Ok(await artifactSvc.GetByTaskAsync(id, ct).ConfigureAwait(false))
         ).RequirePermission(Permission.ArtifactView);
 
         app.MapGet("/api/deployments/{deploymentId:guid}/artifacts/{artifactId:guid}/download",
@@ -2538,7 +2540,7 @@ public static class Program
             async (Guid stepId, AddStepRequest req, RunbookService runbookSvc, CancellationToken ct) =>
             {
                 var step = await runbookSvc.UpdateStepAsync(
-                    stepId, req.Name, req.StepType, req.PackageId, req.TargetRoles, req.Config,
+                    stepId, req.Name, req.PackageId, req.TargetRoles, req.Config,
                     req.StepPackageName, req.StepPackageVersion, ct: ct)
                     .ConfigureAwait(false);
                 return step is null ? Results.NotFound() : Results.Ok(step);

@@ -225,7 +225,7 @@
                         <Template Context="r">@(r.Environment?.Name ?? "—")</Template>
                     </RadzenDataGridColumn>
                     <RadzenDataGridColumn TItem="RunbookRun" Title="Target" Width="160px">
-                        <Template Context="r">@(r.Target?.Name ?? "—")</Template>
+                        <Template Context="r">@(r.TargetLabel())</Template>
                     </RadzenDataGridColumn>
                     <RadzenDataGridColumn TItem="RunbookRun" Title="Started" Width="160px">
                         <Template Context="r">
@@ -243,7 +243,7 @@
             {
                 <RadzenCard class="rz-mt-3">
                     <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-2">
-                        Log — @_selectedRun.Environment?.Name / @_selectedRun.Target?.Name
+                        Log — @_selectedRun.Environment?.Name / @(_selectedRun.TargetLabel())
                     </RadzenText>
                     <div style="font-family:monospace;font-size:0.82rem;background:var(--surface-2);color:var(--text);border:1px solid var(--surface-3);
                                  padding:1rem;border-radius:4px;max-height:400px;overflow-y:auto">
@@ -287,7 +287,7 @@
     [Parameter] public Guid Id { get; set; }
 
     private Runbook? _runbook;
-    private List<RunbookStep> _steps = [];
+    private List<ProcessStep> _steps = [];
     // M15 follow-up — tree sidecar maps (same shape as Process.razor).
     private Dictionary<Guid, int> _depthByStepId = [];
     private Dictionary<Guid, string> _numberingByStepId = [];
@@ -319,7 +319,7 @@
 
     // run log viewer
     private RunbookRun? _selectedRun;
-    private List<RunbookRunLogEntry> _selectedRunLogs = [];
+    private List<TaskLogLine> _selectedRunLogs = [];
 
     protected override async Task OnInitializedAsync()
     {
@@ -334,9 +334,9 @@
         _environments = envTask.Result;
         _targets      = tgtTask.Result;
 
-        if (_runbook?.Process?.Steps is not null)
+        if (_runbook is not null)
         {
-            BuildStepTree(_runbook.Process.Steps);
+            BuildStepTree(await RunbookSvc.GetProcessStepsAsync(Id));
         }
     }
 
@@ -344,7 +344,7 @@
     /// M15 follow-up — DFS over the flat step list via shared
     /// <see cref="StepTreeBuilder"/>. Same logic Process.razor uses.
     /// </summary>
-    private void BuildStepTree(IEnumerable<RunbookStep> rawSteps)
+    private void BuildStepTree(IEnumerable<ProcessStep> rawSteps)
     {
         var view = StepTreeBuilder.Build(rawSteps.OrderBy(s => s.SortOrder));
         _steps = [.. view.OrderedSteps];
@@ -362,31 +362,31 @@
     private async Task ReloadStepsAsync()
     {
         _runbook = await RunbookSvc.GetAsync(Id);
-        if (_runbook?.Process?.Steps is not null)
+        if (_runbook is not null)
         {
-            BuildStepTree(_runbook.Process.Steps);
+            BuildStepTree(await RunbookSvc.GetProcessStepsAsync(Id));
         }
     }
 
-    private int DepthOf(RunbookStep step)
+    private int DepthOf(ProcessStep step)
         => _depthByStepId.TryGetValue(step.Id, out var d) ? d : 0;
 
-    private string NumberingOf(RunbookStep step)
+    private string NumberingOf(ProcessStep step)
         => _numberingByStepId.TryGetValue(step.Id, out var n)
             ? n
             : (_steps.IndexOf(step) + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-    private int ChildCountOf(RunbookStep step)
+    private int ChildCountOf(ProcessStep step)
         => _childCountByStepId.TryGetValue(step.Id, out var c) ? c : 0;
 
-    private bool IsStepGroup(RunbookStep step)
+    private bool IsStepGroup(ProcessStep step)
         => string.Equals(step.StepType, "Kraken.StepGroup", StringComparison.OrdinalIgnoreCase);
 
     // ── Step management (M15 follow-up — unified StepFormDialog flow) ─
 
     private Task OpenAddStepAsync() => OpenAddStepCoreAsync(parentStepId: null);
 
-    private Task OpenAddChildStepAsync(RunbookStep groupStep)
+    private Task OpenAddChildStepAsync(ProcessStep groupStep)
         => OpenAddStepCoreAsync(parentStepId: groupStep.Id);
 
     /// <summary>
@@ -457,7 +457,7 @@
         if (templatedResult is true) { await ReloadStepsAsync(); }
     }
 
-    private async Task OpenEditStepAsync(RunbookStep step)
+    private async Task OpenEditStepAsync(ProcessStep step)
     {
         var result = await Dialog.OpenAsync<StepFormDialog>(
             $"Edit Step — {step.Name}",
@@ -472,7 +472,7 @@
         if (result is true) { await ReloadStepsAsync(); }
     }
 
-    private async Task DeleteStepAsync(RunbookStep step)
+    private async Task DeleteStepAsync(ProcessStep step)
     {
         if (!await Guard.AllowAsync(Permission.RunbookEdit)) return;
         var deleted = await RunbookSvc.DeleteStepAsync(step.Id);
@@ -557,7 +557,7 @@
         if (full is not null)
         {
             _selectedRun     = full;
-            _selectedRunLogs = [.. full.LogEntries.OrderBy(l => l.Sequence)];
+            _selectedRunLogs = await RunbookSvc.GetRunLogAsync(run.Id);
         }
     }
 
@@ -601,14 +601,14 @@
     // sentinel → StepFormDialog). The standalone AddStepGroupAsync
     // helper that used to live here is gone.
 
-    private void OnDragStart(RunbookStep step)
+    private void OnDragStart(ProcessStep step)
     {
         _draggingStepId = step.Id;
         _dropTargetStepId = null;
         _dropTargetIsTopLevel = false;
     }
 
-    private void OnDragOver(RunbookStep step)
+    private void OnDragOver(ProcessStep step)
     {
         if (_draggingStepId is null) { return; }
         _dropTargetIsTopLevel = false;
@@ -624,7 +624,7 @@
         _dropTargetIsTopLevel = true;
     }
 
-    private async Task OnDropOnStepAsync(RunbookStep target)
+    private async Task OnDropOnStepAsync(ProcessStep target)
     {
         var sourceId = _draggingStepId;
         ClearDragState();
@@ -662,7 +662,7 @@
         _dropTargetIsTopLevel = false;
     }
 
-    private bool IsValidDropTarget(Guid sourceId, Guid targetId, RunbookStep target)
+    private bool IsValidDropTarget(Guid sourceId, Guid targetId, ProcessStep target)
     {
         if (sourceId == targetId) { return false; }
         if (!IsStepGroup(target)) { return false; }
@@ -676,13 +676,13 @@
         return true;
     }
 
-    private async Task ReparentAsync(RunbookStep source, Guid? newParentId)
+    private async Task ReparentAsync(ProcessStep source, Guid? newParentId)
     {
         if (!await Guard.AllowAsync(Permission.RunbookEdit)) return;
         try
         {
             await RunbookSvc.UpdateStepAsync(
-                source.Id, source.Name, source.StepType, source.PackageId,
+                source.Id, source.Name, source.PackageId,
                 source.TargetRoles, source.Config,
                 stepPackageName:    source.StepPackageName,
                 stepPackageVersion: source.StepPackageVersion,
@@ -706,7 +706,7 @@
         }
     }
 
-    private string DragRowCssClass(RunbookStep step)
+    private string DragRowCssClass(ProcessStep step)
     {
         var cls = "kraken-step-card-wrap";
         if (_draggingStepId == step.Id)

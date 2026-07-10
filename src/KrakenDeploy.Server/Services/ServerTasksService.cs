@@ -192,7 +192,7 @@ public sealed class ServerTasksService(
             Title = sb.ToString(),
             Project = project,
             Environment = env,
-            Target = r.Target?.Name,
+            Target = r.TargetLabel(),
             Tenant = tenant,
             StartedUtc = r.StartedUtc,
             CompletedUtc = r.CompletedUtc,

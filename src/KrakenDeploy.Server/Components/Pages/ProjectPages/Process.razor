@@ -369,7 +369,7 @@
     // (parent immediately followed by its children, then back to the next
     // top-level step). Sidecar maps carry depth + dotted numbering +
     // child counts so the template doesn't recompute them per render.
-    private List<DeploymentStep> _steps = [];
+    private List<ProcessStep> _steps = [];
     private Dictionary<Guid, int> _depthByStepId = [];
     private Dictionary<Guid, string> _numberingByStepId = [];
     private Dictionary<Guid, int> _childCountByStepId = [];
@@ -473,7 +473,7 @@
     /// sidecar maps including descendants (used by the drag UX to
     /// forbid drops on the source's own children).
     /// </summary>
-    private void BuildStepTree(IEnumerable<DeploymentStep> rawSteps)
+    private void BuildStepTree(IEnumerable<ProcessStep> rawSteps)
     {
         var view = StepTreeBuilder.Build(rawSteps.OrderBy(s => s.SortOrder));
         _steps = [.. view.OrderedSteps];
@@ -483,28 +483,28 @@
         _descendantsByStepId = view.DescendantsByStepId.ToDictionary(kv => kv.Key, kv => kv.Value);
     }
 
-    private int DepthOf(DeploymentStep step)
+    private int DepthOf(ProcessStep step)
         => _depthByStepId.TryGetValue(step.Id, out var d) ? d : 0;
 
-    private string NumberingOf(DeploymentStep step)
+    private string NumberingOf(ProcessStep step)
         => _numberingByStepId.TryGetValue(step.Id, out var n)
             ? n
             : (_steps.IndexOf(step) + 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-    private int ChildCountOf(DeploymentStep step)
+    private int ChildCountOf(ProcessStep step)
         => _childCountByStepId.TryGetValue(step.Id, out var c) ? c : 0;
 
-    private bool IsStepGroup(DeploymentStep step)
+    private bool IsStepGroup(ProcessStep step)
         => string.Equals(step.StepType, "Kraken.StepGroup", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// M15 — true when <paramref name="step"/> has no sibling above it
-    /// (lowest SortOrder among steps with the same <see cref="DeploymentStep.ParentStepId"/>).
+    /// (lowest SortOrder among steps with the same <see cref="ProcessStep.ParentStepId"/>).
     /// Drives the "Move up" button's Disabled state — siblings are scoped
     /// to the same parent so top-level steps can't move past each other's
     /// boundary into a Step Group's children list.
     /// </summary>
-    private bool IsFirstSibling(DeploymentStep step)
+    private bool IsFirstSibling(ProcessStep step)
     {
         var siblings = _steps
             .Where(s => s.ParentStepId == step.ParentStepId)
@@ -513,7 +513,7 @@
         return siblings.Count > 0 && siblings[0].Id == step.Id;
     }
 
-    private bool IsLastSibling(DeploymentStep step)
+    private bool IsLastSibling(ProcessStep step)
     {
         var siblings = _steps
             .Where(s => s.ParentStepId == step.ParentStepId)
@@ -631,7 +631,7 @@
     /// id, so the new step lands as a child of the given Step Group.
     /// Used by the per-row "+Add child step" button on group rows.
     /// </summary>
-    private Task OpenAddChildStepAsync(DeploymentStep groupStep)
+    private Task OpenAddChildStepAsync(ProcessStep groupStep)
         => OpenAddStepCoreAsync(parentStepId: groupStep.Id);
 
     private async Task OpenAddStepCoreAsync(Guid? parentStepId)
@@ -713,7 +713,7 @@
         }
     }
 
-    private async Task OpenEditStepAsync(DeploymentStep step)
+    private async Task OpenEditStepAsync(ProcessStep step)
     {
         // Unified dialog resolves the schema for any step type — built-in
         // first (Kraken.IIS / Octopus.IIS / Octopus.TentaclePackage / script /
@@ -749,7 +749,7 @@
     /// id so subsequent dragover / drop can validate the drop target.
     /// Called on the row's <c>@ondragstart</c>.
     /// </summary>
-    private void OnDragStart(DeploymentStep step)
+    private void OnDragStart(ProcessStep step)
     {
         _draggingStepId = step.Id;
         _dropTargetStepId = null;
@@ -762,7 +762,7 @@
     /// itself, not a descendant of the dragged step). Otherwise clears
     /// the highlight. Called on the row's <c>@ondragover</c>.
     /// </summary>
-    private void OnDragOver(DeploymentStep step)
+    private void OnDragOver(ProcessStep step)
     {
         if (_draggingStepId is null) { return; }
         _dropTargetIsTopLevel = false;
@@ -788,7 +788,7 @@
     /// with an <see cref="UpdateParent"/>. Re-loads the step list so the
     /// tree view reflects the new structure.
     /// </summary>
-    private async Task OnDropOnStepAsync(DeploymentStep target)
+    private async Task OnDropOnStepAsync(ProcessStep target)
     {
         var sourceId = _draggingStepId;
         ClearDragState();
@@ -841,7 +841,7 @@
     /// of the dragged step (cycle prevention), and not already the
     /// dragged step's current parent (no-op).
     /// </summary>
-    private bool IsValidDropTarget(Guid sourceId, Guid targetId, DeploymentStep target)
+    private bool IsValidDropTarget(Guid sourceId, Guid targetId, ProcessStep target)
     {
         if (sourceId == targetId) { return false; }
         if (!IsStepGroup(target)) { return false; }
@@ -855,7 +855,7 @@
         return true;
     }
 
-    private async Task ReparentAsync(DeploymentStep source, Guid? newParentId)
+    private async Task ReparentAsync(ProcessStep source, Guid? newParentId)
     {
         if (!await Guard.AllowAsync(Permission.ProcessEdit)) return;
         try
@@ -886,7 +886,7 @@
         }
     }
 
-    private string DragRowCssClass(DeploymentStep step)
+    private string DragRowCssClass(ProcessStep step)
     {
         var cls = "kraken-step-card-wrap rz-mb-2";
         if (_draggingStepId == step.Id)
@@ -904,7 +904,7 @@
         ? "kraken-step-droptarget kraken-step-droptarget--active"
         : "kraken-step-droptarget";
 
-    private async Task DeleteAsync(DeploymentStep step)
+    private async Task DeleteAsync(ProcessStep step)
     {
         if (!await Guard.AllowAsync(Permission.ProcessEdit)) return;
 

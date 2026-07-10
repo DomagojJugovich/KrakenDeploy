@@ -204,6 +204,7 @@ internal static class SeedDemoCommands
         var now = DateTimeOffset.UtcNow;
         var tgt = targets.FirstOrDefault();
         var rel = releases.ToDictionary(r => r.Project, r => r.ReleaseId);
+        var projByName = await db.Projects.ToDictionaryAsync(p => p.Name, p => p.Id);
 
         Deployment Make(string project, Guid env, DeploymentStatus status, int startedMinAgo, int? durationSec, Guid? targetId)
         {
@@ -212,10 +213,11 @@ internal static class SeedDemoCommands
             {
                 SpaceId = WellKnown.DefaultSpaceId,
                 ReleaseId = rel[project],
+                ProjectId = projByName.GetValueOrDefault(project),
                 EnvironmentId = env,
                 // Target set lives exclusively in the assignments join.
                 Targets = targetId is { } t
-                    ? [new DeploymentTargetAssignment { TargetId = t, AddedUtc = now }]
+                    ? [new TaskTargetAssignment { TargetId = t, AddedUtc = now }]
                     : [],
                 Status = status,
                 StartedUtc = status == DeploymentStatus.Queued ? null : started,
@@ -224,26 +226,24 @@ internal static class SeedDemoCommands
             };
         }
 
+        var demoLogs = new List<TaskLogLiveEntry>();
+
         var running = Make("Argosy Web", prod, DeploymentStatus.Running, 4, null, tgt?.Id);
-        running.LogEntries =
-        [
+        demoLogs.AddRange(
             Log(running, 0, "═══ Step 1/3 · Deploy package to IIS ═══", "info", now.AddMinutes(-4)),
             Log(running, 1, "$ kraken deploy-package ArgosyWeb 2026.6.4", "info", now.AddMinutes(-4)),
             Log(running, 2, "Acquiring package ArgosyWeb 2026.6.4 (delta: 4.2 MB of 88 MB)", "info", now.AddMinutes(-3)),
             Log(running, 3, "web-prod-01: site re-pointed, app pool recycled", "ok", now.AddMinutes(-3)),
             Log(running, 4, "web-prod-02: agent on 1.4.0 (server is 1.4.2) — consider upgrading", "warning", now.AddMinutes(-2)),
             Log(running, 5, "═══ Step 2/3 · Run database migrations ═══", "info", now.AddMinutes(-2)),
-            Log(running, 6, "Applying 2 pending migrations to DB-PROD-01", "info", now.AddMinutes(-1)),
-        ];
+            Log(running, 6, "Applying 2 pending migrations to DB-PROD-01", "info", now.AddMinutes(-1)));
         running.NextLogSequence = 7;
 
         var failed = Make("Argosy API", prod, DeploymentStatus.Failed, 70, 90, tgt?.Id);
-        failed.LogEntries =
-        [
+        demoLogs.AddRange(
             Log(failed, 0, "═══ Step 1/3 · Deploy package to IIS ═══", "info", failed.StartedUtc!.Value),
             Log(failed, 1, "api-prod-03: deploying ArgosyAPI 2026.6.4", "info", failed.StartedUtc!.Value),
-            Log(failed, 2, "Smoke test — health endpoint timed out after 90s", "error", failed.StartedUtc!.Value.AddSeconds(90)),
-        ];
+            Log(failed, 2, "Smoke test — health endpoint timed out after 90s", "error", failed.StartedUtc!.Value.AddSeconds(90)));
         failed.NextLogSequence = 3;
         var failedStart = failed.StartedUtc!.Value;
 
@@ -265,8 +265,11 @@ internal static class SeedDemoCommands
         db.Deployments.AddRange(deployments);
         await db.SaveChangesAsync();
 
-        // Step outcomes for the failed deployment (no nav collection on Deployment).
-        db.DeploymentStepOutcomes.AddRange(
+        // Seed log lines (staging rows; the detail page's stitching reader renders them).
+        db.TaskLogLive.AddRange(demoLogs);
+
+        // Step outcomes for the failed deployment (no nav collection on ServerTask).
+        db.TaskStepOutcomes.AddRange(
             Outcome(failed.Id, 0, "Deploy package to IIS", StepOutcomeKind.Succeeded, failedStart, failedStart.AddSeconds(40)),
             Outcome(failed.Id, 1, "Run database migrations", StepOutcomeKind.Succeeded, failedStart.AddSeconds(40), failedStart.AddSeconds(55)),
             Outcome(failed.Id, 2, "Smoke test — health endpoint", StepOutcomeKind.TimedOut, failedStart.AddSeconds(55), failedStart.AddSeconds(90),
@@ -371,7 +374,7 @@ internal static class SeedDemoCommands
                         ReleaseId = rel.Id,
                         EnvironmentId = envs[e],
                         Targets = targetId is { } t
-                            ? [new DeploymentTargetAssignment { TargetId = t, AddedUtc = now }]
+                            ? [new TaskTargetAssignment { TargetId = t, AddedUtc = now }]
                             : [],
                         Status = status,
                         StartedUtc = started,
@@ -667,18 +670,21 @@ internal static class SeedDemoCommands
         }
     }
 
-    private static DeploymentLogEntry Log(Deployment d, int seq, string msg, string level, DateTimeOffset ts) => new()
+    private static TaskLogLiveEntry Log(Deployment d, int seq, string msg, string level, DateTimeOffset ts) => new()
     {
+        TaskId = d.Id,
+        StepIndex = -1,
+        TargetId = null,
         Sequence = seq,
         Message = msg,
         Level = level,
         Timestamp = ts,
     };
 
-    private static DeploymentStepOutcome Outcome(Guid deploymentId, int idx, string name, StepOutcomeKind kind,
+    private static TaskStepOutcome Outcome(Guid deploymentId, int idx, string name, StepOutcomeKind kind,
         DateTimeOffset started, DateTimeOffset completed, string? error = null) => new()
     {
-        DeploymentId = deploymentId,
+        TaskId = deploymentId,
         StepIndex = idx,
         StepName = name,
         Outcome = kind,

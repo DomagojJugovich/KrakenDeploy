@@ -3,6 +3,9 @@
 @rendermode InteractiveServer
 @attribute [Authorize]
 @using KrakenDeploy.Server.Services
+@* Disambiguate the Tasks-grid DTO enum from the new domain ServerTaskKind
+   (both namespaces are globally imported via _Imports). *@
+@using ServerTaskKind = KrakenDeploy.Server.Services.ServerTaskKind
 @implements IAsyncDisposable
 @inject ServerTasksService TasksSvc
 @inject NavigationManager Nav

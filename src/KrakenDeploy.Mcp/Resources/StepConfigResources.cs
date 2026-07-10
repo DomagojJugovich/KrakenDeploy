@@ -1,5 +1,6 @@
 using System.Text.Json;
 using KrakenDeploy.Server.Core.Domain.Audit;
+using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Data;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol;
@@ -51,8 +52,8 @@ public sealed class StepConfigResources
             throw new McpException($"No project found with slug '{projectSlug}'.");
         }
 
-        var rawConfigs = await db.DeploymentProcesses.AsNoTracking()
-            .Where(p => p.ProjectId == project.Id)
+        var rawConfigs = await db.Processes.AsNoTracking()
+            .Where(p => p.OwnerKind == ProcessOwnerKind.Project && p.OwnerId == project.Id)
             .SelectMany(p => p.Steps)
             .OrderBy(s => s.SortOrder)
             .Select(s => s.Config)

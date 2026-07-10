@@ -635,12 +635,10 @@
     [Parameter] public Guid? ProjectId { get; set; }
 
     /// <summary>
-    /// Required for Edit: the existing step row. Accepts either
-    /// <see cref="Processes.DeploymentStep"/> or
-    /// <see cref="Runbooks.RunbookStep"/> — both implement
-    /// <see cref="IComposableStep"/>. M14 execution-knob hydration is
-    /// gated on the concrete type since runbook steps don't carry those
-    /// fields.
+    /// Required for Edit: the existing step row (a <see cref="ProcessStep"/>,
+    /// which implements <see cref="IComposableStep"/>). Post schema-
+    /// unification every step is a ProcessStep, so M14 execution-knob
+    /// hydration applies to all steps.
     /// </summary>
     [Parameter] public IComposableStep? Step { get; set; }
 
@@ -826,11 +824,11 @@
             _stepPackageName    = Step.StepPackageName;
             _stepPackageVersion = Step.StepPackageVersion;
 
-            // M14 — hydrate Execution knobs ONLY when editing a
-            // DeploymentStep (process editor). RunbookStep doesn't carry
-            // these fields; the runbook editor hides the Execution card
-            // entirely via Host.SupportsExecutionKnobs.
-            if (Step is DeploymentStep dStep)
+            // M14 — hydrate Execution knobs. All steps are now ProcessStep
+            // (post schema-unification), so every step carries these fields;
+            // the runbook editor still hides the Execution card entirely via
+            // Host.SupportsExecutionKnobs.
+            if (Step is ProcessStep dStep)
             {
                 _condition                   = dStep.Condition;
                 _conditionVariableExpression = dStep.ConditionVariableExpression;
