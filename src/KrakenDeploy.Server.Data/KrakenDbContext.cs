@@ -102,8 +102,14 @@ public class KrakenDbContext(
     public DbSet<KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings> PerformanceSettings
         => Set<KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings>();
     public DbSet<Tenant> Tenants => Set<Tenant>();
-    public DbSet<TagSet> TagSets => Set<TagSet>();
-    public DbSet<TenantTag> TenantTags => Set<TenantTag>();
+
+    // ── Extended tag sets (Space-level; see docs/extended-tag-sets-plan.md) ──
+    public DbSet<KrakenDeploy.Server.Core.Domain.Tags.TagSet> TagSets
+        => Set<KrakenDeploy.Server.Core.Domain.Tags.TagSet>();
+    public DbSet<KrakenDeploy.Server.Core.Domain.Tags.Tag> Tags
+        => Set<KrakenDeploy.Server.Core.Domain.Tags.Tag>();
+    public DbSet<KrakenDeploy.Server.Core.Domain.Tags.TagApplication> TagApplications
+        => Set<KrakenDeploy.Server.Core.Domain.Tags.TagApplication>();
     public DbSet<Lifecycle> Lifecycles => Set<Lifecycle>();
     public DbSet<Channel> Channels => Set<Channel>();
     public DbSet<Runbook> Runbooks => Set<Runbook>();

@@ -143,15 +143,15 @@ public sealed class RoleAssignmentScopeMatcherTests
     }
 
     [Fact]
-    public void TenantTag_dimension_is_evaluated_with_same_rules()
+    public void Tag_dimension_is_evaluated_with_same_rules()
     {
         var tagId = Guid.NewGuid();
-        var assignment = new RoleAssignment { TenantTagIds = [tagId] };
+        var assignment = new RoleAssignment { TagIds = [tagId] };
 
         RoleAssignmentScopeMatcher.Matches(assignment,
-            new PermissionScope(TenantTagId: tagId)).Should().BeTrue();
+            new PermissionScope(TagId: tagId)).Should().BeTrue();
         RoleAssignmentScopeMatcher.Matches(assignment,
-            new PermissionScope(TenantTagId: Guid.NewGuid())).Should().BeFalse();
+            new PermissionScope(TagId: Guid.NewGuid())).Should().BeFalse();
     }
 
     // ── Argument validation ──────────────────────────────────────────────────
@@ -222,7 +222,7 @@ public sealed class RoleAssignmentScopeMatcherTests
         new RoleAssignment { ProjectIds = [ProjectA] }.IsUnscoped.Should().BeFalse();
         new RoleAssignment { EnvironmentIds = [Prod] }.IsUnscoped.Should().BeFalse();
         new RoleAssignment { TenantIds = [TenantX] }.IsUnscoped.Should().BeFalse();
-        new RoleAssignment { TenantTagIds = [Guid.NewGuid()] }.IsUnscoped.Should().BeFalse();
+        new RoleAssignment { TagIds = [Guid.NewGuid()] }.IsUnscoped.Should().BeFalse();
         new RoleAssignment { ProjectGroupIds = [GroupAlpha] }.IsUnscoped.Should().BeFalse();
     }
 }

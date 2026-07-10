@@ -235,21 +235,32 @@ public sealed class DeploymentFreezeServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task Tenant_tag_match_is_case_insensitive()
+    public async Task Tag_dimension_matches_by_id_and_stays_dormant_when_no_tags_supplied()
     {
-        // The match is OrdinalIgnoreCase; pinning so a future refactor
-        // doesn't tighten it and silently break "Tagsets/customer" vs
-        // "tagsets/Customer".
+        // Extended tag sets: the freeze tag dimension holds Tag GUIDs
+        // (rename-proof) instead of canonical-name strings. Pinning the
+        // OR-within-dimension semantics + the dormant-caller behaviour
+        // (the dispatch gate passes null → a tag-scoped freeze never matches).
         var svc = NewSvc();
+        var tagId = Guid.NewGuid();
         var input = SampleFreeze();
-        input.TenantTagCanonicalNames = ["TagSet/CustomerA"];
+        input.TagIds = [tagId];
         await svc.CreateAsync(input);
 
-        var blocking = await svc.FindBlockingFreezeAsync(
-            WellKnown.DefaultSpaceId, Guid.NewGuid(), Guid.NewGuid(),
-            tenantTagCanonicalNames: ["tagset/customera"]);
+        (await svc.FindBlockingFreezeAsync(
+                WellKnown.DefaultSpaceId, Guid.NewGuid(), Guid.NewGuid(),
+                tenantTagIds: [tagId]))
+            .Should().NotBeNull("the deployment's tenant carries the freeze's tag");
 
-        blocking.Should().NotBeNull("tag matching is case-insensitive");
+        (await svc.FindBlockingFreezeAsync(
+                WellKnown.DefaultSpaceId, Guid.NewGuid(), Guid.NewGuid(),
+                tenantTagIds: [Guid.NewGuid()]))
+            .Should().BeNull("a non-matching tag set lets the deployment through");
+
+        (await svc.FindBlockingFreezeAsync(
+                WellKnown.DefaultSpaceId, Guid.NewGuid(), Guid.NewGuid()))
+            .Should().BeNull("a tag-scoped freeze does not match when the caller " +
+                             "supplies no tags (the dispatch gate's dormant path)");
     }
 
     // ── Space isolation ────────────────────────────────────────────────────

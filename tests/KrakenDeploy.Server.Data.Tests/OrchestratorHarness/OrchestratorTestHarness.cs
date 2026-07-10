@@ -11,6 +11,7 @@ using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data.Encryption;
+using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Transport;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.SignalR;
@@ -119,6 +120,11 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             agentHub:              _services.GetRequiredService<IHubContext<AgentHub, IAgentHubClient>>(),
             serverRunner:          _services.GetRequiredService<ServerScriptStepRunner>(),
             deployReleaseRunner:   _services.GetRequiredService<DeployReleaseStepRunner>(),
+            // Stateless bar its logger — the harness plans are target-side only,
+            // so the offline path isn't exercised here, but the worker ctor
+            // requires it.
+            offlineBundleBuilder:  new OfflineDropBundleBuilder(
+                                       NullLogger<OfflineDropBundleBuilder>.Instance),
             subPlans:              _subPlans,
             scopeFactory:          _services.GetRequiredService<IServiceScopeFactory>(),
             // M11.C diagnosis channel — the harness doesn't run the diagnosis
@@ -286,6 +292,21 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
     /// <summary>Drives the orchestrator's dispatch path to terminal status.</summary>
     public Task RunDeploymentAsync(Guid deploymentId, CancellationToken ct = default)
         => _worker.DispatchForTestAsync(deploymentId, ct);
+
+    /// <summary>
+    /// Cancels a deployment through the real
+    /// <see cref="DeploymentService.CancelAsync"/> (flips Status → Cancelled +
+    /// stamps CompletedUtc), exactly as the API/UI cancel paths do. Used by
+    /// tests to simulate an operator cancelling a queued or in-flight
+    /// deployment.
+    /// </summary>
+    public async Task CancelDeploymentAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var scope = _services
+            .GetRequiredService<IServiceScopeFactory>().CreateAsyncScope();
+        var svc = scope.ServiceProvider.GetRequiredService<DeploymentService>();
+        await svc.CancelAsync(id, ct);
+    }
 
     /// <summary>
     /// Test seam: invokes the worker's concurrent log-append helper directly.

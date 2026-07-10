@@ -46,6 +46,12 @@ public static class AuditEventType
     /// (re)generated and the raw key disclosed once to the caller. Rotation
     /// makes existing bundles undecryptable. Details: target id.</summary>
     public const string OfflineDropBundleKeyGenerated = "OfflineDrop.BundleKeyGenerated";
+    /// <summary>An offline-drop deployment's drop bundle was regenerated (from
+    /// the UI/API) while it awaited its offline result. The bundle is a pure
+    /// function of the frozen release snapshot, so this re-materialises an
+    /// equivalent deployable; <c>plan.enc</c> is re-encrypted with a fresh
+    /// nonce. Details: deployment id.</summary>
+    public const string DropBundleRegenerated = "OfflineDrop.BundleRegenerated";
 
     // ── Deployment lifecycle (non-entity events) ──────────────────────────────
     public const string DeploymentStarted   = "Deployment.Started";

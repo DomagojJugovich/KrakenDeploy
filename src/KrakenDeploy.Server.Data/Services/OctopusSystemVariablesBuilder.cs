@@ -43,14 +43,15 @@ public static class OctopusSystemVariablesBuilder
         DeploymentTarget? target,
         Tenant? tenant,
         IReadOnlyList<StepSnapshot> steps,
-        string? serverBaseUrl = null)
+        string? serverBaseUrl = null,
+        IReadOnlyList<string>? tenantTagCanonicals = null)
     {
         var v = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         AddDeploymentScoped(v, deployment, release, environment, target);
         AddProjectScoped(v, project);
         AddReleaseScoped(v, release);
         AddEnvironmentScoped(v, environment);
-        AddTenantScoped(v, tenant);
+        AddTenantScoped(v, tenant, tenantTagCanonicals);
         AddMachineScoped(v, target);
         AddStepsScoped(v, steps);
         AddWebScoped(v, deployment.Id, project, release, serverBaseUrl);
@@ -72,7 +73,8 @@ public static class OctopusSystemVariablesBuilder
         DeploymentTarget? target,
         Tenant? tenant,
         IReadOnlyList<StepSnapshot> steps,
-        string? serverBaseUrl = null)
+        string? serverBaseUrl = null,
+        IReadOnlyList<string>? tenantTagCanonicals = null)
     {
         var v = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
@@ -106,7 +108,7 @@ public static class OctopusSystemVariablesBuilder
 
         AddProjectScoped(v, project);
         AddEnvironmentScoped(v, environment);
-        AddTenantScoped(v, tenant);
+        AddTenantScoped(v, tenant, tenantTagCanonicals);
         AddMachineScoped(v, target);
 
         AddStepsScoped(v, steps);
@@ -174,7 +176,9 @@ public static class OctopusSystemVariablesBuilder
         v["Octopus.Environment.Description"] = "";    // TODO(kraken-equivalent): add Description field on DeploymentEnvironment
     }
 
-    private static void AddTenantScoped(Dictionary<string, string> v, Tenant? tenant)
+    private static void AddTenantScoped(
+        Dictionary<string, string> v, Tenant? tenant,
+        IReadOnlyList<string>? tenantTagCanonicals = null)
     {
         if (tenant is null)
         {
@@ -188,7 +192,12 @@ public static class OctopusSystemVariablesBuilder
         v["Octopus.Deployment.Tenant.Id"]          = tenant.Id.ToString();
         v["Octopus.Deployment.Tenant.Name"]        = tenant.Name;
         v["Octopus.Deployment.Tenant.Description"] = tenant.Description ?? "";
-        v["Octopus.Deployment.Tenant.Tags"]        = "";    // TODO(kraken-equivalent): join tenant.TagSets[].Tags
+        // Canonical "TagSetName/TagName" strings of the tenant's applied tags
+        // (extended tag sets) — comma-separated, matching Octopus's format.
+        // The caller resolves them (TagService.GetTenantTagCanonicalsAsync);
+        // tags live in the polymorphic tag_applications table, not on Tenant.
+        v["Octopus.Deployment.Tenant.Tags"]        =
+            tenantTagCanonicals is { Count: > 0 } ? string.Join(",", tenantTagCanonicals) : "";
     }
 
     private static void AddMachineScoped(Dictionary<string, string> v, DeploymentTarget? target)

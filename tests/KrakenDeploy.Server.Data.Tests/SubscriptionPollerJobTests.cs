@@ -3,10 +3,15 @@ using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Subscriptions;
+using KrakenDeploy.Server.Data;
+using KrakenDeploy.Server.Data.Interceptors;
 using KrakenDeploy.Server.Data.Jobs;
 using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Data.Services.Subscriptions;
+using KrakenDeploy.Server.Data.Spaces;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -249,7 +254,168 @@ public sealed class SubscriptionPollerJobTests(PostgresFixture postgres)
             "MUST NOT receive events from another Space");
     }
 
+    [Fact]
+    public async Task Cursor_advance_does_not_write_an_audit_entry()
+    {
+        // Regression for the self-perpetuating audit-log churn loop
+        // (Loop 1): SubscriptionPollerState is job-state bookkeeping, not
+        // operator-facing config. If it writes an AuditEntry on every
+        // cursor move, the poller feeds its own event source — audit_entries
+        // grows ~1 row/minute forever, and a catch-all subscription fires on
+        // the bookkeeping noise. It must NOT be auditable.
+        //
+        // This test drives SaveChanges through a context wired with the REAL
+        // AuditLogInterceptor (the fixture's default context omits it), so a
+        // regression that re-adds AuditableEntity to the cursor row is caught.
+
+        // 1. Create then advance the cursor — the exact writes the poller does.
+        await using (var db = CreateAuditingContext())
+        {
+            db.SubscriptionPollerStates.Add(new SubscriptionPollerState
+            {
+                Id              = SubscriptionPollerState.SingletonId,
+                LastOccurredUtc = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+        await using (var db = CreateAuditingContext())
+        {
+            var state = await db.SubscriptionPollerStates.SingleAsync();
+            state.LastOccurredUtc = DateTimeOffset.UtcNow.AddMinutes(1);
+            await db.SaveChangesAsync();
+        }
+
+        // 2. Control: a genuine AuditableEntity DOES get audited through the
+        //    same context — proves the interceptor is actually wired, so a
+        //    green result on the assertion below can't be a false negative.
+        await using (var db = CreateAuditingContext())
+        {
+            db.EventSubscriptions.Add(NewSub("audit-control"));
+            await db.SaveChangesAsync();
+        }
+
+        await using var check = postgres.CreateContext();
+
+        var pollerAudits = await check.AuditEntries
+            .IgnoreQueryFilters()
+            .CountAsync(e => e.SubjectType == nameof(SubscriptionPollerState));
+        pollerAudits.Should().Be(0,
+            "cursor bookkeeping must never enter the audit log — the poller " +
+            "reads audit_entries as its event source, so an audited cursor " +
+            "advance is a self-perpetuating churn loop");
+
+        var controlAudits = await check.AuditEntries
+            .IgnoreQueryFilters()
+            .CountAsync(e => e.SubjectType == nameof(EventSubscription));
+        controlAudits.Should().BeGreaterThan(0,
+            "control: the AuditLogInterceptor is active for real auditable " +
+            "entities, so the zero above is a real result, not a dead interceptor");
+    }
+
+    [Fact]
+    public async Task Poller_does_not_redeliver_its_own_delivery_audit_events()
+    {
+        // Regression for the dispatch-audit storm (Loop 2): EventDispatcher
+        // writes a Subscription.DeliverySucceeded/Failed audit row per
+        // delivery. A system-wide catch-all subscription matches ANY event,
+        // including those delivery-audit rows — and each carries a fresh
+        // EventId, so the UNIQUE (subscription, event) idempotency guard
+        // never trips. Left unchecked, the poller re-consumes its own output
+        // and ramps to the per-cycle cap (~500 real transport calls/minute).
+        //
+        // The poller must exclude its own delivery-audit event types from the
+        // read query. This test arms the exact configuration and asserts the
+        // storm does not start.
+        await using (var seed = postgres.CreateContext())
+        {
+            var sub = NewSub("catch-all");
+            sub.SpaceId = null; // system-wide → matches events in any Space
+            seed.EventSubscriptions.Add(sub);
+            // Historical row so the first-run shortcut seeds the cursor.
+            seed.AuditEntries.Add(new AuditEntry
+            {
+                EventType   = "Seed",
+                OccurredUtc = DateTimeOffset.UtcNow.AddMinutes(-10),
+                UserDisplay = "t",
+                SpaceId     = null,
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        var (stub, job) = NewJob();
+        await job.ExecuteAsync(default); // first-run: seed cursor, no delivery
+        stub.CallCount.Should().Be(0);
+
+        // A genuine event lands after the cursor.
+        await using (var seed = postgres.CreateContext())
+        {
+            seed.AuditEntries.Add(new AuditEntry
+            {
+                EventType   = AuditEventType.DeploymentFailed,
+                OccurredUtc = DateTimeOffset.UtcNow,
+                UserDisplay = "t",
+                SpaceId     = null,
+            });
+            await seed.SaveChangesAsync();
+        }
+
+        // Delivers the real event once. That dispatch writes a
+        // Subscription.DeliverySucceeded audit row (via the dispatcher's
+        // IAuditLog) which now sits in audit_entries after the cursor.
+        await job.ExecuteAsync(default);
+        stub.CallCount.Should().Be(1, "the genuine event is delivered exactly once");
+
+        await using (var check = postgres.CreateContext())
+        {
+            var deliveryAudits = await check.AuditEntries
+                .IgnoreQueryFilters()
+                .CountAsync(e => e.EventType == AuditEventType.SubscriptionDeliverySucceeded);
+            deliveryAudits.Should().Be(1,
+                "sanity: the dispatch wrote a delivery-audit row — that row is " +
+                "the bait the poller must not bite on");
+        }
+
+        // Several more cycles: if the poller re-consumed its own delivery
+        // audit, each cycle would deliver again and write another one,
+        // multiplying the call count. It must stay at 1.
+        await job.ExecuteAsync(default);
+        await job.ExecuteAsync(default);
+        await job.ExecuteAsync(default);
+
+        stub.CallCount.Should().Be(1,
+            "the poller must ignore its own Subscription.Delivery* audit rows; " +
+            "otherwise a catch-all subscription re-consumes its own delivery " +
+            "output and storms up to the per-cycle cap");
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A <see cref="KrakenDbContext"/> wired with the production
+    /// <see cref="AuditLogInterceptor"/> (the shared fixture context omits it,
+    /// so most tests never exercise the audit-write path). Used to prove the
+    /// cursor row does not generate audit entries.
+    /// </summary>
+    private KrakenDbContext CreateAuditingContext()
+    {
+        var spaceContext = new DefaultSpaceContext();
+        var options = new DbContextOptionsBuilder<KrakenDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .UseSnakeCaseNamingConvention()
+            .AddInterceptors(
+                new AuditableEntityInterceptor(TimeProvider.System),
+                new AuditLogInterceptor(new NullHttpContextAccessor(), TimeProvider.System))
+            .ConfigureWarnings(w => w.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        return new KrakenDbContext(options, spaceContext);
+    }
+
+    /// <summary>Background-job stand-in for <see cref="IHttpContextAccessor"/>
+    /// — there is no ambient HttpContext in the poller's Hangfire scope.</summary>
+    private sealed class NullHttpContextAccessor : IHttpContextAccessor
+    {
+        public HttpContext? HttpContext { get => null; set { } }
+    }
 
     private static EventSubscription NewSub(string name) => new()
     {

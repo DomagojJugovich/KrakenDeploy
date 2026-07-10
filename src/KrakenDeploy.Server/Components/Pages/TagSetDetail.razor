@@ -1,0 +1,441 @@
+@page "/s/{SpaceSlug}/tag-sets/new"
+@page "/s/{SpaceSlug}/tag-sets/{Id:guid}"
+@inherits SpaceScopedComponentBase
+@rendermode InteractiveServer
+@attribute [Authorize]
+@inject TagService TagSvc
+@inject NavigationManager Nav
+@inject DialogService Dialog
+@inject NotificationService Notify
+@inject UiActionGuard Guard
+
+<PageTitle>@(_isNew ? "New Tag Set" : _name) - KrakenDeploy</PageTitle>
+
+<div class="breadcrumb">
+    <a href="@Sp("/tag-sets")">Tag Sets</a>
+    <RadzenIcon Icon="chevron_right" />
+    <span>@(_isNew ? "New" : _name)</span>
+</div>
+
+<div class="page-head">
+    <div>
+        <h1 class="page-title">@(_isNew ? "Create Tag Set" : _name)</h1>
+        <p class="page-sub">
+            A short, memorable, unique name; the scope(s) it applies to; and its
+            selection type.
+        </p>
+    </div>
+    <div class="page-head-actions">
+        <RequirePermission Permission="@(_isNew ? Permission.TagSetCreate : Permission.TagSetEdit)">
+            <RadzenButton Text="Save" Icon="save" ButtonStyle="ButtonStyle.Primary"
+                          Variant="Variant.Filled" Click="@SaveAsync"
+                          IsBusy="@_saving" Disabled="@_saving" />
+        </RequirePermission>
+    </div>
+</div>
+
+@if (!_isNew && _notFound)
+{
+    <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+        Tag set not found.
+    </RadzenAlert>
+}
+else
+{
+    <RadzenStack Gap="1rem" Style="max-width: 860px;">
+        <RadzenCard>
+            <RadzenStack Gap="1rem">
+                <div>
+                    <RadzenLabel Text="Name *" />
+                    <RadzenTextBox @bind-Value="_name" Placeholder="e.g. Customer Type, Hosting, Region"
+                                   MaxLength="200" Style="width: 100%;" />
+                </div>
+                <div>
+                    <RadzenLabel Text="Description" />
+                    <RadzenTextBox @bind-Value="_description"
+                                   Placeholder="Shown to users when applying tags from this set"
+                                   MaxLength="1000" Style="width: 100%;" />
+                </div>
+                <div>
+                    <RadzenLabel Text="Scopes *" />
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-1">
+                        The entity kinds this tag set can be applied to.
+                    </RadzenText>
+                    <RadzenCheckBoxList TValue="TaggableEntityKind" @bind-Value="_scopes"
+                                        Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap">
+                        <Items>
+                            <RadzenCheckBoxListItem Text="Tenant"      Value="TaggableEntityKind.Tenant" />
+                            <RadzenCheckBoxListItem Text="Project"     Value="TaggableEntityKind.Project" />
+                            <RadzenCheckBoxListItem Text="Environment" Value="TaggableEntityKind.Environment" />
+                            <RadzenCheckBoxListItem Text="Runbook"     Value="TaggableEntityKind.Runbook" />
+                            <RadzenCheckBoxListItem Text="Deployment target"
+                                                    Value="TaggableEntityKind.DeploymentTarget" />
+                        </Items>
+                    </RadzenCheckBoxList>
+                </div>
+                <div>
+                    <RadzenLabel Text="Type" />
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-1">
+                        Multi select: any number of predefined tags per entity.
+                        Single select: at most one (e.g. tier, cloud provider).
+                        Free text: one arbitrary value per entity, no predefined tags.
+                    </RadzenText>
+                    <RadzenRadioButtonList TValue="TagSetType" @bind-Value="_type"
+                                           Orientation="Orientation.Vertical">
+                        <Items>
+                            <RadzenRadioButtonListItem Text="Multi Select"  Value="TagSetType.MultiSelect" />
+                            <RadzenRadioButtonListItem Text="Single Select" Value="TagSetType.SingleSelect" />
+                            <RadzenRadioButtonListItem Text="Free Text"     Value="TagSetType.FreeText" />
+                        </Items>
+                    </RadzenRadioButtonList>
+                </div>
+                @if (_error is not null)
+                {
+                    <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false" class="rz-mb-0">
+                        @_error
+                    </RadzenAlert>
+                }
+            </RadzenStack>
+        </RadzenCard>
+
+        @* ── Tags (select types only) ─────────────────────────────────────── *@
+        @if (_type != TagSetType.FreeText)
+        {
+            <RadzenCard>
+                <RadzenText TextStyle="TextStyle.H6" class="rz-mb-2">Tags</RadzenText>
+                @if (_isNew)
+                {
+                    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                        Save the tag set first to add tags.
+                    </RadzenText>
+                }
+                else
+                {
+                    <RequirePermission Permission="Permission.TagSetEdit">
+                        <ChildContent>
+                            <RadzenStack Gap="0.5rem">
+                                @for (var i = 0; i < _tags.Count; i++)
+                                {
+                                    var idx = i;
+                                    var tag = _tags[idx];
+                                    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                                                 AlignItems="AlignItems.Center">
+                                        <RadzenButton Icon="arrow_upward" ButtonStyle="ButtonStyle.Light"
+                                                      Size="ButtonSize.ExtraSmall" Variant="Variant.Text"
+                                                      Disabled="@(idx == 0 || _editingTagId is not null)"
+                                                      Click="@(async () => await MoveTagAsync(idx, -1))"
+                                                      title="Move up" />
+                                        <RadzenButton Icon="arrow_downward" ButtonStyle="ButtonStyle.Light"
+                                                      Size="ButtonSize.ExtraSmall" Variant="Variant.Text"
+                                                      Disabled="@(idx == _tags.Count - 1 || _editingTagId is not null)"
+                                                      Click="@(async () => await MoveTagAsync(idx, +1))"
+                                                      title="Move down" />
+                                        @if (_editingTagId == tag.Id)
+                                        {
+                                            @* Inline edit — renaming here preserves the tag's
+                                               applications (delete+recreate would drop them). *@
+                                            <RadzenTextBox @bind-Value="_editTagName" MaxLength="200"
+                                                           Style="width: 160px;" />
+                                            <RadzenTextBox @bind-Value="_editTagDescription" Placeholder="Description"
+                                                           MaxLength="1000" Style="width: 220px;" />
+                                            <RadzenColorPicker @bind-Value="_editTagColor"
+                                                               ShowHSV="true" ShowRGBA="true" ShowColors="true"
+                                                               ShowButton="true" HexText="Hex"
+                                                               title="Tag colour" />
+                                            <span class="grow"></span>
+                                            <RadzenButton Icon="check" ButtonStyle="ButtonStyle.Success"
+                                                          Size="ButtonSize.ExtraSmall" Variant="Variant.Text"
+                                                          Click="@(async () => await SaveTagEditAsync(tag))"
+                                                          Disabled="@string.IsNullOrWhiteSpace(_editTagName)"
+                                                          title="Save" />
+                                            <RadzenButton Icon="close" ButtonStyle="ButtonStyle.Light"
+                                                          Size="ButtonSize.ExtraSmall" Variant="Variant.Text"
+                                                          Click="@(() => _editingTagId = null)" title="Cancel" />
+                                        }
+                                        else
+                                        {
+                                            <TagChip Tag="@tag" />
+                                            <span class="rz-color-secondary rz-text-body2">@tag.Description</span>
+                                            <span class="grow"></span>
+                                            <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
+                                                          Size="ButtonSize.ExtraSmall" Variant="Variant.Text"
+                                                          Disabled="@(_editingTagId is not null)"
+                                                          Click="@(() => BeginTagEdit(tag))" title="Edit tag" />
+                                            <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                                          Size="ButtonSize.ExtraSmall" Variant="Variant.Text"
+                                                          Disabled="@(_editingTagId is not null)"
+                                                          Click="@(async () => await DeleteTagAsync(tag))"
+                                                          title="Delete tag" />
+                                        }
+                                    </RadzenStack>
+                                }
+                                @if (_tags.Count == 0)
+                                {
+                                    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                                        No tags yet.
+                                    </RadzenText>
+                                }
+                                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                                             AlignItems="AlignItems.Center" class="rz-mt-2">
+                                    <RadzenTextBox @bind-Value="_newTagName" Placeholder="New value"
+                                                   MaxLength="200" Style="width: 180px;" />
+                                    <RadzenTextBox @bind-Value="_newTagDescription" Placeholder="Optional description"
+                                                   MaxLength="1000" Style="width: 240px;" />
+                                    <RadzenColorPicker @bind-Value="_newTagColor"
+                                                       ShowHSV="true" ShowRGBA="true" ShowColors="true"
+                                                       ShowButton="true" HexText="Hex"
+                                                       title="Tag colour" />
+                                    <RadzenButton Text="Add" Icon="add" ButtonStyle="ButtonStyle.Secondary"
+                                                  Size="ButtonSize.Small" Click="@AddTagAsync"
+                                                  Disabled="@string.IsNullOrWhiteSpace(_newTagName)" />
+                                </RadzenStack>
+                            </RadzenStack>
+                        </ChildContent>
+                        <Fallback>
+                            @foreach (var tag in _tags)
+                            {
+                                <TagChip Tag="@tag" class="rz-mr-1" />
+                            }
+                        </Fallback>
+                    </RequirePermission>
+                }
+            </RadzenCard>
+        }
+
+        @* ── Danger zone ──────────────────────────────────────────────────── *@
+        @if (!_isNew)
+        {
+            <RequirePermission Permission="Permission.TagSetDelete">
+                <RadzenCard>
+                    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                                 JustifyContent="JustifyContent.SpaceBetween">
+                        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-0">
+                            Deleting this tag set removes its tags and every application of them.
+                        </RadzenText>
+                        <RadzenButton Text="Delete tag set" Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                      Variant="Variant.Flat" Click="@DeleteSetAsync" />
+                    </RadzenStack>
+                </RadzenCard>
+            </RequirePermission>
+        }
+    </RadzenStack>
+}
+
+@code {
+    [Parameter] public Guid? Id { get; set; }
+
+    private bool _isNew => Id is null;
+    private bool _notFound;
+    private bool _saving;
+    private string? _error;
+
+    private string _name = "";
+    private string? _description;
+    private TagSetType _type = TagSetType.MultiSelect;
+    private IEnumerable<TaggableEntityKind> _scopes = new List<TaggableEntityKind>();
+    private List<Tag> _tags = [];
+    // Preserve the set's position across UI edits (was clobbered to 0).
+    private int _sortOrder;
+
+    private string? _newTagName;
+    private string? _newTagDescription;
+    private string? _newTagColor;
+
+    // Inline tag edit buffer.
+    private Guid? _editingTagId;
+    private string? _editTagName;
+    private string? _editTagDescription;
+    private string? _editTagColor;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (Id is { } id)
+        {
+            var set = await TagSvc.GetSetAsync(id);
+            if (set is null)
+            {
+                _notFound = true;
+                return;
+            }
+            _name        = set.Name;
+            _description = set.Description;
+            _type        = set.Type;
+            _scopes      = set.Scopes.ToList();
+            _sortOrder   = set.SortOrder;
+            _tags        = set.Tags.ToList();
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        if (!await Guard.AllowAsync(_isNew ? Permission.TagSetCreate : Permission.TagSetEdit)) return;
+
+        _error = null;
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            _error = "Name is required.";
+            return;
+        }
+        var scopes = _scopes.ToList();
+        if (scopes.Count == 0)
+        {
+            _error = "Pick at least one scope.";
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            if (_isNew)
+            {
+                var created = await TagSvc.CreateSetAsync(
+                    _name.Trim(), Trimmed(_description), _type, scopes, _sortOrder);
+                Notify.Notify(NotificationSeverity.Success, "Created", $"Tag set '{created.Name}'.", 3000);
+                Nav.NavigateTo(Sp($"/tag-sets/{created.Id}"), forceLoad: true);
+                return;
+            }
+
+            await UpdateAsync(scopes, force: false);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task UpdateAsync(List<TaggableEntityKind> scopes, bool force)
+    {
+        try
+        {
+            var updated = await TagSvc.UpdateSetAsync(
+                Id!.Value, _name.Trim(), Trimmed(_description), _type, scopes,
+                _sortOrder, force: force);
+            if (updated is null)
+            {
+                _notFound = true;
+                return;
+            }
+            _type = updated.Type;
+            Notify.Notify(NotificationSeverity.Success, "Saved", $"Tag set '{updated.Name}'.", 3000);
+        }
+        catch (InvalidOperationException ex) when (!force && ex.Message.Contains("Confirm to proceed"))
+        {
+            // Scope removal with existing applications — confirm-then-cascade.
+            var confirmed = await Dialog.Confirm(
+                ex.Message.Replace("Confirm to proceed.", "Proceed?"),
+                "Remove scope",
+                new ConfirmOptions { OkButtonText = "Remove and delete", CancelButtonText = "Cancel" });
+            if (confirmed == true)
+            {
+                await UpdateAsync(scopes, force: true);
+            }
+        }
+    }
+
+    private async Task AddTagAsync()
+    {
+        if (Id is not { } id || string.IsNullOrWhiteSpace(_newTagName)) return;
+        if (!await Guard.AllowAsync(Permission.TagSetEdit)) return;
+
+        try
+        {
+            var tag = await TagSvc.CreateTagAsync(
+                id, _newTagName.Trim(), Trimmed(_newTagColor), Trimmed(_newTagDescription));
+            _tags.Add(tag);
+            _newTagName = _newTagDescription = _newTagColor = null;
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(NotificationSeverity.Error, "Could not add tag", ex.Message, 5000);
+        }
+    }
+
+    private void BeginTagEdit(Tag tag)
+    {
+        _editingTagId       = tag.Id;
+        _editTagName        = tag.Name;
+        _editTagDescription = tag.Description;
+        _editTagColor       = tag.Color;
+    }
+
+    private async Task SaveTagEditAsync(Tag tag)
+    {
+        if (string.IsNullOrWhiteSpace(_editTagName)) return;
+        if (!await Guard.AllowAsync(Permission.TagSetEdit)) return;
+
+        try
+        {
+            // UpdateTagAsync renames in place — the tag's applications are
+            // preserved (unlike delete + recreate, which would drop them).
+            var updated = await TagSvc.UpdateTagAsync(
+                tag.Id, _editTagName.Trim(), Trimmed(_editTagColor), Trimmed(_editTagDescription));
+            if (updated is not null)
+            {
+                var idx = _tags.FindIndex(t => t.Id == tag.Id);
+                if (idx >= 0)
+                {
+                    _tags[idx] = updated;
+                }
+            }
+            _editingTagId = null;
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(NotificationSeverity.Error, "Could not save tag", ex.Message, 5000);
+        }
+    }
+
+    private async Task DeleteTagAsync(Tag tag)
+    {
+        if (!await Guard.AllowAsync(Permission.TagSetEdit)) return;
+
+        var confirmed = await Dialog.Confirm(
+            $"Delete tag '{tag.Name}'? Every application of it is removed.",
+            "Delete Tag",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+        if (confirmed != true) return;
+
+        if (await TagSvc.DeleteTagAsync(tag.Id))
+        {
+            _tags.RemoveAll(t => t.Id == tag.Id);
+        }
+    }
+
+    private async Task MoveTagAsync(int index, int delta)
+    {
+        if (Id is not { } id) return;
+        if (!await Guard.AllowAsync(Permission.TagSetEdit)) return;
+
+        var target = index + delta;
+        if (target < 0 || target >= _tags.Count) return;
+
+        (_tags[index], _tags[target]) = (_tags[target], _tags[index]);
+        await TagSvc.ReorderTagsAsync(id, _tags.Select(t => t.Id).ToList());
+    }
+
+    private async Task DeleteSetAsync()
+    {
+        if (Id is not { } id) return;
+        if (!await Guard.AllowAsync(Permission.TagSetDelete)) return;
+
+        var confirmed = await Dialog.Confirm(
+            $"Delete tag set '{_name}'? Its tags and every application of them are removed. " +
+            "This cannot be undone.",
+            "Delete Tag Set",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+        if (confirmed != true) return;
+
+        if (await TagSvc.DeleteSetAsync(id))
+        {
+            Notify.Notify(NotificationSeverity.Info, "Deleted", $"'{_name}' has been removed.", 4000);
+            Nav.NavigateTo(Sp("/tag-sets"));
+        }
+    }
+
+    private static string? Trimmed(string? s)
+        => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+}

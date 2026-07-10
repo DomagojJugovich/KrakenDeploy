@@ -42,10 +42,10 @@ public sealed class DeploymentFreezeConfiguration : IEntityTypeConfiguration<Dep
                 v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
                 v => JsonSerializer.Deserialize<List<Guid>>(v, (JsonSerializerOptions?)null) ?? new());
 
-        builder.Property(f => f.TenantTagCanonicalNames)
+        builder.Property(f => f.TagIds)
             .HasColumnType("jsonb")
             .HasConversion(
                 v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
-                v => JsonSerializer.Deserialize<List<string>>(v, (JsonSerializerOptions?)null) ?? new());
+                v => JsonSerializer.Deserialize<List<Guid>>(v, (JsonSerializerOptions?)null) ?? new());
     }
 }

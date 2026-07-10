@@ -61,6 +61,10 @@ else
                             <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.ExtraSmall"
                                           Click="@(() => OpenEditDialogAsync(e))" title="Edit" />
                         </RequirePermission>
+                        <RequirePermission Permission="Permission.EnvironmentView">
+                            <RadzenButton Icon="sell" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.ExtraSmall"
+                                          Click="@(() => OpenTagsDialogAsync(e))" title="Tags" />
+                        </RequirePermission>
                         <RequirePermission Permission="Permission.EnvironmentDelete">
                             <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.ExtraSmall"
                                           Click="@(() => DeleteAsync(e))" title="Delete" />
@@ -92,6 +96,21 @@ else
         _envs = await EnvironmentSvc.GetAllOrderedAsync();
         _health = (await DashboardSvc.GetEnvironmentHealthAsync())
             .ToDictionary(h => h.EnvironmentId);
+    }
+
+    private async Task OpenTagsDialogAsync(DeploymentEnvironment env)
+    {
+        // Environments have no detail page — tags edit in a dialog. The editor
+        // saves per set itself (EnvironmentEdit re-checked inside).
+        await Dialog.OpenAsync<EntityTagsDialog>(
+            $"Tags — {env.Name}",
+            new Dictionary<string, object?>
+            {
+                [nameof(EntityTagsDialog.Kind)]           = TaggableEntityKind.Environment,
+                [nameof(EntityTagsDialog.EntityId)]       = env.Id,
+                [nameof(EntityTagsDialog.EditPermission)] = Permission.EnvironmentEdit,
+            },
+            new DialogOptions { Width = "560px" });
     }
 
     private async Task OpenCreateDialogAsync()

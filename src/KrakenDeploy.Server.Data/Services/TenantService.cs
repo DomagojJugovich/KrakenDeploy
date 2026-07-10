@@ -4,8 +4,9 @@ using Microsoft.EntityFrameworkCore;
 namespace KrakenDeploy.Server.Data.Services;
 
 /// <summary>
-/// CRUD and relationship management for <see cref="Tenant"/>s, <see cref="TagSet"/>s,
-/// and <see cref="TenantTag"/>s.
+/// CRUD and relationship management for <see cref="Tenant"/>s.
+/// Tag sets moved to the Space-level extended-tag-sets model — see
+/// <see cref="TagService"/> (docs/extended-tag-sets-plan.md).
 /// </summary>
 public class TenantService(IDbContextFactory<KrakenDbContext> dbFactory)
 {
@@ -29,14 +30,16 @@ public class TenantService(IDbContextFactory<KrakenDbContext> dbFactory)
         return await db.Tenants.FirstOrDefaultAsync(t => t.Slug == slug, ct);
     }
 
-    /// <summary>Returns the tenant with its TagSets and Tags loaded.</summary>
-    public async Task<Tenant?> GetWithTagsAsync(Guid id, CancellationToken ct = default)
+    /// <summary>Tenants connected to one project (via the project_tenants M2M),
+    /// name-ordered — powers project-scoped tenant pickers (deploy dialog).</summary>
+    public async Task<List<Tenant>> GetForProjectAsync(Guid projectId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        return await db.Tenants
-            .Include(t => t.TagSets)
-                .ThenInclude(ts => ts.Tags)
-            .FirstOrDefaultAsync(t => t.Id == id, ct);
+        return await db.Projects
+            .Where(p => p.Id == projectId)
+            .SelectMany(p => p.Tenants)
+            .OrderBy(t => t.Name)
+            .ToListAsync(ct);
     }
 
     /// <summary>Returns the tenant with its connected projects loaded.</summary>
@@ -160,223 +163,5 @@ public class TenantService(IDbContextFactory<KrakenDbContext> dbFactory)
             tenant.Projects.Remove(project);
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
-    }
-
-    // ── TagSet ─────────────────────────────────────────────────────────────────
-
-    public async Task<List<TagSet>> GetTagSetsAsync(Guid tenantId, CancellationToken ct = default)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync(ct);
-        return await db.TagSets
-            .Where(ts => ts.TenantId == tenantId)
-            .OrderBy(ts => ts.SortOrder).ThenBy(ts => ts.Name)
-            .Include(ts => ts.Tags)
-            .ToListAsync(ct);
-    }
-
-    public async Task<TagSet?> GetTagSetAsync(Guid id, CancellationToken ct = default)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync(ct);
-        return await db.TagSets.Include(ts => ts.Tags).FirstOrDefaultAsync(ts => ts.Id == id, ct);
-    }
-
-    public async Task<TagSet> CreateTagSetAsync(
-        Guid tenantId,
-        string name,
-        string? description,
-        int sortOrder,
-        CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-
-        var tenantExists = await db.Tenants.AnyAsync(t => t.Id == tenantId, ct).ConfigureAwait(false);
-        if (!tenantExists)
-        {
-            throw new InvalidOperationException($"Tenant {tenantId} not found.");
-        }
-
-        if (await db.TagSets.AnyAsync(ts => ts.TenantId == tenantId && ts.Name == name, ct).ConfigureAwait(false))
-        {
-            throw new InvalidOperationException($"Tag set '{name}' already exists for this tenant.");
-        }
-
-        var tagSet = new TagSet
-        {
-            TenantId = tenantId,
-            Name = name,
-            Description = description,
-            SortOrder = sortOrder,
-        };
-
-        db.TagSets.Add(tagSet);
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return tagSet;
-    }
-
-    public async Task<TagSet?> UpdateTagSetAsync(
-        Guid id,
-        string name,
-        string? description,
-        int sortOrder,
-        CancellationToken ct = default)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var tagSet = await db.TagSets.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
-        if (tagSet is null)
-        {
-            return null;
-        }
-
-        tagSet.Name = name;
-        tagSet.Description = description;
-        tagSet.SortOrder = sortOrder;
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return tagSet;
-    }
-
-    public async Task<bool> DeleteTagSetAsync(Guid id, CancellationToken ct = default)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var tagSet = await db.TagSets.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
-        if (tagSet is null)
-        {
-            return false;
-        }
-
-        db.TagSets.Remove(tagSet);
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return true;
-    }
-
-    // ── TenantTag ──────────────────────────────────────────────────────────────
-
-    public async Task<TenantTag?> GetTagAsync(Guid id, CancellationToken ct = default)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync(ct);
-        return await db.TenantTags.FindAsync(new object?[] { id }, ct).AsTask();
-    }
-
-    public async Task<TenantTag> CreateTagAsync(
-        Guid tagSetId,
-        string name,
-        string? color,
-        CancellationToken ct = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-
-        var setExists = await db.TagSets.AnyAsync(ts => ts.Id == tagSetId, ct).ConfigureAwait(false);
-        if (!setExists)
-        {
-            throw new InvalidOperationException($"TagSet {tagSetId} not found.");
-        }
-
-        if (await db.TenantTags.AnyAsync(t => t.TagSetId == tagSetId && t.Name == name, ct).ConfigureAwait(false))
-        {
-            throw new InvalidOperationException($"Tag '{name}' already exists in this tag set.");
-        }
-
-        var tag = new TenantTag { TagSetId = tagSetId, Name = name, Color = color };
-        db.TenantTags.Add(tag);
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return tag;
-    }
-
-    public async Task<TenantTag?> UpdateTagAsync(
-        Guid id,
-        string name,
-        string? color,
-        CancellationToken ct = default)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var tag = await db.TenantTags.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
-        if (tag is null)
-        {
-            return null;
-        }
-
-        tag.Name = name;
-        tag.Color = color;
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return tag;
-    }
-
-    public async Task<bool> DeleteTagAsync(Guid id, CancellationToken ct = default)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var tag = await db.TenantTags.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
-        if (tag is null)
-        {
-            return false;
-        }
-
-        db.TenantTags.Remove(tag);
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return true;
-    }
-
-    // ── Target ↔ TenantTag connections ─────────────────────────────────────────
-
-    /// <summary>Assigns a tag to a target (idempotent).</summary>
-    public async Task AddTagToTargetAsync(Guid tagId, Guid targetId, CancellationToken ct = default)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-
-        var tag = await db.TenantTags
-            .Include(t => t.Targets)
-            .FirstOrDefaultAsync(t => t.Id == tagId, ct)
-            .ConfigureAwait(false)
-            ?? throw new InvalidOperationException($"Tag {tagId} not found.");
-
-        if (tag.Targets.Any(t => t.Id == targetId))
-        {
-            return; // already tagged
-        }
-
-        var target = await db.DeploymentTargets.FindAsync(new object?[] { targetId }, ct).ConfigureAwait(false)
-            ?? throw new InvalidOperationException($"Target {targetId} not found.");
-
-        tag.Targets.Add(target);
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-    }
-
-    /// <summary>Removes a tag from a target (idempotent).</summary>
-    public async Task RemoveTagFromTargetAsync(Guid tagId, Guid targetId, CancellationToken ct = default)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-
-        var tag = await db.TenantTags
-            .Include(t => t.Targets)
-            .FirstOrDefaultAsync(t => t.Id == tagId, ct)
-            .ConfigureAwait(false);
-
-        if (tag is null)
-        {
-            return;
-        }
-
-        var target = tag.Targets.FirstOrDefault(t => t.Id == targetId);
-        if (target is not null)
-        {
-            tag.Targets.Remove(target);
-            await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        }
-    }
-
-    /// <summary>
-    /// Returns all tag IDs assigned to a target, grouped by TagSet.
-    /// </summary>
-    public async Task<List<TenantTag>> GetTagsForTargetAsync(Guid targetId, CancellationToken ct = default)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync(ct);
-        return await db.TenantTags
-            .Where(t => t.Targets.Any(tr => tr.Id == targetId))
-            .Include(t => t.TagSet)
-            .OrderBy(t => t.TagSet.SortOrder)
-                .ThenBy(t => t.Name)
-            .ToListAsync(ct);
     }
 }

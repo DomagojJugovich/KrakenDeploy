@@ -49,6 +49,24 @@ public sealed class SubscriptionPollerJob(
     /// </summary>
     private const int MaxEventsPerCycle = 500;
 
+    /// <summary>
+    /// Audit event types the subscription machinery emits as a side effect of
+    /// its own delivery work. They MUST be excluded from the scan: the
+    /// <see cref="EventDispatcher"/> writes a <c>Subscription.Delivery*</c>
+    /// audit row for every delivery, so a catch-all subscription
+    /// (system-wide, empty/<c>*</c> pattern) would match those rows, redeliver,
+    /// and write yet more — a self-perpetuating storm. It is unbounded because
+    /// each new row carries a fresh <c>EventId</c>, so the UNIQUE
+    /// (subscription, event) idempotency guard on the delivery table never
+    /// trips. Excluding them here is where that loop physically closes; the
+    /// rows still land in <c>audit_entries</c> for the /audit UI.
+    /// </summary>
+    private static readonly string[] SelfGeneratedEventTypes =
+    [
+        AuditEventType.SubscriptionDeliverySucceeded,
+        AuditEventType.SubscriptionDeliveryFailed,
+    ];
+
     public async Task ExecuteAsync(CancellationToken ct)
     {
         if (await maintenancePause.ShouldPauseAsync(ct, logger, RecurringJobId)
@@ -78,7 +96,8 @@ public sealed class SubscriptionPollerJob(
             events = await db.AuditEntries
                 .IgnoreQueryFilters()
                 .AsNoTracking()
-                .Where(e => e.OccurredUtc > cursor)
+                .Where(e => e.OccurredUtc > cursor
+                            && !SelfGeneratedEventTypes.Contains(e.EventType))
                 .OrderBy(e => e.OccurredUtc)
                 .ThenBy(e => e.Id)
                 .Take(MaxEventsPerCycle)

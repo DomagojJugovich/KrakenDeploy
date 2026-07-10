@@ -48,6 +48,7 @@ public sealed class DeploymentWorker(
     IHubContext<AgentHub, IAgentHubClient> agentHub,
     ServerScriptStepRunner serverRunner,
     DeployReleaseStepRunner deployReleaseRunner,
+    OfflineDropBundleBuilder offlineBundleBuilder,
     IPendingSubPlanRegistry subPlans,
     IServiceScopeFactory scopeFactory,
     DeploymentDiagnosisChannel diagnosisChannel,
@@ -169,6 +170,22 @@ public sealed class DeploymentWorker(
                 return;
             }
 
+            // ── Cancellation: dequeue-skip ──────────────────────────────────
+            // A deployment can be cancelled (DeploymentService.CancelAsync →
+            // Status=Cancelled) while it sits Queued in the channel or waits for
+            // a scheduled start. Never transition a cancelled deployment to
+            // Running or dispatch any work — bail before the Running transition.
+            // This is the "cancelling a pending deployment prevents dispatch"
+            // guarantee. CancelAsync already stamped CompletedUtc, so there is
+            // nothing further to finalise here.
+            if (deployment.Status == DeploymentStatus.Cancelled)
+            {
+                logger.LogInformation(
+                    "DeploymentWorker: deployment {Id} was cancelled before dispatch; skipping.",
+                    deploymentId);
+                return;
+            }
+
             // M14.3.1 — serialise log-sequence allocation. Single-threaded
             // until M14.4 introduced wave-parallel step execution; M-RollingDeployments
             // Phase 1b adds per-target parallel fan-out on top, so multiple
@@ -217,11 +234,11 @@ public sealed class DeploymentWorker(
             // tenant-tag dimension can light up when the tenant rendering
             // path needs the same lookup anyway.
             var blockingFreeze = await freezeService.FindBlockingFreezeAsync(
-                spaceId:                 deployment.Release.Project.SpaceId,
-                projectId:               deployment.Release.ProjectId,
-                environmentId:           deployment.EnvironmentId,
-                tenantTagCanonicalNames: null,
-                ct:                      ct).ConfigureAwait(false);
+                spaceId:       deployment.Release.Project.SpaceId,
+                projectId:     deployment.Release.ProjectId,
+                environmentId: deployment.EnvironmentId,
+                tenantTagIds:  null,
+                ct:            ct).ConfigureAwait(false);
             if (blockingFreeze is not null)
             {
                 var msg =
@@ -355,7 +372,7 @@ public sealed class DeploymentWorker(
             foreach (var target in targets)
             {
                 var ctx = await BuildTargetDispatchContextAsync(
-                    deployment, target, snapshotSteps, variableService,
+                    logger, deployment, target, snapshotSteps, variableService,
                     serverBaseUrl, dbFactory, ct).ConfigureAwait(false);
                 contexts[target.Id] = ctx;
                 canonical ??= ctx;
@@ -473,6 +490,25 @@ public sealed class DeploymentWorker(
                 return;
             }
 
+            // ── Cancellation: last check before starting work ──────────────
+            // The dequeue-skip above ran immediately after load; the prep phase
+            // since (freeze lookup, per-target context build with variable
+            // resolution + DB round-trips, wave partitioning) does real I/O and
+            // widens the window for a concurrent CancelAsync. The Running write
+            // below is a blind UPDATE (the domain carries no optimistic-
+            // concurrency token), so re-read here to avoid clobbering a cancel
+            // that landed during prep back to Running. A tiny residual TOCTOU
+            // remains between this read and the save — the same window the
+            // finalisation + FailAsync guards accept — and the between-wave
+            // check is the backstop.
+            if (await IsCancellationRequestedAsync(db, deployment.Id, ct).ConfigureAwait(false))
+            {
+                logger.LogInformation(
+                    "DeploymentWorker: deployment {Id} cancelled during dispatch prep; not starting.",
+                    deploymentId);
+                return;
+            }
+
             // Transition to Running before doing any work so the UI updates immediately.
             deployment.Status     = DeploymentStatus.Running;
             deployment.StartedUtc = DateTimeOffset.UtcNow;
@@ -517,6 +553,30 @@ public sealed class DeploymentWorker(
 
             foreach (var wave in waves)
             {
+                // ── Cancellation: stop at the next wave boundary ────────────
+                // The agent protocol exposes no in-flight abort (IAgentHubClient
+                // = Ping / RunDeployment / RunAdhocScript), so cancellation is
+                // cooperative: a wave already dispatched to an agent runs to
+                // completion, but once a cancel has landed
+                // (DeploymentService.CancelAsync → Status=Cancelled) we start no
+                // further waves. CancelAsync already wrote the terminal Cancelled
+                // status + CompletedUtc; we log the boundary and return, leaving
+                // that terminal state to stand — the finalisation + FailAsync
+                // writes below are guarded to never overwrite Cancelled.
+                if (await IsCancellationRequestedAsync(db, deployment.Id, ct).ConfigureAwait(false))
+                {
+                    await AppendConcurrentLogAsync(
+                        deployment.Id, logSeq, "warning",
+                        "--- Deployment cancelled — stopping at the wave boundary. Any step " +
+                        "already dispatched to an agent ran to completion; no further steps " +
+                        "were started. ---",
+                        ct).ConfigureAwait(false);
+                    logger.LogInformation(
+                        "Deployment {Id} cancelled — halting before the remaining wave(s).",
+                        deployment.Id);
+                    return;
+                }
+
                 if (wave.Kind == WavePartitioner.WaveKind.Server)
                 {
                     // ── Server wave ─────────────────────────────────────
@@ -660,7 +720,12 @@ public sealed class DeploymentWorker(
             {
                 var d = await finalDb.Deployments.FindAsync([deployment.Id], ct).ConfigureAwait(false);
                 finalCompletedUtc = DateTimeOffset.UtcNow;
-                if (d is not null)
+                // Never overwrite a cancellation. A concurrent CancelAsync may
+                // have moved this deployment to the terminal Cancelled state
+                // while the final wave completed (the agent protocol can't abort
+                // in-flight work, so the last wave always finishes). Cancel wins:
+                // leave the Cancelled status + its CompletedUtc untouched.
+                if (d is not null && d.Status != DeploymentStatus.Cancelled)
                 {
                     d.Status       = terminalStatus;
                     d.CompletedUtc = finalCompletedUtc;
@@ -723,104 +788,39 @@ public sealed class DeploymentWorker(
     private async Task DispatchOfflineDropAsync(
         IServiceProvider sp, KrakenDbContext db, Deployment deployment, CancellationToken ct)
     {
-        var variableService = sp.GetRequiredService<VariableService>();
-        var dropBundleService = sp.GetRequiredService<DropBundleService>();
-        var stepPackages = sp.GetRequiredService<StepPackageService>();
-        var encryption = sp.GetRequiredService<
-            KrakenDeploy.Server.Core.Domain.Variables.IEncryptionService>();
-        var config = sp.GetRequiredService<IConfiguration>();
-        var dbFactory = sp.GetRequiredService<IDbContextFactory<KrakenDbContext>>();
-        var dataPath = config["DataPath"] ?? "data";
-        var serverBaseUrl = config["Server:BaseUrl"];
-
-        // Offline drops use the frozen release snapshot, exactly like online —
-        // refuse to ship a bundle from an un-snapshotted (pre-feature) release.
-        if (deployment.Release.VariableSnapshotUpdatedUtc is null)
+        string bundlePath;
+        try
         {
-            await FailAsync(db, deployment,
-                $"Release '{deployment.Release.Version}' has no variable snapshot. " +
-                "Open the release and click 'Update Variables', then re-deploy.", ct)
-                .ConfigureAwait(false);
+            // Single source of truth for the plan build + pre-flight gates +
+            // bundle write, shared with the UI/API regenerate path
+            // (OfflineDropBundleBuilder). Precondition failures throw so the
+            // dispatch path can map them to the terminal Failed status below.
+            bundlePath = await offlineBundleBuilder
+                .GenerateOfflineBundleAsync(sp, deployment, ct).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Pre-flight refusals (no snapshot, missing bundle key,
+            // server-orchestrated steps, unresolved required ForEach) are
+            // terminal for a dispatch — mark Failed, mirroring the online path.
+            await FailAsync(db, deployment, ex.Message, ct).ConfigureAwait(false);
             return;
         }
 
-        // Per-target bundle encryption key (provisioned when the target was
-        // configured as offline-drop). Without it we can't produce plan.enc.
-        var bundleKeyEnc = deployment.Target!.OfflineDropConfig?.BundleKeyEncrypted;
-        if (string.IsNullOrEmpty(bundleKeyEnc))
+        var dataPath = sp.GetRequiredService<IConfiguration>()["DataPath"] ?? "data";
+
+        // A cancel may have landed while the bundle was being built — don't
+        // resurrect the deployment to PendingOfflineResult over a Cancelled
+        // row (same blind-write hazard as the online Running transition). The
+        // built bundle is simply orphaned on disk (DropBundlePath stays unset).
+        if (await IsCancellationRequestedAsync(db, deployment.Id, ct).ConfigureAwait(false))
         {
-            await FailAsync(db, deployment,
-                "Offline-drop target has no bundle encryption key. Re-save the " +
-                "target's offline-drop settings to provision one (and deliver it to " +
-                "the target operator out-of-band), then re-deploy.", ct).ConfigureAwait(false);
+            logger.LogInformation(
+                "DeploymentWorker: deployment {Id} cancelled during offline-bundle build; " +
+                "not marking PendingOfflineResult.",
+                deployment.Id);
             return;
         }
-        var bundleKey = Convert.FromBase64String(encryption.Decrypt(bundleKeyEnc));
-
-        // Build the SAME plan the online path dispatches (snapshot-resolved,
-        // Octostache-substituted, flattened, per-step deltas) so the offline
-        // runner executes it through the identical DeploymentExecutor.
-        var snapshotSteps = deployment.Release.ProcessSnapshot
-            .OrderBy(s => s.SortOrder)
-            .ToArray();
-        var ctx = await BuildTargetDispatchContextAsync(
-            deployment, deployment.Target, snapshotSteps, variableService,
-            serverBaseUrl, dbFactory, ct).ConfigureAwait(false);
-
-        // Required ForEach that couldn't resolve its collection aborts here,
-        // mirroring the online gate.
-        foreach (var w in ctx.Flatten.Warnings)
-        {
-            if (w.Kind == DeploymentPlanFlattener.WarningKind.ForEachUnresolved && w.Source.Required)
-            {
-                await FailAsync(db, deployment,
-                    $"Required ForEach step '{w.Source.Name}' could not resolve its " +
-                    $"collection: {w.Detail}", ct).ConfigureAwait(false);
-                return;
-            }
-        }
-
-        var plan = ctx.Plan;
-
-        // Server-orchestrated step types can't run on an air-gapped box (no
-        // server to drive the cascade / approval). Refuse rather than ship a
-        // bundle that fails mid-run.
-        var onlineOnly = plan.Steps
-            .Where(s => s.StepType is "Octopus.DeployRelease" or "Octopus.Manual")
-            .Select(s => s.Name)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        if (onlineOnly.Count > 0)
-        {
-            await FailAsync(db, deployment,
-                "Offline drop cannot run server-orchestrated steps: " +
-                $"{string.Join(", ", onlineOnly)}. Remove them from the process or " +
-                "deploy this project to an online target.", ct).ConfigureAwait(false);
-            return;
-        }
-
-        // Runner embedding (PerformanceSettings.EmbedOfflineRunner, default true,
-        // editable on /configuration/performance): embed the self-contained
-        // runner published for the target's RID under
-        // {dataPath}/offline-runner/{rid}/ so the bundle needs no .NET on the
-        // target (~110 MB/bundle). When off, bundles stay small (data only) and
-        // the bootstrap falls back to a KrakenDeploy.Agent on PATH. An absent
-        // staged runner degrades gracefully regardless.
-        var perfSettings = await sp.GetRequiredService<PerformanceSettingsService>()
-            .GetAsync(ct).ConfigureAwait(false);
-        string? runnerStageDir = null;
-        if (perfSettings.EmbedOfflineRunner)
-        {
-            var rid = (deployment.Target.OperatingSystem ?? "")
-                .Contains("windows", StringComparison.OrdinalIgnoreCase)
-                    ? "win-x64" : "linux-x64";
-            runnerStageDir = Path.Combine(dataPath, "offline-runner", rid);
-        }
-
-        var bundlePath = await dropBundleService
-            .GenerateAsync(deployment, plan, bundleKey,
-                stepPackages.TryGetArchivePath, dataPath, runnerStageDir, ct: ct)
-            .ConfigureAwait(false);
 
         deployment.DropBundlePath = bundlePath;
         deployment.Status = DeploymentStatus.PendingOfflineResult;
@@ -1033,9 +1033,30 @@ public sealed class DeploymentWorker(
     // can run per-ForEach-iteration with the right variable bag. The
     // orchestrator no longer pre-substitutes the snapshot's Config.
 
+    // A cancel written from another connection (DeploymentService.CancelAsync)
+    // is observed via a fresh scalar projection — the worker's shared db still
+    // tracks the deployment as Running/Queued, but a projection always executes
+    // SQL and returns the authoritative DB value.
+    private static async Task<bool> IsCancellationRequestedAsync(
+        KrakenDbContext db, Guid deploymentId, CancellationToken ct)
+        => await db.Deployments
+            .Where(d => d.Id == deploymentId)
+            .Select(d => d.Status)
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false) == DeploymentStatus.Cancelled;
+
     private async Task FailAsync(
         KrakenDbContext db, Deployment deployment, string reason, CancellationToken ct)
     {
+        // Never overwrite a cancellation with Failed. A CancelAsync landing while
+        // a wave was in flight (or during a pre-flight gate) makes Cancelled the
+        // terminal state; the projection reads the authoritative DB value (the
+        // tracked entity may still show Running/Queued). Cancel wins.
+        if (await IsCancellationRequestedAsync(db, deployment.Id, ct).ConfigureAwait(false))
+        {
+            return;
+        }
+
         deployment.Status = DeploymentStatus.Failed;
         deployment.CompletedUtc = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
@@ -2032,7 +2053,7 @@ public sealed class DeploymentWorker(
     /// target waves index by the wave's target id.
     /// </para>
     /// </summary>
-    private sealed record TargetDispatchContext(
+    internal sealed record TargetDispatchContext(
         DeploymentTarget Target,
         VariableDictionary VarDict,
         IReadOnlyDictionary<string, string> FlatVars,
@@ -2051,7 +2072,12 @@ public sealed class DeploymentWorker(
     /// snapshot-driven and therefore identical across targets — only the
     /// substituted Configs differ.
     /// </summary>
-    private async Task<TargetDispatchContext> BuildTargetDispatchContextAsync(
+    // Static + logger-as-parameter so the offline regenerate path
+    // (OfflineDropBundleBuilder) can build the exact same plan the online +
+    // dispatch paths do, without a DeploymentWorker instance and without
+    // duplicating this ~130-line body.
+    internal static async Task<TargetDispatchContext> BuildTargetDispatchContextAsync(
+        ILogger logger,
         Deployment deployment,
         DeploymentTarget target,
         IReadOnlyList<StepSnapshot> snapshotSteps,
@@ -2079,6 +2105,18 @@ public sealed class DeploymentWorker(
 
         var varDict = new VariableDictionary();
 
+        // Octopus.Deployment.Tenant.Tags — canonical strings of the tenant's
+        // applied tags (extended tag sets; polymorphic table, so resolved by
+        // query rather than a navigation). Short-lived context: this runs once
+        // per target at plan-build time, only for tenanted deployments.
+        IReadOnlyList<string>? tenantTagCanonicals = null;
+        if (deployment.TenantId is { } tenantIdForTags)
+        {
+            await using var tagDb = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+            tenantTagCanonicals = await TagService
+                .GetTenantTagCanonicalsAsync(tagDb, tenantIdForTags, ct).ConfigureAwait(false);
+        }
+
         var systemVars = OctopusSystemVariablesBuilder.BuildForDeployment(
             deployment,
             deployment.Release,
@@ -2087,7 +2125,8 @@ public sealed class DeploymentWorker(
             target,
             deployment.Tenant,
             deployment.Release.ProcessSnapshot,
-            serverBaseUrl);
+            serverBaseUrl,
+            tenantTagCanonicals);
 
         var flatVars = new Dictionary<string, string>(systemVars, StringComparer.OrdinalIgnoreCase);
         foreach (var (k, val) in systemVars)
@@ -2258,7 +2297,7 @@ public sealed class DeploymentWorker(
     private async Task<TargetWaveAggregateResult> DispatchTargetWaveAcrossTargetsAsync(
         WavePartitioner.Wave wave,
         List<DeploymentTarget> targets,
-        IReadOnlyDictionary<Guid, TargetDispatchContext> contexts,
+        Dictionary<Guid, TargetDispatchContext> contexts,
         StepSnapshot[] canonicalSnapshotByPlanIndex,
         IReadOnlyDictionary<Guid, StepSnapshot> snapshotById,
         DeploymentFailureMode failureMode,

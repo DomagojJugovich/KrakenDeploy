@@ -148,7 +148,7 @@ public class RoleAssignmentConfiguration : IEntityTypeConfiguration<RoleAssignme
             .HasConversion(new JsonbValueConverter<List<Guid>>())
             .IsRequired();
 
-        builder.Property(x => x.TenantTagIds)
+        builder.Property(x => x.TagIds)
             .HasColumnType("jsonb")
             .HasConversion(new JsonbValueConverter<List<Guid>>())
             .IsRequired();

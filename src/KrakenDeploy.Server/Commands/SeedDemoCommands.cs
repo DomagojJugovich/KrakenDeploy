@@ -451,9 +451,9 @@ internal static class SeedDemoCommands
 
         // Associate demo targets with tenants. The DIRECT association
         // (DeploymentTarget.Tenants) is the primary tenant↔target link and
-        // powers tenant-filtered target pickers; the tenant TAGS created
-        // below are auxiliary metadata (module selection etc.) seeded so the
-        // tags UI has demo data too.
+        // powers tenant-filtered target pickers; the extended-tag-set TAGS
+        // seeded below are auxiliary metadata so the tags UI has demo data
+        // covering all three set types (docs/extended-tag-sets-plan.md).
         (string TenantSlug, string Tag, string[] Targets)[] tagSpecs =
         [
             ("grad-dubrovnik", "DBK", ["demo-web-prod-01", "demo-web-stage-01"]),
@@ -461,12 +461,27 @@ internal static class SeedDemoCommands
             ("ministarstvo-financija", "MFIN", ["demo-api-prod-03", "demo-dmz-gw-01"]),
         ];
 
+        var tagSvc = new TagService(dbFactory);
         await using (var tdb = await dbFactory.CreateDbContextAsync())
         {
             var targetIds = await tdb.DeploymentTargets
                 .Where(t => t.Name.StartsWith("demo-"))
                 .ToDictionaryAsync(t => t.Name, t => t.Id);
             var tenantIds = await tdb.Tenants.ToDictionaryAsync(t => t.Slug, t => t.Id);
+
+            // ── "Hosting" — MultiSelect, scoped Tenant + Target ──────────────
+            var allSets = await tagSvc.GetAllSetsAsync();
+            var hosting = allSets.FirstOrDefault(s => s.Name == "Hosting")
+                ?? await tagSvc.CreateSetAsync(
+                    "Hosting", "Demo hosting tag set",
+                    KrakenDeploy.Server.Core.Domain.Tags.TagSetType.MultiSelect,
+                    [
+                        KrakenDeploy.Server.Core.Domain.Tags.TaggableEntityKind.Tenant,
+                        KrakenDeploy.Server.Core.Domain.Tags.TaggableEntityKind.DeploymentTarget,
+                    ],
+                    sortOrder: 0);
+            // Reload with tags for idempotent tag lookups.
+            hosting = await tagSvc.GetSetAsync(hosting.Id) ?? hosting;
 
             foreach (var (tenantSlug, tagName, targetNames) in tagSpecs)
             {
@@ -475,21 +490,21 @@ internal static class SeedDemoCommands
                     continue;
                 }
 
-                var tagSet = await tdb.TagSets
-                        .Include(ts => ts.Tags)
-                        .FirstOrDefaultAsync(ts => ts.TenantId == tenantId && ts.Name == "Hosting")
-                    is { } existingSet
-                    ? existingSet
-                    : await tenantSvc.CreateTagSetAsync(tenantId, "Hosting", "Demo hosting tag set", 0);
+                var tag = hosting.Tags.FirstOrDefault(t => t.Name == tagName)
+                          ?? await tagSvc.CreateTagAsync(hosting.Id, tagName, null, null);
 
-                var tag = tagSet.Tags.FirstOrDefault(t => t.Name == tagName)
-                          ?? await tenantSvc.CreateTagAsync(tagSet.Id, tagName, null);
-
+                // Tag the tenant itself + its targets (replace-per-set is idempotent).
+                await tagSvc.SetAppliedTagsAsync(
+                    hosting.Id, KrakenDeploy.Server.Core.Domain.Tags.TaggableEntityKind.Tenant,
+                    tenantId, [tag.Id]);
                 foreach (var tn in targetNames)
                 {
                     if (targetIds.TryGetValue(tn, out var tid))
                     {
-                        await tenantSvc.AddTagToTargetAsync(tag.Id, tid); // idempotent
+                        await tagSvc.SetAppliedTagsAsync(
+                            hosting.Id,
+                            KrakenDeploy.Server.Core.Domain.Tags.TaggableEntityKind.DeploymentTarget,
+                            tid, [tag.Id]);
                     }
                 }
 
@@ -511,6 +526,41 @@ internal static class SeedDemoCommands
                         await adb.SaveChangesAsync();
                     }
                 }
+            }
+
+            // ── "Region" — FreeText, scoped Tenant ───────────────────────────
+            var region = allSets.FirstOrDefault(s => s.Name == "Region")
+                ?? await tagSvc.CreateSetAsync(
+                    "Region", "Demo free-text region identifier",
+                    KrakenDeploy.Server.Core.Domain.Tags.TagSetType.FreeText,
+                    [KrakenDeploy.Server.Core.Domain.Tags.TaggableEntityKind.Tenant],
+                    sortOrder: 1);
+            if (tenantIds.TryGetValue("grad-dubrovnik", out var dbkId))
+            {
+                await tagSvc.SetFreeTextValueAsync(
+                    region.Id, KrakenDeploy.Server.Core.Domain.Tags.TaggableEntityKind.Tenant,
+                    dbkId, "HR-South");
+            }
+
+            // ── "Tier" — SingleSelect, scoped Environment ────────────────────
+            var tier = allSets.FirstOrDefault(s => s.Name == "Tier")
+                ?? await tagSvc.CreateSetAsync(
+                    "Tier", "Demo environment criticality tier",
+                    KrakenDeploy.Server.Core.Domain.Tags.TagSetType.SingleSelect,
+                    [KrakenDeploy.Server.Core.Domain.Tags.TaggableEntityKind.Environment],
+                    sortOrder: 2);
+            tier = await tagSvc.GetSetAsync(tier.Id) ?? tier;
+            var critical = tier.Tags.FirstOrDefault(t => t.Name == "Critical")
+                           ?? await tagSvc.CreateTagAsync(tier.Id, "Critical", "#e63946", null);
+            var prodEnvId = await tdb.Environments
+                .Where(e => e.Name == "Production")
+                .Select(e => (Guid?)e.Id)
+                .FirstOrDefaultAsync();
+            if (prodEnvId is { } peid)
+            {
+                await tagSvc.SetAppliedTagsAsync(
+                    tier.Id, KrakenDeploy.Server.Core.Domain.Tags.TaggableEntityKind.Environment,
+                    peid, [critical.Id]);
             }
         }
 

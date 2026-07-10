@@ -61,12 +61,14 @@ public class DeploymentFreeze : AuditableEntity, ISpaceScoped
     public List<Guid> EnvironmentIds { get; set; } = [];
 
     /// <summary>
-    /// Tenant-tag filter (for tenanted deployments). Empty = applies
-    /// regardless of tenant; non-empty = applies only when the deployment's
-    /// tenant carries one of the listed tag canonical names
-    /// (<c>tagSetName/tagName</c>). Stored as JSONB column.
+    /// Tag filter (for tenanted deployments). Empty = applies regardless of
+    /// tenant; non-empty = applies only when the deployment's tenant carries
+    /// one of the listed tags (extended-tag-set <c>Tag</c> ids — rename-proof,
+    /// replacing the earlier canonical-name strings). Stored as JSONB column.
+    /// DORMANT: the dispatch gate passes null for this dimension until
+    /// freeze-by-tag matching ships as its own feature.
     /// </summary>
-    public List<string> TenantTagCanonicalNames { get; set; } = [];
+    public List<Guid> TagIds { get; set; } = [];
 
     /// <summary>
     /// True = soft-disabled (kept on the page but not enforced). The

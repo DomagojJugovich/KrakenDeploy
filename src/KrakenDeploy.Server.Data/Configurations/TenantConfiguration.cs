@@ -21,11 +21,6 @@ public class TenantConfiguration : IEntityTypeConfiguration<Tenant>
 
         builder.Property(x => x.VariableSetId);
 
-        builder.HasMany(x => x.TagSets)
-            .WithOne(ts => ts.Tenant)
-            .HasForeignKey(ts => ts.TenantId)
-            .OnDelete(DeleteBehavior.Cascade);
-
         // Project ↔ Tenant many-to-many (implicit join table)
         builder.HasMany(x => x.Projects)
             .WithMany(p => p.Tenants)

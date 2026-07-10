@@ -54,6 +54,10 @@ public static class ServiceCollectionExtensions
         // needs it at singleton resolution time).
         services.AddHttpContextAccessor();
         services.AddSingleton<AuditLogInterceptor>();
+        // Polymorphic tag_applications cleanup — must run BEFORE
+        // AuditLogInterceptor (registration order = execution order) so the
+        // application deletes it stages are visible to the audit snapshot.
+        services.AddSingleton<TagApplicationCleanupInterceptor>();
 
         // ── Space context ─────────────────────────────────────────────────────
         // Default impl always returns the Default Space — used by tests, the
@@ -94,6 +98,7 @@ public static class ServiceCollectionExtensions
             options.UseSnakeCaseNamingConvention();
             options.AddInterceptors(
                 sp.GetRequiredService<AuditableEntityInterceptor>(),
+                sp.GetRequiredService<TagApplicationCleanupInterceptor>(),
                 sp.GetRequiredService<AuditLogInterceptor>(),
                 sp.GetRequiredService<SpaceScopingInterceptor>());
         }, ServiceLifetime.Scoped);
@@ -188,6 +193,8 @@ public static class ServiceCollectionExtensions
         // KrakenAiFeature.Assistant.
         services.AddScoped<Services.Ai.Assistant.ProcessAssistantService>();
         services.AddScoped<TenantService>();
+        // Extended tag sets (Space-level) — docs/extended-tag-sets-plan.md.
+        services.AddScoped<TagService>();
         services.AddScoped<LifecycleService>();
         services.AddScoped<ChannelService>();
         services.AddScoped<RetentionService>();

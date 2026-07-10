@@ -52,6 +52,13 @@ public sealed class FakeAgent
     /// mid-deployment offline drop-outs.</summary>
     public int? GoOfflineAfterWaves { get; set; }
 
+    /// <summary>Optional callback invoked at the end of each
+    /// <c>RunDeploymentAsync</c> — after the wave's steps are recorded + the TCS
+    /// is resolved — receiving the 1-based wave count. Lets a test mutate
+    /// external state (e.g. cancel the deployment) between waves so the
+    /// orchestrator's next-boundary check observes it before the next wave.</summary>
+    public Func<int, Task>? AfterWaveAsync { get; set; }
+
     internal int WaveCount;
 
     public FakeStepResponse ResponseFor(string stepName)
@@ -145,7 +152,7 @@ internal sealed class FakeAgentClient(
         return Task.CompletedTask;
     }
 
-    public Task RunDeploymentAsync(DeploymentPlan plan)
+    public async Task RunDeploymentAsync(DeploymentPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
 
@@ -186,6 +193,12 @@ internal sealed class FakeAgentClient(
             connectionRegistry.TryRemove(agent.ConnectionId, out _);
         }
 
-        return Task.CompletedTask;
+        // Between-wave hook: fires after this wave's TCS is resolved but before
+        // the orchestrator advances, so a test can (e.g.) cancel the deployment
+        // and have the next-boundary check observe it.
+        if (agent.AfterWaveAsync is { } hook)
+        {
+            await hook(agent.WaveCount).ConfigureAwait(false);
+        }
     }
 }

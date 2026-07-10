@@ -136,9 +136,24 @@ public sealed record TriggerRunbookRunRequest(
 
 public sealed record CreateTenantRequest(string Name, string Slug, string? Description);
 
-public sealed record CreateTagSetRequest(string Name, string? Description, int SortOrder = 0);
+// ── Tag Sets API (extended tag sets — docs/extended-tag-sets-plan.md) ─────────
 
-public sealed record CreateTenantTagRequest(string Name, string? Color);
+public sealed record CreateTagSetRequest(
+    string Name,
+    string? Description,
+    KrakenDeploy.Server.Core.Domain.Tags.TagSetType Type
+        = KrakenDeploy.Server.Core.Domain.Tags.TagSetType.MultiSelect,
+    List<KrakenDeploy.Server.Core.Domain.Tags.TaggableEntityKind>? Scopes = null,
+    int SortOrder = 0);
+
+public sealed record CreateTagRequest(string Name, string? Color, string? Description = null);
+
+public sealed record ReorderTagsRequest(List<Guid>? OrderedTagIds);
+
+/// <summary>PUT body for per-entity tag applications: <c>TagIds</c> for
+/// select-type sets (empty list clears); <c>FreeTextValue</c> for free-text
+/// sets (null/blank clears). Exactly one shape applies per set type.</summary>
+public sealed record ApplyTagsRequest(List<Guid>? TagIds = null, string? FreeTextValue = null);
 
 // ── Offline Drop API ──────────────────────────────────────────────────────
 

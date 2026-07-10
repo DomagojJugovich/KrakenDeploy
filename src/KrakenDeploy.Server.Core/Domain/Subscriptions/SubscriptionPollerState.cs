@@ -9,8 +9,18 @@ namespace KrakenDeploy.Server.Core.Domain.Subscriptions;
 /// poller resumes where it left off; idempotency against re-processed
 /// events is enforced by the unique-per-(SubscriptionId, EventId)
 /// invariant on <see cref="SubscriptionDelivery"/>.
+/// <para>
+/// Deliberately a plain <see cref="Entity"/>, NOT an
+/// <see cref="AuditableEntity"/>: this is internal job bookkeeping, not
+/// operator-facing config. An audited cursor advance would write an
+/// <see cref="Audit.AuditEntry"/> on every poll cycle, and the poller
+/// reads audit_entries as its own event source — so auditing it creates a
+/// self-perpetuating churn loop (audit_entries grows ~1 row/minute even on
+/// an idle instance, and catch-all subscriptions fire on the noise).
+/// Nothing reads CreatedUtc/ModifiedUtc on this row.
+/// </para>
 /// </summary>
-public class SubscriptionPollerState : AuditableEntity
+public class SubscriptionPollerState : Entity
 {
     /// <summary>Fixed singleton id — same pattern SmtpSettings /
     /// BackupSettings use.</summary>

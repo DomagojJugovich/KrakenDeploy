@@ -108,16 +108,18 @@
             // Clone so we don't mutate the parent's reference until Save.
             _form = new DeploymentFreeze
             {
-                Id                      = Existing.Id,
-                SpaceId                 = Existing.SpaceId,
-                Name                    = Existing.Name,
-                Description             = Existing.Description,
-                StartUtc                = Existing.StartUtc,
-                EndUtc                  = Existing.EndUtc,
-                ProjectIds              = [.. Existing.ProjectIds],
-                EnvironmentIds          = [.. Existing.EnvironmentIds],
-                TenantTagCanonicalNames = [.. Existing.TenantTagCanonicalNames],
-                Disabled                = Existing.Disabled,
+                Id             = Existing.Id,
+                SpaceId        = Existing.SpaceId,
+                Name           = Existing.Name,
+                Description    = Existing.Description,
+                StartUtc       = Existing.StartUtc,
+                EndUtc         = Existing.EndUtc,
+                ProjectIds     = [.. Existing.ProjectIds],
+                EnvironmentIds = [.. Existing.EnvironmentIds],
+                // Dormant tag dimension — carried over untouched (no picker;
+                // freeze-by-tag matching is a future feature).
+                TagIds         = [.. Existing.TagIds],
+                Disabled       = Existing.Disabled,
             };
             _startLocal = Existing.StartUtc.UtcDateTime;
             _endLocal   = Existing.EndUtc.UtcDateTime;

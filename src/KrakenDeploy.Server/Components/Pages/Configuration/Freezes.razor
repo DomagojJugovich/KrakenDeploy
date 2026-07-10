@@ -164,10 +164,9 @@
         parts.Add(f.EnvironmentIds.Count == 0
             ? "all environments"
             : $"{f.EnvironmentIds.Count} environment{(f.EnvironmentIds.Count == 1 ? "" : "s")}");
-        if (f.TenantTagCanonicalNames.Count > 0)
+        if (f.TagIds.Count > 0)
         {
-            parts.Add($"{f.TenantTagCanonicalNames.Count} tenant tag" +
-                      $"{(f.TenantTagCanonicalNames.Count == 1 ? "" : "s")}");
+            parts.Add($"{f.TagIds.Count} tag{(f.TagIds.Count == 1 ? "" : "s")}");
         }
         return string.Join(" × ", parts);
     }

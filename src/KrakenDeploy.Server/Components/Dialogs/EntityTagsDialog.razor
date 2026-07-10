@@ -1,0 +1,20 @@
+@*
+    Thin dialog host for EntityTagEditor — used by entity kinds without a
+    detail page (environments). Saving happens inside the editor per set;
+    Close just dismisses.
+*@
+@inject DialogService Dialog
+
+<RadzenStack Gap="1rem" Style="min-width: 480px; padding: 0.25rem 0;">
+    <EntityTagEditor Kind="@Kind" EntityId="@EntityId" EditPermission="@EditPermission" />
+    <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End">
+        <RadzenButton Text="Close" ButtonStyle="ButtonStyle.Light"
+                      Click="@(_ => Dialog.Close(true))" />
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    [Parameter, EditorRequired] public TaggableEntityKind Kind { get; set; }
+    [Parameter, EditorRequired] public Guid EntityId { get; set; }
+    [Parameter, EditorRequired] public Permission EditPermission { get; set; }
+}

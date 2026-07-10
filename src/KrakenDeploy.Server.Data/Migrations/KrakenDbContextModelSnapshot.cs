@@ -61,25 +61,6 @@ namespace KrakenDeploy.Server.Data.Migrations
                     b.ToTable("target_tenants", (string)null);
                 });
 
-            modelBuilder.Entity("DeploymentTargetTenantTag", b =>
-                {
-                    b.Property<Guid>("TargetsId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("targets_id");
-
-                    b.Property<Guid>("TenantTagsId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("tenant_tags_id");
-
-                    b.HasKey("TargetsId", "TenantTagsId")
-                        .HasName("pk_target_tenant_tags");
-
-                    b.HasIndex("TenantTagsId")
-                        .HasDatabaseName("ix_target_tenant_tags_tenant_tags_id");
-
-                    b.ToTable("target_tenant_tags", (string)null);
-                });
-
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Ai.AdhocIteration", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1336,10 +1317,10 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("start_utc");
 
-                    b.Property<string>("TenantTagCanonicalNames")
+                    b.Property<string>("TagIds")
                         .IsRequired()
                         .HasColumnType("jsonb")
-                        .HasColumnName("tenant_tag_canonical_names");
+                        .HasColumnName("tag_ids");
 
                     b.HasKey("Id")
                         .HasName("pk_deployment_freezes");
@@ -2545,6 +2526,11 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("space_id");
 
+                    b.Property<string>("TagIds")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("tag_ids");
+
                     b.Property<Guid>("TeamId")
                         .HasColumnType("uuid")
                         .HasColumnName("team_id");
@@ -2553,11 +2539,6 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .IsRequired()
                         .HasColumnType("jsonb")
                         .HasColumnName("tenant_ids");
-
-                    b.Property<string>("TenantTagIds")
-                        .IsRequired()
-                        .HasColumnType("jsonb")
-                        .HasColumnName("tenant_tag_ids");
 
                     b.HasKey("Id")
                         .HasName("pk_role_assignments");
@@ -3256,22 +3237,194 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
-                    b.Property<DateTimeOffset>("CreatedUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_utc");
-
                     b.Property<DateTimeOffset>("LastOccurredUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_occurred_utc");
-
-                    b.Property<DateTimeOffset?>("ModifiedUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("modified_utc");
 
                     b.HasKey("Id")
                         .HasName("pk_subscription_poller_state");
 
                     b.ToTable("subscription_poller_state", (string)null);
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tags.Tag", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Color")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("color");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("description");
+
+                    b.Property<DateTimeOffset?>("ModifiedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("modified_utc");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("sort_order");
+
+                    b.Property<Guid>("SpaceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("space_id");
+
+                    b.Property<Guid>("TagSetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tag_set_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_tags");
+
+                    b.HasIndex("SpaceId")
+                        .HasDatabaseName("ix_tags_space_id");
+
+                    b.HasIndex("TagSetId", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("ix_tags_tag_set_id_name");
+
+                    b.ToTable("tags", (string)null);
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tags.TagApplication", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
+
+                    b.Property<Guid>("EntityId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("entity_id");
+
+                    b.Property<int>("EntityKind")
+                        .HasColumnType("integer")
+                        .HasColumnName("entity_kind");
+
+                    b.Property<string>("FreeTextValue")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("free_text_value");
+
+                    b.Property<DateTimeOffset?>("ModifiedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("modified_utc");
+
+                    b.Property<int>("SetType")
+                        .HasColumnType("integer")
+                        .HasColumnName("set_type");
+
+                    b.Property<Guid>("SpaceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("space_id");
+
+                    b.Property<Guid?>("TagId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tag_id");
+
+                    b.Property<Guid>("TagSetId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("tag_set_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_tag_applications");
+
+                    b.HasIndex("SpaceId")
+                        .HasDatabaseName("ix_tag_applications_space_id");
+
+                    b.HasIndex("TagId")
+                        .HasDatabaseName("ix_tag_applications_tag_id");
+
+                    b.HasIndex("EntityKind", "EntityId")
+                        .HasDatabaseName("ix_tag_applications_entity_kind_entity_id");
+
+                    b.HasIndex("TagSetId", "EntityKind", "EntityId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_tag_applications_single_value_per_set")
+                        .HasFilter("set_type IN (1, 2)");
+
+                    b.HasIndex("TagSetId", "EntityKind", "EntityId", "TagId")
+                        .IsUnique()
+                        .HasDatabaseName("ix_tag_applications_tag_set_id_entity_kind_entity_id_tag_id");
+
+                    b.ToTable("tag_applications", (string)null);
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tags.TagSet", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)")
+                        .HasColumnName("description");
+
+                    b.Property<DateTimeOffset?>("ModifiedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("modified_utc");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("Scopes")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("scopes");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("sort_order");
+
+                    b.Property<Guid>("SpaceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("space_id");
+
+                    b.Property<int>("Type")
+                        .HasColumnType("integer")
+                        .HasColumnName("type");
+
+                    b.HasKey("Id")
+                        .HasName("pk_tag_sets");
+
+                    b.HasIndex("SpaceId")
+                        .HasDatabaseName("ix_tag_sets_space_id");
+
+                    b.HasIndex("SpaceId", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("ix_tag_sets_space_id_name");
+
+                    b.ToTable("tag_sets", (string)null);
                 });
 
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Targets.DeploymentTarget", b =>
@@ -3371,57 +3524,6 @@ namespace KrakenDeploy.Server.Data.Migrations
                     b.ToTable("deployment_targets", (string)null);
                 });
 
-            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tenants.TagSet", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<DateTimeOffset>("CreatedUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_utc");
-
-                    b.Property<string>("Description")
-                        .HasMaxLength(1000)
-                        .HasColumnType("character varying(1000)")
-                        .HasColumnName("description");
-
-                    b.Property<DateTimeOffset?>("ModifiedUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("modified_utc");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("name");
-
-                    b.Property<int>("SortOrder")
-                        .HasColumnType("integer")
-                        .HasColumnName("sort_order");
-
-                    b.Property<Guid>("SpaceId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("space_id");
-
-                    b.Property<Guid>("TenantId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("tenant_id");
-
-                    b.HasKey("Id")
-                        .HasName("pk_tag_sets");
-
-                    b.HasIndex("SpaceId")
-                        .HasDatabaseName("ix_tag_sets_space_id");
-
-                    b.HasIndex("TenantId", "Name")
-                        .IsUnique()
-                        .HasDatabaseName("ix_tag_sets_tenant_id_name");
-
-                    b.ToTable("tag_sets", (string)null);
-                });
-
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tenants.Tenant", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3473,53 +3575,6 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasDatabaseName("ix_tenants_space_id_slug");
 
                     b.ToTable("tenants", (string)null);
-                });
-
-            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tenants.TenantTag", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<string>("Color")
-                        .HasMaxLength(20)
-                        .HasColumnType("character varying(20)")
-                        .HasColumnName("color");
-
-                    b.Property<DateTimeOffset>("CreatedUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_utc");
-
-                    b.Property<DateTimeOffset?>("ModifiedUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("modified_utc");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("name");
-
-                    b.Property<Guid>("SpaceId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("space_id");
-
-                    b.Property<Guid>("TagSetId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("tag_set_id");
-
-                    b.HasKey("Id")
-                        .HasName("pk_tenant_tags");
-
-                    b.HasIndex("SpaceId")
-                        .HasDatabaseName("ix_tenant_tags_space_id");
-
-                    b.HasIndex("TagSetId", "Name")
-                        .IsUnique()
-                        .HasDatabaseName("ix_tenant_tags_tag_set_id_name");
-
-                    b.ToTable("tenant_tags", (string)null);
                 });
 
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Variables.ProjectVariableSetLink", b =>
@@ -3885,23 +3940,6 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_target_tenants_tenants_tenants_id");
-                });
-
-            modelBuilder.Entity("DeploymentTargetTenantTag", b =>
-                {
-                    b.HasOne("KrakenDeploy.Server.Core.Domain.Targets.DeploymentTarget", null)
-                        .WithMany()
-                        .HasForeignKey("TargetsId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
-                        .HasConstraintName("fk_target_tenant_tags_deployment_targets_targets_id");
-
-                    b.HasOne("KrakenDeploy.Server.Core.Domain.Tenants.TenantTag", null)
-                        .WithMany()
-                        .HasForeignKey("TenantTagsId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
-                        .HasConstraintName("fk_target_tenant_tags_tenant_tags_tenant_tags_id");
                 });
 
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Ai.AdhocIteration", b =>
@@ -4438,6 +4476,62 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasConstraintName("fk_step_templates_spaces_space_id");
                 });
 
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tags.Tag", b =>
+                {
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Spaces.Space", null)
+                        .WithMany()
+                        .HasForeignKey("SpaceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_tags_spaces_space_id");
+
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Tags.TagSet", "TagSet")
+                        .WithMany("Tags")
+                        .HasForeignKey("TagSetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_tags_tag_sets_tag_set_id");
+
+                    b.Navigation("TagSet");
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tags.TagApplication", b =>
+                {
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Spaces.Space", null)
+                        .WithMany()
+                        .HasForeignKey("SpaceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_tag_applications_spaces_space_id");
+
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Tags.Tag", "Tag")
+                        .WithMany()
+                        .HasForeignKey("TagId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .HasConstraintName("fk_tag_applications_tags_tag_id");
+
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Tags.TagSet", "TagSet")
+                        .WithMany()
+                        .HasForeignKey("TagSetId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_tag_applications_tag_sets_tag_set_id");
+
+                    b.Navigation("Tag");
+
+                    b.Navigation("TagSet");
+                });
+
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tags.TagSet", b =>
+                {
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Spaces.Space", null)
+                        .WithMany()
+                        .HasForeignKey("SpaceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_tag_sets_spaces_space_id");
+                });
+
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Targets.DeploymentTarget", b =>
                 {
                     b.HasOne("KrakenDeploy.Server.Core.Domain.Spaces.Space", null)
@@ -4448,25 +4542,6 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasConstraintName("fk_deployment_targets_spaces_space_id");
                 });
 
-            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tenants.TagSet", b =>
-                {
-                    b.HasOne("KrakenDeploy.Server.Core.Domain.Spaces.Space", null)
-                        .WithMany()
-                        .HasForeignKey("SpaceId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired()
-                        .HasConstraintName("fk_tag_sets_spaces_space_id");
-
-                    b.HasOne("KrakenDeploy.Server.Core.Domain.Tenants.Tenant", "Tenant")
-                        .WithMany("TagSets")
-                        .HasForeignKey("TenantId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
-                        .HasConstraintName("fk_tag_sets_tenants_tenant_id");
-
-                    b.Navigation("Tenant");
-                });
-
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tenants.Tenant", b =>
                 {
                     b.HasOne("KrakenDeploy.Server.Core.Domain.Spaces.Space", null)
@@ -4475,25 +4550,6 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired()
                         .HasConstraintName("fk_tenants_spaces_space_id");
-                });
-
-            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tenants.TenantTag", b =>
-                {
-                    b.HasOne("KrakenDeploy.Server.Core.Domain.Spaces.Space", null)
-                        .WithMany()
-                        .HasForeignKey("SpaceId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired()
-                        .HasConstraintName("fk_tenant_tags_spaces_space_id");
-
-                    b.HasOne("KrakenDeploy.Server.Core.Domain.Tenants.TagSet", "TagSet")
-                        .WithMany("Tags")
-                        .HasForeignKey("TagSetId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired()
-                        .HasConstraintName("fk_tenant_tags_tag_sets_tag_set_id");
-
-                    b.Navigation("TagSet");
                 });
 
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Variables.ProjectVariableSetLink", b =>
@@ -4659,14 +4715,9 @@ namespace KrakenDeploy.Server.Data.Migrations
                     b.Navigation("RoleAssignments");
                 });
 
-            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tenants.TagSet", b =>
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tags.TagSet", b =>
                 {
                     b.Navigation("Tags");
-                });
-
-            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Tenants.Tenant", b =>
-                {
-                    b.Navigation("TagSets");
                 });
 
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Variables.VariableSet", b =>

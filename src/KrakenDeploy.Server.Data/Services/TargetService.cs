@@ -100,6 +100,28 @@ public class TargetService(IDbContextFactory<KrakenDbContext> dbFactory)
     }
 
     /// <summary>
+    /// All targets with their environment AND tenant associations eager-loaded —
+    /// for the Deploy dialog, which filters selectable targets by the chosen
+    /// environment and, for tenanted deploys, by tenant association. Read-only
+    /// (<c>AsNoTracking</c>); do not feed into <see cref="UpdateAsync"/>
+    /// (see <see cref="GetAsync"/>). Two collection Includes → split queries,
+    /// otherwise the join would produce a cartesian result set.
+    /// </summary>
+    public async Task<List<DeploymentTarget>> GetAllWithEnvironmentsAsync(
+        CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.DeploymentTargets
+            .AsNoTracking()
+            .Include(t => t.Environments)
+            .Include(t => t.Tenants)
+            .AsSplitQuery()
+            .OrderBy(t => t.Name)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Distinct roles across every deployment target, sorted. Roles live in a
     /// jsonb list so flattening happens in memory — target counts are small.
     /// </summary>

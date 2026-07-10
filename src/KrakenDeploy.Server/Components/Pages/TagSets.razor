@@ -1,0 +1,129 @@
+@page "/s/{SpaceSlug}/tag-sets"
+@inherits SpaceScopedComponentBase
+@rendermode InteractiveServer
+@attribute [Authorize]
+@inject TagService TagSvc
+@inject NavigationManager Nav
+@inject DialogService Dialog
+@inject NotificationService Notify
+@inject UiActionGuard Guard
+
+<PageTitle>Tag Sets - KrakenDeploy</PageTitle>
+
+<div class="page-head">
+    <div>
+        <h1 class="page-title">Tag Sets</h1>
+        <p class="page-sub">
+            Space-level tag taxonomies applicable to tenants, projects, environments,
+            runbooks and deployment targets.
+        </p>
+    </div>
+    <div class="page-head-actions">
+        <RequirePermission Permission="Permission.TagSetCreate">
+            <RadzenButton Icon="add_circle_outline" Text="New tag set"
+                          ButtonStyle="ButtonStyle.Primary" Variant="Variant.Filled"
+                          Click="@(() => Nav.NavigateTo(Sp("/tag-sets/new")))" />
+        </RequirePermission>
+    </div>
+</div>
+
+<KrakenGrid SettingsKey="tag-sets" Data="@_sets" TItem="TagSet"
+                AllowSorting="true" AllowColumnResize="true"
+                RowClick="@(args => { if (args.Data is { } s) Nav.NavigateTo(Sp($"/tag-sets/{s.Id}")); })"
+                GridLines="DataGridGridLines.Horizontal"
+                EmptyText="No tag sets defined yet.">
+    <Columns>
+        <RadzenDataGridColumn TItem="TagSet" Property="Name" Title="Name" Width="220px">
+            <Template Context="s"><span class="cell-strong">@s.Name</span></Template>
+        </RadzenDataGridColumn>
+
+        <RadzenDataGridColumn TItem="TagSet" UniqueID="type" Title="Type" Width="120px" Sortable="false">
+            <Template Context="s"><RadzenBadge Text="@TypeLabel(s.Type)" BadgeStyle="BadgeStyle.Light" /></Template>
+        </RadzenDataGridColumn>
+
+        <RadzenDataGridColumn TItem="TagSet" UniqueID="scopes" Title="Scopes" Width="260px" Sortable="false">
+            <Template Context="s">
+                @foreach (var scope in s.Scopes)
+                {
+                    <RadzenBadge Text="@ScopeLabel(scope)" BadgeStyle="BadgeStyle.Info"
+                                 Shade="Shade.Lighter" class="rz-mr-1" />
+                }
+            </Template>
+        </RadzenDataGridColumn>
+
+        <RadzenDataGridColumn TItem="TagSet" UniqueID="tags" Title="Tags" Sortable="false">
+            <Template Context="s">
+                @if (s.Type == TagSetType.FreeText)
+                {
+                    <span class="rz-color-secondary">free text</span>
+                }
+                else
+                {
+                    @foreach (var tag in s.Tags)
+                    {
+                        <TagChip Tag="@tag" class="rz-mr-1" />
+                    }
+                    @if (s.Tags.Count == 0)
+                    {
+                        <span class="rz-color-secondary">—</span>
+                    }
+                }
+            </Template>
+        </RadzenDataGridColumn>
+
+        <RadzenDataGridColumn TItem="TagSet" UniqueID="actions" Title="" Width="60px" Sortable="false"
+                              TextAlign="TextAlign.Center">
+            <Template Context="s">
+                <RequirePermission Permission="Permission.TagSetDelete">
+                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
+                                  Variant="Variant.Text"
+                                  Click="@(async _ => await DeleteAsync(s))"
+                                  @onclick:stopPropagation="true"
+                                  title="Delete tag set" />
+                </RequirePermission>
+            </Template>
+        </RadzenDataGridColumn>
+    </Columns>
+</KrakenGrid>
+
+@code {
+    private List<TagSet> _sets = [];
+
+    protected override async Task OnInitializedAsync()
+        => _sets = await TagSvc.GetAllSetsAsync();
+
+    private static string TypeLabel(TagSetType t) => t switch
+    {
+        TagSetType.SingleSelect => "Single select",
+        TagSetType.FreeText     => "Free text",
+        _                       => "Multi select",
+    };
+
+    private static string ScopeLabel(TaggableEntityKind k) => k switch
+    {
+        TaggableEntityKind.DeploymentTarget => "Target",
+        _                                   => k.ToString(),
+    };
+
+    private async Task DeleteAsync(TagSet set)
+    {
+        if (!await Guard.AllowAsync(Permission.TagSetDelete)) return;
+
+        var confirmed = await Dialog.Confirm(
+            $"Delete tag set '{set.Name}'? Its tags and every application of them " +
+            "(across all entities) are removed. This cannot be undone.",
+            "Delete Tag Set",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+        if (confirmed != true)
+        {
+            return;
+        }
+
+        var deleted = await TagSvc.DeleteSetAsync(set.Id);
+        if (deleted)
+        {
+            _sets = _sets.Where(s => s.Id != set.Id).ToList();
+            Notify.Notify(NotificationSeverity.Info, "Deleted", $"'{set.Name}' has been removed.", 4000);
+        }
+    }
+}
