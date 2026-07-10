@@ -4,14 +4,13 @@ using Microsoft.EntityFrameworkCore;
 namespace KrakenDeploy.Server.Data.Services;
 
 /// <summary>
-/// Manages the deployment process (ordered step list) for a project.
+/// Manages the deployment process (ordered step list) for a project — rows of the
+/// unified <see cref="Process"/> table with <c>OwnerKind = Project</c>.
 /// </summary>
 /// <remarks>
-/// <paramref name="stepPackageResolver"/> is optional so tests/fixtures that
-/// don't care about D-6 pinning can keep using <c>new ProcessService(db)</c>;
-/// when null, auto-pinning of <c>StepPackageVersion</c> is skipped and steps
-/// keep whatever the caller passed in (possibly null). In production DI it's
-/// always wired.
+/// <paramref name="stepPackageResolver"/> is optional so tests/fixtures that don't
+/// care about D-6 pinning can keep using <c>new ProcessService(db)</c>; when null,
+/// auto-pinning of <c>StepPackageVersion</c> is skipped.
 /// </remarks>
 public class ProcessService(
     IDbContextFactory<KrakenDbContext> dbFactory,
@@ -19,10 +18,7 @@ public class ProcessService(
     : IStepEditingHost
 {
     // ── IStepEditingHost ───────────────────────────────────────────────
-    // Process editor supports the full M14 execution-knobs surface; the
-    // adapters below thin-wrap the existing AddStepAsync / UpdateStepAsync
-    // methods so the StepFormDialog can talk to either editor through one
-    // interface.
+    // Process editor supports the full M14 execution-knobs surface.
 
     bool IStepEditingHost.SupportsExecutionKnobs => true;
 
@@ -65,9 +61,7 @@ public class ProcessService(
     async Task<Guid?> IStepEditingHost.ResolveProjectIdAsync(
         Guid? containerId, Guid? processId, CancellationToken ct)
     {
-        // Container id on the process editor IS the project id; just
-        // bounce it back. On Edit we walk via the process row to find
-        // the owning project.
+        // Container id on the process editor IS the project id; bounce it back.
         if (containerId is not null)
         {
             return containerId;
@@ -77,7 +71,8 @@ public class ProcessService(
             return null;
         }
         var process = await GetProcessByIdAsync(processId.Value, ct).ConfigureAwait(false);
-        return process?.ProjectId;
+        // Owner id of a Project-owned process IS the project id.
+        return process is { OwnerKind: ProcessOwnerKind.Project } ? process.OwnerId : null;
     }
 
 
@@ -87,7 +82,7 @@ public class ProcessService(
     /// Returns the deployment process for the project, creating an empty one if it
     /// does not exist yet.
     /// </summary>
-    public async Task<DeploymentProcess> GetOrCreateAsync(
+    public async Task<Process> GetOrCreateAsync(
         Guid projectId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -95,23 +90,23 @@ public class ProcessService(
     }
 
     /// <summary>Returns the process with steps, or null if the project has none.</summary>
-    public async Task<DeploymentProcess?> GetAsync(Guid projectId, CancellationToken ct = default)
+    public async Task<Process?> GetAsync(Guid projectId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        return await db.DeploymentProcesses
+        return await db.Processes
             .Include(p => p.Steps.OrderBy(s => s.SortOrder))
-            .FirstOrDefaultAsync(p => p.ProjectId == projectId, ct);
+            .FirstOrDefaultAsync(
+                p => p.OwnerKind == ProcessOwnerKind.Project && p.OwnerId == projectId, ct);
     }
 
-    /// <summary>M15 — Returns the process by its own ID (not the project's).
-    /// Used by the editor to load every step in the process so the
-    /// "Parent step" dropdown can filter out the edited step's
-    /// descendants. Returns null when no process matches.</summary>
-    public async Task<DeploymentProcess?> GetProcessByIdAsync(
+    /// <summary>M15 — Returns the process by its own ID (not the owner's). Used by
+    /// the editor to load every step so the "Parent step" dropdown can filter out
+    /// the edited step's descendants. Returns null when no process matches.</summary>
+    public async Task<Process?> GetProcessByIdAsync(
         Guid processId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        return await db.DeploymentProcesses
+        return await db.Processes
             .Include(p => p.Steps.OrderBy(s => s.SortOrder))
             .FirstOrDefaultAsync(p => p.Id == processId, ct);
     }
@@ -119,22 +114,10 @@ public class ProcessService(
     // ── Steps ──────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Appends a new step to the end of the process.
-    /// <para>
-    /// <paramref name="stepPackageName"/> + <paramref name="stepPackageVersion"/>
-    /// (Phase D-6) pin the exact installed step-package the agent will load
-    /// to execute this step. Pass both as a unit, or both <c>null</c>:
-    /// </para>
-    /// <list type="bullet">
-    ///   <item>Both null: the service auto-resolves to the highest installed
-    ///   semver that claims this step type. When no installed package claims
-    ///   it, the pin stays null and the agent falls back to its hardcoded
-    ///   handler (bridges the D-6 → D-8 transition).</item>
-    ///   <item>Both supplied: the caller has explicitly chosen the pair
-    ///   (typically via the D-7 version dropdown).</item>
-    /// </list>
+    /// Appends a new step to the end of the process. See D-6 pinning semantics on
+    /// <paramref name="stepPackageName"/> / <paramref name="stepPackageVersion"/>.
     /// </summary>
-    public async Task<DeploymentStep> AddStepAsync(
+    public async Task<ProcessStep> AddStepAsync(
         Guid projectId,
         string name,
         string stepType,
@@ -150,9 +133,8 @@ public class ProcessService(
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var process = await GetOrCreateCoreAsync(db, projectId, ct).ConfigureAwait(false);
 
-        // M15 — SortOrder is scoped to siblings (per-parent). Top-level
-        // steps share one numbering; children of each group share their own.
-        var maxSort = await db.DeploymentSteps
+        // M15 — SortOrder is scoped to siblings (per-parent).
+        var maxSort = await db.ProcessSteps
             .Where(s => s.ProcessId == process.Id && s.ParentStepId == parentStepId)
             .Select(s => (int?)s.SortOrder)
             .MaxAsync(ct)
@@ -163,7 +145,7 @@ public class ProcessService(
             .ConfigureAwait(false);
 
         var k = knobs ?? StepExecutionKnobs.Default;
-        var step = new DeploymentStep
+        var step = new ProcessStep
         {
             ProcessId                   = process.Id,
             Name                        = name,
@@ -184,16 +166,13 @@ public class ProcessService(
             ParentStepId                = parentStepId,
         };
 
-        // M15 — validate the resulting step tree in memory BEFORE persisting, so
-        // an invalid mutation (cycle, leaf-with-children, group-with-leaf-config)
-        // is rejected without ever writing a corrupt row. The editor's catch
-        // surfaces the errors; the caller can re-load to roll the UI back.
-        var existingSteps = await db.DeploymentSteps
+        // M15 — validate the resulting tree in memory BEFORE persisting.
+        var existingSteps = await db.ProcessSteps
             .Where(s => s.ProcessId == process.Id)
             .ToListAsync(ct).ConfigureAwait(false);
         EnsureValid([.. existingSteps, step]);
 
-        db.DeploymentSteps.Add(step);
+        db.ProcessSteps.Add(step);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         return step;
@@ -202,10 +181,9 @@ public class ProcessService(
     /// <summary>
     /// Updates the mutable fields of an existing step. Pass both
     /// <paramref name="stepPackageName"/> and <paramref name="stepPackageVersion"/>
-    /// to re-pin (the editor's "switch to version X" path, Phase D-6 / D-7).
-    /// Leave both null to keep the existing pin untouched.
+    /// to re-pin; leave both null to keep the existing pin untouched.
     /// </summary>
-    public async Task<DeploymentStep?> UpdateStepAsync(
+    public async Task<ProcessStep?> UpdateStepAsync(
         Guid stepId,
         string name,
         string packageId,
@@ -218,7 +196,7 @@ public class ProcessService(
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var step = await db.DeploymentSteps.FindAsync([stepId], ct).ConfigureAwait(false);
+        var step = await db.ProcessSteps.FindAsync([stepId], ct).ConfigureAwait(false);
         if (step is null)
         {
             return null;
@@ -235,9 +213,7 @@ public class ProcessService(
             step.StepPackageVersion = stepPackageVersion;
         }
 
-        // M14 knobs — null means "leave the row's existing values alone"
-        // (an older caller that doesn't know about these knobs MUST NOT
-        // accidentally reset Required to false or wipe a configured timeout).
+        // M14 knobs — null means "leave existing values alone".
         if (knobs is not null)
         {
             step.Condition                   = knobs.Condition;
@@ -249,21 +225,13 @@ public class ProcessService(
             step.StartTrigger                = knobs.StartTrigger;
         }
 
-        // M15 — parent reassignment. We need a wrapper type (not just a
-        // Guid? parameter) because a bare nullable can't distinguish
-        // "don't touch" from "reparent to top-level (null)". UpdateParent.None
-        // means "don't touch"; UpdateParent.To(parentStepId) sets it.
-        //
-        // M15 follow-up: when the parent actually changes, reassign
-        // SortOrder to be last among the new siblings. Matches the
-        // drag-into-row "drop = append to end of new parent's children"
-        // convention. Without this, a step keeps its old SortOrder
-        // which might collide / sort awkwardly in the new sibling group.
+        // M15 — parent reassignment; when the parent changes, append to the end of
+        // the new sibling group.
         if (updateParent is not null
             && step.ParentStepId != updateParent.NewParentStepId)
         {
             step.ParentStepId = updateParent.NewParentStepId;
-            var newSiblings = await db.DeploymentSteps
+            var newSiblings = await db.ProcessSteps
                 .Where(s => s.ProcessId == step.ProcessId
                             && s.ParentStepId == updateParent.NewParentStepId
                             && s.Id != step.Id)
@@ -273,12 +241,8 @@ public class ProcessService(
                 : newSiblings.Max(s => s.SortOrder) + 1;
         }
 
-        // M15 — structural validation as defence in depth. Same pattern as
-        // AddStepAsync: validate the resulting tree BEFORE persisting so an
-        // invalid mutation is rejected without writing a corrupt row. The
-        // tracked `step` instance carries the pending edits, so the query
-        // returns it with the mutation applied (EF identity resolution).
-        var processSteps = await db.DeploymentSteps
+        // M15 — structural validation as defence in depth (before commit).
+        var processSteps = await db.ProcessSteps
             .Where(s => s.ProcessId == step.ProcessId)
             .ToListAsync(ct).ConfigureAwait(false);
         EnsureValid(processSteps);
@@ -290,10 +254,9 @@ public class ProcessService(
 
 
     /// <summary>
-    /// Resolves the pin: explicit (name, version) wins; otherwise asks the
-    /// resolver for the highest semver claiming <paramref name="stepType"/>;
-    /// returns null when no resolver is wired or no installed package claims
-    /// the step type.
+    /// Resolves the pin: explicit (name, version) wins; otherwise asks the resolver
+    /// for the highest semver claiming <paramref name="stepType"/>; returns null
+    /// when no resolver is wired or no installed package claims the step type.
     /// </summary>
     private async Task<StepPackagePin?> ResolvePinAsync(
         string stepType, string? explicitName, string? explicitVersion, CancellationToken ct)
@@ -312,7 +275,7 @@ public class ProcessService(
 
     /// <summary>
     /// Moves the step one position up or down in the process. <paramref name="direction"/>
-    /// is <c>-1</c> for up, <c>+1</c> for down. No-op if the step is already at the edge.
+    /// is <c>-1</c> for up, <c>+1</c> for down. No-op if already at the edge.
     /// </summary>
     public async Task<bool> MoveStepAsync(Guid stepId, int direction, CancellationToken ct = default)
     {
@@ -323,17 +286,14 @@ public class ProcessService(
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
-        var step = await db.DeploymentSteps.FindAsync([stepId], ct).ConfigureAwait(false);
+        var step = await db.ProcessSteps.FindAsync([stepId], ct).ConfigureAwait(false);
         if (step is null)
         {
             return false;
         }
 
-        // M15 — siblings are scoped to the same ParentStepId. A child can
-        // only move within its parent's children list; a top-level step
-        // can only move among other top-level steps. Reparenting is a
-        // separate operation (see UpdateStepAsync's UpdateParent).
-        var siblings = await db.DeploymentSteps
+        // M15 — siblings are scoped to the same ParentStepId.
+        var siblings = await db.ProcessSteps
             .Where(s => s.ProcessId == step.ProcessId
                         && s.ParentStepId == step.ParentStepId)
             .OrderBy(s => s.SortOrder)
@@ -359,7 +319,7 @@ public class ProcessService(
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
-        var step = await db.DeploymentSteps
+        var step = await db.ProcessSteps
             .Include(s => s.Process)
             .FirstOrDefaultAsync(s => s.Id == stepId, ct)
             .ConfigureAwait(false);
@@ -370,11 +330,11 @@ public class ProcessService(
         }
 
         var processId = step.ProcessId;
-        db.DeploymentSteps.Remove(step);
+        db.ProcessSteps.Remove(step);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         // Re-sequence remaining steps.
-        var remaining = await db.DeploymentSteps
+        var remaining = await db.ProcessSteps
             .Where(s => s.ProcessId == processId)
             .OrderBy(s => s.SortOrder)
             .ToListAsync(ct)
@@ -392,19 +352,10 @@ public class ProcessService(
     // ── Import ─────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Imports steps from an Octopus <c>deploymentprocess</c> JSON document into
-    /// the project's process. The JSON's <c>Properties</c> bag is preserved
-    /// verbatim on each created <see cref="DeploymentStep.Config"/> — no Octopus
-    /// → Kraken key translation. The runtime step handler decides which shape to
-    /// read (dual-shape strategy).
+    /// Imports steps from an Octopus <c>deploymentprocess</c> JSON document into the
+    /// project's process. The JSON's <c>Properties</c> bag is preserved verbatim on
+    /// each created <see cref="ProcessStep.Config"/>.
     /// </summary>
-    /// <param name="projectId">Target project.</param>
-    /// <param name="json">Raw deploymentprocess JSON.</param>
-    /// <param name="replace">
-    /// When <c>true</c>, existing steps on the project's process are deleted
-    /// before the imported steps are appended. When <c>false</c>, imported steps
-    /// are appended after existing ones (sort orders shifted accordingly).
-    /// </param>
     public async Task<ImportDeploymentProcessResult> ImportDeploymentProcessAsync(
         Guid projectId,
         string json,
@@ -419,18 +370,18 @@ public class ProcessService(
         int replaced = 0;
         if (replace)
         {
-            var existing = await db.DeploymentSteps
+            var existing = await db.ProcessSteps
                 .Where(s => s.ProcessId == process.Id)
                 .ToListAsync(ct)
                 .ConfigureAwait(false);
             replaced = existing.Count;
-            db.DeploymentSteps.RemoveRange(existing);
+            db.ProcessSteps.RemoveRange(existing);
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
 
         var startSort = replace
             ? 0
-            : (await db.DeploymentSteps
+            : (await db.ProcessSteps
                 .Where(s => s.ProcessId == process.Id)
                 .Select(s => (int?)s.SortOrder)
                 .MaxAsync(ct)
@@ -454,13 +405,8 @@ public class ProcessService(
     }
 
     /// <summary>
-    /// Recursively materialises a <see cref="ParsedStep"/> (and its children,
-    /// if any) into <see cref="DeploymentStep"/> rows. Children get the
-    /// parent's <see cref="DeploymentStep.Id"/> as their
-    /// <see cref="DeploymentStep.ParentStepId"/> — EF's
-    /// <see cref="Guid.CreateVersion7"/> default on <see cref="Entity"/>
-    /// makes this safe before SaveChanges. Returns the total number of
-    /// rows added (parent + every descendant).
+    /// Recursively materialises a <see cref="ParsedStep"/> (and its children) into
+    /// <see cref="ProcessStep"/> rows. Returns the total number of rows added.
     /// </summary>
     private async Task<int> AddParsedStepAsync(
         KrakenDbContext db,
@@ -470,11 +416,9 @@ public class ProcessService(
         ParsedStep p,
         CancellationToken ct)
     {
-        // D-6: auto-pin each imported step. When no installed package
-        // claims the step type the pin stays null (agent falls back).
         var pin = await ResolvePinAsync(p.StepType, null, null, ct).ConfigureAwait(false);
 
-        var step = new DeploymentStep
+        var step = new ProcessStep
         {
             ProcessId                   = processId,
             Name                        = p.Name,
@@ -485,7 +429,6 @@ public class ProcessService(
             SortOrder                   = sortOrder,
             StepPackageName             = pin?.Name,
             StepPackageVersion          = pin?.Version,
-            // M14 step-execution knobs from the importer.
             Condition                   = p.Condition,
             ConditionVariableExpression = p.ConditionVariableExpression,
             Required                    = p.Required,
@@ -493,10 +436,9 @@ public class ProcessService(
             RetryDelaySeconds           = p.RetryDelaySeconds,
             TimeoutSeconds              = p.TimeoutSeconds,
             StartTrigger                = p.StartTrigger,
-            // M15 parent link
             ParentStepId                = parentStepId,
         };
-        db.DeploymentSteps.Add(step);
+        db.ProcessSteps.Add(step);
 
         var added = 1;
         if (p.Children is { Count: > 0 } children)
@@ -514,18 +456,9 @@ public class ProcessService(
     // ── M15 validation ─────────────────────────────────────────────────────
 
     /// <summary>
-    /// M15 — validates the project's deployment process against the
-    /// structural rules in <see cref="ProcessValidator"/>:
-    /// cycle freedom, parent locality, group-only parenthood, leaf-config
-    /// exclusion on Step Groups. Returns
+    /// M15 — validates the project's deployment process against the structural rules
+    /// in <see cref="ProcessValidator"/>. Returns
     /// <see cref="ProcessValidator.Result.Ok"/> for an empty/clean process.
-    ///
-    /// <para>
-    /// Called by the editor before save (the editor surfaces every error
-    /// at once) and by the orchestrator's flattener as defence in depth
-    /// against corrupted data. Read-only — the validator never mutates
-    /// the steps.
-    /// </para>
     /// </summary>
     public async Task<ProcessValidator.Result> ValidateAsync(
         Guid projectId, CancellationToken ct = default)
@@ -533,9 +466,10 @@ public class ProcessService(
         await using var db = await dbFactory.CreateDbContextAsync(ct)
             .ConfigureAwait(false);
 
-        var process = await db.DeploymentProcesses
+        var process = await db.Processes
             .Include(p => p.Steps)
-            .FirstOrDefaultAsync(p => p.ProjectId == projectId, ct)
+            .FirstOrDefaultAsync(
+                p => p.OwnerKind == ProcessOwnerKind.Project && p.OwnerId == projectId, ct)
             .ConfigureAwait(false);
 
         if (process is null)
@@ -548,17 +482,9 @@ public class ProcessService(
 
     // ── Private helpers ────────────────────────────────────────────────────
 
-    /// <summary>
-    /// M15 — runs <see cref="ProcessValidator"/> against the current state
-    /// of the process's steps + throws when any rule is broken. Called by
-    /// <see cref="AddStepAsync"/> and <see cref="UpdateStepAsync"/> after
-    /// SaveChanges so callers see the error before the UI re-renders. The
-    /// editor surfaces the message inline + reverts its local state.
-    /// </summary>
     // Validates the full step set of a process in memory and throws if any
-    // structural invariant is violated. Callers run this BEFORE persisting so an
-    // invalid mutation never reaches the database.
-    private static void EnsureValid(IEnumerable<DeploymentStep> steps)
+    // structural invariant is violated. Called BEFORE persisting.
+    private static void EnsureValid(IEnumerable<ProcessStep> steps)
     {
         var result = ProcessValidator.Validate(steps);
         if (!result.IsValid)
@@ -567,12 +493,13 @@ public class ProcessService(
         }
     }
 
-    private static async Task<DeploymentProcess> GetOrCreateCoreAsync(
+    private static async Task<Process> GetOrCreateCoreAsync(
         KrakenDbContext db, Guid projectId, CancellationToken ct)
     {
-        var process = await db.DeploymentProcesses
+        var process = await db.Processes
             .Include(p => p.Steps)
-            .FirstOrDefaultAsync(p => p.ProjectId == projectId, ct)
+            .FirstOrDefaultAsync(
+                p => p.OwnerKind == ProcessOwnerKind.Project && p.OwnerId == projectId, ct)
             .ConfigureAwait(false);
 
         if (process is not null)
@@ -580,12 +507,10 @@ public class ProcessService(
             return process;
         }
 
-        // The DeploymentProcesses query above is Space-filtered (DeploymentProcess
-        // is ISpaceScoped), so a cross-Space projectId returns null and would
-        // otherwise create a process in the CURRENT Space pointing at a Project
-        // the caller can't see. Validate the Project is visible in this Space
-        // first (db.Projects carries the global filter) — mirrors
-        // VariableService.GetOrCreateSetCoreAsync.
+        // The Processes query above is Space-filtered (Process is ISpaceScoped), so
+        // a cross-Space projectId returns null and would otherwise create a process
+        // in the CURRENT Space pointing at a Project the caller can't see. Validate
+        // the Project is visible in this Space first (db.Projects carries the filter).
         var projectExists = await db.Projects
             .AnyAsync(p => p.Id == projectId, ct)
             .ConfigureAwait(false);
@@ -595,8 +520,8 @@ public class ProcessService(
             throw new InvalidOperationException($"Project {projectId} not found.");
         }
 
-        process = new DeploymentProcess { ProjectId = projectId };
-        db.DeploymentProcesses.Add(process);
+        process = new Process { OwnerKind = ProcessOwnerKind.Project, OwnerId = projectId };
+        db.Processes.Add(process);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return process;
     }
@@ -609,13 +534,9 @@ public sealed record ImportDeploymentProcessResult(
     IReadOnlyList<ImportDeploymentProcessWarning> Warnings);
 
 /// <summary>
-/// M15 — thrown by <see cref="ProcessService.AddStepAsync"/> /
-/// <see cref="ProcessService.UpdateStepAsync"/> when the resulting state
-/// of the process would violate a <see cref="ProcessValidator"/> rule.
-/// Validation runs BEFORE the write commits, so no invalid row is
-/// persisted; the caller (typically the editor) should surface the errors
-/// to the operator and may re-read to roll the UI back. <see cref="Result"/>
-/// carries the full list of errors so the UI can show them all at once.
+/// Thrown by <see cref="ProcessService.AddStepAsync"/> / <see cref="ProcessService.UpdateStepAsync"/>
+/// when the resulting process state would violate a <see cref="ProcessValidator"/>
+/// rule. Validation runs BEFORE the write commits, so no invalid row is persisted.
 /// </summary>
 public sealed class ProcessValidationException(ProcessValidator.Result result)
     : InvalidOperationException(BuildMessage(result))

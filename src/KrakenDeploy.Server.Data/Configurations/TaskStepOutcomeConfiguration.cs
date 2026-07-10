@@ -1,0 +1,48 @@
+using KrakenDeploy.Server.Core.Domain.Deployments;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
+
+namespace KrakenDeploy.Server.Data.Configurations;
+
+/// <summary>
+/// Mapping for <see cref="TaskStepOutcome"/> (<c>task_step_outcomes</c>). Surrogate
+/// <c>Id</c> PK plus a unique natural key (TaskId, StepIndex, TargetId) so the
+/// orchestrator + agent can upsert per (task, step, target).
+/// </summary>
+public sealed class TaskStepOutcomeConfiguration : IEntityTypeConfiguration<TaskStepOutcome>
+{
+    public void Configure(EntityTypeBuilder<TaskStepOutcome> builder)
+    {
+        builder.ToTable("task_step_outcomes");
+        builder.HasKey(x => x.Id);
+
+        builder.ConfigureSpaceScope();
+
+        builder.Property(x => x.StepIndex).IsRequired();
+        builder.Property(x => x.StepName).HasMaxLength(256).IsRequired();
+        builder.Property(x => x.Outcome).HasConversion<int>().IsRequired();
+        builder.Property(x => x.AttemptCount).IsRequired();
+        builder.Property(x => x.ErrorMessage);
+        builder.Property(x => x.StartedUtc);
+        builder.Property(x => x.CompletedUtc).IsRequired();
+        builder.Property(x => x.IsServerSide).IsRequired();
+        builder.Property(x => x.Required).IsRequired();
+        builder.Property(x => x.TargetId);
+
+        // Real FK RESTRICT — execution history pins its targets; deletion goes
+        // through the archived-flag escape hatch, never by orphaning history rows.
+        builder.HasOne<Core.Domain.Targets.DeploymentTarget>()
+            .WithMany()
+            .HasForeignKey(x => x.TargetId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        builder.HasOne(x => x.Task)
+            .WithMany(t => t.StepOutcomes)
+            .HasForeignKey(x => x.TaskId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // Primary read: every step's outcome for a task, in step order; also the
+        // upsert-by-natural-key path. NULL TargetId distinguishes server-once steps.
+        builder.HasIndex(x => new { x.TaskId, x.StepIndex, x.TargetId }).IsUnique();
+    }
+}

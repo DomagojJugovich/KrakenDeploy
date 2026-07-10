@@ -221,7 +221,7 @@ public static class AuditEventType
     /// <see cref="DeploymentSlow"/>. Emitted at deployment finalisation
     /// for every target whose effective duration
     /// (max <c>CompletedUtc</c> − min <c>StartedUtc</c> across its
-    /// <see cref="DeploymentStepOutcome"/> rows) exceeded the
+    /// <see cref="Deployments.TaskStepOutcome"/> rows) exceeded the
     /// <c>SlowDeploymentThresholdMinutes</c> window. Lets operators
     /// pinpoint which specific machine slowed a multi-target run, even
     /// if the deployment as a whole stayed under threshold (when only

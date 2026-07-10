@@ -1,7 +1,6 @@
 using KrakenDeploy.Server.Core.Domain.Channels;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Lifecycles;
-using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Tenants;
 using KrakenDeploy.Server.Core.Domain.Variables;
 
@@ -24,8 +23,9 @@ public class Project : AuditableEntity, ISpaceScoped
     public required string Name { get; set; }
     public string? Description { get; set; }
 
-    /// <summary>Deployment process for this project (one-to-one, created lazily).</summary>
-    public DeploymentProcess? Process { get; set; }
+    // The deployment process is a polymorphic Process row (owner_kind=Project,
+    // owner_id=this.Id) with no owner FK — resolve it via ProcessService, not a
+    // navigation property.
 
     /// <summary>Variable set for this project (one-to-one, created lazily).</summary>
     public VariableSet? VariableSet { get; set; }

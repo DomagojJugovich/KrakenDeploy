@@ -47,13 +47,14 @@ public class DeploymentService(
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
-        // Validate release and environment exist.
-        var releaseExists = await db.Releases.AnyAsync(r => r.Id == releaseId, ct)
-            .ConfigureAwait(false);
-        if (!releaseExists)
-        {
-            throw new InvalidOperationException($"Release {releaseId} not found.");
-        }
+        // Load the release's denormalized ownership (project + channel) to stamp
+        // onto the task at creation (decision 5), and validate it exists.
+        var release = await db.Releases
+            .Where(r => r.Id == releaseId)
+            .Select(r => new { r.ProjectId, r.ChannelId })
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Release {releaseId} not found.");
 
         var envExists = await db.Environments.AnyAsync(e => e.Id == environmentId, ct)
             .ConfigureAwait(false);
@@ -107,6 +108,8 @@ public class DeploymentService(
         var deployment = new Deployment
         {
             ReleaseId = releaseId,
+            ProjectId = release.ProjectId,
+            ChannelId = release.ChannelId,
             EnvironmentId = environmentId,
             TenantId = tenantId,
             Status = DeploymentStatus.Queued,
@@ -126,11 +129,11 @@ public class DeploymentService(
         var now = time.GetUtcNow();
         for (var i = 0; i < targetIds.Count; i++)
         {
-            db.DeploymentTargetAssignments.Add(new DeploymentTargetAssignment
+            db.TaskTargetAssignments.Add(new TaskTargetAssignment
             {
-                DeploymentId = deployment.Id,
-                TargetId     = targetIds[i],
-                AddedUtc     = now.AddMicroseconds(i),
+                TaskId   = deployment.Id,
+                TargetId = targetIds[i],
+                AddedUtc = now.AddMicroseconds(i),
             });
         }
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
@@ -226,7 +229,7 @@ public class DeploymentService(
 
         if (projectId.HasValue)
         {
-            q = q.Where(d => d.Release.ProjectId == projectId.Value);
+            q = q.Where(d => d.ProjectId == projectId.Value);
         }
 
         var ordered = q.OrderByDescending(d => d.CreatedUtc);
@@ -280,8 +283,23 @@ public class DeploymentService(
             .Include(d => d.Release).ThenInclude(r => r.Project)
             .Include(d => d.Environment)
             .Include(d => d.Targets).ThenInclude(a => a.Target!)
-            .Include(d => d.LogEntries.OrderBy(l => l.Sequence))
             .FirstOrDefaultAsync(d => d.Id == id, ct);
+    }
+
+    /// <summary>
+    /// The deployment's full log, stitched from compacted step blobs + live
+    /// staging in sequence order. Resolves the deployment first (Space-filtered)
+    /// so the not-ISpaceScoped log tables are only reached via an authorized id.
+    /// </summary>
+    public async Task<List<TaskLogLine>> GetLogAsync(Guid deploymentId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var exists = await db.Deployments.AnyAsync(d => d.Id == deploymentId, ct).ConfigureAwait(false);
+        if (!exists)
+        {
+            return [];
+        }
+        return await TaskLogService.ReadAllAsync(db, deploymentId, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -302,12 +320,12 @@ public class DeploymentService(
     /// <c>Set-OctopusVariable</c> / <c>##octopus[setVariable]</c> markers,
     /// ordered by step capture order and then variable name.
     /// </summary>
-    public async Task<List<DeploymentOutputVariable>> GetOutputVariablesAsync(
+    public async Task<List<TaskOutputVariable>> GetOutputVariablesAsync(
         Guid deploymentId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        return await db.DeploymentOutputVariables
-            .Where(o => o.DeploymentId == deploymentId)
+        return await db.TaskOutputVariables
+            .Where(o => o.TaskId == deploymentId)
             .OrderBy(o => o.CapturedUtc)
             .ThenBy(o => o.Name)
             .ToListAsync(ct);
@@ -319,12 +337,12 @@ public class DeploymentService(
     /// (== SortOrder rank in the process). Powers the deployment detail
     /// page's Steps tab.
     /// </summary>
-    public async Task<List<DeploymentStepOutcome>> GetStepOutcomesAsync(
+    public async Task<List<TaskStepOutcome>> GetStepOutcomesAsync(
         Guid deploymentId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        return await db.DeploymentStepOutcomes
-            .Where(o => o.DeploymentId == deploymentId)
+        return await db.TaskStepOutcomes
+            .Where(o => o.TaskId == deploymentId)
             .OrderBy(o => o.StepIndex)
             .ToListAsync(ct);
     }
@@ -361,7 +379,7 @@ public class DeploymentService(
         // pull every deployment for the project (typically a small set) and
         // fold in memory.
         var rows = await db.Deployments
-            .Where(d => d.Release.ProjectId == projectId && d.TenantId != null)
+            .Where(d => d.ProjectId == projectId && d.TenantId != null)
             .Include(d => d.Release).ThenInclude(r => r.Channel)
             .OrderByDescending(d => d.CreatedUtc)
             .ToListAsync(ct)

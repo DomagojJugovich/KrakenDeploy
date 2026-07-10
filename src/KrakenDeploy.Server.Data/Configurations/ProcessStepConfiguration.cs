@@ -6,11 +6,18 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace KrakenDeploy.Server.Data.Configurations;
 
-public class DeploymentStepConfiguration : IEntityTypeConfiguration<DeploymentStep>
+/// <summary>
+/// Mapping for the unified <see cref="ProcessStep"/> (<c>process_steps</c>) —
+/// replaces <c>deployment_steps</c> + <c>runbook_steps</c>. Carries the FULL
+/// execution-knob set for both owner kinds; <c>target_roles</c> is <c>text[]</c>
+/// (runbook steps used jsonb) and lengths are unified: name 256 / step_type 128 /
+/// package_id 256.
+/// </summary>
+public class ProcessStepConfiguration : IEntityTypeConfiguration<ProcessStep>
 {
-    public void Configure(EntityTypeBuilder<DeploymentStep> builder)
+    public void Configure(EntityTypeBuilder<ProcessStep> builder)
     {
-        builder.ToTable("deployment_steps");
+        builder.ToTable("process_steps");
         builder.HasKey(x => x.Id);
 
         builder.ConfigureSpaceScope();
@@ -27,16 +34,11 @@ public class DeploymentStepConfiguration : IEntityTypeConfiguration<DeploymentSt
         builder.Property(x => x.Config)
             .HasJsonbColumn<Dictionary<string, string>>();
 
-        // Phase D-6: nullable for the migration window (existing rows have no
-        // pin); D-8 will fill in real pins once built-ins are package-backed.
         builder.Property(x => x.StepPackageName).HasMaxLength(128);
         builder.Property(x => x.StepPackageVersion).HasMaxLength(64);
 
-        // M14 step-execution knobs. Defaults preserve pre-M14 behaviour:
-        // Success Condition, Required=true, no retries, no timeout, sequential.
-        // The Required default is critical — existing rows backfilled by the
-        // migration must read as "required" so a pre-M14 deployment process
-        // doesn't silently change its failure semantics after the upgrade.
+        // M14 execution knobs. Defaults preserve pre-M14 behaviour (Success
+        // Condition, Required=true, no retries, no timeout, sequential).
         builder.Property(x => x.Condition).HasDefaultValue(StepCondition.Success);
         builder.Property(x => x.ConditionVariableExpression).HasMaxLength(1024);
         builder.Property(x => x.Required).HasDefaultValue(true);
@@ -52,10 +54,8 @@ public class DeploymentStepConfiguration : IEntityTypeConfiguration<DeploymentSt
 
         builder.HasIndex(x => new { x.ProcessId, x.SortOrder });
 
-        // M15 — self-FK for parent/child step composition. ON DELETE
-        // CASCADE so deleting a Step Group removes its children atomically.
-        // Filtered index (parent_step_id IS NOT NULL) keeps top-level
-        // steps out of the lookup since most are flat.
+        // M15 — self-FK for parent/child step composition. ON DELETE CASCADE so
+        // deleting a Step Group removes its children atomically.
         builder.HasOne(x => x.Parent)
             .WithMany(p => p.Children)
             .HasForeignKey(x => x.ParentStepId)

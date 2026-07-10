@@ -125,8 +125,12 @@ public sealed class DashboardService(
                 .ConfigureAwait(false))
             .ToDictionary(x => x.EnvId, x => x.Count);
 
-        var envTargetPairs = await db.DeploymentTargetAssignments
-            .Select(a => new { a.Deployment.EnvironmentId, a.TargetId })
+        // Env health is deployment-centric; the unified assignment table now also
+        // holds runbook-run targets, so restrict to deployment-kind tasks to keep
+        // "machines that deployed here" honest.
+        var envTargetPairs = await db.TaskTargetAssignments
+            .Where(a => a.Task.Kind == ServerTaskKind.Deployment)
+            .Select(a => new { a.Task.EnvironmentId, a.TargetId })
             .Distinct()
             .ToListAsync(ct)
             .ConfigureAwait(false);
@@ -269,7 +273,7 @@ public sealed class DashboardService(
             .Select(d => new
             {
                 d.Id,
-                ProjectId = d.Release.ProjectId,
+                ProjectId = d.ProjectId,
                 d.EnvironmentId,
                 d.ReleaseId,
                 Version = d.Release.Version,

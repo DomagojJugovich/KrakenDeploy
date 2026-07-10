@@ -41,9 +41,9 @@ public sealed class ProcessContextBuilder(
             return null;
         }
 
-        var steps = await db.DeploymentProcesses
+        var steps = await db.Processes
             .AsNoTracking()
-            .Where(p => p.ProjectId == project.Id)
+            .Where(p => p.OwnerKind == ProcessOwnerKind.Project && p.OwnerId == project.Id)
             .SelectMany(p => p.Steps)
             .OrderBy(s => s.SortOrder)
             .ToListAsync(ct)

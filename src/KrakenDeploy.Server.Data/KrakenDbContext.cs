@@ -51,16 +51,23 @@ public class KrakenDbContext(
     public DbSet<DeploymentEnvironment> Environments => Set<DeploymentEnvironment>();
     public DbSet<DeploymentTarget> DeploymentTargets => Set<DeploymentTarget>();
     public DbSet<Release> Releases => Set<Release>();
+    // Unified execution spine (server_tasks, TPH). ServerTasks is the base set;
+    // Deployments / RunbookRuns are the discriminator-filtered typed surfaces.
+    public DbSet<ServerTask> ServerTasks => Set<ServerTask>();
     public DbSet<Deployment> Deployments => Set<Deployment>();
     public DbSet<Package> Packages => Set<Package>();
-    public DbSet<DeploymentProcess> DeploymentProcesses => Set<DeploymentProcess>();
-    public DbSet<DeploymentStep> DeploymentSteps => Set<DeploymentStep>();
-    public DbSet<DeploymentLogEntry> DeploymentLogEntries => Set<DeploymentLogEntry>();
-    public DbSet<DeploymentArtifact> DeploymentArtifacts => Set<DeploymentArtifact>();
-    public DbSet<DeploymentOutputVariable> DeploymentOutputVariables => Set<DeploymentOutputVariable>();
-    public DbSet<DeploymentStepOutcome> DeploymentStepOutcomes => Set<DeploymentStepOutcome>();
-    public DbSet<DeploymentTargetAssignment> DeploymentTargetAssignments
-        => Set<DeploymentTargetAssignment>();
+
+    // Unified process shape (one processes + one process_steps table).
+    public DbSet<Process> Processes => Set<Process>();
+    public DbSet<ProcessStep> ProcessSteps => Set<ProcessStep>();
+
+    // Unified task children (FK task_id).
+    public DbSet<TaskLogLiveEntry> TaskLogLive => Set<TaskLogLiveEntry>();
+    public DbSet<TaskStepLog> TaskStepLogs => Set<TaskStepLog>();
+    public DbSet<TaskArtifact> TaskArtifacts => Set<TaskArtifact>();
+    public DbSet<TaskOutputVariable> TaskOutputVariables => Set<TaskOutputVariable>();
+    public DbSet<TaskStepOutcome> TaskStepOutcomes => Set<TaskStepOutcome>();
+    public DbSet<TaskTargetAssignment> TaskTargetAssignments => Set<TaskTargetAssignment>();
     public DbSet<VariableSet> VariableSets => Set<VariableSet>();
     public DbSet<Variable> Variables => Set<Variable>();
     public DbSet<ProjectVariableSetLink> ProjectVariableSetLinks => Set<ProjectVariableSetLink>();
@@ -113,10 +120,7 @@ public class KrakenDbContext(
     public DbSet<Lifecycle> Lifecycles => Set<Lifecycle>();
     public DbSet<Channel> Channels => Set<Channel>();
     public DbSet<Runbook> Runbooks => Set<Runbook>();
-    public DbSet<RunbookProcess> RunbookProcesses => Set<RunbookProcess>();
-    public DbSet<RunbookStep> RunbookSteps => Set<RunbookStep>();
     public DbSet<RunbookRun> RunbookRuns => Set<RunbookRun>();
-    public DbSet<RunbookRunLogEntry> RunbookRunLogEntries => Set<RunbookRunLogEntry>();
 
     // ── Audit log ────────────────────────────────────────────────────────────
     public DbSet<AuditEntry> AuditEntries => Set<AuditEntry>();
@@ -177,6 +181,15 @@ public class KrakenDbContext(
         foreach (var entityType in builder.Model.GetEntityTypes())
         {
             if (!typeof(ISpaceScoped).IsAssignableFrom(entityType.ClrType))
+            {
+                continue;
+            }
+
+            // TPH: a query filter may only be defined on the ROOT of an
+            // inheritance hierarchy — EF throws if applied to a derived type.
+            // ServerTask (the ISpaceScoped root) carries the filter for its
+            // Deployment / RunbookRun derived types automatically.
+            if (entityType.BaseType is not null)
             {
                 continue;
             }

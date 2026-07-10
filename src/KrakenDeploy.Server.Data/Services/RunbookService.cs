@@ -9,11 +9,8 @@ using Microsoft.EntityFrameworkCore;
 namespace KrakenDeploy.Server.Data.Services;
 
 /// <summary>
-/// Narrow interface exposing only the runbook-trigger surface that
-/// external callers (e.g. the M13.B.2/3 Runbook subscription transport)
-/// need. Keeps the dependency on RunbookService's broader CRUD API out
-/// of consumer code + lets tests substitute a stub without touching the
-/// runbook execution pipeline.
+/// Narrow interface exposing only the runbook-trigger surface that external callers
+/// (e.g. the Runbook subscription transport) need.
 /// </summary>
 public interface IRunbookTrigger
 {
@@ -26,24 +23,26 @@ public interface IRunbookTrigger
 }
 
 /// <summary>
-/// CRUD and dispatch for <see cref="Runbook"/>s, their process steps, and
-/// <see cref="RunbookRun"/> executions.
+/// CRUD and dispatch for <see cref="Runbook"/>s, their process steps (unified
+/// <see cref="Process"/> / <see cref="ProcessStep"/> tables, owner = Runbook), and
+/// <see cref="RunbookRun"/> executions. Runbook runs now share the deployment
+/// orchestrator: they carry the full M14 execution knobs, fan out over a target
+/// assignment set, and gain artifacts / output variables / step outcomes.
 /// </summary>
 public class RunbookService(
     IDbContextFactory<KrakenDbContext> dbFactory,
-    RunbookRunChannel runbookQueue,
+    Channel<TenantWorkItem> taskQueue,
+    TimeProvider time,
     IAccountContext accountContext,
     StepPackageResolver? stepPackageResolver = null)
     : IRunbookTrigger, IStepEditingHost
 {
     // ── IStepEditingHost ───────────────────────────────────────────────
-    // Runbook steps don't carry M14 execution knobs, so SupportsExecutionKnobs
-    // is false and the knobs parameter on the adapter calls is silently
-    // discarded (StepExecutionKnobs has no place to land on RunbookStep).
-    // The unified StepFormDialog hides its Execution card on the runbook
-    // editor based on this flag.
+    // Runbook steps now carry the full M14 execution knobs (parity with the
+    // deployment process editor), so the unified StepFormDialog shows its
+    // Execution card and the knobs are persisted rather than discarded.
 
-    bool IStepEditingHost.SupportsExecutionKnobs => false;
+    bool IStepEditingHost.SupportsExecutionKnobs => true;
 
     async Task<Guid> IStepEditingHost.AddStepAsync(
         Guid containerId, string name, string stepType, string packageId,
@@ -52,10 +51,9 @@ public class RunbookService(
         StepExecutionKnobs? knobs, Guid? parentStepId,
         CancellationToken ct)
     {
-        _ = knobs; // runbooks have no M14 execution knobs; intentionally dropped
         var step = await AddStepAsync(
             containerId, name, stepType, packageId, targetRoles, config,
-            stepPackageName, stepPackageVersion, parentStepId, ct)
+            stepPackageName, stepPackageVersion, knobs, parentStepId, ct)
             .ConfigureAwait(false);
         return step.Id;
     }
@@ -67,19 +65,9 @@ public class RunbookService(
         StepExecutionKnobs? knobs, UpdateParent? updateParent,
         CancellationToken ct)
     {
-        _ = knobs; // runbooks have no M14 execution knobs; intentionally dropped
-        // RunbookService.UpdateStepAsync requires a stepType — the editor
-        // doesn't let operators change the type after creation, so we
-        // re-read the existing step's type rather than ask the caller for
-        // a value the dialog wouldn't supply.
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var existing = await db.RunbookSteps.FindAsync(new object?[] { stepId }, ct)
-            .ConfigureAwait(false);
-        if (existing is null) { return; }
-
         await UpdateStepAsync(
-            stepId, name, existing.StepType, packageId, targetRoles, config,
-            stepPackageName, stepPackageVersion, updateParent, ct)
+            stepId, name, packageId, targetRoles, config,
+            stepPackageName, stepPackageVersion, knobs, updateParent, ct)
             .ConfigureAwait(false);
     }
 
@@ -87,7 +75,7 @@ public class RunbookService(
         Guid processId, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var steps = await db.RunbookSteps
+        var steps = await db.ProcessSteps
             .Where(s => s.ProcessId == processId)
             .OrderBy(s => s.SortOrder)
             .ToListAsync(ct)
@@ -99,8 +87,7 @@ public class RunbookService(
         Guid? containerId, Guid? processId, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        // Container id on the runbook editor = runbook id; resolve to
-        // ProjectId via the Runbook row.
+        // Container id on the runbook editor = runbook id; resolve to ProjectId.
         if (containerId is not null)
         {
             var runbook = await db.Runbooks
@@ -110,12 +97,19 @@ public class RunbookService(
         }
         if (processId is null) { return null; }
 
-        // Edit path: walk RunbookProcess → Runbook → ProjectId.
-        var process = await db.RunbookProcesses
-            .Include(p => p.Runbook)
+        // Edit path: process -> runbook (owner) -> project.
+        var process = await db.Processes
             .FirstOrDefaultAsync(p => p.Id == processId.Value, ct)
             .ConfigureAwait(false);
-        return process?.Runbook?.ProjectId;
+        if (process is not { OwnerKind: ProcessOwnerKind.Runbook })
+        {
+            return null;
+        }
+        return await db.Runbooks
+            .Where(r => r.Id == process.OwnerId)
+            .Select(r => (Guid?)r.ProjectId)
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false);
     }
 
     // ── Runbook CRUD ───────────────────────────────────────────────────────────
@@ -132,10 +126,20 @@ public class RunbookService(
     public async Task<Runbook?> GetAsync(Guid id, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        return await db.Runbooks
-            .Include(r => r.Process)
-                .ThenInclude(p => p != null ? p.Steps.OrderBy(s => s.SortOrder) : null!)
-            .FirstOrDefaultAsync(r => r.Id == id, ct);
+        return await db.Runbooks.FirstOrDefaultAsync(r => r.Id == id, ct);
+    }
+
+    /// <summary>The runbook's editable process steps (owner = Runbook), ordered.
+    /// Empty when the runbook has no process yet.</summary>
+    public async Task<List<ProcessStep>> GetProcessStepsAsync(
+        Guid runbookId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var process = await db.Processes
+            .Include(p => p.Steps.OrderBy(s => s.SortOrder))
+            .FirstOrDefaultAsync(
+                p => p.OwnerKind == ProcessOwnerKind.Runbook && p.OwnerId == runbookId, ct);
+        return process is null ? [] : [.. process.Steps];
     }
 
     public async Task<Runbook> CreateAsync(
@@ -167,7 +171,7 @@ public class RunbookService(
         Guid id, string name, string? description, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var runbook = await db.Runbooks.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
+        var runbook = await db.Runbooks.FindAsync([id], ct).ConfigureAwait(false);
         if (runbook is null)
         {
             return null;
@@ -182,10 +186,21 @@ public class RunbookService(
     public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var runbook = await db.Runbooks.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
+        var runbook = await db.Runbooks.FindAsync([id], ct).ConfigureAwait(false);
         if (runbook is null)
         {
             return false;
+        }
+
+        // The process is polymorphic (no owner FK) — delete it + its steps
+        // explicitly so deleting a runbook doesn't orphan its process.
+        var process = await db.Processes
+            .FirstOrDefaultAsync(
+                p => p.OwnerKind == ProcessOwnerKind.Runbook && p.OwnerId == id, ct)
+            .ConfigureAwait(false);
+        if (process is not null)
+        {
+            db.Processes.Remove(process); // cascades to its ProcessSteps
         }
 
         db.Runbooks.Remove(runbook);
@@ -195,7 +210,7 @@ public class RunbookService(
 
     // ── Step management ────────────────────────────────────────────────────────
 
-    public async Task<RunbookStep> AddStepAsync(
+    public async Task<ProcessStep> AddStepAsync(
         Guid runbookId,
         string name,
         string stepType,
@@ -204,14 +219,13 @@ public class RunbookService(
         Dictionary<string, string> config,
         string? stepPackageName = null,
         string? stepPackageVersion = null,
+        StepExecutionKnobs? knobs = null,
         Guid? parentStepId = null,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var process = await GetOrCreateProcessAsync(db, runbookId, ct).ConfigureAwait(false);
 
-        // M15 — SortOrder is scoped to siblings (per-parent). Top-level
-        // steps share one numbering; children of each group share their own.
         var siblings = process.Steps.Where(s => s.ParentStepId == parentStepId).ToList();
         var maxOrder = siblings.Count > 0 ? siblings.Max(s => s.SortOrder) : -1;
 
@@ -219,52 +233,56 @@ public class RunbookService(
                 stepType, stepPackageName, stepPackageVersion, ct)
             .ConfigureAwait(false);
 
-        var step = new RunbookStep
+        var k = knobs ?? StepExecutionKnobs.Default;
+        var step = new ProcessStep
         {
-            ProcessId          = process.Id,
-            Name               = name,
-            StepType           = stepType,
-            PackageId          = packageId,
-            TargetRoles        = targetRoles,
-            Config             = config,
-            SortOrder          = maxOrder + 1,
-            StepPackageName    = pin?.Name,
-            StepPackageVersion = pin?.Version,
-            ParentStepId       = parentStepId,
+            ProcessId                   = process.Id,
+            Name                        = name,
+            StepType                    = stepType,
+            PackageId                   = packageId,
+            TargetRoles                 = targetRoles,
+            Config                      = config,
+            SortOrder                   = maxOrder + 1,
+            StepPackageName             = pin?.Name,
+            StepPackageVersion          = pin?.Version,
+            Condition                   = k.Condition,
+            ConditionVariableExpression = k.ConditionVariableExpression,
+            Required                    = k.Required,
+            MaxRetries                  = k.MaxRetries,
+            RetryDelaySeconds           = k.RetryDelaySeconds,
+            TimeoutSeconds              = k.TimeoutSeconds,
+            StartTrigger                = k.StartTrigger,
+            ParentStepId                = parentStepId,
         };
 
-        db.RunbookSteps.Add(step);
+        db.ProcessSteps.Add(step);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
-        // M15 — structural validation as defence in depth. Mirrors
-        // ProcessService.EnsureValidAsync: throws ProcessValidationException
-        // when the tree violates an invariant.
         await EnsureValidAsync(db, process.Id, ct).ConfigureAwait(false);
 
         return step;
     }
 
-    public async Task<RunbookStep?> UpdateStepAsync(
+    public async Task<ProcessStep?> UpdateStepAsync(
         Guid stepId,
         string name,
-        string stepType,
         string packageId,
         List<string> targetRoles,
         Dictionary<string, string> config,
         string? stepPackageName = null,
         string? stepPackageVersion = null,
+        StepExecutionKnobs? knobs = null,
         UpdateParent? updateParent = null,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var step = await db.RunbookSteps.FindAsync(new object?[] { stepId }, ct).ConfigureAwait(false);
+        var step = await db.ProcessSteps.FindAsync([stepId], ct).ConfigureAwait(false);
         if (step is null)
         {
             return null;
         }
 
         step.Name        = name;
-        step.StepType    = stepType;
         step.PackageId   = packageId;
         step.TargetRoles = targetRoles;
         step.Config      = config;
@@ -275,16 +293,22 @@ public class RunbookService(
             step.StepPackageVersion = stepPackageVersion;
         }
 
-        // M15 — parent reassignment. UpdateParent wrapper distinguishes
-        // "don't touch" (default null) from "reparent to top-level (null)".
-        // Drag-into-row follow-up: reassign SortOrder to be last among the
-        // new siblings when the parent actually changes, matching the
-        // "drop = append to end" UX convention.
+        if (knobs is not null)
+        {
+            step.Condition                   = knobs.Condition;
+            step.ConditionVariableExpression = knobs.ConditionVariableExpression;
+            step.Required                    = knobs.Required;
+            step.MaxRetries                  = knobs.MaxRetries;
+            step.RetryDelaySeconds           = knobs.RetryDelaySeconds;
+            step.TimeoutSeconds              = knobs.TimeoutSeconds;
+            step.StartTrigger                = knobs.StartTrigger;
+        }
+
         if (updateParent is not null
             && step.ParentStepId != updateParent.NewParentStepId)
         {
             step.ParentStepId = updateParent.NewParentStepId;
-            var newSiblings = await db.RunbookSteps
+            var newSiblings = await db.ProcessSteps
                 .Where(s => s.ProcessId == step.ProcessId
                             && s.ParentStepId == updateParent.NewParentStepId
                             && s.Id != step.Id)
@@ -301,17 +325,10 @@ public class RunbookService(
         return step;
     }
 
-    /// <summary>
-    /// M15 — runs <see cref="ProcessValidator"/> against the current state
-    /// of the runbook process's steps + throws <see cref="ProcessValidationException"/>
-    /// when any rule is broken. Mirrors <c>ProcessService.EnsureValidAsync</c>.
-    /// The validator works on <see cref="IComposableStep"/>, so the same
-    /// rules apply to both deployment processes and runbooks.
-    /// </summary>
     private static async Task EnsureValidAsync(
         KrakenDbContext db, Guid processId, CancellationToken ct)
     {
-        var steps = await db.RunbookSteps
+        var steps = await db.ProcessSteps
             .Where(s => s.ProcessId == processId)
             .ToListAsync(ct)
             .ConfigureAwait(false);
@@ -322,12 +339,6 @@ public class RunbookService(
         }
     }
 
-    /// <summary>
-    /// Mirrors <c>ProcessService.ResolvePinAsync</c>: explicit (name, version)
-    /// wins; otherwise asks the resolver for the highest semver claiming
-    /// the step type. Returns null when no resolver is wired or no package
-    /// claims the type.
-    /// </summary>
     private async Task<StepPackagePin?> ResolvePinAsync(
         string stepType, string? explicitName, string? explicitVersion, CancellationToken ct)
     {
@@ -346,13 +357,13 @@ public class RunbookService(
     public async Task<bool> DeleteStepAsync(Guid stepId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var step = await db.RunbookSteps.FindAsync(new object?[] { stepId }, ct).ConfigureAwait(false);
+        var step = await db.ProcessSteps.FindAsync([stepId], ct).ConfigureAwait(false);
         if (step is null)
         {
             return false;
         }
 
-        db.RunbookSteps.Remove(step);
+        db.ProcessSteps.Remove(step);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return true;
     }
@@ -361,7 +372,8 @@ public class RunbookService(
 
     /// <summary>
     /// Creates a <see cref="RunbookRun"/> by snapping the current runbook process,
-    /// then enqueues it for dispatch to the target agent.
+    /// records its target assignment, then enqueues it on the shared task queue for
+    /// dispatch by the unified orchestrator.
     /// </summary>
     public async Task<RunbookRun> TriggerAsync(
         Guid runbookId,
@@ -373,15 +385,20 @@ public class RunbookService(
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var runbook = await db.Runbooks
-            .Include(r => r.Process)
-                .ThenInclude(p => p != null ? p.Steps.OrderBy(s => s.SortOrder) : null!)
             .FirstOrDefaultAsync(r => r.Id == runbookId, ct)
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Runbook {runbookId} not found.");
 
-        if (runbook.Process is null || runbook.Process.Steps.Count == 0)
+        var process = await db.Processes
+            .Include(p => p.Steps.OrderBy(s => s.SortOrder))
+            .FirstOrDefaultAsync(
+                p => p.OwnerKind == ProcessOwnerKind.Runbook && p.OwnerId == runbookId, ct)
+            .ConfigureAwait(false);
+
+        if (process is null || process.Steps.Count == 0)
         {
-            throw new InvalidOperationException("Runbook has no steps. Add at least one step before triggering a run.");
+            throw new InvalidOperationException(
+                "Runbook has no steps. Add at least one step before triggering a run.");
         }
 
         var envExists = await db.Environments.AnyAsync(e => e.Id == environmentId, ct).ConfigureAwait(false);
@@ -390,29 +407,38 @@ public class RunbookService(
             throw new InvalidOperationException($"Environment {environmentId} not found.");
         }
 
-        // Snapshot the process (mirrors what ReleaseService does for releases).
-        var snapshot = runbook.Process.Steps
+        var targetExists = await db.DeploymentTargets.AnyAsync(t => t.Id == targetId, ct)
+            .ConfigureAwait(false);
+        if (!targetExists)
+        {
+            throw new InvalidOperationException($"Target {targetId} not found.");
+        }
+
+        // Snapshot the process (mirrors ReleaseService for releases), including the
+        // full execution knobs so the converged orchestrator honours conditions /
+        // retries / timeouts / start-triggers for runbook runs too.
+        var snapshot = process.Steps
             .OrderBy(s => s.SortOrder)
             .Select(s => new StepSnapshot
             {
-                // M15 — freeze the step's Id + parent link so the flattener
-                // can walk the tree at run time. Runbooks support step
-                // composition as of the M15 follow-up commit (ParentStepId
-                // is now on RunbookStep + RunbookRunWorker pre-flattens
-                // the tree via DeploymentPlanFlattener).
-                Id                 = s.Id,
-                ParentStepId       = s.ParentStepId,
-                Name               = s.Name,
-                StepType           = s.StepType,
-                PackageId          = s.PackageId,
-                PackageVersion     = "",   // runbooks don't pin package versions at run time
-                TargetRoles        = [.. s.TargetRoles],
-                Config             = new Dictionary<string, string>(s.Config),
-                SortOrder          = s.SortOrder,
-                // D-6: step-package pin is copied as-is from the live step.
-                // Runbooks share the same per-step pin contract as releases.
-                StepPackageName    = s.StepPackageName,
-                StepPackageVersion = s.StepPackageVersion,
+                Id                          = s.Id,
+                ParentStepId                = s.ParentStepId,
+                Name                        = s.Name,
+                StepType                    = s.StepType,
+                PackageId                   = s.PackageId,
+                PackageVersion              = "",   // runbooks don't pin package versions at run time
+                TargetRoles                 = [.. s.TargetRoles],
+                Config                      = new Dictionary<string, string>(s.Config),
+                SortOrder                   = s.SortOrder,
+                StepPackageName             = s.StepPackageName,
+                StepPackageVersion          = s.StepPackageVersion,
+                Condition                   = s.Condition,
+                ConditionVariableExpression = s.ConditionVariableExpression,
+                Required                    = s.Required,
+                MaxRetries                  = s.MaxRetries,
+                RetryDelaySeconds           = s.RetryDelaySeconds,
+                TimeoutSeconds              = s.TimeoutSeconds,
+                StartTrigger                = s.StartTrigger,
             })
             .ToList();
 
@@ -420,8 +446,8 @@ public class RunbookService(
         {
             SpaceId = runbook.SpaceId,
             RunbookId = runbookId,
+            ProjectId = runbook.ProjectId,   // denormalized ownership (decision 5)
             EnvironmentId = environmentId,
-            TargetId = targetId,
             TenantId = tenantId,
             Status = DeploymentStatus.Queued,
             ProcessSnapshot = snapshot,
@@ -430,8 +456,18 @@ public class RunbookService(
         db.RunbookRuns.Add(run);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
+        // Target set via the assignment join — the single authority, shared with
+        // deployments (parity). Single-target today; the join supports fan-out.
+        db.TaskTargetAssignments.Add(new TaskTargetAssignment
+        {
+            TaskId   = run.Id,
+            TargetId = targetId,
+            AddedUtc = time.GetUtcNow(),
+        });
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
         var accountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;
-        await runbookQueue.Writer
+        await taskQueue.Writer
             .WriteAsync(new TenantWorkItem(accountId, run.Id), ct)
             .ConfigureAwait(false);
 
@@ -443,14 +479,12 @@ public class RunbookService(
     public async Task<List<RunbookRun>> GetRunsAsync(Guid runbookId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
+        // RunbookRun is ISpaceScoped (via ServerTask), so db.RunbookRuns is
+        // Space-filtered — a cross-Space runbookId simply returns no rows.
         return await db.RunbookRuns
-            // RunbookRun isn't ISpaceScoped — scope transitively through the
-            // (space-filtered) Runbooks set so a cross-space runbookId can't
-            // read another Space's runs (same guard as GetAllRunsAsync).
-            .Where(r => r.RunbookId == runbookId
-                     && db.Runbooks.Any(rb => rb.Id == r.RunbookId))
+            .Where(r => r.RunbookId == runbookId)
             .Include(r => r.Environment)
-            .Include(r => r.Target)
+            .Include(r => r.Targets).ThenInclude(a => a.Target)
             .OrderByDescending(r => r.CreatedUtc)
             .ToListAsync(ct);
     }
@@ -459,32 +493,32 @@ public class RunbookService(
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         return await db.RunbookRuns
-            // Transitive Space scope — a run's GUID from another Space must 404,
-            // not leak the run + its log output (RunbookRun isn't ISpaceScoped).
-            .Where(r => db.Runbooks.Any(rb => rb.Id == r.RunbookId))
             .Include(r => r.Runbook)
             .Include(r => r.Environment)
-            .Include(r => r.Target)
-            .Include(r => r.LogEntries.OrderBy(l => l.Sequence))
+            .Include(r => r.Targets).ThenInclude(a => a.Target)
             .FirstOrDefaultAsync(r => r.Id == runId, ct);
     }
 
-    /// <summary>
-    /// All runbook runs across every runbook in the active Space, newest first.
-    /// Backs the global Tasks page. <see cref="RunbookRun"/> is not itself
-    /// <c>ISpaceScoped</c>, so the Space filter is applied through its parent
-    /// <see cref="Runbook"/> (which is) — the <c>db.Runbooks.Any(...)</c> sub-query
-    /// carries the global query filter, scoping runs to the current Space.
-    /// </summary>
+    /// <summary>A runbook run's full log, stitched from compacted step blobs + live
+    /// staging in sequence order. Resolves the run first (Space-filtered).</summary>
+    public async Task<List<TaskLogLine>> GetRunLogAsync(Guid runId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var exists = await db.RunbookRuns.AnyAsync(r => r.Id == runId, ct).ConfigureAwait(false);
+        if (!exists)
+        {
+            return [];
+        }
+        return await TaskLogService.ReadAllAsync(db, runId, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>All runbook runs across every runbook in the active Space, newest first.</summary>
     public async Task<List<RunbookRun>> GetAllRunsAsync(int? limit = null, CancellationToken ct = default)
     {
         return await GetRunsCoreAsync(targetId: null, limit, ct).ConfigureAwait(false);
     }
 
-    /// <summary>Runbook runs that executed on one target (newest first,
-    /// bounded) — powers the target-detail Runbook runs tab. Space scoping
-    /// is inherited through the parent Runbook, same as
-    /// <see cref="GetAllRunsAsync"/>.</summary>
+    /// <summary>Runbook runs that executed on one target (newest first, bounded).</summary>
     public async Task<List<RunbookRun>> GetRunsForTargetAsync(
         Guid targetId, int limit = 100, CancellationToken ct = default)
     {
@@ -495,16 +529,15 @@ public class RunbookService(
         Guid? targetId, int? limit, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        IQueryable<RunbookRun> source = db.RunbookRuns
-            .Where(r => db.Runbooks.Any(rb => rb.Id == r.RunbookId));
+        IQueryable<RunbookRun> source = db.RunbookRuns;
         if (targetId is { } tid)
         {
-            source = source.Where(r => r.TargetId == tid);
+            source = source.Where(r => r.Targets.Any(a => a.TargetId == tid));
         }
         IQueryable<RunbookRun> query = source
             .Include(r => r.Runbook).ThenInclude(rb => rb.Project)
             .Include(r => r.Environment)
-            .Include(r => r.Target)
+            .Include(r => r.Targets).ThenInclude(a => a.Target)
             .Include(r => r.Tenant)
             .OrderByDescending(r => r.CreatedUtc);
 
@@ -518,12 +551,13 @@ public class RunbookService(
 
     // ── Private helpers ────────────────────────────────────────────────────────
 
-    private static async Task<RunbookProcess> GetOrCreateProcessAsync(
+    private static async Task<Process> GetOrCreateProcessAsync(
         KrakenDbContext db, Guid runbookId, CancellationToken ct)
     {
-        var process = await db.RunbookProcesses
+        var process = await db.Processes
             .Include(p => p.Steps)
-            .FirstOrDefaultAsync(p => p.RunbookId == runbookId, ct)
+            .FirstOrDefaultAsync(
+                p => p.OwnerKind == ProcessOwnerKind.Runbook && p.OwnerId == runbookId, ct)
             .ConfigureAwait(false);
 
         if (process is not null)
@@ -531,11 +565,9 @@ public class RunbookService(
             return process;
         }
 
-        // The RunbookProcesses query above is Space-filtered (RunbookProcess is
-        // ISpaceScoped), so a cross-Space runbookId returns null and would
-        // otherwise create a process in the CURRENT Space pointing at a Runbook
-        // the caller can't see. Validate the Runbook is visible in this Space
-        // first (db.Runbooks carries the global filter).
+        // The Processes query is Space-filtered, so a cross-Space runbookId returns
+        // null and would otherwise create a process pointing at an invisible runbook.
+        // Validate the runbook is visible in this Space first.
         var runbookExists = await db.Runbooks
             .AnyAsync(r => r.Id == runbookId, ct)
             .ConfigureAwait(false);
@@ -545,8 +577,8 @@ public class RunbookService(
             throw new InvalidOperationException($"Runbook {runbookId} not found.");
         }
 
-        process = new RunbookProcess { RunbookId = runbookId };
-        db.RunbookProcesses.Add(process);
+        process = new Process { OwnerKind = ProcessOwnerKind.Runbook, OwnerId = runbookId };
+        db.Processes.Add(process);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return process;
     }

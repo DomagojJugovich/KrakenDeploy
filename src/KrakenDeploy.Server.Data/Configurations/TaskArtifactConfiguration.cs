@@ -4,11 +4,12 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace KrakenDeploy.Server.Data.Configurations;
 
-public sealed class DeploymentArtifactConfiguration : IEntityTypeConfiguration<DeploymentArtifact>
+/// <summary>Mapping for <see cref="TaskArtifact"/> (<c>task_artifacts</c>).</summary>
+public sealed class TaskArtifactConfiguration : IEntityTypeConfiguration<TaskArtifact>
 {
-    public void Configure(EntityTypeBuilder<DeploymentArtifact> builder)
+    public void Configure(EntityTypeBuilder<TaskArtifact> builder)
     {
-        builder.ToTable("deployment_artifacts");
+        builder.ToTable("task_artifacts");
         builder.HasKey(x => x.Id);
 
         builder.ConfigureSpaceScope();
@@ -20,12 +21,11 @@ public sealed class DeploymentArtifactConfiguration : IEntityTypeConfiguration<D
         builder.Property(x => x.StoredPath).HasMaxLength(1024).IsRequired();
         builder.Property(x => x.CollectedUtc).IsRequired();
 
-        builder.HasOne(x => x.Deployment)
-            .WithMany(d => d.Artifacts)
-            .HasForeignKey(x => x.DeploymentId)
+        builder.HasOne(x => x.Task)
+            .WithMany(t => t.Artifacts)
+            .HasForeignKey(x => x.TaskId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        // Primary access pattern: list all artifacts for a deployment.
-        builder.HasIndex(x => x.DeploymentId);
+        builder.HasIndex(x => x.TaskId);
     }
 }

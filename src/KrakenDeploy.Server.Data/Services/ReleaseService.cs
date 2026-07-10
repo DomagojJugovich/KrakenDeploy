@@ -1,5 +1,6 @@
 using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Server.Core.Domain.Channels;
+using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using Microsoft.EntityFrameworkCore;
@@ -15,7 +16,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// <paramref name="stepPackageResolver"/> is optional so tests/fixtures can
 /// keep the legacy single-arg construction. In production it's wired through
 /// DI; when null, <see cref="StepSnapshot.StepPackageVersion"/> is copied
-/// from the underlying <see cref="DeploymentStep"/> as-is (no re-resolution).
+/// from the underlying <see cref="ProcessStep"/> as-is (no re-resolution).
 /// </remarks>
 public class ReleaseService(
     IDbContextFactory<KrakenDbContext> dbFactory,
@@ -65,10 +66,11 @@ public class ReleaseService(
                 ?? throw new InvalidOperationException($"Channel {channelId} not found for this project.");
         }
 
-        // Load the current process snapshot.
-        var process = await db.DeploymentProcesses
+        // Load the current process snapshot (owner = Project).
+        var process = await db.Processes
             .Include(p => p.Steps.OrderBy(s => s.SortOrder))
-            .FirstOrDefaultAsync(p => p.ProjectId == projectId, ct)
+            .FirstOrDefaultAsync(
+                p => p.OwnerKind == ProcessOwnerKind.Project && p.OwnerId == projectId, ct)
             .ConfigureAwait(false);
 
         if (process is null || process.Steps.Count == 0)

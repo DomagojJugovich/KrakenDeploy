@@ -22,7 +22,7 @@ namespace KrakenDeploy.Server.Data.Services;
 public static class OctopusDeploymentProcessExporter
 {
     public static (JsonObject Process, List<ImportDeploymentProcessWarning> Warnings) Export(
-        IReadOnlyList<DeploymentStep> steps)
+        IReadOnlyList<ProcessStep> steps)
     {
         var warnings = new List<ImportDeploymentProcessWarning>();
         var childrenByParent = steps
@@ -72,11 +72,11 @@ public static class OctopusDeploymentProcessExporter
     /// their leaves are flattened in document order with a warning.
     /// </summary>
     private static void CollectActions(
-        DeploymentStep group,
-        Dictionary<Guid, List<DeploymentStep>> childrenByParent,
+        ProcessStep group,
+        Dictionary<Guid, List<ProcessStep>> childrenByParent,
         JsonArray actions,
         List<ImportDeploymentProcessWarning> warnings,
-        DeploymentStep topGroup)
+        ProcessStep topGroup)
     {
         foreach (var child in childrenByParent.GetValueOrDefault(group.Id) ?? [])
         {
@@ -107,7 +107,7 @@ public static class OctopusDeploymentProcessExporter
     /// OMITTED so each child action's own condition survives re-import (the
     /// importer prefers the step-level value when present).
     /// </summary>
-    private static JsonObject StepShell(DeploymentStep step, bool omitConditionWhenDefault)
+    private static JsonObject StepShell(ProcessStep step, bool omitConditionWhenDefault)
     {
         var props = new JsonObject();
         if (step.TargetRoles.Count > 0)
@@ -132,7 +132,7 @@ public static class OctopusDeploymentProcessExporter
         return obj;
     }
 
-    private static JsonObject ActionObj(DeploymentStep step, List<ImportDeploymentProcessWarning> warnings)
+    private static JsonObject ActionObj(ProcessStep step, List<ImportDeploymentProcessWarning> warnings)
     {
         // Config verbatim — values were normalised to strings on import (or
         // authored as strings in the editor), so emitting them as strings is

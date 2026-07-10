@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Security.Cryptography;
 using KrakenDeploy.Contracts.StepPackages;
+using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.StepPackages;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -272,25 +273,24 @@ public sealed class StepPackageService(
             return new UninstallResult(UninstallStatus.NotFound, null);
         }
 
-        // ── Live process steps (DeploymentStep + RunbookStep) ───────────
-        var liveDeploymentSteps = await db.DeploymentSteps
-            .IgnoreQueryFilters() // step packages are platform-wide; usage/upgrade scans span all Spaces
+        // ── Live process steps (unified process_steps, both owner kinds) ─
+        var liveStepRows = await db.ProcessSteps
+            .IgnoreQueryFilters() // step packages are platform-wide; usage scans span all Spaces
             .AsNoTracking()
             .Where(s => s.StepPackageName == name && s.StepPackageVersion == version)
-            .Select(s => new StepPackageUsageReport.LiveStepRef(
-                s.Id, s.Process.Project.Name, s.Process.Project.Slug, s.Name, IsRunbook: false))
+            .Select(s => new { s.Id, s.Name, s.Process.OwnerKind, s.Process.OwnerId })
             .ToListAsync(ct)
             .ConfigureAwait(false);
-
-        var liveRunbookSteps = await db.RunbookSteps
-            .IgnoreQueryFilters() // step packages are platform-wide; usage/upgrade scans span all Spaces
-            .AsNoTracking()
-            .Where(s => s.StepPackageName == name && s.StepPackageVersion == version)
-            .Select(s => new StepPackageUsageReport.LiveStepRef(
-                s.Id, s.Process.Runbook.Project.Name, s.Process.Runbook.Project.Slug,
-                s.Name, IsRunbook: true))
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
+        var resolveLiveProject = await BuildProjectResolverAsync(
+            db, liveStepRows.Select(r => (r.OwnerKind, r.OwnerId)), ct).ConfigureAwait(false);
+        var liveSteps = liveStepRows
+            .Select(r =>
+            {
+                var (pName, pSlug) = resolveLiveProject(r.OwnerKind, r.OwnerId);
+                return new StepPackageUsageReport.LiveStepRef(
+                    r.Id, pName, pSlug, r.Name, r.OwnerKind == ProcessOwnerKind.Runbook);
+            })
+            .ToList();
 
         // ── Release snapshots (project releases) ────────────────────────
         // JSONB containment via Postgres operator @> would be cleaner, but
@@ -315,14 +315,11 @@ public sealed class StepPackageService(
             }
         }
 
-        if (liveDeploymentSteps.Count > 0 || liveRunbookSteps.Count > 0 || releaseRefs.Count > 0)
+        if (liveSteps.Count > 0 || releaseRefs.Count > 0)
         {
             return new UninstallResult(
                 UninstallStatus.Blocked,
-                new StepPackageUsageReport(
-                    name, version,
-                    [.. liveDeploymentSteps, .. liveRunbookSteps],
-                    releaseRefs));
+                new StepPackageUsageReport(name, version, liveSteps, releaseRefs));
         }
 
         // ── Clean up DB + disk ──────────────────────────────────────────
@@ -367,53 +364,34 @@ public sealed class StepPackageService(
         ArgumentException.ThrowIfNullOrWhiteSpace(packageName);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
-        var deploymentRows = await db.DeploymentSteps
+        var rawRows = await db.ProcessSteps
             .IgnoreQueryFilters() // step packages are platform-wide; usage/upgrade scans span all Spaces
             .AsNoTracking()
             .Where(s => s.StepPackageName == packageName && s.StepPackageVersion != null)
-            .Select(s => new StepPackageUsage.UsageRow(
-                s.Id,
-                s.Process.Project.Name,
-                s.Process.Project.Slug,
-                s.Name,
-                s.StepType,
-                false))
+            .Select(s => new
+            {
+                s.Id, s.Name, s.StepType,
+                Version = s.StepPackageVersion!,
+                s.Process.OwnerKind, s.Process.OwnerId,
+            })
             .ToListAsync(ct).ConfigureAwait(false);
 
-        var runbookRows = await db.RunbookSteps
-            .IgnoreQueryFilters() // step packages are platform-wide; usage/upgrade scans span all Spaces
-            .AsNoTracking()
-            .Where(s => s.StepPackageName == packageName && s.StepPackageVersion != null)
-            .Select(s => new StepPackageUsage.UsageRow(
-                s.Id,
-                s.Process.Runbook.Project.Name,
-                s.Process.Runbook.Project.Slug,
-                s.Name,
-                s.StepType,
-                true))
-            .ToListAsync(ct).ConfigureAwait(false);
+        var resolveProject = await BuildProjectResolverAsync(
+            db, rawRows.Select(r => (r.OwnerKind, r.OwnerId)), ct).ConfigureAwait(false);
 
-        // Re-query to grab each step's version (Select dropped it because the
-        // UsageRow record doesn't carry it — version is the GROUPING key).
-        var dpVersions = await db.DeploymentSteps
-            .IgnoreQueryFilters() // step packages are platform-wide; usage/upgrade scans span all Spaces
-            .AsNoTracking()
-            .Where(s => s.StepPackageName == packageName && s.StepPackageVersion != null)
-            .Select(s => new { s.Id, s.StepPackageVersion })
-            .ToDictionaryAsync(s => s.Id, s => s.StepPackageVersion!, ct).ConfigureAwait(false);
-        var rbVersions = await db.RunbookSteps
-            .IgnoreQueryFilters() // step packages are platform-wide; usage/upgrade scans span all Spaces
-            .AsNoTracking()
-            .Where(s => s.StepPackageName == packageName && s.StepPackageVersion != null)
-            .Select(s => new { s.Id, s.StepPackageVersion })
-            .ToDictionaryAsync(s => s.Id, s => s.StepPackageVersion!, ct).ConfigureAwait(false);
-
-        var groups = deploymentRows.Concat(runbookRows)
-            .GroupBy(r => r.IsRunbook ? rbVersions[r.StepId] : dpVersions[r.StepId])
+        var groups = rawRows
+            .Select(r =>
+            {
+                var (pName, pSlug) = resolveProject(r.OwnerKind, r.OwnerId);
+                return (r.Version, Row: new StepPackageUsage.UsageRow(
+                    r.Id, pName, pSlug, r.Name, r.StepType,
+                    r.OwnerKind == ProcessOwnerKind.Runbook));
+            })
+            .GroupBy(x => x.Version)
             .OrderByDescending(g => g.Key, StringComparer.Ordinal)
             .Select(g => new StepPackageUsage.VersionGroup(
                 g.Key,
-                [.. g.OrderBy(r => r.ProjectName).ThenBy(r => r.StepName)]))
+                [.. g.Select(x => x.Row).OrderBy(r => r.ProjectName).ThenBy(r => r.StepName)]))
             .ToList();
 
         return new StepPackageUsage(packageName, groups);
@@ -461,42 +439,18 @@ public sealed class StepPackageService(
         var skipped = new List<BulkUpgradeResult.SkippedRow>();
         var touched = 0;
 
-        // ── Deployment steps ───────────────────────────────────────────
-        if (deploymentStepIds.Count > 0)
+        // Deployment + runbook steps are now one table (process_steps); the two id
+        // lists are kept in the API surface only so the UI can present them
+        // separately. Bump both in a single scan.
+        var allIds = deploymentStepIds.Concat(runbookStepIds).Distinct().ToList();
+        if (allIds.Count > 0)
         {
-            var rows = await db.DeploymentSteps
-            .IgnoreQueryFilters() // step packages are platform-wide; usage/upgrade scans span all Spaces
-                .Where(s => deploymentStepIds.Contains(s.Id)
-                            && s.StepPackageName == packageName)
+            var rows = await db.ProcessSteps
+                .IgnoreQueryFilters() // step packages are platform-wide; upgrade scans span all Spaces
+                .Where(s => allIds.Contains(s.Id) && s.StepPackageName == packageName)
                 .ToDictionaryAsync(s => s.Id, ct).ConfigureAwait(false);
 
-            foreach (var id in deploymentStepIds)
-            {
-                if (!rows.TryGetValue(id, out var row))
-                {
-                    skipped.Add(new BulkUpgradeResult.SkippedRow(id, "not-found"));
-                    continue;
-                }
-                if (string.Equals(row.StepPackageVersion, targetVersion, StringComparison.Ordinal))
-                {
-                    skipped.Add(new BulkUpgradeResult.SkippedRow(id, "already-target"));
-                    continue;
-                }
-                row.StepPackageVersion = targetVersion;
-                touched++;
-            }
-        }
-
-        // ── Runbook steps ──────────────────────────────────────────────
-        if (runbookStepIds.Count > 0)
-        {
-            var rows = await db.RunbookSteps
-            .IgnoreQueryFilters() // step packages are platform-wide; usage/upgrade scans span all Spaces
-                .Where(s => runbookStepIds.Contains(s.Id)
-                            && s.StepPackageName == packageName)
-                .ToDictionaryAsync(s => s.Id, ct).ConfigureAwait(false);
-
-            foreach (var id in runbookStepIds)
+            foreach (var id in allIds)
             {
                 if (!rows.TryGetValue(id, out var row))
                 {
@@ -536,6 +490,51 @@ public sealed class StepPackageService(
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Builds a resolver mapping a process owner (kind + id) to its owning
+    /// project's (name, slug). Runbook-owned processes resolve through the
+    /// runbook's ProjectId. Platform-wide (IgnoreQueryFilters) so usage /
+    /// uninstall scans see every Space's steps.
+    /// </summary>
+    private static async Task<Func<ProcessOwnerKind, Guid, (string Name, string Slug)>>
+        BuildProjectResolverAsync(
+            KrakenDbContext db,
+            IEnumerable<(ProcessOwnerKind Kind, Guid OwnerId)> owners,
+            CancellationToken ct)
+    {
+        var ownerList = owners.ToList();
+
+        var runbookIds = ownerList
+            .Where(o => o.Kind == ProcessOwnerKind.Runbook)
+            .Select(o => o.OwnerId).Distinct().ToList();
+        var runbookToProject = runbookIds.Count == 0
+            ? []
+            : await db.Runbooks.IgnoreQueryFilters().AsNoTracking()
+                .Where(r => runbookIds.Contains(r.Id))
+                .ToDictionaryAsync(r => r.Id, r => r.ProjectId, ct).ConfigureAwait(false);
+
+        Guid ProjectIdOf(ProcessOwnerKind kind, Guid ownerId) =>
+            kind == ProcessOwnerKind.Project
+                ? ownerId
+                : runbookToProject.GetValueOrDefault(ownerId);
+
+        var projectIds = ownerList
+            .Select(o => ProjectIdOf(o.Kind, o.OwnerId))
+            .Where(id => id != Guid.Empty).Distinct().ToList();
+        var projRows = projectIds.Count == 0
+            ? []
+            : await db.Projects.IgnoreQueryFilters().AsNoTracking()
+                .Where(p => projectIds.Contains(p.Id))
+                .Select(p => new { p.Id, p.Name, p.Slug })
+                .ToListAsync(ct).ConfigureAwait(false);
+        var projects = projRows.ToDictionary(p => p.Id, p => (p.Name, p.Slug));
+
+        return (kind, ownerId) =>
+            projects.TryGetValue(ProjectIdOf(kind, ownerId), out var proj)
+                ? proj
+                : ("(unknown)", "unknown");
+    }
 
     private string ResolveDir(string name, string version)
     {

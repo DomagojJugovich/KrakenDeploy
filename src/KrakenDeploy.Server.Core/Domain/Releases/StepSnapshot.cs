@@ -11,7 +11,7 @@ public sealed class StepSnapshot
 {
     /// <summary>
     /// M15 — frozen at snapshot time as the corresponding
-    /// <see cref="Processes.DeploymentStep.Id"/>. Lets
+    /// <see cref="Processes.ProcessStep.Id"/>. Lets
     /// <see cref="ParentStepId"/> form parent-child links inside the
     /// snapshot tree. Pre-M15 snapshots (where this field wasn't set
     /// at cut time) deserialise as <see cref="Guid.Empty"/>, which
@@ -47,7 +47,7 @@ public sealed class StepSnapshot
     /// </summary>
     public string? StepPackageVersion { get; init; }
 
-    // ── M14 step-execution knobs (mirror DeploymentStep) ─────────────────
+    // ── M14 step-execution knobs (mirror ProcessStep) ─────────────────
     // Releases freeze these at cut time so historical reproducibility
     // survives subsequent edits to the live process. The jsonb shape
     // adds the new fields with type-default values for old rows — older
@@ -55,14 +55,14 @@ public sealed class StepSnapshot
     // no timeout / sequential", which preserves the runtime they were
     // created under.
 
-    /// <summary>M14.2 Run Condition — see <see cref="DeploymentStep.Condition"/>.</summary>
+    /// <summary>M14.2 Run Condition — see <see cref="ProcessStep.Condition"/>.</summary>
     public StepCondition Condition { get; init; } = StepCondition.Success;
 
     /// <summary>M14.2 Variable-condition expression — see
-    /// <see cref="DeploymentStep.ConditionVariableExpression"/>.</summary>
+    /// <see cref="ProcessStep.ConditionVariableExpression"/>.</summary>
     public string? ConditionVariableExpression { get; init; }
 
-    /// <summary>M14.2 Required — see <see cref="DeploymentStep.Required"/>.
+    /// <summary>M14.2 Required — see <see cref="ProcessStep.Required"/>.
     /// Defaulted to <c>true</c> on the property; older snapshots without
     /// this field also surface as <c>true</c> via System.Text.Json's
     /// "missing property = type default" behaviour ONLY IF the property
@@ -72,16 +72,16 @@ public sealed class StepSnapshot
     /// </summary>
     public bool Required { get; init; } = true;
 
-    /// <summary>M14.3 Retry count — see <see cref="DeploymentStep.MaxRetries"/>.</summary>
+    /// <summary>M14.3 Retry count — see <see cref="ProcessStep.MaxRetries"/>.</summary>
     public int MaxRetries { get; init; }
 
-    /// <summary>M14.3 Retry delay seconds — see <see cref="DeploymentStep.RetryDelaySeconds"/>.</summary>
+    /// <summary>M14.3 Retry delay seconds — see <see cref="ProcessStep.RetryDelaySeconds"/>.</summary>
     public int RetryDelaySeconds { get; init; }
 
-    /// <summary>M14.2 Timeout seconds — see <see cref="DeploymentStep.TimeoutSeconds"/>.</summary>
+    /// <summary>M14.2 Timeout seconds — see <see cref="ProcessStep.TimeoutSeconds"/>.</summary>
     public int TimeoutSeconds { get; init; }
 
-    /// <summary>M14.4 Start trigger — see <see cref="DeploymentStep.StartTrigger"/>.</summary>
+    /// <summary>M14.4 Start trigger — see <see cref="ProcessStep.StartTrigger"/>.</summary>
     public StepStartTrigger StartTrigger { get; init; } = StepStartTrigger.StartAfterPrevious;
 
     /// <summary>

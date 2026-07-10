@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 namespace KrakenDeploy.Server.Data.Services;
 
 /// <summary>
-/// Saves, lists, and retrieves deployment artifacts.
+/// Saves, lists, and retrieves task artifacts (deployment or runbook run).
 /// </summary>
 public sealed class ArtifactService(
     IDbContextFactory<KrakenDbContext> dbFactory,
@@ -15,10 +15,10 @@ public sealed class ArtifactService(
 
     /// <summary>
     /// Persists <paramref name="content"/> to the artifact store and writes a
-    /// <see cref="DeploymentArtifact"/> record to the database.
+    /// <see cref="TaskArtifact"/> record to the database.
     /// </summary>
-    public async Task<DeploymentArtifact> SaveAsync(
-        Guid deploymentId,
+    public async Task<TaskArtifact> SaveAsync(
+        Guid taskId,
         string stepName,
         string fileName,
         string contentType,
@@ -26,24 +26,24 @@ public sealed class ArtifactService(
         Stream content,
         CancellationToken ct = default)
     {
-        var storedPath = await store.SaveAsync(deploymentId, stepName, fileName, content, ct)
+        var storedPath = await store.SaveAsync(taskId, stepName, fileName, content, ct)
             .ConfigureAwait(false);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
-        // Agent-upload path has no real Space context — resolve the parent
-        // deployment's Space directly (IgnoreQueryFilters) and stamp it so the
-        // interceptor doesn't mis-assign the Default Space.
-        var spaceId = await db.Deployments.IgnoreQueryFilters()
-            .Where(d => d.Id == deploymentId)
-            .Select(d => d.SpaceId)
+        // Agent-upload path has no real Space context — resolve the parent task's
+        // Space directly (IgnoreQueryFilters) and stamp it so the interceptor
+        // doesn't mis-assign the Default Space.
+        var spaceId = await db.ServerTasks.IgnoreQueryFilters()
+            .Where(t => t.Id == taskId)
+            .Select(t => t.SpaceId)
             .FirstAsync(ct)
             .ConfigureAwait(false);
 
-        var artifact = new DeploymentArtifact
+        var artifact = new TaskArtifact
         {
             SpaceId      = spaceId,
-            DeploymentId = deploymentId,
+            TaskId       = taskId,
             StepName     = stepName,
             FileName     = fileName,
             ContentType  = contentType,
@@ -52,7 +52,7 @@ public sealed class ArtifactService(
             CollectedUtc = DateTimeOffset.UtcNow,
         };
 
-        db.DeploymentArtifacts.Add(artifact);
+        db.TaskArtifacts.Add(artifact);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         return artifact;
@@ -60,38 +60,33 @@ public sealed class ArtifactService(
 
     // ── Query ──────────────────────────────────────────────────────────────────
 
-    // DeploymentArtifact isn't ISpaceScoped — it reaches a Space via its parent
-    // Deployment. Read paths therefore scope transitively through the
-    // (space-filtered) Deployments set, so an artifact/deployment GUID from
-    // another Space can't be read or downloaded across the request-path API.
-    public async Task<List<DeploymentArtifact>> GetByDeploymentAsync(
-        Guid deploymentId, CancellationToken ct = default)
+    // TaskArtifact is ISpaceScoped, so the global query filter scopes these reads
+    // to the caller's Space; a task/artifact GUID from another Space simply won't
+    // match.
+    public async Task<List<TaskArtifact>> GetByTaskAsync(
+        Guid taskId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        return await db.DeploymentArtifacts
-             .Where(a => a.DeploymentId == deploymentId
-                      && db.Deployments.Any(d => d.Id == a.DeploymentId))
+        return await db.TaskArtifacts
+             .Where(a => a.TaskId == taskId)
              .OrderBy(a => a.StepName).ThenBy(a => a.FileName)
              .ToListAsync(ct);
     }
 
-    public async Task<DeploymentArtifact?> GetAsync(Guid artifactId, CancellationToken ct = default)
+    public async Task<TaskArtifact?> GetAsync(Guid artifactId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        return await db.DeploymentArtifacts
-            .FirstOrDefaultAsync(a => a.Id == artifactId
-                                   && db.Deployments.Any(d => d.Id == a.DeploymentId), ct);
+        return await db.TaskArtifacts.FirstOrDefaultAsync(a => a.Id == artifactId, ct);
     }
 
     // ── Download ───────────────────────────────────────────────────────────────
 
-    public async Task<(Stream Stream, DeploymentArtifact Artifact)> OpenReadAsync(
+    public async Task<(Stream Stream, TaskArtifact Artifact)> OpenReadAsync(
         Guid artifactId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var artifact = await db.DeploymentArtifacts
-            .FirstOrDefaultAsync(a => a.Id == artifactId
-                                   && db.Deployments.Any(d => d.Id == a.DeploymentId), ct)
+        var artifact = await db.TaskArtifacts
+            .FirstOrDefaultAsync(a => a.Id == artifactId, ct)
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Artifact {artifactId} not found.");
 
@@ -104,7 +99,7 @@ public sealed class ArtifactService(
     public async Task DeleteAsync(Guid artifactId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var artifact = await db.DeploymentArtifacts
+        var artifact = await db.TaskArtifacts
             .FirstOrDefaultAsync(a => a.Id == artifactId, ct).ConfigureAwait(false);
         if (artifact is null)
         {
@@ -112,7 +107,7 @@ public sealed class ArtifactService(
         }
 
         store.Delete(artifact.StoredPath);
-        db.DeploymentArtifacts.Remove(artifact);
+        db.TaskArtifacts.Remove(artifact);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 }

@@ -46,7 +46,6 @@ public class OfflineResultService(
 
         var deployment = await db.Deployments
             .Include(d => d.Targets).ThenInclude(a => a.Target!)
-            .Include(d => d.LogEntries)
             .FirstOrDefaultAsync(d => d.Id == deploymentId, ct)
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Deployment {deploymentId} not found.");
@@ -177,10 +176,10 @@ public class OfflineResultService(
                     var outcome = step.Skipped
                         ? StepOutcomeKind.Skipped
                         : step.Success ? StepOutcomeKind.Succeeded : StepOutcomeKind.Failed;
-                    db.Set<DeploymentStepOutcome>().Add(new DeploymentStepOutcome
+                    db.TaskStepOutcomes.Add(new TaskStepOutcome
                     {
                         SpaceId      = deployment.SpaceId,
-                        DeploymentId = deploymentId,
+                        TaskId       = deploymentId,
                         StepIndex    = step.StepIndex,
                         StepName     = step.StepName,
                         Outcome      = outcome,
@@ -195,10 +194,10 @@ public class OfflineResultService(
 
                     foreach (var (name, value) in step.OutputVariables)
                     {
-                        db.Set<DeploymentOutputVariable>().Add(new DeploymentOutputVariable
+                        db.TaskOutputVariables.Add(new TaskOutputVariable
                         {
                             SpaceId      = deployment.SpaceId,
-                            DeploymentId = deploymentId,
+                            TaskId       = deploymentId,
                             StepName     = step.StepName,
                             Name         = name,
                             Value        = value,
@@ -215,8 +214,11 @@ public class OfflineResultService(
         {
             var logText = await ReadEntryTextAsync(logEntry, ct).ConfigureAwait(false);
             var lines = logText.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-            var seq = deployment.NextLogSequence;
 
+            // Flat offline log has no per-line step attribution — stage the lines
+            // unattributed (step -1) via the shared sequencer, then compaction
+            // (below) folds them into a single blob just like the online path.
+            var parsedLines = new List<(string Level, string Message)>();
             foreach (var line in lines)
             {
                 var trimmed = line.TrimEnd('\r');
@@ -224,22 +226,29 @@ public class OfflineResultService(
                 {
                     continue; // skip comments and blank lines
                 }
-
-                // Try to parse structured format: "timestamp | level | message"
-                var (level, message) = ParseLogLine(trimmed);
-
-                db.Set<DeploymentLogEntry>().Add(new DeploymentLogEntry
-                {
-                    SpaceId = deployment.SpaceId,
-                    DeploymentId = deploymentId,
-                    Sequence = seq++,
-                    Timestamp = DateTimeOffset.UtcNow,
-                    Level = level,
-                    Message = message,
-                });
+                parsedLines.Add(ParseLogLine(trimmed));
             }
 
-            deployment.NextLogSequence = seq;
+            if (parsedLines.Count > 0)
+            {
+                var baseSeq = await TaskLogService
+                    .AllocateSequenceRangeAsync(db, deploymentId, parsedLines.Count, ct)
+                    .ConfigureAwait(false);
+                var importedAt = DateTimeOffset.UtcNow;
+                for (var i = 0; i < parsedLines.Count; i++)
+                {
+                    db.TaskLogLive.Add(new TaskLogLiveEntry
+                    {
+                        TaskId    = deploymentId,
+                        StepIndex = -1,
+                        TargetId  = target?.Id,
+                        Sequence  = baseSeq + i,
+                        Level     = parsedLines[i].Level,
+                        Timestamp = importedAt,
+                        Message   = parsedLines[i].Message,
+                    });
+                }
+            }
         }
 
         // ── Process artifacts ────────────────────────────────────────────────
@@ -274,10 +283,10 @@ public class OfflineResultService(
                 .ConfigureAwait(false);
 
             var contentType = MimeMapping.GetContentType(fileName);
-            db.Set<DeploymentArtifact>().Add(new DeploymentArtifact
+            db.TaskArtifacts.Add(new TaskArtifact
             {
                 SpaceId = deployment.SpaceId,
-                DeploymentId = deploymentId,
+                TaskId = deploymentId,
                 StepName = stepName,
                 FileName = fileName,
                 ContentType = contentType,
@@ -292,6 +301,12 @@ public class OfflineResultService(
         }
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        // Compact the imported (unattributed) staging lines into a single blob so
+        // the offline path stores logs identically to the online compactor.
+        await TaskLogService.CompactRemainingAsync(
+            db, deploymentId, deployment.CompletedUtc ?? DateTimeOffset.UtcNow, ct)
+            .ConfigureAwait(false);
 
         logger.LogInformation(
             "Offline result ingested for deployment {Id}: status = {Status}.",

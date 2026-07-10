@@ -4,7 +4,7 @@ namespace KrakenDeploy.Server.Core.Domain.Processes;
 
 /// <summary>
 /// Bundle of M14 step-execution knobs passed to service methods that
-/// create or update a <see cref="DeploymentStep"/>. Avoids inflating
+/// create or update a <see cref="ProcessStep"/>. Avoids inflating
 /// the service signatures with seven additional parameters.
 ///
 /// <para>
@@ -27,8 +27,8 @@ public sealed record StepExecutionKnobs(
     public static readonly StepExecutionKnobs Default = new();
 
     /// <summary>Snapshots the knobs from an existing
-    /// <see cref="DeploymentStep"/>.</summary>
-    public static StepExecutionKnobs From(DeploymentStep step) => new(
+    /// <see cref="ProcessStep"/>.</summary>
+    public static StepExecutionKnobs From(ProcessStep step) => new(
         Condition:                   step.Condition,
         ConditionVariableExpression: step.ConditionVariableExpression,
         Required:                    step.Required,

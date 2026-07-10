@@ -6,8 +6,14 @@ namespace KrakenDeploy.Server.Core.Domain.Runbooks;
 /// <summary>
 /// A runbook is a named automation sequence scoped to a project that can be triggered
 /// against any environment without creating a release. The runbook owns a
-/// <see cref="RunbookProcess"/> (its editable steps), and each execution is recorded
-/// as a <see cref="RunbookRun"/> that snaps the current process at trigger time.
+/// <see cref="Processes.Process"/> (its editable steps, keyed by owner), and each
+/// execution is recorded as a <see cref="RunbookRun"/> that snaps the current
+/// process at trigger time.
+/// <para>
+/// The process is polymorphic (no owner FK), so there is no navigation property —
+/// resolve it via <c>ProcessService</c> / <c>RunbookService</c> by
+/// (<c>ProcessOwnerKind.Runbook</c>, runbook id).
+/// </para>
 /// </summary>
 public class Runbook : AuditableEntity, ISpaceScoped
 {
@@ -19,7 +25,4 @@ public class Runbook : AuditableEntity, ISpaceScoped
     public required string Name { get; set; }
 
     public string? Description { get; set; }
-
-    /// <summary>Editable step list — snapped into each run at dispatch time.</summary>
-    public RunbookProcess? Process { get; set; }
 }

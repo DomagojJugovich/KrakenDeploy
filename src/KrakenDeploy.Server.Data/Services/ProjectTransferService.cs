@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using KrakenDeploy.Server.Core.Domain.Processes;
 using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data.Services;
@@ -27,10 +28,11 @@ public sealed class ProjectTransferService(IDbContextFactory<KrakenDbContext> db
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException("Project not found.");
 
-        var process = await db.DeploymentProcesses
+        var process = await db.Processes
             .AsNoTracking()
             .Include(p => p.Steps.OrderBy(s => s.SortOrder))
-            .FirstOrDefaultAsync(p => p.ProjectId == projectId, ct)
+            .FirstOrDefaultAsync(
+                p => p.OwnerKind == ProcessOwnerKind.Project && p.OwnerId == projectId, ct)
             .ConfigureAwait(false);
 
         var (processObj, warnings) = OctopusDeploymentProcessExporter.Export(

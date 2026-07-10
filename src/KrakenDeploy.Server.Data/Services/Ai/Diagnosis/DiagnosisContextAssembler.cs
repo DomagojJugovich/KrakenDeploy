@@ -51,8 +51,8 @@ public sealed class DiagnosisContextAssembler(
             .Select(d => d.Release)
             .FirstOrDefaultAsync(ct).ConfigureAwait(false);
 
-        var failedOutcomes = await db.DeploymentStepOutcomes.AsNoTracking()
-            .Where(o => o.DeploymentId == deploymentId
+        var failedOutcomes = await db.TaskStepOutcomes.AsNoTracking()
+            .Where(o => o.TaskId == deploymentId
                      && (o.Outcome == StepOutcomeKind.Failed || o.Outcome == StepOutcomeKind.TimedOut))
             .OrderBy(o => o.StepIndex)
             .ToListAsync(ct).ConfigureAwait(false);

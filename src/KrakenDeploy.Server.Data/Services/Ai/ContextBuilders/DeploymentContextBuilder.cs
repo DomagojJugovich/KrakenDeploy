@@ -81,20 +81,15 @@ public sealed class DeploymentContextBuilder(IDbContextFactory<KrakenDbContext> 
             return null;
         }
 
-        var total = await db.DeploymentLogEntries.AsNoTracking()
-            .CountAsync(l => l.DeploymentId == deploymentId, ct).ConfigureAwait(false);
+        // Stitch the task's log (compacted step blobs + live staging) in sequence
+        // order via the shared reader, then take the tail. The AI tail runs on
+        // (usually failed) individual tasks, so per-task materialisation is fine.
+        var allLines = await TaskLogService.ReadAllAsync(db, deploymentId, ct).ConfigureAwait(false);
+        var total = allLines.Count;
 
         var clamped = Math.Clamp(tailLines, 1, 1000);
-        // Pull the last N by sequence-desc, then re-order ascending so the
-        // tail reads top-to-bottom like the log itself.
-        var tail = await db.DeploymentLogEntries.AsNoTracking()
-            .Where(l => l.DeploymentId == deploymentId)
-            .OrderByDescending(l => l.Sequence)
-            .Take(clamped)
-            .ToListAsync(ct).ConfigureAwait(false);
-        tail.Reverse();
-
-        var tailDtos = tail
+        var tailDtos = allLines
+            .TakeLast(clamped)
             .Select(l => new DeploymentLogLineDto(l.Sequence, l.Timestamp, l.Level, l.Message))
             .ToList();
 
