@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| Version | 1.1 |
-| Date | 2026-07-06 |
+| Version | 1.2 |
+| Date | 2026-07-10 |
 | Authors | Domagoj Jugović, Claude (5-agent audit) |
 | Status | Review |
 | Technologies | .NET 10, Blazor Server, Radzen, EF Core 10, PostgreSQL, SignalR, gRPC, Hangfire |
@@ -69,14 +69,16 @@ Projects/groups, process editor (M14/M15 exceeds Octopus), step templates + comm
 
 **Execution parameters (locked 2026-07-06):** on-prem single-instance ships first, SaaS follows. Scope is fixed; the date flexes — realistic go-live is **~2.5 months** at ~28 working days of build plus review buffer. **One Opus session at a time, one WP per session on its own branch, `/code-review` before every merge.** Progress tracked as a new **M16 milestone in TASKS.md** (create the checklist at kickoff — one checkbox per WP below). WP3, WP7, WP12 and WP15 are design-doc-first (built into their prompts). Worker/agent-touching WPs (WP2, WP3, WP7, WP15) must not interleave with anything else touching `DeploymentWorker`.
 
+**Ordering update (2026-07-10):** WP1 and WP2 are **DONE** (merged to main). Before WP3, the **DB schema hardening chain** runs to completion — `docs/db-schema-fix-prompts-2026-07-10.md`, fixes 1–7 on `fix/db-schema-hardening`. It rewrites `deployments`/`runbook_runs` into a unified `server_tasks` spine, replaces the settings tables with a `SettingsService`-backed document table, enforces channel version rules, and adds composite Space FKs — surfaces that WP3, WP7, WP8, WP9, WP12, WP13 and WP15 build on. Merged execution order: **schema fixes 1→7 → WP3 → WP4 (re-audit first) → WP5 → WP6 → WP9 → WP8 → WP7 → WP15 → WP10 → WP11 → GO-LIVE → WP13 → WP12 → WP14**. Affected WP prompts below carry a `RIDER (2026-07-10)` paragraph — paste riders together with the prompt.
+
 Sizes: S < ½ day, M ≈ 1 day, L ≈ 2–3 days, XL ≈ 1 week (Opus-assisted).
 
 Pre-go-live, in execution order (single serial track):
 
 | # | WP | Title | Size | Notes |
 |---|---|---|---|---|
-| 1 | WP1 | Deploy from the web UI (full dialog: env + tenant + schedule + FailureMode) | L | critical path |
-| 2 | WP2 | Cancel (boundary model) / redeploy / fix fake Regenerate | M | redeploy needs WP1 |
+| 1 | WP1 | Deploy from the web UI (full dialog: env + tenant + schedule + FailureMode) | L | **DONE** — merged 2026-07-10 |
+| 2 | WP2 | Cancel (boundary model) / redeploy / fix fake Regenerate | M | **DONE** — merged 2026-07-10 |
 | 3 | WP3 | Real manual intervention (pause/approve/reject) | XL | **go-live blocker**; spec in prompt |
 | 4 | WP4 | Reachability + missing edit affordances batch | M | |
 | 5 | WP5 | Missing CRUD end-to-end (target/release/group/user) | M | |
@@ -144,10 +146,14 @@ House rules (each has bitten us before — do not skip):
 3. Never ConfigureAwait(false) in component lifecycle code. Circuit-scoped caches use
    ConcurrentDictionary.
 4. New Space-owned entities implement ISpaceScoped (global query filter picks them up);
-   agent-path writes stamp SpaceId from the parent.
+   agent-path writes stamp SpaceId from the parent. Composite-FK convention (2026-07-10
+   schema chain): space-scoped parents carry UNIQUE (space_id, id); space-scoped children
+   FK (space_id, parent_id) -> parent (space_id, id); join tables carry a stamped space_id.
 5. Multi-account safety: new singletons/static caches must be account-keyed (mirror
-   PerAccountOidcProviderCache) or registered Scoped-in-multi-account like FeatureFlagService
-   (ServiceCollectionExtensions.cs:229). Background work items carry AccountId
+   PerAccountOidcProviderCache) or registered Scoped-in-multi-account (see
+   ServiceCollectionExtensions). NOTE: FeatureFlagService / MaintenanceModeService /
+   PerformanceSettingsService were replaced by SettingsService in the 2026-07-10 schema
+   chain — do not copy them as patterns. Background work items carry AccountId
    (TenantWorkItem pattern); workers wrap processing in WithAccount.
 6. EF migrations: dotnet ef migrations add <Name> --project src/KrakenDeploy.Server.Data
    --startup-project src/KrakenDeploy.Server.Data --framework net10.0
@@ -160,6 +166,12 @@ House rules (each has bitten us before — do not skip):
    DI scopes — captive dependencies fail here). Postgres via docker-compose. Empty dev DB →
    seed with the seed-demo CLI verb (src/KrakenDeploy.Server/Commands/SeedDemoCommands.cs).
 10. Report honestly what you verified vs what you could not.
+11. Settings (post 2026-07-10 schema chain): singleton/per-Space config lives in the unified
+    settings table behind SettingsService (typed ISettingsDocument payloads; secrets as
+    *Encrypted members — the DEK-rotation completeness test reflects over them). New knobs
+    extend an existing settings document or add a new document+key — do NOT create new
+    settings tables or columns. The settings DbSet is off-limits outside SettingsService
+    (an architecture test enforces this).
 ```
 
 ---
@@ -272,6 +284,13 @@ Step 2 — implementation:
 Acceptance: a process containing a Manual Intervention step pauses at that step with instructions
 visible; an authorized user approves (deployment continues) or rejects with notes (deployment
 fails cleanly); everything audited and notifiable; deployments without the step are unaffected.
+
+RIDER (2026-07-10, after the DB schema chain): deployments and runbook runs are now ONE
+server_tasks table (kind discriminator) and the worker/AgentHub were rewritten in schema fix 3 —
+re-locate the wave orchestration and terminal-status resolver before designing. The pause
+status/flag lives on the unified spine (decide whether interventions apply to runbook-run kind
+too — recommend yes). The Interruption entity follows house rule 4's composite-FK convention.
+Type/table names cited in this prompt may have changed — trust the code, not these identifiers.
 ```
 
 ### WP4 — Reachability + missing edit affordances (batch)
@@ -305,6 +324,12 @@ audit entries where the service doesn't already write them; follow the page-head
 
 Acceptance: each operation performable in the browser; no regressions on the touched pages;
 build + affected tests green; quick manual smoke of each page listed.
+
+RIDER (2026-07-10): the extended tag sets rework (merged 2026-07-10) rebuilt the tag UI
+(TagSets/TagSetDetail pages, EntityTagEditor, TagChip; TargetDetail and TenantDetail touched)
+and endpoints moved. Re-audit items 2-4 and every cited Program.cs line number before starting —
+several items may already be done or relocated. Re-check item 1 too (NavMenu gained a Tag Sets
+entry in the same rework; verify whether Step Packages followed).
 ```
 
 ### WP5 — Missing CRUD end-to-end (backend + UI)
@@ -334,6 +359,14 @@ that state consequences, audit entries, tests.
 
 Acceptance: each operation works from the browser with correct guards; deleting/retiring never
 breaks existing deployment history pages; build + tests green (add service-level tests per item).
+
+RIDER (2026-07-10, after the DB schema chain): legacy deployments.target_id is GONE (fix 2) —
+item 1's FK-graph note is stale; execution history references targets only via
+task_target_assignments and step outcomes, both RESTRICT. Retire/soft-delete is therefore the
+ONLY path for targets with history (hard delete works only for history-free targets). Item 2:
+deployments are server_tasks rows (kind=Deployment) and server_tasks -> releases is RESTRICT.
+Item 4 complements fix 4's DB-level user-delete cascades (api keys, team memberships,
+per-user views).
 ```
 
 ### WP6 — Finish the project tabs (variables trio + runbooks)
@@ -402,6 +435,14 @@ Scope:
 Acceptance: a scheduled trigger deploys the latest channel release at the right local time;
 pushing a matching package creates a release exactly once; both tabs fully functional; multi-
 account fan-out verified at least by the existing smoke pattern.
+
+RIDER (2026-07-10, after the DB schema chain): (a) channel version rules are now ENFORCED by
+ReleaseService (schema fix 7 Part C) — consume that validation in AutoReleaseOnPackagePush, do
+not reimplement it; (b) server_tasks.cause exists (fix 6) with a reserved Trigger value — stamp
+cause=Trigger (+ cause_detail = trigger id) on everything a trigger fires; (c) global trigger
+defaults/knobs go into a settings document per house rule 11 (per-trigger rows stay a real
+entity, composite-FK per house rule 4); (d) executions are server_tasks — ScheduledFor and the
+dispatch job operate on the unified table.
 ```
 
 ### WP8 — Prompted variables
@@ -433,6 +474,12 @@ Scope:
 Acceptance: define a prompted variable, deploy from the UI → prompted for it, value visible to
 steps (Octostache substitution), sensitive prompted value never appears in logs or the variable
 preview unmasked.
+
+RIDER (2026-07-10, after the DB schema chain): server_tasks.form_values (jsonb, currently always
+NULL) was added in fix 3 exactly for this — store operator-supplied values there instead of
+inventing new storage. Deployments are server_tasks rows; the injection point is the unified
+worker. Sensitive prompted values follow the *Encrypted ciphertext convention — verify
+DekRotationWalk covers encrypted members inside form_values and extend the walk if not.
 ```
 
 ### WP9 — Retention expansion
@@ -465,6 +512,13 @@ Scope:
 Acceptance: with retention enabled on a seeded history, old packages/releases/runs are pruned,
 nothing referenced survives-check fails, dry-run logs accurately, single-instance and
 multi-account registrations both wired.
+
+RIDER (2026-07-10, after the DB schema chain): this WP ABSORBS the log age-cap originally
+scoped into schema fix 6: age-based pruning of task_log_entries for RETAINED executions, knob
+in the retention/performance settings document (house rule 11) — RetentionService is extended
+once, here. Runbook-run retention (item 3) operates on server_tasks kind=RunbookRun (children
+cascade via the unified FKs). Item 2's global package-retention default is a settings-document
+field, not a new table or column.
 ```
 
 ### WP10 — OpenTelemetry export
@@ -532,6 +586,11 @@ TASK: Close six small, unrelated latent defects. Independent items — commit se
 
 Acceptance: each item verified individually (unit test or manual smoke as appropriate); no
 regressions in Steps.KrakenIis and Agent test suites.
+
+RIDER (2026-07-10, after the DB schema chain): item 3 (log-sequencing race) was folded into
+schema fix 3 (unified log allocation) — verify ServerScriptStepRunner routes through the shared
+sequencer and close the item with a regression test only; if fix 3 missed it, fix it here
+against the unified task_log_entries.
 ```
 
 ### WP12 — Per-account DEK: unblock multi-account boot
@@ -574,6 +633,13 @@ Scope:
 Acceptance: multi-account boots with encryption enabled; per-account rotation works offline;
 cross-account decryption is impossible by construction; single-instance path byte-identical in
 behavior.
+
+RIDER (2026-07-10, after the DB schema chain): P3-5 changed shape. FeatureFlagService,
+MaintenanceModeService and PerformanceSettingsService no longer exist as table-backed Scoped
+caches — they read documents via SettingsService (fix 7). Account-key SettingsService's cache
+plus the two survivors (DeploymentFreezeService, LicenseUsageCounter). The per-account DEK walk
+must also cover the generic settings-document rotation step added in fix 7 (typed payloads with
+*Encrypted members, per account DB).
 ```
 
 ### WP13 — Account & security feature batch
@@ -612,6 +678,12 @@ TASK: Four security/account features, independent — commit separately.
 Acceptance: invite round-trip works end-to-end (create → register → team applied → code dead);
 signing-key rotation possible without config edits; AI rates overridable per Space and the
 budget cap respects them; deployment group either gone or join-authorized with a test.
+
+RIDER (2026-07-10, after the DB schema chain): item 3 — prefer extending the Space 'ai'
+settings document (fix 7) with the cost-override rates instead of a new ISpaceScoped entity;
+fall back to an entity only if per-rate rows genuinely need independent audit/concurrency.
+Item 4 — AgentHub was rewritten in fix 3; re-locate the deployment:{id} (now task-scoped) group
+pushes before deciding delete-vs-authorized-join.
 ```
 
 ### WP14 — Documentation reconciliation
@@ -656,6 +728,11 @@ TASK: Make the paperwork match the shipped product. No code changes except the o
 
 Acceptance: a new developer reading README + TASKS.md gets an accurate picture; every doc has a
 correct status header; the AI settings link resolves.
+
+RIDER (2026-07-10): item 3 is CANCELLED — docs/db-erd.md was deleted as stale (2026-07-10); do
+NOT recreate it unless explicitly asked. Extend item 2e: the DB schema hardening chain
+(docs/db-schema-fix-prompts-2026-07-10.md, fixes 1-7), the WP1/WP2 completions, and the merged
+execution order (finish-plan v1.2 §2) belong in the M16/TASKS.md reconciliation.
 ```
 
 ### WP15 — Certificates library (full v1, pre-go-live)
@@ -715,3 +792,4 @@ permission gates enforced.
 |---|---|---|
 | 1.0 | 2026-07-05 | Initial audit + plan + WP1–WP14 prompts |
 | 1.1 | 2026-07-06 | Grill session: all decisions resolved (§3), execution order + go-live line locked, WP3 approval model specced, WP10 + Seq, WP14 D8/D9 + M16, new WP15 certificates prompt |
+| 1.2 | 2026-07-10 | WP1+WP2 done; DB schema chain (db-schema-fix-prompts-2026-07-10.md) inserted before WP3, merged order locked; preamble rules 4/5 updated + new rule 11 (SettingsService); RIDERs added to WP3-5, WP7-9, WP11-14; WP14 db-erd.md item cancelled (file deleted) |

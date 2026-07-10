@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Status** | Draft |
-| **Version** | 1.0 |
+| **Status** | Review |
+| **Version** | 1.1 |
 | **Date** | 2026-07-10 |
 | **Authors** | Domagoj Jugović, Claude (Fable 5 review session) |
 | **Technologies** | .NET 10, EF Core 10, PostgreSQL, Blazor Server (Radzen) |
@@ -14,11 +14,19 @@ Seven sequential prompts for Opus 4.8 sessions. Each fix is one or more commits 
 chain branch; each session starts where the previous one finished. Paste the **Common Context**
 block plus the fix's prompt into a fresh session.
 
+**Ordering (2026-07-10):** this chain runs to completion BEFORE finish-plan WP3 and all later
+work packages — see the ordering update and merged execution order in
+`docs/finish-plan-2026-07-05.md` §2 (v1.2). Reconciliation deltas applied there as per-WP
+riders; deltas applied here: WP11 item 3 folded into fix 3, the log age-cap moved from fix 6 to
+WP9, and fix 7's ERD regeneration removed (`docs/db-erd.md` was deleted as stale — do not
+recreate it).
+
 ## Preconditions (manual, before Prompt 1)
 
-1. Commit/merge `feat/deploy-release-ui` and `feat/dashboard-tile-layout` into `main`
-   (fix 3 rewrites the Deployments surface and Home dashboard — unmerged UI work will conflict).
-2. Create the chain branch: `git checkout -b fix/db-schema-hardening main`.
+1. Commit/merge `feat/deploy-release-ui` and `feat/dashboard-tile-layout` into `main` —
+   **DONE 2026-07-10** (merge `4712364`; the dashboard branch was already in main's history;
+   build 0/0 + full test suite verified green before the merge).
+2. Create the chain branch — **DONE 2026-07-10**: `fix/db-schema-hardening` exists at `4712364`.
 3. Dev DB content is disposable (destructive migrations are allowed throughout).
 4. Docker Desktop must be started via Explorer, not plain `Start-Process`
    (`Start-Process explorer.exe -ArgumentList '"...Docker Desktop.exe"'`), or it dies mid-init.
@@ -155,6 +163,10 @@ and one ServerTask spine — that is the target.
    runbook history mass-cascades).
 8. `StepSnapshot`/`DeploymentPlanFlattener`/`StepConditionEvaluator` in KrakenDeploy.Execution
    stay shared and Octostache-only; the agent must never gain a Server.* reference.
+9. While unifying log allocation, route `ServerScriptStepRunner`'s unguarded
+   `deployment.NextLogSequence++` (~line 246) through the same sequencer the agent path uses —
+   parallel server-side steps can currently take duplicate sequence numbers. This closes
+   finish-plan WP11 item 3; leave a regression test.
 
 **Sequencing inside the session (separate commits):** (a) schema + entities + migration,
 (b) engine — DeploymentWorker/RunbookRunWorker convergence, AgentHub single lookup, terminal
@@ -274,10 +286,11 @@ outlive any retention policy except whole-execution pruning.
    tools, `ScheduledDeploymentDispatchJob`, `DeployReleaseStepRunner` (child deployments),
    offline result import. Enforce with a service-layer guard (creation API requires a cause).
 3. UI: show "initiated by / cause" on task detail pages and the deployments dashboard column.
-4. **Log retention (rows stay in Postgres — decided):** extend `RetentionService` so pruned
-   executions delete their children (verify CASCADE does this post-fix-3), and add an age-based
-   cap for logs of *retained* executions (knob on `PerformanceSettings`; fix 7 will migrate the
-   knob into the settings document — coordinate by adding it to the POCO in a way fix 7 can move).
+4. **Log retention (rows stay in Postgres — decided):** verify pruned executions delete their
+   children via the fix-3 CASCADE FKs and add a regression test (including logs of pruned
+   runbook-kind tasks). The age-based cap for logs of *retained* executions is deliberately NOT
+   in this fix — it moved to finish-plan WP9 (retention expansion) so `RetentionService` is
+   extended exactly once. Do not add retention knobs here.
 
 **Verification:** build 0/0, full tests, **docker smoke required** (creation-site changes touch
 the worker/agent path via scheduled dispatch and parent-step deploys). Adversarial review focus:
@@ -345,11 +358,17 @@ and displayed but never applied. Implement Octopus-semantics validation at relea
 `ReleaseService` (and CLI/MCP create paths): package versions must satisfy the SemVer range and
 the pre-release tag regex of the release's channel; clear validation errors in the UI dialog.
 
-**Part D — regenerate `docs/db-erd.md`** from the final model snapshot (it is stale: says 61
-tables and still draws the pre-extended-tags tenant tag model). Bump its version header.
+(There is no Part D — `docs/db-erd.md` was deleted as stale on 2026-07-10; do not recreate it.)
 
 **Verification:** build 0/0, full tests (DEK rotation completeness + settings round-trip +
 channel rule tests), no smoke needed unless the MCP gate change touches the agent path (it does
 not — verify). Adversarial review focus: DEK rotation coverage of every `*Encrypted` member,
 maintenance-mode read path performance (it runs per-request), and feature-flag concurrency on
 the single document row.
+
+---
+
+| Version | Date | Change |
+|---|---|---|
+| 1.0 | 2026-07-10 | Initial: 7 prompts from the consolidated 5-agent schema review |
+| 1.1 | 2026-07-10 | Preconditions done (merge `4712364`, chain branch created); reconciled with finish-plan v1.2: WP11 item 3 folded into fix 3 (decision 9), log age-cap moved fix 6 → WP9, ERD regeneration removed (db-erd.md deleted); chain ordered before WP3 |
