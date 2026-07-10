@@ -445,6 +445,9 @@ public sealed class DiagnosticsService(
         var deployments  = await db.Deployments.IgnoreQueryFilters().CountAsync(ct).ConfigureAwait(false);
         var users        = await db.Users.CountAsync(ct).ConfigureAwait(false);
         var teams        = await db.Teams.CountAsync(ct).ConfigureAwait(false);
+        // AuditEntries deliberately not routed through the audit choke point
+        // (AuditExportService): bare COUNT(*) — no row content leaves the DB —
+        // and this surface is gated by ConfigureServer (system tier).
         var auditEntries = await db.AuditEntries.IgnoreQueryFilters().CountAsync(ct).ConfigureAwait(false);
 
         return new RowCountSnapshot(

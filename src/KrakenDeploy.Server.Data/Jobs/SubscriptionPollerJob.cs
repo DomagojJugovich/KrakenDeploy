@@ -90,6 +90,11 @@ public sealed class SubscriptionPollerJob(
         }
 
         // 2. Read new audit rows.
+        // Not routed through the audit choke point (AuditExportService): this
+        // is the system-context event pump — it must see every Space's rows to
+        // fan them out. Space isolation is enforced per subscription at match
+        // time (SubscriptionMatcher: a Space-scoped subscription only matches
+        // its own Space's events; NULL-Space rows only match system-wide subs).
         List<AuditEntry> events;
         await using (var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false))
         {

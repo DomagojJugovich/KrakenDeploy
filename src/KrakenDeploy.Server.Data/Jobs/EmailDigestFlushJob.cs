@@ -134,6 +134,11 @@ public sealed class EmailDigestFlushJob(
             if (entries.Count == 0) { return; }
 
             var ids = entries.Select(e => e.EventId).ToHashSet();
+            // Not routed through the audit choke point (AuditExportService):
+            // re-reads rows by primary key of outbox entries that were already
+            // Space-matched to THIS subscription by SubscriptionMatcher at
+            // enqueue time; the digest goes to the subscription's recipients,
+            // not an interactive caller.
             events = await db.AuditEntries
                 .IgnoreQueryFilters()
                 .Where(a => ids.Contains(a.Id))
