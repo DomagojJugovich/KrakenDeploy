@@ -639,7 +639,12 @@ MaintenanceModeService and PerformanceSettingsService no longer exist as table-b
 caches — they read documents via SettingsService (fix 7). Account-key SettingsService's cache
 plus the two survivors (DeploymentFreezeService, LicenseUsageCounter). The per-account DEK walk
 must also cover the generic settings-document rotation step added in fix 7 (typed payloads with
-*Encrypted members, per account DB).
+*Encrypted members, per account DB). ALSO IN SCOPE (TASKS.md M10.2, flagged 2026-07-10):
+FleetMigrationOrchestrator.MigrateAllAsync has NO caller — already-provisioned tenant DBs never
+receive new EF migrations. Wire the fleet-migration trigger here (recommend a CLI
+`database migrate-fleet` verb with advisory lock + per-account FleetMigrationReport surfacing) —
+multi-account cannot ship on manually migrated tenant DBs, and the schema chain's 7 migrations
+plus your per-account DEK migration all depend on it reaching existing accounts.
 ```
 
 ### WP13 — Account & security feature batch
