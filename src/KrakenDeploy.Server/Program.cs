@@ -1876,6 +1876,17 @@ public static class Program
             async (TriggerDeploymentRequest req, DeploymentService deploymentSvc,
                 CancellationToken ct) =>
             {
+                // A body that omits TargetId (or sends null) binds as
+                // Guid.Empty — fail with a clear message instead of the
+                // opaque "Target(s) not found: 00000000-…" from CreateAsync.
+                if (req.TargetId == Guid.Empty)
+                {
+                    return Results.BadRequest(new
+                    {
+                        error = "TargetId is required — a deployment needs at least one target.",
+                    });
+                }
+
                 try
                 {
                     var deployment = await deploymentSvc
