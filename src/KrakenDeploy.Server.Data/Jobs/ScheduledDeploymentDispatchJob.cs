@@ -32,10 +32,12 @@ public sealed class ScheduledDeploymentDispatchJob(
 
         var now = time.GetUtcNow();
 
-        // Load IDs of tasks (deployments OR runbook runs) whose scheduled time has
-        // passed. IgnoreQueryFilters — dispatch is space-agnostic. Querying the
-        // unified server_tasks spine means scheduled runbook runs dispatch too.
-        var dueIds = await db.ServerTasks
+        // Load IDs of DEPLOYMENTS whose scheduled time has passed. This job feeds
+        // the deployment queue, so it must stay deployment-kind only — runbook-run
+        // scheduling arrives with the DeploymentWorker/RunbookRunWorker merge (until
+        // then runbook triggers never set ScheduledFor). IgnoreQueryFilters —
+        // dispatch is space-agnostic.
+        var dueIds = await db.Deployments
             .IgnoreQueryFilters()
             .Where(d => d.Status == DeploymentStatus.Queued
                      && d.ScheduledFor != null
@@ -51,7 +53,7 @@ public sealed class ScheduledDeploymentDispatchJob(
 
         // Atomically clear ScheduledFor so a concurrent run of this job (or a
         // quick retry) cannot enqueue the same deployment a second time.
-        await db.ServerTasks
+        await db.Deployments
             .IgnoreQueryFilters()
             .Where(d => dueIds.Contains(d.Id))
             .ExecuteUpdateAsync(s =>
