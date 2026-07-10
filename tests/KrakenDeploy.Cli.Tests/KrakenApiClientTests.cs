@@ -165,6 +165,7 @@ public sealed class KrakenApiClientTests
         string? capturedBody = null;
         var releaseId = Guid.NewGuid();
         var envId     = Guid.NewGuid();
+        var targetId  = Guid.NewGuid();
 
         var response = new
         {
@@ -172,7 +173,6 @@ public sealed class KrakenApiClientTests
             Status        = "Queued",
             ReleaseId     = releaseId,
             EnvironmentId = envId,
-            TargetId      = (Guid?)null,
             CreatedUtc    = DateTimeOffset.UtcNow,
             StartedUtc    = (DateTimeOffset?)null,
             CompletedUtc  = (DateTimeOffset?)null,
@@ -188,7 +188,7 @@ public sealed class KrakenApiClientTests
         });
 
         using var client = BuildClient(handler);
-        var deployment = await client.CreateDeploymentAsync(releaseId, envId, null);
+        var deployment = await client.CreateDeploymentAsync(releaseId, envId, targetId);
 
         deployment.Status.Should().Be("Queued");
 
@@ -198,6 +198,9 @@ public sealed class KrakenApiClientTests
         var doc = JsonDocument.Parse(capturedBody!).RootElement;
         doc.GetProperty("ReleaseId").GetGuid().Should().Be(releaseId);
         doc.GetProperty("EnvironmentId").GetGuid().Should().Be(envId);
+        // TargetId is mandatory — the 2026-07 fix stopped the CLI from
+        // serialising a null that bound as Guid.Empty server-side.
+        doc.GetProperty("TargetId").GetGuid().Should().Be(targetId);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

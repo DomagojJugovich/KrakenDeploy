@@ -34,7 +34,6 @@ public sealed record DeploymentDto(
     string Status,
     Guid ReleaseId,
     Guid EnvironmentId,
-    Guid? TargetId,
     DateTimeOffset CreatedUtc,
     DateTimeOffset? StartedUtc,
     DateTimeOffset? CompletedUtc);
@@ -143,7 +142,7 @@ public sealed class KrakenApiClient : IDisposable
     // ── Deployments ───────────────────────────────────────────────────────────
 
     public async Task<DeploymentDto> CreateDeploymentAsync(
-        Guid releaseId, Guid environmentId, Guid? targetId, CancellationToken ct = default)
+        Guid releaseId, Guid environmentId, Guid targetId, CancellationToken ct = default)
     {
         var body = new { ReleaseId = releaseId, EnvironmentId = environmentId, TargetId = targetId };
         var response = await _http.PostAsJsonAsync("api/deployments", body, JsonOpts, ct)

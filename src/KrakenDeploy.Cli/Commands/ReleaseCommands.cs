@@ -123,7 +123,11 @@ public static class ReleaseCommands
         var projectOpt     = new Option<string>("--project",     "Project slug.")     { IsRequired = true };
         var releaseOpt     = new Option<string>("--release",     "Release version.") { IsRequired = true };
         var environmentOpt = new Option<string>("--environment", "Environment slug.") { IsRequired = true };
-        var targetOpt      = new Option<string?>("--target", "Target name (optional; omit to let the server pick).");
+        // Required: a deployment needs at least one target, and the server
+        // has no "pick one for me" semantic — omitting it used to serialize
+        // a null that bound as Guid.Empty server-side and failed with an
+        // opaque "Target(s) not found: 00000000-…" error.
+        var targetOpt      = new Option<string>("--target", "Target name.") { IsRequired = true };
         var waitOpt        = new Option<bool>("--wait", "Block until the deployment finishes and stream log output.");
         var timeoutOpt     = new Option<int>("--timeout", () => 600, "Timeout in seconds when --wait is set.");
 
@@ -157,18 +161,18 @@ public static class ReleaseCommands
                     string.Equals(e.Name, environment, StringComparison.OrdinalIgnoreCase));
                 if (env is null) { Console.Error.WriteLine($"Environment '{environment}' not found."); return; }
 
-                // Resolve target (optional)
-                Guid? targetId = null;
-                if (target is not null)
+                // Resolve target
+                var targets = await client.GetTargetsAsync().ConfigureAwait(false);
+                var tgt = targets.FirstOrDefault(t =>
+                    string.Equals(t.Name, target, StringComparison.OrdinalIgnoreCase));
+                if (tgt is null)
                 {
-                    var targets = await client.GetTargetsAsync().ConfigureAwait(false);
-                    var tgt = targets.FirstOrDefault(t =>
-                        string.Equals(t.Name, target, StringComparison.OrdinalIgnoreCase));
-                    if (tgt is null) { Console.Error.WriteLine($"Target '{target}' not found."); return; }
-                    targetId = tgt.Id;
+                    Console.Error.WriteLine($"Target '{target}' not found.");
+                    Environment.ExitCode = 1;
+                    return;
                 }
 
-                var deployment = await client.CreateDeploymentAsync(rel.Id, env.Id, targetId)
+                var deployment = await client.CreateDeploymentAsync(rel.Id, env.Id, tgt.Id)
                     .ConfigureAwait(false);
 
                 Console.WriteLine($"✓  Deployment queued (id: {deployment.Id})");
