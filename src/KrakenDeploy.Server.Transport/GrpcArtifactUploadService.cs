@@ -81,11 +81,11 @@ public sealed class GrpcArtifactUploadService(
             await using (var db = await dbFactory
                 .CreateDbContextAsync(context.CancellationToken).ConfigureAwait(false))
             {
-                if (!await AgentDeploymentOwnership.ConnectionOwnsDeploymentAsync(
+                if (!await AgentDeploymentOwnership.ConnectionOwnsTaskAsync(
                         db, deploymentId, connectionTargetId).ConfigureAwait(false))
                 {
                     logger.LogWarning(
-                        "Artifact upload rejected: target {Target} is not assigned to deployment {Id}.",
+                        "Artifact upload rejected: target {Target} is not assigned to task {Id}.",
                         connectionTargetId, deploymentId);
                     return Fail("Not authorized for this deployment.");
                 }

@@ -37,6 +37,12 @@ public sealed class DeploymentExecutor(
     /// </summary>
     public bool IsExecuting { get; private set; }
 
+    // Per-step-flow current step index, stored +1 so the AsyncLocal default (0)
+    // reads as "no step / plan-level" (-1). Set at the top of RunStepInWaveAsync;
+    // it flows to every LogAsync in that step's async branch. Waves run steps via
+    // Task.WhenAll, so each branch keeps its own value — parallel steps don't clash.
+    private readonly AsyncLocal<int> _stepIndexPlusOne = new();
+
     /// <param name="orchestrateSteps">
     /// When <c>true</c>, the executor itself applies per-step run conditions,
     /// timeouts, retries, and Required-aware gating — the orchestration the
@@ -221,6 +227,12 @@ public sealed class DeploymentExecutor(
         bool hasFailed,
         CancellationToken ct)
     {
+        // Stamp this step's index for the async flow so every LogAsync in this
+        // branch attributes its lines to the right step (used by the server's log
+        // compactor). +1 so the AsyncLocal default reads as plan-level (-1). Waves
+        // run steps via Task.WhenAll — each branch keeps its own value.
+        _stepIndexPlusOne.Value = step.Index + 1;
+
         // Orchestrate mode (offline): evaluate the step's Run Condition. Skipped
         // steps don't run, don't fail the deployment, and produce no outputs.
         if (orchestrateSteps)
@@ -824,9 +836,11 @@ public sealed class DeploymentExecutor(
         Guid deploymentId, string level, string message, CancellationToken ct)
     {
         logger.LogDebug("[Deployment {Id}] {Level}: {Message}", deploymentId, level, message);
+        // -1 = plan-level (no step in this async flow); otherwise the running step.
+        var stepIndex = _stepIndexPlusOne.Value - 1;
         try
         {
-            await serverLink.AppendLogAsync(deploymentId, level, message, ct)
+            await serverLink.AppendLogAsync(deploymentId, stepIndex, level, message, ct)
                 .ConfigureAwait(false);
         }
         catch (Exception ex)

@@ -4,6 +4,7 @@ using System.Text;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Data;
+using KrakenDeploy.Server.Data.Services;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -41,7 +42,7 @@ public sealed class ServerScriptStepRunner(
         IReadOnlyDictionary<string, string> planVariables,
         CancellationToken ct)
     {
-        await AppendLogAsync(deploymentId, "info",
+        await AppendLogAsync(deploymentId, step.Index, "info",
             $"--- Step {step.Index + 1}: {step.Name} (server-side) ---", ct).ConfigureAwait(false);
 
         var scriptBody = step.Config.TryGetValue("Octopus.Action.Script.ScriptBody", out var b) ? b : "";
@@ -50,7 +51,7 @@ public sealed class ServerScriptStepRunner(
 
         if (string.IsNullOrWhiteSpace(scriptBody))
         {
-            await AppendLogAsync(deploymentId, "error",
+            await AppendLogAsync(deploymentId, step.Index, "error",
                 "Step has no script body.", ct).ConfigureAwait(false);
             return false;
         }
@@ -109,14 +110,14 @@ public sealed class ServerScriptStepRunner(
             {
                 if (e.Data is not null)
                 {
-                    pending.Add(AppendLogAsync(deploymentId, "info", e.Data, ct));
+                    pending.Add(AppendLogAsync(deploymentId, step.Index, "info", e.Data, ct));
                 }
             };
             process.ErrorDataReceived += (_, e) =>
             {
                 if (e.Data is not null)
                 {
-                    pending.Add(AppendLogAsync(deploymentId, "error", e.Data, ct));
+                    pending.Add(AppendLogAsync(deploymentId, step.Index, "error", e.Data, ct));
                 }
             };
 
@@ -128,7 +129,7 @@ public sealed class ServerScriptStepRunner(
             await Task.WhenAll(pending).ConfigureAwait(false);
 
             var success = process.ExitCode == 0;
-            await AppendLogAsync(deploymentId,
+            await AppendLogAsync(deploymentId, step.Index,
                 success ? "info" : "error",
                 success ? $"Step '{step.Name}' succeeded." : $"Step '{step.Name}' failed (exit {process.ExitCode}).",
                 ct).ConfigureAwait(false);
@@ -150,7 +151,7 @@ public sealed class ServerScriptStepRunner(
             logger.LogError(ex,
                 "Server-side script step '{Step}' for deployment {Id} crashed.",
                 step.Name, deploymentId);
-            await AppendLogAsync(deploymentId, "error",
+            await AppendLogAsync(deploymentId, step.Index, "error",
                 $"Server-side execution crashed: {ex.Message}", ct).ConfigureAwait(false);
             return false;
         }
@@ -233,35 +234,29 @@ public sealed class ServerScriptStepRunner(
     /// agent lines.
     /// </summary>
     private async Task AppendLogAsync(
-        Guid deploymentId, string level, string message, CancellationToken ct)
+        Guid deploymentId, int stepIndex, string level, string message, CancellationToken ct)
     {
         var timestamp = timeProvider.GetUtcNow();
 
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
-        // Background scope → DefaultSpaceId, so the global filter would hide a
-        // deployment in a non-Default Space. Load it filter-free (it's an
-        // already-authorised by-id read) and stamp the log row's SpaceId from the
-        // loaded deployment below — same pattern as DeploymentWorker.AppendConcurrentLogAsync.
-        var deployment = await db.Deployments.IgnoreQueryFilters()
-            .FirstOrDefaultAsync(d => d.Id == deploymentId, ct).ConfigureAwait(false);
-        if (deployment is null)
+        // Background scope → DefaultSpaceId; confirm the task exists filter-free
+        // (an already-authorised by-id read). Server-side steps aren't bound to a
+        // target, so the line's target_id is null.
+        var exists = await db.ServerTasks.IgnoreQueryFilters()
+            .AnyAsync(t => t.Id == deploymentId, ct).ConfigureAwait(false);
+        if (!exists)
         {
-            logger.LogWarning("ServerScriptStepRunner: deployment {Id} not found for log line.", deploymentId);
+            logger.LogWarning("ServerScriptStepRunner: task {Id} not found for log line.", deploymentId);
             return;
         }
 
-        var seq = deployment.NextLogSequence++;
-        db.DeploymentLogEntries.Add(new DeploymentLogEntry
-        {
-            SpaceId      = deployment.SpaceId,
-            DeploymentId = deploymentId,
-            Sequence     = seq,
-            Timestamp    = timestamp,
-            Message      = message,
-            Level        = level,
-        });
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        // Route through the SHARED DB-atomic sequencer — the same one the agent
+        // path uses — so parallel server-side wave steps can't take duplicate
+        // sequence numbers (closes the old unguarded NextLogSequence++ race).
+        var seq = await TaskLogService.AppendLiveAsync(
+            db, deploymentId, stepIndex, targetId: null, level, message, timestamp, ct)
+            .ConfigureAwait(false);
 
         await uiHub.Clients.Group($"deployment:{deploymentId}")
             .DeploymentLogAppendedAsync(deploymentId, seq, timestamp, level, message)

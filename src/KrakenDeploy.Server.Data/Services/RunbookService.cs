@@ -31,7 +31,7 @@ public interface IRunbookTrigger
 /// </summary>
 public class RunbookService(
     IDbContextFactory<KrakenDbContext> dbFactory,
-    Channel<TenantWorkItem> taskQueue,
+    RunbookRunChannel runbookQueue,
     TimeProvider time,
     IAccountContext accountContext,
     StepPackageResolver? stepPackageResolver = null)
@@ -467,7 +467,7 @@ public class RunbookService(
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         var accountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;
-        await taskQueue.Writer
+        await runbookQueue.Writer
             .WriteAsync(new TenantWorkItem(accountId, run.Id), ct)
             .ConfigureAwait(false);
 

@@ -59,8 +59,8 @@ public static class OctopusDeployReleaseConfigKeys
 /// <list type="number">
 ///   <item>Create the child deployment via <see cref="DeploymentService.CreateAsync"/>
 ///         against the parent's environment and target. Record the parent
-///         link via <see cref="Deployment.ParentDeploymentId"/>.</item>
-///   <item>Poll the child's <see cref="DeploymentLogEntry"/> rows; for each
+///         link via <see cref="ServerTask.ParentTaskId"/>.</item>
+///   <item>Poll the child's log (via <c>TaskLogService</c>); for each
 ///         new entry, append a prefixed line to the *parent* deployment's
 ///         log (so the operator sees the child's progress without leaving
 ///         the parent's view).</item>
@@ -244,7 +244,7 @@ public sealed class DeployReleaseStepRunner(
             var tracked = await linkDb.Deployments.FindAsync([child.Id], ct).ConfigureAwait(false);
             if (tracked is not null)
             {
-                tracked.ParentDeploymentId = parentDeploymentId;
+                tracked.ParentTaskId = parentDeploymentId;
                 await linkDb.SaveChangesAsync(ct).ConfigureAwait(false);
             }
         }
@@ -282,11 +282,8 @@ public sealed class DeployReleaseStepRunner(
             var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
 
             // Stream any new log lines the child has written since we last polled.
-            var newLines = await db.DeploymentLogEntries
-                .AsNoTracking()
-                .Where(l => l.DeploymentId == childId && l.Sequence > lastSequence)
-                .OrderBy(l => l.Sequence)
-                .ToListAsync(ct)
+            var newLines = await TaskLogService
+                .ReadSinceAsync(db, childId, lastSequence, ct)
                 .ConfigureAwait(false);
 
             foreach (var line in newLines)
@@ -427,26 +424,21 @@ public sealed class DeployReleaseStepRunner(
         // Background scope → DefaultSpaceId; load filter-free (already-authorised
         // by-id read) and stamp the log row's SpaceId from the loaded deployment
         // below — mirrors ServerScriptStepRunner / AppendConcurrentLogAsync.
-        var deployment = await db.Deployments.IgnoreQueryFilters()
-            .FirstOrDefaultAsync(d => d.Id == deploymentId, ct).ConfigureAwait(false);
-        if (deployment is null)
+        var exists = await db.ServerTasks.IgnoreQueryFilters()
+            .AnyAsync(t => t.Id == deploymentId, ct).ConfigureAwait(false);
+        if (!exists)
         {
             logger.LogWarning(
-                "DeployReleaseStepRunner: deployment {Id} not found for log line.", deploymentId);
+                "DeployReleaseStepRunner: task {Id} not found for log line.", deploymentId);
             return;
         }
 
-        var seq = deployment.NextLogSequence++;
-        db.DeploymentLogEntries.Add(new DeploymentLogEntry
-        {
-            SpaceId      = deployment.SpaceId,
-            DeploymentId = deploymentId,
-            Sequence     = seq,
-            Timestamp    = timestamp,
-            Message      = message,
-            Level        = level,
-        });
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        // Parent DeployRelease step lines (including mirrored child lines) route
+        // through the shared DB-atomic sequencer, at task level (-1) since they're
+        // the orchestrator relaying the child's progress into the parent.
+        var seq = await TaskLogService.AppendLiveAsync(
+            db, deploymentId, -1, targetId: null, level, message, timestamp, ct)
+            .ConfigureAwait(false);
 
         await uiHub.Clients.Group($"deployment:{deploymentId}")
             .DeploymentLogAppendedAsync(deploymentId, seq, timestamp, level, message)

@@ -1,45 +1,40 @@
-using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Data;
+using KrakenDeploy.Server.Data.Services;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace KrakenDeploy.Server.Transport;
 
 /// <summary>
-/// Serialises read-modify-write of <see cref="Deployment.NextLogSequence"/>
-/// so the orchestrator can hand out unique log-entry sequence numbers
-/// from multiple concurrent code paths inside a single deployment dispatch.
-///
+/// Orchestrator-side log writer for a single task dispatch. Routes every
+/// orchestrator log line through the SHARED DB-atomic sequencer
+/// (<see cref="TaskLogService"/>) — the same path the agent and the server-side
+/// script runner use — so parallel waves / multi-target fan-out can never take
+/// duplicate sequence numbers (the pre-unification in-memory
+/// <c>NextLogSequence++</c> race is gone: decision 9).
 /// <para>
-/// <strong>Why this exists:</strong> the M14.2/M14.3 helpers each read
-/// <c>deployment.NextLogSequence++</c> when appending a log entry. Today
-/// the loop is single-threaded per deployment so that's safe. M14.4
-/// introduces wave-parallel step execution within a single deployment;
-/// two parallel waves writing log entries would race the unguarded
-/// post-increment and assign the same sequence to two rows. This carrier
-/// closes that gap proactively — one <see cref="LogSequencer"/> per
-/// deployment dispatch, shared across every helper that needs a sequence.
-/// </para>
-///
-/// <para>
-/// The lock is held only for the duration of the post-increment (a few
-/// nanoseconds). It is NOT held across the DB SaveChanges, so concurrent
-/// SaveChanges calls writing different rows still parallelise — only the
-/// sequence assignment is serialised.
+/// Each append runs in its own short-lived DI scope so concurrent branches never
+/// contend on the dispatch's main <see cref="KrakenDbContext"/>. One instance per
+/// task dispatch, shared across every orchestrator helper.
 /// </para>
 /// </summary>
-public sealed class LogSequencer(Deployment deployment)
+public sealed class LogSequencer(
+    IServiceScopeFactory scopeFactory,
+    TimeProvider timeProvider,
+    Guid taskId)
 {
-    private readonly object _gate = new();
-    private readonly Deployment _deployment = deployment;
-
     /// <summary>
-    /// Atomically reads the current sequence value, increments it, and
-    /// returns the pre-increment value. Equivalent to the pre-M14.3.1
-    /// <c>deployment.NextLogSequence++</c> idiom under a lock.
+    /// Append one orchestrator log line via the shared sequencer.
+    /// <paramref name="stepIndex"/> = -1 for a task-level banner (no bound step);
+    /// <paramref name="targetId"/> = null when not bound to a specific target.
+    /// Returns the allocated sequence.
     /// </summary>
-    public int Next()
+    public async Task<int> AppendAsync(
+        int stepIndex, Guid? targetId, string level, string message, CancellationToken ct = default)
     {
-        lock (_gate)
-        {
-            return _deployment.NextLogSequence++;
-        }
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
+        return await TaskLogService.AppendLiveAsync(
+            db, taskId, stepIndex, targetId, level, message, timeProvider.GetUtcNow(), ct)
+            .ConfigureAwait(false);
     }
 }

@@ -20,10 +20,12 @@ public interface IAgentHubServer
     Task ReportStatusAsync(string status);
 
     /// <summary>
-    /// Streams a single log line from an executing deployment step.
-    /// The server persists it and broadcasts it to the UI in real time.
+    /// Streams a single log line from an executing step. The server persists it
+    /// (staged per step for compaction) and broadcasts it to the UI in real time.
+    /// <paramref name="stepIndex"/> is the plan-level step index the line belongs
+    /// to, or -1 for plan-level lines.
     /// </summary>
-    Task AppendLogAsync(Guid deploymentId, string level, string message);
+    Task AppendLogAsync(Guid deploymentId, int stepIndex, string level, string message);
 
     /// <summary>
     /// Called by the agent when all steps have finished (or a step has failed).

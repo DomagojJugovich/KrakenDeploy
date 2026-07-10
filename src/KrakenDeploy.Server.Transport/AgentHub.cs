@@ -2,8 +2,10 @@ using System.Security.Claims;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Contracts.Adhoc;
 using KrakenDeploy.Server.Core.Domain.Accounts;
+using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data;
+using KrakenDeploy.Server.Data.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.DependencyInjection;
@@ -220,7 +222,7 @@ public sealed class AgentHub(
         return Task.CompletedTask;
     }
 
-    public async Task AppendLogAsync(Guid deploymentId, string level, string message)
+    public async Task AppendLogAsync(Guid deploymentId, int stepIndex, string level, string message)
     {
         ArgumentNullException.ThrowIfNull(message);
 
@@ -229,80 +231,37 @@ public sealed class AgentHub(
 
         await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
 
-        // Try Deployment first, then RunbookRun (same ID space, non-overlapping GUIDs).
-        // The agent reports against a deployment/run id; the hub has no ambient
-        // Space (DefaultSpaceId), so load filter-free — the global filter would
-        // otherwise hide a deployment that lives in a non-Default Space. Writes
-        // below stamp SpaceId explicitly from the loaded row.
-        var deployment = await db.Deployments
+        // ONE lookup — deployments and runbook runs share the server_tasks spine
+        // (no more Deployment-then-RunbookRun probe). Filter-free: the hub has no
+        // ambient Space (DefaultSpaceId); ownership is enforced via the join below.
+        var task = await db.ServerTasks
             .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(d => d.Id == deploymentId)
+            .FirstOrDefaultAsync(t => t.Id == deploymentId)
             .ConfigureAwait(false);
-
-        if (deployment is not null)
+        if (task is null)
         {
-            if (connectionTargetId is null
-                || !await AgentDeploymentOwnership.ConnectionOwnsDeploymentAsync(
-                    db, deployment, connectionTargetId.Value).ConfigureAwait(false))
-            {
-                logger.LogWarning(
-                    "AppendLog rejected: target {Target} is not assigned to deployment {Id}.",
-                    connectionTargetId, deploymentId);
-                return;
-            }
-
-            var seq = deployment.NextLogSequence++;
-            db.DeploymentLogEntries.Add(new KrakenDeploy.Server.Core.Domain.Deployments.DeploymentLogEntry
-            {
-                SpaceId = deployment.SpaceId,
-                DeploymentId = deploymentId,
-                Sequence = seq,
-                Timestamp = timestamp,
-                Message = message,
-                Level = level,
-            });
-            await db.SaveChangesAsync().ConfigureAwait(false);
-
-            await uiHub.Clients.Group($"deployment:{deploymentId}")
-                .DeploymentLogAppendedAsync(deploymentId, seq, timestamp, level, message)
-                .ConfigureAwait(false);
+            logger.LogWarning("AppendLog for unknown task {Id}; ignored.", deploymentId);
             return;
         }
 
-        var run = await db.RunbookRuns
-            .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(r => r.Id == deploymentId)
-            .ConfigureAwait(false);
-
-        if (run is not null)
+        if (connectionTargetId is null
+            || !await AgentDeploymentOwnership.ConnectionOwnsTaskAsync(
+                db, task, connectionTargetId.Value).ConfigureAwait(false))
         {
-            if (connectionTargetId is null || run.TargetId != connectionTargetId)
-            {
-                logger.LogWarning(
-                    "AppendLog rejected: target {Target} does not own runbook run {Id}.",
-                    connectionTargetId, deploymentId);
-                return;
-            }
-
-            var seq = run.NextLogSequence++;
-            db.RunbookRunLogEntries.Add(new KrakenDeploy.Server.Core.Domain.Runbooks.RunbookRunLogEntry
-            {
-                SpaceId = run.SpaceId,
-                RunbookRunId = deploymentId,
-                Sequence = seq,
-                Timestamp = timestamp,
-                Message = message,
-                Level = level,
-            });
-            await db.SaveChangesAsync().ConfigureAwait(false);
-
-            await uiHub.Clients.Group($"deployment:{deploymentId}")
-                .DeploymentLogAppendedAsync(deploymentId, seq, timestamp, level, message)
-                .ConfigureAwait(false);
+            logger.LogWarning(
+                "AppendLog rejected: target {Target} is not assigned to task {Id}.",
+                connectionTargetId, deploymentId);
             return;
         }
 
-        logger.LogWarning("AppendLog for unknown run {Id}; ignored.", deploymentId);
+        // DB-atomic sequence + staging insert (shared with the server-side path).
+        var seq = await TaskLogService.AppendLiveAsync(
+            db, deploymentId, stepIndex, connectionTargetId, level, message, timestamp)
+            .ConfigureAwait(false);
+
+        await uiHub.Clients.Group($"deployment:{deploymentId}")
+            .DeploymentLogAppendedAsync(deploymentId, seq, timestamp, level, message)
+            .ConfigureAwait(false);
     }
 
     public async Task CompleteDeploymentAsync(
@@ -336,88 +295,50 @@ public sealed class AgentHub(
 
         await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
 
-        // Try Deployment first.
-        // The agent reports against a deployment/run id; the hub has no ambient
-        // Space (DefaultSpaceId), so load filter-free — the global filter would
-        // otherwise hide a deployment that lives in a non-Default Space. Writes
-        // below stamp SpaceId explicitly from the loaded row.
-        var deployment = await db.Deployments
+        // ONE lookup on the unified spine. Reached only for a non-orchestrated
+        // completion (the orchestrator resolves its waves via the sub-plan registry
+        // above and finalises + compacts itself); kept robust as a fallback.
+        var task = await db.ServerTasks
             .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(d => d.Id == deploymentId)
+            .FirstOrDefaultAsync(t => t.Id == deploymentId)
             .ConfigureAwait(false);
-
-        if (deployment is not null)
+        if (task is null)
         {
-            if (connectionTargetId is null
-                || !await AgentDeploymentOwnership.ConnectionOwnsDeploymentAsync(
-                    db, deployment, connectionTargetId.Value).ConfigureAwait(false))
-            {
-                logger.LogWarning(
-                    "CompleteDeployment rejected: target {Target} is not assigned to deployment {Id}.",
-                    connectionTargetId, deploymentId);
-                return;
-            }
-
-            deployment.Status = success
-                ? KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Succeeded
-                : KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Failed;
-            deployment.CompletedUtc = completedAt;
-            await db.SaveChangesAsync().ConfigureAwait(false);
-
-            var statusStr = deployment.Status.ToString();
-            await uiHub.Clients.Group($"deployment:{deploymentId}")
-                .DeploymentStatusChangedAsync(deploymentId, statusStr)
-                .ConfigureAwait(false);
-
-            logger.LogInformation(
-                "Deployment {Id} completed: {Status}{Error}.",
-                deploymentId, statusStr,
-                errorMessage is null ? "" : $" — {errorMessage}");
-
-            // Prune old deployments per retention policy.
-            if (success)
-            {
-                _ = PruneRetentionAsync(deploymentId, scopeFactory, logger);
-            }
-
+            logger.LogWarning("CompleteDeployment for unknown task {Id}; ignored.", deploymentId);
             return;
         }
 
-        // Try RunbookRun.
-        var run = await db.RunbookRuns
-            .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(r => r.Id == deploymentId)
-            .ConfigureAwait(false);
-
-        if (run is not null)
+        if (connectionTargetId is null
+            || !await AgentDeploymentOwnership.ConnectionOwnsTaskAsync(
+                db, task, connectionTargetId.Value).ConfigureAwait(false))
         {
-            if (connectionTargetId is null || run.TargetId != connectionTargetId)
-            {
-                logger.LogWarning(
-                    "CompleteDeployment rejected: target {Target} does not own runbook run {Id}.",
-                    connectionTargetId, deploymentId);
-                return;
-            }
-
-            run.Status = success
-                ? KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Succeeded
-                : KrakenDeploy.Server.Core.Domain.Deployments.DeploymentStatus.Failed;
-            run.CompletedUtc = completedAt;
-            await db.SaveChangesAsync().ConfigureAwait(false);
-
-            var statusStr = run.Status.ToString();
-            await uiHub.Clients.Group($"deployment:{deploymentId}")
-                .DeploymentStatusChangedAsync(deploymentId, statusStr)
-                .ConfigureAwait(false);
-
-            logger.LogInformation(
-                "RunbookRun {Id} completed: {Status}{Error}.",
-                deploymentId, statusStr,
-                errorMessage is null ? "" : $" — {errorMessage}");
+            logger.LogWarning(
+                "CompleteDeployment rejected: target {Target} is not assigned to task {Id}.",
+                connectionTargetId, deploymentId);
             return;
         }
 
-        logger.LogWarning("CompleteDeployment for unknown run {Id}; ignored.", deploymentId);
+        task.Status = success ? DeploymentStatus.Succeeded : DeploymentStatus.Failed;
+        task.CompletedUtc = completedAt;
+        await db.SaveChangesAsync().ConfigureAwait(false);
+
+        // Terminal: sweep any remaining staging lines into per-step blobs.
+        await TaskLogService.CompactRemainingAsync(db, deploymentId, completedAt).ConfigureAwait(false);
+
+        var statusStr = task.Status.ToString();
+        await uiHub.Clients.Group($"deployment:{deploymentId}")
+            .DeploymentStatusChangedAsync(deploymentId, statusStr)
+            .ConfigureAwait(false);
+
+        logger.LogInformation(
+            "Task {Id} completed: {Status}{Error}.",
+            deploymentId, statusStr, errorMessage is null ? "" : $" — {errorMessage}");
+
+        // Retention pruning applies to deployments only (lifecycle-driven).
+        if (success && task.Kind == ServerTaskKind.Deployment)
+        {
+            _ = PruneRetentionAsync(deploymentId, scopeFactory, logger);
+        }
     }
 
     /// <summary>
@@ -470,79 +391,77 @@ public sealed class AgentHub(
                                       outputVariables, StringComparer.OrdinalIgnoreCase)));
         }
 
-        if (outputVariables.Count == 0)
-        {
-            // No outputs to persist; per-step outcome already recorded.
-            return;
-        }
-
         var capturedAt = timeProvider.GetUtcNow();
 
         await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
 
-        // Resolve the deployment's Space directly (IgnoreQueryFilters — the hub
-        // has no real Space context) both to confirm it exists and to stamp the
-        // output-variable rows so they aren't mis-scoped to the Default Space.
-        var deploymentScope = await db.Deployments.IgnoreQueryFilters()
-            .Where(d => d.Id == deploymentId)
-            .Select(d => new { d.SpaceId })
+        // ONE lookup on the unified spine — output variables are now persisted for
+        // runbook runs too (the pre-unification drop is fixed). Filter-free; stamp
+        // the child rows' SpaceId from the loaded task.
+        var scope = await db.ServerTasks.IgnoreQueryFilters()
+            .Where(t => t.Id == deploymentId)
+            .Select(t => new { t.SpaceId })
             .FirstOrDefaultAsync().ConfigureAwait(false);
-        if (deploymentScope is null)
+        if (scope is null)
         {
-            // Runbook runs don't currently capture output variables — when they
-            // do, route here using a parallel table. Until then, ignore.
             logger.LogDebug(
-                "ReportStepCompleted for unknown deployment {Id}; ignored.", deploymentId);
+                "ReportStepCompleted for unknown task {Id}; ignored.", deploymentId);
             return;
         }
 
-        // Ownership: only a target assigned to this deployment may persist its
-        // output variables — otherwise a foreign agent could inject outputs that
+        // Ownership: only a target assigned to this task may persist its outputs
+        // or compact its logs — otherwise a foreign agent could inject outputs that
         // later steps consume.
         if (connectionTargetId is null
             || !await AgentDeploymentOwnership
-                   .ConnectionOwnsDeploymentAsync(db, deploymentId, connectionTargetId.Value)
+                   .ConnectionOwnsTaskAsync(db, deploymentId, connectionTargetId.Value)
                    .ConfigureAwait(false))
         {
             logger.LogWarning(
-                "ReportStepCompleted rejected: target {Target} is not assigned to deployment {Id}.",
+                "ReportStepCompleted rejected: target {Target} is not assigned to task {Id}.",
                 connectionTargetId, deploymentId);
             return;
         }
 
-        var spaceId = deploymentScope.SpaceId;
-
-        var existing = await db.DeploymentOutputVariables
-            .Where(o => o.DeploymentId == deploymentId && o.StepName == stepName)
-            .ToDictionaryAsync(o => o.Name, StringComparer.OrdinalIgnoreCase)
-            .ConfigureAwait(false);
-
-        foreach (var (name, value) in outputVariables)
+        if (outputVariables.Count > 0)
         {
-            if (existing.TryGetValue(name, out var row))
+            var spaceId = scope.SpaceId;
+            var existing = await db.TaskOutputVariables
+                .Where(o => o.TaskId == deploymentId && o.StepName == stepName)
+                .ToDictionaryAsync(o => o.Name, StringComparer.OrdinalIgnoreCase)
+                .ConfigureAwait(false);
+
+            foreach (var (name, value) in outputVariables)
             {
-                row.Value = value;
-                row.CapturedUtc = capturedAt;
-            }
-            else
-            {
-                db.DeploymentOutputVariables.Add(
-                    new KrakenDeploy.Server.Core.Domain.Deployments.DeploymentOutputVariable
+                if (existing.TryGetValue(name, out var row))
+                {
+                    row.Value = value;
+                    row.CapturedUtc = capturedAt;
+                }
+                else
+                {
+                    db.TaskOutputVariables.Add(new TaskOutputVariable
                     {
-                        SpaceId      = spaceId,
-                        DeploymentId = deploymentId,
-                        StepName     = stepName,
-                        Name         = name,
-                        Value        = value,
-                        CapturedUtc  = capturedAt,
+                        SpaceId     = spaceId,
+                        TaskId      = deploymentId,
+                        StepName    = stepName,
+                        Name        = name,
+                        Value       = value,
+                        CapturedUtc = capturedAt,
                     });
+                }
             }
+
+            await db.SaveChangesAsync().ConfigureAwait(false);
         }
 
-        await db.SaveChangesAsync().ConfigureAwait(false);
+        // Step-completion compaction (decision 3): fold this (task, step, target)'s
+        // staging log lines into a single blob. No-op when the step logged nothing.
+        await TaskLogService.CompactStepAsync(
+            db, deploymentId, stepIndex, connectionTargetId, capturedAt).ConfigureAwait(false);
 
         logger.LogInformation(
-            "Step '{Step}' (index {Index}) of deployment {Id} completed: " +
+            "Step '{Step}' (index {Index}) of task {Id} completed: " +
             "success={Success}, outputs={Count}.",
             stepName, stepIndex, deploymentId, success, outputVariables.Count);
     }

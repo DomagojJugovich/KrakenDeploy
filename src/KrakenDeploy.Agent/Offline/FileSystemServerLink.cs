@@ -56,8 +56,9 @@ public sealed class FileSystemServerLink(
     public void OnRunDeployment(Func<DeploymentPlan, Task> handler) { }
     public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler) { }
 
-    public Task AppendLogAsync(Guid deploymentId, string level, string message, CancellationToken ct)
+    public Task AppendLogAsync(Guid deploymentId, int stepIndex, string level, string message, CancellationToken ct)
     {
+        _ = stepIndex; // offline log is a flat file; step attribution is added on result import
         var ts = DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture);
         var line = $"{ts} | {level} | {message}{Environment.NewLine}";
         lock (_logLock)

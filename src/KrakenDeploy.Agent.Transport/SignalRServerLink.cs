@@ -125,11 +125,11 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
     }
 
     public Task AppendLogAsync(
-        Guid deploymentId, string level, string message, CancellationToken ct)
+        Guid deploymentId, int stepIndex, string level, string message, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(message);
         return _connection is not null
-            ? _connection.InvokeAsync("AppendLogAsync", deploymentId, level, message, ct)
+            ? _connection.InvokeAsync("AppendLogAsync", deploymentId, stepIndex, level, message, ct)
             : Task.CompletedTask;
     }
 

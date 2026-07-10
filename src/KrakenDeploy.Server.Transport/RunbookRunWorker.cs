@@ -115,7 +115,7 @@ public sealed class RunbookRunWorker(
                 .Include(r => r.Runbook)
                     .ThenInclude(rb => rb.Project)
                 .Include(r => r.Environment)
-                .Include(r => r.Target)
+                .Include(r => r.Targets).ThenInclude(a => a.Target!)
                 .Include(r => r.Tenant)
                 .FirstOrDefaultAsync(r => r.Id == runId, ct)
                 .ConfigureAwait(false);
@@ -126,13 +126,18 @@ public sealed class RunbookRunWorker(
                 return;
             }
 
-            if (run.TargetId is null)
+            // Single-target dispatch: the assignment set is the authority now (the
+            // old single TargetId column is gone). First-assigned target is
+            // canonical. Full multi-target/waves parity comes with the follow-up
+            // merge of runbook runs into the deployment orchestrator.
+            var target = run.ResolvedTargets().FirstOrDefault();
+            if (target is null)
             {
                 await FailAsync(db, run, "No target assigned to runbook run.", ct).ConfigureAwait(false);
                 return;
             }
 
-            var connectionId = registry.GetConnectionId(run.TargetId.Value);
+            var connectionId = registry.GetConnectionId(target.Id);
             if (connectionId is null)
             {
                 await FailAsync(db, run, "Target is offline.", ct).ConfigureAwait(false);
@@ -144,14 +149,14 @@ public sealed class RunbookRunWorker(
             // account must never receive the plan (structurally impossible given
             // globally-unique target ids validated at connect; fail closed regardless).
             if (_dispatchAccountId.Value != Guid.Empty
-                && registry.GetAccountForTarget(run.TargetId.Value) != _dispatchAccountId.Value)
+                && registry.GetAccountForTarget(target.Id) != _dispatchAccountId.Value)
             {
                 logger.LogError(
                     "Cross-account dispatch blocked for runbook run {Run}: target {Target}'s " +
                     "live connection belongs to account {ConnectionAccount}, not the dispatch " +
                     "account {DispatchAccount}.",
-                    run.Id, run.TargetId.Value,
-                    registry.GetAccountForTarget(run.TargetId.Value), _dispatchAccountId.Value);
+                    run.Id, target.Id,
+                    registry.GetAccountForTarget(target.Id), _dispatchAccountId.Value);
                 await FailAsync(db, run, "Cross-account connection blocked at dispatch.", ct)
                     .ConfigureAwait(false);
                 return;
@@ -164,14 +169,14 @@ public sealed class RunbookRunWorker(
             }
 
             // ── Resolve variables ────────────────────────────────────────────
-            var targetRoles = run.Target?.Roles ?? [];
+            var targetRoles = target.Roles;
             // Resolve deployment-wide variables + per-step deltas live (runbooks
             // don't use a frozen release snapshot). channelId is null — runbooks
             // aren't channel-scoped.
             var stepResolution = await variableService.ResolveWithStepsAsync(
                 run.Runbook.ProjectId,
                 run.EnvironmentId,
-                run.TargetId,
+                target.Id,
                 targetRoles,
                 run.TenantId,
                 channelId: null,
@@ -196,7 +201,7 @@ public sealed class RunbookRunWorker(
                 run.Runbook,
                 run.Runbook.Project,
                 run.Environment,
-                run.Target,
+                target,
                 run.Tenant,
                 run.ProcessSnapshot,
                 serverBaseUrl,

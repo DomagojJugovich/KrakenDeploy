@@ -35,8 +35,10 @@ public interface IServerLink : IAsyncDisposable
     /// <summary>Reports a text status string (e.g. "ShuttingDown") to the server hub.</summary>
     Task ReportStatusAsync(string status, CancellationToken ct);
 
-    /// <summary>Sends a single log line from an executing deployment step to the server.</summary>
-    Task AppendLogAsync(Guid deploymentId, string level, string message, CancellationToken ct);
+    /// <summary>Sends a single log line from an executing step to the server.
+    /// <paramref name="stepIndex"/> is the plan-level step index the line belongs
+    /// to (-1 for plan-level lines) so the server can compact logs per step.</summary>
+    Task AppendLogAsync(Guid deploymentId, int stepIndex, string level, string message, CancellationToken ct);
 
     /// <summary>Reports deployment completion (success or failure) to the server.</summary>
     Task CompleteDeploymentAsync(

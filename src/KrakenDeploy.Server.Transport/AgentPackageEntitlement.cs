@@ -1,5 +1,6 @@
 using System.Text.Json;
 using KrakenDeploy.Contracts.Steps;
+using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Data;
 using Microsoft.EntityFrameworkCore;
@@ -102,9 +103,12 @@ public static class AgentPackageEntitlement
     private static async Task<List<List<StepSnapshot>>> ReachableSnapshotsAsync(
         KrakenDbContext db, Guid targetId, CancellationToken ct)
     {
-        var releaseIds = await db.DeploymentTargetAssignments.IgnoreQueryFilters()
-            .Where(a => a.TargetId == targetId)
-            .Select(a => a.Deployment.ReleaseId)
+        // Package entitlement is a deployment concern (releases pin packages);
+        // restrict the assignment scan to deployment-kind tasks and read the
+        // release id off the Deployment discriminated type.
+        var releaseIds = await db.TaskTargetAssignments.IgnoreQueryFilters()
+            .Where(a => a.TargetId == targetId && a.Task is Deployment)
+            .Select(a => ((Deployment)a.Task).ReleaseId)
             .Distinct()
             .ToListAsync(ct).ConfigureAwait(false);
         if (releaseIds.Count == 0)

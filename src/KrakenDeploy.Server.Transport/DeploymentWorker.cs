@@ -53,6 +53,7 @@ public sealed class DeploymentWorker(
     IServiceScopeFactory scopeFactory,
     DeploymentDiagnosisChannel diagnosisChannel,
     InFlightWorkGauge inFlightGauge,
+    TimeProvider timeProvider,
     ILogger<DeploymentWorker> logger)
     : BackgroundService
 {
@@ -139,7 +140,7 @@ public sealed class DeploymentWorker(
             // write (the Include load, variable resolution, freeze lookup, step
             // outcomes, finalisation) resolves against the deployment's real Space.
             // Note: server-side step runners open their own scopes and are scoped
-            // separately (see ExecuteServerStepAsync); AppendConcurrentLogAsync
+            // separately (see ExecuteServerStepAsync); LogSequencer.AppendAsync
             // defends its own short-lived scope via IgnoreQueryFilters.
             var deploymentSpaceId = await db.Deployments.IgnoreQueryFilters()
                 .Where(d => d.Id == deploymentId)
@@ -190,7 +191,7 @@ public sealed class DeploymentWorker(
             // Phase 1b adds per-target parallel fan-out on top, so multiple
             // target waves write log entries concurrently through the same
             // sequencer.
-            var logSeq = new LogSequencer(deployment);
+            var logSeq = new LogSequencer(scopeFactory, timeProvider, deployment.Id);
 
             // ── Resolve the target SET ──────────────────────────────────
             // The assignments join is the single authority (the transitional
@@ -240,15 +241,7 @@ public sealed class DeploymentWorker(
                     "Deployment {DeploymentId} blocked by freeze {FreezeId} ({FreezeName}); " +
                     "window ends {EndUtc}.",
                     deployment.Id, blockingFreeze.Id, blockingFreeze.Name, blockingFreeze.EndUtc);
-                db.DeploymentLogEntries.Add(new DeploymentLogEntry
-                {
-                    SpaceId      = deployment.SpaceId,
-            DeploymentId = deployment.Id,
-                    Sequence     = logSeq.Next(),
-                    Timestamp    = DateTimeOffset.UtcNow,
-                    Level        = "error",
-                    Message      = msg,
-                });
+                await logSeq.AppendAsync(-1, null, "error", msg, ct).ConfigureAwait(false);
                 // The IAuditLog event tags the deployment + freeze so a
                 // forensic review of "why did Friday's release not ship"
                 // points straight at the freeze + window.
@@ -318,15 +311,7 @@ public sealed class DeploymentWorker(
                     "Deployment {DeploymentId}: refusing to dispatch — release {ReleaseId} " +
                     "has no variable snapshot (pre-feature row).",
                     deployment.Id, deployment.Release.Id);
-                db.DeploymentLogEntries.Add(new DeploymentLogEntry
-                {
-                    SpaceId      = deployment.SpaceId,
-            DeploymentId = deployment.Id,
-                    Sequence     = logSeq.Next(),
-                    Timestamp    = DateTimeOffset.UtcNow,
-                    Level        = "error",
-                    Message      = msg,
-                });
+                await logSeq.AppendAsync(-1, null, "error", msg, ct).ConfigureAwait(false);
                 await FailAsync(db, deployment, msg, ct).ConfigureAwait(false);
                 return;
             }
@@ -392,17 +377,9 @@ public sealed class DeploymentWorker(
                         => AuditEventType.DeploymentForEachUnresolved,
                     _ => AuditEventType.DeploymentForEachEmpty,
                 };
-                db.DeploymentLogEntries.Add(new DeploymentLogEntry
-                {
-                    SpaceId      = deployment.SpaceId,
-            DeploymentId = deployment.Id,
-                    Sequence     = logSeq.Next(),
-                    Timestamp    = DateTimeOffset.UtcNow,
-                    Level        = w.Kind == DeploymentPlanFlattener.WarningKind.ForEachEmpty
-                                       ? "info" : "error",
-                    Message      = $"--- {w.Source.Name}: {w.Detail} ---",
-                });
-                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                await logSeq.AppendAsync(-1, null,
+                    w.Kind == DeploymentPlanFlattener.WarningKind.ForEachEmpty ? "info" : "error",
+                    $"--- {w.Source.Name}: {w.Detail} ---", ct).ConfigureAwait(false);
                 await auditLog.RecordAsync(
                     eventType,
                     subjectType: "Deployment",
@@ -448,15 +425,7 @@ public sealed class DeploymentWorker(
                                  $"ServerSteps=[{string.Join(", ", ex.ServerStepNames)}], " +
                                  $"TargetSteps=[{string.Join(", ", ex.TargetStepNames)}]",
                     ct: ct).ConfigureAwait(false);
-                db.DeploymentLogEntries.Add(new DeploymentLogEntry
-                {
-                    SpaceId      = deployment.SpaceId,
-            DeploymentId = deployment.Id,
-                    Sequence     = logSeq.Next(),
-                    Timestamp    = DateTimeOffset.UtcNow,
-                    Level        = "error",
-                    Message      = ex.Message,
-                });
+                await logSeq.AppendAsync(-1, null, "error", ex.Message, ct).ConfigureAwait(false);
                 // M14.5 — record Skipped outcomes for the refused wave's
                 // steps so the Steps tab shows "Skipped: mixed wave"
                 // instead of an empty section. Per-step IsServerSide
@@ -558,8 +527,7 @@ public sealed class DeploymentWorker(
                 // writes below are guarded to never overwrite Cancelled.
                 if (await IsCancellationRequestedAsync(db, deployment.Id, ct).ConfigureAwait(false))
                 {
-                    await AppendConcurrentLogAsync(
-                        deployment.Id, logSeq, "warning",
+                    await logSeq.AppendAsync(-1, null, "warning",
                         "--- Deployment cancelled — stopping at the wave boundary. Any step " +
                         "already dispatched to an agent ran to completion; no further steps " +
                         "were started. ---",
@@ -735,7 +703,7 @@ public sealed class DeploymentWorker(
 
             // ── Phase 3 — per-target slow audit ──────────────────────────
             // Each target's effective duration (max CompletedUtc − min
-            // StartedUtc across its DeploymentStepOutcome rows) is
+            // StartedUtc across its TaskStepOutcome rows) is
             // compared against the same threshold; one
             // Deployment.TargetSlow audit per slow target. Operators can
             // pinpoint which specific machine slowed a multi-target run,
@@ -744,12 +712,23 @@ public sealed class DeploymentWorker(
                 scope.ServiceProvider, deployment, ct).ConfigureAwait(false);
 
             // ── Per-step slow audit (M13.F.3) ────────────────────────────
-            // Each DeploymentStepOutcome's own duration is compared against
+            // Each TaskStepOutcome's own duration is compared against
             // SlowStepThresholdMinutes; one DeploymentStep.Slow audit per slow
             // step. Threshold = 0 disables. (Previously the knob was persisted
             // + editable but nothing ever emitted the event — now wired.)
             await EmitSlowStepAuditsIfNeededAsync(
                 scope.ServiceProvider, deployment, ct).ConfigureAwait(false);
+
+            // Terminal: fold any remaining live staging log lines (server-side
+            // banners/steps, unreported steps) into per-step blobs. Agent per-step
+            // compaction already handled target steps as they finished. Own scope
+            // so it never touches the dispatch's main context.
+            await using (var compactScope = scopeFactory.CreateAsyncScope())
+            {
+                var compactDb = compactScope.ServiceProvider.GetRequiredService<KrakenDbContext>();
+                await TaskLogService.CompactRemainingAsync(
+                    compactDb, deployment.Id, finalCompletedUtc, ct).ConfigureAwait(false);
+            }
 
             logger.LogInformation(
                 "Deployment {Id} completed ({ServerSteps} server step(s), {TargetSteps} target step(s)).",
@@ -1128,13 +1107,12 @@ public sealed class DeploymentWorker(
             // (RunServerWaveAsync logs + audits it), not per timed-out attempt.
             onAttemptTimedOutAsync: null,
             // Wave steps run in parallel; each writes its log line through its
-            // own short-lived context (AppendConcurrentLogAsync) so they never
+            // own short-lived context (LogSequencer.AppendAsync) so they never
             // contend on the shared per-dispatch db. Audit already uses its own
             // per-call context (AuditLogService).
             onRetryAsync: async info =>
             {
-                await AppendConcurrentLogAsync(
-                    deployment.Id, logSeq, "warning", info.Marker, ct).ConfigureAwait(false);
+                await logSeq.AppendAsync(-1, null, "warning", info.Marker, ct).ConfigureAwait(false);
                 await audit.RecordAsync(
                     AuditEventType.DeploymentStepRetried,
                     subjectType: "Deployment",
@@ -1145,8 +1123,7 @@ public sealed class DeploymentWorker(
                                  $"RetryDelaySeconds={info.DelaySeconds.ToString(CultureInfo.InvariantCulture)}",
                     ct: ct).ConfigureAwait(false);
             },
-            onLateSuccessAsync: attemptCount => AppendConcurrentLogAsync(
-                deployment.Id, logSeq, "info",
+            onLateSuccessAsync: attemptCount => logSeq.AppendAsync(-1, null, "info",
                 $"--- Step '{snapshot.Name}' succeeded on attempt " +
                 $"{attemptCount.ToString(CultureInfo.InvariantCulture)} ---", ct),
             ct).ConfigureAwait(false);
@@ -1155,69 +1132,13 @@ public sealed class DeploymentWorker(
                 AttemptCount: outcome.AttemptCount, StartedUtc: startedUtc);
     }
 
-    /// <summary>
-    /// Appends one deployment-log entry through a SHORT-LIVED DI scope (its own
-    /// <see cref="KrakenDbContext"/>) instead of the shared per-dispatch
-    /// <c>db</c>. Wave steps and rolling-deployment targets run in parallel and
-    /// would otherwise contend on the single (non-thread-safe) DbContext; giving
-    /// each concurrent log write its own scoped context removes that contention
-    /// entirely — no global lock — so the fan-out scales (DB concurrency is then
-    /// bounded by the connection pool, not serialised). <see cref="LogSequencer"/>
-    /// is independently locked, so sequence numbers stay monotonic across
-    /// branches, and <c>IAuditLog</c> already uses its own per-call context
-    /// (<c>AuditLogService</c>), so audit writes need no special handling.
-    /// <para>
-    /// Resolved via <see cref="IServiceScopeFactory"/> rather than injecting
-    /// <c>IDbContextFactory</c>: the factory is registered SCOPED in this app, so
-    /// injecting it into this singleton hosted service is a captive dependency
-    /// that fails the host's ValidateOnBuild. Mirrors <c>DispatchAsync</c>.
-    /// </para>
-    /// Used only on the CONCURRENT paths; the sequential post-wave writes keep
-    /// using the shared <c>db</c>. Internal (not private) so a focused test can
-    /// drive it from genuinely-parallel tasks (the orchestrator's fake-agent
-    /// harness resolves dispatches synchronously and can't race it otherwise).
-    /// </summary>
-    internal async Task AppendConcurrentLogAsync(
-        Guid deploymentId, LogSequencer logSeq, string level, string message, CancellationToken ct)
-    {
-        await using var scope = scopeFactory.CreateAsyncScope();
-        var logDb = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
-        // This short-lived scope has no real Space context (DefaultSpaceId), so
-        // resolve the deployment's Space directly (IgnoreQueryFilters) and stamp
-        // it explicitly — the interceptor would otherwise mis-stamp DefaultSpaceId.
-        var spaceId = await logDb.Deployments.IgnoreQueryFilters()
-            .Where(d => d.Id == deploymentId)
-            .Select(d => d.SpaceId)
-            .FirstAsync(ct)
-            .ConfigureAwait(false);
-        logDb.DeploymentLogEntries.Add(new DeploymentLogEntry
-        {
-            SpaceId      = spaceId,
-            DeploymentId = deploymentId,
-            Sequence     = logSeq.Next(),
-            Timestamp    = DateTimeOffset.UtcNow,
-            Level        = level,
-            Message      = message,
-        });
-        await logDb.SaveChangesAsync(ct).ConfigureAwait(false);
-    }
-
     private static async Task LogAndAuditStepSkippedAsync(
         KrakenDbContext db, IAuditLog audit, LogSequencer logSeq,
         Deployment deployment, StepSnapshot snapshot,
         StepConditionEvaluator.Decision decision,
         CancellationToken ct)
     {
-        db.DeploymentLogEntries.Add(new DeploymentLogEntry
-        {
-            SpaceId      = deployment.SpaceId,
-            DeploymentId = deployment.Id,
-            Sequence     = logSeq.Next(),
-            Timestamp    = DateTimeOffset.UtcNow,
-            Level        = "info",
-            Message      = $"--- Step '{snapshot.Name}' skipped: {decision.Reason} ---",
-        });
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await logSeq.AppendAsync(-1, null, "info", $"--- Step '{snapshot.Name}' skipped: {decision.Reason} ---", ct).ConfigureAwait(false);
 
         // M14.3.1 — typed Decision.Kind drives the audit event type
         // (replaced the pre-M14.3.1 substring-on-Reason heuristic which
@@ -1235,15 +1156,14 @@ public sealed class DeploymentWorker(
 
     // Instance (not static) + fresh-context log write: this is the one
     // log/audit helper with a CONCURRENT caller (RunServerWaveAsync's parallel
-    // step tasks), so its log line goes through AppendConcurrentLogAsync rather
+    // step tasks), so its log line goes through logSeq.AppendAsync rather
     // than the shared db. The sequential target-wave caller is unaffected.
-    private async Task LogAndAuditStepTimedOutAsync(
+    private static async Task LogAndAuditStepTimedOutAsync(
         IAuditLog audit, LogSequencer logSeq,
         Deployment deployment, StepSnapshot snapshot,
         CancellationToken ct)
     {
-        await AppendConcurrentLogAsync(
-            deployment.Id, logSeq, "error",
+        await logSeq.AppendAsync(-1, null, "error",
             $"--- Step '{snapshot.Name}' timed out after " +
             $"{snapshot.TimeoutSeconds.ToString(CultureInfo.InvariantCulture)}s ---",
             ct).ConfigureAwait(false);
@@ -1261,17 +1181,9 @@ public sealed class DeploymentWorker(
         Deployment deployment, StepSnapshot snapshot,
         CancellationToken ct)
     {
-        db.DeploymentLogEntries.Add(new DeploymentLogEntry
-        {
-            SpaceId      = deployment.SpaceId,
-            DeploymentId = deployment.Id,
-            Sequence     = logSeq.Next(),
-            Timestamp    = DateTimeOffset.UtcNow,
-            Level        = "warning",
-            Message      = $"--- Step '{snapshot.Name}' failed (not required) — " +
-                           "deployment continues ---",
-        });
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await logSeq.AppendAsync(-1, null, "warning",
+            $"--- Step '{snapshot.Name}' failed (not required) — " +
+            "deployment continues ---", ct).ConfigureAwait(false);
         await audit.RecordAsync(
             AuditEventType.DeploymentStepFailedNonRequired,
             subjectType: "Deployment",
@@ -1337,7 +1249,7 @@ public sealed class DeploymentWorker(
     /// M-RollingDeployments Phase 3 — emits one
     /// <see cref="AuditEventType.DeploymentTargetSlow"/> per target whose
     /// effective duration (max <c>CompletedUtc</c> − min <c>StartedUtc</c>
-    /// across its <see cref="DeploymentStepOutcome"/> rows) exceeded
+    /// across its <see cref="TaskStepOutcome"/> rows) exceeded
     /// <c>SlowDeploymentThresholdMinutes</c>. Lets operators pinpoint
     /// which specific machine slowed a multi-target run, even when the
     /// deployment as a whole stayed under threshold (single straggler
@@ -1367,8 +1279,8 @@ public sealed class DeploymentWorker(
                 .GetRequiredService<IDbContextFactory<KrakenDbContext>>()
                 .CreateDbContextAsync(ct).ConfigureAwait(false);
 
-            var rows = await db.DeploymentStepOutcomes
-                .Where(o => o.DeploymentId == deployment.Id
+            var rows = await db.TaskStepOutcomes
+                .Where(o => o.TaskId == deployment.Id
                             && o.TargetId != null
                             && o.StartedUtc != null)
                 .Select(o => new { o.TargetId, o.StartedUtc, o.CompletedUtc })
@@ -1425,7 +1337,7 @@ public sealed class DeploymentWorker(
     /// <summary>
     /// M13.F.3 — emits one <see cref="AuditEventType.DeploymentStepSlow"/> per
     /// step whose own duration (<c>CompletedUtc − StartedUtc</c> on its
-    /// <see cref="DeploymentStepOutcome"/>) exceeded
+    /// <see cref="TaskStepOutcome"/>) exceeded
     /// <c>SlowStepThresholdMinutes</c>. Lets operators pinpoint the specific
     /// slow step even when the deployment/target stayed under the coarser
     /// deployment threshold. Threshold = 0 disables. Best-effort — a lookup
@@ -1451,8 +1363,8 @@ public sealed class DeploymentWorker(
                 .GetRequiredService<IDbContextFactory<KrakenDbContext>>()
                 .CreateDbContextAsync(ct).ConfigureAwait(false);
 
-            var slowSteps = await db.DeploymentStepOutcomes
-                .Where(o => o.DeploymentId == deployment.Id && o.StartedUtc != null)
+            var slowSteps = await db.TaskStepOutcomes
+                .Where(o => o.TaskId == deployment.Id && o.StartedUtc != null)
                 .Select(o => new { o.StepIndex, o.StepName, o.TargetId, o.StartedUtc, o.CompletedUtc })
                 .ToListAsync(ct).ConfigureAwait(false);
 
@@ -1507,17 +1419,9 @@ public sealed class DeploymentWorker(
             _                       => "unknown",
         };
 
-        db.DeploymentLogEntries.Add(new DeploymentLogEntry
-        {
-            SpaceId      = deployment.SpaceId,
-            DeploymentId = deployment.Id,
-            Sequence     = logSeq.Next(),
-            Timestamp    = DateTimeOffset.UtcNow,
-            Level        = "warning",
-            Message      = $"--- Target '{dropped.Target.Name}' dropped out: " +
-                           $"{reasonText}{(dropped.Error is null ? "" : $" — {dropped.Error}")} ---",
-        });
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await logSeq.AppendAsync(-1, null, "warning",
+            $"--- Target '{dropped.Target.Name}' dropped out: " +
+            $"{reasonText}{(dropped.Error is null ? "" : $" — {dropped.Error}")} ---", ct).ConfigureAwait(false);
 
         await auditLog.RecordAsync(
             AuditEventType.DeploymentTargetDropped,
@@ -1547,7 +1451,7 @@ public sealed class DeploymentWorker(
     /// <para>
     /// M14.5: <see cref="AttemptCount"/> and <see cref="StartedUtc"/>
     /// flow from <see cref="RunServerStepWithRetriesAsync"/> so the
-    /// orchestrator can populate <see cref="DeploymentStepOutcome"/>
+    /// orchestrator can populate <see cref="TaskStepOutcome"/>
     /// rows with accurate timing + retry counts. <see cref="StartedUtc"/>
     /// is null when the step was skipped (it never started).
     /// </para>
@@ -1647,7 +1551,7 @@ public sealed class DeploymentWorker(
 
         // Fire all surviving steps in parallel. Each Task wraps the M14.3 retry
         // helper. Those per-step writes (retry markers, late-success, timeout)
-        // go through short-lived per-write contexts (AppendConcurrentLogAsync),
+        // go through short-lived per-write contexts (logSeq.AppendAsync),
         // NOT the shared per-dispatch db, so the steps run fully in parallel with
         // no DbContext contention. Audit uses its own per-call context
         // (AuditLogService). LogSequencer is independently locked, so sequence
@@ -1816,8 +1720,7 @@ public sealed class DeploymentWorker(
                 timedOut = false;
                 if (attempt > 0)
                 {
-                    await AppendConcurrentLogAsync(
-                        deployment.Id, logSeq, "info",
+                    await logSeq.AppendAsync(-1, null, "info",
                         $"--- Target wave [{waveNamesForAudit}] succeeded on attempt " +
                         $"{(attempt + 1).ToString(CultureInfo.InvariantCulture)} ---",
                         ct).ConfigureAwait(false);
@@ -1834,8 +1737,7 @@ public sealed class DeploymentWorker(
 
             // Non-final attempt failed — emit retry marker + audit + delay.
             attempt++;
-            await AppendConcurrentLogAsync(
-                deployment.Id, logSeq, "warning",
+            await logSeq.AppendAsync(-1, null, "warning",
                 $"--- Target wave [{waveNamesForAudit}] attempt " +
                 $"{attempt.ToString(CultureInfo.InvariantCulture)} failed; retrying " +
                 $"(attempt {(attempt + 1).ToString(CultureInfo.InvariantCulture)} of " +
@@ -1915,17 +1817,10 @@ public sealed class DeploymentWorker(
             var loserDesc = string.Join(", ",
                 c.Losers.Select(w => $"{w.StepName}={Elide(w.Value)}"));
 
-            db.DeploymentLogEntries.Add(new DeploymentLogEntry
-            {
-                SpaceId      = deployment.SpaceId,
-            DeploymentId = deployment.Id,
-                Sequence     = logSeq.Next(),
-                Timestamp    = DateTimeOffset.UtcNow,
-                Level        = "warning",
-                Message      = $"Output variable '{c.VariableName}' was set by " +
-                               $"parallel siblings [{writersDesc}]; last-writer-wins " +
-                               $"in SortOrder → {c.Winner.StepName}={Elide(c.Winner.Value)}.",
-            });
+            await logSeq.AppendAsync(-1, null, "warning",
+                $"Output variable '{c.VariableName}' was set by " +
+                $"parallel siblings [{writersDesc}]; last-writer-wins " +
+                $"in SortOrder → {c.Winner.StepName}={Elide(c.Winner.Value)}.", ct).ConfigureAwait(false);
             await auditLog.RecordAsync(
                 AuditEventType.DeploymentParallelOutputCollision,
                 subjectType: "Deployment",
@@ -1946,7 +1841,7 @@ public sealed class DeploymentWorker(
     // ── M14.5 step-outcome aggregate ────────────────────────────────────
 
     /// <summary>
-    /// M14.5 — upsert a <see cref="DeploymentStepOutcome"/> row keyed by
+    /// M14.5 — upsert a <see cref="TaskStepOutcome"/> row keyed by
     /// (DeploymentId, StepIndex, TargetId). Wave-level target retries
     /// re-dispatch the whole sub-plan so a step's outcome can be
     /// reported multiple times; the upsert keeps a single row per
@@ -1983,9 +1878,9 @@ public sealed class DeploymentWorker(
         CancellationToken ct,
         Guid? targetId = null)
     {
-        var existing = await db.DeploymentStepOutcomes
+        var existing = await db.TaskStepOutcomes
             .FirstOrDefaultAsync(o =>
-                o.DeploymentId == deploymentId
+                o.TaskId == deploymentId
                 && o.StepIndex == stepIndex
                 && o.TargetId == targetId, ct)
             .ConfigureAwait(false);
@@ -2006,15 +1901,15 @@ public sealed class DeploymentWorker(
 
         // Worker context has no real Space (DefaultSpaceId); resolve + stamp the
         // deployment's Space explicitly so the interceptor leaves it alone.
-        var spaceId = await db.Deployments.IgnoreQueryFilters()
-            .Where(d => d.Id == deploymentId)
-            .Select(d => d.SpaceId)
+        var spaceId = await db.ServerTasks.IgnoreQueryFilters()
+            .Where(t => t.Id == deploymentId)
+            .Select(t => t.SpaceId)
             .FirstAsync(ct)
             .ConfigureAwait(false);
-        db.DeploymentStepOutcomes.Add(new DeploymentStepOutcome
+        db.TaskStepOutcomes.Add(new TaskStepOutcome
         {
             SpaceId      = spaceId,
-            DeploymentId = deploymentId,
+            TaskId       = deploymentId,
             StepIndex    = stepIndex,
             StepName     = stepName,
             Outcome      = outcome,
@@ -2468,20 +2363,12 @@ public sealed class DeploymentWorker(
                                  $"Targets=[{batchTargets}], " +
                                  $"Wave=[{waveNames}]",
                     ct: ct).ConfigureAwait(false);
-                db.DeploymentLogEntries.Add(new DeploymentLogEntry
-                {
-                    SpaceId      = deployment.SpaceId,
-            DeploymentId = deployment.Id,
-                    Sequence     = logSeq.Next(),
-                    Timestamp    = DateTimeOffset.UtcNow,
-                    Level        = "info",
-                    Message      = $"--- Rolling batch " +
-                                   $"{(batchIdx + 1).ToString(CultureInfo.InvariantCulture)} of " +
-                                   $"{batches.Count.ToString(CultureInfo.InvariantCulture)} for " +
-                                   $"'{rollingGroupName}' (window={maxParallelism!.Value}): " +
-                                   $"[{batchTargets}] ---",
-                });
-                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                await logSeq.AppendAsync(-1, null, "info",
+                    $"--- Rolling batch " +
+                    $"{(batchIdx + 1).ToString(CultureInfo.InvariantCulture)} of " +
+                    $"{batches.Count.ToString(CultureInfo.InvariantCulture)} for " +
+                    $"'{rollingGroupName}' (window={maxParallelism!.Value}): " +
+                    $"[{batchTargets}] ---", ct).ConfigureAwait(false);
             }
 
             var batchOutcome = await DispatchOneBatchAsync(
