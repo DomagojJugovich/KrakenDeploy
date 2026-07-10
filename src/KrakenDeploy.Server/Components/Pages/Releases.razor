@@ -132,7 +132,7 @@
             {
                 [nameof(DeployReleaseDialog.ReleaseId)] = r.Id,
             },
-            new DialogOptions { Width = "640px" });
+            DeployReleaseDialog.BuildOptions());
     }
 
     private async Task LoadAsync()

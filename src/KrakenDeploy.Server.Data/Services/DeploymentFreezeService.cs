@@ -73,14 +73,14 @@ public sealed class DeploymentFreezeService(
             .ConfigureAwait(false);
         if (existing is null) { return null; }
 
-        existing.Name                    = input.Name;
-        existing.Description             = input.Description;
-        existing.StartUtc                = input.StartUtc;
-        existing.EndUtc                  = input.EndUtc;
-        existing.ProjectIds              = [.. input.ProjectIds];
-        existing.EnvironmentIds          = [.. input.EnvironmentIds];
-        existing.TenantTagCanonicalNames = [.. input.TenantTagCanonicalNames];
-        existing.Disabled                = input.Disabled;
+        existing.Name           = input.Name;
+        existing.Description    = input.Description;
+        existing.StartUtc       = input.StartUtc;
+        existing.EndUtc         = input.EndUtc;
+        existing.ProjectIds     = [.. input.ProjectIds];
+        existing.EnvironmentIds = [.. input.EnvironmentIds];
+        existing.TagIds         = [.. input.TagIds];
+        existing.Disabled       = input.Disabled;
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         InvalidateCache();
@@ -114,22 +114,31 @@ public sealed class DeploymentFreezeService(
     /// <param name="spaceId">Deployment's owning Space.</param>
     /// <param name="projectId">Deployment's project.</param>
     /// <param name="environmentId">Deployment's target environment.</param>
-    /// <param name="tenantTagCanonicalNames">Tags on the deployment's tenant
-    /// (<c>tagSetName/tagName</c>, lowercase). Empty for untenanted deployments.</param>
+    /// <param name="tenantTagIds">Tag ids applied to the deployment's tenant
+    /// (extended tag sets). Empty for untenanted deployments. The dispatch
+    /// gate currently passes null — the tag dimension is dormant until
+    /// freeze-by-tag matching ships.</param>
+    /// <param name="atUtc">The instant to evaluate the freeze windows at —
+    /// defaults to now (the dispatch gate). The deploy dialog passes the
+    /// scheduled start so a deployment scheduled INTO a freeze window is
+    /// caught at creation, not at dispatch. Note the enabled-freeze cache is
+    /// point-in-time: a freeze created after this check but active at the
+    /// scheduled time is still caught by the worker's dispatch re-check.</param>
     public async Task<DeploymentFreeze?> FindBlockingFreezeAsync(
         Guid spaceId,
         Guid projectId,
         Guid environmentId,
-        IReadOnlyCollection<string>? tenantTagCanonicalNames = null,
+        IReadOnlyCollection<Guid>? tenantTagIds = null,
+        DateTimeOffset? atUtc = null,
         CancellationToken ct = default)
     {
-        var now = time.GetUtcNow();
+        var at = atUtc ?? time.GetUtcNow();
         var freezes = await GetActiveFreezesForSpaceAsync(spaceId, ct).ConfigureAwait(false);
-        var tags = tenantTagCanonicalNames ?? [];
+        var tags = tenantTagIds ?? [];
 
         foreach (var freeze in freezes)
         {
-            if (!freeze.IsActiveAt(now)) { continue; }
+            if (!freeze.IsActiveAt(at)) { continue; }
 
             // Empty scope-list = "applies to anything" for that dimension.
             // Non-empty = applies only when the deployment's value matches.
@@ -141,8 +150,8 @@ public sealed class DeploymentFreezeService(
             {
                 continue;
             }
-            if (freeze.TenantTagCanonicalNames.Count > 0 &&
-                !freeze.TenantTagCanonicalNames.Any(t => tags.Contains(t, StringComparer.OrdinalIgnoreCase)))
+            if (freeze.TagIds.Count > 0 &&
+                !freeze.TagIds.Any(tags.Contains))
             {
                 continue;
             }

@@ -317,7 +317,7 @@
                 [nameof(DeployReleaseDialog.ReleaseId)] = releaseId,
                 [nameof(DeployReleaseDialog.PresetEnvironmentId)] = environmentId,
             },
-            new DialogOptions { Width = "640px" });
+            DeployReleaseDialog.BuildOptions());
 
         // Dialog navigates to the new deployment on success; refresh if we stay.
         if (result is true)

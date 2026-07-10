@@ -5,7 +5,9 @@ namespace KrakenDeploy.Server.Core.Domain.Tenants;
 
 /// <summary>
 /// A tenant represents a customer or business unit that is deployed to independently.
-/// Tenants can be connected to projects and tagged onto deployment targets.
+/// Tenants can be connected to projects and are one of the taggable entity kinds
+/// (see <see cref="Tags.TagApplication"/> — tag sets are Space-level assets, no
+/// longer owned by a tenant).
 /// Each tenant optionally owns a <see cref="Variables.VariableSet"/> for common variables
 /// that supplement project-level scoping.
 /// </summary>
@@ -26,9 +28,6 @@ public class Tenant : AuditableEntity, ISpaceScoped
     /// variable set, with tenant-scoped project variables taking precedence.
     /// </summary>
     public Guid? VariableSetId { get; set; }
-
-    /// <summary>Tag sets owned by this tenant.</summary>
-    public ICollection<TagSet> TagSets { get; set; } = [];
 
     /// <summary>Projects this tenant is connected to.</summary>
     public ICollection<Project> Projects { get; set; } = [];

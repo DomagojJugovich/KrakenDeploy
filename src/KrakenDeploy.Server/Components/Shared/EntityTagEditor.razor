@@ -1,0 +1,225 @@
+@*
+    Shared applied-tags editor for any taggable entity kind (extended tag
+    sets — docs/extended-tag-sets-plan.md). Hosted on the five entity
+    surfaces (tenant / target / project / environment / runbook); the host
+    passes its own edit permission so the <RequirePermission> gate and the
+    server-side UiActionGuard re-check both use the right atom.
+
+    Renders one control per set scoped to the kind, by set Type:
+    multi-select chips / single-select dropdown / free-text box. Saving
+    applies only the sets the operator actually changed.
+*@
+@inject TagService TagSvc
+@inject UiActionGuard Guard
+@inject NotificationService Notify
+
+@if (_loading)
+{
+    <RadzenProgressBarCircular ShowValue="false" Mode="ProgressBarMode.Indeterminate"
+                               Size="ProgressBarCircularSize.Small" />
+}
+else if (_sets.Count == 0)
+{
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+        No tag sets are scoped to @KindLabel. Define one under Library → Tag Sets.
+    </RadzenText>
+}
+else
+{
+    <RequirePermission Permission="@EditPermission">
+        <ChildContent>
+            <RadzenStack Gap="1rem">
+                @foreach (var set in _sets)
+                {
+                    var s = set;
+                    <div>
+                        <RadzenLabel Text="@s.Name" />
+                        @if (!string.IsNullOrWhiteSpace(s.Description))
+                        {
+                            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-1">
+                                @s.Description
+                            </RadzenText>
+                        }
+                        @if (s.Type == TagSetType.MultiSelect)
+                        {
+                            <RadzenDropDown TValue="IEnumerable<Guid>"
+                                            Value="@_multiSelections[s.Id]"
+                                            ValueChanged="@(v => { _multiSelections[s.Id] = v?.ToList() ?? []; _dirty.Add(s.Id); })"
+                                            Data="@s.Tags" TextProperty="Name" ValueProperty="Id"
+                                            Multiple="true" Chips="true" AllowClear="true"
+                                            Placeholder="(no tags)" Style="width: 100%;">
+                                <Template Context="tag">
+                                    <TagChip Tag="@((Tag)tag)" />
+                                </Template>
+                            </RadzenDropDown>
+                        }
+                        else if (s.Type == TagSetType.SingleSelect)
+                        {
+                            <RadzenDropDown TValue="Guid?"
+                                            Value="@_singleSelections[s.Id]"
+                                            ValueChanged="@(v => { _singleSelections[s.Id] = v; _dirty.Add(s.Id); })"
+                                            Data="@s.Tags" TextProperty="Name" ValueProperty="Id"
+                                            AllowClear="true"
+                                            Placeholder="(no tag)" Style="width: 100%;">
+                                <Template Context="tag">
+                                    <TagChip Tag="@((Tag)tag)" />
+                                </Template>
+                            </RadzenDropDown>
+                        }
+                        else
+                        {
+                            <RadzenTextBox Value="@_freeTextValues[s.Id]"
+                                           ValueChanged="@(v => { _freeTextValues[s.Id] = v; _dirty.Add(s.Id); })"
+                                           Placeholder="(no value)" Style="width: 100%;"
+                                           MaxLength="1000" />
+                        }
+                    </div>
+                }
+                <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End">
+                    <RadzenButton Text="Save tags" Icon="sell" ButtonStyle="ButtonStyle.Primary"
+                                  Size="ButtonSize.Small"
+                                  Click="@SaveAsync" IsBusy="@_saving" Disabled="@(_saving || _dirty.Count == 0)" />
+                </RadzenStack>
+            </RadzenStack>
+        </ChildContent>
+        <Fallback>
+            @* Read-only view for users without the edit permission. *@
+            <RadzenStack Gap="0.5rem">
+                @foreach (var set in _sets)
+                {
+                    <div>
+                        <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-1">@set.Name</RadzenText>
+                        @if (set.Type == TagSetType.FreeText)
+                        {
+                            <span class="rz-color-secondary">@(_freeTextValues[set.Id] is { Length: > 0 } v ? v : "—")</span>
+                        }
+                        else
+                        {
+                            var applied = set.Tags
+                                .Where(t => _multiSelections[set.Id].Contains(t.Id)
+                                         || _singleSelections[set.Id] == t.Id)
+                                .ToList();
+                            @if (applied.Count == 0)
+                            {
+                                <span class="rz-color-secondary">—</span>
+                            }
+                            @foreach (var tag in applied)
+                            {
+                                <TagChip Tag="@tag" class="rz-mr-1" />
+                            }
+                        }
+                    </div>
+                }
+            </RadzenStack>
+        </Fallback>
+    </RequirePermission>
+}
+
+@code {
+    /// <summary>The entity kind this editor tags.</summary>
+    [Parameter, EditorRequired] public TaggableEntityKind Kind { get; set; }
+
+    /// <summary>The tagged entity's id.</summary>
+    [Parameter, EditorRequired] public Guid EntityId { get; set; }
+
+    /// <summary>The host entity's edit permission (TenantEdit / ProjectEdit /
+    /// MachineEdit / EnvironmentEdit / RunbookEdit) — gates the controls and
+    /// the server-side re-check.</summary>
+    [Parameter, EditorRequired] public Permission EditPermission { get; set; }
+
+    private List<TagSet> _sets = [];
+    private readonly Dictionary<Guid, IEnumerable<Guid>> _multiSelections = [];
+    private readonly Dictionary<Guid, Guid?> _singleSelections = [];
+    private readonly Dictionary<Guid, string?> _freeTextValues = [];
+    private readonly HashSet<Guid> _dirty = [];
+    private bool _loading = true;
+    private bool _saving;
+    private Guid _loadedFor;
+
+    private string KindLabel => Kind switch
+    {
+        TaggableEntityKind.Tenant           => "tenants",
+        TaggableEntityKind.Project          => "projects",
+        TaggableEntityKind.Environment      => "environments",
+        TaggableEntityKind.Runbook          => "runbooks",
+        TaggableEntityKind.DeploymentTarget => "deployment targets",
+        _                                   => Kind.ToString(),
+    };
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // Reload only when the target entity actually changes (the host page
+        // may re-render for unrelated reasons).
+        if (_loadedFor == EntityId)
+        {
+            return;
+        }
+        _loadedFor = EntityId;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _loading = true;
+        _dirty.Clear();
+        _sets = await TagSvc.GetSetsForKindAsync(Kind);
+        var applications = await TagSvc.GetForEntityAsync(Kind, EntityId);
+
+        _multiSelections.Clear();
+        _singleSelections.Clear();
+        _freeTextValues.Clear();
+        foreach (var set in _sets)
+        {
+            var mine = applications.Where(a => a.TagSetId == set.Id).ToList();
+            _multiSelections[set.Id]  = set.Type == TagSetType.MultiSelect
+                ? mine.Where(a => a.TagId is not null).Select(a => a.TagId!.Value).ToList()
+                : [];
+            _singleSelections[set.Id] = set.Type == TagSetType.SingleSelect
+                ? mine.FirstOrDefault(a => a.TagId is not null)?.TagId
+                : null;
+            _freeTextValues[set.Id]   = set.Type == TagSetType.FreeText
+                ? mine.FirstOrDefault()?.FreeTextValue
+                : null;
+        }
+        _loading = false;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (!await Guard.AllowAsync(EditPermission)) return;
+
+        _saving = true;
+        try
+        {
+            foreach (var set in _sets.Where(s => _dirty.Contains(s.Id)))
+            {
+                switch (set.Type)
+                {
+                    case TagSetType.MultiSelect:
+                        await TagSvc.SetAppliedTagsAsync(
+                            set.Id, Kind, EntityId, _multiSelections[set.Id].ToList());
+                        break;
+                    case TagSetType.SingleSelect:
+                        await TagSvc.SetAppliedTagsAsync(
+                            set.Id, Kind, EntityId,
+                            _singleSelections[set.Id] is { } one ? [one] : []);
+                        break;
+                    case TagSetType.FreeText:
+                        await TagSvc.SetFreeTextValueAsync(
+                            set.Id, Kind, EntityId, _freeTextValues[set.Id]);
+                        break;
+                }
+            }
+            _dirty.Clear();
+            Notify.Notify(NotificationSeverity.Success, "Tags saved", "", 3000);
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(NotificationSeverity.Error, "Could not save tags", ex.Message, 6000);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+}

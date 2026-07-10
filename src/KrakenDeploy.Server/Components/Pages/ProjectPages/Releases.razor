@@ -234,7 +234,7 @@
             {
                 [nameof(DeployReleaseDialog.ReleaseId)] = release.Id,
             },
-            new DialogOptions { Width = "640px" });
+            DeployReleaseDialog.BuildOptions());
 
         // The dialog navigates to the new deployment on success; refresh if we stay.
         if (result is true)

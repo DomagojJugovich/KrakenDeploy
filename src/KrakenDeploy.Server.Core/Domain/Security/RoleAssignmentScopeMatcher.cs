@@ -51,7 +51,7 @@ public static class RoleAssignmentScopeMatcher
             && DimensionMatches(assignment.ProjectIds,      scope.ProjectId)
             && DimensionMatches(assignment.EnvironmentIds,  scope.EnvironmentId)
             && DimensionMatches(assignment.TenantIds,       scope.TenantId)
-            && DimensionMatches(assignment.TenantTagIds,    scope.TenantTagId);
+            && DimensionMatches(assignment.TagIds,          scope.TagId);
     }
 
     private static bool DimensionMatches(List<Guid> assignmentIds, Guid? scopeId)

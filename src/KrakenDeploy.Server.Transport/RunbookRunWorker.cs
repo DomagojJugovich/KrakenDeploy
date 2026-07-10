@@ -182,6 +182,15 @@ public sealed class RunbookRunWorker(
             // ── Build Octostache dictionary ───────────────────────────────────
             var varDict = new VariableDictionary();
 
+            // Octopus.Deployment.Tenant.Tags — canonical strings of the tenant's
+            // applied tags (extended tag sets), mirroring the deployment path.
+            IReadOnlyList<string>? tenantTagCanonicals = null;
+            if (run.TenantId is { } tenantIdForTags)
+            {
+                tenantTagCanonicals = await TagService
+                    .GetTenantTagCanonicalsAsync(db, tenantIdForTags, ct).ConfigureAwait(false);
+            }
+
             var systemVars = OctopusSystemVariablesBuilder.BuildForRunbookRun(
                 run,
                 run.Runbook,
@@ -190,7 +199,8 @@ public sealed class RunbookRunWorker(
                 run.Target,
                 run.Tenant,
                 run.ProcessSnapshot,
-                serverBaseUrl);
+                serverBaseUrl,
+                tenantTagCanonicals);
 
             var flatVars = new Dictionary<string, string>(systemVars, StringComparer.OrdinalIgnoreCase);
             foreach (var (k, val) in systemVars)

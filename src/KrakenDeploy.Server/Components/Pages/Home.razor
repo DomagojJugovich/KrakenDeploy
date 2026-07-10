@@ -38,8 +38,10 @@
         }
         <RadzenButton Text="Refresh" Icon="refresh" ButtonStyle="ButtonStyle.Light"
                       Variant="Variant.Filled" Click="@RefreshAsync" />
+        @* Releases (not /projects): every row there carries a Deploy action,
+           so this is one click away from the deploy dialog. *@
         <RadzenButton Text="Deploy" Icon="rocket_launch" ButtonStyle="ButtonStyle.Primary"
-                      Variant="Variant.Filled" Click="@(() => Nav.NavigateTo(Sp("/projects")))" />
+                      Variant="Variant.Filled" Click="@(() => Nav.NavigateTo(Sp("/releases")))" />
     </div>
 </div>
 

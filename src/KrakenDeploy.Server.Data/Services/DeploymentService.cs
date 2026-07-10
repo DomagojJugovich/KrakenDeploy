@@ -151,6 +151,67 @@ public class DeploymentService(
         return deployment;
     }
 
+    // ── Cancel ─────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Transitions a non-terminal deployment to
+    /// <see cref="DeploymentStatus.Cancelled"/> and stamps its completion time.
+    /// <para>
+    /// Effectiveness depends on where the deployment is in its lifecycle:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><b>Queued / scheduled</b>: the <see cref="DeploymentWorker"/>'s
+    ///     dequeue-skip check bails on a <c>Cancelled</c> row, so no work is ever
+    ///     dispatched — this is the "cancelling a pending deployment prevents
+    ///     dispatch" guarantee. <c>ScheduledFor</c> is also cleared so the
+    ///     Hangfire re-dispatch job can never pick it up.</item>
+    ///   <item><b>Running</b>: cancellation is cooperative and takes effect at the
+    ///     next wave boundary — a wave already dispatched to an agent runs to
+    ///     completion (the agent protocol exposes no in-flight abort), but the
+    ///     orchestrator starts no further waves and leaves this terminal status
+    ///     in place.</item>
+    /// </list>
+    /// <para>
+    /// Returns the updated deployment, or <c>null</c> when it does not exist.
+    /// Throws <see cref="InvalidOperationException"/> when the deployment is
+    /// already in a terminal state.
+    /// </para>
+    /// </summary>
+    public async Task<Deployment?> CancelAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var deployment = await db.Deployments
+            .FirstOrDefaultAsync(d => d.Id == id, ct)
+            .ConfigureAwait(false);
+        if (deployment is null)
+        {
+            return null;
+        }
+
+        if (deployment.Status is DeploymentStatus.Succeeded
+            or DeploymentStatus.SucceededWithWarnings
+            or DeploymentStatus.Failed
+            or DeploymentStatus.Cancelled)
+        {
+            throw new InvalidOperationException(
+                $"Deployment {id} is already in a terminal state " +
+                $"({deployment.Status}) and cannot be cancelled.");
+        }
+
+        deployment.Status       = DeploymentStatus.Cancelled;
+        deployment.CompletedUtc = time.GetUtcNow();
+        // Belt-and-braces: a future-dated deployment sits Queued with a
+        // ScheduledFor; the dispatch job only re-queues Status==Queued rows, so
+        // the flip to Cancelled already excludes it — clear the schedule too so
+        // it can never be resurrected.
+        deployment.ScheduledFor = null;
+        // Saving a modified AuditableEntity auto-emits a "Deployment.Updated"
+        // audit row via AuditLogInterceptor; callers additionally record the
+        // semantic AuditEventType.DeploymentCancelled event.
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return deployment;
+    }
+
     // ── Query ──────────────────────────────────────────────────────────────
 
     public async Task<List<Deployment>> GetAllAsync(
@@ -340,6 +401,26 @@ public class DeploymentService(
     // ── Lifecycle gate ──────────────────────────────────────────────────────
 
     /// <summary>
+    /// Query-shaped twin of the create-time gate: for each environment in
+    /// <paramref name="environmentIds"/>, would the lifecycle allow deploying
+    /// this release there right now (per-tenant progression when
+    /// <paramref name="tenantId"/> is set)? Feeds the deploy dialog's
+    /// environment picker so illegal choices surface BEFORE submit. Shares the
+    /// exact evaluation <see cref="CreateAsync"/> enforces — the dialog can
+    /// display the same message the create would throw.
+    /// </summary>
+    public async Task<Dictionary<Guid, LifecycleGateStatus>> GetLifecycleGateStatusesAsync(
+        Guid releaseId,
+        Guid? tenantId,
+        IReadOnlyCollection<Guid> environmentIds,
+        CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await ComputeLifecycleGateStatusesAsync(db, releaseId, tenantId, environmentIds, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Checks whether all earlier non-optional lifecycle phases have been satisfied
     /// for this release before allowing deployment to <paramref name="environmentId"/>.
     /// Silently succeeds if no lifecycle is configured.
@@ -347,6 +428,26 @@ public class DeploymentService(
     private static async Task EnforceLifecycleGateAsync(
         KrakenDbContext db, Guid releaseId, Guid environmentId, Guid? tenantId, CancellationToken ct)
     {
+        var statuses = await ComputeLifecycleGateStatusesAsync(
+            db, releaseId, tenantId, [environmentId], ct).ConfigureAwait(false);
+        if (statuses.TryGetValue(environmentId, out var status) && !status.Allowed)
+        {
+            throw new InvalidOperationException(status.Reason);
+        }
+    }
+
+    private static async Task<Dictionary<Guid, LifecycleGateStatus>> ComputeLifecycleGateStatusesAsync(
+        KrakenDbContext db,
+        Guid releaseId,
+        Guid? tenantId,
+        IReadOnlyCollection<Guid> environmentIds,
+        CancellationToken ct)
+    {
+        // Default allow: no lifecycle, unknown release, or env outside the
+        // lifecycle's phases all mean "no gate".
+        var result = environmentIds.Distinct()
+            .ToDictionary(id => id, _ => LifecycleGateStatus.Ok);
+
         // Load the lifecycle via: release → channel → lifecycle,
         // OR release → project → lifecycle (fallback).
         var release = await db.Releases
@@ -360,39 +461,27 @@ public class DeploymentService(
 
         if (release is null)
         {
-            return;
+            return result;
         }
 
         var lifecycle = release.Channel?.Lifecycle ?? release.Project.Lifecycle;
         if (lifecycle is null || lifecycle.Phases.Count == 0)
         {
-            return;
+            return result;
         }
 
         var phases = lifecycle.Phases.OrderBy(p => p.SortOrder).ToList();
 
-        // Find the index of the target environment's phase.
-        var targetIdx = phases.FindIndex(p =>
-            p.EnvironmentIds.Contains(environmentId) ||
-            p.OptionalEnvironmentIds.Contains(environmentId));
-
-        if (targetIdx <= 0)
-        {
-            return; // first phase, or environment not covered by lifecycle — allow
-        }
-
-        // Check all required phases before the target phase.
-        for (var i = 0; i < targetIdx; i++)
+        // One success-count per required phase (NOT per environment) — the
+        // per-environment walk below is then pure lookup.
+        var successCounts = new Dictionary<int, int>();
+        for (var i = 0; i < phases.Count; i++)
         {
             var phase = phases[i];
             if (phase.IsOptional || phase.EnvironmentIds.Count == 0)
             {
                 continue;
             }
-
-            var minRequired = phase.MinimumEnvironments == 0
-                ? phase.EnvironmentIds.Count
-                : phase.MinimumEnvironments;
 
             // Count distinct environments in this phase that have a successful deployment.
             var envIds = phase.EnvironmentIds;
@@ -406,19 +495,58 @@ public class DeploymentService(
                 successQuery = successQuery.Where(d => d.TenantId == tenantId.Value);
             }
 
-            var successCount = await successQuery
+            successCounts[i] = await successQuery
                 .Select(d => d.EnvironmentId)
                 .Distinct()
                 .CountAsync(ct)
                 .ConfigureAwait(false);
+        }
 
-            if (successCount < minRequired)
+        foreach (var environmentId in result.Keys.ToList())
+        {
+            // Find the index of the target environment's phase.
+            var targetIdx = phases.FindIndex(p =>
+                p.EnvironmentIds.Contains(environmentId) ||
+                p.OptionalEnvironmentIds.Contains(environmentId));
+
+            if (targetIdx <= 0)
             {
-                throw new InvalidOperationException(
-                    $"Lifecycle gate: phase '{phase.Name}' requires successful deployment to " +
-                    $"{minRequired} environment(s) but only {successCount} have succeeded for this release. " +
-                    "Deploy to the required earlier environments first.");
+                continue; // first phase, or environment not covered by lifecycle — allow
+            }
+
+            // Check all required phases before the target phase.
+            for (var i = 0; i < targetIdx; i++)
+            {
+                var phase = phases[i];
+                if (phase.IsOptional || phase.EnvironmentIds.Count == 0)
+                {
+                    continue;
+                }
+
+                var minRequired = phase.MinimumEnvironments == 0
+                    ? phase.EnvironmentIds.Count
+                    : phase.MinimumEnvironments;
+
+                var successCount = successCounts[i];
+                if (successCount < minRequired)
+                {
+                    result[environmentId] = new LifecycleGateStatus(false,
+                        $"Lifecycle gate: phase '{phase.Name}' requires successful deployment to " +
+                        $"{minRequired} environment(s) but only {successCount} have succeeded for this release. " +
+                        "Deploy to the required earlier environments first.");
+                    break;
+                }
             }
         }
+
+        return result;
     }
+}
+
+/// <summary>Lifecycle-gate verdict for one environment: deployable now, or
+/// blocked with the operator-facing reason (the same message
+/// <see cref="DeploymentService.CreateAsync"/> would throw).</summary>
+public sealed record LifecycleGateStatus(bool Allowed, string? Reason)
+{
+    public static readonly LifecycleGateStatus Ok = new(true, null);
 }

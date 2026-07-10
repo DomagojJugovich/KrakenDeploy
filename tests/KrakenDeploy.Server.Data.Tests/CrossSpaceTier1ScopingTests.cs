@@ -3,6 +3,7 @@ using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
 using KrakenDeploy.Server.Core.Domain.Spaces;
+using KrakenDeploy.Server.Core.Domain.Tags;
 using KrakenDeploy.Server.Core.Domain.Tenants;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data;
@@ -77,26 +78,28 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
         await AssertStillExistsAsync<Variable>(g.VariableId);
     }
 
-    // ── TenantTag (parent TagSet is scoped; TenantTag was tier-1) ────────────
+    // ── Tag (extended tag sets — parent TagSet is scoped; Tag is Space-scoped) ──
 
     [Fact]
-    public async Task GetTagAsync_does_not_return_other_space_tag()
+    public async Task UpdateTagAsync_cannot_modify_other_space_tag()
     {
         var g = await SeedOtherSpaceGraphAsync();
-        var svc = new TenantService(postgres);
+        var svc = new TagService(postgres);
 
-        (await svc.GetTagAsync(g.TagId)).Should().BeNull();
+        (await svc.UpdateTagAsync(g.TagId, "hacked", null, null)).Should().BeNull(
+            "the tag update-by-id must not reach across Spaces");
+        await AssertUnchangedAsync<Tag>(g.TagId, t => t.Name.Should().Be("t1-tag"));
     }
 
     [Fact]
     public async Task DeleteTagAsync_cannot_delete_other_space_tag()
     {
         var g = await SeedOtherSpaceGraphAsync();
-        var svc = new TenantService(postgres);
+        var svc = new TagService(postgres);
 
         (await svc.DeleteTagAsync(g.TagId)).Should().BeFalse(
-            "the tenant-tag delete-by-id must not reach across Spaces");
-        await AssertStillExistsAsync<TenantTag>(g.TagId);
+            "the tag delete-by-id must not reach across Spaces");
+        await AssertStillExistsAsync<Tag>(g.TagId);
     }
 
     // ── DeploymentStep / DeploymentProcess (tier-1) ──────────────────────────
@@ -224,12 +227,16 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
         };
         db.Variables.Add(variable);
 
-        // Tag in a tag set.
-        var tagSet = new TagSet { SpaceId = OtherSpaceId, TenantId = tenant.Id, Name = "t1-set" };
+        // Tag in a Space-level tag set (extended tag sets model).
+        var tagSet = new TagSet
+        {
+            SpaceId = OtherSpaceId, Name = $"t1-set-{Guid.NewGuid():N}",
+            Scopes = [TaggableEntityKind.Tenant],
+        };
         db.TagSets.Add(tagSet);
         await db.SaveChangesAsync();
-        var tag = new TenantTag { SpaceId = OtherSpaceId, TagSetId = tagSet.Id, Name = "t1-tag" };
-        db.TenantTags.Add(tag);
+        var tag = new Tag { SpaceId = OtherSpaceId, TagSetId = tagSet.Id, Name = "t1-tag" };
+        db.Tags.Add(tag);
 
         // Deployment process + step.
         var dprocess = new DeploymentProcess { SpaceId = OtherSpaceId, ProjectId = project.Id };

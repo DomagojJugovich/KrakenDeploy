@@ -125,6 +125,17 @@
                     </RequirePermission>
                 </RadzenStack>
 
+                @* Tags save independently of the settings form (per-set apply). *@
+                <RadzenCard class="rz-mt-2">
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-1">Tags</RadzenText>
+                    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-3">
+                        Tags from Space-level tag sets scoped to projects
+                        (managed under Library → Tag Sets).
+                    </RadzenText>
+                    <EntityTagEditor Kind="TaggableEntityKind.Project" EntityId="@_project!.Id"
+                                     EditPermission="Permission.ProjectEdit" />
+                </RadzenCard>
+
                 <RadzenCard class="rz-mt-4 kraken-danger-card">
                     <RadzenText TextStyle="TextStyle.H6" class="rz-mb-1">
                         Danger zone

@@ -17,7 +17,7 @@ public readonly record struct PermissionScope(
     Guid? ProjectId       = null,
     Guid? EnvironmentId   = null,
     Guid? TenantId        = null,
-    Guid? TenantTagId     = null)
+    Guid? TagId           = null)
 {
     /// <summary>True when no dimension is specified — a system-wide check.</summary>
     public bool IsSystemWide =>
@@ -26,5 +26,5 @@ public readonly record struct PermissionScope(
         ProjectId is null &&
         EnvironmentId is null &&
         TenantId is null &&
-        TenantTagId is null;
+        TagId is null;
 }

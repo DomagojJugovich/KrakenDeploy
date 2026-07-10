@@ -197,7 +197,7 @@ public class TeamService(IDbContextFactory<KrakenDbContext> dbFactory)
     public async Task<RoleAssignment> AddRoleAssignmentAsync(
         Guid teamId, Guid roleId, Guid? spaceId,
         List<Guid>? projectGroupIds, List<Guid>? projectIds,
-        List<Guid>? environmentIds, List<Guid>? tenantIds, List<Guid>? tenantTagIds,
+        List<Guid>? environmentIds, List<Guid>? tenantIds, List<Guid>? tagIds,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -211,7 +211,7 @@ public class TeamService(IDbContextFactory<KrakenDbContext> dbFactory)
             ProjectIds      = projectIds      ?? [],
             EnvironmentIds  = environmentIds  ?? [],
             TenantIds       = tenantIds       ?? [],
-            TenantTagIds    = tenantTagIds    ?? [],
+            TagIds          = tagIds          ?? [],
         };
 
         db.RoleAssignments.Add(assignment);

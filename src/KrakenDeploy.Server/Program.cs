@@ -463,6 +463,12 @@ public static class Program
             sp => sp.GetRequiredService<KrakenDeploy.Server.Telemetry.CircuitCounter>());
         builder.Services.AddSingleton<ServerScriptStepRunner>();
         builder.Services.AddSingleton<DeployReleaseStepRunner>();
+        // Shared offline-drop bundle builder — single source of truth for the
+        // plan build + gates the worker uses at dispatch AND the UI/API use to
+        // regenerate. Singleton (stateless bar ILogger) so the singleton
+        // DeploymentWorker can depend on it without a captive dependency; scoped
+        // collaborators are resolved from the caller's IServiceProvider.
+        builder.Services.AddSingleton<OfflineDropBundleBuilder>();
         builder.Services.AddSingleton<IPendingSubPlanRegistry, PendingSubPlanRegistry>();
         // M11.E.7 — per-target adhoc-script dispatch + result collation.
         builder.Services.AddSingleton<IPendingAdhocRegistry, PendingAdhocRegistry>();
@@ -622,6 +628,15 @@ public static class Program
             {
                 options.DetailedErrors = builder.Environment.IsDevelopment();
             });
+
+        // Minimal-API JSON: tolerate EF navigation cycles. Endpoints that return
+        // entity graphs with a bidirectional navigation (e.g. TagSet.Tags ↔
+        // Tag.TagSet, populated by EF relationship fix-up on Include) would
+        // otherwise throw "possible object cycle detected" → 500. IgnoreCycles
+        // writes null at the back-reference; non-cyclic graphs are unchanged.
+        builder.Services.ConfigureHttpJsonOptions(o =>
+            o.SerializerOptions.ReferenceHandler =
+                System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles);
 
         // ── Build & configure pipeline ────────────────────────────────────────
         var app = builder.Build();
@@ -1877,6 +1892,37 @@ public static class Program
                 }
             }).RequirePermission(Permission.DeploymentCreate);
 
+        // Cancel a Queued or Running deployment. A queued one never dispatches;
+        // a running one stops at the next wave boundary (the agent protocol has
+        // no in-flight abort) — see DeploymentService.CancelAsync. Gated on
+        // TaskCancel (Octopus models a deployment as a cancellable task).
+        app.MapPost("/api/deployments/{id:guid}/cancel",
+            async (Guid id, DeploymentService deploymentSvc, IAuditLog audit,
+                CancellationToken ct) =>
+            {
+                try
+                {
+                    var deployment = await deploymentSvc.CancelAsync(id, ct).ConfigureAwait(false);
+                    if (deployment is null)
+                    {
+                        return Results.NotFound();
+                    }
+
+                    await audit.RecordAsync(
+                        AuditEventType.DeploymentCancelled,
+                        subjectType: "Deployment",
+                        subjectId:   id.ToString(),
+                        details:     "Deployment cancelled via API.",
+                        ct:          ct).ConfigureAwait(false);
+
+                    return Results.Ok(new { deployment.Id, Status = deployment.Status.ToString() });
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.TaskCancel);
+
         // ── Artifact API ─────────────────────────────────────────────────────────
         app.MapGet("/api/deployments/{id:guid}/artifacts",
             async (Guid id, ArtifactService artifactSvc, CancellationToken ct) =>
@@ -1929,6 +1975,27 @@ public static class Program
                     return Results.NotFound(new { error = "Drop bundle file not found on disk." });
                 }
             }).RequirePermission(Permission.DeploymentView);
+
+        // Regenerate the drop bundle for an offline-drop deployment still
+        // awaiting its result (e.g. the operator lost the file, or a package
+        // was re-uploaded). Re-materialises a secret-bearing deployable, so
+        // gate at DeploymentCreate rather than the read-only DeploymentView.
+        app.MapPost("/api/deployments/{id:guid}/regenerate-drop-bundle",
+            async (Guid id, OfflineDropBundleBuilder bundleBuilder, HttpContext http,
+                CancellationToken ct) =>
+            {
+                try
+                {
+                    await bundleBuilder
+                        .RegenerateForDeploymentAsync(id, http.RequestServices, ct)
+                        .ConfigureAwait(false);
+                    return Results.Ok(new { id, regenerated = true });
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.DeploymentCreate);
 
         app.MapPost("/api/deployments/{id:guid}/offline-result",
             async (Guid id, HttpRequest request, OfflineResultService resultSvc,
@@ -2076,7 +2143,7 @@ public static class Program
         app.MapGet("/api/tenants/{id:guid}",
             async (Guid id, TenantService tenantSvc, CancellationToken ct) =>
             {
-                var tenant = await tenantSvc.GetWithTagsAsync(id, ct).ConfigureAwait(false);
+                var tenant = await tenantSvc.GetAsync(id, ct).ConfigureAwait(false);
                 return tenant is null ? Results.NotFound() : Results.Ok(tenant);
             }).RequirePermission(Permission.TenantView);
 
@@ -2139,20 +2206,32 @@ public static class Program
                 return Results.NoContent();
             }).RequirePermission(Permission.TenantEdit);
 
-        // Tag Sets
-        app.MapGet("/api/tenants/{tenantId:guid}/tag-sets",
-            async (Guid tenantId, TenantService tenantSvc, CancellationToken ct) =>
-                Results.Ok(await tenantSvc.GetTagSetsAsync(tenantId, ct).ConfigureAwait(false)))
+        // ── Tag Sets API (Space-level extended tag sets) ─────────────────────
+        // docs/extended-tag-sets-plan.md — sets carry Scope (entity kinds) and
+        // Type (MultiSelect / SingleSelect / FreeText); applications live in
+        // the polymorphic tag_applications table.
+
+        app.MapGet("/api/tag-sets",
+            async (TagService tagSvc, CancellationToken ct) =>
+                Results.Ok(await tagSvc.GetAllSetsAsync(ct).ConfigureAwait(false)))
             .RequirePermission(Permission.TagSetView);
 
-        app.MapPost("/api/tenants/{tenantId:guid}/tag-sets",
-            async (Guid tenantId, CreateTagSetRequest req, TenantService tenantSvc, CancellationToken ct) =>
+        app.MapGet("/api/tag-sets/{id:guid}",
+            async (Guid id, TagService tagSvc, CancellationToken ct) =>
+            {
+                var set = await tagSvc.GetSetAsync(id, ct).ConfigureAwait(false);
+                return set is null ? Results.NotFound() : Results.Ok(set);
+            }).RequirePermission(Permission.TagSetView);
+
+        app.MapPost("/api/tag-sets",
+            async (CreateTagSetRequest req, TagService tagSvc, CancellationToken ct) =>
             {
                 try
                 {
-                    var ts = await tenantSvc.CreateTagSetAsync(tenantId, req.Name, req.Description, req.SortOrder, ct)
+                    var set = await tagSvc.CreateSetAsync(
+                            req.Name, req.Description, req.Type, req.Scopes ?? [], req.SortOrder, ct)
                         .ConfigureAwait(false);
-                    return Results.Created($"/api/tenants/{tenantId}/tag-sets/{ts.Id}", ts);
+                    return Results.Created($"/api/tag-sets/{set.Id}", set);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -2160,28 +2239,39 @@ public static class Program
                 }
             }).RequirePermission(Permission.TagSetCreate);
 
+        // ?force=true confirms destructive scope removal (cascades the removed
+        // kind's applications) — mirrors the UI confirm dialog.
         app.MapPut("/api/tag-sets/{id:guid}",
-            async (Guid id, CreateTagSetRequest req, TenantService tenantSvc, CancellationToken ct) =>
-            {
-                var ts = await tenantSvc.UpdateTagSetAsync(id, req.Name, req.Description, req.SortOrder, ct)
-                    .ConfigureAwait(false);
-                return ts is null ? Results.NotFound() : Results.Ok(ts);
-            }).RequirePermission(Permission.TagSetEdit);
-
-        app.MapDelete("/api/tag-sets/{id:guid}",
-            async (Guid id, TenantService tenantSvc, CancellationToken ct) =>
-            {
-                var deleted = await tenantSvc.DeleteTagSetAsync(id, ct).ConfigureAwait(false);
-                return deleted ? Results.NoContent() : Results.NotFound();
-            }).RequirePermission(Permission.TagSetDelete);
-
-        // Tags
-        app.MapPost("/api/tag-sets/{tagSetId:guid}/tags",
-            async (Guid tagSetId, CreateTenantTagRequest req, TenantService tenantSvc, CancellationToken ct) =>
+            async (Guid id, CreateTagSetRequest req, TagService tagSvc,
+                CancellationToken ct, bool force = false) =>
             {
                 try
                 {
-                    var tag = await tenantSvc.CreateTagAsync(tagSetId, req.Name, req.Color, ct)
+                    var set = await tagSvc.UpdateSetAsync(
+                            id, req.Name, req.Description, req.Type, req.Scopes ?? [],
+                            req.SortOrder, force, ct)
+                        .ConfigureAwait(false);
+                    return set is null ? Results.NotFound() : Results.Ok(set);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.TagSetEdit);
+
+        app.MapDelete("/api/tag-sets/{id:guid}",
+            async (Guid id, TagService tagSvc, CancellationToken ct) =>
+            {
+                var deleted = await tagSvc.DeleteSetAsync(id, ct).ConfigureAwait(false);
+                return deleted ? Results.NoContent() : Results.NotFound();
+            }).RequirePermission(Permission.TagSetDelete);
+
+        app.MapPost("/api/tag-sets/{tagSetId:guid}/tags",
+            async (Guid tagSetId, CreateTagRequest req, TagService tagSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var tag = await tagSvc.CreateTagAsync(tagSetId, req.Name, req.Color, req.Description, ct)
                         .ConfigureAwait(false);
                     return Results.Created($"/api/tag-sets/{tagSetId}/tags/{tag.Id}", tag);
                 }
@@ -2191,47 +2281,85 @@ public static class Program
                 }
             }).RequirePermission(Permission.TagSetEdit);
 
+        app.MapPut("/api/tag-sets/{tagSetId:guid}/tag-order",
+            async (Guid tagSetId, ReorderTagsRequest req, TagService tagSvc, CancellationToken ct) =>
+            {
+                await tagSvc.ReorderTagsAsync(tagSetId, req.OrderedTagIds ?? [], ct).ConfigureAwait(false);
+                return Results.NoContent();
+            }).RequirePermission(Permission.TagSetEdit);
+
         app.MapPut("/api/tags/{id:guid}",
-            async (Guid id, CreateTenantTagRequest req, TenantService tenantSvc, CancellationToken ct) =>
-            {
-                var tag = await tenantSvc.UpdateTagAsync(id, req.Name, req.Color, ct)
-                    .ConfigureAwait(false);
-                return tag is null ? Results.NotFound() : Results.Ok(tag);
-            }).RequirePermission(Permission.TagSetEdit);
-
-        app.MapDelete("/api/tags/{id:guid}",
-            async (Guid id, TenantService tenantSvc, CancellationToken ct) =>
-            {
-                var deleted = await tenantSvc.DeleteTagAsync(id, ct).ConfigureAwait(false);
-                return deleted ? Results.NoContent() : Results.NotFound();
-            }).RequirePermission(Permission.TagSetEdit);
-
-        // Target-Tag connections
-        app.MapPost("/api/tags/{tagId:guid}/targets/{targetId:guid}",
-            async (Guid tagId, Guid targetId, TenantService tenantSvc, CancellationToken ct) =>
+            async (Guid id, CreateTagRequest req, TagService tagSvc, CancellationToken ct) =>
             {
                 try
                 {
-                    await tenantSvc.AddTagToTargetAsync(tagId, targetId, ct).ConfigureAwait(false);
-                    return Results.NoContent();
+                    var tag = await tagSvc.UpdateTagAsync(id, req.Name, req.Color, req.Description, ct)
+                        .ConfigureAwait(false);
+                    return tag is null ? Results.NotFound() : Results.Ok(tag);
                 }
                 catch (InvalidOperationException ex)
                 {
                     return Results.BadRequest(new { error = ex.Message });
                 }
-            }).RequirePermission(Permission.MachineEdit);
+            }).RequirePermission(Permission.TagSetEdit);
 
-        app.MapDelete("/api/tags/{tagId:guid}/targets/{targetId:guid}",
-            async (Guid tagId, Guid targetId, TenantService tenantSvc, CancellationToken ct) =>
+        app.MapDelete("/api/tags/{id:guid}",
+            async (Guid id, TagService tagSvc, CancellationToken ct) =>
             {
-                await tenantSvc.RemoveTagFromTargetAsync(tagId, targetId, ct).ConfigureAwait(false);
-                return Results.NoContent();
-            }).RequirePermission(Permission.MachineEdit);
+                var deleted = await tagSvc.DeleteTagAsync(id, ct).ConfigureAwait(false);
+                return deleted ? Results.NoContent() : Results.NotFound();
+            }).RequirePermission(Permission.TagSetEdit);
 
-        app.MapGet("/api/targets/{targetId:guid}/tags",
-            async (Guid targetId, TenantService tenantSvc, CancellationToken ct) =>
-                Results.Ok(await tenantSvc.GetTagsForTargetAsync(targetId, ct).ConfigureAwait(false)))
-            .RequirePermission(Permission.MachineView);
+        // ── Tag applications per entity ──────────────────────────────────────
+        // One GET + one PUT per taggable kind, registered in a loop so each
+        // route carries the entity's own View/Edit permission statically (no
+        // in-handler permission mapping). PUT body: TagIds for select-type
+        // sets, FreeTextValue for free-text sets (null clears the value).
+        var tagKindRoutes = new (string Segment, KrakenDeploy.Server.Core.Domain.Tags.TaggableEntityKind Kind,
+            Permission View, Permission Edit)[]
+        {
+            ("tenants",      KrakenDeploy.Server.Core.Domain.Tags.TaggableEntityKind.Tenant,
+                Permission.TenantView,      Permission.TenantEdit),
+            ("projects",     KrakenDeploy.Server.Core.Domain.Tags.TaggableEntityKind.Project,
+                Permission.ProjectView,     Permission.ProjectEdit),
+            ("environments", KrakenDeploy.Server.Core.Domain.Tags.TaggableEntityKind.Environment,
+                Permission.EnvironmentView, Permission.EnvironmentEdit),
+            ("runbooks",     KrakenDeploy.Server.Core.Domain.Tags.TaggableEntityKind.Runbook,
+                Permission.RunbookView,     Permission.RunbookEdit),
+            ("targets",      KrakenDeploy.Server.Core.Domain.Tags.TaggableEntityKind.DeploymentTarget,
+                Permission.MachineView,     Permission.MachineEdit),
+        };
+        foreach (var (segment, kind, viewPerm, editPerm) in tagKindRoutes)
+        {
+            app.MapGet($"/api/{segment}/{{entityId:guid}}/tags",
+                async (Guid entityId, TagService tagSvc, CancellationToken ct) =>
+                    Results.Ok(await tagSvc.GetForEntityAsync(kind, entityId, ct).ConfigureAwait(false)))
+                .RequirePermission(viewPerm);
+
+            app.MapPut($"/api/{segment}/{{entityId:guid}}/tags/{{tagSetId:guid}}",
+                async (Guid entityId, Guid tagSetId, ApplyTagsRequest req,
+                    TagService tagSvc, CancellationToken ct) =>
+                {
+                    try
+                    {
+                        if (req.TagIds is not null)
+                        {
+                            await tagSvc.SetAppliedTagsAsync(tagSetId, kind, entityId, req.TagIds, ct)
+                                .ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            await tagSvc.SetFreeTextValueAsync(tagSetId, kind, entityId, req.FreeTextValue, ct)
+                                .ConfigureAwait(false);
+                        }
+                        return Results.NoContent();
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        return Results.BadRequest(new { error = ex.Message });
+                    }
+                }).RequirePermission(editPerm);
+        }
 
         // ── Lifecycle API ──────────────────────────────────────────────────────────
 

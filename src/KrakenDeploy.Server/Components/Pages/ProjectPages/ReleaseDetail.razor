@@ -7,6 +7,7 @@
 @using KrakenDeploy.Server.Core.Domain.Releases
 @inject ProjectService ProjectSvc
 @inject ReleaseService ReleaseSvc
+@inject EnvironmentService EnvironmentSvc
 @inject DeploymentService DeploymentSvc
 @inject NotificationService Notifications
 @inject UiActionGuard Guard
@@ -63,9 +64,23 @@
                             : $"{_release.VariableSnapshot.Count} variable(s) pinned")
                     </span>
                     <RequirePermission Permission="Permission.DeploymentCreate">
-                        <RadzenButton Text="Deploy" Icon="rocket_launch"
-                                      ButtonStyle="ButtonStyle.Primary" Variant="Variant.Filled"
-                                      Click="OpenDeployAsync" />
+                        @* Octopus-style split button: the body opens the deploy
+                           dialog unpreset; the arrow lists environments with
+                           their lifecycle verdict and opens the dialog
+                           pre-targeted at the chosen one. *@
+                        <RadzenSplitButton Text="Deploy" Icon="rocket_launch"
+                                           ButtonStyle="ButtonStyle.Primary" Variant="Variant.Filled"
+                                           Click="@OnDeployClickAsync">
+                            <ChildContent>
+                                @foreach (var env in _envGate)
+                                {
+                                    <RadzenSplitButtonItem Text="@(env.Allowed ? env.Name : $"{env.Name} — blocked by lifecycle")"
+                                                           Value="@env.Id.ToString()"
+                                                           Icon="@(env.Allowed ? "east" : "lock")"
+                                                           Disabled="@(!env.Allowed)" />
+                                }
+                            </ChildContent>
+                        </RadzenSplitButton>
                     </RequirePermission>
                 </div>
             </RadzenStack>
@@ -158,6 +173,11 @@
     private List<Deployment> _deployments = [];
     private bool _loaded;
 
+    // Environments annotated with the untenanted lifecycle verdict — feeds the
+    // split button's dropdown. The dialog re-evaluates tenant-aware.
+    private sealed record EnvGate(Guid Id, string Name, bool Allowed);
+    private List<EnvGate> _envGate = [];
+
     protected override async Task OnParametersSetAsync()
     {
         try
@@ -167,6 +187,15 @@
             if (_project is not null && _release?.ProjectId == _project.Id)
             {
                 _deployments = await DeploymentSvc.GetForReleaseAsync(ReleaseId);
+
+                var environments = await EnvironmentSvc.GetAllOrderedAsync();
+                var gate = await DeploymentSvc.GetLifecycleGateStatusesAsync(
+                    ReleaseId, tenantId: null, environments.Select(e => e.Id).ToList());
+                _envGate = environments
+                    .Select(e => new EnvGate(
+                        e.Id, e.Name,
+                        !gate.TryGetValue(e.Id, out var s) || s.Allowed))
+                    .ToList();
             }
         }
         catch (Exception ex)
@@ -202,7 +231,14 @@
         }
     }
 
-    private async Task OpenDeployAsync()
+    // Body click → item is null (no preset); dropdown item → its Value is
+    // the environment id to pre-select in the dialog.
+    private Task OnDeployClickAsync(RadzenSplitButtonItem? item)
+        => OpenDeployAsync(item?.Value is { } v && Guid.TryParse(v, out var envId)
+            ? envId
+            : null);
+
+    private async Task OpenDeployAsync(Guid? presetEnvironmentId = null)
     {
         if (_release is null) return;
         var result = await Dialog.OpenAsync<DeployReleaseDialog>(
@@ -210,8 +246,9 @@
             new Dictionary<string, object?>
             {
                 [nameof(DeployReleaseDialog.ReleaseId)] = _release.Id,
+                [nameof(DeployReleaseDialog.PresetEnvironmentId)] = presetEnvironmentId,
             },
-            new DialogOptions { Width = "640px" });
+            DeployReleaseDialog.BuildOptions());
 
         // The dialog navigates to the new deployment on success; if the user
         // cancels navigation or returns, refresh the list defensively.

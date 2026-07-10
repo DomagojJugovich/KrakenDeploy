@@ -5,7 +5,7 @@ namespace KrakenDeploy.Server.Core.Domain.Security;
 /// <summary>
 /// Grants a <see cref="Role"/> to a <see cref="Team"/> within an optional
 /// scope. The scope is a composite of independent dimensions (Project Groups,
-/// Projects, Environments, Tenants, Tenant Tags) — within a dimension the
+/// Projects, Environments, Tenants, Tags) — within a dimension the
 /// list values are OR'd; between dimensions they're AND'd.
 /// <para>
 /// An empty list for a dimension means "all in this Space" for that dimension.
@@ -47,7 +47,11 @@ public class RoleAssignment : AuditableEntity
     public List<Guid> ProjectIds { get; set; } = [];
     public List<Guid> EnvironmentIds { get; set; } = [];
     public List<Guid> TenantIds { get; set; } = [];
-    public List<Guid> TenantTagIds { get; set; } = [];
+
+    /// <summary>Extended-tag-set tag ids (renamed from <c>TenantTagIds</c> —
+    /// tags are polymorphic now, no longer tenant-owned). Dormant: no UI/API
+    /// writes this dimension yet; the matcher honours it when populated.</summary>
+    public List<Guid> TagIds { get; set; } = [];
 
     /// <summary>
     /// True when every scope dimension is empty — the assignment grants the
@@ -59,5 +63,5 @@ public class RoleAssignment : AuditableEntity
         ProjectIds.Count == 0 &&
         EnvironmentIds.Count == 0 &&
         TenantIds.Count == 0 &&
-        TenantTagIds.Count == 0;
+        TagIds.Count == 0;
 }

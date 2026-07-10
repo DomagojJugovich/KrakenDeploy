@@ -1,7 +1,9 @@
 @using KrakenDeploy.Server.Core.Domain.Deployments
 @using KrakenDeploy.Server.Core.Domain.Environments
+@using KrakenDeploy.Server.Core.Domain.Freezes
 @using KrakenDeploy.Server.Core.Domain.Releases
 @using KrakenDeploy.Server.Core.Domain.Security
+@using KrakenDeploy.Server.Core.Domain.Tags
 @using KrakenDeploy.Server.Core.Domain.Targets
 @using KrakenDeploy.Server.Core.Domain.Tenants
 @using KrakenDeploy.Server.Core.Domain.Spaces
@@ -12,19 +14,34 @@
 @inject EnvironmentService EnvironmentSvc
 @inject TargetService TargetSvc
 @inject TenantService TenantSvc
+@inject TagService TagSvc
 @inject DeploymentService DeploymentSvc
+@inject DeploymentFreezeService FreezeSvc
 @inject UiActionGuard Guard
 @inject ISpaceContext SpaceCtx
 
 @*
-    Trigger a deployment of a release. Gathers the target environment, one or
-    more targets (rolling), an optional tenant, an optional scheduled start,
-    and the multi-target failure mode. The lifecycle gate + existence checks
-    are enforced server-side by DeploymentService.CreateAsync — errors surface
-    inline rather than being re-implemented here.
+    Trigger a deployment of a release — Octopus-style multi-tenant flow.
+
+    Tenants connected to the release's project are selected explicitly or via
+    "Include all connected tenants"; each selected tenant gets its OWN target
+    picker (targets serving the environment AND associated with that tenant),
+    defaulted to all-selected. Submit queues ONE DEPLOYMENT PER TENANT.
+    With no tenants selected (or a tenant-less project) the flow is the classic
+    untenanted single deployment with a flat target picker.
+
+    The lifecycle gate + existence checks are enforced server-side by
+    DeploymentService.CreateAsync — errors surface inline rather than being
+    re-implemented here. The dialog ALSO pre-surfaces deployability (lifecycle
+    gate per environment, active freezes) so a blocked choice is visible
+    BEFORE clicking Deploy.
+
+    Layout: the action buttons + error live in a non-scrolling header so they
+    stay reachable however many per-tenant pickers render; the form body
+    scrolls internally.
 *@
 
-<div style="min-width: 560px; padding: 0.25rem 0;">
+<div style="min-width: 640px; padding: 0.25rem 0;">
     @if (_loading)
     {
         <RadzenProgressBarCircular ShowValue="false" Mode="ProgressBarMode.Indeterminate"
@@ -52,50 +69,238 @@
     }
     else
     {
+        @* ── Pinned header: summary + actions (never scrolls away) ─────────── *@
+        <div style="display: flex; align-items: center; justify-content: space-between;
+                    gap: 1rem; padding-bottom: 0.65rem; margin-bottom: 0.75rem;
+                    border-bottom: 1px solid var(--rz-base-dark, rgba(128,128,128,.25));">
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary" Style="margin: 0;">
+                @DeploymentsToCreate deployment@(DeploymentsToCreate == 1 ? "" : "s") will be queued.
+            </RadzenText>
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" AlignItems="AlignItems.Center">
+                <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                              Click="@(_ => Dialog.Close(false))" Disabled="@_submitting" />
+                <RadzenButton Text="@DeployButtonText"
+                              Icon="rocket_launch" ButtonStyle="ButtonStyle.Primary"
+                              Click="DeployAsync" IsBusy="@_submitting"
+                              Disabled="@(_submitting || SelectedEnv is { Allowed: false })"
+                              BusyText="Queuing…" />
+            </RadzenStack>
+        </div>
+
+        @if (_error is not null)
+        {
+            <div class="kraken-login-error rz-text-body2" style="margin-bottom: 0.75rem; white-space: pre-line;">@_error</div>
+        }
+
+        @* ── Scrolling form body ───────────────────────────────────────────── *@
+        <div style="overflow-y: auto; max-height: min(64vh, 720px); padding-right: 6px;">
         <RadzenStack Gap="1rem">
             <div>
                 <RadzenLabel Text="Environment *" />
                 <RadzenDropDown TValue="Guid?" @bind-Value="_environmentId"
-                                Change="@(_ => OnEnvironmentChanged())"
-                                Data="@_environments" TextProperty="Name" ValueProperty="Id"
-                                Placeholder="Select an environment" Style="width: 100%;" />
-            </div>
-
-            <div>
-                <RadzenLabel Text="Target(s) *" />
-                <RadzenDropDown TValue="IEnumerable<Guid>" @bind-Value="_selectedTargetIds"
-                                Data="@EligibleTargets" TextProperty="Name" ValueProperty="Id"
-                                Multiple="true" Chips="true" AllowClear="true" AllowFiltering="true"
-                                FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                                Disabled="@(_environmentId is null)"
-                                Placeholder="@(_environmentId is null
-                                    ? "Pick an environment first"
-                                    : "Select target(s)")"
-                                Style="width: 100%;" />
-                @if (_environmentId is not null && EligibleTargets.Count == 0)
+                                Change="@(_ => OnEnvironmentChangedAsync())"
+                                Data="@_envOptions" TextProperty="Name" ValueProperty="Id"
+                                Placeholder="Select an environment" Style="width: 100%;">
+                    <Template Context="item">
+                        @{ var opt = (EnvOption)item; }
+                        <span style="display: inline-flex; align-items: center; gap: 0.4rem;">
+                            @if (!opt.Allowed)
+                            {
+                                <RadzenIcon Icon="lock" Style="font-size: 14px;" />
+                            }
+                            <span>@opt.Name</span>
+                            @if (!opt.Allowed)
+                            {
+                                <span class="rz-color-secondary" style="font-size: 11.5px;">— blocked by lifecycle</span>
+                            }
+                        </span>
+                    </Template>
+                </RadzenDropDown>
+                @if (SelectedEnv is { Allowed: false } blockedEnv)
                 {
                     <RadzenText TextStyle="TextStyle.Caption" class="kraken-validation-error">
-                        No targets serve this environment. Assign a target to it first
-                        (target → Settings → Environments).
-                    </RadzenText>
-                }
-                else if (SelectedCount > 1)
-                {
-                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
-                        Rolling deployment across @SelectedCount targets.
+                        @blockedEnv.Reason
                     </RadzenText>
                 }
             </div>
+
+            @if (_blockingFreeze is not null)
+            {
+                <RadzenAlert AlertStyle="AlertStyle.Warning" Variant="Variant.Flat"
+                             ShowIcon="true" AllowClose="false" class="rz-m-0">
+                    Deployment freeze '@_blockingFreeze.Name' is active for this
+                    project/environment until @_blockingFreeze.EndUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm").
+                    Immediate deployments are blocked — schedule the start after the freeze ends.
+                </RadzenAlert>
+            }
 
             @if (_tenants.Count > 0)
             {
                 <div>
-                    <RadzenLabel Text="Tenant" />
-                    <RadzenDropDown TValue="Guid?" @bind-Value="_tenantId"
-                                    Data="@_tenants" TextProperty="Name" ValueProperty="Id"
-                                    AllowClear="true" AllowFiltering="true"
+                    <RadzenLabel Text="Tenants" />
+                    <RadzenStack Gap="0.5rem">
+                        <div style="display: flex; align-items: center; gap: 0.5rem;">
+                            <RadzenCheckBox TValue="bool" @bind-Value="_includeAllTenants"
+                                            Change="@(_ => OnTenantSelectionChangedAsync())"
+                                            Name="includeAllTenants" />
+                            <RadzenLabel Text="@($"Include all connected tenants ({_tenants.Count})")"
+                                         Component="includeAllTenants" Style="cursor: pointer;" />
+                        </div>
+                        @if (_includeAllTenants)
+                        {
+                            @* The explicit picker hides while include-all is on —
+                               showing its (stale) chips next to "all 34" misleads. *@
+                            <RadzenAlert AlertStyle="AlertStyle.Warning" Variant="Variant.Flat"
+                                         ShowIcon="true" AllowClose="false" class="rz-m-0">
+                                This will deploy to all @_tenants.Count connected tenants —
+                                review the per-tenant targets below before deploying.
+                            </RadzenAlert>
+                        }
+                        else
+                        {
+                            <RadzenDropDown TValue="IEnumerable<Guid>" @bind-Value="_explicitTenantIds"
+                                            Change="@(_ => OnTenantSelectionChangedAsync())"
+                                            Data="@_tenants" TextProperty="Name" ValueProperty="Id"
+                                            Multiple="true" Chips="true" MaxSelectedLabels="6"
+                                            AllowClear="true" AllowFiltering="true"
+                                            FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                            Placeholder="(untenanted — select one or many tenants)"
+                                            Style="width: 100%;" />
+                        }
+                        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary" Style="margin: 0;">
+                            Only tenants connected to this project are listed. One deployment is
+                            queued per selected tenant; leave empty for an untenanted deployment.
+                        </RadzenText>
+                    </RadzenStack>
+                </div>
+            }
+
+            @if (_tagOptions.Count > 0)
+            {
+                <div>
+                    <RadzenLabel Text="Filter targets by tag" />
+                    <RadzenDropDown TValue="IEnumerable<Guid>" @bind-Value="_filterTagIds"
+                                    Change="@(_ => OnTagFilterChangedAsync())"
+                                    Data="@_tagOptions" TextProperty="Label" ValueProperty="Id"
+                                    Multiple="true" Chips="true" AllowClear="true" AllowFiltering="true"
                                     FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                                    Placeholder="(untenanted)" Style="width: 100%;" />
+                                    Disabled="@(_environmentId is null)"
+                                    Placeholder="@(_environmentId is null ? "Pick an environment first" : "(no tag filter)")"
+                                    Style="width: 100%;">
+                        <Template Context="item">
+                            @{ var tag = (TagOption)item; }
+                            <span style="display: inline-flex; align-items: center; gap: 0.4rem;">
+                                <span style="width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto;
+                                             background: @(tag.Color ?? "var(--text-3)");"></span>
+                                <span>@tag.Label</span>
+                            </span>
+                        </Template>
+                    </RadzenDropDown>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                        Narrows every target list to targets carrying any selected tag —
+                        applying it resets the target selections below.
+                    </RadzenText>
+                </div>
+            }
+
+            @if (SelectedTenants.Count == 0)
+            {
+                @* Untenanted: one deployment, flat target picker. *@
+                <div>
+                    <RadzenLabel Text="Target(s) *" />
+                    <RadzenDropDown TValue="IEnumerable<Guid>" @bind-Value="_selectedTargetIds"
+                                    Data="@EligibleTargets" TextProperty="Name" ValueProperty="Id"
+                                    Multiple="true" Chips="true" AllowClear="true" AllowFiltering="true"
+                                    FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                    Disabled="@(_environmentId is null)"
+                                    Placeholder="@(_environmentId is null
+                                        ? "Pick an environment first"
+                                        : "Select target(s)")"
+                                    Style="width: 100%;">
+                        <Template Context="item">
+                            @{ var target = (DeploymentTarget)item; }
+                            <span>@target.Name</span>
+                            @if (target.Roles.Count > 0)
+                            {
+                                <span class="rz-color-secondary" style="font-size: 11.5px;"> · @string.Join(", ", target.Roles)</span>
+                            }
+                        </Template>
+                    </RadzenDropDown>
+                    @if (_environmentId is not null && EligibleTargets.Count == 0)
+                    {
+                        <RadzenText TextStyle="TextStyle.Caption" class="kraken-validation-error">
+                            @(_tagMatchedTargetIds is not null && EnvironmentTargets.Count > 0
+                                ? "No target serving this environment matches the tag filter — clear or change the filter."
+                                : "No targets serve this environment. Assign a target to it first (target → Settings → Environments).")
+                        </RadzenText>
+                    }
+                    else if (SelectedCount > 1)
+                    {
+                        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                            Rolling deployment across @SelectedCount targets.
+                        </RadzenText>
+                    }
+                </div>
+            }
+            else
+            {
+                @* Tenanted: one target picker PER selected tenant, all applicable
+                   targets pre-selected — the operator deselects what to skip. *@
+                <div>
+                    <RadzenLabel Text="Targets per tenant *" />
+                    @if (_environmentId is null)
+                    {
+                        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                            Pick an environment to choose targets per tenant.
+                        </RadzenText>
+                    }
+                    else
+                    {
+                        <RadzenStack Gap="0.6rem" class="rz-mt-1">
+                            @foreach (var tenant in SelectedTenants)
+                            {
+                                var applicable = ApplicableTargets(tenant);
+                                <div class="kr-card" style="padding: 0.6rem 0.8rem;">
+                                    <RadzenText TextStyle="TextStyle.Subtitle2" Style="margin: 0 0 0.35rem 0;">
+                                        @tenant.Name
+                                    </RadzenText>
+                                    @if (applicable.Count == 0)
+                                    {
+                                        <RadzenText TextStyle="TextStyle.Caption" class="kraken-validation-error" Style="margin: 0;">
+                                            @(_tagMatchedTargetIds is not null
+                                                ? "No associated target serving this environment matches the tag filter."
+                                                : "No target serving this environment is associated with this tenant.")
+                                            Deselect the tenant or fix the target's tenant associations.
+                                        </RadzenText>
+                                    }
+                                    else
+                                    {
+                                        <RadzenDropDown TValue="IEnumerable<Guid>" @bind-Value="_tenantTargetIds[tenant.Id]"
+                                                        Data="@applicable" TextProperty="Name" ValueProperty="Id"
+                                                        Multiple="true" Chips="true" AllowClear="true" AllowFiltering="true"
+                                                        FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                                        Placeholder="Select target(s)"
+                                                        Style="width: 100%;">
+                                            <Template Context="item">
+                                                @{ var target = (DeploymentTarget)item; }
+                                                <span>@target.Name</span>
+                                                @if (target.Roles.Count > 0)
+                                                {
+                                                    <span class="rz-color-secondary" style="font-size: 11.5px;"> · @string.Join(", ", target.Roles)</span>
+                                                }
+                                            </Template>
+                                        </RadzenDropDown>
+                                        @if (TenantSelectionCount(tenant.Id) > 1)
+                                        {
+                                            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary" Style="margin: 0.25rem 0 0 0;">
+                                                Rolling deployment across @TenantSelectionCount(tenant.Id) targets.
+                                            </RadzenText>
+                                        }
+                                    }
+                                </div>
+                            }
+                        </RadzenStack>
+                    }
                 </div>
             }
 
@@ -106,12 +311,12 @@
                                   DateFormat="yyyy-MM-dd HH:mm" AllowClear="true"
                                   Placeholder="(deploy now)" Style="width: 100%;" />
                 <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
-                    Leave empty to deploy immediately. A future time queues the deployment
+                    Leave empty to deploy immediately. A future time queues the deployment@(DeploymentsToCreate > 1 ? "s" : "")
                     (interpreted in the server's time zone).
                 </RadzenText>
             </div>
 
-            @if (SelectedCount > 1)
+            @if (AnyRolling)
             {
                 <div>
                     <RadzenLabel Text="On target failure" />
@@ -120,27 +325,13 @@
                                     Style="width: 100%;" />
                     <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
                         @(_failureMode == DeploymentFailureMode.Atomic
-                            ? "Any target failing fails the whole deployment; survivors run cleanup steps."
+                            ? "Any target failing fails that whole deployment; survivors run cleanup steps."
                             : "A failing target is dropped; the remaining targets continue.")
                     </RadzenText>
                 </div>
             }
-
-            @if (_error is not null)
-            {
-                <div class="kraken-login-error rz-text-body2">@_error</div>
-            }
-
-            <RadzenStack Orientation="Orientation.Horizontal"
-                         JustifyContent="JustifyContent.End" Gap="0.5rem">
-                <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
-                              Click="@(_ => Dialog.Close(false))" Disabled="@_submitting" />
-                <RadzenButton Text="@(_scheduledFor is null ? "Deploy" : "Schedule")"
-                              Icon="rocket_launch" ButtonStyle="ButtonStyle.Primary"
-                              Click="DeployAsync" IsBusy="@_submitting" Disabled="@_submitting"
-                              BusyText="Queuing…" />
-            </RadzenStack>
         </RadzenStack>
+        </div>
     }
 </div>
 
@@ -151,26 +342,65 @@
     /// <summary>Optional environment to pre-select (e.g. from a matrix cell).</summary>
     [Parameter] public Guid? PresetEnvironmentId { get; set; }
 
+    /// <summary>Optional target(s) to pre-select — used by Redeploy to reproduce
+    /// the source deployment's target set. Only ids still eligible for the
+    /// preset environment (and tenant) are seeded; the operator adjusts the rest.</summary>
+    [Parameter] public IEnumerable<Guid>? PresetTargetIds { get; set; }
+
+    /// <summary>Optional tenant to pre-select (Redeploy).</summary>
+    [Parameter] public Guid? PresetTenantId { get; set; }
+
+    /// <summary>Optional multi-target failure mode to pre-select (Redeploy).</summary>
+    [Parameter] public DeploymentFailureMode? PresetFailureMode { get; set; }
+
+    /// <summary>Shared options for every entry point. The dialog is content-heavy
+    /// (per-tenant target pickers) so it opens wide; the body scrolls internally
+    /// and the action buttons stay pinned at the top-right.</summary>
+    public static DialogOptions BuildOptions() => new() { Width = "940px" };
+
     private Release? _release;
     private List<DeploymentEnvironment> _environments = [];
     private List<DeploymentTarget> _allTargets = [];
     private List<Tenant> _tenants = [];
 
     private Guid? _environmentId;
-    private IEnumerable<Guid> _selectedTargetIds = [];
-    private Guid? _tenantId;
     private DateTime? _scheduledFor;
     private DeploymentFailureMode _failureMode = DeploymentFailureMode.BestEffort;
+
+    // Tenant selection: explicit picks OR the include-all switch. One
+    // deployment per selected tenant; empty selection = untenanted.
+    private bool _includeAllTenants;
+    private IEnumerable<Guid> _explicitTenantIds = [];
+
+    // Target selections: flat set for the untenanted flow, per-tenant sets for
+    // the tenanted flow. RESET to "all applicable" whenever environment,
+    // tenant selection, or the tag filter changes.
+    private IEnumerable<Guid> _selectedTargetIds = [];
+    private Dictionary<Guid, IEnumerable<Guid>> _tenantTargetIds = [];
+
+    // Deployability pre-surface: lifecycle gate per environment (tenant-aware
+    // when exactly one tenant is selected) + the freeze blocking this scope.
+    private Dictionary<Guid, LifecycleGateStatus> _gate = [];
+    private List<EnvOption> _envOptions = [];
+    private DeploymentFreeze? _blockingFreeze;
+
+    // Target tag filter (extended tag sets): options from DeploymentTarget-
+    // scoped select-type sets; null match-set = no filter active.
+    private List<TagOption> _tagOptions = [];
+    private IEnumerable<Guid> _filterTagIds = [];
+    private HashSet<Guid>? _tagMatchedTargetIds;
 
     private bool _loading = true;
     private bool _submitting;
     private string? _loadError;   // OnInitialized failure — shown as a full alert
-    private string? _error;       // submit failure — shown inline in the form
+    private string? _error;       // submit failure — pinned under the header
 
-    // A record (not a ValueTuple) so Radzen's reflection-based TextProperty/
+    // Records (not ValueTuples) so Radzen's reflection-based TextProperty/
     // ValueProperty resolve real members — tuples expose only Item1/Item2 at
     // runtime, which garbles the labels and throws on selection.
     private sealed record FailureModeOption(DeploymentFailureMode Mode, string Label);
+    private sealed record EnvOption(Guid Id, string Name, bool Allowed, string? Reason);
+    private sealed record TagOption(Guid Id, string Label, string? Color);
 
     private readonly FailureModeOption[] _failureModes =
     [
@@ -178,26 +408,117 @@
         new(DeploymentFailureMode.Atomic, "Atomic — fail all on any target failure"),
     ];
 
-    private List<DeploymentTarget> EligibleTargets =>
+    private List<Tenant> SelectedTenants => _includeAllTenants
+        ? _tenants
+        : _tenants.Where(t => _explicitTenantIds.Contains(t.Id)).ToList();
+
+    private List<DeploymentTarget> EnvironmentTargets =>
         _environmentId is { } envId
             ? _allTargets.Where(t => t.Environments.Any(e => e.Id == envId)).ToList()
             : [];
 
+    private List<DeploymentTarget> EligibleTargets =>
+        _tagMatchedTargetIds is { } matched
+            ? EnvironmentTargets.Where(t => matched.Contains(t.Id)).ToList()
+            : EnvironmentTargets;
+
+    /// <summary>Targets deployable for one tenant: serve the environment,
+    /// associated with the tenant, and pass the tag filter.</summary>
+    private List<DeploymentTarget> ApplicableTargets(Tenant tenant) =>
+        EligibleTargets.Where(t => t.Tenants.Any(x => x.Id == tenant.Id)).ToList();
+
     private int SelectedCount => _selectedTargetIds?.Count() ?? 0;
+
+    private int TenantSelectionCount(Guid tenantId) =>
+        _tenantTargetIds.TryGetValue(tenantId, out var sel) ? sel.Count() : 0;
+
+    private int DeploymentsToCreate =>
+        SelectedTenants is { Count: > 0 } tenants ? tenants.Count : 1;
+
+    private bool AnyRolling => SelectedTenants.Count == 0
+        ? SelectedCount > 1
+        : _tenantTargetIds.Values.Any(v => v.Count() > 1);
+
+    private string DeployButtonText
+    {
+        get
+        {
+            var verb = _scheduledFor is null ? "Deploy" : "Schedule";
+            return DeploymentsToCreate > 1 ? $"{verb} ({DeploymentsToCreate})" : verb;
+        }
+    }
+
+    private EnvOption? SelectedEnv =>
+        _environmentId is { } envId ? _envOptions.FirstOrDefault(o => o.Id == envId) : null;
 
     protected override async Task OnInitializedAsync()
     {
         try
         {
             _release = await ReleaseSvc.GetAsync(ReleaseId);
+            if (_release is null)
+            {
+                _loadError = "The release no longer exists.";
+                return;
+            }
+
             _environments = await EnvironmentSvc.GetAllOrderedAsync();
             _allTargets = await TargetSvc.GetAllWithEnvironmentsAsync();
-            _tenants = await TenantSvc.GetAllAsync();
+            // Only tenants connected to the release's project — deploying to an
+            // unrelated tenant is never meaningful and clutters the picker.
+            _tenants = await TenantSvc.GetForProjectAsync(_release.ProjectId);
+
+            var targetSets = await TagSvc.GetSetsForKindAsync(TaggableEntityKind.DeploymentTarget);
+            _tagOptions = targetSets
+                .Where(s => s.Type != TagSetType.FreeText)
+                .SelectMany(s => s.Tags.Select(t =>
+                    new TagOption(t.Id, TagCanonical.Format(s.Name, t.Name), t.Color)))
+                .ToList();
 
             if (PresetEnvironmentId is { } pre && _environments.Any(e => e.Id == pre))
             {
                 _environmentId = pre;
             }
+            if (PresetFailureMode is { } fm)
+            {
+                _failureMode = fm;
+            }
+            if (PresetTenantId is { } tid && _tenants.Any(t => t.Id == tid))
+            {
+                _explicitTenantIds = new List<Guid> { tid };
+            }
+
+            // Tenant presets are applied above, so the gate reflects the
+            // tenant-specific progression from the first render.
+            await LoadGateAsync();
+            ResetTargetSelections();
+
+            // Redeploy target presets override the all-selected default — but
+            // only ids still applicable for the environment (and tenant) seed.
+            if (PresetTargetIds is { } presetTargets && _environmentId is not null)
+            {
+                var presets = presetTargets.ToList();
+                if (SelectedTenants is [var single])
+                {
+                    var applicable = ApplicableTargets(single).Select(t => t.Id).ToHashSet();
+                    var seed = presets.Where(applicable.Contains).ToList();
+                    if (seed.Count > 0)
+                    {
+                        _tenantTargetIds[single.Id] = seed;
+                    }
+                }
+                else if (SelectedTenants.Count == 0)
+                {
+                    var eligible = EligibleTargets.Select(t => t.Id).ToHashSet();
+                    var seed = presets.Where(eligible.Contains).ToList();
+                    if (seed.Count > 0)
+                    {
+                        _selectedTargetIds = seed;
+                    }
+                }
+            }
+
+            await RefreshFreezeBannerAsync();
         }
         catch (Exception ex)
         {
@@ -209,18 +530,116 @@
         }
     }
 
-    // Dropping the environment invalidates any targets no longer eligible.
-    private void OnEnvironmentChanged()
+    private async Task LoadGateAsync()
     {
-        var eligible = EligibleTargets.Select(t => t.Id).ToHashSet();
-        _selectedTargetIds = _selectedTargetIds.Where(eligible.Contains).ToList();
+        // The gate is tenant-aware. With exactly one tenant the annotation is
+        // exact; with several the untenanted verdict is shown — it is never
+        // MORE restrictive than any per-tenant verdict (tenant success counts
+        // are subsets), and CreateAsync re-enforces per tenant at submit.
+        var gateTenantId = SelectedTenants is [var single] ? single.Id : (Guid?)null;
+        _gate = await DeploymentSvc.GetLifecycleGateStatusesAsync(
+            ReleaseId, gateTenantId, _environments.Select(e => e.Id).ToList());
+        _envOptions = _environments
+            .Select(e => _gate.TryGetValue(e.Id, out var s)
+                ? new EnvOption(e.Id, e.Name, s.Allowed, s.Reason)
+                : new EnvOption(e.Id, e.Name, true, null))
+            .ToList();
+    }
+
+    private async Task RefreshFreezeBannerAsync()
+    {
+        _blockingFreeze = _environmentId is { } envId
+            ? await FindFreezeAsync(envId, atUtc: null)
+            : null;
+    }
+
+    /// <summary>The freeze blocking this dialog's scope at <paramref name="atUtc"/>
+    /// (null = now). The tenant-tag dimension is fed only when exactly one
+    /// tenant is selected — project/environment scoping covers the rest, and
+    /// tag-scoped freezes cannot be authored in the UI yet.</summary>
+    private async Task<DeploymentFreeze?> FindFreezeAsync(Guid envId, DateTimeOffset? atUtc)
+    {
+        if (_release is null)
+        {
+            return null;
+        }
+
+        List<Guid>? tenantTagIds = null;
+        if (SelectedTenants is [var single])
+        {
+            var applications = await TagSvc.GetForEntityAsync(TaggableEntityKind.Tenant, single.Id);
+            tenantTagIds = applications
+                .Where(a => a.TagId is not null)
+                .Select(a => a.TagId!.Value)
+                .ToList();
+        }
+
+        return await FreezeSvc.FindBlockingFreezeAsync(
+            SpaceCtx.CurrentSpaceId, _release.ProjectId, envId, tenantTagIds, atUtc);
+    }
+
+    /// <summary>Re-derives every target selection to "all applicable" — called
+    /// whenever environment, tenant selection, or the tag filter changes. Any
+    /// manual deselections are intentionally discarded (predictable defaults
+    /// beat stale subsets pointing at the wrong tenant/environment).</summary>
+    private void ResetTargetSelections()
+    {
+        _selectedTargetIds = EligibleTargets.Select(t => t.Id).ToList();
+        _tenantTargetIds = SelectedTenants.ToDictionary(
+            t => t.Id,
+            t => (IEnumerable<Guid>)ApplicableTargets(t).Select(x => x.Id).ToList());
+    }
+
+    private async Task OnEnvironmentChangedAsync()
+    {
+        ResetTargetSelections();
+        try
+        {
+            await RefreshFreezeBannerAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not check deployment freezes: {ex.Message}";
+        }
+    }
+
+    // Fires for both the explicit tenant picker and the include-all checkbox.
+    private async Task OnTenantSelectionChangedAsync()
+    {
+        ResetTargetSelections();
+        try
+        {
+            await LoadGateAsync();
+            await RefreshFreezeBannerAsync();
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not refresh deployability: {ex.Message}";
+        }
+    }
+
+    private async Task OnTagFilterChangedAsync()
+    {
+        try
+        {
+            var ids = _filterTagIds?.ToList() ?? [];
+            _tagMatchedTargetIds = ids.Count == 0
+                ? null
+                : await TagSvc.GetEntityIdsWithAnyTagAsync(TaggableEntityKind.DeploymentTarget, ids);
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not apply the tag filter: {ex.Message}";
+            return;
+        }
+        ResetTargetSelections();
     }
 
     private async Task DeployAsync()
     {
         // Synchronous re-entrancy guard. The busy state is bound to _submitting,
         // but between the first await below and the re-render the Deploy button
-        // stays enabled — a double-click would otherwise queue TWO deployments.
+        // stays enabled — a double-click would otherwise queue everything twice.
         // Set the flag before any await; the finally always clears it.
         if (_submitting) return;
         _submitting = true;
@@ -239,11 +658,42 @@
                 return;
             }
 
-            var targetIds = _selectedTargetIds?.ToList() ?? [];
-            if (targetIds.Count == 0)
+            // Local pre-check from the loaded gate — CreateAsync re-enforces
+            // authoritatively (per tenant), this just fails fast.
+            if (SelectedEnv is { Allowed: false } blockedEnv)
             {
-                _error = "Select at least one target.";
+                _error = blockedEnv.Reason;
                 return;
+            }
+
+            // One deployment plan per selected tenant; a single untenanted
+            // plan when no tenant is selected.
+            var tenants = SelectedTenants;
+            var plans = new List<(Guid? TenantId, string Label, List<Guid> TargetIds)>();
+            if (tenants.Count == 0)
+            {
+                var flat = _selectedTargetIds?.ToList() ?? [];
+                if (flat.Count == 0)
+                {
+                    _error = "Select at least one target.";
+                    return;
+                }
+                plans.Add((null, "", flat));
+            }
+            else
+            {
+                var withoutTargets = tenants
+                    .Where(t => TenantSelectionCount(t.Id) == 0)
+                    .Select(t => t.Name)
+                    .ToList();
+                if (withoutTargets.Count > 0)
+                {
+                    _error = "No targets selected for: " + string.Join(", ", withoutTargets) +
+                             ". Select at least one target per tenant, or deselect those tenants.";
+                    return;
+                }
+                plans.AddRange(tenants.Select(t =>
+                    ((Guid?)t.Id, t.Name, _tenantTargetIds[t.Id].ToList())));
             }
 
             DateTimeOffset? scheduled = null;
@@ -258,49 +708,89 @@
                 }
             }
 
-            // Authoritative, never-stale permission re-check at the SPECIFIC scope
-            // (project + environment + tenant) — not just the Space. A grant scoped
-            // to another project/environment must NOT be able to deploy here.
-            // SpaceId MUST be set: the evaluator filters assignments by SpaceId, so
-            // omitting it would fetch only system-wide grants and wrongly deny.
-            // Guard fires its own denial toast on failure.
-            var scope = new PermissionScope(
-                SpaceId:       SpaceCtx.CurrentSpaceId,
-                ProjectId:     _release.ProjectId,
-                EnvironmentId: envId,
-                TenantId:      _tenantId);
-            if (!await Guard.AllowAsync(Permission.DeploymentCreate, scope))
+            // Freeze pre-check at the EFFECTIVE start (now, or the scheduled
+            // time). Project/environment dimensions apply to every plan alike,
+            // so one check covers the batch. Without this the deployments are
+            // created and then failed by the worker's dispatch gate — doomed
+            // creates with a worse message.
+            var blockingFreeze = await FindFreezeAsync(envId, scheduled);
+            if (blockingFreeze is not null)
             {
+                _error =
+                    $"Blocked by deployment freeze '{blockingFreeze.Name}' " +
+                    $"(until {blockingFreeze.EndUtc.ToLocalTime():yyyy-MM-dd HH:mm}). " +
+                    (scheduled is null
+                        ? "Schedule the start after the freeze ends, or remove the freeze."
+                        : "The scheduled start falls inside the freeze window — pick a time after it ends.");
                 return;
             }
 
-            var additional = targetIds.Skip(1).ToList();
-            var deployment = await DeploymentSvc.CreateAsync(
-                releaseId:           ReleaseId,
-                environmentId:       envId,
-                targetId:            targetIds[0],
-                tenantId:            _tenantId,
-                scheduledFor:        scheduled,
-                additionalTargetIds: additional.Count > 0 ? additional : null,
-                failureMode:         _failureMode);
+            var created = new List<Deployment>();
+            var failures = new List<string>();
+            foreach (var (tenantId, label, targetIds) in plans)
+            {
+                // Authoritative, never-stale permission re-check at the SPECIFIC
+                // scope (project + environment + tenant) — not just the Space.
+                // SpaceId MUST be set: the evaluator filters assignments by
+                // SpaceId, so omitting it would fetch only system-wide grants
+                // and wrongly deny. Guard fires its own denial toast.
+                var scope = new PermissionScope(
+                    SpaceId:       SpaceCtx.CurrentSpaceId,
+                    ProjectId:     _release.ProjectId,
+                    EnvironmentId: envId,
+                    TenantId:      tenantId);
+                if (!await Guard.AllowAsync(Permission.DeploymentCreate, scope))
+                {
+                    failures.Add(Prefix(label) + "permission denied.");
+                    continue;
+                }
 
-            Dialog.Close(true);
-            Nav.NavigateTo(Nav.Sp($"/deployments/{deployment.Id}"));
-        }
-        catch (InvalidOperationException ex)
-        {
-            // Expected domain failures: lifecycle gate, missing target/tenant, etc.
-            _error = ex.Message;
-        }
-        catch (Exception ex)
-        {
-            // Unexpected (DbUpdateException, transient Npgsql, …) — surface inline
-            // rather than letting it tear down the Blazor circuit.
-            _error = $"Deployment could not be queued: {ex.Message}";
+                try
+                {
+                    var additional = targetIds.Skip(1).ToList();
+                    created.Add(await DeploymentSvc.CreateAsync(
+                        releaseId:           ReleaseId,
+                        environmentId:       envId,
+                        targetId:            targetIds[0],
+                        tenantId:            tenantId,
+                        scheduledFor:        scheduled,
+                        additionalTargetIds: additional.Count > 0 ? additional : null,
+                        failureMode:         _failureMode));
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // Expected domain failures: lifecycle gate, missing target, etc.
+                    failures.Add(Prefix(label) + ex.Message);
+                }
+                catch (Exception ex)
+                {
+                    // Unexpected (DbUpdateException, transient Npgsql, …) — record
+                    // rather than letting it tear down the Blazor circuit.
+                    failures.Add(Prefix(label) + $"deployment could not be queued: {ex.Message}");
+                }
+            }
+
+            if (failures.Count == 0)
+            {
+                Dialog.Close(true);
+                Nav.NavigateTo(created.Count == 1
+                    ? Nav.Sp($"/deployments/{created[0].Id}")
+                    : Nav.Sp("/deployments"));
+                return;
+            }
+
+            // Partial failures keep the dialog open so the operator sees exactly
+            // which tenants failed; anything already created IS queued.
+            _error = created.Count > 0
+                ? $"Queued {created.Count} of {plans.Count} deployments. Failed:\n" +
+                  string.Join("\n", failures)
+                : string.Join("\n", failures);
         }
         finally
         {
             _submitting = false;
         }
+
+        static string Prefix(string label) => label.Length > 0 ? $"{label}: " : "";
     }
 }

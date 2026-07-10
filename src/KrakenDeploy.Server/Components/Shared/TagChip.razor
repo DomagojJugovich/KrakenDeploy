@@ -1,0 +1,42 @@
+@*
+    Small display chip for one extended-tag-set Tag: colour dot + name.
+    The dot colour is user data (Tag.Color hex chosen by the operator), not a
+    theme constant — falls back to the theme's secondary text colour when the
+    tag has none. Title carries the optional description.
+
+    Caller-supplied class is MERGED with the base "tag-chip" class (Blazor
+    attribute splatting would otherwise let a splatted `class` REPLACE the
+    literal one, dropping the base styling), and any other attributes splat.
+*@
+<span class="@CssClass" title="@(Tag.Description ?? Tag.Name)" @attributes="OtherAttributes">
+    <span class="tag-chip-dot"
+          style="background: @(string.IsNullOrWhiteSpace(Tag.Color) ? "var(--text-3)" : Tag.Color);"></span>
+    @Tag.Name
+</span>
+
+@code {
+    [Parameter, EditorRequired] public Tag Tag { get; set; } = null!;
+
+    [Parameter(CaptureUnmatchedValues = true)]
+    public Dictionary<string, object>? AdditionalAttributes { get; set; }
+
+    private string CssClass
+    {
+        get
+        {
+            var extra = AdditionalAttributes is not null
+                        && AdditionalAttributes.TryGetValue("class", out var c)
+                ? c?.ToString()
+                : null;
+            return string.IsNullOrWhiteSpace(extra) ? "tag-chip" : $"tag-chip {extra}";
+        }
+    }
+
+    // Everything except class (merged above) splats onto the span.
+    private IReadOnlyDictionary<string, object>? OtherAttributes =>
+        AdditionalAttributes is null
+            ? null
+            : AdditionalAttributes
+                .Where(kv => !string.Equals(kv.Key, "class", StringComparison.OrdinalIgnoreCase))
+                .ToDictionary(kv => kv.Key, kv => kv.Value);
+}
