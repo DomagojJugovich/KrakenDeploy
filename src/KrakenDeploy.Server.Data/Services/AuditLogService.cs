@@ -18,15 +18,30 @@ public sealed class AuditLogService(
     TimeProvider time) : IAuditLog
 {
     /// <summary>Audit entries about one subject (newest first, bounded) —
-    /// powers per-entity "Events" tabs (e.g. target detail).</summary>
+    /// powers per-entity "Events" tabs (e.g. target detail).
+    /// <para>
+    /// Caged to <paramref name="spaceId"/> via the audit choke point
+    /// (<see cref="AuditExportService.ApplySpaceVisibility"/>): the subject id
+    /// comes from the page URL, so without the Space predicate a caller could
+    /// probe another Space's entity ids and read their audit snapshots.
+    /// System rows (<c>SpaceId IS NULL</c>) are excluded — platform events are
+    /// not entity history. Pass the page's validated active Space.
+    /// </para>
+    /// <para>
+    /// <paramref name="subjectType"/> narrows to one entity type and lets the
+    /// query use the (subject_type, subject_id, occurred_utc) index instead of
+    /// seq-scanning the largest table.
+    /// </para></summary>
     public async Task<List<AuditEntry>> GetForSubjectAsync(
-        string subjectId, int limit = 100, CancellationToken ct = default)
+        string subjectType, string subjectId, Guid spaceId,
+        int limit = 100, CancellationToken ct = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(subjectType);
         ArgumentException.ThrowIfNullOrWhiteSpace(subjectId);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        return await db.AuditEntries
-            .AsNoTracking()
-            .Where(e => e.SubjectId == subjectId)
+        return await AuditExportService.ApplySpaceVisibility(
+                db.AuditEntries.AsNoTracking(), [spaceId], includeSystemRows: false)
+            .Where(e => e.SubjectType == subjectType && e.SubjectId == subjectId)
             .OrderByDescending(e => e.OccurredUtc)
             .Take(limit)
             .ToListAsync(ct)
@@ -90,6 +105,9 @@ public sealed class AuditLogService(
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var cutoff = time.GetUtcNow().AddDays(-retentionDays);
+        // Deliberately NOT routed through the audit Space-visibility choke
+        // point: this is the system-wide retention sweep — it deletes by age
+        // across every Space and returns no row content to any caller.
         return await db.AuditEntries
             .Where(e => e.OccurredUtc < cutoff)
             .ExecuteDeleteAsync(ct)

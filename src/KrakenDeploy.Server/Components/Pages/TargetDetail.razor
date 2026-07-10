@@ -16,6 +16,7 @@
 @inject DeploymentService DeploymentSvc
 @inject RunbookService RunbookSvc
 @inject AuditLogService AuditSvc
+@inject ISpaceContext SpaceCtx
 @inject IEncryptionService Encryption
 @inject NotificationService Notify
 @inject UiActionGuard Guard
@@ -605,7 +606,10 @@ else
                 _runbookRuns ??= await RunbookSvc.GetRunsForTargetAsync(Id);
                 break;
             case "events":
-                _events ??= await AuditSvc.GetForSubjectAsync(Id.ToString());
+                // Space-caged history: SpaceCtx.CurrentSpaceId was validated
+                // by SpaceScopedComponentBase before this page rendered.
+                _events ??= await AuditSvc.GetForSubjectAsync(
+                    nameof(DeploymentTarget), Id.ToString(), SpaceCtx.CurrentSpaceId);
                 break;
         }
     }
