@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Review |
-| **Version** | 1.1 |
+| **Version** | 1.2 |
 | **Date** | 2026-07-10 |
 | **Authors** | Domagoj Jugović, Claude (Fable 5 review session) |
 | **Technologies** | .NET 10, EF Core 10, PostgreSQL, Blazor Server (Radzen) |
@@ -64,7 +64,7 @@ Ground rules:
 
 ---
 
-## Prompt 1 — Audit log Space filter (security)
+## Prompt 1 — Audit log Space filter (security) — DONE 2026-07-10 (b4424f7…a1266de)
 
 **Problem.** `audit_entries` carries a nullable `space_id` but is not `ISpaceScoped` and nothing
 filters it. Two leak paths let a Space-A operator with `EventView` read Space B's audit rows,
@@ -97,7 +97,7 @@ audit read, and the export endpoints' parameter binding.
 
 ---
 
-## Prompt 2 — Retire `deployments.target_id`, unify target delete policy
+## Prompt 2 — Retire `deployments.target_id`, unify target delete policy — DONE 2026-07-10 (560f0d2…9451cb6)
 
 **Problem.** `deployments.target_id` is a documented transitional column duplicating
 `deployment_target_assignments` (every deployment row has assignment rows — historical backfill
@@ -148,9 +148,29 @@ and one ServerTask spine — that is the target.
 2. **One `processes` table** (`owner_kind`, `owner_id`, unique per owner) + **one `process_steps`**
    table with the FULL column set (all execution knobs, `text[]` target_roles, unified lengths:
    name 256 / step_type 128 / package_id 256). Drop the four old process/step tables.
-3. **Unify children** on `task_id`: `task_log_entries` (unique `(task_id, sequence)`, level
-   varchar(16)), `task_step_outcomes`, `task_output_variables`, `task_artifacts`,
-   `task_target_assignments`. All FK CASCADE from `server_tasks`.
+3. **Unify children** on `task_id`: `task_step_outcomes`, `task_output_variables`,
+   `task_artifacts`, `task_target_assignments`. All FK CASCADE from `server_tasks`.
+   **Logs — REVISED DECISION 2026-07-10 (v1.2, supersedes "unified line rows"): hybrid
+   staging → blob-per-step.** Rationale: Postgres cannot append to a TOASTed value (every
+   append rewrites the whole blob), so a pure blob model breaks live streaming; pure line rows
+   make logs the biggest table + index + WAL + backup burden in the system. Shape:
+   - `task_log_live` (staging): line rows — task_id, step_index, target_id (nullable),
+     sequence, level varchar(16), timestamp, message; unique (task_id, sequence); FK CASCADE
+     from server_tasks. The existing streaming write paths and the live-tail UI read/write
+     ONLY this table while a task runs. Logged table (not UNLOGGED) — crash must not lose logs.
+   - `task_step_logs` (final): ONE row per completed step(×target): task_id, step_index,
+     target_id (nullable), content text — lines serialized as `seq|iso8601-ts|level|message`
+     per line, TOAST/lz4 compresses transparently and ILIKE keeps working — plus summary
+     columns: line_count, error_count, warn_count, first_error_line, byte_size, completed_utc.
+     FK CASCADE from server_tasks.
+   - Compactor: on step completion move that step's staging lines into one blob row and delete
+     them; at terminal task status, sweep-compact any staging remainder. Offline result import
+     and runbook-kind tasks write through the same compactor.
+   - Read path: task detail stitches completed blobs + remaining staging; per-task level/text
+     filtering happens in memory (per-step blobs are small). NO global cross-task log search
+     in-app: queryable facts (package pins, initiator, error counts) live in structured
+     columns/snapshots, and global text search is the WP10 Seq pipeline. Do NOT add trgm/GIN
+     indexes over log content.
 4. **Full parity**: runbook runs gain failure mode, scheduling, multi-target assignments,
    artifacts, output variables (fix the AgentHub drop), step outcomes — schema + worker/AgentHub
    wiring + UI (runbook step editors gain condition/retry/timeout/start-trigger fields mirroring
@@ -372,3 +392,4 @@ the single document row.
 |---|---|---|
 | 1.0 | 2026-07-10 | Initial: 7 prompts from the consolidated 5-agent schema review |
 | 1.1 | 2026-07-10 | Preconditions done (merge `4712364`, chain branch created); reconciled with finish-plan v1.2: WP11 item 3 folded into fix 3 (decision 9), log age-cap moved fix 6 → WP9, ERD regeneration removed (db-erd.md deleted); chain ordered before WP3 |
+| 1.2 | 2026-07-10 | Fixes 1+2 DONE on the chain; log storage decision REVISED (grill session): fix 3 builds hybrid staging→blob (`task_log_live` + `task_step_logs`, text blob with `seq\|ts\|level\|` prefix, compactor at step/terminal, per-task search only — global search = WP10 Seq) instead of unified line rows |

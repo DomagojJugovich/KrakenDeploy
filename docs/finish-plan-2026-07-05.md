@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Version | 1.2 |
+| Version | 1.3 |
 | Date | 2026-07-10 |
 | Authors | Domagoj Jugović, Claude (5-agent audit) |
 | Status | Review |
@@ -514,7 +514,8 @@ nothing referenced survives-check fails, dry-run logs accurately, single-instanc
 multi-account registrations both wired.
 
 RIDER (2026-07-10, after the DB schema chain): this WP ABSORBS the log age-cap originally
-scoped into schema fix 6: age-based pruning of task_log_entries for RETAINED executions, knob
+scoped into schema fix 6: age-based pruning of task_step_logs BLOB rows (log model is
+staging→blob since prompts-doc v1.2) plus a sweep for orphaned task_log_live staging rows, knob
 in the retention/performance settings document (house rule 11) — RetentionService is extended
 once, here. Runbook-run retention (item 3) operates on server_tasks kind=RunbookRun (children
 cascade via the unified FKs). Item 2's global package-retention default is a settings-document
@@ -551,6 +552,11 @@ Scope:
 
 Acceptance: spans + metrics arrive at a local OTLP collector; logs visible in a local Seq;
 disabled mode is a true no-op; README/on-prem-guide claims match reality.
+
+RIDER (2026-07-10): the Seq pipeline is also the GLOBAL log-search story — since the schema
+chain's log-model revision (staging→blob, prompts-doc v1.2), in-app log viewing is per-task
+only by design. State that explicitly in the on-prem guide Observability section: operators
+who need cross-deployment log search point the OTLP/Seq pipeline at their collector.
 ```
 
 ### WP11 — Latent bug batch
@@ -590,7 +596,7 @@ regressions in Steps.KrakenIis and Agent test suites.
 RIDER (2026-07-10, after the DB schema chain): item 3 (log-sequencing race) was folded into
 schema fix 3 (unified log allocation) — verify ServerScriptStepRunner routes through the shared
 sequencer and close the item with a regression test only; if fix 3 missed it, fix it here
-against the unified task_log_entries.
+against the task_log_live staging table (log model is staging→blob since prompts-doc v1.2).
 ```
 
 ### WP12 — Per-account DEK: unblock multi-account boot
@@ -798,3 +804,4 @@ permission gates enforced.
 | 1.0 | 2026-07-05 | Initial audit + plan + WP1–WP14 prompts |
 | 1.1 | 2026-07-06 | Grill session: all decisions resolved (§3), execution order + go-live line locked, WP3 approval model specced, WP10 + Seq, WP14 D8/D9 + M16, new WP15 certificates prompt |
 | 1.2 | 2026-07-10 | WP1+WP2 done; DB schema chain (db-schema-fix-prompts-2026-07-10.md) inserted before WP3, merged order locked; preamble rules 4/5 updated + new rule 11 (SettingsService); RIDERs added to WP3-5, WP7-9, WP11-14; WP14 db-erd.md item cancelled (file deleted) |
+| 1.3 | 2026-07-10 | Fleet-migration trigger pulled into WP12 scope; log-model revision (staging→blob in schema fix 3) reflected in WP9/WP11 riders + new WP10 rider (Seq = global log search) |
