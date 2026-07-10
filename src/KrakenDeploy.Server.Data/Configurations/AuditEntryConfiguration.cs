@@ -23,9 +23,13 @@ public class AuditEntryConfiguration : IEntityTypeConfiguration<AuditEntry>
         builder.Property(x => x.BeforeJson).HasColumnType("jsonb");
         builder.Property(x => x.AfterJson).HasColumnType("jsonb");
 
-        // AuditEntry is never space-scoped by the global query filter
-        // (we want all entries visible to EventView holders regardless of
-        // active Space).  The SpaceId column is just a tag for filtering.
+        // AuditEntry is not ISpaceScoped (no global query filter): background
+        // pumps (subscription poller, digest flush) and system-tier
+        // diagnostics legitimately read across Spaces. Interactive reads are
+        // NOT free-for-all — they must flow through the choke point
+        // (AuditExportService.ApplySpaceVisibility): rows are visible in
+        // their own Space only, and NULL-SpaceId rows (platform events) only
+        // to AdministerSystem holders.
         // No FK constraint — entries must outlive the Space they reference.
         builder.Property(x => x.SpaceId);
 
@@ -35,5 +39,8 @@ public class AuditEntryConfiguration : IEntityTypeConfiguration<AuditEntry>
         builder.HasIndex(x => new { x.UserId, x.OccurredUtc });
         builder.HasIndex(x => new { x.EventType, x.OccurredUtc });
         builder.HasIndex(x => new { x.SpaceId, x.OccurredUtc });
+        // "History of this object" (per-entity Events tabs) — without it those
+        // queries seq-scan the largest table in the schema.
+        builder.HasIndex(x => new { x.SubjectType, x.SubjectId, x.OccurredUtc });
     }
 }
