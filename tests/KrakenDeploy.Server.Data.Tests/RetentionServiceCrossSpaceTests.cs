@@ -116,10 +116,11 @@ public sealed class RetentionServiceCrossSpaceTests(PostgresFixture postgres)
 
         var project = new Project
         {
-            SpaceId     = NonDefaultSpaceId,
-            Name        = $"rp-{Guid.NewGuid():N}"[..12],
-            Slug        = $"rp-{Guid.NewGuid():N}"[..12],
-            LifecycleId = lifecycle.Id,
+            SpaceId        = NonDefaultSpaceId,
+            Name           = $"rp-{Guid.NewGuid():N}"[..12],
+            Slug           = $"rp-{Guid.NewGuid():N}"[..12],
+            LifecycleId    = lifecycle.Id,
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, NonDefaultSpaceId),
         };
         db.Projects.Add(project);
         await db.SaveChangesAsync();

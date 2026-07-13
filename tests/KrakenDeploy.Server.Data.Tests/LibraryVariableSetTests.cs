@@ -1,4 +1,5 @@
 using FluentAssertions;
+using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Environments;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Projects;
@@ -389,7 +390,12 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
     private async Task<Project> SeedProjectAsync()
     {
         await using var db = postgres.CreateContext();
-        var project = new Project { Slug = $"lvs-{Guid.NewGuid():N}", Name = "Lib VarSet Test" };
+        var project = new Project
+        {
+            Slug = $"lvs-{Guid.NewGuid():N}",
+            Name = "Lib VarSet Test",
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
+        };
         db.Projects.Add(project);
         await db.SaveChangesAsync();
         return project;
@@ -399,7 +405,12 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
         SeedContextAsync(string[] roles)
     {
         await using var db = postgres.CreateContext();
-        var project = new Project { Slug = $"lvs-{Guid.NewGuid():N}", Name = "Lib VarSet Test" };
+        var project = new Project
+        {
+            Slug = $"lvs-{Guid.NewGuid():N}",
+            Name = "Lib VarSet Test",
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
+        };
         var env = new DeploymentEnvironment { Slug = $"env-{Guid.NewGuid():N}", Name = "Production" };
         var target = new DeploymentTarget
         {

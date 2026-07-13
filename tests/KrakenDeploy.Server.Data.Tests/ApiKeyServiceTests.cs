@@ -257,21 +257,23 @@ public sealed class ApiKeyServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task GetAll_labels_an_orphaned_key_as_deleted_user()
+    public async Task Deleting_the_owner_cascade_removes_the_key_from_the_grid()
     {
-        // Exercises the CASE/COALESCE owner-name branch: a key whose owner row
-        // is gone must project "(deleted user)" — not throw, not drop the row.
+        // Post fix-4 decision 1, api_keys FK-cascade with their owning user, so
+        // an orphaned key (owner gone, key present) can no longer exist — the
+        // grid simply stops listing it. (The "(deleted user)" projection branch
+        // is now defensive/unreachable.)
         var user = await SeedUserAsync("pete");
         var svc = BuildService();
-        await svc.CreateAsync(user.Id, "orphan-grid");
+        var created = await svc.CreateAsync(user.Id, "orphan-grid");
 
         await using (var db = postgres.CreateContext())
         {
             await db.Users.Where(u => u.Id == user.Id).ExecuteDeleteAsync();
         }
 
-        (await svc.GetAllAsync()).Should().ContainSingle()
-            .Which.UserName.Should().Be("(deleted user)");
+        (await svc.GetAllAsync()).Should().NotContain(k => k.Id == created.Key.Id,
+            "the key cascade-deleted with its owner");
     }
 
     // ── Revocation ──────────────────────────────────────────────────────────
@@ -366,22 +368,23 @@ public sealed class ApiKeyServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task AuthenticateToken_fails_closed_when_the_owner_row_is_gone()
+    public async Task Deleting_the_owner_cascade_removes_the_key_so_auth_fails_closed()
     {
         var user = await SeedUserAsync("leo");
         var svc = BuildService();
         var created = await svc.CreateAsync(user.Id, "orphan");
 
-        // Delete the user OUT-OF-BAND (bypassing UserService.DeleteAsync's key
-        // cleanup) to simulate the should-never-happen orphan row.
+        // Deleting the user cascades its api_keys away (fix 4 decision 1), so no
+        // orphaned key can survive to authenticate a vanished principal. The FK
+        // enforces at the DB what the OwnerMissing status defended in code.
         await using (var db = postgres.CreateContext())
         {
             await db.Users.Where(u => u.Id == user.Id).ExecuteDeleteAsync();
         }
 
         (await svc.AuthenticateTokenAsync(created.PlainToken)).Status
-            .Should().Be(ApiKeyAuthStatus.OwnerMissing,
-                "a key must never authenticate a principal that no longer exists");
+            .Should().Be(ApiKeyAuthStatus.UnknownKey,
+                "the owner's delete cascaded the key, so it no longer exists");
     }
 
     [Fact]

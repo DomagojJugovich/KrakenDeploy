@@ -139,7 +139,13 @@ public sealed class McpResourceTests(PostgresFixture postgres)
     private async Task SeedProjectWithStepAsync()
     {
         await using var db = postgres.CreateContext();
-        var project = new Project { SpaceId = WellKnown.DefaultSpaceId, Name = "Argosy", Slug = "argosy" };
+        var project = new Project
+        {
+            SpaceId = WellKnown.DefaultSpaceId,
+            Name = "Argosy",
+            Slug = "argosy",
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
+        };
         db.Projects.Add(project);
         await db.SaveChangesAsync();
         db.Processes.Add(new Process
@@ -168,7 +174,13 @@ public sealed class McpResourceTests(PostgresFixture postgres)
     private async Task<Guid> SeedDeploymentWithLogAsync()
     {
         await using var db = postgres.CreateContext();
-        var project = new Project { SpaceId = WellKnown.DefaultSpaceId, Name = "P", Slug = "p" };
+        var project = new Project
+        {
+            SpaceId = WellKnown.DefaultSpaceId,
+            Name = "P",
+            Slug = "p",
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
+        };
         db.Projects.Add(project);
         await db.SaveChangesAsync();
         var release = new Core.Domain.Releases.Release

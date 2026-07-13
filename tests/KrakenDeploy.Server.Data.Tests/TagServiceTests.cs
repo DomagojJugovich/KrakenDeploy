@@ -254,7 +254,9 @@ public sealed class TagServiceTests(PostgresFixture postgres)
         {
             var project = new KrakenDeploy.Server.Core.Domain.Projects.Project
             {
-                SpaceId = WellKnown.DefaultSpaceId, Name = Unique("rb-proj"), Slug = Unique("rb-proj"),
+                SpaceId = WellKnown.DefaultSpaceId,
+                ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
+                Name = Unique("rb-proj"), Slug = Unique("rb-proj"),
             };
             db.Projects.Add(project);
             await db.SaveChangesAsync();

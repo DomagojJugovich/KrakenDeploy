@@ -209,6 +209,7 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
         var project = new Project
         {
             SpaceId = OtherSpaceId, Name = "t1-proj", Slug = $"t1-proj-{Guid.NewGuid():N}",
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, OtherSpaceId),
         };
         var tenant = new Tenant
         {
@@ -277,6 +278,7 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
         var project = new Project
         {
             SpaceId = OtherSpaceId, Name = "t1-proj2", Slug = $"t1-proj2-{Guid.NewGuid():N}",
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, OtherSpaceId),
         };
         db.Projects.Add(project);
         await db.SaveChangesAsync();
@@ -291,6 +293,7 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
         var project = new Project
         {
             SpaceId = OtherSpaceId, Name = "t1-proj3", Slug = $"t1-proj3-{Guid.NewGuid():N}",
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, OtherSpaceId),
         };
         db.Projects.Add(project);
         await db.SaveChangesAsync();

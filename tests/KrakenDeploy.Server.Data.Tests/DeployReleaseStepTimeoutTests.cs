@@ -49,10 +49,11 @@ public sealed class DeployReleaseStepTimeoutTests(PostgresFixture postgres)
         {
             var childProject = new Project
             {
-                SpaceId     = WellKnown.DefaultSpaceId,
-                Name        = $"child-{Guid.NewGuid():N}",
-                Slug        = $"child-{Guid.NewGuid():N}",
-                Description = "deploy-release timeout test child",
+                SpaceId        = WellKnown.DefaultSpaceId,
+                ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
+                Name           = $"child-{Guid.NewGuid():N}",
+                Slug           = $"child-{Guid.NewGuid():N}",
+                Description    = "deploy-release timeout test child",
             };
             db.Projects.Add(childProject);
 

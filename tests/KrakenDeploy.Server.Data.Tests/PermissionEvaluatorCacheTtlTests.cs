@@ -98,6 +98,7 @@ public sealed class PermissionEvaluatorCacheTtlTests(PostgresFixture postgres)
         db.Teams.Add(team);
         await db.SaveChangesAsync();
 
+        await TestData.EnsureUserAsync(db, userId);
         db.Add(new TeamMember { TeamId = team.Id, UserId = userId, AddedUtc = DateTimeOffset.UtcNow });
         var assignment = new RoleAssignment { TeamId = team.Id, RoleId = role.Id, SpaceId = spaceId };
         db.RoleAssignments.Add(assignment);

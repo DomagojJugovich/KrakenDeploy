@@ -129,7 +129,13 @@ public sealed class McpIntegrationTests(PostgresFixture postgres)
     private async Task SeedProjectWithReleaseAsync()
     {
         await using var db = postgres.CreateContext();
-        var project = new Project { SpaceId = WellKnown.DefaultSpaceId, Name = "Argosy", Slug = "argosy" };
+        var project = new Project
+        {
+            SpaceId = WellKnown.DefaultSpaceId,
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
+            Name = "Argosy",
+            Slug = "argosy",
+        };
         db.Projects.Add(project);
         await db.SaveChangesAsync();
         db.Releases.Add(new Release

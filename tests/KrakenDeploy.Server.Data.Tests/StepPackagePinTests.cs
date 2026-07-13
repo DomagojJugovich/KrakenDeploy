@@ -1,4 +1,5 @@
 using FluentAssertions;
+using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.StepPackages;
 using KrakenDeploy.Server.Data.Services;
@@ -158,7 +159,12 @@ public sealed class StepPackagePinTests(PostgresFixture postgres)
         // package resolver is bypassed (the empty-string path in CreateAsync).
         // No need to seed a Package row.
         var slug    = $"p-{Guid.NewGuid():N}";
-        var project = new Project { Name = slug, Slug = slug };
+        var project = new Project
+        {
+            Name           = slug,
+            Slug           = slug,
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
+        };
         db.Projects.Add(project);
         await db.SaveChangesAsync();
         return project.Id;

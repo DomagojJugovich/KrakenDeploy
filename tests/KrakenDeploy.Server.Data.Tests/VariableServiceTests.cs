@@ -1,4 +1,5 @@
 using FluentAssertions;
+using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Environments;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Targets;
@@ -31,6 +32,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         {
             Slug = $"var-test-{Guid.NewGuid():N}",
             Name = "Var Test Project",
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
         };
         db.Projects.Add(project);
         await db.SaveChangesAsync();

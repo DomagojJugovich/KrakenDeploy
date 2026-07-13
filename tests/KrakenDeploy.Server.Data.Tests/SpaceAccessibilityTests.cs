@@ -52,6 +52,7 @@ public sealed class SpaceAccessibilityTests(PostgresFixture postgres)
             await db.SaveChangesAsync();
 
             db.RoleAssignments.Add(new RoleAssignment { TeamId = teamX.Id, RoleId = role.Id, SpaceId = spaceX.Id });
+            await TestData.EnsureUserAsync(db, userId);
             db.Add(new TeamMember { TeamId = teamX.Id, UserId = userId, AddedUtc = DateTimeOffset.UtcNow });
             await db.SaveChangesAsync();
         }
@@ -84,6 +85,7 @@ public sealed class SpaceAccessibilityTests(PostgresFixture postgres)
             await db.SaveChangesAsync();
 
             db.RoleAssignments.Add(new RoleAssignment { TeamId = team.Id, RoleId = role.Id, SpaceId = null });
+            await TestData.EnsureUserAsync(db, userId);
             db.Add(new TeamMember { TeamId = team.Id, UserId = userId, AddedUtc = DateTimeOffset.UtcNow });
             await db.SaveChangesAsync();
         }
@@ -121,6 +123,7 @@ public sealed class SpaceAccessibilityTests(PostgresFixture postgres)
             await db.SaveChangesAsync();
 
             db.RoleAssignments.Add(new RoleAssignment { TeamId = adminTeam.Id, RoleId = adminRole.Id, SpaceId = null });
+            await TestData.EnsureUserAsync(db, userId);
             db.Add(new TeamMember { TeamId = adminTeam.Id, UserId = userId, AddedUtc = DateTimeOffset.UtcNow });
             await db.SaveChangesAsync();
         }
@@ -141,6 +144,13 @@ public sealed class SpaceAccessibilityTests(PostgresFixture postgres)
         // Roles must exist so the seeded Space-Managers assignment resolves to a
         // role carrying SpaceEdit.
         await new BuiltInRbacSeeder(postgres, NullLogger<BuiltInRbacSeeder>.Instance).SeedAsync();
+
+        // team_members now FKs to users (fix 4 decision 1); CreateAsync adds the
+        // creator as a member, so the creator user must exist.
+        await using (var seed = postgres.CreateContext())
+        {
+            await TestData.EnsureUserAsync(seed, creatorId);
+        }
 
         var spaceSvc = new SpaceService(postgres);
         var space = await spaceSvc.CreateAsync(

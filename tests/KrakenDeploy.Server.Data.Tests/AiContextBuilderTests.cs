@@ -213,7 +213,11 @@ public sealed class AiContextBuilderTests(PostgresFixture postgres)
     private async Task<Project> SeedProjectAsync(string slug)
     {
         await using var db = postgres.CreateContext();
-        var p = new Project { SpaceId = WellKnown.DefaultSpaceId, Name = slug, Slug = slug };
+        var p = new Project
+        {
+            SpaceId = WellKnown.DefaultSpaceId, Name = slug, Slug = slug,
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
+        };
         db.Projects.Add(p);
         await db.SaveChangesAsync();
         return p;

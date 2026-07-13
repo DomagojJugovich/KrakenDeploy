@@ -128,6 +128,7 @@ public sealed class CrossSpaceScopingTests(PostgresFixture postgres)
         var project = new Project
         {
             SpaceId = OtherSpaceId, Name = "other-proj", Slug = $"other-proj-{Guid.NewGuid():N}",
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, OtherSpaceId),
         };
         var env = new DeploymentEnvironment
         {

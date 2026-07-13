@@ -49,6 +49,7 @@ public sealed class SpaceIsolationPermissionTests(PostgresFixture postgres)
 
             db.RoleAssignments.Add(new RoleAssignment { TeamId = everyoneA.Id, RoleId = viewerRole.Id, SpaceId = spaceA });
             db.RoleAssignments.Add(new RoleAssignment { TeamId = everyoneB.Id, RoleId = viewerRole.Id, SpaceId = spaceB });
+            await TestData.EnsureUserAsync(db, userId);
             db.Add(new TeamMember { TeamId = membersA.Id, UserId = userId, AddedUtc = DateTimeOffset.UtcNow });
             await db.SaveChangesAsync();
         }

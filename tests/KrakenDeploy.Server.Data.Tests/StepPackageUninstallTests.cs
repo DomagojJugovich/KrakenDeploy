@@ -1,4 +1,5 @@
 using FluentAssertions;
+using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.StepPackages;
@@ -152,7 +153,12 @@ public sealed class StepPackageUninstallTests(PostgresFixture postgres)
     {
         var slug = $"unin-{Guid.NewGuid():N}";
         await using var db = postgres.CreateContext();
-        var project = new Project { Name = slug, Slug = slug };
+        var project = new Project
+        {
+            Name           = slug,
+            Slug           = slug,
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
+        };
         db.Projects.Add(project);
         await db.SaveChangesAsync();
         return (project.Id, slug);

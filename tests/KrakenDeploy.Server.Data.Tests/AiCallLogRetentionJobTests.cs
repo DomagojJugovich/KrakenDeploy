@@ -142,6 +142,17 @@ public sealed class AiCallLogRetentionJobTests(PostgresFixture postgres)
         var spaceA = WellKnown.DefaultSpaceId;
         var spaceB = Guid.NewGuid();
 
+        // ai_call_logs now carries a real FK to spaces (fix 4 decision 4), so the
+        // foreign Space must exist before its rows can be inserted.
+        await using (var seed = postgres.CreateContext())
+        {
+            seed.Spaces.Add(new KrakenDeploy.Server.Core.Domain.Spaces.Space
+            {
+                Id = spaceB, Slug = $"space-b-{spaceB:N}", Name = "Space B",
+            });
+            await seed.SaveChangesAsync();
+        }
+
         await SeedAsync(time, daysAgo: 100, "space-a-old",  spaceId: spaceA);
         await SeedAsync(time, daysAgo: 100, "space-b-old",  spaceId: spaceB);
 

@@ -197,6 +197,7 @@ public sealed class ApiKeySpaceRestrictionTests(PostgresFixture postgres)
         db.Teams.Add(team);
         await db.SaveChangesAsync();
 
+        await TestData.EnsureUserAsync(db, userId);
         db.Add(new TeamMember { TeamId = team.Id, UserId = userId, AddedUtc = DateTimeOffset.UtcNow });
         db.RoleAssignments.Add(new RoleAssignment { TeamId = team.Id, RoleId = role.Id, SpaceId = spaceId });
         await db.SaveChangesAsync();

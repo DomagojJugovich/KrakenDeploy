@@ -160,7 +160,11 @@ public sealed class CrossSpaceParentScopingTests(PostgresFixture postgres)
         }
 
         var u = Guid.NewGuid().ToString("N");
-        var project = new Project { SpaceId = OtherSpaceId, Name = $"p-{u}", Slug = $"p-{u}" };
+        var project = new Project
+        {
+            SpaceId = OtherSpaceId, Name = $"p-{u}", Slug = $"p-{u}",
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, OtherSpaceId),
+        };
         var tenant = new Tenant { SpaceId = OtherSpaceId, Name = $"t-{u}", Slug = $"t-{u}" };
         var env = new DeploymentEnvironment
         {

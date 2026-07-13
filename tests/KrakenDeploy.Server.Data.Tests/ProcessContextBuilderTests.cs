@@ -35,14 +35,15 @@ public sealed class ProcessContextBuilderTests(PostgresFixture postgres)
     public async Task BuildForProject_projects_live_process_with_curated_config_and_parent_names()
     {
         var groupId = Guid.NewGuid();
-        var project = new Project
-        {
-            SpaceId = WellKnown.DefaultSpaceId,
-            Name    = "Argosy",
-            Slug    = "argosy",
-        };
         await using (var db = postgres.CreateContext())
         {
+            var project = new Project
+            {
+                SpaceId        = WellKnown.DefaultSpaceId,
+                ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
+                Name           = "Argosy",
+                Slug           = "argosy",
+            };
             db.Projects.Add(project);
             await db.SaveChangesAsync();
 
@@ -124,14 +125,15 @@ public sealed class ProcessContextBuilderTests(PostgresFixture postgres)
     [Fact]
     public async Task BuildForRelease_projects_frozen_snapshot()
     {
-        var project = new Project
-        {
-            SpaceId = WellKnown.DefaultSpaceId,
-            Name    = "Argosy",
-            Slug    = "argosy",
-        };
         await using (var db = postgres.CreateContext())
         {
+            var project = new Project
+            {
+                SpaceId        = WellKnown.DefaultSpaceId,
+                ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
+                Name           = "Argosy",
+                Slug           = "argosy",
+            };
             db.Projects.Add(project);
             await db.SaveChangesAsync();
 

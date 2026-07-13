@@ -147,7 +147,12 @@ public sealed class DeploymentDiagnosisServiceTests(PostgresFixture postgres)
     private async Task<Guid> SeedFailedDeploymentAsync()
     {
         await using var db = postgres.CreateContext();
-        var project = new Project { SpaceId = WellKnown.DefaultSpaceId, Name = "P", Slug = "p" };
+        var project = new Project
+        {
+            SpaceId = WellKnown.DefaultSpaceId,
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
+            Name = "P", Slug = "p",
+        };
         var env = new DeploymentEnvironment
         {
             SpaceId = WellKnown.DefaultSpaceId, Name = "prod", Slug = "prod", SortOrder = 1,

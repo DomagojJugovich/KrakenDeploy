@@ -1,4 +1,5 @@
 using FluentAssertions;
+using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Data.Services;
 
@@ -107,6 +108,7 @@ public sealed class ProcessServiceImportTests(PostgresFixture postgres)
         {
             Name = $"ImportTest-{Guid.NewGuid():N}",
             Slug = $"importtest-{Guid.NewGuid():N}",
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
         };
         db.Projects.Add(project);
         await db.SaveChangesAsync();

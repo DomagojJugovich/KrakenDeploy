@@ -154,10 +154,11 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         await using var db = _postgres.CreateContext();
         var p = new Project
         {
-            SpaceId     = WellKnown.DefaultSpaceId,
-            Name        = name,
-            Slug        = name.Replace(' ', '-').ToLowerInvariant(),
-            Description = "harness test project",
+            SpaceId        = WellKnown.DefaultSpaceId,
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
+            Name           = name,
+            Slug           = name.Replace(' ', '-').ToLowerInvariant(),
+            Description    = "harness test project",
         };
         db.Projects.Add(p);
         await db.SaveChangesAsync();

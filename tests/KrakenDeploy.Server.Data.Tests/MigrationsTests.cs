@@ -41,7 +41,9 @@ public class MigrationsTests(PostgresFixture postgres) : IClassFixture<PostgresF
         {
             Slug = $"smoke-{Guid.NewGuid():N}",
             Name = "Smoke Project",
-            Description = "Phase 2 integration test"
+            Description = "Phase 2 integration test",
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(
+                context, KrakenDeploy.Server.Core.Domain.Common.WellKnown.DefaultSpaceId)
         };
 
         context.Projects.Add(project);

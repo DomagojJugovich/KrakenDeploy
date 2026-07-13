@@ -432,9 +432,10 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
 
         var project = new Project
         {
-            SpaceId = spaceId,
-            Name    = $"xp-{Guid.NewGuid():N}"[..12],
-            Slug    = $"xp-{Guid.NewGuid():N}"[..12],
+            SpaceId        = spaceId,
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, spaceId),
+            Name           = $"xp-{Guid.NewGuid():N}"[..12],
+            Slug           = $"xp-{Guid.NewGuid():N}"[..12],
         };
         var env = new DeploymentEnvironment
         {

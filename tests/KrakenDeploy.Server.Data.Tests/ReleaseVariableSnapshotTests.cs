@@ -1,4 +1,5 @@
 using FluentAssertions;
+using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Environments;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Projects;
@@ -187,7 +188,12 @@ public sealed class ReleaseVariableSnapshotTests(PostgresFixture postgres)
     {
         await using var db = postgres.CreateContext();
         var slug = $"rvs-{Guid.NewGuid():N}";
-        var project = new Project { Slug = slug, Name = slug };
+        var project = new Project
+        {
+            Slug = slug,
+            Name = slug,
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
+        };
         var env     = new DeploymentEnvironment { Slug = $"env-{Guid.NewGuid():N}", Name = "Production" };
         var target  = new DeploymentTarget
         {
