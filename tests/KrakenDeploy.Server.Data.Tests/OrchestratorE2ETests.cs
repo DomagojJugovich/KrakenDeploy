@@ -6,6 +6,7 @@ using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data.Tests.OrchestratorHarness;
+using KrakenDeploy.Server.Transport;
 using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data.Tests;
@@ -404,6 +405,59 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
                 because: "step-outcome rows the worker writes must inherit the " +
                           "deployment's Space, not be mis-stamped DefaultSpaceId");
         });
+    }
+
+    [Fact]
+    public async Task Re_reporting_a_step_outcome_in_a_non_default_Space_updates_not_throws()
+    {
+        // Regression: UpsertStepOutcomeAsync read `existing` through the Space
+        // query filter, but the worker runs under DefaultSpaceId while the row
+        // carries the task's real (non-Default) Space. A re-report (retry, agent
+        // re-callback) therefore missed the existing row and attempted a duplicate
+        // INSERT that the (task_id, step_index, target_id) unique index rejects.
+        // The lookup now uses IgnoreQueryFilters, so the re-report UPDATEs.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var (deploymentId, _) = await SeedInSpaceAsync(
+            harness, NonDefaultSpaceId, stepNames: ["s1"], targetNames: ["t1"]);
+
+        // First report — INSERT (stamps the deployment's real Space). The harness
+        // context runs under DefaultSpaceId, exactly like the worker.
+        await using (var db = harness.CreateContext())
+        {
+            await DeploymentWorker.UpsertStepOutcomeAsync(
+                db, deploymentId, stepIndex: 0, stepName: "s1",
+                outcome: StepOutcomeKind.Failed, attemptCount: 1, errorMessage: "boom",
+                startedUtc: DateTimeOffset.UtcNow, completedUtc: DateTimeOffset.UtcNow,
+                isServerSide: true, required: true, ct: CancellationToken.None, targetId: null);
+            await db.SaveChangesAsync();
+        }
+
+        // Re-report the SAME (task, step, null-target) — must UPDATE, not throw.
+        await using (var db = harness.CreateContext())
+        {
+            var act = async () =>
+            {
+                await DeploymentWorker.UpsertStepOutcomeAsync(
+                    db, deploymentId, stepIndex: 0, stepName: "s1",
+                    outcome: StepOutcomeKind.Succeeded, attemptCount: 2, errorMessage: null,
+                    startedUtc: DateTimeOffset.UtcNow, completedUtc: DateTimeOffset.UtcNow,
+                    isServerSide: true, required: true, ct: CancellationToken.None, targetId: null);
+                await db.SaveChangesAsync();
+            };
+            await act.Should().NotThrowAsync(
+                "the filter-free lookup finds the non-Default-Space row and updates it");
+        }
+
+        await using (var verify = harness.CreateContext())
+        {
+            var rows = await verify.TaskStepOutcomes.IgnoreQueryFilters()
+                .Where(o => o.TaskId == deploymentId && o.StepIndex == 0)
+                .ToListAsync();
+            rows.Should().ContainSingle("the re-report updates in place, it does not insert a duplicate");
+            rows[0].Outcome.Should().Be(StepOutcomeKind.Succeeded);
+            rows[0].AttemptCount.Should().Be(2);
+            rows[0].SpaceId.Should().Be(NonDefaultSpaceId);
+        }
     }
 
     /// <summary>

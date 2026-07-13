@@ -1863,7 +1863,9 @@ public sealed class DeploymentWorker(
     /// rows accumulate then flush together).
     /// </para>
     /// </summary>
-    private static async Task UpsertStepOutcomeAsync(
+    // internal (not private) so the Space-scope regression test can drive it
+    // directly — InternalsVisibleTo KrakenDeploy.Server.Data.Tests.
+    internal static async Task UpsertStepOutcomeAsync(
         KrakenDbContext db,
         Guid deploymentId,
         int stepIndex,
@@ -1878,7 +1880,14 @@ public sealed class DeploymentWorker(
         CancellationToken ct,
         Guid? targetId = null)
     {
+        // IgnoreQueryFilters: the worker runs under DefaultSpaceId (no HTTP Space
+        // context — see the stamp below), but the outcome row carries the task's
+        // REAL Space. Without this, the filtered read misses the existing row for a
+        // non-Default-Space task and the method would attempt a duplicate INSERT
+        // that the (task_id, step_index, target_id) unique index rejects. task_id is
+        // Space-safe (composite FK to server_tasks), so the lookup stays scoped.
         var existing = await db.TaskStepOutcomes
+            .IgnoreQueryFilters()
             .FirstOrDefaultAsync(o =>
                 o.TaskId == deploymentId
                 && o.StepIndex == stepIndex
