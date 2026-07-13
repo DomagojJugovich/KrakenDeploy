@@ -235,8 +235,7 @@ public sealed class DashboardService(
         var projectQuery = db.Projects.AsNoTracking().AsQueryable();
         if (!filter.AllGroups)
         {
-            projectQuery = projectQuery.Where(p =>
-                p.ProjectGroupId != null && filter.GroupIds.Contains(p.ProjectGroupId.Value));
+            projectQuery = projectQuery.Where(p => filter.GroupIds.Contains(p.ProjectGroupId));
         }
         if (!filter.AllProjects)
         {
@@ -335,10 +334,8 @@ public sealed class DashboardService(
         var groups = allGroups
             .Select(g => new ProjectGroupSection(g.Id, g.Name, rowsByGroup[g.Id].ToList()))
             .ToList();
-        if (rowsByGroup[null].Any())
-        {
-            groups.Add(new ProjectGroupSection(null, "Ungrouped", rowsByGroup[null].ToList()));
-        }
+        // Every project belongs to a group (project_group_id is NOT NULL), so
+        // there is no "Ungrouped" bucket to emit.
 
         return new ProjectDashboard(groups, environments);
     }

@@ -138,9 +138,6 @@ internal static class SeedDemoCommands
         // ── Tenants + project connections + deployment tagging ────────────
         await SeedTenantsAsync(dbFactory, sp.GetRequiredService<TenantService>()).ConfigureAwait(false);
 
-        // ── Backfill: any ungrouped project → Default Project Group ────────
-        await BackfillProjectGroupAsync(dbFactory).ConfigureAwait(false);
-
         // ── Channels: give two projects a non-default channel and put their
         //    newest (deployed) releases on it, so channel pills render on the
         //    Projects / project dashboards ─────────────────────────────────
@@ -642,34 +639,6 @@ internal static class SeedDemoCommands
     }
 
     /// <summary>
-    /// Assigns the Default Project Group to any project left ungrouped (e.g.
-    /// projects created before <see cref="ProjectService.CreateAsync"/> began
-    /// defaulting the group). Idempotent.
-    /// </summary>
-    private static async Task BackfillProjectGroupAsync(IDbContextFactory<KrakenDbContext> dbFactory)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync();
-        var defaultGroupId = await db.ProjectGroups
-            .Where(g => g.IsDefault)
-            .Select(g => (Guid?)g.Id)
-            .FirstOrDefaultAsync();
-        if (defaultGroupId is null)
-        {
-            return;
-        }
-
-        var ungrouped = await db.Projects.Where(p => p.ProjectGroupId == null).ToListAsync();
-        foreach (var p in ungrouped)
-        {
-            p.ProjectGroupId = defaultGroupId;
-        }
-        if (ungrouped.Count > 0)
-        {
-            await db.SaveChangesAsync();
-            Console.WriteLine($"Backfilled {ungrouped.Count} ungrouped project(s) into the Default Project Group.");
-        }
-    }
-
     private static TaskLogLiveEntry Log(Deployment d, int seq, string msg, string level, DateTimeOffset ts) => new()
     {
         TaskId = d.Id,

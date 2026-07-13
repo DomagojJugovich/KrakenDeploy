@@ -12,11 +12,13 @@ public class Project : AuditableEntity, ISpaceScoped
 
     /// <summary>
     /// FK to the owning <see cref="ProjectGroup"/> (the Project's folder).
-    /// Nullable during the transitional period after the M10 migration adds
-    /// the column but before the Default Project Group seeder runs; in
-    /// steady state every Project belongs to exactly one Group.
+    /// Required — every Project belongs to exactly one Group (the Space's
+    /// Default Project Group unless moved). The M10 transition that left this
+    /// nullable is complete (backfilled + NOT NULL).
     /// </summary>
-    public Guid? ProjectGroupId { get; set; }
+    public Guid ProjectGroupId { get; set; }
+
+    /// <summary>Navigation to the owning group; null unless explicitly loaded.</summary>
     public ProjectGroup? ProjectGroup { get; set; }
 
     public required string Slug { get; set; }

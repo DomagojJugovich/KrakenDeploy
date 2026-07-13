@@ -27,12 +27,13 @@ public class ProjectConfiguration : IEntityTypeConfiguration<Project>
             .HasForeignKey(x => x.LifecycleId)
             .OnDelete(DeleteBehavior.Restrict);
 
-        // ProjectGroup FK — nullable during M10 transition, becomes required
-        // after the Default Project Group seeder backfills existing rows.
+        // ProjectGroup FK — required (M10 transition complete). RESTRICT: a
+        // group can't be deleted while it still holds projects.
         builder.HasOne(x => x.ProjectGroup)
             .WithMany()
             .HasForeignKey(x => x.ProjectGroupId)
-            .OnDelete(DeleteBehavior.Restrict);
+            .OnDelete(DeleteBehavior.Restrict)
+            .IsRequired();
         builder.HasIndex(x => x.ProjectGroupId);
 
         builder.Property(x => x.CreatedUtc).IsRequired();

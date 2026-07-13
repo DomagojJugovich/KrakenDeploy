@@ -37,13 +37,16 @@ public class ProjectService(IDbContextFactory<KrakenDbContext> dbFactory)
         }
 
         // New projects land in the Space's Default Project Group unless moved
-        // later (matches the documented behaviour). The global space filter
-        // scopes this to the current Space; null only if no default exists.
+        // later. The global space filter scopes this to the current Space.
+        // ProjectGroupId is now required, so a missing default group is a
+        // Space-setup invariant violation, not a silently-null project.
         var defaultGroupId = await db.ProjectGroups
             .Where(g => g.IsDefault)
             .Select(g => (Guid?)g.Id)
             .FirstOrDefaultAsync(ct)
-            .ConfigureAwait(false);
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                "No Default Project Group exists in this Space; cannot create a project.");
 
         var project = new Project
         {
@@ -125,7 +128,10 @@ public class ProjectService(IDbContextFactory<KrakenDbContext> dbFactory)
 
     /// <summary>
     /// Updates a project's lifecycle and project-group references. Pass
-    /// <c>null</c> for either parameter to clear that reference.
+    /// <c>null</c> for <paramref name="lifecycleId"/> to clear the (optional)
+    /// lifecycle. <paramref name="projectGroupId"/> is required: <c>null</c>
+    /// means "move back to the Space's Default Project Group" (the group can
+    /// never be cleared — every project belongs to exactly one group).
     /// </summary>
     public async Task<Project?> SetLifecycleAndGroupAsync(
         Guid id, Guid? lifecycleId, Guid? projectGroupId,
@@ -137,8 +143,20 @@ public class ProjectService(IDbContextFactory<KrakenDbContext> dbFactory)
         {
             return null;
         }
+
+        // Resolve "no group" to the Space's Default Project Group so the
+        // required FK is always satisfied.
+        var resolvedGroupId = projectGroupId
+            ?? await db.ProjectGroups
+                .Where(g => g.IsDefault)
+                .Select(g => (Guid?)g.Id)
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                "No Default Project Group exists in this Space; cannot clear the project's group.");
+
         project.LifecycleId = lifecycleId;
-        project.ProjectGroupId = projectGroupId;
+        project.ProjectGroupId = resolvedGroupId;
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return project;
     }
