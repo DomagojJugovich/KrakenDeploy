@@ -410,8 +410,9 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
     /// Seeds a minimal Project + Environment + Release + Target(s) + Deployment
     /// entirely in <paramref name="spaceId"/> (explicit SpaceId — the
     /// interceptor preserves caller-set values), bypassing the harness's
-    /// Default-Space seed helpers. The join collection is not ISpaceScoped, so
-    /// it needs no Space stamp.
+    /// Default-Space seed helpers. task_target_assignments is now ISpaceScoped
+    /// with composite FKs, so its rows are stamped with <paramref name="spaceId"/>
+    /// too (production stamps them from the deployment's Space context).
     /// </summary>
     private static async Task<(Guid DeploymentId, List<DeploymentTarget> Targets)>
         SeedInSpaceAsync(
@@ -499,6 +500,7 @@ public sealed class OrchestratorE2ETests(PostgresFixture postgres)
         {
             db.TaskTargetAssignments.Add(new TaskTargetAssignment
             {
+                SpaceId      = spaceId,
                 TaskId       = deployment.Id,
                 TargetId     = targets[i].Id,
                 AddedUtc     = addedUtc.AddMicroseconds(i),

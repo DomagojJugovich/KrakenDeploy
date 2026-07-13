@@ -30,7 +30,7 @@ public class ModelConventionsTests
     }
 
     [Fact]
-    public void Every_space_scoped_entity_has_an_fk_to_spaces()
+    public void Every_space_scoped_entity_anchors_space_id_by_fk()
     {
         using var context = BuildModelContext();
 
@@ -38,6 +38,13 @@ public class ModelConventionsTests
         // table consolidation). Remove this exemption when that table is dropped.
         var exempt = new HashSet<Type> { typeof(SpaceAiSettings) };
 
+        // Post composite-FK hardening: every ISpaceScoped entity must anchor its
+        // space_id through a foreign key that INCLUDES space_id and whose principal
+        // is EITHER spaces (aggregate roots — direct FK) OR another ISpaceScoped
+        // entity (children/joins — the composite (space_id, parent_id) →
+        // parent(space_id, id) FK, which transitively reaches spaces through the
+        // parent's own anchor). This guarantees a row can neither be orphaned from
+        // its Space nor reference a parent in a different Space.
         var offenders = context.Model.GetEntityTypes()
             // TPH: the FK lives on the inheritance ROOT (ServerTask), so skip
             // derived types — mirrors KrakenDbContext.ApplySpaceQueryFilters.
@@ -45,14 +52,16 @@ public class ModelConventionsTests
             .Where(et => et.BaseType is null)
             .Where(et => !exempt.Contains(et.ClrType))
             .Where(et => !et.GetForeignKeys().Any(fk =>
-                fk.PrincipalEntityType.ClrType == typeof(Space)
-                && fk.Properties.Any(p => p.Name == nameof(ISpaceScoped.SpaceId))))
+                fk.Properties.Any(p => p.Name == nameof(ISpaceScoped.SpaceId))
+                && (fk.PrincipalEntityType.ClrType == typeof(Space)
+                    || typeof(ISpaceScoped).IsAssignableFrom(fk.PrincipalEntityType.ClrType))))
             .Select(et => et.ClrType.Name)
             .OrderBy(n => n)
             .ToList();
 
         offenders.Should().BeEmpty(because:
-            "every ISpaceScoped aggregate must carry an FK to spaces via " +
-            "ConfigureSpaceScope() so a Space delete cannot orphan its rows");
+            "every ISpaceScoped entity must anchor space_id — roots via a direct FK to " +
+            "spaces, children/joins via a composite (space_id, parent_id) FK to another " +
+            "space-scoped entity");
     }
 }
