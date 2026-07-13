@@ -53,11 +53,13 @@ public class TeamConfiguration : IEntityTypeConfiguration<Team>
         builder.Property(x => x.SpaceId);
         builder.HasIndex(x => x.SpaceId);
 
-        // Names are unique within (SpaceId, name); for system teams (SpaceId
-        // is null) Postgres treats NULL as distinct from NULL, so we index
-        // separately to enforce per-Space uniqueness without colliding with
-        // system teams.
-        builder.HasIndex(x => new { x.SpaceId, x.Name }).IsUnique();
+        // Names are unique within (SpaceId, name). NULLS NOT DISTINCT so
+        // system teams (SpaceId = null) also cannot share a name — without it
+        // Postgres treats each NULL SpaceId as distinct, letting two system
+        // teams called "Everyone" coexist.
+        builder.HasIndex(x => new { x.SpaceId, x.Name })
+            .IsUnique()
+            .AreNullsDistinct(false);
 
         builder.HasMany(x => x.Members)
             .WithOne(m => m.Team)
@@ -116,8 +118,12 @@ public class TeamExternalGroupConfiguration : IEntityTypeConfiguration<TeamExter
             .HasForeignKey(x => x.IdentityProviderId)
             .OnDelete(DeleteBehavior.SetNull);
 
-        // Same group claim cannot map to the same team twice.
-        builder.HasIndex(x => new { x.TeamId, x.IdentityProviderId, x.GroupClaim }).IsUnique();
+        // Same group claim cannot map to the same team twice. NULLS NOT
+        // DISTINCT so an "any provider" mapping (IdentityProviderId = null)
+        // also can't be duplicated for a given (team, claim).
+        builder.HasIndex(x => new { x.TeamId, x.IdentityProviderId, x.GroupClaim })
+            .IsUnique()
+            .AreNullsDistinct(false);
     }
 }
 

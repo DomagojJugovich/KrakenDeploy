@@ -42,7 +42,12 @@ public sealed class TaskStepOutcomeConfiguration : IEntityTypeConfiguration<Task
             .OnDelete(DeleteBehavior.Cascade);
 
         // Primary read: every step's outcome for a task, in step order; also the
-        // upsert-by-natural-key path. NULL TargetId distinguishes server-once steps.
-        builder.HasIndex(x => new { x.TaskId, x.StepIndex, x.TargetId }).IsUnique();
+        // upsert-by-natural-key path. NULLS NOT DISTINCT so a server-once step's
+        // NULL TargetId is treated as a single logical key — matching the
+        // worker's upsert, which already dedupes NULL==NULL via EF null-semantics;
+        // this closes the concurrent-duplicate-insert gap the DB previously allowed.
+        builder.HasIndex(x => new { x.TaskId, x.StepIndex, x.TargetId })
+            .IsUnique()
+            .AreNullsDistinct(false);
     }
 }
