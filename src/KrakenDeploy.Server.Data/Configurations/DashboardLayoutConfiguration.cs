@@ -15,6 +15,10 @@ public sealed class DashboardLayoutConfiguration : IEntityTypeConfiguration<Dash
         builder.ToTable("dashboard_layouts");
         builder.HasKey(l => l.Id);
 
+        // FK to spaces; the unique (space_id, user_id, dashboard_key) index
+        // below leads with space_id, so no standalone space_id index.
+        builder.ConfigureSpaceScope(addSpaceIdIndex: false);
+
         builder.Property(l => l.DashboardKey).IsRequired().HasMaxLength(64);
         builder.Property(l => l.Definition).IsRequired();
 

@@ -17,6 +17,10 @@ public sealed class AdhocSessionConfiguration : IEntityTypeConfiguration<AdhocSe
         builder.ToTable("adhoc_sessions");
         builder.HasKey(s => s.Id);
 
+        // FK to spaces; the (space_id, created_utc) composite below already
+        // serves the query filter, so no standalone space_id index.
+        builder.ConfigureSpaceScope(addSpaceIdIndex: false);
+
         // The /adhoc page lists a Space's sessions newest-first.
         builder.HasIndex(s => new { s.SpaceId, s.CreatedUtc });
 

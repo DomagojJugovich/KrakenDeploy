@@ -17,6 +17,10 @@ public class AiCallLogConfiguration : IEntityTypeConfiguration<AiCallLog>
         builder.ToTable("ai_call_logs");
         builder.HasKey(x => x.Id);
 
+        // FK to spaces; both composite indexes below lead with space_id, so
+        // no standalone space_id index.
+        builder.ConfigureSpaceScope(addSpaceIdIndex: false);
+
         builder.Property(x => x.Provider).HasMaxLength(64).IsRequired();
         builder.Property(x => x.Model).HasMaxLength(128).IsRequired();
         builder.Property(x => x.Feature).HasMaxLength(32).IsRequired();

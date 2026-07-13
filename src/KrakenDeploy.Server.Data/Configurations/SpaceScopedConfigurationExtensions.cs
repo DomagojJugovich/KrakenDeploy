@@ -16,11 +16,22 @@ namespace KrakenDeploy.Server.Data.Configurations;
 /// </summary>
 public static class SpaceScopedConfigurationExtensions
 {
-    public static EntityTypeBuilder<T> ConfigureSpaceScope<T>(this EntityTypeBuilder<T> builder)
+    /// <param name="addSpaceIdIndex">
+    /// When <c>true</c> (default) a standalone index on <c>space_id</c> is created for
+    /// the query filter. Pass <c>false</c> when the entity already has a composite index
+    /// whose leading column is <c>space_id</c> (e.g. <c>(space_id, created_utc)</c>) — the
+    /// composite already serves the filter, so a standalone index would be redundant.
+    /// The FK to <c>spaces</c> is added regardless.
+    /// </param>
+    public static EntityTypeBuilder<T> ConfigureSpaceScope<T>(
+        this EntityTypeBuilder<T> builder, bool addSpaceIdIndex = true)
         where T : class, ISpaceScoped
     {
         builder.Property(x => x.SpaceId).IsRequired();
-        builder.HasIndex(x => x.SpaceId);
+        if (addSpaceIdIndex)
+        {
+            builder.HasIndex(x => x.SpaceId);
+        }
 
         builder.HasOne<Space>()
             .WithMany()

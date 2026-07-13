@@ -19,6 +19,10 @@ public sealed class DeploymentFreezeConfiguration : IEntityTypeConfiguration<Dep
         builder.ToTable("deployment_freezes");
         builder.HasKey(f => f.Id);
 
+        // FK to spaces; the (space_id, start_utc, end_utc) composite below
+        // already serves the query filter, so no standalone space_id index.
+        builder.ConfigureSpaceScope(addSpaceIdIndex: false);
+
         builder.Property(f => f.Name).IsRequired().HasMaxLength(200);
         builder.Property(f => f.Description).HasMaxLength(2000);
 
