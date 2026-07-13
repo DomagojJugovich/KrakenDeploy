@@ -57,6 +57,13 @@ public sealed class SubscriptionDeliveryConfiguration : IEntityTypeConfiguration
         builder.Property(d => d.Detail).HasMaxLength(4000);
         builder.Property(d => d.ErrorMessage).HasMaxLength(4000);
 
+        // Real FK CASCADE — delivery history dies with its subscription.
+        // (No navigation on the plain-Entity delivery row.)
+        builder.HasOne<EventSubscription>()
+            .WithMany()
+            .HasForeignKey(d => d.SubscriptionId)
+            .OnDelete(DeleteBehavior.Cascade);
+
         // Index for the per-subscription history grid: pull last 20
         // deliveries by StartedUtc descending.
         builder.HasIndex(d => new { d.SubscriptionId, d.StartedUtc }).IsDescending(false, true);
@@ -87,6 +94,12 @@ public sealed class EmailDigestOutboxEntryConfiguration
     {
         builder.ToTable("email_digest_outbox");
         builder.HasKey(e => e.Id);
+
+        // Real FK CASCADE — queued digest entries die with their subscription.
+        builder.HasOne<EventSubscription>()
+            .WithMany()
+            .HasForeignKey(e => e.SubscriptionId)
+            .OnDelete(DeleteBehavior.Cascade);
 
         // UNIQUE (SubscriptionId, EventId) — same idempotency guard as
         // SubscriptionDelivery. A crash-resumed dispatcher must not

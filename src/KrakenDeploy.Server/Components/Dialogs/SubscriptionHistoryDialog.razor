@@ -45,12 +45,6 @@
                             <RadzenBadge BadgeStyle="BadgeStyle.Light" IsPill="true" Text="Cancelled" />
                             break;
                     }
-                    @if (d.AttemptNumber > 1)
-                    {
-                        <span class="rz-color-secondary" style="font-size:0.8em; margin-left:0.4rem">
-                            (try #@d.AttemptNumber)
-                        </span>
-                    }
                 </Template>
             </RadzenDataGridColumn>
             <RadzenDataGridColumn TItem="SubscriptionDelivery" Title="Duration" Width="100px">

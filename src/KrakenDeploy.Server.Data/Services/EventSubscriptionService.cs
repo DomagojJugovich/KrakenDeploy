@@ -152,10 +152,9 @@ public sealed class EventSubscriptionService(
             .ConfigureAwait(false);
         if (existing is null) { return false; }
 
-        // Cascade clean-up of delivery rows would be nice but is a
-        // potentially-large delete — leave them as orphans (they have
-        // SubscriptionId, no FK constraint) so the history stays
-        // queryable for forensic review.
+        // Delivery-history and queued-digest rows now carry a real FK
+        // ON DELETE CASCADE to this subscription, so the DB removes them in
+        // the same transaction — no more orphaned rows to leak or sweep.
         db.EventSubscriptions.Remove(existing);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return true;

@@ -3,12 +3,13 @@ using KrakenDeploy.Server.Core.Domain.Common;
 namespace KrakenDeploy.Server.Core.Domain.Subscriptions;
 
 /// <summary>
-/// One row per (subscription × event × transport-attempt) — the audit
-/// trail of every delivery the router tried. Powers the per-subscription
-/// delivery-history sub-grid in the UI ("did my Slack webhook actually
-/// receive the last 5 failures?") and the Hangfire retry policy
-/// (transient HTTP failure → row marked Failed → retry → new row marked
-/// Succeeded).
+/// One row per (subscription × event) — the audit trail of what the router
+/// delivered. The unique <c>(subscription_id, event_id)</c> index makes this
+/// idempotent: a crash-resumed poll that re-processes the same audit row
+/// cannot emit a second delivery. On transport failure the row is finalised
+/// <see cref="SubscriptionDeliveryOutcome.Failed"/> in place — there is no
+/// per-attempt retry row. Powers the per-subscription delivery-history
+/// sub-grid in the UI ("did my Slack webhook receive the last 5 failures?").
 ///
 /// <para>
 /// Separate from <c>audit_entries</c> because the queries differ —
@@ -35,10 +36,6 @@ public class SubscriptionDelivery : Entity
 
     public SubscriptionDeliveryOutcome Outcome { get; set; }
 
-    /// <summary>Attempt counter — 1 on first try, increments on Hangfire
-    /// retry. The UI shows "(retry 2 of 3)" next to the row.</summary>
-    public int AttemptNumber { get; set; } = 1;
-
     /// <summary>Transport-supplied success blurb (e.g. HTTP status code +
     /// response banner; SMTP server response; runbook run id). Safe to
     /// surface in the UI.</summary>
@@ -59,8 +56,9 @@ public enum SubscriptionDeliveryOutcome
 
     Succeeded = 1,
 
-    /// <summary>Transport returned an error. Hangfire's default retry
-    /// policy may produce a follow-up row with a higher AttemptNumber.</summary>
+    /// <summary>Transport returned an error; the row is finalised in place.
+    /// Re-dispatch of the same (subscription, event) is blocked by the unique
+    /// idempotency index rather than producing a follow-up row.</summary>
     Failed = 2,
 
     /// <summary>Operator killed the delivery before it ran (paused the

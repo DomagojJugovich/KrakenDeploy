@@ -65,7 +65,6 @@ public sealed class EventDispatcher(
             Transport      = subscription.Transport,
             StartedUtc     = time.GetUtcNow(),
             Outcome        = SubscriptionDeliveryOutcome.InProgress,
-            AttemptNumber  = 1,
         };
         try
         {

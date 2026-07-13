@@ -164,7 +164,6 @@ public sealed class EmailDigestFlushJob(
             Transport     = SubscriptionTransport.Email,
             StartedUtc    = started,
             Outcome       = SubscriptionDeliveryOutcome.InProgress,
-            AttemptNumber = 1,
         };
         await using (var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false))
         {
