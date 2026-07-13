@@ -41,6 +41,13 @@ public class ChannelService(IDbContextFactory<KrakenDbContext> dbFactory)
             return existing;
         }
 
+        // Belt: the project must be in the current Space before we stamp a channel
+        // into it (the composite FK (space_id, project_id) is the braces).
+        if (!await db.Projects.AnyAsync(p => p.Id == projectId, ct).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException($"Project {projectId} not found in the current Space.");
+        }
+
         // Auto-create a default channel on first access.
         var channel = new Channel
         {
@@ -65,6 +72,13 @@ public class ChannelService(IDbContextFactory<KrakenDbContext> dbFactory)
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // Belt: the project must be in the current Space (the composite FK
+        // (space_id, project_id) is the braces — this yields a clear error first).
+        if (!await db.Projects.AnyAsync(p => p.Id == projectId, ct).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException($"Project {projectId} not found in the current Space.");
+        }
 
         if (await db.Channels.AnyAsync(c => c.ProjectId == projectId && c.Name == name, ct)
             .ConfigureAwait(false))

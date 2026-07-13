@@ -385,6 +385,24 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
     public async Task IncludeSetAsync(Guid projectId, Guid setId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // Validate BOTH ends are in the current Space before linking (belt; the
+        // composite FKs (space_id, project_id)/(space_id, variable_set_id) are the
+        // braces). The DbSets are Space-filtered, so a cross-Space id resolves to
+        // null/false here — fail fast with a clear error instead of a raw FK
+        // violation. space_id is stamped from the (validated in-scope) project.
+        var spaceId = await db.Projects
+            .Where(p => p.Id == projectId)
+            .Select(p => (Guid?)p.SpaceId)
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Project {projectId} not found in the current Space.");
+
+        if (!await db.VariableSets.AnyAsync(vs => vs.Id == setId, ct).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException($"Variable set {setId} not found in the current Space.");
+        }
+
         var already = await db.ProjectVariableSetLinks
             .AnyAsync(l => l.ProjectId == projectId && l.VariableSetId == setId, ct)
             .ConfigureAwait(false);
@@ -401,6 +419,7 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
 
         db.ProjectVariableSetLinks.Add(new ProjectVariableSetLink
         {
+            SpaceId = spaceId,
             ProjectId = projectId,
             VariableSetId = setId,
             SortOrder = maxSort + 1,
