@@ -1,4 +1,5 @@
 using KrakenDeploy.Server.Core.Domain.Tenants;
+using KrakenDeploy.Server.Core.Domain.Variables;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -19,7 +20,14 @@ public class TenantConfiguration : IEntityTypeConfiguration<Tenant>
         builder.Property(x => x.Name).IsRequired().HasMaxLength(200);
         builder.Property(x => x.Description).HasMaxLength(1000);
 
-        builder.Property(x => x.VariableSetId);
+        // Tenant-common variable set (reserved/dormant column). FK SET NULL so
+        // deleting the set clears the pointer without deleting the tenant —
+        // ownership stays tenant-side, not variable-set-side.
+        builder.HasOne<VariableSet>()
+            .WithMany()
+            .HasForeignKey(x => x.VariableSetId)
+            .OnDelete(DeleteBehavior.SetNull);
+        builder.HasIndex(x => x.VariableSetId);
 
         // Project ↔ Tenant many-to-many (implicit join table)
         builder.HasMany(x => x.Projects)

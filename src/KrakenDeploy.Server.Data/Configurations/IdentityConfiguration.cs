@@ -1,3 +1,4 @@
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Data.Identity;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -23,5 +24,17 @@ public static class IdentityConfiguration
         modelBuilder.Entity<IdentityUserClaim<Guid>>().ToTable("user_claims");
         modelBuilder.Entity<IdentityUserLogin<Guid>>().ToTable("user_logins");
         modelBuilder.Entity<IdentityUserToken<Guid>>().ToTable("user_tokens");
+
+        // The IdP a user last signed in with (used to scope external-group
+        // team mapping). FK SET NULL + index: deleting an identity provider
+        // clears the stamp rather than blocking or cascading the user.
+        // Mirrors team_external_groups.identity_provider_id (also SetNull).
+        modelBuilder.Entity<ApplicationUser>()
+            .HasOne<IdentityProvider>()
+            .WithMany()
+            .HasForeignKey(u => u.LastOidcProviderId)
+            .OnDelete(DeleteBehavior.SetNull);
+        modelBuilder.Entity<ApplicationUser>()
+            .HasIndex(u => u.LastOidcProviderId);
     }
 }
