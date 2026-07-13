@@ -57,6 +57,7 @@ public sealed class PostgresFixture : IAsyncLifetime, IDbContextFactory<KrakenDb
             .AddInterceptors(
                 new AuditableEntityInterceptor(TimeProvider.System),
                 new TagApplicationCleanupInterceptor(),
+                new EnvironmentReferenceCleanupInterceptor(),
                 new SpaceScopingInterceptor(spaceContext))
             // EF Core 9 promotes PendingModelChangesWarning to an error by default.
             // Lambda-based value converters (like our jsonb HasConversion) cannot be

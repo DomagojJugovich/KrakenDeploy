@@ -58,6 +58,9 @@ public static class ServiceCollectionExtensions
         // AuditLogInterceptor (registration order = execution order) so the
         // application deletes it stages are visible to the audit snapshot.
         services.AddSingleton<TagApplicationCleanupInterceptor>();
+        // Strips deleted environment ids out of jsonb reference documents
+        // (lifecycle phases, freezes, subscriptions). Same rationale as above.
+        services.AddSingleton<EnvironmentReferenceCleanupInterceptor>();
 
         // ── Space context ─────────────────────────────────────────────────────
         // Default impl always returns the Default Space — used by tests, the
@@ -99,6 +102,7 @@ public static class ServiceCollectionExtensions
             options.AddInterceptors(
                 sp.GetRequiredService<AuditableEntityInterceptor>(),
                 sp.GetRequiredService<TagApplicationCleanupInterceptor>(),
+                sp.GetRequiredService<EnvironmentReferenceCleanupInterceptor>(),
                 sp.GetRequiredService<AuditLogInterceptor>(),
                 sp.GetRequiredService<SpaceScopingInterceptor>());
         }, ServiceLifetime.Scoped);

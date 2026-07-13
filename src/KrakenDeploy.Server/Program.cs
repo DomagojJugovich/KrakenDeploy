@@ -1141,7 +1141,7 @@ public static class Program
         // ── Environment API (CLI / REST) ─────────────────────────────────────
         app.MapGet("/api/environments",
             async (EnvironmentService envSvc, CancellationToken ct) =>
-                Results.Ok(await envSvc.GetAllOrderedAsync(ct).ConfigureAwait(false))
+                Results.Ok(await envSvc.GetAllOrderedAsync(includeArchived: true, ct).ConfigureAwait(false))
         ).RequirePermission(Permission.EnvironmentView);
 
         // ── Target API (CLI / REST) ──────────────────────────────────────────

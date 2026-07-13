@@ -250,7 +250,7 @@ else
         {
             _groupOptions = (await ProjectSvc.GetProjectGroupsAsync()).Select(g => new ProjectFilterFlyout.FilterOption(g.Id, g.Name)).ToArray();
             _projectOptions = (await ProjectSvc.GetAllAsync()).Select(p => new ProjectFilterFlyout.FilterOption(p.Id, p.Name)).ToArray();
-            _envOptions = (await EnvironmentSvc.GetAllOrderedAsync()).Select(e => new ProjectFilterFlyout.FilterOption(e.Id, e.Name)).ToArray();
+            _envOptions = (await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true)).Select(e => new ProjectFilterFlyout.FilterOption(e.Id, e.Name)).ToArray();
             _tenantOptions = (await TenantSvc.GetAllAsync()).Select(t => new ProjectFilterFlyout.FilterOption(t.Id, t.Name)).ToArray();
             _optionsLoaded = true;
         }

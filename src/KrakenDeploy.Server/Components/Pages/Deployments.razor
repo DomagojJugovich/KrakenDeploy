@@ -136,7 +136,9 @@
     protected override async Task OnInitializedAsync()
     {
         _all = await DeploymentSvc.GetAllAsync();
-        _envs = await EnvironmentSvc.GetAllOrderedAsync();
+        // Include archived: historical deployments to a since-retired
+        // environment must still filter and colour-map correctly.
+        _envs = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true);
         _envColor = _envs.Select((e, i) => (e.Id, i)).ToDictionary(x => x.Id, x => x.i);
         ApplyFilters();
     }

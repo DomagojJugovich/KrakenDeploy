@@ -5,10 +5,35 @@ namespace KrakenDeploy.Server.Data.Services;
 
 public class EnvironmentService(IDbContextFactory<KrakenDbContext> dbFactory)
 {
-    public async Task<List<DeploymentEnvironment>> GetAllOrderedAsync(CancellationToken ct = default)
+    /// <param name="includeArchived">
+    /// <c>false</c> (default) hides archived environments — the safe default for
+    /// pickers (you can't scope new work to a retired environment). Pass
+    /// <c>true</c> for admin/management and for historical filter/display lists
+    /// that must still resolve archived ids.
+    /// </param>
+    public async Task<List<DeploymentEnvironment>> GetAllOrderedAsync(
+        bool includeArchived = false, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        return await db.Environments.OrderBy(e => e.SortOrder).ThenBy(e => e.Name).ToListAsync(ct);
+        var query = db.Environments.AsQueryable();
+        if (!includeArchived)
+        {
+            query = query.Where(e => !e.Archived);
+        }
+        return await query.OrderBy(e => e.SortOrder).ThenBy(e => e.Name).ToListAsync(ct);
+    }
+
+    public async Task<bool> SetArchivedAsync(Guid id, bool archived, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var env = await db.Environments.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
+        if (env is null)
+        {
+            return false;
+        }
+        env.Archived = archived;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return true;
     }
 
     public async Task<DeploymentEnvironment> CreateAsync(
@@ -65,6 +90,17 @@ public class EnvironmentService(IDbContextFactory<KrakenDbContext> dbFactory)
         if (env is null)
         {
             return false;
+        }
+
+        // Friendly guard in front of the RESTRICT FK (server_tasks.environment_id):
+        // an environment with execution history can't be hard-deleted. Point the
+        // caller at the archive escape hatch instead of a raw DbUpdateException.
+        var hasHistory = await db.ServerTasks.IgnoreQueryFilters()
+            .AnyAsync(t => t.EnvironmentId == id, ct).ConfigureAwait(false);
+        if (hasHistory)
+        {
+            throw new InvalidOperationException(
+                "This environment has deployment history and can't be deleted. Archive it instead.");
         }
 
         db.Environments.Remove(env);

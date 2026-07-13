@@ -125,7 +125,7 @@ else
 
     protected override async Task OnInitializedAsync()
     {
-        _envNames    = (await EnvironmentSvc.GetAllOrderedAsync()).ToDictionary(e => e.Id, e => e.Name);
+        _envNames    = (await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true)).ToDictionary(e => e.Id, e => e.Name);
         _tenantNames = (await TenantSvc.GetAllAsync()).ToDictionary(t => t.Id, t => t.Name);
         _targetNames = (await TargetSvc.GetAllAsync()).ToDictionary(t => t.Id, t => t.Name);
         await ReloadAsync();

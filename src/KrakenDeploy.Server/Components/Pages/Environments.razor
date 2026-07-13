@@ -65,6 +65,10 @@ else
                             <RadzenButton Icon="sell" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.ExtraSmall"
                                           Click="@(() => OpenTagsDialogAsync(e))" title="Tags" />
                         </RequirePermission>
+                        <RequirePermission Permission="Permission.EnvironmentEdit">
+                            <RadzenButton Icon="archive" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.ExtraSmall"
+                                          Click="@(() => ArchiveAsync(e))" title="Archive (hide from pickers)" />
+                        </RequirePermission>
                         <RequirePermission Permission="Permission.EnvironmentDelete">
                             <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.ExtraSmall"
                                           Click="@(() => DeleteAsync(e))" title="Delete" />
@@ -85,17 +89,67 @@ else
     </p>
 }
 
+@if (_archived.Count > 0)
+{
+    <div class="kr-card kr-card-pad" style="margin-top:1rem;">
+        <RadzenText TextStyle="TextStyle.Subtitle2">Archived environments</RadzenText>
+        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+            Hidden from pickers. Existing history still references them. Unarchive to reuse,
+            or delete once no execution history remains.
+        </RadzenText>
+        <RadzenStack Gap="0.5rem" style="margin-top:0.75rem;">
+            @foreach (var e in _archived)
+            {
+                <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                             JustifyContent="JustifyContent.SpaceBetween" Gap="0.5rem">
+                    <span>@e.Name <span class="rz-color-secondary">(@e.Slug)</span></span>
+                    <RadzenStack Orientation="Orientation.Horizontal" Gap="0.25rem">
+                        <RequirePermission Permission="Permission.EnvironmentEdit">
+                            <RadzenButton Icon="unarchive" Text="Unarchive" ButtonStyle="ButtonStyle.Light"
+                                          Size="ButtonSize.ExtraSmall" Click="@(() => UnarchiveAsync(e))" />
+                        </RequirePermission>
+                        <RequirePermission Permission="Permission.EnvironmentDelete">
+                            <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Variant="Variant.Text"
+                                          Size="ButtonSize.ExtraSmall" Click="@(() => DeleteAsync(e))" title="Delete" />
+                        </RequirePermission>
+                    </RadzenStack>
+                </RadzenStack>
+            }
+        </RadzenStack>
+    </div>
+}
+
 @code {
     private List<DeploymentEnvironment> _envs = [];
+    private List<DeploymentEnvironment> _archived = [];
     private Dictionary<Guid, EnvironmentHealth> _health = [];
 
     protected override async Task OnInitializedAsync() => await LoadAsync();
 
     private async Task LoadAsync()
     {
-        _envs = await EnvironmentSvc.GetAllOrderedAsync();
+        var all = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true);
+        _envs = all.Where(e => !e.Archived).ToList();
+        _archived = all.Where(e => e.Archived).ToList();
         _health = (await DashboardSvc.GetEnvironmentHealthAsync())
             .ToDictionary(h => h.EnvironmentId);
+    }
+
+    private async Task ArchiveAsync(DeploymentEnvironment env)
+    {
+        if (!await Guard.AllowAsync(Permission.EnvironmentEdit)) return;
+        await EnvironmentSvc.SetArchivedAsync(env.Id, archived: true);
+        await LoadAsync();
+        Notifications.Notify(NotificationSeverity.Info, "Archived",
+            $"'{env.Name}' is hidden from pickers. Unarchive it any time.", 4000);
+    }
+
+    private async Task UnarchiveAsync(DeploymentEnvironment env)
+    {
+        if (!await Guard.AllowAsync(Permission.EnvironmentEdit)) return;
+        await EnvironmentSvc.SetArchivedAsync(env.Id, archived: false);
+        await LoadAsync();
+        Notifications.Notify(NotificationSeverity.Success, "Unarchived", $"'{env.Name}' is active again.", 3000);
     }
 
     private async Task OpenTagsDialogAsync(DeploymentEnvironment env)
@@ -164,10 +218,18 @@ else
 
         if (confirmed == true)
         {
-            await EnvironmentSvc.DeleteAsync(env.Id);
-            await LoadAsync();
-            Notifications.Notify(NotificationSeverity.Success, "Deleted",
-                $"'{env.Name}' was deleted.", 4000);
+            try
+            {
+                await EnvironmentSvc.DeleteAsync(env.Id);
+                await LoadAsync();
+                Notifications.Notify(NotificationSeverity.Success, "Deleted",
+                    $"'{env.Name}' was deleted.", 4000);
+            }
+            catch (InvalidOperationException ex)
+            {
+                Notifications.Notify(NotificationSeverity.Warning, "Cannot delete environment",
+                    ex.Message, 6000);
+            }
         }
     }
 }
