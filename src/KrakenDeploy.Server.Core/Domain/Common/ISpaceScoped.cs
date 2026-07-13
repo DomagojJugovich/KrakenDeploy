@@ -14,10 +14,15 @@ namespace KrakenDeploy.Server.Core.Domain.Common;
 /// </list>
 /// </para>
 /// <para>
-/// Child entities (e.g. <c>DeploymentStep</c>, <c>Variable</c>, <c>RunbookRunLogEntry</c>)
-/// do <em>not</em> implement this — they reach a Space transitively via their parent
-/// FK. Only top-level aggregates carry the direct Space FK so the query filter is fast
-/// and the foreign key graph stays acyclic.
+/// Both aggregate roots and Space-scoped child entities (e.g. <c>Variable</c>,
+/// <c>ProcessStep</c>, <c>TaskArtifact</c>) implement this so the query filter and
+/// insert-stamping apply uniformly. They differ in how <c>space_id</c> integrity is
+/// enforced at the DB level: aggregate roots carry a direct FK to <c>spaces</c>, while
+/// children carry a <em>composite</em> FK <c>(space_id, parent_id) → parent(space_id, id)</c>
+/// that transitively pins them to their parent's Space (so a child can never reference a
+/// parent in another Space). A few high-volume or purely-transitive tables
+/// (e.g. <c>task_step_logs</c>, <c>task_log_live</c>) deliberately do <em>not</em>
+/// implement this and reach a Space only through their single owning FK.
 /// </para>
 /// </summary>
 public interface ISpaceScoped
