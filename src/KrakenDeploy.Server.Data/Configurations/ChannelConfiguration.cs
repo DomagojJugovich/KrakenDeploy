@@ -31,6 +31,13 @@ public class ChannelConfiguration : IEntityTypeConfiguration<Channel>
         // Unique channel name per project.
         builder.HasIndex(x => new { x.ProjectId, x.Name }).IsUnique();
 
+        // At most one default channel per project — filtered unique index
+        // (precedent: project_groups one-default-per-Space). Replaces the
+        // non-transactional clear-then-set invariant ChannelService relied on.
+        builder.HasIndex(x => x.ProjectId)
+            .IsUnique()
+            .HasFilter("is_default");
+
         builder.Property(x => x.CreatedUtc).IsRequired();
     }
 }
