@@ -23,10 +23,12 @@ public class ChannelConfiguration : IEntityTypeConfiguration<Channel>
             .HasForeignKey(x => x.ProjectId)
             .OnDelete(DeleteBehavior.Cascade);
 
+        // RESTRICT — deleting a lifecycle that gates a channel must fail
+        // loudly, not silently null the pointer and un-gate deploys.
         builder.HasOne(x => x.Lifecycle)
             .WithMany()
             .HasForeignKey(x => x.LifecycleId)
-            .OnDelete(DeleteBehavior.SetNull);
+            .OnDelete(DeleteBehavior.Restrict);
 
         // Unique channel name per project.
         builder.HasIndex(x => new { x.ProjectId, x.Name }).IsUnique();

@@ -118,16 +118,29 @@
     {
         if (!await Guard.AllowAsync(Permission.LifecycleDelete)) return;
 
-        var deleted = await LifecycleSvc.DeleteAsync(lc.Id);
-        if (deleted)
+        try
         {
-            _lifecycles = _lifecycles.Where(x => x.Id != lc.Id).ToList();
+            var deleted = await LifecycleSvc.DeleteAsync(lc.Id);
+            if (deleted)
+            {
+                _lifecycles = _lifecycles.Where(x => x.Id != lc.Id).ToList();
+                Notify.Notify(new NotificationMessage
+                {
+                    Severity = NotificationSeverity.Info,
+                    Summary = "Deleted",
+                    Detail = lc.Name,
+                    Duration = 3000,
+                });
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
             Notify.Notify(new NotificationMessage
             {
-                Severity = NotificationSeverity.Info,
-                Summary = "Deleted",
-                Detail = lc.Name,
-                Duration = 3000,
+                Severity = NotificationSeverity.Warning,
+                Summary = "Cannot delete lifecycle",
+                Detail = ex.Message,
+                Duration = 6000,
             });
         }
     }

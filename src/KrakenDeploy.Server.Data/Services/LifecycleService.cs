@@ -83,6 +83,21 @@ public class LifecycleService(IDbContextFactory<KrakenDbContext> dbFactory)
             return false;
         }
 
+        // Friendly guard in front of the RESTRICT FK: a lifecycle still
+        // assigned to a project or channel cannot be deleted (deleting it would
+        // un-gate their deploys). Surfacing this as InvalidOperationException —
+        // matching Create/Update — beats an opaque DbUpdateException from the FK.
+        var inUse = await db.Projects.IgnoreQueryFilters()
+            .AnyAsync(p => p.LifecycleId == id, ct).ConfigureAwait(false)
+            || await db.Channels.IgnoreQueryFilters()
+            .AnyAsync(c => c.LifecycleId == id, ct).ConfigureAwait(false);
+        if (inUse)
+        {
+            throw new InvalidOperationException(
+                "This lifecycle is still assigned to one or more projects or channels. " +
+                "Reassign them before deleting it.");
+        }
+
         db.Lifecycles.Remove(lifecycle);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return true;

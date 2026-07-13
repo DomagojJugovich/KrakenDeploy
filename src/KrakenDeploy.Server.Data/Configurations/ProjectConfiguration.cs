@@ -20,10 +20,12 @@ public class ProjectConfiguration : IEntityTypeConfiguration<Project>
         builder.Property(x => x.Name).HasMaxLength(200).IsRequired();
         builder.Property(x => x.Description).HasMaxLength(2000);
 
+        // RESTRICT — deleting a lifecycle that gates a project must fail
+        // loudly, not silently null the pointer and un-gate deploys.
         builder.HasOne(x => x.Lifecycle)
             .WithMany()
             .HasForeignKey(x => x.LifecycleId)
-            .OnDelete(DeleteBehavior.SetNull);
+            .OnDelete(DeleteBehavior.Restrict);
 
         // ProjectGroup FK — nullable during M10 transition, becomes required
         // after the Default Project Group seeder backfills existing rows.
