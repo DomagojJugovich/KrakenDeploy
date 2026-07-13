@@ -119,6 +119,20 @@ namespace KrakenDeploy.Server.Data.Migrations
                 CROSS JOIN LATERAL jsonb_array_elements_text(ra.tenant_ids) AS e(val)
                 WHERE EXISTS (SELECT 1 FROM tenants t WHERE t.id = e.val::uuid);");
 
+            // Guard against migration-time privilege escalation: an assignment
+            // that WAS scoped (any non-empty dimension array) but whose every id
+            // was already dangling migrates to zero scope rows, which the matcher
+            // reads as whole-Space. Delete those so a dead narrow grant doesn't
+            // silently widen (mirrors RoleAssignmentScopeCleanupInterceptor).
+            migrationBuilder.Sql(@"
+                DELETE FROM role_assignments ra
+                WHERE NOT EXISTS (
+                        SELECT 1 FROM role_assignment_scopes s WHERE s.role_assignment_id = ra.id)
+                  AND (jsonb_array_length(ra.project_group_ids) > 0
+                    OR jsonb_array_length(ra.project_ids) > 0
+                    OR jsonb_array_length(ra.environment_ids) > 0
+                    OR jsonb_array_length(ra.tenant_ids) > 0);");
+
             migrationBuilder.DropColumn(name: "environment_ids", table: "role_assignments");
             migrationBuilder.DropColumn(name: "project_group_ids", table: "role_assignments");
             migrationBuilder.DropColumn(name: "project_ids", table: "role_assignments");
@@ -137,35 +151,35 @@ namespace KrakenDeploy.Server.Data.Migrations
                 table: "role_assignments",
                 type: "jsonb",
                 nullable: false,
-                defaultValue: "");
+                defaultValue: "[]");
 
             migrationBuilder.AddColumn<string>(
                 name: "project_group_ids",
                 table: "role_assignments",
                 type: "jsonb",
                 nullable: false,
-                defaultValue: "");
+                defaultValue: "[]");
 
             migrationBuilder.AddColumn<string>(
                 name: "project_ids",
                 table: "role_assignments",
                 type: "jsonb",
                 nullable: false,
-                defaultValue: "");
+                defaultValue: "[]");
 
             migrationBuilder.AddColumn<string>(
                 name: "tag_ids",
                 table: "role_assignments",
                 type: "jsonb",
                 nullable: false,
-                defaultValue: "");
+                defaultValue: "[]");
 
             migrationBuilder.AddColumn<string>(
                 name: "tenant_ids",
                 table: "role_assignments",
                 type: "jsonb",
                 nullable: false,
-                defaultValue: "");
+                defaultValue: "[]");
         }
     }
 }

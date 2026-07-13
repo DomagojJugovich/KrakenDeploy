@@ -61,6 +61,9 @@ public static class ServiceCollectionExtensions
         // Strips deleted environment ids out of jsonb reference documents
         // (lifecycle phases, freezes, subscriptions). Same rationale as above.
         services.AddSingleton<EnvironmentReferenceCleanupInterceptor>();
+        // Deletes RBAC grants whose scope set is emptied by a resource delete,
+        // so a per-dimension CASCADE can't silently widen them to whole-Space.
+        services.AddSingleton<RoleAssignmentScopeCleanupInterceptor>();
 
         // ── Space context ─────────────────────────────────────────────────────
         // Default impl always returns the Default Space — used by tests, the
@@ -103,6 +106,7 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<AuditableEntityInterceptor>(),
                 sp.GetRequiredService<TagApplicationCleanupInterceptor>(),
                 sp.GetRequiredService<EnvironmentReferenceCleanupInterceptor>(),
+                sp.GetRequiredService<RoleAssignmentScopeCleanupInterceptor>(),
                 sp.GetRequiredService<AuditLogInterceptor>(),
                 sp.GetRequiredService<SpaceScopingInterceptor>());
         }, ServiceLifetime.Scoped);

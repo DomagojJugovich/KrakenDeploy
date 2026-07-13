@@ -494,7 +494,9 @@
             _project = await ProjectSvc.GetBySlugAsync(Slug);
             if (_project is null) return;
 
-            _environments = await EnvironmentSvc.GetAllOrderedAsync();
+            // Include archived so variable rows already scoped to a
+            // since-archived env keep resolving and aren't dropped on save.
+            _environments = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true);
             _envNames = _environments.ToDictionary(e => e.Id, e => e.Name);
 
             _tenants = await TenantSvc.GetAllAsync();

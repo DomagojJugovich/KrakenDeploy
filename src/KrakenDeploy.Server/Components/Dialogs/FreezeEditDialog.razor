@@ -101,7 +101,10 @@
     protected override async Task OnInitializedAsync()
     {
         _projects     = await ProjectSvc.GetAllAsync();
-        _environments = await EnvironmentSvc.GetAllOrderedAsync();
+        // Include archived: this multiselect full-replaces the freeze's
+        // EnvironmentIds on save, so an already-scoped env that was since
+        // archived must stay in the list or it'd be silently dropped.
+        _environments = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true);
 
         if (Existing is not null)
         {

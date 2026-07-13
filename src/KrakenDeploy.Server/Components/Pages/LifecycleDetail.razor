@@ -176,7 +176,10 @@
     protected override async Task OnInitializedAsync()
     {
         var lcTask  = LifecycleSvc.GetAsync(Id);
-        var envTask = EnvSvc.GetAllOrderedAsync();
+        // Include archived: the phase editor rebuilds each phase's env sets from
+        // this list on save, so a since-archived env already in a phase must
+        // stay listed or it'd be silently removed from the lifecycle gate.
+        var envTask = EnvSvc.GetAllOrderedAsync(includeArchived: true);
         await Task.WhenAll(lcTask, envTask);
         _lifecycle    = lcTask.Result;
         _environments = envTask.Result;

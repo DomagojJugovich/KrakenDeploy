@@ -570,7 +570,9 @@ else
         _name = Target.Name;
         _riskLevel = Target.RiskLevel;
 
-        _environments = await EnvironmentSvc.GetAllOrderedAsync();
+        // Include archived: this multiselect full-replaces the target's served
+        // environments on save, so a since-archived env must stay listed.
+        _environments = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true);
         _tenants = await TenantSvc.GetAllAsync();
 
         // Associations come from a separate read-only load so the tracked

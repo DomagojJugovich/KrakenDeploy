@@ -182,7 +182,9 @@
 
     protected override async Task OnInitializedAsync()
     {
-        _environments = await EnvironmentSvc.GetAllOrderedAsync();
+        // Include archived so editing a variable already scoped to a
+        // since-archived environment still resolves + preserves that scope.
+        _environments = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true);
         _tenants = await TenantSvc.GetAllAsync();
 
         // Roles offered for scoping: every role on a deployment target, plus

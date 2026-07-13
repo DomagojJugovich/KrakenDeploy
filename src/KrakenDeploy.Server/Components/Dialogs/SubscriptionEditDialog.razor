@@ -218,7 +218,9 @@
     protected override async Task OnInitializedAsync()
     {
         _projects     = await ProjectSvc.GetAllAsync();
-        _environments = await EnvironmentSvc.GetAllOrderedAsync();
+        // Include archived: the env filter full-replaces on save, so a
+        // since-archived env already in the list must not be silently dropped.
+        _environments = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true);
         // Pull every runbook across every project in the current Space —
         // RunbookService.GetAllAsync is per-project; the page wants a flat
         // list so the operator picks by name. Manual flatten.
