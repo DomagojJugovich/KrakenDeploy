@@ -13,7 +13,7 @@ public class ReleaseConfiguration : IEntityTypeConfiguration<Release>
         builder.ToTable("releases");
         builder.HasKey(x => x.Id);
 
-        builder.ConfigureSpaceScope();
+        builder.ConfigureSpaceScopeAsChild();
 
         builder.Property(x => x.Version).HasMaxLength(128).IsRequired();
         builder.Property(x => x.ReleaseNotes);
@@ -31,14 +31,23 @@ public class ReleaseConfiguration : IEntityTypeConfiguration<Release>
             .HasJsonbColumn<List<VariableSnapshot>>();
         builder.Property(x => x.VariableSnapshotUpdatedUtc);
 
+        // Composite Space FK: a release can only belong to a project in its Space.
         builder.HasOne(x => x.Project)
             .WithMany()
-            .HasForeignKey(x => x.ProjectId)
+            .HasForeignKey(x => new { x.SpaceId, x.ProjectId })
+            .HasPrincipalKey(p => new { p.SpaceId, p.Id })
             .OnDelete(DeleteBehavior.Restrict);
 
+        // Composite Space FK to the (optional) channel. SetNull on a composite FK
+        // whose space_id is NOT NULL requires the Postgres 15+ column-list form
+        // `ON DELETE SET NULL (channel_id)`, which EF Core 10 cannot emit — the
+        // migration rewrites this constraint with raw SQL. EF keeps modelling it
+        // as SetNull, which is harmless (the column subset is invisible to the
+        // model comparison, so no snapshot drift).
         builder.HasOne(x => x.Channel)
             .WithMany()
-            .HasForeignKey(x => x.ChannelId)
+            .HasForeignKey(x => new { x.SpaceId, x.ChannelId })
+            .HasPrincipalKey(c => new { c.SpaceId, c.Id })
             .OnDelete(DeleteBehavior.SetNull);
 
         builder.HasIndex(x => new { x.ProjectId, x.Version }).IsUnique();

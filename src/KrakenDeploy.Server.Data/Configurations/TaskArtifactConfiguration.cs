@@ -12,7 +12,7 @@ public sealed class TaskArtifactConfiguration : IEntityTypeConfiguration<TaskArt
         builder.ToTable("task_artifacts");
         builder.HasKey(x => x.Id);
 
-        builder.ConfigureSpaceScope();
+        builder.ConfigureSpaceScopeAsChild();
 
         builder.Property(x => x.StepName).HasMaxLength(256).IsRequired();
         builder.Property(x => x.FileName).HasMaxLength(512).IsRequired();
@@ -21,9 +21,11 @@ public sealed class TaskArtifactConfiguration : IEntityTypeConfiguration<TaskArt
         builder.Property(x => x.StoredPath).HasMaxLength(1024).IsRequired();
         builder.Property(x => x.CollectedUtc).IsRequired();
 
+        // Composite Space FK: an artifact can only belong to a task in its Space.
         builder.HasOne(x => x.Task)
             .WithMany(t => t.Artifacts)
-            .HasForeignKey(x => x.TaskId)
+            .HasForeignKey(x => new { x.SpaceId, x.TaskId })
+            .HasPrincipalKey(t => new { t.SpaceId, t.Id })
             .OnDelete(DeleteBehavior.Cascade);
 
         builder.HasIndex(x => x.TaskId);

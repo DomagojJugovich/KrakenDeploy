@@ -12,16 +12,18 @@ public sealed class TaskOutputVariableConfiguration : IEntityTypeConfiguration<T
         builder.ToTable("task_output_variables");
         builder.HasKey(x => x.Id);
 
-        builder.ConfigureSpaceScope();
+        builder.ConfigureSpaceScopeAsChild();
 
         builder.Property(x => x.StepName).HasMaxLength(256).IsRequired();
         builder.Property(x => x.Name).HasMaxLength(256).IsRequired();
         builder.Property(x => x.Value).IsRequired();
         builder.Property(x => x.CapturedUtc).IsRequired();
 
+        // Composite Space FK: an output variable can only belong to a task in its Space.
         builder.HasOne(x => x.Task)
             .WithMany(t => t.OutputVariables)
-            .HasForeignKey(x => x.TaskId)
+            .HasForeignKey(x => new { x.SpaceId, x.TaskId })
+            .HasPrincipalKey(t => new { t.SpaceId, t.Id })
             .OnDelete(DeleteBehavior.Cascade);
 
         // Read "everything step X produced" + upsert "did step X produce Y?".

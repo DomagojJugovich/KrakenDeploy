@@ -16,7 +16,9 @@ public class TagConfiguration : IEntityTypeConfiguration<Tag>
         builder.ToTable("tags");
         builder.HasKey(x => x.Id);
 
-        builder.ConfigureSpaceScope();
+        // Child of TagSet — the composite FK (space_id, tag_set_id) lives in
+        // TagSetConfiguration and transitively guarantees space_id.
+        builder.ConfigureSpaceScopeAsChild();
 
         builder.Property(x => x.Name).IsRequired().HasMaxLength(200);
         // Stores a CSS colour string. The UI color picker can emit rgb()/rgba()

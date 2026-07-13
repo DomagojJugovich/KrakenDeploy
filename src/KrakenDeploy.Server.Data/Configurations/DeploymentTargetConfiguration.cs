@@ -1,4 +1,6 @@
+using KrakenDeploy.Server.Core.Domain.Environments;
 using KrakenDeploy.Server.Core.Domain.Targets;
+using KrakenDeploy.Server.Core.Domain.Tenants;
 using KrakenDeploy.Server.Data.Conventions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -63,15 +65,50 @@ public class DeploymentTargetConfiguration : IEntityTypeConfiguration<Deployment
 
         // Direct tenant association (Octopus "Associated Tenants") — the
         // primary tenant↔target link. Distinct from target_tenant_tags,
-        // which carries auxiliary tag metadata.
+        // which carries auxiliary tag metadata. Explicit Space-scoped join:
+        // composite FKs on BOTH sides pin target and tenant to the same Space.
         builder.HasMany(x => x.Tenants)
             .WithMany()
-            .UsingEntity(j => j.ToTable("target_tenants"));
+            .UsingEntity<TargetTenant>(
+                r => r.HasOne<Tenant>()
+                    .WithMany()
+                    .HasForeignKey(tt => new { tt.SpaceId, tt.TenantId })
+                    .HasPrincipalKey(t => new { t.SpaceId, t.Id })
+                    .OnDelete(DeleteBehavior.Cascade),
+                l => l.HasOne<DeploymentTarget>()
+                    .WithMany()
+                    .HasForeignKey(tt => new { tt.SpaceId, tt.TargetId })
+                    .HasPrincipalKey(d => new { d.SpaceId, d.Id })
+                    .OnDelete(DeleteBehavior.Cascade),
+                j =>
+                {
+                    j.ToTable("target_tenants");
+                    j.HasKey(tt => new { tt.TargetId, tt.TenantId });
+                    j.Property(tt => tt.SpaceId).IsRequired();
+                    j.HasIndex(tt => tt.TenantId);
+                });
 
-        // Environments this target serves.
+        // Environments this target serves. Explicit Space-scoped join, same shape.
         builder.HasMany(x => x.Environments)
             .WithMany()
-            .UsingEntity(j => j.ToTable("target_environments"));
+            .UsingEntity<TargetEnvironment>(
+                r => r.HasOne<DeploymentEnvironment>()
+                    .WithMany()
+                    .HasForeignKey(te => new { te.SpaceId, te.EnvironmentId })
+                    .HasPrincipalKey(e => new { e.SpaceId, e.Id })
+                    .OnDelete(DeleteBehavior.Cascade),
+                l => l.HasOne<DeploymentTarget>()
+                    .WithMany()
+                    .HasForeignKey(te => new { te.SpaceId, te.TargetId })
+                    .HasPrincipalKey(d => new { d.SpaceId, d.Id })
+                    .OnDelete(DeleteBehavior.Cascade),
+                j =>
+                {
+                    j.ToTable("target_environments");
+                    j.HasKey(te => new { te.TargetId, te.EnvironmentId });
+                    j.Property(te => te.SpaceId).IsRequired();
+                    j.HasIndex(te => te.EnvironmentId);
+                });
 
         builder.Property(x => x.CreatedUtc).IsRequired();
     }

@@ -17,7 +17,9 @@ public sealed class AdhocIterationConfiguration : IEntityTypeConfiguration<Adhoc
         builder.ToTable("adhoc_iterations");
         builder.HasKey(i => i.Id);
 
-        builder.ConfigureSpaceScope();
+        // Child of AdhocSession — the composite FK (space_id, session_id) lives in
+        // AdhocSessionConfiguration and transitively guarantees space_id.
+        builder.ConfigureSpaceScopeAsChild();
 
         builder.HasIndex(i => new { i.SessionId, i.IterNumber }).IsUnique();
 

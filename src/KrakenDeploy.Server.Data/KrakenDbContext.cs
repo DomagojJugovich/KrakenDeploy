@@ -50,6 +50,13 @@ public class KrakenDbContext(
     public DbSet<ProjectGroup> ProjectGroups => Set<ProjectGroup>();
     public DbSet<DeploymentEnvironment> Environments => Set<DeploymentEnvironment>();
     public DbSet<DeploymentTarget> DeploymentTargets => Set<DeploymentTarget>();
+    // Explicit Space-scoped join entities (replace the former implicit EF joins).
+    public DbSet<KrakenDeploy.Server.Core.Domain.Targets.TargetTenant> TargetTenants
+        => Set<KrakenDeploy.Server.Core.Domain.Targets.TargetTenant>();
+    public DbSet<KrakenDeploy.Server.Core.Domain.Targets.TargetEnvironment> TargetEnvironments
+        => Set<KrakenDeploy.Server.Core.Domain.Targets.TargetEnvironment>();
+    public DbSet<KrakenDeploy.Server.Core.Domain.Projects.ProjectTenant> ProjectTenants
+        => Set<KrakenDeploy.Server.Core.Domain.Projects.ProjectTenant>();
     public DbSet<Release> Releases => Set<Release>();
     // Unified execution spine (server_tasks, TPH). ServerTasks is the base set;
     // Deployments / RunbookRuns are the discriminator-filtered typed surfaces.

@@ -12,7 +12,7 @@ public class VariableConfiguration : IEntityTypeConfiguration<Variable>
         builder.ToTable("variables");
         builder.HasKey(x => x.Id);
 
-        builder.ConfigureSpaceScope();
+        builder.ConfigureSpaceScopeAsChild();
 
         builder.Property(x => x.Name).HasMaxLength(200).IsRequired();
 
@@ -29,9 +29,11 @@ public class VariableConfiguration : IEntityTypeConfiguration<Variable>
         builder.Property(x => x.Scope)
             .HasJsonbColumn<VariableScope>();
 
+        // Composite Space FK: a variable can only belong to a set in its own Space.
         builder.HasOne(x => x.Set)
             .WithMany(s => s.Variables)
-            .HasForeignKey(x => x.SetId)
+            .HasForeignKey(x => new { x.SpaceId, x.SetId })
+            .HasPrincipalKey(s => new { s.SpaceId, s.Id })
             .OnDelete(DeleteBehavior.Cascade);
 
         // Most queries filter by set and optionally name.

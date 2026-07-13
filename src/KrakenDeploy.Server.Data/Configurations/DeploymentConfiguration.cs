@@ -14,10 +14,15 @@ public class DeploymentConfiguration : IEntityTypeConfiguration<Deployment>
     public void Configure(EntityTypeBuilder<Deployment> builder)
     {
         // Execution history is delete-proof: a release with deployments cannot be
-        // deleted out from under them (decision 7).
+        // deleted out from under them (decision 7). Composite Space FK so a
+        // deployment can only reference a release in its own Space. (space_id is
+        // inherited from the ServerTask base; release_id is the Deployment-only
+        // column — physically nullable in TPH, so the FK is skipped for RunbookRun
+        // rows under MATCH SIMPLE.)
         builder.HasOne(x => x.Release)
             .WithMany()
-            .HasForeignKey(x => x.ReleaseId)
+            .HasForeignKey(x => new { x.SpaceId, x.ReleaseId })
+            .HasPrincipalKey(r => new { r.SpaceId, r.Id })
             .OnDelete(DeleteBehavior.Restrict);
 
         // Serves the release×environment matrix cells ("latest deployment of

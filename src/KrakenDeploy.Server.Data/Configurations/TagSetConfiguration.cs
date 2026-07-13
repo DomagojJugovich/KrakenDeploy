@@ -32,9 +32,11 @@ public class TagSetConfiguration : IEntityTypeConfiguration<TagSet>
         // Space-level uniqueness (was (TenantId, Name) in the tenant-owned model).
         builder.HasIndex(x => new { x.SpaceId, x.Name }).IsUnique();
 
+        // Composite Space FK: a tag can only belong to a tag set in its own Space.
         builder.HasMany(x => x.Tags)
             .WithOne(t => t.TagSet)
-            .HasForeignKey(t => t.TagSetId)
+            .HasForeignKey(t => new { t.SpaceId, t.TagSetId })
+            .HasPrincipalKey(s => new { s.SpaceId, s.Id })
             .OnDelete(DeleteBehavior.Cascade);
 
         builder.Property(x => x.CreatedUtc).IsRequired();

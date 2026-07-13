@@ -16,7 +16,7 @@ public sealed class TaskStepOutcomeConfiguration : IEntityTypeConfiguration<Task
         builder.ToTable("task_step_outcomes");
         builder.HasKey(x => x.Id);
 
-        builder.ConfigureSpaceScope();
+        builder.ConfigureSpaceScopeAsChild();
 
         builder.Property(x => x.StepIndex).IsRequired();
         builder.Property(x => x.StepName).HasMaxLength(256).IsRequired();
@@ -31,14 +31,19 @@ public sealed class TaskStepOutcomeConfiguration : IEntityTypeConfiguration<Task
 
         // Real FK RESTRICT — execution history pins its targets; deletion goes
         // through the archived-flag escape hatch, never by orphaning history rows.
+        // Composite so the target must be in the outcome's Space (target_id is
+        // nullable → the composite FK is simply not enforced for server-once steps).
         builder.HasOne<Core.Domain.Targets.DeploymentTarget>()
             .WithMany()
-            .HasForeignKey(x => x.TargetId)
+            .HasForeignKey(x => new { x.SpaceId, x.TargetId })
+            .HasPrincipalKey(t => new { t.SpaceId, t.Id })
             .OnDelete(DeleteBehavior.Restrict);
 
+        // Composite Space FK: an outcome can only belong to a task in its Space.
         builder.HasOne(x => x.Task)
             .WithMany(t => t.StepOutcomes)
-            .HasForeignKey(x => x.TaskId)
+            .HasForeignKey(x => new { x.SpaceId, x.TaskId })
+            .HasPrincipalKey(t => new { t.SpaceId, t.Id })
             .OnDelete(DeleteBehavior.Cascade);
 
         // Primary read: every step's outcome for a task, in step order; also the

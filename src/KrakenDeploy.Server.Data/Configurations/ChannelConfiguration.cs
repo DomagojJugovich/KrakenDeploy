@@ -11,23 +11,27 @@ public class ChannelConfiguration : IEntityTypeConfiguration<Channel>
         builder.ToTable("channels");
         builder.HasKey(x => x.Id);
 
-        builder.ConfigureSpaceScope();
+        builder.ConfigureSpaceScopeAsChild();
 
         builder.Property(x => x.Name).IsRequired().HasMaxLength(200);
         builder.Property(x => x.IsDefault).IsRequired();
         builder.Property(x => x.VersionRange).HasMaxLength(200);
         builder.Property(x => x.VersionTag).HasMaxLength(100);
 
+        // Composite Space FK: a channel can only belong to a project in its Space.
         builder.HasOne(x => x.Project)
             .WithMany(p => p.Channels)
-            .HasForeignKey(x => x.ProjectId)
+            .HasForeignKey(x => new { x.SpaceId, x.ProjectId })
+            .HasPrincipalKey(p => new { p.SpaceId, p.Id })
             .OnDelete(DeleteBehavior.Cascade);
 
         // RESTRICT — deleting a lifecycle that gates a channel must fail
-        // loudly, not silently null the pointer and un-gate deploys.
+        // loudly, not silently null the pointer and un-gate deploys. Composite
+        // so the lifecycle must be in the channel's Space.
         builder.HasOne(x => x.Lifecycle)
             .WithMany()
-            .HasForeignKey(x => x.LifecycleId)
+            .HasForeignKey(x => new { x.SpaceId, x.LifecycleId })
+            .HasPrincipalKey(l => new { l.SpaceId, l.Id })
             .OnDelete(DeleteBehavior.Restrict);
 
         // Unique channel name per project.

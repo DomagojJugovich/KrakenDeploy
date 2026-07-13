@@ -18,18 +18,21 @@ public sealed class DeploymentDiagnosisConfiguration
         builder.ToTable("deployment_diagnoses");
         builder.HasKey(x => x.Id);
 
-        // ISpaceScoped but historically missing its Space FK/index — add both
-        // (this table has no space_id index yet, so create a standalone one).
-        builder.ConfigureSpaceScope();
+        // Child of ServerTask — space_id is transitively guaranteed by the
+        // composite FK below; the FK's covering index (space_id, deployment_id)
+        // serves the Space query filter, so no direct spaces FK / standalone index.
+        builder.ConfigureSpaceScopeAsChild();
 
         builder.HasIndex(x => x.DeploymentId).IsUnique();
 
         // The diagnosis is for one server_tasks row (a Kind=Deployment task,
         // post fix-3). CASCADE: pruning the task drops its diagnosis. The
-        // unique index above enforces the one-to-one shape.
+        // unique index above enforces the one-to-one shape. Composite Space FK
+        // so a diagnosis can only reference a task in its own Space.
         builder.HasOne<ServerTask>()
             .WithMany()
-            .HasForeignKey(x => x.DeploymentId)
+            .HasForeignKey(x => new { x.SpaceId, x.DeploymentId })
+            .HasPrincipalKey(t => new { t.SpaceId, t.Id })
             .OnDelete(DeleteBehavior.Cascade);
 
         builder.Property(x => x.ProbableCause).HasMaxLength(2000).IsRequired();

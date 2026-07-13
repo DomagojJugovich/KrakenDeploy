@@ -1,3 +1,4 @@
+using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
@@ -14,10 +15,14 @@ public class VariableSetConfiguration : IEntityTypeConfiguration<VariableSet>
         builder.ConfigureSpaceScope();
 
         // Optional one-to-one: project sets carry ProjectId; library / tenant
-        // sets leave it null.
+        // sets leave it null. Composite Space FK: a project-kind set can only
+        // point at a project in its own Space (VariableSet keeps its own direct
+        // spaces FK as an aggregate root — project_id is optional so it is not an
+        // owning parent).
         builder.HasOne(x => x.Project)
             .WithOne(p => p.VariableSet)
-            .HasForeignKey<VariableSet>(x => x.ProjectId)
+            .HasForeignKey<VariableSet>(x => new { x.SpaceId, x.ProjectId })
+            .HasPrincipalKey<Project>(p => new { p.SpaceId, p.Id })
             .OnDelete(DeleteBehavior.Cascade)
             .IsRequired(false);
 

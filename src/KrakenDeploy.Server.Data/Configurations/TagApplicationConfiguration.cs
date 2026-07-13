@@ -19,20 +19,23 @@ public class TagApplicationConfiguration : IEntityTypeConfiguration<TagApplicati
         builder.ToTable("tag_applications");
         builder.HasKey(x => x.Id);
 
-        builder.ConfigureSpaceScope();
+        builder.ConfigureSpaceScopeAsChild();
 
         builder.Property(x => x.EntityKind).IsRequired();
         builder.Property(x => x.SetType).IsRequired();
         builder.Property(x => x.FreeTextValue).HasMaxLength(1000);
 
+        // Composite Space FKs: the set and tag must live in the application's Space.
         builder.HasOne(x => x.TagSet)
             .WithMany()
-            .HasForeignKey(x => x.TagSetId)
+            .HasForeignKey(x => new { x.SpaceId, x.TagSetId })
+            .HasPrincipalKey(s => new { s.SpaceId, s.Id })
             .OnDelete(DeleteBehavior.Cascade);
 
         builder.HasOne(x => x.Tag)
             .WithMany()
-            .HasForeignKey(x => x.TagId)
+            .HasForeignKey(x => new { x.SpaceId, x.TagId })
+            .HasPrincipalKey(t => new { t.SpaceId, t.Id })
             .OnDelete(DeleteBehavior.Cascade);
 
         // No duplicate tag on the same entity. (NULL TagId rows — FreeText —

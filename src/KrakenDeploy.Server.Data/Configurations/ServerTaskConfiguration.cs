@@ -57,22 +57,30 @@ public sealed class ServerTaskConfiguration : IEntityTypeConfiguration<ServerTas
 
         builder.Property(x => x.DropBundlePath).HasMaxLength(500);
 
+        // Composite Space FK: a task's environment must be in the task's Space.
         builder.HasOne(x => x.Environment)
             .WithMany()
-            .HasForeignKey(x => x.EnvironmentId)
+            .HasForeignKey(x => new { x.SpaceId, x.EnvironmentId })
+            .HasPrincipalKey(e => new { e.SpaceId, e.Id })
             .OnDelete(DeleteBehavior.Restrict);
 
+        // Composite Space FK to the (optional) tenant. SetNull on a composite FK
+        // whose space_id is NOT NULL needs the Postgres column-list form
+        // `ON DELETE SET NULL (tenant_id)` (rewritten with raw SQL in the migration).
         builder.HasOne(x => x.Tenant)
             .WithMany()
-            .HasForeignKey(x => x.TenantId)
+            .HasForeignKey(x => new { x.SpaceId, x.TenantId })
+            .HasPrincipalKey(t => new { t.SpaceId, t.Id })
             .OnDelete(DeleteBehavior.SetNull);
 
         // Parent-task link — set when an Octopus.DeployRelease step triggered this
         // task. SetNull on delete so deleting a parent doesn't cascade away the
-        // child's history.
+        // child's history. Composite self-FK: parent must be in the same Space
+        // (raw-SQL column-list SET NULL in the migration, same reason as tenant_id).
         builder.HasOne(x => x.ParentTask)
             .WithMany()
-            .HasForeignKey(x => x.ParentTaskId)
+            .HasForeignKey(x => new { x.SpaceId, x.ParentTaskId })
+            .HasPrincipalKey(t => new { t.SpaceId, t.Id })
             .OnDelete(DeleteBehavior.SetNull);
         builder.HasIndex(x => x.ParentTaskId)
             .HasFilter("parent_task_id IS NOT NULL");

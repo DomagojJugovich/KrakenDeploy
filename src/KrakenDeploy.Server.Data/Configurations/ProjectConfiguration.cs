@@ -21,17 +21,23 @@ public class ProjectConfiguration : IEntityTypeConfiguration<Project>
         builder.Property(x => x.Description).HasMaxLength(2000);
 
         // RESTRICT — deleting a lifecycle that gates a project must fail
-        // loudly, not silently null the pointer and un-gate deploys.
+        // loudly, not silently null the pointer and un-gate deploys. Composite
+        // Space FK: the lifecycle must live in the project's Space (Project keeps
+        // its own direct spaces FK as an aggregate root; this FK is composite
+        // only to prevent a cross-Space reference).
         builder.HasOne(x => x.Lifecycle)
             .WithMany()
-            .HasForeignKey(x => x.LifecycleId)
+            .HasForeignKey(x => new { x.SpaceId, x.LifecycleId })
+            .HasPrincipalKey(l => new { l.SpaceId, l.Id })
             .OnDelete(DeleteBehavior.Restrict);
 
         // ProjectGroup FK — required (M10 transition complete). RESTRICT: a
-        // group can't be deleted while it still holds projects.
+        // group can't be deleted while it still holds projects. Composite Space
+        // FK: the group must live in the project's Space.
         builder.HasOne(x => x.ProjectGroup)
             .WithMany()
-            .HasForeignKey(x => x.ProjectGroupId)
+            .HasForeignKey(x => new { x.SpaceId, x.ProjectGroupId })
+            .HasPrincipalKey(g => new { g.SpaceId, g.Id })
             .OnDelete(DeleteBehavior.Restrict)
             .IsRequired();
         builder.HasIndex(x => x.ProjectGroupId);

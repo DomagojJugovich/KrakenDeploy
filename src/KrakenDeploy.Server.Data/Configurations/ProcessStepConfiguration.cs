@@ -20,7 +20,7 @@ public class ProcessStepConfiguration : IEntityTypeConfiguration<ProcessStep>
         builder.ToTable("process_steps");
         builder.HasKey(x => x.Id);
 
-        builder.ConfigureSpaceScope();
+        builder.ConfigureSpaceScopeAsChild();
 
         builder.Property(x => x.Name).HasMaxLength(256).IsRequired();
         builder.Property(x => x.StepType).HasMaxLength(128).IsRequired();
@@ -47,18 +47,22 @@ public class ProcessStepConfiguration : IEntityTypeConfiguration<ProcessStep>
         builder.Property(x => x.TimeoutSeconds).HasDefaultValue(0);
         builder.Property(x => x.StartTrigger).HasDefaultValue(StepStartTrigger.StartAfterPrevious);
 
+        // Composite Space FK: a step can only belong to a process in its own Space.
         builder.HasOne(x => x.Process)
             .WithMany(p => p.Steps)
-            .HasForeignKey(x => x.ProcessId)
+            .HasForeignKey(x => new { x.SpaceId, x.ProcessId })
+            .HasPrincipalKey(p => new { p.SpaceId, p.Id })
             .OnDelete(DeleteBehavior.Cascade);
 
         builder.HasIndex(x => new { x.ProcessId, x.SortOrder });
 
         // M15 — self-FK for parent/child step composition. ON DELETE CASCADE so
-        // deleting a Step Group removes its children atomically.
+        // deleting a Step Group removes its children atomically. Composite so a
+        // step's parent must live in the same Space.
         builder.HasOne(x => x.Parent)
             .WithMany(p => p.Children)
-            .HasForeignKey(x => x.ParentStepId)
+            .HasForeignKey(x => new { x.SpaceId, x.ParentStepId })
+            .HasPrincipalKey(p => new { p.SpaceId, p.Id })
             .OnDelete(DeleteBehavior.Cascade);
 
         builder.HasIndex(x => x.ParentStepId)

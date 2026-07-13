@@ -1,3 +1,4 @@
+using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Targets;
 
 namespace KrakenDeploy.Server.Core.Domain.Deployments;
@@ -10,14 +11,15 @@ namespace KrakenDeploy.Server.Core.Domain.Deployments;
 /// rolling/parallel fan-out. Shared by deployments and runbook runs.
 ///
 /// <para>
-/// <strong>Scope:</strong> Space scope inherits through <see cref="TaskId"/> — the
-/// task row carries <see cref="ServerTask.SpaceId"/>, so the join carries no
-/// <c>SpaceId</c> of its own (a stamped <c>space_id</c> + composite Space FKs land
-/// in the later composite-FK hardening step).
+/// <strong>Scope:</strong> Space-scoped. It carries a stamped <see cref="SpaceId"/>
+/// and composite FKs <c>(space_id, task_id)</c> / <c>(space_id, target_id)</c> so a
+/// task can only be assigned to a target in the same Space.
 /// </para>
 /// </summary>
-public class TaskTargetAssignment
+public class TaskTargetAssignment : ISpaceScoped
 {
+    public Guid SpaceId { get; set; }
+
     public Guid TaskId { get; set; }
     public ServerTask Task { get; set; } = null!;
 

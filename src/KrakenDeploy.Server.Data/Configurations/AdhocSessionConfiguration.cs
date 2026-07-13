@@ -30,9 +30,11 @@ public sealed class AdhocSessionConfiguration : IEntityTypeConfiguration<AdhocSe
         builder.Property(s => s.FrozenTargetSetJson).HasColumnType("jsonb").IsRequired();
         builder.Property(s => s.CreatedByDisplay).HasMaxLength(256).IsRequired();
 
+        // Composite Space FK: an iteration can only belong to a session in its Space.
         builder.HasMany(s => s.Iterations)
             .WithOne()
-            .HasForeignKey(i => i.SessionId)
+            .HasForeignKey(i => new { i.SpaceId, i.SessionId })
+            .HasPrincipalKey(s => new { s.SpaceId, s.Id })
             .OnDelete(DeleteBehavior.Cascade);
     }
 }
