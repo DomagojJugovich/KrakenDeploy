@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations.Schema;
 using KrakenDeploy.Server.Core.Domain.Common;
 
 namespace KrakenDeploy.Server.Core.Domain.Security;
@@ -5,18 +6,20 @@ namespace KrakenDeploy.Server.Core.Domain.Security;
 /// <summary>
 /// Grants a <see cref="Role"/> to a <see cref="Team"/> within an optional
 /// scope. The scope is a composite of independent dimensions (Project Groups,
-/// Projects, Environments, Tenants, Tags) — within a dimension the
-/// list values are OR'd; between dimensions they're AND'd.
+/// Projects, Environments, Tenants) — within a dimension the values are OR'd;
+/// between dimensions they're AND'd.
 /// <para>
-/// An empty list for a dimension means "all in this Space" for that dimension.
-/// Example interpretation:
+/// Scope values live in the <c>role_assignment_scopes</c> child table (one row
+/// per (dimension, id)) with real per-dimension FKs, so a deleted project /
+/// environment / tenant / group cascades out of every grant. NO rows for a
+/// dimension means "all in this Space" for that dimension. Example:
 /// <code>
 /// Team:        Web Deployers
 /// Role:        Project Deployer
 /// Space:       Production
 /// Projects:    [WebApp, ApiGateway]
 /// Environments:[Prod, Staging]
-/// Tenants:     []        // = all tenants
+/// Tenants:     (no rows)   // = all tenants
 /// </code>
 /// → "Web Deployers may exercise Project Deployer permissions on WebApp or
 /// ApiGateway, in Prod or Staging, for any tenant in the Production Space."
@@ -40,28 +43,39 @@ public class RoleAssignment : AuditableEntity
     /// </summary>
     public Guid? SpaceId { get; set; }
 
-    // ── Scope dimensions (jsonb arrays of Guid) ──────────────────────────────
-    // Empty array = "all in this Space" for that dimension.
+    /// <summary>
+    /// Scope restriction rows (one per (dimension, id)). Empty collection =
+    /// unscoped (whole Space). Must be eager-loaded wherever the matcher runs —
+    /// a detached (unloaded) collection reads as "no scopes = all", a fail-open
+    /// over-grant.
+    /// </summary>
+    public ICollection<RoleAssignmentScope> Scopes { get; set; } = [];
 
-    public List<Guid> ProjectGroupIds { get; set; } = [];
-    public List<Guid> ProjectIds { get; set; } = [];
-    public List<Guid> EnvironmentIds { get; set; } = [];
-    public List<Guid> TenantIds { get; set; } = [];
+    // ── Per-dimension views over Scopes (no rows = "all") ────────────────────
+    // Read-only projections so existing callers (matcher, team-detail UI) keep
+    // reading ProjectIds/EnvironmentIds/etc. unchanged after the jsonb→child
+    // move. NotMapped: the data lives in role_assignment_scopes.
 
-    /// <summary>Extended-tag-set tag ids (renamed from <c>TenantTagIds</c> —
-    /// tags are polymorphic now, no longer tenant-owned). Dormant: no UI/API
-    /// writes this dimension yet; the matcher honours it when populated.</summary>
-    public List<Guid> TagIds { get; set; } = [];
+    [NotMapped]
+    public IReadOnlyList<Guid> ProjectGroupIds =>
+        Scopes.Where(s => s.ProjectGroupId.HasValue).Select(s => s.ProjectGroupId!.Value).ToList();
+
+    [NotMapped]
+    public IReadOnlyList<Guid> ProjectIds =>
+        Scopes.Where(s => s.ProjectId.HasValue).Select(s => s.ProjectId!.Value).ToList();
+
+    [NotMapped]
+    public IReadOnlyList<Guid> EnvironmentIds =>
+        Scopes.Where(s => s.EnvironmentId.HasValue).Select(s => s.EnvironmentId!.Value).ToList();
+
+    [NotMapped]
+    public IReadOnlyList<Guid> TenantIds =>
+        Scopes.Where(s => s.TenantId.HasValue).Select(s => s.TenantId!.Value).ToList();
 
     /// <summary>
-    /// True when every scope dimension is empty — the assignment grants the
-    /// role across the entire Space (or system-wide if <see cref="SpaceId"/>
-    /// is null).
+    /// True when there are no scope rows — the assignment grants the role
+    /// across the entire Space (or system-wide if <see cref="SpaceId"/> is null).
     /// </summary>
-    public bool IsUnscoped =>
-        ProjectGroupIds.Count == 0 &&
-        ProjectIds.Count == 0 &&
-        EnvironmentIds.Count == 0 &&
-        TenantIds.Count == 0 &&
-        TagIds.Count == 0;
+    [NotMapped]
+    public bool IsUnscoped => Scopes.Count == 0;
 }

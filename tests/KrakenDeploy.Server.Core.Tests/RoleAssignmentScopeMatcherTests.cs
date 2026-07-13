@@ -5,8 +5,10 @@ namespace KrakenDeploy.Server.Core.Tests;
 
 /// <summary>
 /// Pure-logic tests for <see cref="RoleAssignmentScopeMatcher.Matches"/>.
-/// Per-dimension semantics are subtle (empty list = "all", null scope =
-/// optimistic match) so each rule has its own focused test.
+/// Per-dimension semantics are subtle (no scope rows = "all", null scope =
+/// optimistic match) so each rule has its own focused test. Scope values now
+/// live in <see cref="RoleAssignment.Scopes"/>; <see cref="Assignment"/> builds
+/// the child rows the old jsonb-array initializers used to set directly.
 /// </summary>
 public sealed class RoleAssignmentScopeMatcherTests
 {
@@ -18,12 +20,26 @@ public sealed class RoleAssignmentScopeMatcherTests
     private static readonly Guid TenantY    = Guid.NewGuid();
     private static readonly Guid GroupAlpha = Guid.NewGuid();
 
+    private static RoleAssignment Assignment(
+        IEnumerable<Guid>? projectGroups = null,
+        IEnumerable<Guid>? projects = null,
+        IEnumerable<Guid>? environments = null,
+        IEnumerable<Guid>? tenants = null)
+    {
+        var a = new RoleAssignment();
+        foreach (var id in projectGroups ?? []) { a.Scopes.Add(new RoleAssignmentScope { ProjectGroupId = id }); }
+        foreach (var id in projects ?? []) { a.Scopes.Add(new RoleAssignmentScope { ProjectId = id }); }
+        foreach (var id in environments ?? []) { a.Scopes.Add(new RoleAssignmentScope { EnvironmentId = id }); }
+        foreach (var id in tenants ?? []) { a.Scopes.Add(new RoleAssignmentScope { TenantId = id }); }
+        return a;
+    }
+
     // ── Empty assignment ("unscoped" — applies to whole Space) ────────────────
 
     [Fact]
     public void Unscoped_assignment_matches_any_scope()
     {
-        var assignment = new RoleAssignment(); // all dimension lists empty
+        var assignment = new RoleAssignment(); // no scope rows
 
         // Empty scope, fully-pinned scope, partially-pinned scope all match.
         RoleAssignmentScopeMatcher.Matches(assignment, default).Should().BeTrue();
@@ -40,7 +56,7 @@ public sealed class RoleAssignmentScopeMatcherTests
     [Fact]
     public void Project_restricted_assignment_matches_when_scope_is_in_list()
     {
-        var assignment = new RoleAssignment { ProjectIds = [ProjectA, ProjectB] };
+        var assignment = Assignment(projects: [ProjectA, ProjectB]);
 
         RoleAssignmentScopeMatcher.Matches(assignment,
             new PermissionScope(ProjectId: ProjectA)).Should().BeTrue();
@@ -51,7 +67,7 @@ public sealed class RoleAssignmentScopeMatcherTests
     [Fact]
     public void Project_restricted_assignment_does_not_match_other_project()
     {
-        var assignment = new RoleAssignment { ProjectIds = [ProjectA] };
+        var assignment = Assignment(projects: [ProjectA]);
         var unrelated  = Guid.NewGuid();
 
         RoleAssignmentScopeMatcher.Matches(assignment,
@@ -64,7 +80,7 @@ public sealed class RoleAssignmentScopeMatcherTests
         // Optimistic: caller hasn't asked about a specific project, so an
         // assignment that grants on SOME project should still contribute its
         // permissions (UI uses this for "do I see this menu?" decisions).
-        var assignment = new RoleAssignment { ProjectIds = [ProjectA] };
+        var assignment = Assignment(projects: [ProjectA]);
 
         RoleAssignmentScopeMatcher.Matches(assignment, default).Should().BeTrue();
         RoleAssignmentScopeMatcher.Matches(assignment,
@@ -76,12 +92,8 @@ public sealed class RoleAssignmentScopeMatcherTests
     [Fact]
     public void All_dimensions_must_match_when_all_are_restricted()
     {
-        var assignment = new RoleAssignment
-        {
-            ProjectIds     = [ProjectA],
-            EnvironmentIds = [Prod],
-            TenantIds      = [TenantX],
-        };
+        var assignment = Assignment(
+            projects: [ProjectA], environments: [Prod], tenants: [TenantX]);
 
         // All three pinned and matching → match.
         RoleAssignmentScopeMatcher.Matches(assignment, new PermissionScope(
@@ -108,12 +120,7 @@ public sealed class RoleAssignmentScopeMatcherTests
         // "Web Deployers can deploy WebApp+ApiGateway in Prod+Staging for any
         // tenant." Caller asks: "Can they deploy ANYTHING?" → yes (because
         // there exists a project/env where they could).
-        var assignment = new RoleAssignment
-        {
-            ProjectIds     = [ProjectA],
-            EnvironmentIds = [Prod],
-            // TenantIds: empty → all
-        };
+        var assignment = Assignment(projects: [ProjectA], environments: [Prod]);
 
         // Caller pins nothing: optimistic match across both restricted dims.
         RoleAssignmentScopeMatcher.Matches(assignment, default).Should().BeTrue();
@@ -128,30 +135,18 @@ public sealed class RoleAssignmentScopeMatcherTests
             new PermissionScope(ProjectId: ProjectB)).Should().BeFalse();
     }
 
-    // ── ProjectGroup + TenantTag dimensions ──────────────────────────────────
+    // ── ProjectGroup dimension ────────────────────────────────────────────────
 
     [Fact]
     public void ProjectGroup_dimension_is_evaluated_with_same_rules()
     {
-        var assignment = new RoleAssignment { ProjectGroupIds = [GroupAlpha] };
+        var assignment = Assignment(projectGroups: [GroupAlpha]);
 
         RoleAssignmentScopeMatcher.Matches(assignment,
             new PermissionScope(ProjectGroupId: GroupAlpha)).Should().BeTrue();
         RoleAssignmentScopeMatcher.Matches(assignment,
             new PermissionScope(ProjectGroupId: Guid.NewGuid())).Should().BeFalse();
         RoleAssignmentScopeMatcher.Matches(assignment, default).Should().BeTrue();
-    }
-
-    [Fact]
-    public void Tag_dimension_is_evaluated_with_same_rules()
-    {
-        var tagId = Guid.NewGuid();
-        var assignment = new RoleAssignment { TagIds = [tagId] };
-
-        RoleAssignmentScopeMatcher.Matches(assignment,
-            new PermissionScope(TagId: tagId)).Should().BeTrue();
-        RoleAssignmentScopeMatcher.Matches(assignment,
-            new PermissionScope(TagId: Guid.NewGuid())).Should().BeFalse();
     }
 
     // ── Argument validation ──────────────────────────────────────────────────
@@ -173,18 +168,14 @@ public sealed class RoleAssignmentScopeMatcherTests
         //   Role:        Project Deployer
         //   Projects:    [WebApp, ApiGateway]
         //   Environments:[Prod, Staging]
-        //   Tenants:     [] = all tenants
+        //   Tenants:     (no rows) = all tenants
         var webApp     = Guid.NewGuid();
         var apiGateway = Guid.NewGuid();
         var prod       = Guid.NewGuid();
         var staging    = Guid.NewGuid();
 
-        var assignment = new RoleAssignment
-        {
-            ProjectIds     = [webApp, apiGateway],
-            EnvironmentIds = [prod, staging],
-            // TenantIds: empty → all
-        };
+        var assignment = Assignment(
+            projects: [webApp, apiGateway], environments: [prod, staging]);
 
         // "Deploy WebApp to Prod for any tenant" → match.
         RoleAssignmentScopeMatcher.Matches(assignment, new PermissionScope(
@@ -219,10 +210,9 @@ public sealed class RoleAssignmentScopeMatcherTests
     [Fact]
     public void Assignment_with_any_dimension_set_is_not_IsUnscoped()
     {
-        new RoleAssignment { ProjectIds = [ProjectA] }.IsUnscoped.Should().BeFalse();
-        new RoleAssignment { EnvironmentIds = [Prod] }.IsUnscoped.Should().BeFalse();
-        new RoleAssignment { TenantIds = [TenantX] }.IsUnscoped.Should().BeFalse();
-        new RoleAssignment { TagIds = [Guid.NewGuid()] }.IsUnscoped.Should().BeFalse();
-        new RoleAssignment { ProjectGroupIds = [GroupAlpha] }.IsUnscoped.Should().BeFalse();
+        Assignment(projects: [ProjectA]).IsUnscoped.Should().BeFalse();
+        Assignment(environments: [Prod]).IsUnscoped.Should().BeFalse();
+        Assignment(tenants: [TenantX]).IsUnscoped.Should().BeFalse();
+        Assignment(projectGroups: [GroupAlpha]).IsUnscoped.Should().BeFalse();
     }
 }

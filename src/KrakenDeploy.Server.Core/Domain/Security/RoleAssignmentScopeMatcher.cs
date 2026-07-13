@@ -47,17 +47,18 @@ public static class RoleAssignmentScopeMatcher
     {
         ArgumentNullException.ThrowIfNull(assignment);
 
+        // No Tag dimension: tag_ids was dormant and is dropped (fix 7). Each
+        // list is a projection over the assignment's scope rows.
         return DimensionMatches(assignment.ProjectGroupIds, scope.ProjectGroupId)
             && DimensionMatches(assignment.ProjectIds,      scope.ProjectId)
             && DimensionMatches(assignment.EnvironmentIds,  scope.EnvironmentId)
-            && DimensionMatches(assignment.TenantIds,       scope.TenantId)
-            && DimensionMatches(assignment.TagIds,          scope.TagId);
+            && DimensionMatches(assignment.TenantIds,       scope.TenantId);
     }
 
-    private static bool DimensionMatches(List<Guid> assignmentIds, Guid? scopeId)
+    private static bool DimensionMatches(IReadOnlyList<Guid> assignmentIds, Guid? scopeId)
     {
-        // Empty list on the assignment = "all" for this dimension → matches
-        // every scope value (including null).
+        // No rows for the assignment in this dimension = "all" → matches every
+        // scope value (including null).
         if (assignmentIds.Count == 0)
         {
             return true;

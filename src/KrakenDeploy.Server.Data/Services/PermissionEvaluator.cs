@@ -294,6 +294,10 @@ public sealed class PermissionEvaluator(
             assignments = await db.RoleAssignments
                 .IgnoreQueryFilters() // RoleAssignment isn't ISpaceScoped, but be explicit
                 .Include(a => a.Role)
+                // MUST eager-load scopes: the matcher reads assignment.Scopes,
+                // and an unloaded collection reads as "no scopes = whole Space"
+                // — a fail-open over-grant.
+                .Include(a => a.Scopes)
                 .Where(a => teamIds.Contains(a.TeamId))
                 .Where(a => a.SpaceId == null || a.SpaceId == spaceId)
                 .ToListAsync(ct)

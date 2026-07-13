@@ -131,6 +131,7 @@ public class KrakenDbContext(
     public DbSet<TeamMember> TeamMembers => Set<TeamMember>();
     public DbSet<TeamExternalGroup> TeamExternalGroups => Set<TeamExternalGroup>();
     public DbSet<RoleAssignment> RoleAssignments => Set<RoleAssignment>();
+    public DbSet<RoleAssignmentScope> RoleAssignmentScopes => Set<RoleAssignmentScope>();
     public DbSet<IdentityProvider> IdentityProviders => Set<IdentityProvider>();
     public DbSet<ApiKey> ApiKeys => Set<ApiKey>();
     public DbSet<DataEncryptionKey> DataEncryptionKeys => Set<DataEncryptionKey>();

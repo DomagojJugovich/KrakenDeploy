@@ -1,4 +1,7 @@
+using KrakenDeploy.Server.Core.Domain.Environments;
+using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Security;
+using KrakenDeploy.Server.Core.Domain.Tenants;
 using KrakenDeploy.Server.Data.Conventions;
 using KrakenDeploy.Server.Data.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -143,40 +146,59 @@ public class RoleAssignmentConfiguration : IEntityTypeConfiguration<RoleAssignme
         builder.Property(x => x.SpaceId);
         builder.HasIndex(x => x.SpaceId);
 
-        // Scope dimensions stored as jsonb arrays of Guid. Empty = "all".
-        builder.Property(x => x.ProjectGroupIds)
-            .HasColumnType("jsonb")
-            .HasConversion(new JsonbValueConverter<List<Guid>>())
-            .IsRequired();
-
-        builder.Property(x => x.ProjectIds)
-            .HasColumnType("jsonb")
-            .HasConversion(new JsonbValueConverter<List<Guid>>())
-            .IsRequired();
-
-        builder.Property(x => x.EnvironmentIds)
-            .HasColumnType("jsonb")
-            .HasConversion(new JsonbValueConverter<List<Guid>>())
-            .IsRequired();
-
-        builder.Property(x => x.TenantIds)
-            .HasColumnType("jsonb")
-            .HasConversion(new JsonbValueConverter<List<Guid>>())
-            .IsRequired();
-
-        builder.Property(x => x.TagIds)
-            .HasColumnType("jsonb")
-            .HasConversion(new JsonbValueConverter<List<Guid>>())
-            .IsRequired();
-
-        // IsUnscoped is a computed property — don't try to map it.
-        builder.Ignore(x => x.IsUnscoped);
+        // Scope dimensions now live in role_assignment_scopes (child rows with
+        // real per-dimension FKs). Cascade so removing the assignment clears
+        // its scope rows in the same transaction.
+        builder.HasMany(x => x.Scopes)
+            .WithOne(s => s.RoleAssignment)
+            .HasForeignKey(s => s.RoleAssignmentId)
+            .OnDelete(DeleteBehavior.Cascade);
 
         // Composite lookup index: when evaluating "what permissions does
         // team T have in space S?" we filter on both columns.
         builder.HasIndex(x => new { x.TeamId, x.SpaceId });
 
         builder.Property(x => x.CreatedUtc).IsRequired();
+    }
+}
+
+public class RoleAssignmentScopeConfiguration : IEntityTypeConfiguration<RoleAssignmentScope>
+{
+    public void Configure(EntityTypeBuilder<RoleAssignmentScope> builder)
+    {
+        builder.ToTable("role_assignment_scopes", t => t.HasCheckConstraint(
+            "ck_role_assignment_scopes_exactly_one_dimension",
+            "num_nonnulls(project_group_id, project_id, environment_id, tenant_id) = 1"));
+        builder.HasKey(x => x.Id);
+
+        // Per-dimension FKs, all CASCADE and optional (exactly one is set per
+        // row, enforced by the CHECK above). Deleting the referenced entity
+        // removes the scope row, so the grant simply loses that restriction.
+        builder.HasOne<ProjectGroup>()
+            .WithMany()
+            .HasForeignKey(x => x.ProjectGroupId)
+            .OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne<Project>()
+            .WithMany()
+            .HasForeignKey(x => x.ProjectId)
+            .OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne<DeploymentEnvironment>()
+            .WithMany()
+            .HasForeignKey(x => x.EnvironmentId)
+            .OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne<Tenant>()
+            .WithMany()
+            .HasForeignKey(x => x.TenantId)
+            .OnDelete(DeleteBehavior.Cascade);
+
+        // Prevent duplicate grants of the same (assignment, dimension, id).
+        // NULLS NOT DISTINCT so the three NULL columns in each row collapse.
+        builder.HasIndex(x => new
+            {
+                x.RoleAssignmentId, x.ProjectGroupId, x.ProjectId, x.EnvironmentId, x.TenantId,
+            })
+            .IsUnique()
+            .AreNullsDistinct(false);
     }
 }
 

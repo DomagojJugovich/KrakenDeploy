@@ -24,6 +24,7 @@ public class TeamService(IDbContextFactory<KrakenDbContext> dbFactory)
             .Include(t => t.Members)
             .Include(t => t.ExternalGroups).ThenInclude(eg => eg.IdentityProvider)
             .Include(t => t.RoleAssignments).ThenInclude(a => a.Role)
+            .Include(t => t.RoleAssignments).ThenInclude(a => a.Scopes)
             .Where(t => t.SpaceId == null || t.SpaceId == spaceId)
             .OrderByDescending(t => t.IsBuiltIn)
             .ThenBy(t => t.SpaceId == null ? 0 : 1)
@@ -38,6 +39,7 @@ public class TeamService(IDbContextFactory<KrakenDbContext> dbFactory)
             .Include(t => t.Members)
             .Include(t => t.ExternalGroups).ThenInclude(eg => eg.IdentityProvider)
             .Include(t => t.RoleAssignments).ThenInclude(a => a.Role)
+            .Include(t => t.RoleAssignments).ThenInclude(a => a.Scopes)
             .FirstOrDefaultAsync(t => t.Id == id, ct);
     }
 
@@ -197,26 +199,42 @@ public class TeamService(IDbContextFactory<KrakenDbContext> dbFactory)
     public async Task<RoleAssignment> AddRoleAssignmentAsync(
         Guid teamId, Guid roleId, Guid? spaceId,
         List<Guid>? projectGroupIds, List<Guid>? projectIds,
-        List<Guid>? environmentIds, List<Guid>? tenantIds, List<Guid>? tagIds,
+        List<Guid>? environmentIds, List<Guid>? tenantIds,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var assignment = new RoleAssignment
         {
-            TeamId         = teamId,
-            RoleId         = roleId,
-            SpaceId        = spaceId,
-            ProjectGroupIds = projectGroupIds ?? [],
-            ProjectIds      = projectIds      ?? [],
-            EnvironmentIds  = environmentIds  ?? [],
-            TenantIds       = tenantIds       ?? [],
-            TagIds          = tagIds          ?? [],
+            TeamId  = teamId,
+            RoleId  = roleId,
+            SpaceId = spaceId,
         };
+
+        // One scope row per (dimension, id). No rows for a dimension = "all"
+        // (see RoleAssignmentScopeMatcher). Empty/null lists add nothing.
+        AddScopeRows(assignment, projectGroupIds, id => new RoleAssignmentScope { ProjectGroupId = id });
+        AddScopeRows(assignment, projectIds,      id => new RoleAssignmentScope { ProjectId = id });
+        AddScopeRows(assignment, environmentIds,  id => new RoleAssignmentScope { EnvironmentId = id });
+        AddScopeRows(assignment, tenantIds,       id => new RoleAssignmentScope { TenantId = id });
 
         db.RoleAssignments.Add(assignment);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return assignment;
+    }
+
+    private static void AddScopeRows(
+        RoleAssignment assignment, List<Guid>? ids, Func<Guid, RoleAssignmentScope> factory)
+    {
+        if (ids is null)
+        {
+            return;
+        }
+        // De-dupe defensively; the unique index would otherwise reject repeats.
+        foreach (var id in ids.Distinct())
+        {
+            assignment.Scopes.Add(factory(id));
+        }
     }
 
     public async Task<bool> RemoveRoleAssignmentAsync(
