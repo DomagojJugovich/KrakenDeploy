@@ -1,4 +1,5 @@
 using KrakenDeploy.Server.Core.Domain.Analytics;
+using KrakenDeploy.Server.Data.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -23,5 +24,11 @@ public sealed class PivotViewConfiguration : IEntityTypeConfiguration<PivotView>
         builder.Property(v => v.Definition).IsRequired();
 
         builder.HasIndex(v => new { v.SpaceId, v.UserId, v.Name }).IsUnique();
+
+        // Private per-user views die with their owner (CASCADE).
+        builder.HasOne<ApplicationUser>()
+            .WithMany()
+            .HasForeignKey(v => v.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }

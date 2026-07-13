@@ -1,5 +1,6 @@
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Data.Conventions;
+using KrakenDeploy.Server.Data.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -87,6 +88,15 @@ public class TeamMemberConfiguration : IEntityTypeConfiguration<TeamMember>
         builder.HasKey(x => new { x.TeamId, x.UserId });
 
         builder.HasIndex(x => x.UserId);
+
+        // Membership dies with the user. Real FK CASCADE (belt-and-braces
+        // cleanup still lives in UserService.DeleteAsync). Postgres permits
+        // the two cascade paths into this table (Team delete + User delete).
+        builder.HasOne<ApplicationUser>()
+            .WithMany()
+            .HasForeignKey(x => x.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
+
         builder.Property(x => x.AddedUtc).IsRequired();
     }
 }

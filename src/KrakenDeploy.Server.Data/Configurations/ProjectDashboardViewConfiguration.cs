@@ -1,4 +1,5 @@
 using KrakenDeploy.Server.Core.Domain.Projects;
+using KrakenDeploy.Server.Data.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -22,5 +23,11 @@ public sealed class ProjectDashboardViewConfiguration : IEntityTypeConfiguration
         builder.Property(v => v.Definition).IsRequired();
 
         builder.HasIndex(v => new { v.SpaceId, v.UserId }).IsUnique();
+
+        // Private per-user view dies with its owner (CASCADE).
+        builder.HasOne<ApplicationUser>()
+            .WithMany()
+            .HasForeignKey(v => v.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }

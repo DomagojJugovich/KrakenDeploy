@@ -1,4 +1,5 @@
 using KrakenDeploy.Server.Core.Domain.Dashboards;
+using KrakenDeploy.Server.Data.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -23,5 +24,11 @@ public sealed class DashboardLayoutConfiguration : IEntityTypeConfiguration<Dash
         builder.Property(l => l.Definition).IsRequired();
 
         builder.HasIndex(l => new { l.SpaceId, l.UserId, l.DashboardKey }).IsUnique();
+
+        // Private per-user layout dies with its owner (CASCADE).
+        builder.HasOne<ApplicationUser>()
+            .WithMany()
+            .HasForeignKey(l => l.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
     }
 }

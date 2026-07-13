@@ -1,4 +1,5 @@
 using KrakenDeploy.Server.Core.Domain.Security;
+using KrakenDeploy.Server.Data.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -25,6 +26,15 @@ public sealed class ApiKeyConfiguration : IEntityTypeConfiguration<ApiKey>
 
         // One purpose label per owner keeps the list navigable.
         builder.HasIndex(x => new { x.UserId, x.Name }).IsUnique();
+
+        // Keys authenticate AS the owning user, so they die with the account.
+        // Real FK CASCADE (belt-and-braces cleanup still lives in
+        // UserService.DeleteAsync). No navigation on the domain entity — the
+        // house convention keeps domain->Identity refs as bare Guids.
+        builder.HasOne<ApplicationUser>()
+            .WithMany()
+            .HasForeignKey(x => x.UserId)
+            .OnDelete(DeleteBehavior.Cascade);
 
         builder.Property(x => x.Name).HasMaxLength(200).IsRequired();
         builder.Property(x => x.Prefix).HasMaxLength(32).IsRequired();
