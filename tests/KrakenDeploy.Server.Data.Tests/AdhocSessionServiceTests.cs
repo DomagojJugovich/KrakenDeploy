@@ -6,7 +6,9 @@ using KrakenDeploy.Contracts.Adhoc;
 using KrakenDeploy.Server.Core.Domain.Ai;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Core.Domain.Targets;
+using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Data.Services.Ai.Adhoc;
 using KrakenDeploy.Server.Transport;
 using Microsoft.EntityFrameworkCore;
@@ -35,9 +37,9 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
         await using var db = postgres.CreateContext();
         await db.AdhocSessions.IgnoreQueryFilters().ExecuteDeleteAsync();
         await db.DeploymentTargets.IgnoreQueryFilters().ExecuteDeleteAsync();
-        // Per-Space AI settings row drives the iteration cap — clear it so a
+        // Per-Space AI settings document drives the iteration cap — clear it so a
         // seeded override in one test can't leak into the config-fallback tests.
-        await db.SpaceAiSettings.IgnoreQueryFilters().ExecuteDeleteAsync();
+        await db.Set<Setting>().ExecuteDeleteAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -492,31 +494,25 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
         return t;
     }
 
-    private async Task EnableTwoPersonAsync()
-    {
-        await using var db = postgres.CreateContext();
-        db.SpaceAiSettings.Add(new SpaceAiSettings
-        {
-            SpaceId                = WellKnown.DefaultSpaceId,
-            Provider               = KrakenAiProviderValue.Anthropic,
-            AdhocEnabled           = true,
-            AdhocTwoPersonApproval = true,
-        });
-        await db.SaveChangesAsync();
-    }
+    private Task EnableTwoPersonAsync() =>
+        new SettingsService(postgres.ScopeFactory, TimeProvider.System).SaveAsync(
+            new SpaceAiSettings
+            {
+                Provider               = KrakenAiProviderValue.Anthropic,
+                AdhocEnabled           = true,
+                AdhocTwoPersonApproval = true,
+            },
+            WellKnown.DefaultSpaceId);
 
-    private async Task SeedSpaceAdhocMaxIterationsAsync(int value)
-    {
-        await using var db = postgres.CreateContext();
-        db.SpaceAiSettings.Add(new SpaceAiSettings
-        {
-            SpaceId            = WellKnown.DefaultSpaceId,
-            Provider           = KrakenAiProviderValue.Anthropic,
-            AdhocEnabled       = true,
-            AdhocMaxIterations = value,
-        });
-        await db.SaveChangesAsync();
-    }
+    private Task SeedSpaceAdhocMaxIterationsAsync(int value) =>
+        new SettingsService(postgres.ScopeFactory, TimeProvider.System).SaveAsync(
+            new SpaceAiSettings
+            {
+                Provider           = KrakenAiProviderValue.Anthropic,
+                AdhocEnabled       = true,
+                AdhocMaxIterations = value,
+            },
+            WellKnown.DefaultSpaceId);
 
     private sealed record Harness(AdhocSessionService Service);
 
@@ -553,7 +549,9 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
         var audit = new RecordingAuditLog(postgres);
 
         var service = new AdhocSessionService(
-            postgres, genSvc, verdictSvc, keyProvider, dispatcher,
+            postgres,
+            new SettingsService(postgres.ScopeFactory, TimeProvider.System),
+            genSvc, verdictSvc, keyProvider, dispatcher,
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             audit, config, TimeProvider.System, logger);
         return new Harness(service);

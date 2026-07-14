@@ -234,16 +234,20 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<KrakenDeploy.Server.Core.Domain.Features.IFeatureCatalog,
                               KrakenDeploy.Server.Core.Domain.Features.BuiltInFeatureCatalog>();
 
-        // These cache services open a tenant DbContext via the factory. In SaaS
-        // multi-account mode the tenant connection is resolved per request from the
-        // active account, so a process-wide Singleton (with a single shared cache)
-        // can't serve multiple tenants — and its captured factory would resolve the
-        // account from the root scope (unset → throws). Register them Scoped when
-        // multi-account is active so each request resolves its own account's DB
-        // (the cache becomes per-request; a per-account-keyed cache is a later
-        // optimisation). Single-instance installs keep the shared Singleton cache.
+        // SettingsService owns the cache for the unified `settings` documents; the
+        // settings-backed services below (feature flags, maintenance, performance)
+        // are now thin delegators over it. These open a tenant DbContext via the
+        // scope factory. In SaaS multi-account mode the tenant connection is
+        // resolved per request from the active account, so a process-wide Singleton
+        // (with a single shared cache) can't serve multiple tenants — and, worse,
+        // the shared Default-Space id would let one account's document leak to
+        // another. Register them Scoped when multi-account is active so each request
+        // resolves its own account's DB and the cache is per-request. Single-instance
+        // installs keep the shared Singleton cache. DeploymentFreezeService keeps its
+        // own cache and rides the same split.
         if (multiAccount)
         {
+            services.AddScoped<SettingsService>();
             services.AddScoped<FeatureFlagService>();
             services.AddScoped<DeploymentFreezeService>();
             services.AddScoped<MaintenanceModeService>();
@@ -251,17 +255,13 @@ public static class ServiceCollectionExtensions
         }
         else
         {
-            // Singleton because the cache must persist across requests — the
-            // service opens its own DbContext per call via the factory.
+            services.AddSingleton<SettingsService>();
             services.AddSingleton<FeatureFlagService>();
             services.AddSingleton<DeploymentFreezeService>();
-            // Maintenance mode (M13.A.3) — singleton so the cached state is
-            // shared across requests; the middleware hits GetStateAsync on
-            // every non-exempt write request.
+            // Maintenance mode (M13.A.3) — the middleware hits GetStateAsync on
+            // every non-exempt write request; SettingsService's short-TTL cache
+            // keeps that off the DB.
             services.AddSingleton<MaintenanceModeService>();
-            // Performance + retention knobs (M13.F.3) — singleton so the
-            // 30 s cache is shared across consumers (Hangfire jobs, the
-            // DeploymentWorker, the page itself).
             services.AddSingleton<PerformanceSettingsService>();
         }
         // Helper recurring jobs call to short-circuit during maintenance.

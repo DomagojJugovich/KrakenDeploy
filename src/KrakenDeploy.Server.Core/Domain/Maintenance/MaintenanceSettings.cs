@@ -1,9 +1,10 @@
-using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Settings;
 
 namespace KrakenDeploy.Server.Core.Domain.Maintenance;
 
 /// <summary>
-/// Singleton-row table holding the instance-wide maintenance flag.
+/// System-scoped <see cref="ISettingsDocument"/> (key <c>"maintenance"</c>)
+/// holding the instance-wide maintenance flag.
 /// When <see cref="Enabled"/> is true, the maintenance middleware
 /// refuses POST/PUT/PATCH/DELETE on most endpoints with HTTP 503 and a
 /// body that surfaces <see cref="Reason"/>. Hangfire recurring jobs
@@ -18,11 +19,13 @@ namespace KrakenDeploy.Server.Core.Domain.Maintenance;
 /// hit the 503 wall.
 /// </para>
 /// </summary>
-public class MaintenanceSettings : AuditableEntity
+public class MaintenanceSettings : ISettingsDocument
 {
-    /// <summary>Fixed singleton id — same pattern SmtpSettings + BackupSettings use.</summary>
-    public static readonly Guid SingletonId =
-        new("00000000-0000-0000-0001-000000000004");
+    /// <inheritdoc />
+    public static string Key => "maintenance";
+
+    /// <inheritdoc />
+    public static SettingsScope Scope => SettingsScope.System;
 
     /// <summary>Master switch. When true, the middleware blocks writes.</summary>
     public bool Enabled { get; set; }

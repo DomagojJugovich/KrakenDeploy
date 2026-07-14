@@ -242,7 +242,6 @@
 
     private static PerformanceSettings Clone(PerformanceSettings src) => new()
     {
-        Id                             = src.Id,
         HangfireWorkerCount            = src.HangfireWorkerCount,
         SlowDeploymentThresholdMinutes = src.SlowDeploymentThresholdMinutes,
         SlowStepThresholdMinutes       = src.SlowStepThresholdMinutes,

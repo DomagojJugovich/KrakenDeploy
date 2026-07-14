@@ -1,5 +1,6 @@
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Performance;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
 
@@ -18,7 +19,7 @@ public sealed class PerformanceSettingsServiceTests(PostgresFixture postgres)
     public async Task InitializeAsync()
     {
         await using var db = postgres.CreateContext();
-        await db.PerformanceSettings.ExecuteDeleteAsync();
+        await db.Set<Setting>().ExecuteDeleteAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -55,7 +56,6 @@ public sealed class PerformanceSettingsServiceTests(PostgresFixture postgres)
 
         await svc.SaveAsync(new PerformanceSettings
         {
-            Id                             = PerformanceSettings.SingletonId,
             HangfireWorkerCount            = 12,
             SlowDeploymentThresholdMinutes = 45,
             SlowStepThresholdMinutes       = 7,
@@ -84,14 +84,12 @@ public sealed class PerformanceSettingsServiceTests(PostgresFixture postgres)
 
         await svc.SaveAsync(new PerformanceSettings
         {
-            Id = PerformanceSettings.SingletonId,
             EmbedOfflineRunner = false,
         });
         (await svc.GetAsync()).EmbedOfflineRunner.Should().BeFalse("the OFF toggle must persist");
 
         await svc.SaveAsync(new PerformanceSettings
         {
-            Id = PerformanceSettings.SingletonId,
             EmbedOfflineRunner = true,
         });
         (await svc.GetAsync()).EmbedOfflineRunner.Should().BeTrue("the ON toggle must persist");
@@ -103,12 +101,10 @@ public sealed class PerformanceSettingsServiceTests(PostgresFixture postgres)
         var svc = NewSvc();
         await svc.SaveAsync(new PerformanceSettings
         {
-            Id                  = PerformanceSettings.SingletonId,
             HangfireWorkerCount = 8,
         });
         await svc.SaveAsync(new PerformanceSettings
         {
-            Id                  = PerformanceSettings.SingletonId,
             HangfireWorkerCount = 16,
         });
 
@@ -119,28 +115,25 @@ public sealed class PerformanceSettingsServiceTests(PostgresFixture postgres)
 
         // Only one row exists in the DB after two saves.
         await using var db = postgres.CreateContext();
-        var count = await db.PerformanceSettings.CountAsync();
+        var count = await db.Set<Setting>().CountAsync(s => s.Key == PerformanceSettings.Key);
         count.Should().Be(1);
     }
 
     [Fact]
     public async Task GetAsync_returns_row_when_present()
     {
-        // Seed a row directly via DbContext (bypassing the service) so we
-        // pin the GetAsync read path independently of the SaveAsync write.
-        await using (var seed = postgres.CreateContext())
-        {
-            seed.PerformanceSettings.Add(new PerformanceSettings
+        // Seed the document via a separate SettingsService instance (bypassing
+        // the service-under-test) so we pin the GetAsync read path independently
+        // of the SaveAsync write. NewSvc() below has a cold cache.
+        await new SettingsService(postgres.ScopeFactory, TimeProvider.System)
+            .SaveAsync(new PerformanceSettings
             {
-                Id                             = PerformanceSettings.SingletonId,
                 HangfireWorkerCount            = 24,
                 SlowDeploymentThresholdMinutes = 60,
                 SlowStepThresholdMinutes       = 15,
                 AuditLogRetentionDays          = 1825, // 5 years
                 AiCallLogRetentionDays         = 14,
             });
-            await seed.SaveChangesAsync();
-        }
 
         var svc = NewSvc();
         var settings = await svc.GetAsync();
@@ -170,5 +163,5 @@ public sealed class PerformanceSettingsServiceTests(PostgresFixture postgres)
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private PerformanceSettingsService NewSvc()
-        => new(postgres.ScopeFactory, TimeProvider.System);
+        => new(new SettingsService(postgres.ScopeFactory, TimeProvider.System));
 }

@@ -1,23 +1,26 @@
-using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Settings;
 
 namespace KrakenDeploy.Server.Core.Domain.Backup;
 
 /// <summary>
-/// Server-wide backup configuration (M13.G). Single-row table — there's
-/// one backup policy per KrakenDeploy instance. Mirror of the
-/// <c>SmtpSettings</c> shape (also a singleton); same SingletonId pattern.
+/// Server-wide backup configuration (M13.G). A System-scoped
+/// <see cref="ISettingsDocument"/> (key <c>"backup"</c>) in the unified
+/// <c>settings</c> table — one backup policy per KrakenDeploy instance.
 ///
 /// <para>
 /// The bundle format and engine are inherited verbatim from the existing
-/// CLI (<c>BackupCommands</c>) — this row only carries the operator-facing
+/// CLI (<c>BackupCommands</c>) — this document only carries the operator-facing
 /// knobs: where bundles go, whether the scheduler is on, and how many to
 /// keep around.
 /// </para>
 /// </summary>
-public class BackupSettings : AuditableEntity
+public class BackupSettings : ISettingsDocument
 {
-    public static readonly Guid SingletonId =
-        new("00000000-0000-0000-0001-000000000002");
+    /// <inheritdoc />
+    public static string Key => "backup";
+
+    /// <inheritdoc />
+    public static SettingsScope Scope => SettingsScope.System;
 
     /// <summary>
     /// Directory the backup engine writes bundles into. Each run creates a

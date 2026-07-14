@@ -42,12 +42,9 @@ public class DeploymentDiagnosis : AuditableEntity, ISpaceScoped
     /// </summary>
     public string RelevantLogLinesJson { get; set; } = "[]";
 
-    /// <summary>Provider/model that produced the diagnosis, e.g.
-    /// <c>Anthropic/claude-sonnet-4.6</c>. Forensic + cost attribution.</summary>
-    public string ModelUsed { get; set; } = string.Empty;
-
-    public int PromptTokens { get; set; }
-    public int CompletionTokens { get; set; }
+    // Model + token attribution lives in AiCallLog (the single source of truth for
+    // AI spend); the never-read model_used/prompt_tokens/completion_tokens columns
+    // were dropped in the 2026-07 schema cleanup.
 }
 
 /// <summary>Model-reported confidence in a <see cref="DeploymentDiagnosis"/>.

@@ -31,10 +31,14 @@ public sealed class PostgresFixture : IAsyncLifetime, IDbContextFactory<KrakenDb
     {
         // Mirrors the production registration enough for the singleton
         // services that now open a per-call scope: each scope resolves a
-        // fresh KrakenDbContext via the fixture's factory.
+        // fresh KrakenDbContext via the fixture's factory. SettingsService is
+        // registered so components that resolve it out of a scope (e.g. the
+        // MCP-enabled gate) work against the fixture container.
         var services = new ServiceCollection();
         services.AddScoped<KrakenDbContext>(_ => CreateContext());
         services.AddSingleton<IDbContextFactory<KrakenDbContext>>(this);
+        services.AddSingleton(TimeProvider.System);
+        services.AddScoped<KrakenDeploy.Server.Data.Services.SettingsService>();
         _scopeProvider = services.BuildServiceProvider();
     }
 

@@ -4,17 +4,8 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace KrakenDeploy.Server.Data.Configurations;
 
-public sealed class BackupSettingsConfiguration : IEntityTypeConfiguration<BackupSettings>
-{
-    public void Configure(EntityTypeBuilder<BackupSettings> builder)
-    {
-        builder.ToTable("backup_settings");
-        builder.HasKey(s => s.Id);
-        builder.Property(s => s.TargetDirectory).IsRequired().HasMaxLength(500);
-        builder.Property(s => s.ScheduleCron).HasMaxLength(64);
-    }
-}
-
+// BackupSettings is now a System-scoped ISettingsDocument in the unified
+// `settings` table (see SettingConfiguration); only backup_runs remains a table.
 public sealed class BackupRunConfiguration : IEntityTypeConfiguration<BackupRun>
 {
     public void Configure(EntityTypeBuilder<BackupRun> builder)

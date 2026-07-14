@@ -1,6 +1,7 @@
 using KrakenDeploy.Contracts.Crypto;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Variables;
+using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data.Encryption;
@@ -76,22 +77,20 @@ public static class DekRotationWalk
             if (touched) { release.VariableSnapshot = rewritten; c.Releases++; }
         }
 
-        // 3. AI provider keys.
-        var ai = await db.SpaceAiSettings.IgnoreQueryFilters()
-            .Where(s => s.ApiKeyEncrypted != null).ToListAsync(ct).ConfigureAwait(false);
-        foreach (var s in ai) { s.ApiKeyEncrypted = Re(oldDek, newDek, s.ApiKeyEncrypted!); c.AiSettings++; }
+        // 3. Settings documents (unified `settings` table) — re-encrypts every
+        //    *Encrypted member of every ISettingsDocument generically. Covers the
+        //    server-wide SMTP password AND the per-Space AI API key that used to be
+        //    walked as their own steps, plus any future secret-bearing settings
+        //    document, so a new one can't be silently missed by a rotation.
+        c.Settings = await SettingsService.ReEncryptSettingsForRotationAsync(
+            db, cipher => Re(oldDek, newDek, cipher), ct).ConfigureAwait(false);
 
         // 4. OIDC client secrets.
         var idps = await db.IdentityProviders.IgnoreQueryFilters()
             .Where(i => i.ClientSecretEncrypted != null).ToListAsync(ct).ConfigureAwait(false);
         foreach (var i in idps) { i.ClientSecretEncrypted = Re(oldDek, newDek, i.ClientSecretEncrypted!); c.IdentityProviders++; }
 
-        // 5. Server-wide SMTP password.
-        var smtp = await db.SmtpSettings.IgnoreQueryFilters()
-            .Where(s => s.PasswordEncrypted != null).ToListAsync(ct).ConfigureAwait(false);
-        foreach (var s in smtp) { s.PasswordEncrypted = Re(oldDek, newDek, s.PasswordEncrypted!); c.Smtp++; }
-
-        // 6. Offline-drop config (JSONB — mutate in place + flag modified, since the
+        // 5. Offline-drop config (JSONB — mutate in place + flag modified, since the
         //    converter has no ValueComparer so change tracking won't notice otherwise).
         var targets = await db.DeploymentTargets.IgnoreQueryFilters()
             .Where(t => t.OfflineDropConfig != null).ToListAsync(ct).ConfigureAwait(false);
@@ -121,15 +120,19 @@ public sealed class DekReEncryptCounts
     public int Variables { get; set; }
     public int Releases { get; set; }
     public int SnapshotEntries { get; set; }
-    public int AiSettings { get; set; }
+
+    /// <summary>
+    /// <c>*Encrypted</c> members rewritten across all settings documents (SMTP
+    /// password, AI API key, and any future secret-bearing settings document).
+    /// </summary>
+    public int Settings { get; set; }
     public int IdentityProviders { get; set; }
-    public int Smtp { get; set; }
     public int OfflineDropFields { get; set; }
 
-    public int Total => Variables + SnapshotEntries + AiSettings + IdentityProviders + Smtp + OfflineDropFields;
+    public int Total => Variables + SnapshotEntries + Settings + IdentityProviders + OfflineDropFields;
 
     public string Summary =>
         $"{Variables} variables, {SnapshotEntries} snapshot entries across {Releases} releases, " +
-        $"{AiSettings} AI keys, {IdentityProviders} OIDC secrets, {Smtp} SMTP, " +
+        $"{Settings} settings secrets, {IdentityProviders} OIDC secrets, " +
         $"{OfflineDropFields} offline-drop targets";
 }

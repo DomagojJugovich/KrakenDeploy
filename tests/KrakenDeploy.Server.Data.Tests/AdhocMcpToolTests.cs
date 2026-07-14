@@ -9,6 +9,7 @@ using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Targets;
+using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Data.Services.Ai.Adhoc;
 using KrakenDeploy.Server.Transport;
 using Microsoft.AspNetCore.Http;
@@ -199,7 +200,9 @@ public sealed class AdhocMcpToolTests(PostgresFixture postgres)
         var keyProvider = new AdhocSigningKeyProvider(config);
         var audit = new RecordingAuditLog(postgres);
         var sessionService = new AdhocSessionService(
-            postgres, genSvc, verdictSvc, keyProvider,
+            postgres,
+            new SettingsService(postgres.ScopeFactory, TimeProvider.System),
+            genSvc, verdictSvc, keyProvider,
             new FakeAdhocDispatcher(),
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             audit, config, TimeProvider.System,

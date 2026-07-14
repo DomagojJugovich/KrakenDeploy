@@ -1,7 +1,9 @@
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Features;
 using KrakenDeploy.Server.Core.Domain.Performance;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Data.Jobs;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.AspNetCore.Http;
@@ -25,8 +27,8 @@ public sealed class AuditRetentionJobTests(PostgresFixture postgres)
     {
         await using var db = postgres.CreateContext();
         await db.AuditEntries.IgnoreQueryFilters().ExecuteDeleteAsync();
-        await db.PerformanceSettings.ExecuteDeleteAsync();
-        await db.FeatureFlags.ExecuteDeleteAsync();
+        // PerformanceSettings + FeatureFlags now share the unified settings table.
+        await db.Set<Setting>().ExecuteDeleteAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -55,15 +57,11 @@ public sealed class AuditRetentionJobTests(PostgresFixture postgres)
         var time = TimeProvider.System;
         await SeedAsync(time, daysAgo: 9999, "ancient-but-kept");
 
-        await using (var db = postgres.CreateContext())
-        {
-            db.FeatureFlags.Add(new KrakenDeploy.Server.Core.Domain.Features.FeatureFlag
+        await new SettingsService(postgres.ScopeFactory, time).SaveAsync(
+            new FeatureFlagsDocument
             {
-                Key     = AuditRetentionJob.PurgeEnabledFeatureKey,
-                Enabled = false,
+                Overrides = { [AuditRetentionJob.PurgeEnabledFeatureKey] = false },
             });
-            await db.SaveChangesAsync();
-        }
 
         await NewJob(time).ExecuteAsync(CancellationToken.None);
 
@@ -80,15 +78,8 @@ public sealed class AuditRetentionJobTests(PostgresFixture postgres)
         await SeedAsync(time, daysAgo: 10, "older-than-7");
         await SeedAsync(time, daysAgo: 5,  "fresher-than-7");
 
-        await using (var db = postgres.CreateContext())
-        {
-            db.PerformanceSettings.Add(new PerformanceSettings
-            {
-                Id                    = PerformanceSettings.SingletonId,
-                AuditLogRetentionDays = 7,
-            });
-            await db.SaveChangesAsync();
-        }
+        await new SettingsService(postgres.ScopeFactory, time).SaveAsync(
+            new PerformanceSettings { AuditLogRetentionDays = 7 });
 
         // Appsettings says 999 (would keep everything) — DB-backed 7 must win.
         await NewJob(time, configRetentionDays: "999").ExecuteAsync(CancellationToken.None);
@@ -123,15 +114,8 @@ public sealed class AuditRetentionJobTests(PostgresFixture postgres)
         var time = TimeProvider.System;
         await SeedAsync(time, daysAgo: 9999, "ancient");
 
-        await using (var db = postgres.CreateContext())
-        {
-            db.PerformanceSettings.Add(new PerformanceSettings
-            {
-                Id                    = PerformanceSettings.SingletonId,
-                AuditLogRetentionDays = 0,
-            });
-            await db.SaveChangesAsync();
-        }
+        await new SettingsService(postgres.ScopeFactory, time).SaveAsync(
+            new PerformanceSettings { AuditLogRetentionDays = 0 });
 
         await NewJob(time).ExecuteAsync(CancellationToken.None);
 
@@ -158,15 +142,13 @@ public sealed class AuditRetentionJobTests(PostgresFixture postgres)
         var httpAccessor = new HttpContextAccessor();
         var spaceCtx = new KrakenDeploy.Server.Data.Spaces.DefaultSpaceContext();
         var auditLog = new AuditLogService(postgres, httpAccessor, spaceCtx, time);
-        var performance = new PerformanceSettingsService(postgres.ScopeFactory, time);
-        var featureFlags = new FeatureFlagService(
-            postgres.ScopeFactory,
-            new KrakenDeploy.Server.Core.Domain.Features.BuiltInFeatureCatalog(),
-            time);
+        var settings = new SettingsService(postgres.ScopeFactory, time);
+        var performance = new PerformanceSettingsService(settings);
+        var featureFlags = new FeatureFlagService(settings, new BuiltInFeatureCatalog());
 
         return new AuditRetentionJob(
             auditLog,
-            postgres,
+            settings,
             performance,
             featureFlags,
             config,

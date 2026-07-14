@@ -1,12 +1,12 @@
-using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Settings;
 
 namespace KrakenDeploy.Server.Core.Domain.Notifications;
 
 /// <summary>
 /// Server-wide SMTP configuration for outbound notifications (M13.B.1).
-/// Single row table — there's one mail relay per KrakenDeploy instance.
-/// Future M13.B.2 event subscriptions consume this settings to deliver
-/// per-event email notifications.
+/// A System-scoped <see cref="ISettingsDocument"/> (key <c>"smtp"</c>) stored
+/// in the unified <c>settings</c> table. M13.B.2 event subscriptions consume
+/// these settings to deliver per-event email notifications.
 ///
 /// <para>
 /// Storage: the password is AES-256-GCM ciphertext produced by
@@ -17,15 +17,13 @@ namespace KrakenDeploy.Server.Core.Domain.Notifications;
 /// re-encrypts when a new value is supplied.
 /// </para>
 /// </summary>
-public class SmtpSettings : AuditableEntity
+public class SmtpSettings : ISettingsDocument
 {
-    /// <summary>
-    /// Fixed singleton ID — the table has exactly one row identified by this
-    /// Guid. Service code uses <c>FindAsync(SingletonId)</c> + <c>GetOrAddAsync</c>
-    /// to upsert; UI never sees this.
-    /// </summary>
-    public static readonly Guid SingletonId =
-        new("00000000-0000-0000-0001-000000000001");
+    /// <inheritdoc />
+    public static string Key => "smtp";
+
+    /// <inheritdoc />
+    public static SettingsScope Scope => SettingsScope.System;
 
     /// <summary>
     /// Master switch. When false the settings persist but the notification

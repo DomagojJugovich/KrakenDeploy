@@ -1,4 +1,4 @@
-using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Settings;
 
 namespace KrakenDeploy.Server.Core.Domain.Performance;
 
@@ -28,16 +28,18 @@ namespace KrakenDeploy.Server.Core.Domain.Performance;
 /// </para>
 ///
 /// <para>
-/// Same singleton pattern as <c>SmtpSettings</c> / <c>BackupSettings</c> /
-/// <c>MaintenanceSettings</c>: fixed <see cref="SingletonId"/>, single row,
-/// service caches the snapshot in-memory + invalidates on write.
+/// A System-scoped <see cref="ISettingsDocument"/> (key <c>"performance"</c>)
+/// in the unified <c>settings</c> table; the accessor caches the snapshot
+/// in-memory + invalidates on write.
 /// </para>
 /// </summary>
-public class PerformanceSettings : AuditableEntity
+public class PerformanceSettings : ISettingsDocument
 {
-    /// <summary>Fixed singleton id — same pattern the other settings rows use.</summary>
-    public static readonly Guid SingletonId =
-        new("00000000-0000-0000-0001-000000000005");
+    /// <inheritdoc />
+    public static string Key => "performance";
+
+    /// <inheritdoc />
+    public static SettingsScope Scope => SettingsScope.System;
 
     // ── Hangfire ──────────────────────────────────────────────────────────
 

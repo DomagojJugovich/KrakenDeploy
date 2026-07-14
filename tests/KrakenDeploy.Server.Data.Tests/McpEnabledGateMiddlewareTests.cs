@@ -2,6 +2,8 @@ using FluentAssertions;
 using KrakenDeploy.Mcp;
 using KrakenDeploy.Server.Core.Domain.Ai;
 using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Settings;
+using KrakenDeploy.Server.Data.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -24,7 +26,7 @@ public sealed class McpEnabledGateMiddlewareTests(PostgresFixture postgres)
     public async Task InitializeAsync()
     {
         await using var db = postgres.CreateContext();
-        await db.SpaceAiSettings.IgnoreQueryFilters().ExecuteDeleteAsync();
+        await db.Set<Setting>().ExecuteDeleteAsync();
         McpEnabledGateMiddleware.ClearCacheForTest();
     }
 
@@ -104,15 +106,12 @@ public sealed class McpEnabledGateMiddlewareTests(PostgresFixture postgres)
             next, postgres.ScopeFactory, NullLogger<McpEnabledGateMiddleware>.Instance);
     }
 
-    private async Task SeedSettingsAsync(bool mcpEnabled)
-    {
-        await using var db = postgres.CreateContext();
-        db.SpaceAiSettings.Add(new SpaceAiSettings
-        {
-            SpaceId    = WellKnown.DefaultSpaceId,
-            Provider   = KrakenAiProviderValue.Anthropic,
-            McpEnabled = mcpEnabled,
-        });
-        await db.SaveChangesAsync();
-    }
+    private Task SeedSettingsAsync(bool mcpEnabled) =>
+        new SettingsService(postgres.ScopeFactory, TimeProvider.System).SaveAsync(
+            new SpaceAiSettings
+            {
+                Provider   = KrakenAiProviderValue.Anthropic,
+                McpEnabled = mcpEnabled,
+            },
+            WellKnown.DefaultSpaceId);
 }

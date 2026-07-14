@@ -1,8 +1,10 @@
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Ai;
 using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Data.Encryption;
+using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Data.Services.Ai;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -24,7 +26,7 @@ public sealed class SpaceAiSettingsServiceTests(PostgresFixture postgres)
     public async Task InitializeAsync()
     {
         await using var db = postgres.CreateContext();
-        await db.SpaceAiSettings.IgnoreQueryFilters().ExecuteDeleteAsync();
+        await db.Set<Setting>().ExecuteDeleteAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -64,9 +66,9 @@ public sealed class SpaceAiSettingsServiceTests(PostgresFixture postgres)
         dto.ApiKeyMasked.Should().NotContain("sk-test",
             "the masked DTO must not leak any of the plaintext key");
 
-        // Confirms one row exists for this Space.
+        // Confirms one settings document exists for this Space's AI key.
         await using var db = postgres.CreateContext();
-        var count = await db.SpaceAiSettings.IgnoreQueryFilters().CountAsync();
+        var count = await db.Set<Setting>().CountAsync(s => s.Key == SpaceAiSettings.Key);
         count.Should().Be(1);
     }
 
@@ -267,7 +269,8 @@ public sealed class SpaceAiSettingsServiceTests(PostgresFixture postgres)
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private SpaceAiSettingsService NewSvc() =>
-        new(postgres,
+        new(new SettingsService(postgres.ScopeFactory, TimeProvider.System),
+            postgres,
             new FixedSpaceContext(WellKnown.DefaultSpaceId),
             NewEncryptionService(),
             NullLogger<SpaceAiSettingsService>.Instance);

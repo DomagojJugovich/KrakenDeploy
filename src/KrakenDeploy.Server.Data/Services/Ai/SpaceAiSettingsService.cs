@@ -28,6 +28,7 @@ namespace KrakenDeploy.Server.Data.Services.Ai;
 /// </para>
 /// </remarks>
 public sealed class SpaceAiSettingsService(
+    SettingsService                        settings,
     IDbContextFactory<KrakenDbContext>   dbFactory,
     ISpaceContext                          spaceContext,
     IEncryptionService                     encryption,
@@ -39,27 +40,24 @@ public sealed class SpaceAiSettingsService(
     /// </summary>
     public async Task<SpaceAiSettingsDto> GetAsync(CancellationToken ct = default)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var row = await db.SpaceAiSettings.AsNoTracking().FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        var row = await settings.GetAsync<SpaceAiSettings>(spaceContext.CurrentSpaceId, ct).ConfigureAwait(false);
 
-        return row is null
-            ? new SpaceAiSettingsDto()
-            : new SpaceAiSettingsDto
-            {
-                Provider          = row.Provider,
-                Model             = row.Model,
-                ApiKeyMasked      = MaskApiKey(row.ApiKeyEncrypted),
-                HasApiKey         = !string.IsNullOrEmpty(row.ApiKeyEncrypted),
-                BaseUrl           = row.BaseUrl,
-                BudgetUsdPerMonth = row.BudgetUsdPerMonth,
-                LogPromptBodies   = row.LogPromptBodies,
-                DiagnosisEnabled  = row.DiagnosisEnabled,
-                McpEnabled        = row.McpEnabled,
-                AdhocEnabled      = row.AdhocEnabled,
-                AdhocMaxIterations = row.AdhocMaxIterations,
-                AdhocTwoPersonApproval = row.AdhocTwoPersonApproval,
-                AssistantEnabled  = row.AssistantEnabled,
-            };
+        return new SpaceAiSettingsDto
+        {
+            Provider          = row.Provider,
+            Model             = row.Model,
+            ApiKeyMasked      = MaskApiKey(row.ApiKeyEncrypted),
+            HasApiKey         = !string.IsNullOrEmpty(row.ApiKeyEncrypted),
+            BaseUrl           = row.BaseUrl,
+            BudgetUsdPerMonth = row.BudgetUsdPerMonth,
+            LogPromptBodies   = row.LogPromptBodies,
+            DiagnosisEnabled  = row.DiagnosisEnabled,
+            McpEnabled        = row.McpEnabled,
+            AdhocEnabled      = row.AdhocEnabled,
+            AdhocMaxIterations = row.AdhocMaxIterations,
+            AdhocTwoPersonApproval = row.AdhocTwoPersonApproval,
+            AssistantEnabled  = row.AssistantEnabled,
+        };
     }
 
     /// <summary>
@@ -77,45 +75,34 @@ public sealed class SpaceAiSettingsService(
         ArgumentNullException.ThrowIfNull(request);
         ValidateRequest(request);
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var row = await db.SpaceAiSettings.FirstOrDefaultAsync(ct).ConfigureAwait(false);
-
-        var isNew = row is null;
-        row ??= new SpaceAiSettings
+        await settings.MutateAsync<SpaceAiSettings>(spaceContext.CurrentSpaceId, row =>
         {
-            SpaceId  = spaceContext.CurrentSpaceId,
-            Provider = KrakenAiProviderValue.Disabled,
-        };
+            row.Provider          = request.Provider;
+            row.Model             = request.Model;
+            row.BaseUrl           = request.BaseUrl;
+            row.BudgetUsdPerMonth = request.BudgetUsdPerMonth;
+            row.LogPromptBodies   = request.LogPromptBodies;
+            row.DiagnosisEnabled  = request.DiagnosisEnabled;
+            row.McpEnabled        = request.McpEnabled;
+            row.AdhocEnabled      = request.AdhocEnabled;
+            row.AdhocMaxIterations = request.AdhocMaxIterations;
+            row.AdhocTwoPersonApproval = request.AdhocTwoPersonApproval;
+            row.AssistantEnabled  = request.AssistantEnabled;
 
-        row.Provider          = request.Provider;
-        row.Model             = request.Model;
-        row.BaseUrl           = request.BaseUrl;
-        row.BudgetUsdPerMonth = request.BudgetUsdPerMonth;
-        row.LogPromptBodies   = request.LogPromptBodies;
-        row.DiagnosisEnabled  = request.DiagnosisEnabled;
-        row.McpEnabled        = request.McpEnabled;
-        row.AdhocEnabled      = request.AdhocEnabled;
-        row.AdhocMaxIterations = request.AdhocMaxIterations;
-        row.AdhocTwoPersonApproval = request.AdhocTwoPersonApproval;
-        row.AssistantEnabled  = request.AssistantEnabled;
+            if (request.ApiKey == ApiKeyClearSentinel)
+            {
+                row.ApiKeyEncrypted = null;
+            }
+            else if (!string.IsNullOrWhiteSpace(request.ApiKey))
+            {
+                row.ApiKeyEncrypted = encryption.Encrypt(request.ApiKey);
+            }
+            // else: leave ApiKeyEncrypted alone (preserve existing key on edits
+            // that don't touch the key field — operator changing only Model
+            // shouldn't accidentally clear the key).
 
-        if (request.ApiKey == ApiKeyClearSentinel)
-        {
-            row.ApiKeyEncrypted = null;
-        }
-        else if (!string.IsNullOrWhiteSpace(request.ApiKey))
-        {
-            row.ApiKeyEncrypted = encryption.Encrypt(request.ApiKey);
-        }
-        // else: leave ApiKeyEncrypted alone (preserve existing key on edits
-        // that don't touch the key field — operator changing only Model
-        // shouldn't accidentally clear the key).
-
-        if (isNew)
-        {
-            db.SpaceAiSettings.Add(row);
-        }
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            return row;
+        }, ct).ConfigureAwait(false);
 
         logger.LogInformation(
             "SpaceAiSettings updated for Space {SpaceId}: Provider={Provider}, " +
@@ -136,8 +123,7 @@ public sealed class SpaceAiSettingsService(
     /// </returns>
     public async Task<string?> RevealApiKeyAsync(CancellationToken ct = default)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var row = await db.SpaceAiSettings.AsNoTracking().FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        var row = await settings.TryGetAsync<SpaceAiSettings>(spaceContext.CurrentSpaceId, ct).ConfigureAwait(false);
         return string.IsNullOrEmpty(row?.ApiKeyEncrypted)
             ? null
             : encryption.Decrypt(row.ApiKeyEncrypted);

@@ -103,7 +103,11 @@ public sealed class AuditLogInterceptor(
             };
 
             var subjectId   = TryGetPropertyValue(entry, "Id")?.ToString();
-            var subjectName = TryGetPropertyValue(entry, "Name")?.ToString();
+            // Prefer a "Name" property; fall back to "Key" so keyed documents —
+            // notably the unified `settings` rows (smtp/backup/ai/…) — produce
+            // distinguishable audit entries instead of a null subject.
+            var subjectName = TryGetPropertyValue(entry, "Name")?.ToString()
+                           ?? TryGetPropertyValue(entry, "Key")?.ToString();
 
             Guid? spaceId = null;
             if (entry.Metadata.FindProperty("SpaceId") is not null)

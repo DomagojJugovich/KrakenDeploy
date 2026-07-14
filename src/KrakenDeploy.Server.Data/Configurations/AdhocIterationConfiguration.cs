@@ -34,6 +34,5 @@ public sealed class AdhocIterationConfiguration : IEntityTypeConfiguration<Adhoc
         builder.Property(i => i.ApprovedByDisplay).HasMaxLength(256);
         builder.Property(i => i.FirstApprovedByDisplay).HasMaxLength(256);
         builder.Property(i => i.ResultsJson).HasColumnType("jsonb").IsRequired();
-        builder.Property(i => i.LlmModel).HasMaxLength(256);
     }
 }

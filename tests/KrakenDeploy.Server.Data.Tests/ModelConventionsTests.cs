@@ -1,5 +1,4 @@
 using FluentAssertions;
-using KrakenDeploy.Server.Core.Domain.Ai;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Data;
@@ -34,10 +33,6 @@ public class ModelConventionsTests
     {
         using var context = BuildModelContext();
 
-        // space_ai_settings is a known straggler removed by fix 7 (the settings
-        // table consolidation). Remove this exemption when that table is dropped.
-        var exempt = new HashSet<Type> { typeof(SpaceAiSettings) };
-
         // Post composite-FK hardening: every ISpaceScoped entity must anchor its
         // space_id through a foreign key that INCLUDES space_id and whose principal
         // is EITHER spaces (aggregate roots — direct FK) OR another ISpaceScoped
@@ -50,7 +45,6 @@ public class ModelConventionsTests
             // derived types — mirrors KrakenDbContext.ApplySpaceQueryFilters.
             .Where(et => typeof(ISpaceScoped).IsAssignableFrom(et.ClrType))
             .Where(et => et.BaseType is null)
-            .Where(et => !exempt.Contains(et.ClrType))
             .Where(et => !et.GetForeignKeys().Any(fk =>
                 fk.Properties.Any(p => p.Name == nameof(ISpaceScoped.SpaceId))
                 && (fk.PrincipalEntityType.ClrType == typeof(Space)

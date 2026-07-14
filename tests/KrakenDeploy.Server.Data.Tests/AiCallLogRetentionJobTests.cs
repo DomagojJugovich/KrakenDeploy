@@ -1,6 +1,7 @@
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Ai;
 using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Data.Jobs;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
@@ -24,10 +25,10 @@ public sealed class AiCallLogRetentionJobTests(PostgresFixture postgres)
     {
         await using var db = postgres.CreateContext();
         await db.AiCallLogs.IgnoreQueryFilters().ExecuteDeleteAsync();
-        // Reset the singleton row so the appsettings fallback path is
-        // exercised by default (the DB-wins path is exercised by a
+        // Reset the performance settings document so the appsettings fallback
+        // path is exercised by default (the DB-wins path is exercised by a
         // dedicated test below).
-        await db.PerformanceSettings.ExecuteDeleteAsync();
+        await db.Set<Setting>().ExecuteDeleteAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -111,15 +112,11 @@ public sealed class AiCallLogRetentionJobTests(PostgresFixture postgres)
         await SeedAsync(time, daysAgo: 6, "older-than-5");
         await SeedAsync(time, daysAgo: 3, "fresher-than-5");
 
-        await using (var db = postgres.CreateContext())
-        {
-            db.PerformanceSettings.Add(new KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings
+        await new SettingsService(postgres.ScopeFactory, time).SaveAsync(
+            new KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings
             {
-                Id                     = KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings.SingletonId,
                 AiCallLogRetentionDays = 5,
             });
-            await db.SaveChangesAsync();
-        }
 
         // Appsettings says 999 (a value that would keep everything) — but
         // the DB-backed 5 must win.
@@ -182,9 +179,11 @@ public sealed class AiCallLogRetentionJobTests(PostgresFixture postgres)
         // PerformanceSettings row seeded the job falls back to appsettings,
         // which is the path the existing tests assert. The DB-wins path is
         // covered by Honours_DB_setting_when_PerformanceSettings_row_exists.
-        var performance = new PerformanceSettingsService(postgres.ScopeFactory, time);
+        var settings = new SettingsService(postgres.ScopeFactory, time);
+        var performance = new PerformanceSettingsService(settings);
         return new AiCallLogRetentionJob(
             postgres,
+            settings,
             performance,
             config,
             time,

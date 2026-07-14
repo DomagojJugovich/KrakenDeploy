@@ -2,8 +2,10 @@ using FluentAssertions;
 using KrakenDeploy.Ai;
 using KrakenDeploy.Server.Core.Domain.Ai;
 using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Data.Encryption;
+using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Data.Services.Ai;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -29,7 +31,7 @@ public sealed class DbKrakenAiSettingsProviderTests(PostgresFixture postgres)
     public async Task InitializeAsync()
     {
         await using var db = postgres.CreateContext();
-        await db.SpaceAiSettings.IgnoreQueryFilters().ExecuteDeleteAsync();
+        await db.Set<Setting>().ExecuteDeleteAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -68,9 +70,8 @@ public sealed class DbKrakenAiSettingsProviderTests(PostgresFixture postgres)
     {
         var encryption  = NewEncryptionService();
         var encryptedKey = encryption.Encrypt("sk-real-key-not-actually-real");
-        await SeedSettingsAsync(new SpaceAiSettings
+        await SeedSettingsAsync(WellKnown.DefaultSpaceId, new SpaceAiSettings
         {
-            SpaceId           = WellKnown.DefaultSpaceId,
             Provider          = KrakenAiProviderValue.Anthropic,
             Model             = "claude-sonnet-4.6",
             ApiKeyEncrypted   = encryptedKey,
@@ -103,9 +104,8 @@ public sealed class DbKrakenAiSettingsProviderTests(PostgresFixture postgres)
         // Operator created settings row but hasn't pasted a key yet. The
         // provider returns ApiKey=null; the wrapper's factory rejects
         // empty-key configurations downstream.
-        await SeedSettingsAsync(new SpaceAiSettings
+        await SeedSettingsAsync(WellKnown.DefaultSpaceId, new SpaceAiSettings
         {
-            SpaceId           = WellKnown.DefaultSpaceId,
             Provider          = KrakenAiProviderValue.Anthropic,
             Model             = "claude-sonnet-4.6",
             ApiKeyEncrypted   = null,
@@ -123,9 +123,8 @@ public sealed class DbKrakenAiSettingsProviderTests(PostgresFixture postgres)
     {
         // A stale row from a downgraded binary (e.g. a provider added in a
         // newer release) must not crash AI on read.
-        await SeedSettingsAsync(new SpaceAiSettings
+        await SeedSettingsAsync(WellKnown.DefaultSpaceId, new SpaceAiSettings
         {
-            SpaceId           = WellKnown.DefaultSpaceId,
             Provider          = "FutureProviderNotYetReleased",
             BudgetUsdPerMonth = 0m,
         });
@@ -137,26 +136,24 @@ public sealed class DbKrakenAiSettingsProviderTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task Settings_isolated_across_spaces_by_global_query_filter()
+    public async Task Settings_isolated_across_spaces_by_scope_id()
     {
-        // Pins the contract that the global query filter on ISpaceScoped
-        // restricts reads to the DbContext's ambient Space. We seed TWO
-        // rows — one under DefaultSpaceId, one under a foreign Space —
-        // and prove the provider only ever sees the DefaultSpaceId row
-        // (which is what the test fixture's ISpaceContext pins).
+        // Pins the contract that SettingsService cages a Space document to the
+        // caller's Space (settings.scope_id). We seed TWO rows — one under
+        // DefaultSpaceId, one under a foreign Space — and prove the provider
+        // only ever sees the DefaultSpaceId row (which is what the test
+        // fixture's ISpaceContext pins).
         var foreignSpaceId = Guid.NewGuid();
         var encryption = NewEncryptionService();
-        await SeedSettingsAsync(new SpaceAiSettings
+        await SeedSettingsAsync(WellKnown.DefaultSpaceId, new SpaceAiSettings
         {
-            SpaceId           = WellKnown.DefaultSpaceId,
             Provider          = KrakenAiProviderValue.Anthropic,
             Model             = "claude-MINE",
             ApiKeyEncrypted   = encryption.Encrypt("key-mine"),
             BudgetUsdPerMonth = 100m,
         });
-        await SeedSettingsAsync(new SpaceAiSettings
+        await SeedSettingsAsync(foreignSpaceId, new SpaceAiSettings
         {
-            SpaceId           = foreignSpaceId,
             Provider          = KrakenAiProviderValue.OpenAI,
             Model             = "gpt-NOT-MINE",
             ApiKeyEncrypted   = encryption.Encrypt("key-foreign"),
@@ -167,7 +164,7 @@ public sealed class DbKrakenAiSettingsProviderTests(PostgresFixture postgres)
 
         settings.Provider.Should().Be(KrakenAiProvider.Anthropic);
         settings.Model.Should().Be("claude-MINE",
-            "the global query filter restricts reads to the current Space — " +
+            "SettingsService cages the read to the current Space's scope_id — " +
             "the foreign row must not be visible");
         settings.ApiKey.Should().Be("key-mine");
     }
@@ -177,7 +174,7 @@ public sealed class DbKrakenAiSettingsProviderTests(PostgresFixture postgres)
     private DbKrakenAiSettingsProvider NewProvider(
         Guid spaceId, AesEncryptionService? encryption = null) =>
         new(
-            postgres,
+            new SettingsService(postgres.ScopeFactory, TimeProvider.System),
             new FixedSpaceContext(spaceId),
             encryption ?? NewEncryptionService(),
             NullLogger<DbKrakenAiSettingsProvider>.Instance);
@@ -186,12 +183,8 @@ public sealed class DbKrakenAiSettingsProviderTests(PostgresFixture postgres)
         TestCrypto.Service(Convert.ToBase64String(
             System.Security.Cryptography.RandomNumberGenerator.GetBytes(32)));
 
-    private async Task SeedSettingsAsync(SpaceAiSettings row)
-    {
-        await using var db = postgres.CreateContext();
-        db.SpaceAiSettings.Add(row);
-        await db.SaveChangesAsync();
-    }
+    private Task SeedSettingsAsync(Guid spaceId, SpaceAiSettings row) =>
+        new SettingsService(postgres.ScopeFactory, TimeProvider.System).SaveAsync(row, spaceId);
 
     private sealed class FixedSpaceContext(Guid spaceId) : ISpaceContext
     {

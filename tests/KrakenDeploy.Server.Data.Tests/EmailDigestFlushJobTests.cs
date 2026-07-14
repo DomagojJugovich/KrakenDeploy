@@ -3,6 +3,7 @@ using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Notifications;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Core.Domain.Subscriptions;
 using KrakenDeploy.Server.Data.Encryption;
 using KrakenDeploy.Server.Data.Jobs;
@@ -36,7 +37,7 @@ public sealed class EmailDigestFlushJobTests(PostgresFixture postgres)
         await db.SubscriptionDeliveries.ExecuteDeleteAsync();
         await db.EventSubscriptions.ExecuteDeleteAsync();
         await db.AuditEntries.IgnoreQueryFilters().ExecuteDeleteAsync();
-        await db.SmtpSettings.ExecuteDeleteAsync();
+        await db.Set<Setting>().ExecuteDeleteAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -232,7 +233,8 @@ public sealed class EmailDigestFlushJobTests(PostgresFixture postgres)
     private async Task SeedUnreachableSmtpAsync()
     {
         var svc = new SmtpSettingsService(
-            postgres, TestCrypto.Service(Base64Key),
+            new SettingsService(postgres.ScopeFactory, TimeProvider.System),
+            TestCrypto.Service(Base64Key),
             NullLogger<SmtpSettingsService>.Instance);
         await svc.UpsertAsync(new SmtpSettings
         {
@@ -248,7 +250,8 @@ public sealed class EmailDigestFlushJobTests(PostgresFixture postgres)
     private EmailDigestFlushJob NewJob()
     {
         var smtp = new SmtpSettingsService(
-            postgres, TestCrypto.Service(Base64Key),
+            new SettingsService(postgres.ScopeFactory, TimeProvider.System),
+            TestCrypto.Service(Base64Key),
             NullLogger<SmtpSettingsService>.Instance);
         var sender = new EmailDigestSender(smtp);
         var audit = new SilentAuditLog();
@@ -261,9 +264,6 @@ public sealed class EmailDigestFlushJobTests(PostgresFixture postgres)
 
     private EventDispatcher NewDispatcher()
     {
-        var smtp = new SmtpSettingsService(
-            postgres, TestCrypto.Service(Base64Key),
-            NullLogger<SmtpSettingsService>.Instance);
         return new EventDispatcher(
             postgres,
             transports: Array.Empty<IEventTransport>(),

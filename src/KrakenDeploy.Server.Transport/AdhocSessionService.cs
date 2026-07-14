@@ -5,6 +5,7 @@ using KrakenDeploy.Server.Core.Domain.Ai;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data;
+using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Data.Services.Ai.Adhoc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -61,6 +62,7 @@ namespace KrakenDeploy.Server.Transport;
 /// </summary>
 public sealed class AdhocSessionService(
     IDbContextFactory<KrakenDbContext> dbFactory,
+    SettingsService settings,
     AdhocGenerationService generation,
     AdhocVerdictService verdict,
     AdhocSigningKeyProvider signingKey,
@@ -611,14 +613,14 @@ public sealed class AdhocSessionService(
     /// opt-in on AND the session is Mutating OR its frozen target set's max risk
     /// is Production. Evaluated fresh per approval.
     /// </summary>
-    private static async Task<bool> RequiresTwoPersonAsync(
+    private async Task<bool> RequiresTwoPersonAsync(
         KrakenDbContext db, AdhocSession session, CancellationToken ct)
     {
-        var enabled = await db.SpaceAiSettings
-            .AsNoTracking()
-            .Select(s => (bool?)s.AdhocTwoPersonApproval)
-            .FirstOrDefaultAsync(ct)
-            .ConfigureAwait(false) ?? false;
+        var spaceId = db.CurrentSpaceId;
+        var doc = spaceId == Guid.Empty
+            ? null
+            : await settings.TryGetAsync<SpaceAiSettings>(spaceId, ct).ConfigureAwait(false);
+        var enabled = doc?.AdhocTwoPersonApproval ?? false;
         if (!enabled) { return false; }
         if (session.Mode == AdhocMode.Mutating) { return true; }
 
@@ -668,17 +670,15 @@ public sealed class AdhocSessionService(
 
     private async Task<int> ReadMaxIterationsAsync(KrakenDbContext db, CancellationToken ct)
     {
-        // Per-Space override wins (SaaS — every Space tunes its own cap). The
-        // SpaceAiSettings row is space-filtered by the global query filter, so
-        // FirstOrDefault returns the current Space's row (or null when a Space
-        // has never configured AI). Fall back to the deployment-wide config
-        // default, then a hard default of 5.
-        var perSpace = await db.SpaceAiSettings
-            .AsNoTracking()
-            .Select(s => (int?)s.AdhocMaxIterations)
-            .FirstOrDefaultAsync(ct)
-            .ConfigureAwait(false);
-        if (perSpace is > 0) { return perSpace.Value; }
+        // Per-Space override wins (SaaS — every Space tunes its own cap). Read the
+        // current Space's AI settings document (null when the Space has never
+        // configured AI). Fall back to the deployment-wide config default, then a
+        // hard default of 5.
+        var spaceId = db.CurrentSpaceId;
+        var doc = spaceId == Guid.Empty
+            ? null
+            : await settings.TryGetAsync<SpaceAiSettings>(spaceId, ct).ConfigureAwait(false);
+        if (doc is { AdhocMaxIterations: > 0 }) { return doc.AdhocMaxIterations; }
 
         if (int.TryParse(config[MaxIterationsConfigKey], out var v) && v > 0) { return v; }
         return 5;

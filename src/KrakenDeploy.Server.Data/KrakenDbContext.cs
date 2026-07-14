@@ -83,20 +83,18 @@ public class KrakenDbContext(
     public DbSet<StepPackage> StepPackages => Set<StepPackage>();
     public DbSet<StepPackageCatalogEntry> StepPackageCatalog => Set<StepPackageCatalogEntry>();
     public DbSet<AiCallLog> AiCallLogs => Set<AiCallLog>();
-    public DbSet<SpaceAiSettings> SpaceAiSettings => Set<SpaceAiSettings>();
     public DbSet<DeploymentDiagnosis> DeploymentDiagnoses => Set<DeploymentDiagnosis>();
     public DbSet<AdhocSession> AdhocSessions => Set<AdhocSession>();
     public DbSet<AdhocIteration> AdhocIterations => Set<AdhocIteration>();
-    public DbSet<KrakenDeploy.Server.Core.Domain.Notifications.SmtpSettings> SmtpSettings
-        => Set<KrakenDeploy.Server.Core.Domain.Notifications.SmtpSettings>();
-    public DbSet<KrakenDeploy.Server.Core.Domain.Features.FeatureFlag> FeatureFlags
-        => Set<KrakenDeploy.Server.Core.Domain.Features.FeatureFlag>();
     public DbSet<KrakenDeploy.Server.Core.Domain.Freezes.DeploymentFreeze> DeploymentFreezes
         => Set<KrakenDeploy.Server.Core.Domain.Freezes.DeploymentFreeze>();
-    public DbSet<KrakenDeploy.Server.Core.Domain.Backup.BackupSettings> BackupSettings
-        => Set<KrakenDeploy.Server.Core.Domain.Backup.BackupSettings>();
     public DbSet<KrakenDeploy.Server.Core.Domain.Backup.BackupRun> BackupRuns
         => Set<KrakenDeploy.Server.Core.Domain.Backup.BackupRun>();
+    // SmtpSettings, BackupSettings, MaintenanceSettings, PerformanceSettings,
+    // FeatureFlag, and SpaceAiSettings are folded into the unified `settings`
+    // table. There is deliberately NO settings DbSet here: SettingsService is the
+    // sole accessor (it reads the settings entity internally), enforced by an
+    // architecture test, so the nullable-scope table can't be queried unscoped.
     public DbSet<KrakenDeploy.Server.Core.Domain.Subscriptions.EventSubscription> EventSubscriptions
         => Set<KrakenDeploy.Server.Core.Domain.Subscriptions.EventSubscription>();
     public DbSet<KrakenDeploy.Server.Core.Domain.Subscriptions.SubscriptionDelivery> SubscriptionDeliveries
@@ -111,10 +109,6 @@ public class KrakenDbContext(
         => Set<KrakenDeploy.Server.Core.Domain.Subscriptions.SubscriptionPollerState>();
     public DbSet<KrakenDeploy.Server.Core.Domain.Subscriptions.EmailDigestOutboxEntry> EmailDigestOutbox
         => Set<KrakenDeploy.Server.Core.Domain.Subscriptions.EmailDigestOutboxEntry>();
-    public DbSet<KrakenDeploy.Server.Core.Domain.Maintenance.MaintenanceSettings> MaintenanceSettings
-        => Set<KrakenDeploy.Server.Core.Domain.Maintenance.MaintenanceSettings>();
-    public DbSet<KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings> PerformanceSettings
-        => Set<KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings>();
     public DbSet<Tenant> Tenants => Set<Tenant>();
 
     // ── Extended tag sets (Space-level; see docs/extended-tag-sets-plan.md) ──

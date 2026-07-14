@@ -15,26 +15,20 @@ namespace KrakenDeploy.Server.Data.Services;
 /// </summary>
 public sealed class BackupService(
     IDbContextFactory<KrakenDbContext> dbFactory,
+    SettingsService settings,
     BackupEngine engine,
     ILogger<BackupService> logger,
     TimeProvider time,
     IAuditLog audit)
 {
     /// <summary>Loads the persisted settings or returns a default-shaped
-    /// row when none exist (first-run convenience — operator sees the
+    /// document when none exist (first-run convenience — operator sees the
     /// defaults pre-populated in the form).</summary>
-    public async Task<BackupSettings> GetSettingsAsync(CancellationToken ct = default)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var row = await db.BackupSettings
-            .AsNoTracking()
-            .FirstOrDefaultAsync(s => s.Id == BackupSettings.SingletonId, ct)
-            .ConfigureAwait(false);
-        return row ?? new BackupSettings { Id = BackupSettings.SingletonId };
-    }
+    public Task<BackupSettings> GetSettingsAsync(CancellationToken ct = default)
+        => settings.GetAsync<BackupSettings>(ct: ct);
 
     /// <summary>Upsert. Validates target-directory + retention; returns the
-    /// persisted row (without re-reading — saves a round trip).</summary>
+    /// persisted document.</summary>
     public async Task<BackupSettings> UpsertSettingsAsync(
         BackupSettings input, CancellationToken ct = default)
     {
@@ -50,26 +44,16 @@ public sealed class BackupService(
                 "RetainLastN must be 0 (keep all) or positive.", nameof(input));
         }
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var existing = await db.BackupSettings
-            .FirstOrDefaultAsync(s => s.Id == BackupSettings.SingletonId, ct)
-            .ConfigureAwait(false);
-
-        if (existing is null)
+        return await settings.MutateAsync<BackupSettings>(scopeId: null, existing =>
         {
-            existing = new BackupSettings { Id = BackupSettings.SingletonId };
-            db.BackupSettings.Add(existing);
-        }
-
-        existing.TargetDirectory = input.TargetDirectory.Trim();
-        existing.ScheduleCron    = string.IsNullOrWhiteSpace(input.ScheduleCron)
-            ? null
-            : input.ScheduleCron.Trim();
-        existing.ScheduleEnabled = input.ScheduleEnabled;
-        existing.RetainLastN     = input.RetainLastN;
-
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return existing;
+            existing.TargetDirectory = input.TargetDirectory.Trim();
+            existing.ScheduleCron    = string.IsNullOrWhiteSpace(input.ScheduleCron)
+                ? null
+                : input.ScheduleCron.Trim();
+            existing.ScheduleEnabled = input.ScheduleEnabled;
+            existing.RetainLastN     = input.RetainLastN;
+            return existing;
+        }, ct).ConfigureAwait(false);
     }
 
     /// <summary>

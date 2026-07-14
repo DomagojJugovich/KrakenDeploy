@@ -60,15 +60,10 @@ public class DeploymentFreeze : AuditableEntity, ISpaceScoped
     /// </summary>
     public List<Guid> EnvironmentIds { get; set; } = [];
 
-    /// <summary>
-    /// Tag filter (for tenanted deployments). Empty = applies regardless of
-    /// tenant; non-empty = applies only when the deployment's tenant carries
-    /// one of the listed tags (extended-tag-set <c>Tag</c> ids — rename-proof,
-    /// replacing the earlier canonical-name strings). Stored as JSONB column.
-    /// DORMANT: the dispatch gate passes null for this dimension until
-    /// freeze-by-tag matching ships as its own feature.
-    /// </summary>
-    public List<Guid> TagIds { get; set; } = [];
+    // The tag-filter dimension (tag_ids) was dropped in the 2026-07 cleanup: it
+    // was dormant end-to-end (no UI tag picker; the dispatch gate always passed
+    // null), and fix 4's role-assignment scope table deliberately has no tag
+    // dimension. Freeze-by-tag can be reintroduced as its own feature if needed.
 
     /// <summary>
     /// True = soft-disabled (kept on the page but not enforced). The

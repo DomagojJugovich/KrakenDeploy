@@ -151,7 +151,7 @@ public sealed class DeploymentDiagnosisService(
                 Confidence           = confidence,
                 SuggestedFix         = Trim(result.SuggestedFix, 2000),
                 RelevantLogLinesJson = logLinesJson,
-                ModelUsed            = "", // token/model attribution lives in AiCallLog (correlated by deployment id)
+                // Token/model attribution lives in AiCallLog (correlated by deployment id).
             });
         }
         else

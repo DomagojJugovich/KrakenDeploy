@@ -58,14 +58,9 @@ public class IdentityProvider : AuditableEntity
     /// <summary>True = visible on the login page; false = disabled but config retained.</summary>
     public bool IsEnabled { get; set; } = true;
 
-    /// <summary>Optional URL of an icon shown next to the button text.</summary>
-    public string? IconUrl { get; set; }
-
-    /// <summary>
-    /// Display order on the login page. Smaller values render first; ties
-    /// broken by name.
-    /// </summary>
-    public int SortOrder { get; set; }
+    // icon_url and sort_order were dropped in the 2026-07 schema cleanup: neither was
+    // ever written (no dialog field, no service assignment), and login-page ordering
+    // now sorts by Name (which is what the sort_order tie-break already fell back to).
 }
 
 /// <summary>Family of external auth provider — drives endpoint defaults and group-claim parsing.</summary>

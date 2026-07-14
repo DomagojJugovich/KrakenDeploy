@@ -1,6 +1,5 @@
 using KrakenDeploy.Server.Core.Domain.Performance;
 using KrakenDeploy.Server.Data.Services;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
@@ -39,7 +38,7 @@ namespace KrakenDeploy.Server.Data.Jobs;
 /// </summary>
 public sealed class AuditRetentionJob(
     Services.AuditLogService auditLog,
-    IDbContextFactory<KrakenDbContext> dbFactory,
+    SettingsService settingsService,
     PerformanceSettingsService performance,
     FeatureFlagService featureFlags,
     IConfiguration config,
@@ -107,18 +106,16 @@ public sealed class AuditRetentionJob(
     private async Task<int> ResolveRetentionDaysAsync(
         PerformanceSettings settings, CancellationToken ct)
     {
-        // Has the operator saved the Performance page at least once?
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var rowExists = await db.PerformanceSettings
-            .AsNoTracking()
-            .AnyAsync(p => p.Id == PerformanceSettings.SingletonId, ct)
-            .ConfigureAwait(false);
-        if (rowExists)
+        // DB wins when the operator has saved the Performance page at least once
+        // — TryGetAsync returns null only when no document exists yet, which is
+        // how we distinguish "never saved" from "saved a value".
+        var saved = await settingsService.TryGetAsync<PerformanceSettings>(ct: ct).ConfigureAwait(false);
+        if (saved is not null)
         {
             return settings.AuditLogRetentionDays;
         }
 
-        // No row yet — fall back to appsettings, then to the hardcoded default.
+        // No document yet — fall back to appsettings, then to the hardcoded default.
         return config.GetValue<int?>(RetentionDaysConfigKey) ?? DefaultRetentionDays;
     }
 }

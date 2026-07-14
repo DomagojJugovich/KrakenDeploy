@@ -57,9 +57,6 @@ public sealed class AdhocSessionPersistenceTests(PostgresFixture postgres)
                         Status              = AdhocIterationStatus.Completed,
                         Verdict             = AdhocVerdict.AllSucceeded,
                         ResultsJson         = "[{\"targetId\":\"x\",\"exitCode\":0}]",
-                        LlmModel            = "Anthropic/claude-sonnet-4.6",
-                        LlmPromptTokens     = 120,
-                        LlmCompletionTokens = 40,
                     },
                 },
             };

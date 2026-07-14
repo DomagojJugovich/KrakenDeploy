@@ -46,8 +46,8 @@ public sealed class DekRotationWalkTests(PostgresFixture postgres)
         // from a clean slate (CASCADE clears FK dependents like deployments).
         await using var db = postgres.CreateContext();
         await db.Database.ExecuteSqlRawAsync(
-            "TRUNCATE variables, variable_sets, releases, space_ai_settings, " +
-            "identity_providers, smtp_settings, deployment_targets RESTART IDENTITY CASCADE");
+            "TRUNCATE variables, variable_sets, releases, settings, " +
+            "identity_providers, deployment_targets RESTART IDENTITY CASCADE");
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -67,20 +67,24 @@ public sealed class DekRotationWalkTests(PostgresFixture postgres)
         var seededSnap = release.VariableSnapshot.Single(v => v.Name == "ApiKey");
         AesGcmCipher.Decrypt(OldDek, seededSnap.Value).Should().Be("super-secret");
 
+        // Seed the settings-document secrets (SMTP password + AI API key) under
+        // DEK_old via SettingsService — they now live as *Encrypted members inside
+        // the unified `settings` payloads, walked generically by the rotation.
+        var seedSettings = new SettingsService(postgres.ScopeFactory, TimeProvider.System);
+        await seedSettings.SaveAsync(new SpaceAiSettings
+        {
+            ApiKeyEncrypted = AesGcmCipher.Encrypt(OldDek, "ai-provider-key"),
+        }, WellKnown.DefaultSpaceId);
+        await seedSettings.SaveAsync(new SmtpSettings
+        {
+            Host = "smtp.local", FromAddress = "noreply@laus.hr",
+            PasswordEncrypted = AesGcmCipher.Encrypt(OldDek, "smtp-password"),
+        });
+
         // Direct-seed the scalar + offline-drop stores under DEK_old.
         Guid targetId;
         await using (var db = postgres.CreateContext())
         {
-            db.SpaceAiSettings.Add(new SpaceAiSettings
-            {
-                SpaceId = Guid.NewGuid(),
-                ApiKeyEncrypted = AesGcmCipher.Encrypt(OldDek, "ai-provider-key"),
-            });
-            db.SmtpSettings.Add(new SmtpSettings
-            {
-                Host = "smtp.local", FromAddress = "noreply@laus.hr",
-                PasswordEncrypted = AesGcmCipher.Encrypt(OldDek, "smtp-password"),
-            });
             db.IdentityProviders.Add(new IdentityProvider
             {
                 Name = "Entra", Type = IdentityProviderType.AzureAd,
@@ -117,9 +121,8 @@ public sealed class DekRotationWalkTests(PostgresFixture postgres)
         counts.Variables.Should().Be(1);
         counts.SnapshotEntries.Should().Be(1);
         counts.Releases.Should().Be(1);
-        counts.AiSettings.Should().Be(1);
+        counts.Settings.Should().Be(2, "the SMTP password and the AI API key are both settings-document secrets");
         counts.IdentityProviders.Should().Be(1);
-        counts.Smtp.Should().Be(1);
         counts.OfflineDropFields.Should().Be(1);
 
         // ── Assert: everything now decrypts under DEK_new, not DEK_old ────────
@@ -138,10 +141,13 @@ public sealed class DekRotationWalkTests(PostgresFixture postgres)
             AesGcmCipher.Decrypt(NewDek, snap.Value).Should().Be("super-secret",
                 "the JSONB snapshot list was rebuilt + reassigned so the UPDATE persisted");
 
-            var ai = await db.SpaceAiSettings.IgnoreQueryFilters().SingleAsync();
+            // Settings-document secrets read back through a fresh SettingsService
+            // (its own cache is empty, so it reads the re-encrypted payload).
+            var freshSettings = new SettingsService(postgres.ScopeFactory, TimeProvider.System);
+            var ai = await freshSettings.GetAsync<SpaceAiSettings>(WellKnown.DefaultSpaceId);
             AesGcmCipher.Decrypt(NewDek, ai.ApiKeyEncrypted!).Should().Be("ai-provider-key");
 
-            var smtp = await db.SmtpSettings.IgnoreQueryFilters().SingleAsync();
+            var smtp = await freshSettings.GetAsync<SmtpSettings>();
             AesGcmCipher.Decrypt(NewDek, smtp.PasswordEncrypted!).Should().Be("smtp-password");
 
             var idp = await db.IdentityProviders.IgnoreQueryFilters().SingleAsync();

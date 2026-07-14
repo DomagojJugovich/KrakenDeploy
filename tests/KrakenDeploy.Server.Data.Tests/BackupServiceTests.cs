@@ -1,6 +1,7 @@
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Backup;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -25,7 +26,7 @@ public sealed class BackupServiceTests(PostgresFixture postgres)
     {
         await using var db = postgres.CreateContext();
         await db.BackupRuns.ExecuteDeleteAsync();
-        await db.BackupSettings.ExecuteDeleteAsync();
+        await db.Set<Setting>().ExecuteDeleteAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -46,7 +47,7 @@ public sealed class BackupServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task UpsertSettingsAsync_creates_row_on_first_save_with_singleton_id()
+    public async Task UpsertSettingsAsync_creates_single_row_on_first_save()
     {
         var svc = NewSvc();
         var input = new BackupSettings
@@ -59,7 +60,9 @@ public sealed class BackupServiceTests(PostgresFixture postgres)
 
         var saved = await svc.UpsertSettingsAsync(input);
 
-        saved.Id.Should().Be(BackupSettings.SingletonId);
+        await using var db = postgres.CreateContext();
+        (await db.Set<Setting>().CountAsync(s => s.Key == BackupSettings.Key)).Should().Be(1,
+            "the backup config is a single System document — first save creates one row");
         saved.TargetDirectory.Should().Be("/var/lib/kraken/backups");
         saved.ScheduleEnabled.Should().BeTrue();
         saved.ScheduleCron.Should().Be("0 3 * * *");
@@ -265,8 +268,9 @@ public sealed class BackupServiceTests(PostgresFixture postgres)
         var engine = new BackupEngine(config,
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             NullLogger<BackupEngine>.Instance, TimeProvider.System);
-        return new BackupService(postgres, engine,
-            NullLogger<BackupService>.Instance, TimeProvider.System, new NoopAuditLog());
+        return new BackupService(postgres,
+            new SettingsService(postgres.ScopeFactory, TimeProvider.System),
+            engine, NullLogger<BackupService>.Instance, TimeProvider.System, new NoopAuditLog());
     }
 
     /// <summary>
@@ -288,8 +292,9 @@ public sealed class BackupServiceTests(PostgresFixture postgres)
         var engine = new BackupEngine(config,
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             NullLogger<BackupEngine>.Instance, TimeProvider.System);
-        return new BackupService(postgres, engine,
-            NullLogger<BackupService>.Instance, TimeProvider.System, audit ?? new NoopAuditLog());
+        return new BackupService(postgres,
+            new SettingsService(postgres.ScopeFactory, TimeProvider.System),
+            engine, NullLogger<BackupService>.Instance, TimeProvider.System, audit ?? new NoopAuditLog());
     }
 
     [Fact]

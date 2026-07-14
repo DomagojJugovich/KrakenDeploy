@@ -2775,13 +2775,15 @@ public static class Program
                 options,
                 new KrakenDeploy.Server.Data.Spaces.DefaultSpaceContext());
 
-            var row = db.PerformanceSettings
-                .AsNoTracking()
-                .FirstOrDefault(p => p.Id ==
-                    KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings.SingletonId);
+            // Read the System-scoped `performance` settings document off the bare
+            // context (SettingsService's static reader keeps the raw settings query
+            // out of pre-DI startup code). A missing document yields defaults, whose
+            // HangfireWorkerCount is the hardcoded default.
+            var perf = KrakenDeploy.Server.Data.Services.SettingsService
+                .ReadOrDefaultAsync<KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings>(db)
+                .GetAwaiter().GetResult();
 
-            return row?.HangfireWorkerCount
-                ?? KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings.DefaultHangfireWorkerCount;
+            return perf.HangfireWorkerCount;
         }
         catch
         {

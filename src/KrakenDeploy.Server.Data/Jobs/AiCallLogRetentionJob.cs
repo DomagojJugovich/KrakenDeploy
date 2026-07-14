@@ -35,6 +35,7 @@ namespace KrakenDeploy.Server.Data.Jobs;
 /// </summary>
 public sealed class AiCallLogRetentionJob(
     IDbContextFactory<KrakenDbContext> dbFactory,
+    SettingsService settingsService,
     PerformanceSettingsService performance,
     IConfiguration config,
     TimeProvider time,
@@ -89,12 +90,9 @@ public sealed class AiCallLogRetentionJob(
     private async Task<int> ResolveRetentionDaysAsync(
         PerformanceSettings settings, CancellationToken ct)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var rowExists = await db.PerformanceSettings
-            .AsNoTracking()
-            .AnyAsync(p => p.Id == PerformanceSettings.SingletonId, ct)
-            .ConfigureAwait(false);
-        if (rowExists)
+        // DB wins when the operator has saved the Performance page at least once.
+        var saved = await settingsService.TryGetAsync<PerformanceSettings>(ct: ct).ConfigureAwait(false);
+        if (saved is not null)
         {
             return settings.AiCallLogRetentionDays;
         }

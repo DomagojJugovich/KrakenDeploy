@@ -2,7 +2,6 @@ using KrakenDeploy.Server.Core.Domain.Notifications;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using MailKit.Net.Smtp;
 using MailKit.Security;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using MimeKit;
 
@@ -12,35 +11,28 @@ namespace KrakenDeploy.Server.Data.Services;
 /// Server-wide SMTP configuration store + send pipeline.
 ///
 /// <para>
-/// Single-row table, addressed by <see cref="SmtpSettings.SingletonId"/>.
-/// The password is AES-256-GCM-encrypted on persist and decrypted only at
-/// send time — the GET path returns the row with <c>PasswordEncrypted</c>
-/// nulled out so the cipher never reaches the browser. UI sends a null
-/// password on PUT to mean "keep the existing one"; a non-null value
-/// re-encrypts.
+/// Backed by the System-scoped <c>smtp</c> settings document (via
+/// <see cref="SettingsService"/>). The password is AES-256-GCM-encrypted on
+/// persist and decrypted only at send time — the GET path returns the document
+/// with <c>PasswordEncrypted</c> nulled out so the cipher never reaches the
+/// browser. UI sends a null password on PUT to mean "keep the existing one"; a
+/// non-null value re-encrypts.
 /// </para>
 /// </summary>
 public sealed class SmtpSettingsService(
-    IDbContextFactory<KrakenDbContext> dbFactory,
+    SettingsService settings,
     IEncryptionService encryption,
     ILogger<SmtpSettingsService> logger)
 {
-    private static readonly Guid SingletonId = SmtpSettings.SingletonId;
-
     /// <summary>
-    /// Returns the persisted settings or <see langword="null"/> if no row
-    /// exists yet. The returned record has <c>PasswordEncrypted</c> set to
-    /// <see langword="null"/> regardless of DB state — callers that need
-    /// the cleartext password go through <see cref="GetDecryptedSettingsAsync"/>
-    /// instead.
+    /// Returns the persisted settings or <see langword="null"/> if none have been
+    /// saved yet. The returned document has <c>PasswordEncrypted</c> set to
+    /// <see langword="null"/> regardless of DB state — callers that need the
+    /// cleartext password go through <see cref="GetDecryptedSettingsAsync"/>.
     /// </summary>
     public async Task<SmtpSettings?> GetAsync(CancellationToken ct = default)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var row = await db.SmtpSettings
-            .AsNoTracking()
-            .FirstOrDefaultAsync(s => s.Id == SingletonId, ct)
-            .ConfigureAwait(false);
+        var row = await settings.TryGetAsync<SmtpSettings>(ct: ct).ConfigureAwait(false);
         if (row is null) { return null; }
         // Belt-and-braces: never leak the cipher beyond the data layer.
         row.PasswordEncrypted = null;
@@ -48,18 +40,14 @@ public sealed class SmtpSettingsService(
     }
 
     /// <summary>
-    /// Internal-use overload that returns the row WITH the cipher attached.
-    /// Used by the send pipeline only — explicitly different method so it's
-    /// hard to accidentally bind to the public GET surface.
+    /// Internal-use overload that returns the document WITH the decrypted
+    /// password. Used by the send pipeline only — explicitly different method so
+    /// it's hard to accidentally bind to the public GET surface.
     /// </summary>
     public async Task<(SmtpSettings Settings, string? Password)?> GetDecryptedSettingsAsync(
         CancellationToken ct = default)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var row = await db.SmtpSettings
-            .AsNoTracking()
-            .FirstOrDefaultAsync(s => s.Id == SingletonId, ct)
-            .ConfigureAwait(false);
+        var row = await settings.TryGetAsync<SmtpSettings>(ct: ct).ConfigureAwait(false);
         if (row is null) { return null; }
 
         string? password = null;
@@ -86,45 +74,37 @@ public sealed class SmtpSettingsService(
     {
         ArgumentNullException.ThrowIfNull(input);
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var existing = await db.SmtpSettings
-            .FirstOrDefaultAsync(s => s.Id == SingletonId, ct)
-            .ConfigureAwait(false);
-
-        if (existing is null)
+        var saved = await settings.MutateAsync<SmtpSettings>(scopeId: null, existing =>
         {
-            existing = new SmtpSettings { Id = SingletonId };
-            db.SmtpSettings.Add(existing);
-        }
+            existing.Enabled         = input.Enabled;
+            existing.Host            = input.Host.Trim();
+            existing.Port            = input.Port;
+            existing.TlsMode         = input.TlsMode;
+            existing.Username        = string.IsNullOrWhiteSpace(input.Username) ? null : input.Username.Trim();
+            existing.FromAddress     = input.FromAddress.Trim();
+            existing.FromDisplayName = string.IsNullOrWhiteSpace(input.FromDisplayName) ? null : input.FromDisplayName.Trim();
+            existing.TimeoutSeconds  = input.TimeoutSeconds <= 0 ? 30 : input.TimeoutSeconds;
 
-        existing.Enabled         = input.Enabled;
-        existing.Host            = input.Host.Trim();
-        existing.Port            = input.Port;
-        existing.TlsMode         = input.TlsMode;
-        existing.Username        = string.IsNullOrWhiteSpace(input.Username) ? null : input.Username.Trim();
-        existing.FromAddress     = input.FromAddress.Trim();
-        existing.FromDisplayName = string.IsNullOrWhiteSpace(input.FromDisplayName) ? null : input.FromDisplayName.Trim();
-        existing.TimeoutSeconds  = input.TimeoutSeconds <= 0 ? 30 : input.TimeoutSeconds;
+            if (newPassword is null)
+            {
+                // Preserve existing — operator didn't touch the password field.
+            }
+            else if (newPassword.Length == 0)
+            {
+                existing.PasswordEncrypted = null;
+            }
+            else
+            {
+                existing.PasswordEncrypted = encryption.Encrypt(newPassword);
+            }
 
-        if (newPassword is null)
-        {
-            // Preserve existing — operator didn't touch the password field.
-        }
-        else if (newPassword.Length == 0)
-        {
-            existing.PasswordEncrypted = null;
-        }
-        else
-        {
-            existing.PasswordEncrypted = encryption.Encrypt(newPassword);
-        }
+            return existing;
+        }, ct).ConfigureAwait(false);
 
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-
-        // Strip the cipher before returning so the caller can hand the row
+        // Strip the cipher before returning so the caller can hand the document
         // straight back to the UI.
-        existing.PasswordEncrypted = null;
-        return existing;
+        saved.PasswordEncrypted = null;
+        return saved;
     }
 
     /// <summary>

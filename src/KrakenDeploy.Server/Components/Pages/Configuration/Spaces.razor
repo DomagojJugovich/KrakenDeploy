@@ -47,9 +47,7 @@
                 <RadzenBadge Text="@s.Status.ToString()"
                              BadgeStyle="@(s.Status == SpaceStatus.Active
                                  ? BadgeStyle.Success
-                                 : s.Status == SpaceStatus.Suspended
-                                     ? BadgeStyle.Warning
-                                     : BadgeStyle.Secondary)" />
+                                 : BadgeStyle.Secondary)" />
             </Template>
         </RadzenDataGridColumn>
         <RadzenDataGridColumn TItem="Space" Title="" Width="130px"

@@ -557,9 +557,7 @@
     }
 
     /// <summary>The freeze blocking this dialog's scope at <paramref name="atUtc"/>
-    /// (null = now). The tenant-tag dimension is fed only when exactly one
-    /// tenant is selected — project/environment scoping covers the rest, and
-    /// tag-scoped freezes cannot be authored in the UI yet.</summary>
+    /// (null = now). Freezes scope by project + environment only.</summary>
     private async Task<DeploymentFreeze?> FindFreezeAsync(Guid envId, DateTimeOffset? atUtc)
     {
         if (_release is null)
@@ -567,18 +565,8 @@
             return null;
         }
 
-        List<Guid>? tenantTagIds = null;
-        if (SelectedTenants is [var single])
-        {
-            var applications = await TagSvc.GetForEntityAsync(TaggableEntityKind.Tenant, single.Id);
-            tenantTagIds = applications
-                .Where(a => a.TagId is not null)
-                .Select(a => a.TagId!.Value)
-                .ToList();
-        }
-
         return await FreezeSvc.FindBlockingFreezeAsync(
-            SpaceCtx.CurrentSpaceId, _release.ProjectId, envId, tenantTagIds, atUtc);
+            SpaceCtx.CurrentSpaceId, _release.ProjectId, envId, atUtc);
     }
 
     /// <summary>Re-derives every target selection to "all applicable" — called

@@ -217,18 +217,10 @@ public sealed class DeploymentWorker(
             // the time we get here, the deployment has already been
             // authorised to run, so we just block on raw freeze match.
             var freezeService = scope.ServiceProvider.GetRequiredService<DeploymentFreezeService>();
-            // NOTE: tenant-tag matching is intentionally left empty for now.
-            // The Tenant aggregate doesn't carry a flat canonical-name
-            // collection (tags live on TagSets) — wiring that resolution
-            // here would require an extra join per dispatch. Project +
-            // Environment scoping covers the common freeze use cases; the
-            // tenant-tag dimension can light up when the tenant rendering
-            // path needs the same lookup anyway.
             var blockingFreeze = await freezeService.FindBlockingFreezeAsync(
                 spaceId:       deployment.Release.Project.SpaceId,
                 projectId:     deployment.Release.ProjectId,
                 environmentId: deployment.EnvironmentId,
-                tenantTagIds:  null,
                 ct:            ct).ConfigureAwait(false);
             if (blockingFreeze is not null)
             {

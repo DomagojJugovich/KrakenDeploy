@@ -18,8 +18,7 @@ public class IdentityProviderService(
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         return await db.IdentityProviders
-            .OrderBy(p => p.SortOrder)
-            .ThenBy(p => p.Name)
+            .OrderBy(p => p.Name)
             .ToListAsync(ct);
     }
 

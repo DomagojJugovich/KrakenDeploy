@@ -1,105 +1,45 @@
 using KrakenDeploy.Server.Core.Domain.Maintenance;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace KrakenDeploy.Server.Data.Services;
 
 /// <summary>
-/// Read + write surface for the instance-wide maintenance flag.
-///
-/// <para>
-/// The middleware hits <see cref="GetStateAsync"/> once per incoming
-/// request, so the state is cached in-memory with a short TTL.
-/// Writes (<see cref="EnableAsync"/> / <see cref="DisableAsync"/>)
-/// invalidate the cache so the gate takes effect within the same
-/// request, not after a TTL window.
-/// </para>
+/// Read + write surface for the instance-wide maintenance flag. Thin wrapper over
+/// the System-scoped <c>maintenance</c> settings document (via
+/// <see cref="SettingsService"/>, which owns the short-TTL cache the per-request
+/// maintenance middleware relies on).
 /// </summary>
-public sealed class MaintenanceModeService(
-    IServiceScopeFactory scopeFactory,
-    TimeProvider time)
+public sealed class MaintenanceModeService(SettingsService settings, TimeProvider time)
 {
-    private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(10);
-
-    private readonly object _gate = new();
-    private MaintenanceState? _cached;
-    private DateTimeOffset _refreshedAt;
-
-    /// <summary>Cached snapshot of the singleton row. Returns the "off"
-    /// default when no row exists yet (first run).</summary>
+    /// <summary>Current maintenance state. Returns "off" when never configured.</summary>
     public async Task<MaintenanceState> GetStateAsync(CancellationToken ct = default)
     {
-        var now = time.GetUtcNow();
-        lock (_gate)
+        var doc = await settings.GetAsync<MaintenanceSettings>(ct: ct).ConfigureAwait(false);
+        return doc.Enabled
+            ? new MaintenanceState(true, doc.Reason, doc.EnabledByUserId, doc.EnabledUtc)
+            : MaintenanceState.Off;
+    }
+
+    public Task EnableAsync(string? reason, Guid? userId, CancellationToken ct = default)
+        => settings.MutateAsync<MaintenanceSettings>(scopeId: null, m =>
         {
-            if (_cached is { } cached && (now - _refreshedAt) < CacheTtl)
-            {
-                return cached;
-            }
-        }
+            m.Enabled         = true;
+            m.Reason          = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
+            m.EnabledByUserId = userId;
+            m.EnabledUtc      = time.GetUtcNow();
+            return m;
+        }, ct);
 
-        await using var scope = scopeFactory.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
-        var row = await db.MaintenanceSettings
-            .AsNoTracking()
-            .FirstOrDefaultAsync(m => m.Id == MaintenanceSettings.SingletonId, ct)
-            .ConfigureAwait(false);
-
-        var fresh = row is null
-            ? MaintenanceState.Off
-            : new MaintenanceState(row.Enabled, row.Reason, row.EnabledByUserId, row.EnabledUtc);
-
-        lock (_gate)
+    public Task DisableAsync(CancellationToken ct = default)
+        => settings.MutateAsync<MaintenanceSettings>(scopeId: null, m =>
         {
-            _cached = fresh;
-            _refreshedAt = time.GetUtcNow();
-            return _cached;
-        }
-    }
+            m.Enabled         = false;
+            m.Reason          = null;
+            m.EnabledByUserId = null;
+            m.EnabledUtc      = null;
+            return m;
+        }, ct);
 
-    public async Task EnableAsync(string? reason, Guid? userId, CancellationToken ct = default)
-    {
-        await using var scope = scopeFactory.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
-        var row = await db.MaintenanceSettings
-            .FirstOrDefaultAsync(m => m.Id == MaintenanceSettings.SingletonId, ct)
-            .ConfigureAwait(false);
-
-        if (row is null)
-        {
-            row = new MaintenanceSettings { Id = MaintenanceSettings.SingletonId };
-            db.MaintenanceSettings.Add(row);
-        }
-        row.Enabled         = true;
-        row.Reason          = string.IsNullOrWhiteSpace(reason) ? null : reason.Trim();
-        row.EnabledByUserId = userId;
-        row.EnabledUtc      = time.GetUtcNow();
-
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        InvalidateCache();
-    }
-
-    public async Task DisableAsync(CancellationToken ct = default)
-    {
-        await using var scope = scopeFactory.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
-        var row = await db.MaintenanceSettings
-            .FirstOrDefaultAsync(m => m.Id == MaintenanceSettings.SingletonId, ct)
-            .ConfigureAwait(false);
-        if (row is null) { return; }
-
-        row.Enabled         = false;
-        row.Reason          = null;
-        row.EnabledByUserId = null;
-        row.EnabledUtc      = null;
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-        InvalidateCache();
-    }
-
-    public void InvalidateCache()
-    {
-        lock (_gate) { _cached = null; }
-    }
+    public void InvalidateCache() => settings.Invalidate<MaintenanceSettings>();
 }
 
 /// <summary>Immutable snapshot of the maintenance flag — what the

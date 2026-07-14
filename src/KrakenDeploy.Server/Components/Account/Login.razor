@@ -215,8 +215,7 @@
 
         _oidcProviders = (await IdpSvc.GetAllAsync())
             .Where(p => p.IsEnabled)
-            .OrderBy(p => p.SortOrder)
-            .ThenBy(p => p.Name)
+            .OrderBy(p => p.Name)
             .ToList();
     }
 

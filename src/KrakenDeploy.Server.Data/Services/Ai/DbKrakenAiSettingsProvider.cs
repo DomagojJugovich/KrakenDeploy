@@ -2,7 +2,6 @@ using KrakenDeploy.Ai;
 using KrakenDeploy.Server.Core.Domain.Ai;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.Variables;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace KrakenDeploy.Server.Data.Services.Ai;
@@ -34,7 +33,7 @@ namespace KrakenDeploy.Server.Data.Services.Ai;
 /// </para>
 /// </remarks>
 public sealed class DbKrakenAiSettingsProvider(
-    IDbContextFactory<KrakenDbContext>   dbFactory,
+    SettingsService                        settings,
     ISpaceContext                          spaceContext,
     IEncryptionService                     encryption,
     ILogger<DbKrakenAiSettingsProvider>    logger)
@@ -52,15 +51,9 @@ public sealed class DbKrakenAiSettingsProvider(
             return new KrakenAiSettings();
         }
 
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-
-        // The global query filter (SpaceScopingInterceptor) already
-        // restricts to the current Space, so a simple FirstOrDefault
-        // returns the row (or null) for THIS Space.
-        var row = await db.SpaceAiSettings
-            .AsNoTracking()
-            .FirstOrDefaultAsync(ct)
-            .ConfigureAwait(false);
+        // Read THIS Space's AI settings document (scoped by explicit Space id;
+        // the settings table is not ISpaceScoped so caging lives in the service).
+        var row = await settings.TryGetAsync<SpaceAiSettings>(spaceId, ct).ConfigureAwait(false);
 
         if (row is null)
         {

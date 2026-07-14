@@ -44,8 +44,9 @@ public enum SpaceStatus
     /// <summary>Normal operation.</summary>
     Active = 0,
 
-    /// <summary>Read-only — users can sign in and view but not modify.</summary>
-    Suspended = 1,
+    // Suspended (=1) was removed in the 2026-07 cleanup — it was never assigned
+    // anywhere. The value 1 is intentionally left as a gap (not reused) so any
+    // persisted Archived rows keep their stored ordinal 2.
 
     /// <summary>Marked for deletion; data purge runs asynchronously.</summary>
     Archived = 2,

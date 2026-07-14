@@ -14,5 +14,6 @@ namespace KrakenDeploy.Server.Data.Tests;
 internal static class NoopMaintenancePause
 {
     public static MaintenancePause For(IServiceScopeFactory scopeFactory)
-        => new(new MaintenanceModeService(scopeFactory, TimeProvider.System));
+        => new(new MaintenanceModeService(
+            new SettingsService(scopeFactory, TimeProvider.System), TimeProvider.System));
 }

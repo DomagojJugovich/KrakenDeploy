@@ -79,7 +79,6 @@ public sealed class DeploymentFreezeService(
         existing.EndUtc         = input.EndUtc;
         existing.ProjectIds     = [.. input.ProjectIds];
         existing.EnvironmentIds = [.. input.EnvironmentIds];
-        existing.TagIds         = [.. input.TagIds];
         existing.Disabled       = input.Disabled;
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
@@ -114,10 +113,6 @@ public sealed class DeploymentFreezeService(
     /// <param name="spaceId">Deployment's owning Space.</param>
     /// <param name="projectId">Deployment's project.</param>
     /// <param name="environmentId">Deployment's target environment.</param>
-    /// <param name="tenantTagIds">Tag ids applied to the deployment's tenant
-    /// (extended tag sets). Empty for untenanted deployments. The dispatch
-    /// gate currently passes null — the tag dimension is dormant until
-    /// freeze-by-tag matching ships.</param>
     /// <param name="atUtc">The instant to evaluate the freeze windows at —
     /// defaults to now (the dispatch gate). The deploy dialog passes the
     /// scheduled start so a deployment scheduled INTO a freeze window is
@@ -128,13 +123,11 @@ public sealed class DeploymentFreezeService(
         Guid spaceId,
         Guid projectId,
         Guid environmentId,
-        IReadOnlyCollection<Guid>? tenantTagIds = null,
         DateTimeOffset? atUtc = null,
         CancellationToken ct = default)
     {
         var at = atUtc ?? time.GetUtcNow();
         var freezes = await GetActiveFreezesForSpaceAsync(spaceId, ct).ConfigureAwait(false);
-        var tags = tenantTagIds ?? [];
 
         foreach (var freeze in freezes)
         {
@@ -147,11 +140,6 @@ public sealed class DeploymentFreezeService(
                 continue;
             }
             if (freeze.EnvironmentIds.Count > 0 && !freeze.EnvironmentIds.Contains(environmentId))
-            {
-                continue;
-            }
-            if (freeze.TagIds.Count > 0 &&
-                !freeze.TagIds.Any(tags.Contains))
             {
                 continue;
             }

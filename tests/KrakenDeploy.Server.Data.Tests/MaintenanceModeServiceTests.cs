@@ -1,5 +1,6 @@
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Maintenance;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Data.Jobs;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
@@ -22,7 +23,7 @@ public sealed class MaintenanceModeServiceTests(PostgresFixture postgres)
     public async Task InitializeAsync()
     {
         await using var db = postgres.CreateContext();
-        await db.MaintenanceSettings.ExecuteDeleteAsync();
+        await db.Set<Setting>().ExecuteDeleteAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -164,7 +165,7 @@ public sealed class MaintenanceModeServiceTests(PostgresFixture postgres)
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private MaintenanceModeService NewSvc()
-        => new(postgres.ScopeFactory, TimeProvider.System);
+        => new(new SettingsService(postgres.ScopeFactory, TimeProvider.System), TimeProvider.System);
 
     private sealed class CountingLogger : Microsoft.Extensions.Logging.ILogger<MaintenancePause>
     {

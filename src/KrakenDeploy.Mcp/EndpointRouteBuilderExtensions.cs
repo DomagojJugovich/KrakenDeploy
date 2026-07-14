@@ -168,12 +168,16 @@ public sealed class McpEnabledGateMiddleware(
             return cached.Enabled;
         }
 
-        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
-        var enabled = await db.SpaceAiSettings
-            .IgnoreQueryFilters() // the gate looks across the SpaceScopingInterceptor
-            .Where(s => s.SpaceId == spaceId)
-            .Select(s => s.McpEnabled)
-            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        // Read the Space's AI settings document by explicit Space id. The
+        // `settings` table is not ISpaceScoped, so SettingsService cages by the
+        // passed id (no query filter to bypass); a missing document yields a
+        // default (McpEnabled = false) — the gate stays fail-closed.
+        var settings = scope.ServiceProvider
+            .GetRequiredService<KrakenDeploy.Server.Data.Services.SettingsService>();
+        var doc = await settings
+            .GetAsync<KrakenDeploy.Server.Core.Domain.Ai.SpaceAiSettings>(spaceId, ct)
+            .ConfigureAwait(false);
+        var enabled = doc.McpEnabled;
 
         Cache[key] = (enabled, DateTimeOffset.UtcNow);
         return enabled;

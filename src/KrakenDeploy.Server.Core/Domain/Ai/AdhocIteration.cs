@@ -115,18 +115,9 @@ public class AdhocIteration : Entity, ISpaceScoped
     /// outcome (M11.E.8 / M11.E.13). Shown on the iteration card.</summary>
     public string Narrative { get; set; } = string.Empty;
 
-    // ── Cost attribution ────────────────────────────────────────────────────
-
-    /// <summary>Provider/model that produced this iteration's script, e.g.
-    /// <c>Anthropic/claude-sonnet-4.6</c>.</summary>
-    public string LlmModel { get; set; } = string.Empty;
-
-    /// <summary>Prompt tokens consumed across this iteration's LLM calls
-    /// (generation + verdict). Counts against the Space's monthly cap.</summary>
-    public int LlmPromptTokens { get; set; }
-
-    /// <summary>Completion tokens consumed across this iteration's LLM calls.</summary>
-    public int LlmCompletionTokens { get; set; }
+    // Cost attribution (model + token counts) lives in AiCallLog; the never-read
+    // llm_model/llm_prompt_tokens/llm_completion_tokens columns were dropped in the
+    // 2026-07 schema cleanup.
 }
 
 /// <summary>Lifecycle of an <see cref="AdhocIteration"/>. Stored as int (additive).</summary>

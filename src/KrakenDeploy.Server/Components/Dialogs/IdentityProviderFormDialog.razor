@@ -98,8 +98,15 @@
     private string               _error         = "";
     private bool                 _busy;
 
+    // Only OIDC-family providers are implemented — every enabled provider is
+    // registered via AddOpenIdConnect (see OidcRegistrar). Ldap and
+    // ActiveDirectoryFederation have no handler, so offering them here produces a
+    // broken OIDC registration; keep them out of the picker (the enum values
+    // remain for storage/back-compat).
     private static readonly IReadOnlyList<object> _types =
         Enum.GetValues<IdentityProviderType>()
+            .Where(t => t is not (IdentityProviderType.Ldap
+                              or IdentityProviderType.ActiveDirectoryFederation))
             .Select(t => new { Text = t.ToString(), Value = t })
             .ToList<object>();
 

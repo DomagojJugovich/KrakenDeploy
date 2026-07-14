@@ -1,13 +1,15 @@
-using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Settings;
 
 namespace KrakenDeploy.Server.Core.Domain.Ai;
 
 /// <summary>
-/// Per-Space AI configuration (Phase M11.A.6). One row per Space; the
-/// settings page GET returns this row when present and a default-shaped
-/// record (<see cref="Provider"/> = <see cref="KrakenAiProviderValue.Disabled"/>,
-/// all feature flags off) when absent — Spaces that never use AI never
-/// allocate a row.
+/// Per-Space AI configuration (Phase M11.A.6). A Space-scoped
+/// <see cref="ISettingsDocument"/> (key <c>"ai"</c>) in the unified
+/// <c>settings</c> table — one document per Space, keyed by
+/// <c>scope_id = SpaceId</c>. The settings page GET returns the document when
+/// present and a default-shaped record (<see cref="Provider"/> =
+/// <see cref="KrakenAiProviderValue.Disabled"/>, all feature flags off) when
+/// absent — Spaces that never use AI never allocate a row.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -22,15 +24,18 @@ namespace KrakenDeploy.Server.Core.Domain.Ai;
 /// audit event on every call.
 /// </para>
 /// <para>
-/// <strong>Unique index</strong> on <see cref="ISpaceScoped.SpaceId"/>
-/// enforces the 1-to-1 with Space at the DB level — multiple settings
-/// rows for one Space would be a bug.
+/// Space scoping is enforced by <c>SettingsService</c> (the owning Space id is
+/// the <c>settings.scope_id</c>); a unique index on (scope_type, scope_id, key)
+/// enforces the 1-to-1 with Space at the DB level.
 /// </para>
 /// </remarks>
-public class SpaceAiSettings : AuditableEntity, ISpaceScoped
+public class SpaceAiSettings : ISettingsDocument
 {
-    /// <summary>FK to the owning Space. Auto-stamped by SpaceScopingInterceptor.</summary>
-    public Guid SpaceId { get; set; }
+    /// <inheritdoc />
+    public static string Key => "ai";
+
+    /// <inheritdoc />
+    public static SettingsScope Scope => SettingsScope.Space;
 
     /// <summary>
     /// <see cref="KrakenAiProviderValue"/> as a string for forward-compat

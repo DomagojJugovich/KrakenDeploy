@@ -164,10 +164,6 @@
         parts.Add(f.EnvironmentIds.Count == 0
             ? "all environments"
             : $"{f.EnvironmentIds.Count} environment{(f.EnvironmentIds.Count == 1 ? "" : "s")}");
-        if (f.TagIds.Count > 0)
-        {
-            parts.Add($"{f.TagIds.Count} tag{(f.TagIds.Count == 1 ? "" : "s")}");
-        }
         return string.Join(" × ", parts);
     }
 }

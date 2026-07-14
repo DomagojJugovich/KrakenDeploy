@@ -119,9 +119,6 @@
                 EndUtc         = Existing.EndUtc,
                 ProjectIds     = [.. Existing.ProjectIds],
                 EnvironmentIds = [.. Existing.EnvironmentIds],
-                // Dormant tag dimension — carried over untouched (no picker;
-                // freeze-by-tag matching is a future feature).
-                TagIds         = [.. Existing.TagIds],
                 Disabled       = Existing.Disabled,
             };
             _startLocal = Existing.StartUtc.UtcDateTime;

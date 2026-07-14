@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Notifications;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Data.Encryption;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
@@ -26,7 +27,7 @@ public sealed class SmtpSettingsServiceTests(PostgresFixture postgres)
     public async Task InitializeAsync()
     {
         await using var db = postgres.CreateContext();
-        await db.SmtpSettings.ExecuteDeleteAsync();
+        await db.Set<Setting>().ExecuteDeleteAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -39,14 +40,15 @@ public sealed class SmtpSettingsServiceTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task UpsertAsync_creates_row_with_singleton_id_on_first_save()
+    public async Task UpsertAsync_creates_single_row_on_first_save()
     {
         var svc = NewSvc();
 
         var saved = await svc.UpsertAsync(SampleSettings(), newPassword: "hunter2");
 
-        saved.Id.Should().Be(SmtpSettings.SingletonId,
-            "the table is single-row — every save targets the fixed singleton id");
+        await using var db = postgres.CreateContext();
+        (await db.Set<Setting>().CountAsync(s => s.Key == SmtpSettings.Key)).Should().Be(1,
+            "the SMTP config is a single System document — every save targets one row");
         saved.PasswordEncrypted.Should().BeNull(
             "the return value strips the cipher so callers can hand it " +
             "straight back to the UI");
@@ -61,7 +63,7 @@ public sealed class SmtpSettingsServiceTests(PostgresFixture postgres)
         // Read raw from the DB — bypass the service's strip-the-cipher
         // logic to confirm it actually went through encryption.
         await using var db = postgres.CreateContext();
-        var raw = await db.SmtpSettings.FirstAsync();
+        var raw = await SettingsService.ReadOrDefaultAsync<SmtpSettings>(db);
 
         raw.PasswordEncrypted.Should().NotBeNullOrEmpty();
         raw.PasswordEncrypted.Should().NotBe("hunter2",
@@ -118,7 +120,7 @@ public sealed class SmtpSettingsServiceTests(PostgresFixture postgres)
             "empty-string is the explicit 'clear' signal");
 
         await using var db = postgres.CreateContext();
-        var raw = await db.SmtpSettings.FirstAsync();
+        var raw = await SettingsService.ReadOrDefaultAsync<SmtpSettings>(db);
         raw.PasswordEncrypted.Should().BeNull();
     }
 
@@ -226,7 +228,7 @@ public sealed class SmtpSettingsServiceTests(PostgresFixture postgres)
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private SmtpSettingsService NewSvc() =>
-        new(postgres,
+        new(new SettingsService(postgres.ScopeFactory, TimeProvider.System),
             TestCrypto.Service(Base64Key),
             NullLogger<SmtpSettingsService>.Instance);
 

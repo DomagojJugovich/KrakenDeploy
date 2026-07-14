@@ -1,5 +1,6 @@
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Features;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
 
@@ -19,7 +20,7 @@ public sealed class FeatureFlagServiceTests(PostgresFixture postgres)
     public async Task InitializeAsync()
     {
         await using var db = postgres.CreateContext();
-        await db.FeatureFlags.ExecuteDeleteAsync();
+        await db.Set<Setting>().ExecuteDeleteAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -71,9 +72,11 @@ public sealed class FeatureFlagServiceTests(PostgresFixture postgres)
 
         await svc.SetAsync("feeds.step-template-catalog", enabled: false);
 
-        await using var db = postgres.CreateContext();
-        var rows = await db.FeatureFlags.ToListAsync();
-        rows.Should().ContainSingle()
+        // The single System "features" document now carries the override map;
+        // a non-default toggle adds exactly one entry keyed by the flag.
+        var doc = await new SettingsService(postgres.ScopeFactory, TimeProvider.System)
+            .GetAsync<FeatureFlagsDocument>();
+        doc.Overrides.Should().ContainSingle()
             .Which.Key.Should().Be("feeds.step-template-catalog");
     }
 
@@ -89,9 +92,10 @@ public sealed class FeatureFlagServiceTests(PostgresFixture postgres)
         await svc.SetAsync("feeds.step-template-catalog", enabled: false);
         await svc.SetAsync("feeds.step-template-catalog", enabled: true); // back to default
 
-        await using var db = postgres.CreateContext();
-        (await db.FeatureFlags.CountAsync()).Should().Be(0,
-            "toggling back to the catalogue default must delete the override row");
+        var doc = await new SettingsService(postgres.ScopeFactory, TimeProvider.System)
+            .GetAsync<FeatureFlagsDocument>();
+        doc.Overrides.Should().BeEmpty(
+            "toggling back to the catalogue default must remove the override entry");
     }
 
     [Fact]
@@ -103,8 +107,9 @@ public sealed class FeatureFlagServiceTests(PostgresFixture postgres)
 
         await svc.SetAsync("feeds.step-template-catalog", enabled: true); // default is true
 
-        await using var db = postgres.CreateContext();
-        (await db.FeatureFlags.CountAsync()).Should().Be(0);
+        var doc = await new SettingsService(postgres.ScopeFactory, TimeProvider.System)
+            .GetAsync<FeatureFlagsDocument>();
+        doc.Overrides.Should().BeEmpty();
     }
 
     [Fact]
@@ -166,5 +171,5 @@ public sealed class FeatureFlagServiceTests(PostgresFixture postgres)
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private FeatureFlagService NewSvc() =>
-        new(postgres.ScopeFactory, new BuiltInFeatureCatalog(), TimeProvider.System);
+        new(new SettingsService(postgres.ScopeFactory, TimeProvider.System), new BuiltInFeatureCatalog());
 }

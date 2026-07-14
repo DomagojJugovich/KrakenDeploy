@@ -40,6 +40,5 @@ public sealed class DeploymentDiagnosisConfiguration
         // jsonb display blob — relevant log lines. Bounded by the assembler
         // (a handful of lines) but the column is unconstrained text.
         builder.Property(x => x.RelevantLogLinesJson).HasColumnType("jsonb").IsRequired();
-        builder.Property(x => x.ModelUsed).HasMaxLength(256);
     }
 }

@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using KrakenDeploy.Server.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -12,9 +13,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace KrakenDeploy.Server.Data.Migrations
 {
     [DbContext(typeof(KrakenDbContext))]
-    partial class KrakenDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260714095031_ConsolidateSettingsTables")]
+    partial class ConsolidateSettingsTables
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -80,6 +83,20 @@ namespace KrakenDeploy.Server.Data.Migrations
                     b.Property<int>("IterNumber")
                         .HasColumnType("integer")
                         .HasColumnName("iter_number");
+
+                    b.Property<int>("LlmCompletionTokens")
+                        .HasColumnType("integer")
+                        .HasColumnName("llm_completion_tokens");
+
+                    b.Property<string>("LlmModel")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("llm_model");
+
+                    b.Property<int>("LlmPromptTokens")
+                        .HasColumnType("integer")
+                        .HasColumnName("llm_prompt_tokens");
 
                     b.Property<string>("Narrative")
                         .IsRequired()
@@ -303,6 +320,10 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("id");
 
+                    b.Property<int>("CompletionTokens")
+                        .HasColumnType("integer")
+                        .HasColumnName("completion_tokens");
+
                     b.Property<int>("Confidence")
                         .HasColumnType("integer")
                         .HasColumnName("confidence");
@@ -315,6 +336,12 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("deployment_id");
 
+                    b.Property<string>("ModelUsed")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("model_used");
+
                     b.Property<DateTimeOffset?>("ModifiedUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("modified_utc");
@@ -324,6 +351,10 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasMaxLength(2000)
                         .HasColumnType("character varying(2000)")
                         .HasColumnName("probable_cause");
+
+                    b.Property<int>("PromptTokens")
+                        .HasColumnType("integer")
+                        .HasColumnName("prompt_tokens");
 
                     b.Property<string>("RelevantLogLinesJson")
                         .IsRequired()
@@ -1235,6 +1266,11 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("start_utc");
 
+                    b.Property<string>("TagIds")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("tag_ids");
+
                     b.HasKey("Id")
                         .HasName("pk_deployment_freezes");
 
@@ -1988,6 +2024,11 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnType("character varying(128)")
                         .HasColumnName("group_claim_name");
 
+                    b.Property<string>("IconUrl")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)")
+                        .HasColumnName("icon_url");
+
                     b.Property<bool>("IsEnabled")
                         .HasColumnType("boolean")
                         .HasColumnName("is_enabled");
@@ -2007,6 +2048,10 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasMaxLength(1024)
                         .HasColumnType("character varying(1024)")
                         .HasColumnName("scopes");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer")
+                        .HasColumnName("sort_order");
 
                     b.Property<int>("Type")
                         .HasColumnType("integer")

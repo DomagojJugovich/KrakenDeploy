@@ -218,10 +218,8 @@ public class IdentityProviderConfiguration : IEntityTypeConfiguration<IdentityPr
         builder.Property(x => x.ClientSecretEncrypted).HasMaxLength(2048);
         builder.Property(x => x.Scopes).HasMaxLength(1024).IsRequired();
         builder.Property(x => x.GroupClaimName).HasMaxLength(128).IsRequired();
-        builder.Property(x => x.IconUrl).HasMaxLength(2048);
         builder.Property(x => x.IsEnabled).IsRequired();
         builder.Property(x => x.AutoProvisionUsers).IsRequired();
-        builder.Property(x => x.SortOrder).IsRequired();
 
         builder.HasOne(x => x.DefaultTeam)
             .WithMany()

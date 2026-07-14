@@ -234,34 +234,8 @@ public sealed class DeploymentFreezeServiceTests(PostgresFixture postgres)
             .Should().BeNull();
     }
 
-    [Fact]
-    public async Task Tag_dimension_matches_by_id_and_stays_dormant_when_no_tags_supplied()
-    {
-        // Extended tag sets: the freeze tag dimension holds Tag GUIDs
-        // (rename-proof) instead of canonical-name strings. Pinning the
-        // OR-within-dimension semantics + the dormant-caller behaviour
-        // (the dispatch gate passes null → a tag-scoped freeze never matches).
-        var svc = NewSvc();
-        var tagId = Guid.NewGuid();
-        var input = SampleFreeze();
-        input.TagIds = [tagId];
-        await svc.CreateAsync(input);
-
-        (await svc.FindBlockingFreezeAsync(
-                WellKnown.DefaultSpaceId, Guid.NewGuid(), Guid.NewGuid(),
-                tenantTagIds: [tagId]))
-            .Should().NotBeNull("the deployment's tenant carries the freeze's tag");
-
-        (await svc.FindBlockingFreezeAsync(
-                WellKnown.DefaultSpaceId, Guid.NewGuid(), Guid.NewGuid(),
-                tenantTagIds: [Guid.NewGuid()]))
-            .Should().BeNull("a non-matching tag set lets the deployment through");
-
-        (await svc.FindBlockingFreezeAsync(
-                WellKnown.DefaultSpaceId, Guid.NewGuid(), Guid.NewGuid()))
-            .Should().BeNull("a tag-scoped freeze does not match when the caller " +
-                             "supplies no tags (the dispatch gate's dormant path)");
-    }
+    // (The freeze tag dimension was dropped in the 2026-07 cleanup — it was
+    // dormant end-to-end, so its test was removed with the column.)
 
     // ── Space isolation ────────────────────────────────────────────────────
 

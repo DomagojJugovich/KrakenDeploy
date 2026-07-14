@@ -3,6 +3,7 @@ using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Notifications;
+using KrakenDeploy.Server.Core.Domain.Settings;
 using KrakenDeploy.Server.Core.Domain.Subscriptions;
 using KrakenDeploy.Server.Data.Encryption;
 using KrakenDeploy.Server.Data.Services;
@@ -31,7 +32,7 @@ public sealed class EmailImmediateTransportTests(PostgresFixture postgres)
     public async Task InitializeAsync()
     {
         await using var db = postgres.CreateContext();
-        await db.SmtpSettings.ExecuteDeleteAsync();
+        await db.Set<Setting>().ExecuteDeleteAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -183,7 +184,7 @@ public sealed class EmailImmediateTransportTests(PostgresFixture postgres)
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private SmtpSettingsService NewSmtpService() =>
-        new(postgres,
+        new(new SettingsService(postgres.ScopeFactory, TimeProvider.System),
             TestCrypto.Service(Base64Key),
             NullLogger<SmtpSettingsService>.Instance);
 
