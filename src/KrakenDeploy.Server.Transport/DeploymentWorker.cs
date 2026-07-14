@@ -665,6 +665,7 @@ public sealed class DeploymentWorker(
                 requiredStepDropped: droppedTargets.Any(d => d.Reason == DropReason.RequiredStepFailed),
                 droppedTargetCount:  droppedTargets.Count,
                 softFailedCount:     softFailedTargets.Count);
+            var didSucceed = false;
             DateTimeOffset finalCompletedUtc;
             await using (var finalDb = await scope.ServiceProvider
                 .GetRequiredService<IDbContextFactory<KrakenDbContext>>()
@@ -682,6 +683,8 @@ public sealed class DeploymentWorker(
                     d.Status       = terminalStatus;
                     d.CompletedUtc = finalCompletedUtc;
                     await finalDb.SaveChangesAsync(ct).ConfigureAwait(false);
+                    didSucceed = terminalStatus is DeploymentStatus.Succeeded
+                        or DeploymentStatus.SucceededWithWarnings;
                 }
             }
 
@@ -722,6 +725,20 @@ public sealed class DeploymentWorker(
                     compactDb, deployment.Id, finalCompletedUtc, ct).ConfigureAwait(false);
             }
 
+            // Retention pruning. The orchestrated deployment finalises HERE — it
+            // never reaches AgentHub's retention trigger, because each target's
+            // completion resolves via the sub-plan registry and early-returns
+            // before that trigger. Fire only on a successful terminal status.
+            // Fire-and-forget with its own scope + internal try/catch so a
+            // retention error never fails the deployment (mirrors
+            // AgentHub.PruneRetentionAsync). Deployment-only here; runbook runs are
+            // pruned via AgentHub (their completion DOES reach it), so the two
+            // paths are mutually exclusive per task and cannot double-prune.
+            if (didSucceed)
+            {
+                _ = PruneRetentionAsync(deployment.Id);
+            }
+
             logger.LogInformation(
                 "Deployment {Id} completed ({ServerSteps} server step(s), {TargetSteps} target step(s)).",
                 deployment.Id, serverStepCount, targetStepCount);
@@ -743,6 +760,27 @@ public sealed class DeploymentWorker(
                     .GetRequiredService<ISpaceContext>().WithSpace(dep.SpaceId);
                 await FailAsync(errorDb, dep, ex.Message, ct).ConfigureAwait(false);
             }
+        }
+    }
+
+    /// <summary>
+    /// Lifecycle retention prune after a successful orchestrated deployment.
+    /// Opens its own DI scope (the caller's dispatch scope may be torn down before
+    /// this fire-and-forget completes) and swallows errors so retention never fails
+    /// the deployment. Mirrors <c>AgentHub.PruneRetentionAsync</c>.
+    /// </summary>
+    private async Task PruneRetentionAsync(Guid deploymentId)
+    {
+        try
+        {
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var retention = scope.ServiceProvider.GetRequiredService<RetentionService>();
+            await retention.PruneAfterDeploymentAsync(deploymentId).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex,
+                "Error running retention pruning for orchestrated deployment {Id}.", deploymentId);
         }
     }
 
