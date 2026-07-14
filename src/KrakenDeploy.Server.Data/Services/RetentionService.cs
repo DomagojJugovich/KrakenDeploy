@@ -124,6 +124,15 @@ public class RetentionService(
         // production callers pass nothing and get DefaultRunbookRunKeep.
         var keep = keepOverride ?? DefaultRunbookRunKeep;
 
+        // keep <= 0 means "unlimited / disabled", matching the deployment path
+        // (PruneAfterDeploymentAsync treats RetentionKeepDeployments == 0 as
+        // unlimited). Without this, keep=0 would Skip(0) and delete every run — a
+        // data-loss footgun once WP9 wires keepOverride to operator config.
+        if (keep <= 0)
+        {
+            return;
+        }
+
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         // Background DI scope with no active Space → DefaultSpaceId. Load the run

@@ -137,6 +137,12 @@ public sealed class McpToolTests(PostgresFixture postgres)
         var (project, env, target) = await SeedBaseAsync();
         var release = await SeedReleaseAsync(project.Id, "1.0");
         var sourceId = await SeedDeploymentAsync(release.Id, env.Id, DeploymentStatus.Failed, target);
+        // retry stamps created_by_user_id = the API-key owner (a real FK to users);
+        // seed the owner so the insert satisfies fk_server_tasks_users_created_by_user_id.
+        await using (var seed = postgres.CreateContext())
+        {
+            await TestData.EnsureUserAsync(seed, AuthedUserId);
+        }
         var audit = new SpyAuditLog();
         var queue = Channel.CreateUnbounded<KrakenDeploy.Server.Data.TenantWorkItem>();
         var service = new DeploymentService(postgres, queue, TimeProvider.System,
@@ -219,13 +225,18 @@ public sealed class McpToolTests(PostgresFixture postgres)
 
     // ── Auth fakes for the gated tool ─────────────────────────────────────
 
+    // Stable so a test can seed the matching users row: retry_deployment now
+    // stamps created_by_user_id = the API-key owner (fix 6), which is a real FK to
+    // users — mirrors production, where the key's owner always exists.
+    private static readonly Guid AuthedUserId = Guid.Parse("0000aaaa-0000-0000-0000-00000000acce");
+
     private static HttpContextAccessor AuthedAccessor() => new()
     {
         HttpContext = new DefaultHttpContext
         {
             User = new ClaimsPrincipal(new ClaimsIdentity(
             [
-                new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                new Claim(ClaimTypes.NameIdentifier, AuthedUserId.ToString()),
                 new Claim(ClaimTypes.Name, "mcp-test@laus.hr"),
             ], authenticationType: "test")),
         },
