@@ -26,6 +26,7 @@ public class OfflineResultService(
     IDbContextFactory<KrakenDbContext> dbFactory,
     IArtifactStore artifactStore,
     IEncryptionService encryption,
+    RetentionService retention,
     ILogger<OfflineResultService> logger)
 {
     private static readonly JsonSerializerOptions JsonOpts = new(JsonSerializerDefaults.Web);
@@ -307,6 +308,30 @@ public class OfflineResultService(
         await TaskLogService.CompactRemainingAsync(
             db, deploymentId, deployment.CompletedUtc ?? DateTimeOffset.UtcNow, ct)
             .ConfigureAwait(false);
+
+        // Retention pruning. The offline-import path finalises the deployment
+        // HERE — it never reaches the online orchestrator (DeploymentWorker) or the
+        // AgentHub completion trigger, so without this offline-drop deployments and
+        // their logs would accumulate unbounded. Prune on a successful terminal
+        // status, matching the online paths. Awaited (an offline import is a rare,
+        // manual, non-latency-sensitive upload — no worker throughput / blue-green
+        // drain concern that would call for fire-and-forget) with try/catch so a
+        // retention error never fails the import. Offline drops are deployment-only,
+        // so only the deployment prune applies. Runs after the terminal status is
+        // committed above, so the just-imported deployment is counted as newest.
+        if (deployment.Status is DeploymentStatus.Succeeded or DeploymentStatus.SucceededWithWarnings)
+        {
+            try
+            {
+                await retention.PruneAfterDeploymentAsync(deploymentId, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex,
+                    "Error running retention pruning after offline import for deployment {Id}.",
+                    deploymentId);
+            }
+        }
 
         logger.LogInformation(
             "Offline result ingested for deployment {Id}: status = {Status}.",
