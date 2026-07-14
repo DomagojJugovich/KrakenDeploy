@@ -20,10 +20,9 @@ public sealed class LocalPackageStore(string dataPath, IAccountContext accountCo
         string packageId, string version, string fileName,
         Stream content, CancellationToken ct)
     {
-        var dir = Path.Combine(RootPath, packageId, version);
-        Directory.CreateDirectory(dir);
+        var filePath = ResolveWithinRoot(Path.Combine(packageId, version, fileName));
+        Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
 
-        var filePath = Path.Combine(dir, fileName);
         await using var fs = new FileStream(
             filePath, FileMode.Create, FileAccess.Write, FileShare.None,
             bufferSize: 81920, useAsync: true);
@@ -44,7 +43,7 @@ public sealed class LocalPackageStore(string dataPath, IAccountContext accountCo
     }
 
     public string GetFullPath(string storedPath)
-        => Path.Combine(RootPath, storedPath.Replace('/', Path.DirectorySeparatorChar));
+        => ResolveWithinRoot(storedPath.Replace('/', Path.DirectorySeparatorChar));
 
     public Task DeleteAsync(string storedPath, CancellationToken ct)
     {
@@ -54,5 +53,27 @@ public sealed class LocalPackageStore(string dataPath, IAccountContext accountCo
             File.Delete(fullPath);
         }
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Resolves <paramref name="relative"/> against <see cref="RootPath"/> and asserts
+    /// the result stays strictly under the root — defence in depth against a path
+    /// component that escapes the package tree (the caller already sanitizes, but a
+    /// store must never write/read/delete outside its root). Covers the multi-account
+    /// <c>accounts/{id}/packages</c> root too.
+    /// </summary>
+    private string ResolveWithinRoot(string relative)
+    {
+        var root = Path.GetFullPath(RootPath);
+        var rootWithSep = root.EndsWith(Path.DirectorySeparatorChar)
+            ? root
+            : root + Path.DirectorySeparatorChar;
+        var full = Path.GetFullPath(Path.Combine(root, relative));
+        if (!full.StartsWith(rootWithSep, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Resolved package path escapes the package storage root.");
+        }
+        return full;
     }
 }

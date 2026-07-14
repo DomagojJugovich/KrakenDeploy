@@ -11,6 +11,9 @@ public class PackageService(IDbContextFactory<KrakenDbContext> dbFactory, IPacka
 {
     private static readonly char[] InvalidChars = ['/', '\\', ' '];
 
+    // File names may contain spaces ("My App.nupkg") but never path separators.
+    private static readonly char[] PathSeparators = ['/', '\\'];
+
     // ── Upload ─────────────────────────────────────────────────────────────
 
     public async Task<Package> UploadAsync(
@@ -30,6 +33,18 @@ public class PackageService(IDbContextFactory<KrakenDbContext> dbFactory, IPacka
             || version.Contains("..", StringComparison.Ordinal))
         {
             throw new ArgumentException("PackageId and Version must not contain path separators.");
+        }
+
+        // T0-5: the file name is attacker-controlled (multipart Content-Disposition).
+        // Reject anything that isn't a bare file name — a path like
+        // "..\..\wwwroot\shell.aspx" or an absolute path would otherwise escape the
+        // package tree via Path.Combine and enable an arbitrary-file-write → RCE.
+        if (fileName.IndexOfAny(PathSeparators) >= 0
+            || fileName.Contains("..", StringComparison.Ordinal)
+            || !string.Equals(fileName, Path.GetFileName(fileName), StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                "FileName must be a bare file name with no path separators or '..'.", nameof(fileName));
         }
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);

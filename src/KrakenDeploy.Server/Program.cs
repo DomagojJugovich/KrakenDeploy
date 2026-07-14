@@ -1187,6 +1187,11 @@ public static class Program
                         pkg.FileName, pkg.SizeBytes, pkg.UploadedUtc,
                     });
                 }
+                catch (ArgumentException ex)
+                {
+                    // Invalid packageId/version/fileName (incl. path-traversal attempt).
+                    return Results.BadRequest(new { error = ex.Message });
+                }
                 catch (InvalidOperationException ex)
                 {
                     return Results.Conflict(new { error = ex.Message });
