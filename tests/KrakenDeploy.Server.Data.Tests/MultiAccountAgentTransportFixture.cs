@@ -108,6 +108,14 @@ public sealed class MultiAccountAgentTransportFixture : IAsyncLifetime
                 [Beta.Host] = Beta.ToResolvedAccount(),
             }));
 
+        // AgentHub depends on IEncryptionService (T0-6: it encrypts sensitive
+        // output variables). Production registers it via AddKrakenDeployEncryption;
+        // this host needs it so the hub can be activated on connect. A fixed-key
+        // test service suffices — these tests never report output variables, so
+        // Encrypt/Decrypt (and thus the DEK) is never touched.
+        builder.Services.AddSingleton<KrakenDeploy.Server.Core.Domain.Variables.IEncryptionService>(
+            TestCrypto.Service("S3Jha2VuRGVwbG95RGV2TWFzdGVyS2V5MzJCeXRlcyE="));
+
         // Agent transport services (mirrors KrakenDeploy.Server/Program.cs).
         builder.Services.AddSingleton<IAgentConnectionRegistry, InMemoryAgentConnectionRegistry>();
         builder.Services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
