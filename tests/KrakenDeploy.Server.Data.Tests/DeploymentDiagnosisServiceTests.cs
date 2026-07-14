@@ -119,6 +119,55 @@ public sealed class DeploymentDiagnosisServiceTests(PostgresFixture postgres)
         await act.Should().NotThrowAsync();
     }
 
+    // ── T0-6: diagnosis sanitiser stays in sync with output-var sensitivity ──
+
+    [Fact]
+    public async Task AssembleAsync_includes_sensitive_output_values_and_excludes_plaintext()
+    {
+        const string devKey = "S3Jha2VuRGVwbG95RGV2TWFzdGVyS2V5MzJCeXRlcyE=";
+        var encryption = TestCrypto.Service(devKey);
+        var deploymentId = await SeedFailedDeploymentAsync();
+
+        await using (var db = postgres.CreateContext())
+        {
+            db.TaskOutputVariables.Add(new TaskOutputVariable
+            {
+                SpaceId = WellKnown.DefaultSpaceId, TaskId = deploymentId,
+                StepName = "Start service", Name = "AdminToken",
+                Value = encryption.Encrypt("super-out-secret"), IsSensitive = true,
+                CapturedUtc = DateTimeOffset.UtcNow,
+            });
+            db.TaskOutputVariables.Add(new TaskOutputVariable
+            {
+                SpaceId = WellKnown.DefaultSpaceId, TaskId = deploymentId,
+                StepName = "Start service", Name = "PublicUrl",
+                Value = "https://public", IsSensitive = false,
+                CapturedUtc = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var curators = new StepConfigCuratorRegistry(
+            new IStepConfigCurator[] { new ScriptStepConfigCurator() },
+            new DefaultStepConfigCurator());
+        var assembler = new DiagnosisContextAssembler(
+            postgres,
+            new DeploymentContextBuilder(postgres),
+            new DeploymentDiffBuilder(postgres),
+            new TargetHealthBuilder(postgres),
+            curators,
+            encryption,
+            NullLogger<DiagnosisContextAssembler>.Instance);
+
+        var assembled = await assembler.AssembleAsync(deploymentId);
+
+        assembled.Should().NotBeNull();
+        assembled!.SensitiveValues.Values.Should().Contain("super-out-secret",
+            "a sensitive output variable's plaintext must feed the prompt sanitiser");
+        assembled.SensitiveValues.Values.Should().NotContain("https://public",
+            "a non-sensitive output variable must not be treated as a secret");
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────
 
     private static DiagnosisResult Result(string cause, string confidence)

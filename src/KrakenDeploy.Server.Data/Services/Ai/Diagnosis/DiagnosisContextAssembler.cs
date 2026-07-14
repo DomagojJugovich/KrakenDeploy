@@ -166,8 +166,14 @@ public sealed class DiagnosisContextAssembler(
         }
 
         var sensitive = release is null
-            ? new Dictionary<string, string>()
+            ? new Dictionary<string, string>(StringComparer.Ordinal)
             : DecryptSensitiveValues(release.VariableSnapshot);
+
+        // Also feed sensitive OUTPUT variable values (T0-6) to the sanitizer, so
+        // the diagnosis prompt stays in sync with the same sensitivity source the
+        // log-redactor uses. A value could reach the prompt via curated config or
+        // a pre-redaction log line even though live logs are masked at write time.
+        await AddSensitiveOutputValuesAsync(db, deploymentId, sensitive, ct).ConfigureAwait(false);
 
         return new AssembledContext(sb.ToString(), sensitive);
     }
@@ -205,5 +211,41 @@ public sealed class DiagnosisContextAssembler(
             }
         }
         return map;
+    }
+
+    /// <summary>
+    /// Merges the deployment's sensitive OUTPUT variables (encrypted at rest,
+    /// <see cref="TaskOutputVariable.IsSensitive"/>) into the redaction map,
+    /// decrypting best-effort. Keyed by <c>name@step</c> so a value never
+    /// collides with — and evicts — a same-named snapshot variable; the
+    /// sanitizer matches on the value, so the label just needs to be unique.
+    /// </summary>
+    private async Task AddSensitiveOutputValuesAsync(
+        KrakenDbContext db, Guid deploymentId,
+        Dictionary<string, string> map, CancellationToken ct)
+    {
+        var rows = await db.TaskOutputVariables.AsNoTracking()
+            .Where(o => o.TaskId == deploymentId && o.IsSensitive && o.Value != "")
+            .Select(o => new { o.StepName, o.Name, o.Value })
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        foreach (var o in rows)
+        {
+            try
+            {
+                var plain = encryption.Decrypt(o.Value);
+                if (!string.IsNullOrEmpty(plain))
+                {
+                    map[$"{o.Name}@{o.StepName}"] = plain;
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "Diagnosis sanitisation: could not decrypt sensitive output variable " +
+                    "'{Name}' of step '{Step}' (key rotated?). It will NOT be redacted — skipping.",
+                    o.Name, o.StepName);
+            }
+        }
     }
 }
