@@ -75,6 +75,29 @@ public abstract class ServerTask : AuditableEntity, ISpaceScoped
     /// prompted variables land.</summary>
     public string? FormValues { get; set; }
 
+    // ── Provenance (schema-hardening fix 6) ──────────────────────────────────
+
+    /// <summary>Acting user who created the task, when attributable. Stored as a
+    /// bare <c>Guid</c> (no navigation — house convention for domain→Identity refs);
+    /// the FK to <c>users</c> is <c>SET NULL</c> on user delete so history outlives
+    /// the user. <c>null</c> for automated causes (scheduled, subscription, …).</summary>
+    public Guid? CreatedByUserId { get; set; }
+
+    /// <summary>Denormalized initiator label — the acting user's name, or a
+    /// <c>"System (…)"</c> label for automated causes. NOT NULL; captured from claims
+    /// at creation and never looked up later (there is no <c>User.DisplayName</c> to
+    /// join). Survives everything, including user deletion.</summary>
+    public string CreatedByDisplay { get; set; } = "";
+
+    /// <summary>Why/how the task was created. Required — enforced by the creation
+    /// guard (<see cref="TaskInitiator.EnsureValid"/>), because a non-nullable enum
+    /// defaults to a real value and a DB NOT NULL alone can't catch a missing cause.</summary>
+    public ServerTaskCause Cause { get; set; }
+
+    /// <summary>Optional extra provenance (parent task id, API-key name, subscription
+    /// + event ids, …). Max 256 chars.</summary>
+    public string? CauseDetail { get; set; }
+
     // ── Children (FK task_id, CASCADE) ───────────────────────────────────────
 
     /// <summary>The task's target SET — the single authority for "which targets

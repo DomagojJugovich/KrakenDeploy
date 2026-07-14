@@ -1,5 +1,6 @@
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
+using KrakenDeploy.Server.Data.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -56,6 +57,27 @@ public sealed class ServerTaskConfiguration : IEntityTypeConfiguration<ServerTas
         builder.Property(x => x.FormValues).HasColumnType("jsonb");
 
         builder.Property(x => x.DropBundlePath).HasMaxLength(500);
+
+        // ── Provenance (fix 6) ───────────────────────────────────────────────
+        // Real FK to users with SET NULL: a task is not user-OWNED (unlike api_keys,
+        // which CASCADE) — it is only user-INITIATED, so its execution history must
+        // survive the initiator's deletion. users is account-global (not Space-scoped),
+        // so this is a simple single-column FK like fk_api_keys_users_user_id. No
+        // navigation on the domain entity (house convention keeps domain→Identity refs
+        // as bare Guids). The denormalized created_by_display keeps provenance readable
+        // after the id is nulled.
+        builder.HasOne<ApplicationUser>()
+            .WithMany()
+            .HasForeignKey(x => x.CreatedByUserId)
+            .OnDelete(DeleteBehavior.SetNull);
+        builder.HasIndex(x => x.CreatedByUserId)
+            .HasFilter("created_by_user_id IS NOT NULL");
+
+        builder.Property(x => x.CreatedByDisplay)
+            .IsRequired()
+            .HasMaxLength(TaskInitiator.MaxDisplayLength);
+        builder.Property(x => x.Cause).IsRequired().HasConversion<int>();
+        builder.Property(x => x.CauseDetail).HasMaxLength(TaskInitiator.MaxDetailLength);
 
         // Composite Space FK: a task's environment must be in the task's Space.
         builder.HasOne(x => x.Environment)
