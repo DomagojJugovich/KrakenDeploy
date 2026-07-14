@@ -20,7 +20,19 @@ public sealed record DeploymentPlan(
     /// StringArray variable values as parsed string arrays, for
     /// <c>$OctopusArrays</c> PowerShell exposure and <c>#{each}</c> Octostache iteration.
     /// </summary>
-    IReadOnlyDictionary<string, string[]> ArrayVariables);
+    IReadOnlyDictionary<string, string[]> ArrayVariables,
+    /// <summary>
+    /// T0-6: names of the variables (in <see cref="Variables"/>, and any per-step
+    /// <see cref="DeploymentStepPlan.StepVariables"/> / <c>Config</c>) whose resolved
+    /// values are <c>Sensitive</c>. The agent builds a value-based log redactor from
+    /// these — looking each name up in <see cref="Variables"/> to get the plaintext,
+    /// then masking those substrings to <c>***</c> before any log line leaves the
+    /// agent. Sensitive output-variable values captured mid-run are folded into the
+    /// same redactor. Appended + defaulted for back-compat: an older agent ignores
+    /// it (prior no-masking behaviour); a newer agent reading an older plan masks
+    /// nothing extra.
+    /// </summary>
+    IReadOnlyCollection<string>? SensitiveVariableNames = null);
 
 /// <summary>
 /// One step within a <see cref="DeploymentPlan"/>.

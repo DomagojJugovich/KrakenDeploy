@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Contracts.Logging;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
@@ -40,10 +41,11 @@ public sealed class ServerScriptStepRunner(
         Guid deploymentId,
         DeploymentStepPlan step,
         IReadOnlyDictionary<string, string> planVariables,
+        SecretRedactor redactor,
         CancellationToken ct)
     {
         await AppendLogAsync(deploymentId, step.Index, "info",
-            $"--- Step {step.Index + 1}: {step.Name} (server-side) ---", ct).ConfigureAwait(false);
+            $"--- Step {step.Index + 1}: {step.Name} (server-side) ---", redactor, ct).ConfigureAwait(false);
 
         var scriptBody = step.Config.TryGetValue("Octopus.Action.Script.ScriptBody", out var b) ? b : "";
         var syntax     = step.Config.TryGetValue("Octopus.Action.Script.Syntax", out var s) ? s : "PowerShell";
@@ -52,7 +54,7 @@ public sealed class ServerScriptStepRunner(
         if (string.IsNullOrWhiteSpace(scriptBody))
         {
             await AppendLogAsync(deploymentId, step.Index, "error",
-                "Step has no script body.", ct).ConfigureAwait(false);
+                "Step has no script body.", redactor, ct).ConfigureAwait(false);
             return false;
         }
 
@@ -110,14 +112,14 @@ public sealed class ServerScriptStepRunner(
             {
                 if (e.Data is not null)
                 {
-                    pending.Add(AppendLogAsync(deploymentId, step.Index, "info", e.Data, ct));
+                    pending.Add(AppendLogAsync(deploymentId, step.Index, "info", e.Data, redactor, ct));
                 }
             };
             process.ErrorDataReceived += (_, e) =>
             {
                 if (e.Data is not null)
                 {
-                    pending.Add(AppendLogAsync(deploymentId, step.Index, "error", e.Data, ct));
+                    pending.Add(AppendLogAsync(deploymentId, step.Index, "error", e.Data, redactor, ct));
                 }
             };
 
@@ -132,7 +134,7 @@ public sealed class ServerScriptStepRunner(
             await AppendLogAsync(deploymentId, step.Index,
                 success ? "info" : "error",
                 success ? $"Step '{step.Name}' succeeded." : $"Step '{step.Name}' failed (exit {process.ExitCode}).",
-                ct).ConfigureAwait(false);
+                redactor, ct).ConfigureAwait(false);
             return success;
         }
         catch (OperationCanceledException)
@@ -152,7 +154,7 @@ public sealed class ServerScriptStepRunner(
                 "Server-side script step '{Step}' for deployment {Id} crashed.",
                 step.Name, deploymentId);
             await AppendLogAsync(deploymentId, step.Index, "error",
-                $"Server-side execution crashed: {ex.Message}", ct).ConfigureAwait(false);
+                $"Server-side execution crashed: {ex.Message}", redactor, ct).ConfigureAwait(false);
             return false;
         }
         finally
@@ -234,8 +236,14 @@ public sealed class ServerScriptStepRunner(
     /// agent lines.
     /// </summary>
     private async Task AppendLogAsync(
-        Guid deploymentId, int stepIndex, string level, string message, CancellationToken ct)
+        Guid deploymentId, int stepIndex, string level, string message,
+        SecretRedactor redactor, CancellationToken ct)
     {
+        // T0-6: single chokepoint — mask known sensitive values before the line
+        // is persisted (TaskLogService) or broadcast (UiHub). No call site can
+        // bypass this. No-op when the plan carries no sensitive variables.
+        message = redactor.Redact(message);
+
         var timestamp = timeProvider.GetUtcNow();
 
         await using var scope = scopeFactory.CreateAsyncScope();

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Threading.Channels;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Contracts.Logging;
 using KrakenDeploy.Execution;
 using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Audit;
@@ -505,6 +506,14 @@ public sealed class DeploymentWorker(
             // sibling's. (Atomic mode uses the global hasFailed flag instead.)
             var softFailedTargets = new HashSet<Guid>();
 
+            // T0-6: value-based log redactor for server-side steps. Built once
+            // from the canonical plan's sensitive values (identical across
+            // targets — only substituted Configs differ, not which variables are
+            // sensitive). Server steps capture no output variables today
+            // (see RunServerStepWithRetriesAsync docs), so a static redactor is
+            // complete. Threaded into RunServerWaveAsync → ServerScriptStepRunner.
+            var serverRedactor = SecretRedactor.ForPlan(canonicalCtx.Plan);
+
             foreach (var wave in waves)
             {
                 // ── Cancellation: stop at the next wave boundary ────────────
@@ -545,7 +554,7 @@ public sealed class DeploymentWorker(
                     var serverOutcomes = await RunServerWaveAsync(
                         wave, canonicalCtx.SnapshotByPlanIndex, hasFailed,
                         canonicalCtx.VarDict, deployment, db, auditLog, logSeq,
-                        canonicalCtx.FlatVars, ct).ConfigureAwait(false);
+                        canonicalCtx.FlatVars, serverRedactor, ct).ConfigureAwait(false);
 
                     var firstRequiredFailure = serverOutcomes.FirstOrDefault(o =>
                         !o.Skipped && !o.Ok && canonicalCtx.SnapshotByPlanIndex[o.Step.Index].Required);
@@ -950,6 +959,7 @@ public sealed class DeploymentWorker(
         DeploymentStepPlan step,
         IReadOnlyDictionary<string, string> flatVars,
         Guid spaceId,
+        SecretRedactor redactor,
         CancellationToken ct)
     {
         // Overlay this step's per-step variable delta (step/action scope) onto
@@ -966,8 +976,11 @@ public sealed class DeploymentWorker(
         }
         // ServerScriptStepRunner only writes deployment-log rows and scopes those
         // short-lived writes itself (IgnoreQueryFilters + explicit SpaceId stamp),
-        // so it needs no Space threading.
-        return serverRunner.ExecuteAsync(deploymentId, step, effectiveVars, ct);
+        // so it needs no Space threading. The redactor masks sensitive values in
+        // every log line the runner emits (T0-6). DeployRelease steps route to a
+        // child deployment whose own worker run redacts its logs, so they don't
+        // take the redactor here.
+        return serverRunner.ExecuteAsync(deploymentId, step, effectiveVars, redactor, ct);
     }
 
     private static IReadOnlyDictionary<string, string> OverlayStepVariables(
@@ -1118,6 +1131,7 @@ public sealed class DeploymentWorker(
             IAuditLog audit,
             LogSequencer logSeq,
             IReadOnlyDictionary<string, string> flatVars,
+            SecretRedactor redactor,
             CancellationToken ct)
     {
         // M14.5 — capture start time at first attempt so the outcome row
@@ -1130,7 +1144,7 @@ public sealed class DeploymentWorker(
             snapshot.RetryDelaySeconds,
             snapshot.TimeoutSeconds,
             runAttempt: (CancellationToken attemptCt) =>
-                ExecuteServerStepAsync(deploymentId, step, flatVars, deployment.SpaceId, attemptCt),
+                ExecuteServerStepAsync(deploymentId, step, flatVars, deployment.SpaceId, redactor, attemptCt),
             isSuccess: ok => ok,
             onTimeoutResult: () => false,
             // Server surfaces the per-step timeout ONCE via the final TimedOut
@@ -1520,6 +1534,7 @@ public sealed class DeploymentWorker(
         IAuditLog auditLog,
         LogSequencer logSeq,
         IReadOnlyDictionary<string, string> flatVars,
+        SecretRedactor redactor,
         CancellationToken ct)
     {
         // Evaluate Conditions + Role filter sequentially first so skipped-
@@ -1593,7 +1608,7 @@ public sealed class DeploymentWorker(
             var (ok, timedOut, attemptCount, startedUtc) =
                 await RunServerStepWithRetriesAsync(
                     deployment.Id, s, snap, deployment, auditLog,
-                    logSeq, flatVars, ct).ConfigureAwait(false);
+                    logSeq, flatVars, redactor, ct).ConfigureAwait(false);
             if (timedOut)
             {
                 await LogAndAuditStepTimedOutAsync(
@@ -1985,7 +2000,8 @@ public sealed class DeploymentWorker(
         DeploymentPlan Plan,
         DeploymentStepPlan[] Steps,
         StepSnapshot[] SnapshotByPlanIndex,
-        DeploymentPlanFlattener.FlattenResult Flatten);
+        DeploymentPlanFlattener.FlattenResult Flatten,
+        IReadOnlyCollection<string> SensitiveVariableNames);
 
     /// <summary>
     /// Resolves project variables for a single target, builds the Octostache
@@ -2129,7 +2145,8 @@ public sealed class DeploymentWorker(
             EnvironmentName: deployment.Environment.Name,
             Steps:           steps,
             Variables:       flatVars,
-            ArrayVariables:  arrayVars);
+            ArrayVariables:  arrayVars,
+            SensitiveVariableNames: stepResolution.SensitiveNames);
 
         return new TargetDispatchContext(
             Target:              target,
@@ -2139,7 +2156,8 @@ public sealed class DeploymentWorker(
             Plan:                plan,
             Steps:               steps,
             SnapshotByPlanIndex: snapshotByPlanIndex,
-            Flatten:             flatten);
+            Flatten:             flatten,
+            SensitiveVariableNames: stepResolution.SensitiveNames);
     }
 
     /// <summary>

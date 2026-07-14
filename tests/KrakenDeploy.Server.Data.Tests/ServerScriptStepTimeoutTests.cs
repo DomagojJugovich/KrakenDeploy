@@ -1,5 +1,6 @@
 using FluentAssertions;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Contracts.Logging;
 using KrakenDeploy.Execution;
 using KrakenDeploy.Server.Data.Tests.OrchestratorHarness;
 using KrakenDeploy.Server.Transport;
@@ -69,7 +70,7 @@ public sealed class ServerScriptStepTimeoutTests(PostgresFixture postgres)
             maxRetries:              0,
             retryDelaySeconds:       0,
             timeoutSeconds:          1,
-            runAttempt:              ct => runner.ExecuteAsync(Guid.NewGuid(), step, planVars, ct),
+            runAttempt:              ct => runner.ExecuteAsync(Guid.NewGuid(), step, planVars, new SecretRedactor(), ct),
             isSuccess:               ok => ok,
             onTimeoutResult:         () => false,
             onAttemptTimedOutAsync:  null,

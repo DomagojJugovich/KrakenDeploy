@@ -298,7 +298,8 @@ public sealed class RunbookRunWorker(
                 EnvironmentName: run.Environment.Name,
                 Steps: steps,
                 Variables: flatVars,
-                ArrayVariables: arrayVars);
+                ArrayVariables: arrayVars,
+                SensitiveVariableNames: stepResolution.SensitiveNames);
 
             run.Status = DeploymentStatus.Running;
             run.StartedUtc = DateTimeOffset.UtcNow;

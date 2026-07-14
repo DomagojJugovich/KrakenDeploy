@@ -590,7 +590,12 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
         IReadOnlyList<(Guid StepId, string StepName)> steps)
     {
         var deploymentWide = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        ResolveCandidates(candidates, deploymentWide, environmentId, targetId, targetRoles, tenantId, channelId, stepName: null);
+        // Collect sensitive names across the deployment-wide pass AND every
+        // per-step pass — a variable that is only step-scoped and sensitive
+        // appears in a PerStepDelta, not DeploymentWide, but its value still
+        // reaches the agent and must be redacted.
+        var sensitiveNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        ResolveCandidates(candidates, deploymentWide, environmentId, targetId, targetRoles, tenantId, channelId, stepName: null, sensitiveNames);
 
         var perStep = new Dictionary<Guid, Dictionary<string, string>>();
 
@@ -599,7 +604,7 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
             foreach (var (stepId, stepNameValue) in steps)
             {
                 var full = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                ResolveCandidates(candidates, full, environmentId, targetId, targetRoles, tenantId, channelId, stepNameValue);
+                ResolveCandidates(candidates, full, environmentId, targetId, targetRoles, tenantId, channelId, stepNameValue, sensitiveNames);
 
                 var delta = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var (name, value) in full)
@@ -618,7 +623,7 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
             }
         }
 
-        return new StepScopedResolution(deploymentWide, perStep);
+        return new StepScopedResolution(deploymentWide, perStep, sensitiveNames);
     }
 
     private const int TenantOriginRank = -1;
@@ -656,7 +661,8 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
         IReadOnlyList<string> targetRoles,
         Guid? tenantId,
         Guid? channelId,
-        string? stepName)
+        string? stepName,
+        ICollection<string>? sensitiveNames = null)
     {
         foreach (var group in candidates.GroupBy(c => c.Name, StringComparer.OrdinalIgnoreCase))
         {
@@ -671,9 +677,18 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
                 continue;
             }
 
-            result[winner.Name] = winner.Type == VariableType.Sensitive
-                ? encryption.Decrypt(winner.Value)
-                : winner.Value;  // String: plain; StringArray: JSON string
+            if (winner.Type == VariableType.Sensitive)
+            {
+                result[winner.Name] = encryption.Decrypt(winner.Value);
+                // Carry the sensitivity signal out so the plan can drive log
+                // redaction — the flat result dict alone can't distinguish a
+                // decrypted secret from a plain string.
+                sensitiveNames?.Add(winner.Name);
+            }
+            else
+            {
+                result[winner.Name] = winner.Value;  // String: plain; StringArray: JSON string
+            }
         }
     }
 
@@ -846,4 +861,5 @@ public sealed record VariableDto(
 /// </summary>
 public sealed record StepScopedResolution(
     Dictionary<string, string> DeploymentWide,
-    Dictionary<Guid, Dictionary<string, string>> PerStepDelta);
+    Dictionary<Guid, Dictionary<string, string>> PerStepDelta,
+    IReadOnlyCollection<string> SensitiveNames);

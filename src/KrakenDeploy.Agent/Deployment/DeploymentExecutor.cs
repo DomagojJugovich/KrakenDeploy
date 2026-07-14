@@ -3,6 +3,7 @@ using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.StepPackages;
 using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Contracts.Logging;
 using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Execution;
 using Microsoft.Extensions.Logging;
@@ -43,6 +44,15 @@ public sealed class DeploymentExecutor(
     // Task.WhenAll, so each branch keeps its own value — parallel steps don't clash.
     private readonly AsyncLocal<int> _stepIndexPlusOne = new();
 
+    // T0-6: value-based secret redactor for the running plan. Seeded from the
+    // plan's sensitive variable values at the top of ExecuteAsync and grown as
+    // sensitive output variables are captured mid-run. Every log line the agent
+    // emits passes through it (see LogAsync) so a secret is masked even when a
+    // script echoes it. Held in an AsyncLocal for symmetry with the step index;
+    // a single executor instance runs one plan at a time, but this also keeps it
+    // out of the way of any future concurrent execution.
+    private readonly AsyncLocal<SecretRedactor?> _redactor = new();
+
     /// <param name="orchestrateSteps">
     /// When <c>true</c>, the executor itself applies per-step run conditions,
     /// timeouts, retries, and Required-aware gating — the orchestration the
@@ -58,6 +68,11 @@ public sealed class DeploymentExecutor(
         IsExecuting = true;
         try
         {
+
+        // T0-6: seed the log redactor with this plan's sensitive values before
+        // any step runs, so every log line — including plan-level ones below —
+        // is masked. Grows later as sensitive output variables are captured.
+        _redactor.Value = SecretRedactor.ForPlan(plan);
 
         logger.LogInformation(
             "Starting deployment {DeploymentId} ({StepCount} step(s)) in environment {Env}.",
@@ -835,6 +850,10 @@ public sealed class DeploymentExecutor(
     private async Task LogAsync(
         Guid deploymentId, string level, string message, CancellationToken ct)
     {
+        // T0-6: mask known sensitive values before the line is persisted or
+        // streamed. Also mask the local debug log — a secret is a secret in
+        // every sink. Redact is a no-op when no secrets are registered.
+        message = _redactor.Value?.Redact(message) ?? message;
         logger.LogDebug("[Deployment {Id}] {Level}: {Message}", deploymentId, level, message);
         // -1 = plan-level (no step in this async flow); otherwise the running step.
         var stepIndex = _stepIndexPlusOne.Value - 1;
