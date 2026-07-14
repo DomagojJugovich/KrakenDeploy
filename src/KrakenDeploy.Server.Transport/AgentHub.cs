@@ -334,10 +334,12 @@ public sealed class AgentHub(
             "Task {Id} completed: {Status}{Error}.",
             deploymentId, statusStr, errorMessage is null ? "" : $" — {errorMessage}");
 
-        // Retention pruning applies to deployments only (lifecycle-driven).
-        if (success && task.Kind == ServerTaskKind.Deployment)
+        // Retention pruning for both kinds: deployments prune per the lifecycle
+        // phase policy, runbook runs per a fixed keep (RetentionService). Both
+        // cascade-delete their log/step/output children with the parent row.
+        if (success)
         {
-            _ = PruneRetentionAsync(deploymentId, scopeFactory, logger);
+            _ = PruneRetentionAsync(deploymentId, task.Kind, scopeFactory, logger);
         }
     }
 
@@ -499,7 +501,8 @@ public sealed class AgentHub(
     }
 
     private static async Task PruneRetentionAsync(
-        Guid deploymentId,
+        Guid taskId,
+        ServerTaskKind kind,
         IServiceScopeFactory scopeFactory,
         ILogger logger)
     {
@@ -508,11 +511,18 @@ public sealed class AgentHub(
             await using var scope = scopeFactory.CreateAsyncScope();
             var retention = scope.ServiceProvider
                 .GetRequiredService<KrakenDeploy.Server.Data.Services.RetentionService>();
-            await retention.PruneAfterDeploymentAsync(deploymentId).ConfigureAwait(false);
+            if (kind == ServerTaskKind.RunbookRun)
+            {
+                await retention.PruneAfterRunbookRunAsync(taskId).ConfigureAwait(false);
+            }
+            else
+            {
+                await retention.PruneAfterDeploymentAsync(taskId).ConfigureAwait(false);
+            }
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Error running retention pruning for deployment {Id}.", deploymentId);
+            logger.LogError(ex, "Error running retention pruning for task {Id} (kind {Kind}).", taskId, kind);
         }
     }
 

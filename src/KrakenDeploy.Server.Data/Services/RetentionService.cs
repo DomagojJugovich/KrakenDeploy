@@ -15,6 +15,15 @@ public class RetentionService(
     ILogger<RetentionService> logger)
 {
     /// <summary>
+    /// Number of successful runbook runs kept per (runbook, environment). Runbook
+    /// runs have no lifecycle phase to source a <c>RetentionKeepDeployments</c>
+    /// policy from, so the keep count is fixed here for now. finish-plan WP9
+    /// (retention expansion) surfaces retention as a configurable knob — a knob is
+    /// deliberately NOT added here.
+    /// </summary>
+    public const int DefaultRunbookRunKeep = 50;
+
+    /// <summary>
     /// Called after a deployment succeeds. Finds the lifecycle phase that owns the
     /// deployment's environment and deletes the oldest successful deployments for the same
     /// project+environment beyond the <c>RetentionKeepDeployments</c> threshold.
@@ -94,6 +103,73 @@ public class RetentionService(
 
         await db.Deployments
             .Where(d => toDelete.Contains(d.Id))
+            .ExecuteDeleteAsync(ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Called after a runbook run succeeds. Deletes the oldest successful runs for the
+    /// same runbook + environment beyond <see cref="DefaultRunbookRunKeep"/>, so their
+    /// log children cascade away with the parent row. Mirrors
+    /// <see cref="PruneAfterDeploymentAsync"/>: only exactly-<see cref="DeploymentStatus.Succeeded"/>
+    /// runs are eligible, so a <c>Queued</c>/<c>Running</c> run and its live log tail
+    /// are never selected. Closes the gap where runbook runs accumulated unbounded
+    /// (deployments were pruned, runbook runs never were).
+    /// </summary>
+    public async Task PruneAfterRunbookRunAsync(
+        Guid runId, int? keepOverride = null, CancellationToken ct = default)
+    {
+        // keepOverride lets finish-plan WP9 pass a configured value once retention
+        // becomes tunable (and lets tests exercise pruning without seeding 50+ runs);
+        // production callers pass nothing and get DefaultRunbookRunKeep.
+        var keep = keepOverride ?? DefaultRunbookRunKeep;
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // Background DI scope with no active Space → DefaultSpaceId. Load the run
+        // filter-free so a non-Default-Space run is still found, then scope the
+        // rest of the prune to its Space so we never reach across Spaces.
+        var run = await db.RunbookRuns
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(r => r.Id == runId, ct)
+            .ConfigureAwait(false);
+
+        if (run is null)
+        {
+            return;
+        }
+
+        using var spaceScope = spaceContext.WithSpace(run.SpaceId);
+
+        var runbookId = run.RunbookId;
+        var envId = run.EnvironmentId;
+
+        // IDs of successful runs for this runbook+environment, newest first.
+        var successIds = await db.RunbookRuns
+            .Where(r => r.RunbookId == runbookId &&
+                        r.EnvironmentId == envId &&
+                        r.Status == DeploymentStatus.Succeeded)
+            .OrderByDescending(r => r.CompletedUtc)
+            .Select(r => r.Id)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        var toDelete = successIds.Skip(keep).ToList();
+        if (toDelete.Count == 0)
+        {
+            return;
+        }
+
+        logger.LogInformation(
+            "Retention: pruning {Count} old successful runbook run(s) for runbook {RunbookId} " +
+            "in environment {EnvId} (keep={Keep}).",
+            toDelete.Count, runbookId, envId, keep);
+
+        // ExecuteDelete on the TPH subtype (kind=1) DELETEs the server_tasks rows;
+        // DB-level ON DELETE CASCADE removes the log/step/output children.
+        await db.RunbookRuns
+            .Where(r => toDelete.Contains(r.Id))
             .ExecuteDeleteAsync(ct)
             .ConfigureAwait(false);
     }
