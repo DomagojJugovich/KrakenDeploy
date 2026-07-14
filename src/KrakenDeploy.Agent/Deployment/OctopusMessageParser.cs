@@ -10,7 +10,7 @@ namespace KrakenDeploy.Agent.Deployment;
 /// <para>
 /// Supported markers (and what we do with them):
 /// <list type="bullet">
-///   <item><c>##octopus[setVariable name='base64' value='base64']</c> — captured as output variable.</item>
+///   <item><c>##octopus[setVariable name='base64' value='base64' sensitive='True']</c> — captured as output variable; the optional <c>sensitive</c> flag marks it for encryption + masking.</item>
 ///   <item><c>##octopus[setOutputVariable name='base64' value='base64']</c> — alias of <c>setVariable</c>.</item>
 ///   <item><c>##octopus[createArtifact path='base64' name='base64']</c> — accepted; in-band marker is informational since the agent already scans the artifacts directory after each step.</item>
 ///   <item><c>##octopus[stdout-warning]</c> / <c>stdout-error</c> / <c>stdout-default</c> — switches the log level of subsequent lines until the next directive.</item>
@@ -58,7 +58,10 @@ public static class OctopusMessageParser
             "setvariable" or "setoutputvariable" =>
                 new SetVariableMessage(
                     Name: DecodeBase64(attrs.GetValueOrDefault("name") ?? ""),
-                    Value: DecodeBase64(attrs.GetValueOrDefault("value") ?? "")),
+                    Value: DecodeBase64(attrs.GetValueOrDefault("value") ?? ""),
+                    // The sensitive flag is a plain (non-base64) bool per Octopus
+                    // convention: sensitive='True'. Absent/garbage => false.
+                    Sensitive: bool.TryParse(attrs.GetValueOrDefault("sensitive"), out var sens) && sens),
 
             "createartifact" =>
                 new CreateArtifactMessage(
@@ -112,7 +115,14 @@ public static class OctopusMessageParser
 }
 
 public abstract record OctopusMessage;
-public sealed record SetVariableMessage(string Name, string Value) : OctopusMessage;
+
+/// <summary>
+/// A captured output variable. <see cref="Sensitive"/> mirrors Octopus's
+/// <c>Set-OctopusVariable -sensitive</c>: the value is encrypted at rest,
+/// masked in the UI, and folded into the agent's log redactor so later log
+/// lines that echo it are masked too (T0-6).
+/// </summary>
+public sealed record SetVariableMessage(string Name, string Value, bool Sensitive = false) : OctopusMessage;
 public sealed record CreateArtifactMessage(string Path, string Name) : OctopusMessage;
 public sealed record SetLogLevelMessage(string Level) : OctopusMessage;
 public sealed record ProgressMessage(int Percentage, string Message) : OctopusMessage;

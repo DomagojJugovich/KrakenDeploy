@@ -17,6 +17,9 @@ public sealed class TaskOutputVariableConfiguration : IEntityTypeConfiguration<T
         builder.Property(x => x.StepName).HasMaxLength(256).IsRequired();
         builder.Property(x => x.Name).HasMaxLength(256).IsRequired();
         builder.Property(x => x.Value).IsRequired();
+        // T0-6: value is ciphertext when true. Default false so existing rows
+        // (all plaintext) read back correctly.
+        builder.Property(x => x.IsSensitive).IsRequired().HasDefaultValue(false);
         builder.Property(x => x.CapturedUtc).IsRequired();
 
         // Composite Space FK: an output variable can only belong to a task in its Space.

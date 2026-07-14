@@ -310,10 +310,11 @@ public sealed class DeploymentExecutor(
 
         bool success;
         Dictionary<string, string> capturedOutputs;
+        HashSet<string> sensitiveOutputs;
         string? errorMessage = null;
         try
         {
-            (success, capturedOutputs) = orchestrateSteps
+            (success, capturedOutputs, sensitiveOutputs) = orchestrateSteps
                 ? await ExecuteStepWithRetriesAsync(preWavePlan, step, ct).ConfigureAwait(false)
                 : await ExecuteStepAsync(preWavePlan, step, ct).ConfigureAwait(false);
             if (!success)
@@ -333,6 +334,7 @@ public sealed class DeploymentExecutor(
             success = false;
             capturedOutputs = new Dictionary<string, string>(
                 StringComparer.OrdinalIgnoreCase);
+            sensitiveOutputs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             errorMessage = ex.Message;
             logger.LogError(ex,
                 "Step '{Step}' threw during wave execution (deployment {Id}).",
@@ -350,11 +352,12 @@ public sealed class DeploymentExecutor(
         {
             await serverLink.ReportStepCompletedAsync(
                 basePlan.DeploymentId,
-                stepIndex:       step.Index,
-                stepName:        reportingKey,
-                success:         success,
-                errorMessage:    errorMessage,
-                outputVariables: capturedOutputs,
+                stepIndex:            step.Index,
+                stepName:             reportingKey,
+                success:              success,
+                errorMessage:         errorMessage,
+                outputVariables:      capturedOutputs,
+                sensitiveOutputNames: sensitiveOutputs,
                 ct).ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -388,17 +391,19 @@ public sealed class DeploymentExecutor(
     /// delay. No late-success marker (the agent never emitted one).
     /// </para>
     /// </summary>
-    private async Task<(bool Success, Dictionary<string, string> Outputs)> ExecuteStepWithRetriesAsync(
+    private async Task<(bool Success, Dictionary<string, string> Outputs, HashSet<string> SensitiveOutputs)> ExecuteStepWithRetriesAsync(
         DeploymentPlan preWavePlan, DeploymentStepPlan step, CancellationToken ct)
     {
-        var outcome = await StepRetryRunner.RunAsync<(bool Success, Dictionary<string, string> Outputs)>(
+        var outcome = await StepRetryRunner.RunAsync<(bool Success, Dictionary<string, string> Outputs, HashSet<string> SensitiveOutputs)>(
             step.Name,
             step.MaxRetries,
             step.RetryDelaySeconds,
             step.TimeoutSeconds,
             runAttempt: (CancellationToken attemptCt) => ExecuteStepAsync(preWavePlan, step, attemptCt),
             isSuccess: r => r.Success,
-            onTimeoutResult: () => (false, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)),
+            onTimeoutResult: () => (false,
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase)),
             onAttemptTimedOutAsync: timeoutSeconds => LogAsync(preWavePlan.DeploymentId, "error",
                 $"--- Step '{step.Name}' timed out after " +
                 $"{timeoutSeconds.ToString(CultureInfo.InvariantCulture)}s ---", ct),
@@ -411,7 +416,7 @@ public sealed class DeploymentExecutor(
 
     // ── Step execution ─────────────────────────────────────────────────────────
 
-    private async Task<(bool Success, Dictionary<string, string> CapturedOutputs)> ExecuteStepAsync(
+    private async Task<(bool Success, Dictionary<string, string> CapturedOutputs, HashSet<string> SensitiveOutputs)> ExecuteStepAsync(
         DeploymentPlan plan, DeploymentStepPlan step, CancellationToken ct)
     {
         await LogAsync(plan.DeploymentId, "info",
@@ -421,6 +426,11 @@ public sealed class DeploymentExecutor(
         // intercepts ##octopus[...] markers and writes here instead of sending them
         // through as visible log lines.
         var capturedOutputs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        // T0-6: names (subset of capturedOutputs) marked sensitive via
+        // Set-OctopusVariable -sensitive. Reported to the server so the value is
+        // encrypted at rest + masked in the UI. The value is also folded into the
+        // run's redactor at capture time so later log lines echoing it are masked.
+        var sensitiveOutputs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // Resolve a handler. Two paths (Phase D-6):
         //   1. If the server pinned a StepPackageVersion, try the
@@ -438,7 +448,7 @@ public sealed class DeploymentExecutor(
                 $"Unknown step type '{step.StepType}'. No handler is registered for it " +
                 $"(pin={step.StepPackageName ?? "<null>"} {step.StepPackageVersion ?? "<null>"}).",
                 ct).ConfigureAwait(false);
-            return (false, capturedOutputs);
+            return (false, capturedOutputs, sensitiveOutputs);
         }
 
         var tempRoot = Path.Combine(
@@ -480,7 +490,7 @@ public sealed class DeploymentExecutor(
             {
                 await LogAsync(plan.DeploymentId, "error",
                     $"Package download failed: {ex.Message}", ct).ConfigureAwait(false);
-                return (false, capturedOutputs);
+                return (false, capturedOutputs, sensitiveOutputs);
             }
 
             extractDir = Path.Combine(tempRoot, "extracted");
@@ -498,7 +508,7 @@ public sealed class DeploymentExecutor(
             {
                 await LogAsync(plan.DeploymentId, "error",
                     $"Package extraction failed: {ex.Message}", ct).ConfigureAwait(false);
-                return (false, capturedOutputs);
+                return (false, capturedOutputs, sensitiveOutputs);
             }
         }
         else if (handler.RequiresPackage)
@@ -559,7 +569,7 @@ public sealed class DeploymentExecutor(
                     await LogAsync(plan.DeploymentId, "error",
                         $"Failed to fetch referenced package '{r.Name}': {ex.Message}", ct)
                         .ConfigureAwait(false);
-                    return (false, capturedOutputs);
+                    return (false, capturedOutputs, sensitiveOutputs);
                 }
             }
         }
@@ -576,6 +586,13 @@ public sealed class DeploymentExecutor(
             {
                 case SetVariableMessage v:
                     capturedOutputs[v.Name] = v.Value;
+                    if (v.Sensitive)
+                    {
+                        sensitiveOutputs.Add(v.Name);
+                        // Mask this value in every subsequent log line of this run
+                        // (this step and later steps share the same redactor).
+                        _redactor.Value?.Add([v.Value]);
+                    }
                     return; // marker is not user-visible log output
                 case SetLogLevelMessage l:
                     stickyLevel = l.Level;
@@ -652,7 +669,7 @@ public sealed class DeploymentExecutor(
         try { Directory.Delete(tempRoot, recursive: true); }
         catch { /* non-fatal */ }
 
-        return (success, capturedOutputs);
+        return (success, capturedOutputs, sensitiveOutputs);
     }
 
     /// <summary>

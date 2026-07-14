@@ -51,6 +51,12 @@ public interface IServerLink : IAsyncDisposable
     /// Replaces the pre-M14.4 variable-only reporting (the orchestrator
     /// now needs per-step attribution to apply the Required gate against
     /// individual steps inside a parallel wave).
+    /// <para>
+    /// T0-6: <paramref name="sensitiveOutputNames"/> is the subset of
+    /// <paramref name="outputVariables"/> keys emitted with
+    /// <c>Set-OctopusVariable -sensitive</c>. The server encrypts those values
+    /// at rest and masks them in the UI. Empty/null means none are sensitive.
+    /// </para>
     /// </summary>
     Task ReportStepCompletedAsync(
         Guid deploymentId,
@@ -59,6 +65,7 @@ public interface IServerLink : IAsyncDisposable
         bool success,
         string? errorMessage,
         IReadOnlyDictionary<string, string> outputVariables,
+        IReadOnlyCollection<string> sensitiveOutputNames,
         CancellationToken ct);
 
     /// <summary>

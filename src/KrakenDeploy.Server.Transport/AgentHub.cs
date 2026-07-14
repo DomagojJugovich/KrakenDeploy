@@ -31,6 +31,7 @@ public sealed class AgentHub(
     IPendingSubPlanRegistry subPlans,
     IPendingAdhocRegistry adhocPending,
     IAccountContext accountContext,
+    KrakenDeploy.Server.Core.Domain.Variables.IEncryptionService encryption,
     ILogger<AgentHub> logger)
     : Hub<IAgentHubClient>, IAgentHubServer
 {
@@ -366,10 +367,14 @@ public sealed class AgentHub(
         string stepName,
         bool success,
         string? errorMessage,
-        Dictionary<string, string> outputVariables)
+        Dictionary<string, string> outputVariables,
+        List<string> sensitiveOutputNames)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(stepName);
         ArgumentNullException.ThrowIfNull(outputVariables);
+        // Older agents / offline JSON may omit the sensitive-name list.
+        sensitiveOutputNames ??= [];
+        var sensitiveSet = new HashSet<string>(sensitiveOutputNames, StringComparer.OrdinalIgnoreCase);
 
         // Register the per-step outcome with the sub-plan registry FIRST so
         // even if DB persistence fails, the orchestrator gets attribution
@@ -435,9 +440,14 @@ public sealed class AgentHub(
 
             foreach (var (name, value) in outputVariables)
             {
+                // T0-6: a sensitive output is stored encrypted (never plaintext);
+                // the read path masks it. Non-sensitive values are stored as-is.
+                var isSensitive = sensitiveSet.Contains(name);
+                var storedValue = isSensitive ? encryption.Encrypt(value) : value;
                 if (existing.TryGetValue(name, out var row))
                 {
-                    row.Value = value;
+                    row.Value = storedValue;
+                    row.IsSensitive = isSensitive;
                     row.CapturedUtc = capturedAt;
                 }
                 else
@@ -448,7 +458,8 @@ public sealed class AgentHub(
                         TaskId      = deploymentId,
                         StepName    = stepName,
                         Name        = name,
-                        Value       = value,
+                        Value       = storedValue,
+                        IsSensitive = isSensitive,
                         CapturedUtc = capturedAt,
                     });
                 }

@@ -149,6 +149,7 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
         bool success,
         string? errorMessage,
         IReadOnlyDictionary<string, string> outputVariables,
+        IReadOnlyCollection<string> sensitiveOutputNames,
         CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrEmpty(stepName);
@@ -164,9 +165,14 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
         var payload = outputVariables as Dictionary<string, string>
                       ?? new Dictionary<string, string>(outputVariables, StringComparer.OrdinalIgnoreCase);
 
+        // T0-6: the sensitive-name subset travels as a List<string> so the hub
+        // knows which values to encrypt at rest + mask. Never null on the wire.
+        var sensitive = sensitiveOutputNames as List<string>
+                        ?? (sensitiveOutputNames?.ToList() ?? []);
+
         return _connection.InvokeAsync(
             "ReportStepCompletedAsync",
-            deploymentId, stepIndex, stepName, success, errorMessage, payload, ct);
+            deploymentId, stepIndex, stepName, success, errorMessage, payload, sensitive, ct);
     }
 
     public Task ReportAdhocResultAsync(AdhocScriptResult result, CancellationToken ct)

@@ -189,7 +189,8 @@ public sealed class AdhocScriptExecutorTests
         public Task AppendLogAsync(Guid deploymentId, int stepIndex, string level, string message, CancellationToken ct) => Task.CompletedTask;
         public Task CompleteDeploymentAsync(Guid deploymentId, bool success, string? errorMessage, CancellationToken ct) => Task.CompletedTask;
         public Task ReportStepCompletedAsync(Guid deploymentId, int stepIndex, string stepName, bool success,
-            string? errorMessage, IReadOnlyDictionary<string, string> outputVariables, CancellationToken ct) => Task.CompletedTask;
+            string? errorMessage, IReadOnlyDictionary<string, string> outputVariables,
+            IReadOnlyCollection<string> sensitiveOutputNames, CancellationToken ct) => Task.CompletedTask;
         public void OnRunDeployment(Func<DeploymentPlan, Task> handler) { }
         public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler) { }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;

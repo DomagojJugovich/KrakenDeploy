@@ -110,6 +110,18 @@ public static class DekRotationWalk
             }
         }
 
+        // 6. Sensitive task output variables (scalar column; only IsSensitive rows
+        //    hold ciphertext — plaintext outputs are left untouched). This column
+        //    is dual-mode (plaintext OR ciphertext), so it is not named *Encrypted
+        //    and the reflection completeness test can't see it — it is walked here
+        //    explicitly and asserted by DekRotationWalkTests instead.
+        var outputs = await db.TaskOutputVariables.IgnoreQueryFilters()
+            .Where(o => o.IsSensitive).ToListAsync(ct).ConfigureAwait(false);
+        foreach (var o in outputs)
+        {
+            if (!string.IsNullOrEmpty(o.Value)) { o.Value = Re(oldDek, newDek, o.Value); c.OutputVariables++; }
+        }
+
         return c;
     }
 }
@@ -129,10 +141,14 @@ public sealed class DekReEncryptCounts
     public int IdentityProviders { get; set; }
     public int OfflineDropFields { get; set; }
 
-    public int Total => Variables + SnapshotEntries + Settings + IdentityProviders + OfflineDropFields;
+    /// <summary>Sensitive task output variables (T0-6) re-encrypted.</summary>
+    public int OutputVariables { get; set; }
+
+    public int Total => Variables + SnapshotEntries + Settings + IdentityProviders
+                        + OfflineDropFields + OutputVariables;
 
     public string Summary =>
         $"{Variables} variables, {SnapshotEntries} snapshot entries across {Releases} releases, " +
         $"{Settings} settings secrets, {IdentityProviders} OIDC secrets, " +
-        $"{OfflineDropFields} offline-drop targets";
+        $"{OfflineDropFields} offline-drop targets, {OutputVariables} output variables";
 }

@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Threading.Channels;
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Targets;
@@ -31,6 +32,10 @@ namespace KrakenDeploy.Server.Data.Tests;
 public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>
 {
+    // 32-byte base64 DEK — same key BuildHub passes to the hub's encryption
+    // service, so the test can decrypt what the hub stored.
+    private const string DevMasterKey = "S3Jha2VuRGVwbG95RGV2TWFzdGVyS2V5MzJCeXRlcyE=";
+
     // ── CompleteDeploymentAsync ──────────────────────────────────────────────
 
     [Fact]
@@ -128,7 +133,8 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
 
         await BuildHub(postgres, g.Foreign.Id).ReportStepCompletedAsync(
             g.DeploymentId, 0, "Deploy", success: true, errorMessage: null,
-            outputVariables: new Dictionary<string, string> { ["Injected"] = "evil" });
+            outputVariables: new Dictionary<string, string> { ["Injected"] = "evil" },
+            sensitiveOutputNames: []);
 
         await using var db = harness.CreateContext();
         (await db.TaskOutputVariables.IgnoreQueryFilters()
@@ -144,12 +150,59 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
 
         await BuildHub(postgres, g.Primary.Id).ReportStepCompletedAsync(
             g.DeploymentId, 0, "Deploy", success: true, errorMessage: null,
-            outputVariables: new Dictionary<string, string> { ["Url"] = "https://x" });
+            outputVariables: new Dictionary<string, string> { ["Url"] = "https://x" },
+            sensitiveOutputNames: []);
 
         await using var db = harness.CreateContext();
         (await db.TaskOutputVariables.IgnoreQueryFilters()
             .CountAsync(o => o.TaskId == g.DeploymentId))
             .Should().Be(1);
+    }
+
+    // ── T0-6: sensitive output variables encrypted at rest + masked in UI ────
+
+    [Fact]
+    public async Task ReportStepCompletedAsync_encrypts_sensitive_output_and_leaves_plaintext_alone()
+    {
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var g = await SeedAsync(harness);
+
+        const string secret = "p@ss w0rd with spaces";
+        const string plain  = "https://public.example";
+
+        await BuildHub(postgres, g.Primary.Id).ReportStepCompletedAsync(
+            g.DeploymentId, 0, "Deploy", success: true, errorMessage: null,
+            outputVariables: new Dictionary<string, string>
+            {
+                ["Token"] = secret,
+                ["Url"]   = plain,
+            },
+            sensitiveOutputNames: ["Token"]);
+
+        await using var db = harness.CreateContext();
+        var rows = await db.TaskOutputVariables.IgnoreQueryFilters()
+            .Where(o => o.TaskId == g.DeploymentId)
+            .ToDictionaryAsync(o => o.Name);
+
+        // Sensitive row: flagged, NOT stored plaintext, and decrypts back.
+        rows["Token"].IsSensitive.Should().BeTrue();
+        rows["Token"].Value.Should().NotBe(secret, "the sensitive value must be encrypted at rest");
+        var crypto = TestCrypto.Service(DevMasterKey);
+        crypto.Decrypt(rows["Token"].Value).Should().Be(secret);
+
+        // Non-sensitive row: untouched.
+        rows["Url"].IsSensitive.Should().BeFalse();
+        rows["Url"].Value.Should().Be(plain);
+
+        // Read path masks the sensitive value to *** and never exposes ciphertext.
+        var queue = Channel.CreateUnbounded<KrakenDeploy.Server.Data.TenantWorkItem>();
+        var service = new KrakenDeploy.Server.Data.Services.DeploymentService(
+            postgres, queue, TimeProvider.System,
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
+        var display = (await service.GetOutputVariablesAsync(g.DeploymentId))
+            .ToDictionary(o => o.Name);
+        display["Token"].Value.Should().Be("***");
+        display["Url"].Value.Should().Be(plain);
     }
 
     // ── Shared ownership predicate (also gates the gRPC artifact upload) ─────
@@ -212,6 +265,7 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
             new FalseSubPlanRegistry(),
             new OwnershipNeverUsedAdhocRegistry(),
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
+            TestCrypto.Service(DevMasterKey),
             NullLogger<AgentHub>.Instance)
         {
             Context = new OwnershipFakeHubCallerContext(actingTargetId),

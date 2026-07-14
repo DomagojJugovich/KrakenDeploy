@@ -193,15 +193,21 @@ public class OfflineResultService(
                         TargetId     = target?.Id,
                     });
 
+                    var sensitiveNames = new HashSet<string>(
+                        step.SensitiveOutputNames, StringComparer.OrdinalIgnoreCase);
                     foreach (var (name, value) in step.OutputVariables)
                     {
+                        // T0-6: sensitive outputs are stored encrypted; the read
+                        // path masks them. Non-sensitive values are stored as-is.
+                        var isSensitive = sensitiveNames.Contains(name);
                         db.TaskOutputVariables.Add(new TaskOutputVariable
                         {
                             SpaceId      = deployment.SpaceId,
                             TaskId       = deploymentId,
                             StepName     = step.StepName,
                             Name         = name,
-                            Value        = value,
+                            Value        = isSensitive ? encryption.Encrypt(value) : value,
+                            IsSensitive  = isSensitive,
                             CapturedUtc  = completedUtc,
                         });
                     }

@@ -81,7 +81,7 @@ public sealed class ScriptPackageTests
     {
         var py = ScriptStepHandler.BuildPythonPreamble();
         py.Should().Contain("OctopusParameters = octopusvariables")
-            .And.Contain("def set_octopusvariable(name, value):")
+            .And.Contain("def set_octopusvariable(name, value, sensitive=False):")
             .And.Contain("def new_octopusartifact(path, name=None):");
     }
 
@@ -90,7 +90,7 @@ public sealed class ScriptPackageTests
     {
         var cs = ScriptStepHandler.BuildCSharpPreamble();
         cs.Should().Contain("var OctopusParameters = Environment.GetEnvironmentVariables()")
-            .And.Contain("void SetOctopusVariable(string name, string value)")
+            .And.Contain("void SetOctopusVariable(string name, string value, bool sensitive = false)")
             .And.Contain("void NewOctopusArtifact(string path, string? name = null)");
     }
 

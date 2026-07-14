@@ -76,6 +76,7 @@ public sealed class FileSystemServerLink(
         bool success,
         string? errorMessage,
         IReadOnlyDictionary<string, string> outputVariables,
+        IReadOnlyCollection<string> sensitiveOutputNames,
         CancellationToken ct)
     {
         _steps[stepIndex] = new OfflineStepResult
@@ -85,6 +86,7 @@ public sealed class FileSystemServerLink(
             Success = success,
             ErrorMessage = errorMessage,
             OutputVariables = new Dictionary<string, string>(outputVariables, StringComparer.OrdinalIgnoreCase),
+            SensitiveOutputNames = sensitiveOutputNames?.ToList() ?? [],
         };
         return Task.CompletedTask;
     }

@@ -436,7 +436,13 @@ else
                                     <RadzenDataGridColumn TItem="TaskOutputVariable"
                                                           Property="Value" Title="Value">
                                         <Template Context="o">
-                                            @if (o.Value.Contains('\n'))
+                                            @if (o.IsSensitive)
+                                            {
+                                                @* T0-6: value is masked server-side; only the badge renders here. *@
+                                                <RadzenBadge BadgeStyle="BadgeStyle.Warning" Shade="Shade.Light"
+                                                             Icon="lock" Text="Sensitive" />
+                                            }
+                                            else if (o.Value.Contains('\n'))
                                             {
                                                 <pre style="margin:0; white-space: pre-wrap; word-break: break-word;
                                                             font-family: var(--rz-mono-font, monospace);

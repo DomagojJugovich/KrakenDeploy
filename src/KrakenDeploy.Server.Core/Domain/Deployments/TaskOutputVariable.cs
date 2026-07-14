@@ -23,8 +23,21 @@ public class TaskOutputVariable : Entity, ISpaceScoped
     /// <summary>Variable name as supplied to <c>Set-OctopusVariable -name</c>.</summary>
     public required string Name { get; set; }
 
-    /// <summary>Variable value (may be multi-line; stored as-is after base64 decode on the agent).</summary>
+    /// <summary>
+    /// Variable value. For non-sensitive outputs this is the plaintext value
+    /// (base64-decoded on the agent). For sensitive outputs
+    /// (<see cref="IsSensitive"/> = <c>true</c>) it is the AES-GCM ciphertext
+    /// produced by <c>IEncryptionService.Encrypt</c> under the active DEK (T0-6)
+    /// — never expose it directly; the read path masks it to <c>***</c>.
+    /// </summary>
     public string Value { get; set; } = "";
+
+    /// <summary>
+    /// T0-6: the value was emitted with <c>Set-OctopusVariable -sensitive</c>.
+    /// When set, <see cref="Value"/> holds ciphertext and the UI masks it. The
+    /// DEK-rotation walk re-encrypts only these rows.
+    /// </summary>
+    public bool IsSensitive { get; set; }
 
     /// <summary>When the variable was captured.</summary>
     public DateTimeOffset CapturedUtc { get; set; }

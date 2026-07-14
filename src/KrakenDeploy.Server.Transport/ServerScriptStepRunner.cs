@@ -218,10 +218,14 @@ public sealed class ServerScriptStepRunner(
         sb.AppendLine("function Write-KrakenError   { param([string]$Message) Write-Error $Message }");
         sb.AppendLine("function Get-KrakenVariable  { param([string]$Name) $OctopusParameters[$Name] }");
         sb.AppendLine("function Set-OctopusVariable {");
-        sb.AppendLine("    param([string]$name, [AllowEmptyString()][string]$value)");
+        sb.AppendLine("    param([string]$name, [AllowEmptyString()][string]$value, [switch]$sensitive)");
         sb.AppendLine("    $b64n = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($name))");
         sb.AppendLine("    $b64v = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($value))");
-        sb.AppendLine("    Write-Host \"##octopus[setVariable name='$b64n' value='$b64v']\"");
+        sb.AppendLine("    if ($sensitive) {");
+        sb.AppendLine("        Write-Host \"##octopus[setVariable name='$b64n' value='$b64v' sensitive='True']\"");
+        sb.AppendLine("    } else {");
+        sb.AppendLine("        Write-Host \"##octopus[setVariable name='$b64n' value='$b64v']\"");
+        sb.AppendLine("    }");
         sb.AppendLine("}");
         sb.AppendLine("# ─────────────────────────────────────────────────────────────────────");
         return sb.ToString();

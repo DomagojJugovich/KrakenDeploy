@@ -56,13 +56,19 @@ public interface IAgentHubServer
     /// inside ForEach iterations (M15) or duplicate-name authoring.
     /// </para>
     /// </summary>
+    /// <param name="sensitiveOutputNames">
+    /// T0-6: subset of <paramref name="outputVariables"/> keys emitted with
+    /// <c>Set-OctopusVariable -sensitive</c>. The server encrypts those values
+    /// at rest and masks them in the UI. Empty means none are sensitive.
+    /// </param>
     Task ReportStepCompletedAsync(
         Guid deploymentId,
         int stepIndex,
         string stepName,
         bool success,
         string? errorMessage,
-        Dictionary<string, string> outputVariables);
+        Dictionary<string, string> outputVariables,
+        List<string> sensitiveOutputNames);
 
     /// <summary>
     /// M11.E.7 — reports an ad-hoc script's per-target outcome back to the

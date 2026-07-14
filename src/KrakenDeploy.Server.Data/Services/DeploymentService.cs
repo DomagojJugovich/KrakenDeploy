@@ -324,16 +324,32 @@ public class DeploymentService(
     /// Returns all output variables captured during a deployment via
     /// <c>Set-OctopusVariable</c> / <c>##octopus[setVariable]</c> markers,
     /// ordered by step capture order and then variable name.
+    /// <para>
+    /// T0-6: sensitive rows store ciphertext; their <see cref="TaskOutputVariable.Value"/>
+    /// is masked to <c>***</c> here so no caller (UI or API) ever sees the
+    /// ciphertext or the secret. The value is never decrypted for display.
+    /// </para>
     /// </summary>
     public async Task<List<TaskOutputVariable>> GetOutputVariablesAsync(
         Guid deploymentId, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        return await db.TaskOutputVariables
+        var rows = await db.TaskOutputVariables
             .Where(o => o.TaskId == deploymentId)
             .OrderBy(o => o.CapturedUtc)
             .ThenBy(o => o.Name)
             .ToListAsync(ct);
+
+        // Mask at the boundary (rows are detached — mutation is not persisted).
+        foreach (var row in rows)
+        {
+            if (row.IsSensitive)
+            {
+                row.Value = "***";
+            }
+        }
+
+        return rows;
     }
 
     /// <summary>

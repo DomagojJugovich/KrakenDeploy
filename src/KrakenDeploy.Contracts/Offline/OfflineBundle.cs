@@ -93,4 +93,8 @@ public sealed record OfflineStepResult
     public bool Required { get; init; } = true;
     public string? ErrorMessage { get; init; }
     public Dictionary<string, string> OutputVariables { get; init; } = [];
+    /// <summary>T0-6: subset of <see cref="OutputVariables"/> keys emitted with
+    /// <c>Set-OctopusVariable -sensitive</c>. On import the server encrypts these
+    /// values at rest and masks them in the UI. Empty = none sensitive.</summary>
+    public List<string> SensitiveOutputNames { get; init; } = [];
 }

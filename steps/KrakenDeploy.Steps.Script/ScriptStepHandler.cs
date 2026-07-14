@@ -205,11 +205,16 @@ function Register-KrakenArtifact {
 function Set-OctopusVariable {
     param(
         [Parameter(Mandatory=$true)][string]$name,
-        [Parameter(Mandatory=$true)][AllowEmptyString()][string]$value
+        [Parameter(Mandatory=$true)][AllowEmptyString()][string]$value,
+        [switch]$sensitive
     )
     $b64Name  = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($name))
     $b64Value = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($value))
-    Write-Host "##octopus[setVariable name='$b64Name' value='$b64Value']"
+    if ($sensitive) {
+        Write-Host "##octopus[setVariable name='$b64Name' value='$b64Value' sensitive='True']"
+    } else {
+        Write-Host "##octopus[setVariable name='$b64Name' value='$b64Value']"
+    }
 }
 
 function New-OctopusArtifact {
@@ -241,9 +246,15 @@ _kraken_b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
 get_octopusvariable() { printenv "$1"; }
 
 set_octopusvariable() {
+    # Usage: set_octopusvariable NAME VALUE [sensitive]
+    # Pass a third arg of "True"/"sensitive" to mark the value sensitive.
     local _name=$(_kraken_b64 "$1")
     local _value=$(_kraken_b64 "$2")
-    echo "##octopus[setVariable name='${_name}' value='${_value}']"
+    if [ "$3" = "True" ] || [ "$3" = "true" ] || [ "$3" = "sensitive" ]; then
+        echo "##octopus[setVariable name='${_name}' value='${_value}' sensitive='True']"
+    else
+        echo "##octopus[setVariable name='${_name}' value='${_value}']"
+    fi
 }
 
 new_octopusartifact() {
@@ -272,10 +283,13 @@ OctopusParameters = octopusvariables  # Octopus / C# naming alias
 def get_octopusvariable(name):
     return _kraken_os.environ.get(name, "")
 
-def set_octopusvariable(name, value):
+def set_octopusvariable(name, value, sensitive=False):
     b64_name = _kraken_base64.b64encode(str(name).encode("utf-8")).decode("ascii")
     b64_value = _kraken_base64.b64encode(str(value).encode("utf-8")).decode("ascii")
-    print(f"##octopus[setVariable name='{b64_name}' value='{b64_value}']", flush=True)
+    if sensitive:
+        print(f"##octopus[setVariable name='{b64_name}' value='{b64_value}' sensitive='True']", flush=True)
+    else:
+        print(f"##octopus[setVariable name='{b64_name}' value='{b64_value}']", flush=True)
 
 def new_octopusartifact(path, name=None):
     name = name or _kraken_os.path.basename(path)
@@ -309,11 +323,12 @@ var OctopusParameters = Environment.GetEnvironmentVariables()
 string GetOctopusVariable(string name) =>
     Environment.GetEnvironmentVariable(name) ?? "";
 
-void SetOctopusVariable(string name, string value)
+void SetOctopusVariable(string name, string value, bool sensitive = false)
 {
     var b64Name  = Convert.ToBase64String(Encoding.UTF8.GetBytes(name ?? ""));
     var b64Value = Convert.ToBase64String(Encoding.UTF8.GetBytes(value ?? ""));
-    Console.WriteLine($"##octopus[setVariable name='{b64Name}' value='{b64Value}']");
+    var suffix = sensitive ? " sensitive='True'" : "";
+    Console.WriteLine($"##octopus[setVariable name='{b64Name}' value='{b64Value}'{suffix}]");
 }
 
 void NewOctopusArtifact(string path, string? name = null)
@@ -350,12 +365,18 @@ let getOctopusVariable (name: string) =
     let v = Environment.GetEnvironmentVariable(name)
     if isNull v then "" else v
 
-let setOctopusVariable (name: string) (value: string) =
+let setOctopusVariableSensitive (name: string) (value: string) (sensitive: bool) =
     let safeName  = if isNull name then "" else name
     let safeValue = if isNull value then "" else value
     let b64Name  = Convert.ToBase64String(Encoding.UTF8.GetBytes(safeName))
     let b64Value = Convert.ToBase64String(Encoding.UTF8.GetBytes(safeValue))
-    printfn "##octopus[setVariable name='%s' value='%s']" b64Name b64Value
+    if sensitive then
+        printfn "##octopus[setVariable name='%s' value='%s' sensitive='True']" b64Name b64Value
+    else
+        printfn "##octopus[setVariable name='%s' value='%s']" b64Name b64Value
+
+let setOctopusVariable (name: string) (value: string) =
+    setOctopusVariableSensitive name value false
 
 let newOctopusArtifact (path: string) (name: string) =
     let actualName = if String.IsNullOrEmpty(name) then Path.GetFileName(path) else name

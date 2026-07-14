@@ -3,6 +3,7 @@ using FluentAssertions;
 using KrakenDeploy.Contracts.Crypto;
 using KrakenDeploy.Server.Core.Domain.Ai;
 using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Environments;
 using KrakenDeploy.Server.Core.Domain.Notifications;
 using KrakenDeploy.Server.Core.Domain.Processes;
@@ -47,7 +48,8 @@ public sealed class DekRotationWalkTests(PostgresFixture postgres)
         await using var db = postgres.CreateContext();
         await db.Database.ExecuteSqlRawAsync(
             "TRUNCATE variables, variable_sets, releases, settings, " +
-            "identity_providers, deployment_targets RESTART IDENTITY CASCADE");
+            "identity_providers, deployment_targets, server_tasks, " +
+            "task_output_variables RESTART IDENTITY CASCADE");
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -104,6 +106,31 @@ public sealed class DekRotationWalkTests(PostgresFixture postgres)
                 },
             };
             db.DeploymentTargets.Add(target);
+
+            // A succeeded deployment carrying a sensitive output variable
+            // (T0-6) whose value is stored encrypted under DEK_old.
+            var deployment = new Deployment
+            {
+                SpaceId          = WellKnown.DefaultSpaceId,
+                ProjectId        = project.Id,
+                EnvironmentId    = env.Id,
+                ReleaseId        = release.Id,
+                Status           = DeploymentStatus.Succeeded,
+                Cause            = ServerTaskCause.Manual,
+                CreatedByDisplay = "dek-rotation-test",
+            };
+            db.Set<Deployment>().Add(deployment);
+            db.TaskOutputVariables.Add(new TaskOutputVariable
+            {
+                SpaceId     = WellKnown.DefaultSpaceId,
+                Task        = deployment,
+                StepName    = "Deploy",
+                Name        = "OutSecret",
+                Value       = AesGcmCipher.Encrypt(OldDek, "output-secret"),
+                IsSensitive = true,
+                CapturedUtc = DateTimeOffset.UtcNow,
+            });
+
             await db.SaveChangesAsync();
             targetId = target.Id;
         }
@@ -124,6 +151,7 @@ public sealed class DekRotationWalkTests(PostgresFixture postgres)
         counts.Settings.Should().Be(2, "the SMTP password and the AI API key are both settings-document secrets");
         counts.IdentityProviders.Should().Be(1);
         counts.OfflineDropFields.Should().Be(1);
+        counts.OutputVariables.Should().Be(1, "the sensitive task output variable is re-encrypted");
 
         // ── Assert: everything now decrypts under DEK_new, not DEK_old ────────
         await using (var db = postgres.CreateContext())
@@ -161,6 +189,15 @@ public sealed class DekRotationWalkTests(PostgresFixture postgres)
             AesGcmCipher.Decrypt(NewDek, cfg.SmtpPasswordEncrypted!).Should().Be("drop-smtp-pw");
             AesGcmCipher.Decrypt(NewDek, cfg.WebhookSecretEncrypted!).Should().Be("webhook-secret");
             AesGcmCipher.Decrypt(NewDek, cfg.FileSharePasswordEncrypted!).Should().Be("fileshare-pw");
+
+            var outVar = await db.TaskOutputVariables.IgnoreQueryFilters()
+                .SingleAsync(o => o.Name == "OutSecret");
+            outVar.IsSensitive.Should().BeTrue();
+            AesGcmCipher.Decrypt(NewDek, outVar.Value).Should().Be("output-secret",
+                "the sensitive output variable was re-encrypted under the new DEK");
+            var decryptOutUnderOld = () => AesGcmCipher.Decrypt(OldDek, outVar.Value);
+            decryptOutUnderOld.Should().Throw<CryptographicException>(
+                "the old DEK must no longer read the rotated output variable");
         }
     }
 
