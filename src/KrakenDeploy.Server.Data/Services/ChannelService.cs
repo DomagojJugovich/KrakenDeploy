@@ -60,6 +60,25 @@ public class ChannelService(IDbContextFactory<KrakenDbContext> dbFactory)
         return channel;
     }
 
+    /// <summary>
+    /// Rejects a malformed version rule up front (invalid NuGet range or regex),
+    /// so a bad rule fails at channel save rather than surfacing only later at
+    /// release creation. Translates the parser's <see cref="FormatException"/> into
+    /// the <see cref="InvalidOperationException"/> the API/UI already map to a
+    /// user-facing validation error.
+    /// </summary>
+    private static void ValidateVersionRule(string? versionRange, string? versionTag)
+    {
+        try
+        {
+            ChannelVersionRule.Parse(versionRange, versionTag);
+        }
+        catch (FormatException ex)
+        {
+            throw new InvalidOperationException(ex.Message);
+        }
+    }
+
     public async Task<Channel> CreateAsync(
         Guid projectId,
         string name,
@@ -70,6 +89,7 @@ public class ChannelService(IDbContextFactory<KrakenDbContext> dbFactory)
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ValidateVersionRule(versionRange, versionTag);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
@@ -130,6 +150,7 @@ public class ChannelService(IDbContextFactory<KrakenDbContext> dbFactory)
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ValidateVersionRule(versionRange, versionTag);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 

@@ -57,14 +57,41 @@ public class ReleaseService(
                 $"Release '{version}' already exists for this project.");
         }
 
-        // Validate channel if provided.
+        // Resolve the channel (explicit, else the project's default) and its
+        // version rule. Octopus semantics: every pinned PRIMARY package version
+        // must satisfy the channel's NuGet range + pre-release-tag regex.
+        Channel? channel;
         if (channelId.HasValue)
         {
-            var channel = await db.Channels
+            channel = await db.Channels
                 .FirstOrDefaultAsync(c => c.Id == channelId.Value && c.ProjectId == projectId, ct)
                 .ConfigureAwait(false)
                 ?? throw new InvalidOperationException($"Channel {channelId} not found for this project.");
         }
+        else
+        {
+            // No explicit channel (the CLI never sends one; the UI's "use project
+            // default"): resolve the default channel so its rules still apply.
+            channel = await db.Channels
+                .FirstOrDefaultAsync(c => c.ProjectId == projectId && c.IsDefault, ct)
+                .ConfigureAwait(false);
+        }
+
+        ChannelVersionRule rule;
+        try
+        {
+            rule = channel is null
+                ? ChannelVersionRule.None
+                : ChannelVersionRule.Parse(channel.VersionRange, channel.VersionTag);
+        }
+        catch (FormatException ex)
+        {
+            throw new InvalidOperationException(
+                $"Channel '{channel!.Name}' has an invalid version rule: {ex.Message} " +
+                "Fix the channel's version range/tag before creating a release on it.");
+        }
+
+        var ruleViolations = new List<string>();
 
         // Load the current process snapshot (owner = Project).
         var process = await db.Processes
@@ -91,9 +118,22 @@ public class ReleaseService(
             string pinned = "";
             if (!string.IsNullOrWhiteSpace(step.PackageId))
             {
-                pinned = (packageVersions is not null && packageVersions.TryGetValue(step.Name, out var v))
-                    ? v
-                    : await ResolveLatestVersionAsync(db, step.PackageId, ct).ConfigureAwait(false);
+                if (packageVersions is not null && packageVersions.TryGetValue(step.Name, out var v))
+                {
+                    // Explicit version — validate it against the channel rule.
+                    pinned = v;
+                    var reason = rule.Check(pinned);
+                    if (reason is not null)
+                    {
+                        ruleViolations.Add($"step '{step.Name}' (package '{step.PackageId}'): {reason}");
+                    }
+                }
+                else
+                {
+                    // Auto-latest — pick the newest uploaded version that satisfies
+                    // the channel rule (throws with a clear message if none does).
+                    pinned = await ResolveLatestVersionAsync(db, step.PackageId, rule, ct).ConfigureAwait(false);
+                }
             }
 
             // Copy the source Config, then pin any referenced packages in it.
@@ -144,6 +184,15 @@ public class ReleaseService(
                 TimeoutSeconds              = step.TimeoutSeconds,
                 StartTrigger                = step.StartTrigger,
             });
+        }
+
+        // Fail the whole release if any explicit package version broke the
+        // channel's rules — report every offender at once, not the first.
+        if (ruleViolations.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Release '{version}' cannot be created on channel '{channel!.Name}' " +
+                $"({rule.Describe()}): " + string.Join("; ", ruleViolations) + ".");
         }
 
         // Variable snapshot — Octopus-style "Update Variables" model.
@@ -320,19 +369,32 @@ public class ReleaseService(
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private static async Task<string> ResolveLatestVersionAsync(
-        KrakenDbContext db, string packageId, CancellationToken ct)
+        KrakenDbContext db, string packageId, ChannelVersionRule rule, CancellationToken ct)
     {
-        var latest = await db.Packages
+        var versions = await db.Packages
             .Where(p => p.PackageId == packageId)
             .OrderByDescending(p => p.UploadedUtc)
             .Select(p => p.Version)
-            .FirstOrDefaultAsync(ct)
+            .ToListAsync(ct)
             .ConfigureAwait(false);
 
-        return latest
-            ?? throw new InvalidOperationException(
+        if (versions.Count == 0)
+        {
+            throw new InvalidOperationException(
                 $"No package with ID '{packageId}' has been uploaded. " +
                 "Upload it first or provide an explicit version.");
+        }
+
+        if (!rule.HasRules)
+        {
+            return versions[0];
+        }
+
+        // Channel-aware "latest": newest uploaded version that satisfies the rule.
+        return versions.FirstOrDefault(rule.IsSatisfiedBy)
+            ?? throw new InvalidOperationException(
+                $"No uploaded version of package '{packageId}' satisfies the channel's " +
+                $"version rules ({rule.Describe()}). Upload a matching version or pin one explicitly.");
     }
 
     private static readonly System.Text.Json.JsonSerializerOptions PackageRefJsonOpts =
@@ -388,7 +450,9 @@ public class ReleaseService(
                 continue;
             }
 
-            var latest = await ResolveLatestVersionAsync(db, r.PackageId, ct).ConfigureAwait(false);
+            // Referenced (helper) packages aren't what the channel's app-version
+            // range targets, so they resolve to newest with no channel rule applied.
+            var latest = await ResolveLatestVersionAsync(db, r.PackageId, ChannelVersionRule.None, ct).ConfigureAwait(false);
             pinned.Add(r with { Version = latest });
         }
 

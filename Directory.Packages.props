@@ -48,6 +48,9 @@
          graph to stay a minimal deployable. EFCore.PG resolves its own Npgsql
          transitively; this central pin keeps both on the same line. -->
     <PackageVersion Include="Npgsql" Version="10.0.3" />
+    <!-- Microsoft-owned SemVer/NuGet-range parser — the exact primitives Octopus
+         uses for channel version rules (VersionRange.Satisfies / NuGetVersion). -->
+    <PackageVersion Include="NuGet.Versioning" Version="6.14.0" />
   </ItemGroup>
 
   <ItemGroup Label="Reverse proxy (blue-green slot router)">

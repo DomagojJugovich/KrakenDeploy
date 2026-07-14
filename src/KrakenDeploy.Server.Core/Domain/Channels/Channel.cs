@@ -29,14 +29,20 @@ public class Channel : AuditableEntity, ISpaceScoped
     public Lifecycle? Lifecycle { get; set; }
 
     /// <summary>
-    /// SemVer range string (e.g. <c>"&gt;=1.0.0 &lt;2.0.0"</c>).
-    /// When set, only release versions matching this range may be created on this channel.
+    /// NuGet-style version range (Octopus semantics), e.g. <c>"[1.0,2.0)"</c>,
+    /// <c>"1.2.*"</c>, or <c>"[1.0.0,)"</c>. When set, every package version pinned
+    /// into a release on this channel must satisfy the range
+    /// (<c>NuGet.Versioning.VersionRange.Satisfies</c>). Validated at channel save
+    /// and enforced at release creation.
     /// </summary>
     public string? VersionRange { get; set; }
 
     /// <summary>
-    /// Pre-release tag filter (e.g. <c>"beta"</c>).
-    /// When set, only versions whose pre-release label equals this value are accepted.
+    /// Pre-release tag filter as a regular expression (Octopus semantics), matched
+    /// against each package version's pre-release label — e.g. <c>"^$"</c> for
+    /// stable-only, <c>"^beta"</c> for beta builds. When set, every pinned package
+    /// version's pre-release tag must match. Validated at channel save and enforced
+    /// at release creation.
     /// </summary>
     public string? VersionTag { get; set; }
 }
