@@ -4,6 +4,7 @@ using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace KrakenDeploy.Server.Data.Services;
 
@@ -20,7 +21,8 @@ namespace KrakenDeploy.Server.Data.Services;
 /// </remarks>
 public class ReleaseService(
     IDbContextFactory<KrakenDbContext> dbFactory,
-    StepPackageResolver? stepPackageResolver = null)
+    StepPackageResolver? stepPackageResolver = null,
+    ILogger<ReleaseService>? logger = null)
 {
     // ── Create ─────────────────────────────────────────────────────────────
 
@@ -86,9 +88,16 @@ public class ReleaseService(
         }
         catch (FormatException ex)
         {
-            throw new InvalidOperationException(
-                $"Channel '{channel!.Name}' has an invalid version rule: {ex.Message} " +
-                "Fix the channel's version range/tag before creating a release on it.");
+            // A legacy channel rule (authored before channel-save validation, or under
+            // the old npm-style grammar) can be unparseable. It was never enforced
+            // before this change, so treat it as "no rule" and warn — blocking every
+            // release on the channel on upgrade would be a worse regression. New/edited
+            // rules are validated at channel save, so this only bites legacy values.
+            logger?.LogWarning(ex,
+                "Channel '{Channel}' has an unparseable version rule; ignoring it for " +
+                "release creation. Re-save the channel with a valid NuGet range / tag " +
+                "regex to enforce it.", channel!.Name);
+            rule = ChannelVersionRule.None;
         }
 
         var ruleViolations = new List<string>();
@@ -371,23 +380,27 @@ public class ReleaseService(
     private static async Task<string> ResolveLatestVersionAsync(
         KrakenDbContext db, string packageId, ChannelVersionRule rule, CancellationToken ct)
     {
-        var versions = await db.Packages
+        var query = db.Packages
             .Where(p => p.PackageId == packageId)
             .OrderByDescending(p => p.UploadedUtc)
-            .Select(p => p.Version)
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
+            .Select(p => p.Version);
 
+        // No rule (the common case, and always for referenced/helper packages):
+        // fetch a single row rather than the whole version history.
+        if (!rule.HasRules)
+        {
+            return await query.FirstOrDefaultAsync(ct).ConfigureAwait(false)
+                ?? throw new InvalidOperationException(
+                    $"No package with ID '{packageId}' has been uploaded. " +
+                    "Upload it first or provide an explicit version.");
+        }
+
+        var versions = await query.ToListAsync(ct).ConfigureAwait(false);
         if (versions.Count == 0)
         {
             throw new InvalidOperationException(
                 $"No package with ID '{packageId}' has been uploaded. " +
                 "Upload it first or provide an explicit version.");
-        }
-
-        if (!rule.HasRules)
-        {
-            return versions[0];
         }
 
         // Channel-aware "latest": newest uploaded version that satisfies the rule.

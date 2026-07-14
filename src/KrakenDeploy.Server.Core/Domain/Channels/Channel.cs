@@ -34,6 +34,11 @@ public class Channel : AuditableEntity, ISpaceScoped
     /// into a release on this channel must satisfy the range
     /// (<c>NuGet.Versioning.VersionRange.Satisfies</c>). Validated at channel save
     /// and enforced at release creation.
+    /// <para>
+    /// Note (NuGet/Octopus semantics): a range does NOT exclude in-range
+    /// pre-releases — <c>[1.0,2.0)</c> admits <c>1.5.0-beta</c>. To restrict a
+    /// channel to stable builds, set <see cref="VersionTag"/> to <c>"^$"</c>.
+    /// </para>
     /// </summary>
     public string? VersionRange { get; set; }
 

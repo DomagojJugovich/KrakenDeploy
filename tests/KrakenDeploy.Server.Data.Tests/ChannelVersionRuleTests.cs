@@ -44,7 +44,22 @@ public sealed class ChannelVersionRuleTests
         var rule = ChannelVersionRule.Parse("[1.0,2.0)", "^$");
         rule.IsSatisfiedBy("1.5.0").Should().BeTrue();          // in range + stable
         rule.IsSatisfiedBy("2.5.0").Should().BeFalse();         // stable but out of range
-        rule.IsSatisfiedBy("1.5.0-beta").Should().BeFalse();    // range excludes pre-release; tag requires stable
+        // Rejected by the `^$` tag. The range ALONE would admit it (see next test).
+        rule.IsSatisfiedBy("1.5.0-beta").Should().BeFalse();
+    }
+
+    [Fact]
+    public void Range_alone_admits_in_range_prereleases_Octopus_semantics()
+    {
+        // Octopus parity (octopus.com/docs/releases/channels): a NuGet range does
+        // NOT filter pre-releases — VersionRange.Satisfies is a pure interval check.
+        // Operators exclude pre-releases by adding a version tag (e.g. ^$), NOT by
+        // the range. Pinned so this can't silently "improve" into range-based
+        // pre-release exclusion, which would break Octopus parity.
+        var rangeOnly = ChannelVersionRule.Parse("[1.0,2.0)", null);
+        rangeOnly.IsSatisfiedBy("1.5.0-beta").Should().BeTrue();
+        rangeOnly.IsSatisfiedBy("2.0.0-beta").Should().BeTrue("even a pre-release of the excluded upper bound satisfies the interval");
+        rangeOnly.IsSatisfiedBy("2.0.0").Should().BeFalse("the stable upper bound is exclusive");
     }
 
     [Fact]

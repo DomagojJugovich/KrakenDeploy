@@ -89,4 +89,28 @@ public sealed class DekRotationCompletenessTests
                 $"the catalog must expose {document.Name}'s *Encrypted members for re-encryption.");
         }
     }
+
+    [Fact]
+    public void Every_settings_document_Encrypted_member_is_a_string()
+    {
+        // The rotation walk + catalog only handle STRING *Encrypted members. A
+        // non-string one (e.g. byte[] TokenEncrypted) would be silently skipped by
+        // BOTH the walk and the completeness guard above (which detects secrets via
+        // the string filter). Codify the convention so such a member fails CI and
+        // forces an explicit decision rather than a silent brick on rotation.
+        var domainAssembly = typeof(SpaceAiSettings).Assembly;
+
+        var nonStringEncrypted = domainAssembly.GetTypes()
+            .Where(t => t is { IsClass: true, IsAbstract: false }
+                     && typeof(ISettingsDocument).IsAssignableFrom(t))
+            .SelectMany(t => t.GetProperties())
+            .Where(p => p.Name.EndsWith("Encrypted", StringComparison.Ordinal)
+                     && p.PropertyType != typeof(string))
+            .Select(p => $"{p.DeclaringType!.Name}.{p.Name} : {p.PropertyType.Name}")
+            .ToList();
+
+        nonStringEncrypted.Should().BeEmpty(
+            "every *Encrypted member on an ISettingsDocument must be a string — the DEK " +
+            "rotation walk and SettingsDocumentCatalog only re-encrypt string members.");
+    }
 }

@@ -69,16 +69,19 @@ public static class SettingsDocumentCatalog
             result.Add(new DocumentDescriptor(type, key, scope, encrypted));
         }
 
+        // Keys must be GLOBALLY unique (not just per-scope): the by-key lookup and
+        // the DEK-rotation resolution (Find(row.Key)) are scope-blind, so two
+        // documents sharing a key — even across scopes — would collide.
         var duplicates = result
-            .GroupBy(d => (d.Scope, d.Key))
+            .GroupBy(d => d.Key, StringComparer.Ordinal)
             .Where(g => g.Count() > 1)
-            .Select(g => $"{g.Key.Scope}/{g.Key.Key}")
+            .Select(g => g.Key)
             .ToList();
         if (duplicates.Count > 0)
         {
             throw new InvalidOperationException(
-                "Duplicate ISettingsDocument key(s) within a scope: " + string.Join(", ", duplicates) +
-                ". Each (scope, key) pair must map to exactly one document type.");
+                "Duplicate ISettingsDocument key(s): " + string.Join(", ", duplicates) +
+                ". Each key must map to exactly one document type across all scopes.");
         }
 
         return result;

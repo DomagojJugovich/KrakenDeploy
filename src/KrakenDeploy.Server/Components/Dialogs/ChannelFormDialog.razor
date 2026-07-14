@@ -48,18 +48,21 @@
             <div>
                 <RadzenLabel Text="Version range" />
                 <RadzenTextBox @bind-Value="_form.VersionRange" Style="width: 100%;"
-                               Placeholder='e.g. "&gt;=1.0.0 &lt;2.0.0"' />
+                               Placeholder="e.g. [1.0,2.0)  or  [1.0.0,)  or  1.2.*" />
                 <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
-                    SemVer range — only matching release versions can be created on this channel.
+                    NuGet version range — every package version in a release on this channel
+                    must satisfy it. A range does not exclude in-range pre-releases; use the
+                    tag below (^$) to restrict to stable builds.
                 </RadzenText>
             </div>
 
             <div>
                 <RadzenLabel Text="Pre-release tag" />
                 <RadzenTextBox @bind-Value="_form.VersionTag" Style="width: 100%;"
-                               Placeholder="e.g. beta, rc, alpha" />
+                               Placeholder="regex, e.g. ^$ (stable only) or ^beta" />
                 <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
-                    When set, only versions whose pre-release label matches are accepted.
+                    Regex matched against each version's pre-release label. "^$" = stable
+                    only; "^beta" = beta builds. Leave blank to allow any tag.
                 </RadzenText>
             </div>
 

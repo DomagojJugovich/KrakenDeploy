@@ -152,6 +152,11 @@ FROM space_ai_settings;");
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            // Structure-only rollback: recreates the six tables EMPTY and drops
+            // `settings` — it does NOT copy the folded data (incl. encrypted SMTP
+            // password / AI API keys) back. Treat this migration as effectively
+            // forward-only; to roll back with data, restore from a backup taken
+            // before the upgrade.
             migrationBuilder.DropTable(
                 name: "settings");
 
