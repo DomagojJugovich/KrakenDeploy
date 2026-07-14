@@ -81,10 +81,21 @@ public class RetentionService(
         var keep = phase.RetentionKeepDeployments;
 
         // IDs of successful deployments for this project+environment, newest first.
+        // "Successful" spans BOTH terminal-success states: Succeeded and
+        // SucceededWithWarnings (a completed deployment whose only failure was a
+        // non-required step — the yellow-badge state). Both count toward the keep
+        // window AND are eligible to be pruned; excluding SucceededWithWarnings
+        // left those rows (and their task_step_logs/task_log_live children)
+        // accumulating unbounded while never counting against the limit. This is
+        // the settled terminal-success contract — finish-plan WP9 (retention
+        // expansion) tunes the keep count/policy, it must NOT narrow this back to
+        // Succeeded-only. Running/Queued/Failed/Cancelled/PendingOfflineResult are
+        // never candidates.
         var successIds = await db.Deployments
             .Where(d => d.Release.ProjectId == projectId &&
                         d.EnvironmentId == envId &&
-                        d.Status == DeploymentStatus.Succeeded)
+                        (d.Status == DeploymentStatus.Succeeded ||
+                         d.Status == DeploymentStatus.SucceededWithWarnings))
             .OrderByDescending(d => d.CompletedUtc)
             .Select(d => d.Id)
             .ToListAsync(ct)

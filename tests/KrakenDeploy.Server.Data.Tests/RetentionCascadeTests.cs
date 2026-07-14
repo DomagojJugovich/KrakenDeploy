@@ -109,6 +109,64 @@ public sealed class RetentionCascadeTests(PostgresFixture postgres)
             .Should().BeTrue("the newest successful deployment is retained");
     }
 
+    [Fact]
+    public async Task PruneAfterDeployment_treats_SucceededWithWarnings_as_a_terminal_success()
+    {
+        // Regression: the prune-candidate filter must span BOTH terminal-success
+        // states. A SucceededWithWarnings deployment (completed, only a
+        // non-required step failed — the yellow-badge state) has to count toward
+        // the keep window AND be eligible for pruning itself. Before the fix the
+        // filter was == Succeeded only, so warning-status rows were invisible to
+        // retention: never counted against the limit, never pruned — they and
+        // their log children accumulated unbounded.
+        var spaceId = Guid.NewGuid();
+        Guid failedId, oldestSuccId, midWarnId, newerSuccId, newestWarnId;
+        await using (var db = postgres.CreateContext())
+        {
+            var (envId, releaseId) = await SeedDeploymentGraphAsync(db, spaceId, keep: 2);
+            var baseUtc = DateTimeOffset.UtcNow;
+
+            // A Failed deployment older than everything — never a success
+            // candidate, must survive. Guards the fix against widening the filter
+            // past the two terminal-success states.
+            var failed = NewDeployment(spaceId, releaseId, envId, baseUtc.AddHours(-4));
+            failed.Status = DeploymentStatus.Failed;
+
+            var oldestSucc = NewDeployment(spaceId, releaseId, envId, baseUtc.AddHours(-3));
+            var midWarn    = NewDeployment(spaceId, releaseId, envId, baseUtc.AddHours(-2));
+            midWarn.Status = DeploymentStatus.SucceededWithWarnings;
+            var newerSucc  = NewDeployment(spaceId, releaseId, envId, baseUtc.AddHours(-1));
+            var newestWarn = NewDeployment(spaceId, releaseId, envId, baseUtc);
+            newestWarn.Status = DeploymentStatus.SucceededWithWarnings;
+
+            db.Deployments.AddRange(failed, oldestSucc, midWarn, newerSucc, newestWarn);
+            await db.SaveChangesAsync();
+
+            failedId     = failed.Id;
+            oldestSuccId = oldestSucc.Id;
+            midWarnId    = midWarn.Id;
+            newerSuccId  = newerSucc.Id;
+            newestWarnId = newestWarn.Id;
+        }
+
+        // keep=2 → newest-first success set is
+        // [newestWarn, newerSucc, midWarn, oldestSucc]; Skip(2) prunes the last two.
+        await PruneDeploymentAsync(newestWarnId);
+
+        await using var check = postgres.CreateContext();
+
+        (await check.Deployments.IgnoreQueryFilters().AnyAsync(d => d.Id == newestWarnId))
+            .Should().BeTrue("SucceededWithWarnings is a terminal success — the newest one is inside the keep window");
+        (await check.Deployments.IgnoreQueryFilters().AnyAsync(d => d.Id == newerSuccId))
+            .Should().BeTrue("the second-newest success (plain Succeeded) is retained by keep=2");
+        (await check.Deployments.IgnoreQueryFilters().AnyAsync(d => d.Id == midWarnId))
+            .Should().BeFalse("a SucceededWithWarnings deployment beyond the keep window must be pruned (was never pruned before the fix)");
+        (await check.Deployments.IgnoreQueryFilters().AnyAsync(d => d.Id == oldestSuccId))
+            .Should().BeFalse("the oldest plain Succeeded is pushed out of the keep window once warning-status successes count too");
+        (await check.Deployments.IgnoreQueryFilters().AnyAsync(d => d.Id == failedId))
+            .Should().BeTrue("a Failed deployment is never a retention candidate and must survive");
+    }
+
     // ── Runbook-run kind (the gap fix 6 closes) ─────────────────────────────
 
     [Fact]
