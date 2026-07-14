@@ -1,0 +1,33 @@
+@page "/s/{SpaceSlug}/configuration/settings"
+@inherits SpaceScopedComponentBase
+@attribute [Authorize]
+
+@using KrakenDeploy.Server.Components.Shared
+@using KrakenDeploy.Server.Components.Pages.Configuration.Sections
+@using KrakenDeploy.Server.Core.Domain.Security
+
+<PageTitle>Settings — KrakenDeploy</PageTitle>
+
+<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-4">Settings</RadzenText>
+
+<RequirePermission Permission="Permission.ConfigureServer">
+    <RadzenTabs>
+        <Tabs>
+            <RadzenTabsItem Text="SMTP">
+                <SmtpSection />
+            </RadzenTabsItem>
+            <RadzenTabsItem Text="Backup">
+                <BackupSection />
+            </RadzenTabsItem>
+            <RadzenTabsItem Text="Maintenance">
+                <MaintenanceSection />
+            </RadzenTabsItem>
+            <RadzenTabsItem Text="Performance">
+                <PerformanceSection />
+            </RadzenTabsItem>
+            <RadzenTabsItem Text="Feature flags">
+                <FeatureFlagsSection />
+            </RadzenTabsItem>
+        </Tabs>
+    </RadzenTabs>
+</RequirePermission>

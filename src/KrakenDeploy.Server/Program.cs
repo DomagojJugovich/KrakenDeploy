@@ -589,7 +589,7 @@ public static class Program
 
         // Hangfire worker count — read from PerformanceSettings (M13.F.3).
         // Hangfire's WorkerCount is a builder-time setting; changes from the
-        // /configuration/performance page take effect on next server restart.
+        // /configuration/settings page (Performance tab) take effect on next server restart.
         // We resolve via a temp scope here because the DI container isn't
         // built yet; a DB failure (first-run / migration pending) falls back
         // to the hardcoded default so startup still succeeds.

@@ -1,0 +1,281 @@
+@using KrakenDeploy.Server.Core.Domain.Audit
+@using KrakenDeploy.Server.Core.Domain.Performance
+@using KrakenDeploy.Server.Core.Domain.Security
+@using KrakenDeploy.Server.Data.Services
+
+@inject PerformanceSettingsService PerformanceSvc
+@inject IAuditLog Audit
+@inject NotificationService Notify
+@inject UiActionGuard Guard
+@inject NavigationManager Nav
+
+<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-1">
+    Performance &amp; retention
+</RadzenText>
+<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+    Instance-wide knobs that affect throughput, slow-deployment alerting,
+    and how long audit + AI-call history is kept.
+    <em>Hangfire worker count</em> is read at startup — changes take effect
+    after the next server restart. Threshold and retention changes apply
+    on the next run.
+</RadzenText>
+
+@if (_settings is null)
+{
+    <RadzenProgressBarCircular ShowValue="false"
+                               Mode="ProgressBarMode.Indeterminate"
+                               Style="margin: 2rem auto; display: block;" />
+}
+else
+{
+    <RadzenStack Gap="1.5rem" Style="max-width: 800px;">
+
+        @* ── Hangfire ─────────────────────────────────────────────── *@
+        <RadzenCard>
+            <RadzenStack Gap="1rem">
+                <RadzenText TextStyle="TextStyle.H6" class="rz-mb-0">
+                    Background-job throughput
+                </RadzenText>
+                <RadzenAlert AlertStyle="AlertStyle.Info" Variant="Variant.Flat"
+                             Shade="Shade.Lighter" AllowClose="false" Icon="info">
+                    Restart the server after saving. Hangfire's worker count
+                    is a builder-time setting; the live workers keep the
+                    previous count until the process is recycled.
+                </RadzenAlert>
+                <RadzenFormField Text="Hangfire worker count"
+                                 Variant="Variant.Outlined" Style="max-width: 320px;">
+                    <RadzenNumeric @bind-Value="_settings.HangfireWorkerCount"
+                                   Min="1" Max="64" Step="1"
+                                   TValue="int" />
+                </RadzenFormField>
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                    Default 4. Raise to 8-12 on larger boxes if the job
+                    queue starts backing up (visible under <a href="/hangfire">/hangfire</a>).
+                </RadzenText>
+            </RadzenStack>
+        </RadzenCard>
+
+        @* ── Slow-deployment thresholds ────────────────────────────── *@
+        <RadzenCard>
+            <RadzenStack Gap="1rem">
+                <RadzenText TextStyle="TextStyle.H6" class="rz-mb-0">
+                    Slow-deployment alerts
+                </RadzenText>
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-0">
+                    Emits <code>Deployment.Slow</code> and
+                    <code>DeploymentStep.Slow</code> audit events when the
+                    run / step exceeds the threshold. Pair with a
+                    Subscription (<a href="@Nav.Sp("/configuration/subscriptions")">Subscriptions</a>)
+                    to route to email / webhook / runbook / AI inspection.
+                    Set to <strong>0</strong> to disable.
+                </RadzenText>
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="1rem">
+                    <RadzenFormField Text="Deployment threshold (minutes)"
+                                     Variant="Variant.Outlined" Style="flex:1;">
+                        <RadzenNumeric @bind-Value="_settings.SlowDeploymentThresholdMinutes"
+                                       Min="0" Max="1440" Step="1"
+                                       TValue="int" />
+                    </RadzenFormField>
+                    <RadzenFormField Text="Step threshold (minutes)"
+                                     Variant="Variant.Outlined" Style="flex:1;">
+                        <RadzenNumeric @bind-Value="_settings.SlowStepThresholdMinutes"
+                                       Min="0" Max="1440" Step="1"
+                                       TValue="int" />
+                    </RadzenFormField>
+                </RadzenStack>
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                    v1 step-timing applies to server-side steps only.
+                    Target-side per-step alerting needs an agent contract
+                    change and is a follow-up.
+                </RadzenText>
+            </RadzenStack>
+        </RadzenCard>
+
+        @* ── Retention card ────────────────────────────────────────── *@
+        <RadzenCard>
+            <RadzenStack Gap="1rem">
+                <RadzenText TextStyle="TextStyle.H6" class="rz-mb-0">
+                    Retention windows
+                </RadzenText>
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-0">
+                    Days of history kept by the nightly retention jobs.
+                    Set to <strong>0</strong> to keep rows indefinitely.
+                    GDPR-relevant — see your data-protection policy before
+                    raising beyond the default.
+                </RadzenText>
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="1rem">
+                    <RadzenFormField Text="Audit log (days)"
+                                     Variant="Variant.Outlined" Style="flex:1;">
+                        <RadzenNumeric @bind-Value="_settings.AuditLogRetentionDays"
+                                       Min="0" Max="3650" Step="30"
+                                       TValue="int" />
+                    </RadzenFormField>
+                    <RadzenFormField Text="AI call log (days)"
+                                     Variant="Variant.Outlined" Style="flex:1;">
+                        <RadzenNumeric @bind-Value="_settings.AiCallLogRetentionDays"
+                                       Min="0" Max="3650" Step="30"
+                                       TValue="int" />
+                    </RadzenFormField>
+                </RadzenStack>
+                <RadzenAlert AlertStyle="AlertStyle.Info" Variant="Variant.Flat"
+                             Shade="Shade.Lighter" AllowClose="false" Icon="tune">
+                    The master kill-switch for audit-log retention lives on the
+                    <a href="@Nav.Sp("/configuration/settings")">Feature flags tab</a>
+                    (<code>audit.purge-enabled</code>) — flip it off to pause
+                    the purge without losing the day count above.
+                </RadzenAlert>
+            </RadzenStack>
+        </RadzenCard>
+
+        @* ── Offline drop ──────────────────────────────────────────── *@
+        <RadzenCard>
+            <RadzenStack Gap="1rem">
+                <RadzenText TextStyle="TextStyle.H6" class="rz-mb-0">
+                    Offline drop
+                </RadzenText>
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem"
+                             AlignItems="AlignItems.Center">
+                    <RadzenSwitch @bind-Value="_settings.EmbedOfflineRunner"
+                                  Name="EmbedOfflineRunner" />
+                    <RadzenLabel Text="Embed the self-contained runner in offline drop bundles"
+                                 Component="EmbedOfflineRunner" />
+                </RadzenStack>
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                    On (default): bundles run on a target with no .NET installed,
+                    at ≈110&nbsp;MB per bundle. Off: bundles carry data only and the
+                    bootstrap uses a <code>KrakenDeploy.Agent</code> installed once on
+                    the target. Either way an absent staged runner degrades gracefully.
+                </RadzenText>
+            </RadzenStack>
+        </RadzenCard>
+
+        @* ── Save bar ──────────────────────────────────────────────── *@
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem"
+                     JustifyContent="JustifyContent.End">
+            <RadzenButton Text="Discard"
+                          ButtonStyle="ButtonStyle.Light"
+                          Icon="restart_alt"
+                          Disabled="@(_saving || !_dirty)"
+                          Click="DiscardAsync" />
+            <RadzenButton Text="Save"
+                          ButtonStyle="ButtonStyle.Primary"
+                          Icon="save"
+                          IsBusy="@_saving"
+                          Disabled="@(!_dirty)"
+                          Click="SaveAsync" />
+        </RadzenStack>
+    </RadzenStack>
+}
+
+@code {
+    private PerformanceSettings? _settings;
+    private PerformanceSettings? _baseline;
+    private bool _saving;
+
+    /// <summary>
+    /// True when any bound field differs from <see cref="_baseline"/> —
+    /// gates the Save button so the operator can't accidentally re-save
+    /// the same values (which would still produce an audit row).
+    /// </summary>
+    private bool _dirty =>
+        _settings is not null && _baseline is not null
+        && (_settings.HangfireWorkerCount            != _baseline.HangfireWorkerCount
+            || _settings.SlowDeploymentThresholdMinutes != _baseline.SlowDeploymentThresholdMinutes
+            || _settings.SlowStepThresholdMinutes       != _baseline.SlowStepThresholdMinutes
+            || _settings.AuditLogRetentionDays          != _baseline.AuditLogRetentionDays
+            || _settings.AiCallLogRetentionDays         != _baseline.AiCallLogRetentionDays
+            || _settings.EmbedOfflineRunner             != _baseline.EmbedOfflineRunner);
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        var fresh = await PerformanceSvc.GetAsync();
+        // Working copy bound to the form; baseline is the unchanged snapshot
+        // used by _dirty + the audit "before → after" details.
+        _settings = Clone(fresh);
+        _baseline = Clone(fresh);
+    }
+
+    private async Task DiscardAsync() => await ReloadAsync();
+
+    private async Task SaveAsync()
+    {
+        if (_settings is null || _baseline is null) { return; }
+        if (!await Guard.AllowAsync(Permission.ConfigureServer)) return;
+
+        _saving = true;
+        try
+        {
+            var changes = BuildChangeSummary(_baseline, _settings);
+            await PerformanceSvc.SaveAsync(_settings);
+
+            await Audit.RecordAsync(
+                AuditEventType.PerformanceSettingsUpdated,
+                subjectType: "PerformanceSettings",
+                details:     changes);
+
+            Notify.Notify(NotificationSeverity.Success,
+                "Settings saved",
+                "Hangfire worker count takes effect after restart.", 4000);
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error,
+                "Failed to save", ex.Message, 6000);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private static PerformanceSettings Clone(PerformanceSettings src) => new()
+    {
+        HangfireWorkerCount            = src.HangfireWorkerCount,
+        SlowDeploymentThresholdMinutes = src.SlowDeploymentThresholdMinutes,
+        SlowStepThresholdMinutes       = src.SlowStepThresholdMinutes,
+        AuditLogRetentionDays          = src.AuditLogRetentionDays,
+        AiCallLogRetentionDays         = src.AiCallLogRetentionDays,
+        EmbedOfflineRunner             = src.EmbedOfflineRunner,
+    };
+
+    /// <summary>
+    /// Builds a comma-separated "field=old→new" list of changed fields.
+    /// Empty string when nothing changed. Used as the audit row's Details
+    /// so a forensic review of "who tuned what when" reads naturally.
+    /// </summary>
+    private static string BuildChangeSummary(
+        PerformanceSettings before, PerformanceSettings after)
+    {
+        var diffs = new List<string>(5);
+
+        if (before.HangfireWorkerCount != after.HangfireWorkerCount)
+        {
+            diffs.Add($"HangfireWorkerCount={before.HangfireWorkerCount}→{after.HangfireWorkerCount}");
+        }
+        if (before.SlowDeploymentThresholdMinutes != after.SlowDeploymentThresholdMinutes)
+        {
+            diffs.Add($"SlowDeploymentThresholdMinutes={before.SlowDeploymentThresholdMinutes}→{after.SlowDeploymentThresholdMinutes}");
+        }
+        if (before.SlowStepThresholdMinutes != after.SlowStepThresholdMinutes)
+        {
+            diffs.Add($"SlowStepThresholdMinutes={before.SlowStepThresholdMinutes}→{after.SlowStepThresholdMinutes}");
+        }
+        if (before.AuditLogRetentionDays != after.AuditLogRetentionDays)
+        {
+            diffs.Add($"AuditLogRetentionDays={before.AuditLogRetentionDays}→{after.AuditLogRetentionDays}");
+        }
+        if (before.AiCallLogRetentionDays != after.AiCallLogRetentionDays)
+        {
+            diffs.Add($"AiCallLogRetentionDays={before.AiCallLogRetentionDays}→{after.AiCallLogRetentionDays}");
+        }
+        if (before.EmbedOfflineRunner != after.EmbedOfflineRunner)
+        {
+            diffs.Add($"EmbedOfflineRunner={before.EmbedOfflineRunner}→{after.EmbedOfflineRunner}");
+        }
+
+        return string.Join(", ", diffs);
+    }
+}

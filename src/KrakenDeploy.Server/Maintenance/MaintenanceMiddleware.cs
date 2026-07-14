@@ -47,7 +47,7 @@ public sealed class MaintenanceMiddleware(RequestDelegate next)
         "/healthz",                // monitoring keeps watching
         "/api/diagnostics",        // ops can still pull diagnostics zip
         "/hangfire",               // job dashboard for the operator
-        "/configuration/maintenance", // the page that turns it off (Razor)
+        "/configuration/settings", // the unified settings page whose Maintenance tab turns it off (Razor)
         "/api/maintenance",        // its API counterpart
     ];
 
@@ -119,8 +119,8 @@ public sealed class MaintenanceMiddleware(RequestDelegate next)
         }
 
         // Space-scoped pages ride at /s/{slug}/… — the bare exempt prefixes
-        // (e.g. /configuration/maintenance) would otherwise never match the
-        // real /s/acme/configuration/maintenance path, so the page that turns
+        // (e.g. /configuration/settings) would otherwise never match the
+        // real /s/acme/configuration/settings path, so the page that turns
         // maintenance OFF wouldn't be exempt. Strip the /s/{slug} prefix and
         // re-test. (Harmless if it exempts a non-existent /s/{slug}/login-style
         // path — that just 404s; maintenance mode is a write-guard, not auth.)

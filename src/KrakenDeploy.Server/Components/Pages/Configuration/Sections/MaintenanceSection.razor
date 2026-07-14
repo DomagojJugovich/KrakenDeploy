@@ -1,0 +1,176 @@
+@using System.Security.Claims
+@using KrakenDeploy.Server.Core.Domain.Audit
+
+@inject MaintenanceModeService MaintenanceSvc
+@inject IAuditLog Audit
+@inject AuthenticationStateProvider AuthState
+@inject NotificationService Notify
+@inject UiActionGuard Guard
+
+<RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1" class="rz-mb-1">
+    Maintenance mode
+</RadzenText>
+<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+    Instance-wide write lock. When enabled, every POST/PUT/PATCH/DELETE
+    that isn't on the exemption list (login, agent transport, Hangfire
+    dashboard, this page, healthz, diagnostics) gets a <code>503 Service
+    Unavailable</code> with the operator-supplied reason in the body —
+    unless the caller holds <code>BypassMaintenance</code>.
+    <code>SystemAdministrator</code> and <code>SystemManager</code> bypass
+    automatically. Recurring Hangfire jobs short-circuit on the flag too,
+    so a backup that fires mid-upgrade doesn't race the work.
+</RadzenText>
+
+@if (_state is null)
+{
+    <RadzenProgressBarCircular ShowValue="false"
+                               Mode="ProgressBarMode.Indeterminate"
+                               Style="margin: 2rem auto; display: block;" />
+}
+else
+{
+    <RadzenCard class="rz-mb-3" Style="max-width: 800px;">
+        <RadzenStack Gap="1rem">
+
+            @* ── Status banner ─────────────────────────────────────── *@
+            @if (_state.Enabled)
+            {
+                <RadzenAlert AlertStyle="AlertStyle.Danger" Variant="Variant.Flat"
+                             Shade="Shade.Lighter" AllowClose="false">
+                    <RadzenStack Gap="0.25rem">
+                        <strong>Maintenance mode is ON.</strong>
+                        <span class="rz-color-secondary">
+                            Since @_state.EnabledUtc?.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")
+                            @if (_state.EnabledByUserId is not null)
+                            {
+                                <span>(by @_state.EnabledByUserId)</span>
+                            }
+                        </span>
+                        @if (!string.IsNullOrWhiteSpace(_state.Reason))
+                        {
+                            <span>Reason: <em>@_state.Reason</em></span>
+                        }
+                    </RadzenStack>
+                </RadzenAlert>
+            }
+            else
+            {
+                <RadzenAlert AlertStyle="AlertStyle.Success" Variant="Variant.Flat"
+                             Shade="Shade.Lighter" AllowClose="false">
+                    Maintenance mode is off — all endpoints operating normally.
+                </RadzenAlert>
+            }
+
+            @* ── Reason input (only relevant when enabling) ────────── *@
+            <RadzenFormField Text="Reason (shown to blocked users)"
+                             Variant="Variant.Outlined" Style="width:100%">
+                <RadzenTextArea @bind-Value="_reasonDraft"
+                                Rows="2"
+                                Placeholder="e.g. Upgrading to v1.2 — back online by 02:00 UTC"
+                                Disabled="@_state.Enabled" />
+            </RadzenFormField>
+
+            @* ── Action buttons ───────────────────────────────────── *@
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+                @if (_state.Enabled)
+                {
+                    <RadzenButton Text="Disable maintenance"
+                                  ButtonStyle="ButtonStyle.Success"
+                                  Icon="check_circle"
+                                  IsBusy="@_saving"
+                                  Click="DisableAsync" />
+                }
+                else
+                {
+                    <RadzenButton Text="Enable maintenance"
+                                  ButtonStyle="ButtonStyle.Danger"
+                                  Icon="pause_circle"
+                                  IsBusy="@_saving"
+                                  Click="EnableAsync" />
+                }
+            </RadzenStack>
+
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-0">
+                Tip: enabling mid-task is safe — in-flight requests
+                finish; new write attempts get the 503 from the next
+                request boundary onward.
+            </RadzenText>
+        </RadzenStack>
+    </RadzenCard>
+}
+
+@code {
+    private MaintenanceState? _state;
+    private string _reasonDraft = "";
+    private bool _saving;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        _state = await MaintenanceSvc.GetStateAsync();
+        _reasonDraft = _state.Reason ?? "";
+    }
+
+    private async Task EnableAsync()
+    {
+        if (!await Guard.AllowAsync(Permission.ConfigureServer)) return;
+        _saving = true;
+        try
+        {
+            var userId = await CurrentUserIdAsync();
+            await MaintenanceSvc.EnableAsync(_reasonDraft, userId);
+            await Audit.RecordAsync(
+                AuditEventType.MaintenanceEnabled,
+                subjectType: "MaintenanceSettings",
+                details:     string.IsNullOrWhiteSpace(_reasonDraft)
+                    ? "Reason: (none)"
+                    : $"Reason: {_reasonDraft.Trim()}");
+            await ReloadAsync();
+            Notify.Notify(NotificationSeverity.Warning, "Maintenance mode ON",
+                "Write requests will be refused. Click 'Disable' to resume.", 6000);
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error,
+                "Failed to enable maintenance", ex.Message, 6000);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task DisableAsync()
+    {
+        if (!await Guard.AllowAsync(Permission.ConfigureServer)) return;
+        _saving = true;
+        try
+        {
+            await MaintenanceSvc.DisableAsync();
+            await Audit.RecordAsync(
+                AuditEventType.MaintenanceDisabled,
+                subjectType: "MaintenanceSettings",
+                details:     "Maintenance window closed");
+            await ReloadAsync();
+            Notify.Notify(NotificationSeverity.Success, "Maintenance mode OFF",
+                "All endpoints accepting writes again.", 4000);
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error,
+                "Failed to disable maintenance", ex.Message, 6000);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task<Guid?> CurrentUserIdAsync()
+    {
+        var state = await AuthState.GetAuthenticationStateAsync();
+        var raw = state.User?.FindFirstValue(ClaimTypes.NameIdentifier);
+        return Guid.TryParse(raw, out var id) ? id : (Guid?)null;
+    }
+}
