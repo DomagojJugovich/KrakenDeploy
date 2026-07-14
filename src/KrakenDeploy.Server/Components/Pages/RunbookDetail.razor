@@ -238,6 +238,11 @@
                     <RadzenDataGridColumn TItem="RunbookRun" Title="Duration" Width="110px">
                         <Template Context="r">@FormatDuration(r)</Template>
                     </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="RunbookRun" Title="Initiated by" Width="150px">
+                        <Template Context="r">
+                            <span title="@(r.Cause.ToString() + (string.IsNullOrEmpty(r.CauseDetail) ? "" : " (" + r.CauseDetail + ")"))">@r.CreatedByDisplay</span>
+                        </Template>
+                    </RadzenDataGridColumn>
                 </Columns>
             </KrakenGrid>
 

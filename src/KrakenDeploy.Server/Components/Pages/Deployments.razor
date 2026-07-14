@@ -90,6 +90,12 @@
             <Template Context="d"><span class="mono cell-muted">@Duration(d)</span></Template>
         </RadzenDataGridColumn>
 
+        <RadzenDataGridColumn TItem="Deployment" Property="CreatedByDisplay" Title="Initiated by" Width="150px">
+            <Template Context="d">
+                <span title="@(d.Cause.ToString() + (string.IsNullOrEmpty(d.CauseDetail) ? "" : " (" + d.CauseDetail + ")"))">@d.CreatedByDisplay</span>
+            </Template>
+        </RadzenDataGridColumn>
+
         <RadzenDataGridColumn TItem="Deployment" UniqueID="actions" Title="" Width="52px" Sortable="false" TextAlign="TextAlign.Center">
             <Template Context="d">
                 @if (d.Status is DeploymentStatus.Queued or DeploymentStatus.Running)

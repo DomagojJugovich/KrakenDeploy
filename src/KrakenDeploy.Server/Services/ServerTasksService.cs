@@ -51,6 +51,13 @@ public sealed record ServerTaskRow
     public string? Target { get; init; }
     public string? Tenant { get; init; }
 
+    /// <summary>Denormalized initiator display (who/what created the task); null for
+    /// system/Hangfire rows that have no task provenance.</summary>
+    public string? InitiatedBy { get; init; }
+
+    /// <summary>Provenance cause; null for system/Hangfire rows.</summary>
+    public ServerTaskCause? Cause { get; init; }
+
     public DateTimeOffset? StartedUtc { get; init; }
     public DateTimeOffset? CompletedUtc { get; init; }
     public DateTimeOffset? QueuedUtc { get; init; }
@@ -168,6 +175,8 @@ public sealed class ServerTasksService(
             StartedUtc = d.StartedUtc,
             CompletedUtc = d.CompletedUtc,
             QueuedUtc = d.ScheduledFor ?? d.CreatedUtc,
+            InitiatedBy = d.CreatedByDisplay,
+            Cause = d.Cause,
             DetailUrl = $"/deployments/{d.Id}",
         };
     }
@@ -197,6 +206,8 @@ public sealed class ServerTasksService(
             StartedUtc = r.StartedUtc,
             CompletedUtc = r.CompletedUtc,
             QueuedUtc = r.CreatedUtc,
+            InitiatedBy = r.CreatedByDisplay,
+            Cause = r.Cause,
             // No per-run page exists; the runbook detail page hosts the Runs tab.
             DetailUrl = r.RunbookId == Guid.Empty ? null : $"/runbooks/{r.RunbookId}",
         };

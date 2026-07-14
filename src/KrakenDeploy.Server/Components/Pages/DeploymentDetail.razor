@@ -101,6 +101,15 @@ else
             <dt>Started</dt><dd class="mono">@(Deployment.StartedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")</dd>
             <dt>Completed</dt><dd class="mono">@(Deployment.CompletedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")</dd>
             <dt>Duration</dt><dd class="mono">@FormatDuration()</dd>
+            <dt>Initiated by</dt><dd>@Deployment.CreatedByDisplay</dd>
+            <dt>Cause</dt>
+            <dd>
+                @Deployment.Cause
+                @if (!string.IsNullOrEmpty(Deployment.CauseDetail))
+                {
+                    <span class="cell-muted mono">(@Deployment.CauseDetail)</span>
+                }
+            </dd>
             <dt>Deployment</dt><dd class="mono">@Deployment.Id.ToString()[..8]</dd>
         </dl>
     </div>

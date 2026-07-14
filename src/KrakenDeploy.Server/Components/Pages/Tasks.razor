@@ -78,6 +78,18 @@
                     }
                 </Template>
             </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="ServerTaskRow" Property="InitiatedBy" Title="Initiated by" Width="150px">
+                <Template Context="t">
+                    @if (t.InitiatedBy is not null)
+                    {
+                        <span title="@(t.Cause?.ToString())">@t.InitiatedBy</span>
+                    }
+                    else
+                    {
+                        <span class="rz-color-secondary">—</span>
+                    }
+                </Template>
+            </RadzenDataGridColumn>
             <RadzenDataGridColumn TItem="ServerTaskRow" Property="StartedUtc" Title="Started" Width="170px">
                 <Template Context="t">@Stamp(t.StartedUtc)</Template>
             </RadzenDataGridColumn>
