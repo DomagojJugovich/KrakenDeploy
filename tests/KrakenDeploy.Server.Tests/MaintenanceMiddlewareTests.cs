@@ -29,12 +29,12 @@ public sealed class MaintenanceMiddlewareTests
     [InlineData("/api/diagnostics/report.zip",         true, "ops still needs diagnostics during maintenance")]
     [InlineData("/hangfire",                           true)]
     [InlineData("/hangfire/jobs/enqueued",             true)]
-    [InlineData("/configuration/maintenance",          true, "the page that turns maintenance off")]
+    [InlineData("/configuration/settings",             true, "the unified settings page hosts the maintenance toggle")]
     [InlineData("/api/maintenance",                    true, "API counterpart")]
-    // ── Space-prefixed forms (/s/{slug}/…) must still be exempt: the real
-    //    maintenance page lives at /s/{slug}/configuration/maintenance ──
-    [InlineData("/s/default/configuration/maintenance", true, "space-prefixed maintenance page")]
-    [InlineData("/s/acme/configuration/maintenance",    true, "space-prefixed for a named account")]
+    // ── Space-prefixed forms (/s/{slug}/…) must still be exempt: the maintenance
+    //    toggle now lives on the unified page at /s/{slug}/configuration/settings ──
+    [InlineData("/s/default/configuration/settings",   true, "space-prefixed settings page")]
+    [InlineData("/s/acme/configuration/settings",      true, "space-prefixed for a named account")]
     // ── Non-exempt paths (will be blocked for non-bypass callers) ──
     [InlineData("/api/projects",                       false)]
     [InlineData("/api/audit/export.csv",               false, "audit export is GET so the middleware skips on method anyway, but path-wise non-exempt")]

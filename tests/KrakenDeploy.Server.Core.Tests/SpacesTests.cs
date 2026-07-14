@@ -100,14 +100,12 @@ public sealed class SpacesTests
             // mirrors a public GitHub feed; same platform-level scope as
             // StepPackage itself.
             "StepPackageCatalogEntry",
-            // Server-wide singletons (M13.B.1 + M13.F.1) — one row per
-            // instance, no per-Space partitioning by design.
-            "SmtpSettings",
-            "FeatureFlag",
-            // Server-wide backup config + history (M13.G) — same reasoning;
-            // there's one backup policy per KrakenDeploy instance, runs are
-            // server-level audit-like rows.
-            "BackupSettings",
+            // Server-wide backup history (M13.G) — one backup policy per
+            // instance; runs are server-level audit-like rows. (BackupSettings,
+            // SmtpSettings, FeatureFlag, MaintenanceSettings, PerformanceSettings
+            // are no longer aggregates — they were folded into the unified
+            // `settings` table as ISettingsDocument POCOs, so they no longer
+            // derive from AuditableEntity/Entity and drop out of this scan.)
             "BackupRun",
             // Subscriptions (M13.B.2/3) — nullable-SpaceId pattern (like
             // Team / RoleAssignment) instead of the ISpaceScoped marker
@@ -122,12 +120,6 @@ public sealed class SpacesTests
             // subscription which carries its own SpaceId; outbox rows
             // inherit scope transitively via SubscriptionId.
             "EmailDigestOutboxEntry",
-            // Singleton flag for instance-wide maintenance (M13.A.3) —
-            // server-wide; one row per instance, no Space partition.
-            "MaintenanceSettings",
-            // Singleton row for instance-wide performance + retention
-            // knobs (M13.F.3) — server-wide tuning dials; not per-Space.
-            "PerformanceSettings",
             // Per-user API keys (M13.C.4) — platform-level rows keyed by
             // owning user (like AuditEntry). SpaceId is an OPTIONAL
             // restriction column, not a tenancy partition, so the entity is
@@ -137,6 +129,11 @@ public sealed class SpacesTests
             // Wrapped data-encryption key (M13.D.2) — platform-level crypto
             // material, one instance-wide row; never Space-partitioned.
             "DataEncryptionKey",
+            // Unified settings table (fix 7) — deliberately NOT ISpaceScoped
+            // (nullable scope discriminator; Space caging lives in
+            // SettingsService, enforced by an architecture test). Holds System-
+            // and Space-scoped documents in one table.
+            "Setting",
         };
 
         var assembly = typeof(Project).Assembly;
