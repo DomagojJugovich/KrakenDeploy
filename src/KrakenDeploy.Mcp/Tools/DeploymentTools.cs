@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text.Json;
 using KrakenDeploy.Server.Core.Domain.Audit;
+using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
@@ -144,8 +145,9 @@ public sealed class DeploymentTools
         CancellationToken ct)
     {
         // The one mutating deployment tool — closes the M11.B deferral: the
-        // description used to CLAIM enforcement that didn't exist.
-        await McpToolAuth.EnsureAsync(
+        // description used to CLAIM enforcement that didn't exist. EnsureAsync also
+        // returns the acting user (API-key owner) for provenance stamping.
+        var (actingUserId, actingDisplay) = await McpToolAuth.EnsureAsync(
             permissions, httpContext, "retry_deployment", Permission.DeploymentCreate, audit, ct)
             .ConfigureAwait(false);
 
@@ -173,10 +175,16 @@ public sealed class DeploymentTools
             throw new McpException("Source deployment has no target — cannot retry.");
         }
 
+        // EnsureAsync yields Guid.Empty when the principal lacks a parseable id;
+        // map that to null so the created_by_user_id FK stays clean.
+        Guid? initiatorUserId = actingUserId == Guid.Empty ? null : actingUserId;
         var child = await deploymentService.CreateAsync(
             releaseId:           source.ReleaseId,
             environmentId:       source.EnvironmentId,
             targetId:            targetIds[0],
+            initiator:           TaskInitiator.Mcp(
+                                     initiatorUserId, actingDisplay,
+                                     detail: $"retry_deployment;source:{deploymentId}"),
             tenantId:            source.TenantId,
             scheduledFor:        null,
             additionalTargetIds: targetIds.Skip(1).ToList(),

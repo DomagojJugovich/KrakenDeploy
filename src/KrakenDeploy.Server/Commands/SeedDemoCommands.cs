@@ -220,6 +220,11 @@ internal static class SeedDemoCommands
                 StartedUtc = status == DeploymentStatus.Queued ? null : started,
                 CompletedUtc = durationSec is { } d ? started.AddSeconds(d) : null,
                 NextLogSequence = 0,
+                // Provenance (fix 6): seed rows are created directly (not via the
+                // service), so stamp the columns inline. Demo data = CLI seed.
+                Cause = ServerTaskCause.Cli,
+                CreatedByDisplay = "System (seed-demo)",
+                CauseDetail = "seed-demo",
             };
         }
 
@@ -377,6 +382,9 @@ internal static class SeedDemoCommands
                         StartedUtc = started,
                         CompletedUtc = started.AddMinutes(3),
                         NextLogSequence = 0,
+                        Cause = ServerTaskCause.Cli,
+                        CreatedByDisplay = "System (seed-demo)",
+                        CauseDetail = "seed-demo",
                     });
                 }
             }

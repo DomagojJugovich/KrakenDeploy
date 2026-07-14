@@ -84,9 +84,9 @@ public static class OctopusSystemVariablesBuilder
         v["Octopus.Deployment.CreatedUtc"] = run.CreatedUtc.ToString("O", CultureInfo.InvariantCulture);
         v["Octopus.Deployment.QueueTime"] = run.CreatedUtc.ToString("O", CultureInfo.InvariantCulture);
         v["Octopus.Deployment.SortableQueueTime"] = run.CreatedUtc.ToString("o", CultureInfo.InvariantCulture);
-        v["Octopus.Deployment.CreatedBy.DisplayName"]  = "";    // TODO(kraken-equivalent): wire up created-by user
-        v["Octopus.Deployment.CreatedBy.Username"]     = "";    // TODO(kraken-equivalent)
-        v["Octopus.Deployment.CreatedBy.EmailAddress"] = "";    // TODO(kraken-equivalent)
+        v["Octopus.Deployment.CreatedBy.DisplayName"]  = run.CreatedByDisplay;   // provenance (fix 6)
+        v["Octopus.Deployment.CreatedBy.Username"]     = "";    // only display is denormalized on the task
+        v["Octopus.Deployment.CreatedBy.EmailAddress"] = "";    // only display is denormalized on the task
         v["Octopus.Deployment.ForcePackageDownload"]   = "False";
         v["Octopus.Deployment.PreviousSuccessful.Id"]  = "";    // TODO(kraken-equivalent)
         v["Octopus.Deployment.SpecificMachines"]       = target?.Id.ToString() ?? "";
@@ -137,9 +137,9 @@ public static class OctopusSystemVariablesBuilder
         v["Octopus.Deployment.QueueTime"]              = deployment.CreatedUtc.ToString("O", CultureInfo.InvariantCulture);
         v["Octopus.Deployment.SortableQueueTime"]      = deployment.CreatedUtc.ToString("o", CultureInfo.InvariantCulture);
         v["Octopus.Deployment.StartedUtc"]             = deployment.StartedUtc?.ToString("O", CultureInfo.InvariantCulture) ?? "";
-        v["Octopus.Deployment.CreatedBy.DisplayName"]  = "";    // TODO(kraken-equivalent): wire up created-by user (need deployment.CreatedById on AuditableEntity)
-        v["Octopus.Deployment.CreatedBy.Username"]     = "";    // TODO(kraken-equivalent)
-        v["Octopus.Deployment.CreatedBy.EmailAddress"] = "";    // TODO(kraken-equivalent)
+        v["Octopus.Deployment.CreatedBy.DisplayName"]  = deployment.CreatedByDisplay;   // provenance (fix 6)
+        v["Octopus.Deployment.CreatedBy.Username"]     = "";    // only display is denormalized on the task
+        v["Octopus.Deployment.CreatedBy.EmailAddress"] = "";    // only display is denormalized on the task
         v["Octopus.Deployment.ForcePackageDownload"]   = "False";
         v["Octopus.Deployment.PreviousSuccessful.Id"]  = "";    // TODO(kraken-equivalent): query previous successful deployment for (project, env, [tenant])
         v["Octopus.Deployment.PreviousSuccessful.ReleaseId"] = ""; // TODO(kraken-equivalent)

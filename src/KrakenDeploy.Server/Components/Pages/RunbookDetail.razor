@@ -10,6 +10,9 @@
 @using KrakenDeploy.Server.Core.Domain.Runbooks
 @using KrakenDeploy.Server.Core.Domain.Targets
 @using KrakenDeploy.Server.Data.Services
+@using KrakenDeploy.Server.Auth
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AuthenticationStateProvider AuthState
 @inject RunbookService RunbookSvc
 @inject EnvironmentService EnvSvc
 @inject TargetService TargetSvc
@@ -502,10 +505,12 @@
 
         try
         {
+            var actingUser = (await AuthState.GetAuthenticationStateAsync()).User;
             var run = await RunbookSvc.TriggerAsync(
                 Id,
                 _triggerEnvId.Value,
-                _triggerTargetId.Value);
+                _triggerTargetId.Value,
+                initiator: TaskInitiator.Manual(actingUser.GetUserId(), actingUser.GetDisplayName()));
 
             _runs = [run, .. _runs];
             _triggerOpen   = false;

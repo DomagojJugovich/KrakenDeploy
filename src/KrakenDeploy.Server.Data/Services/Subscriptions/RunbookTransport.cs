@@ -1,5 +1,6 @@
 using System.Text.Json;
 using KrakenDeploy.Server.Core.Domain.Audit;
+using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Subscriptions;
 using Microsoft.Extensions.Logging;
 
@@ -93,7 +94,10 @@ public sealed class RunbookTransport(
         try
         {
             var run = await runbookService.TriggerAsync(
-                runbookId, environmentId, targetId, tenantId, ct).ConfigureAwait(false);
+                runbookId, environmentId, targetId,
+                initiator: TaskInitiator.Subscription(
+                    $"subscription:{subscription.Id};event:{auditEvent.Id};type:{auditEvent.EventType}"),
+                tenantId: tenantId, ct: ct).ConfigureAwait(false);
 
             logger.LogInformation(
                 "Runbook trigger ok: sub={SubId} event={EventId} runbook={RunbookId} run={RunId}",

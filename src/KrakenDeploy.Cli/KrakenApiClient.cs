@@ -59,6 +59,11 @@ public sealed class KrakenApiClient : IDisposable
     {
         _http = new HttpClient { BaseAddress = new Uri(serverUrl.TrimEnd('/') + "/") };
         _http.DefaultRequestHeaders.Add("X-Api-Key", apiKey);
+        // Identify the client kind so the server attributes deployments/runs to
+        // cause=Cli rather than the generic cause=Api (the API-key principal alone
+        // is indistinguishable from a raw REST caller).
+        _http.DefaultRequestHeaders.Add(
+            Contracts.KrakenHttpHeaders.ClientKind, Contracts.KrakenHttpHeaders.ClientKindCli);
         _http.DefaultRequestHeaders.Accept.Add(
             new MediaTypeWithQualityHeaderValue("application/json"));
     }

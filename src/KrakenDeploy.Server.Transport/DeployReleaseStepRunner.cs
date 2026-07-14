@@ -212,10 +212,16 @@ public sealed class DeployReleaseStepRunner(
         try
         {
             var deploymentService = scope.ServiceProvider.GetRequiredService<DeploymentService>();
+            // Inherit the parent's provenance so the child attributes to the human
+            // who launched the parent; cause=ParentStep + detail=parent id record
+            // the cascade. Runs in a background scope with no HttpContext, so there
+            // is no live user to read here.
             child = await deploymentService.CreateAsync(
                 releaseId:           latestRelease.Id,
                 environmentId:       parent.EnvironmentId,
                 targetId:            parentTargetIds[0],
+                initiator:           TaskInitiator.ParentStep(
+                                         parent.CreatedByUserId, parent.CreatedByDisplay, parentDeploymentId),
                 tenantId:            parent.TenantId,
                 scheduledFor:        null,
                 additionalTargetIds: parentAdditionalTargetIds,

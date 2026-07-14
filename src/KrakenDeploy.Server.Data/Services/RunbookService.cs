@@ -18,6 +18,7 @@ public interface IRunbookTrigger
         Guid runbookId,
         Guid environmentId,
         Guid targetId,
+        TaskInitiator initiator,
         Guid? tenantId = null,
         CancellationToken ct = default);
 }
@@ -379,9 +380,13 @@ public class RunbookService(
         Guid runbookId,
         Guid environmentId,
         Guid targetId,
+        TaskInitiator initiator,
         Guid? tenantId = null,
         CancellationToken ct = default)
     {
+        // Guard: reject a default/unset initiator before we do any work.
+        initiator.EnsureValid();
+
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var runbook = await db.Runbooks
@@ -452,6 +457,7 @@ public class RunbookService(
             Status = DeploymentStatus.Queued,
             ProcessSnapshot = snapshot,
         };
+        initiator.StampOnto(run);   // provenance (fix 6)
 
         db.RunbookRuns.Add(run);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);

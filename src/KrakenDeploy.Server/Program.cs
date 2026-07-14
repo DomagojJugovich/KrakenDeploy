@@ -9,6 +9,7 @@ using KrakenDeploy.Contracts;
 using KrakenDeploy.Mcp;
 using KrakenDeploy.Server.Auth;
 using KrakenDeploy.Server.Core.Domain.Audit;
+using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Licensing;
 using KrakenDeploy.Server.Core.Domain.StepPackages;
 using KrakenDeploy.Server.Commands;
@@ -1876,7 +1877,7 @@ public static class Program
 
         app.MapPost("/api/deployments",
             async (TriggerDeploymentRequest req, DeploymentService deploymentSvc,
-                CancellationToken ct) =>
+                ClaimsPrincipal user, HttpContext http, CancellationToken ct) =>
             {
                 // A body that omits TargetId (or sends null) binds as
                 // Guid.Empty — fail with a clear message instead of the
@@ -1891,11 +1892,21 @@ public static class Program
 
                 try
                 {
+                    // Provenance: the API-key principal is identical for CLI and raw
+                    // REST, so the CLI's X-Kraken-Client header is the only signal
+                    // that distinguishes cause=Cli from cause=Api.
+                    var isCli = string.Equals(
+                        http.Request.Headers[KrakenHttpHeaders.ClientKind],
+                        KrakenHttpHeaders.ClientKindCli, StringComparison.OrdinalIgnoreCase);
+                    var initiator = isCli
+                        ? TaskInitiator.Cli(user.GetUserId(), user.GetDisplayName())
+                        : TaskInitiator.Api(user.GetUserId(), user.GetDisplayName());
                     var deployment = await deploymentSvc
                         .CreateAsync(
                             releaseId:     req.ReleaseId,
                             environmentId: req.EnvironmentId,
                             targetId:      req.TargetId,
+                            initiator:     initiator,
                             tenantId:      req.TenantId,
                             scheduledFor:  req.ScheduledFor,
                             failureMode:   req.FailureMode,
@@ -2568,12 +2579,19 @@ public static class Program
 
         app.MapPost("/api/runbooks/{runbookId:guid}/runs",
             async (Guid runbookId, TriggerRunbookRunRequest req, RunbookService runbookSvc,
-                CancellationToken ct) =>
+                ClaimsPrincipal user, HttpContext http, CancellationToken ct) =>
             {
                 try
                 {
+                    var isCli = string.Equals(
+                        http.Request.Headers[KrakenHttpHeaders.ClientKind],
+                        KrakenHttpHeaders.ClientKindCli, StringComparison.OrdinalIgnoreCase);
+                    var initiator = isCli
+                        ? TaskInitiator.Cli(user.GetUserId(), user.GetDisplayName())
+                        : TaskInitiator.Api(user.GetUserId(), user.GetDisplayName());
                     var run = await runbookSvc.TriggerAsync(
-                        runbookId, req.EnvironmentId, req.TargetId, req.TenantId, ct)
+                        runbookId, req.EnvironmentId, req.TargetId,
+                        initiator: initiator, tenantId: req.TenantId, ct: ct)
                         .ConfigureAwait(false);
                     return Results.Created($"/api/runbook-runs/{run.Id}", run);
                 }

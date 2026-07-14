@@ -39,12 +39,16 @@ public class DeploymentService(
         Guid releaseId,
         Guid environmentId,
         Guid targetId,
+        TaskInitiator initiator,
         Guid? tenantId = null,
         DateTimeOffset? scheduledFor = null,
         IReadOnlyCollection<Guid>? additionalTargetIds = null,
         DeploymentFailureMode failureMode = DeploymentFailureMode.BestEffort,
         CancellationToken ct = default)
     {
+        // Guard: reject a default/unset initiator before we do any work.
+        initiator.EnsureValid();
+
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         // Load the release's denormalized ownership (project + channel) to stamp
@@ -116,6 +120,7 @@ public class DeploymentService(
             FailureMode = failureMode,
             ScheduledFor = scheduledFor,
         };
+        initiator.StampOnto(deployment);   // provenance (fix 6)
 
         db.Deployments.Add(deployment);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);

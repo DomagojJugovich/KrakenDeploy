@@ -162,15 +162,18 @@ public sealed class RunbookTransportTests
         public Guid?  EnvironmentId  { get; private set; }
         public Guid?  TargetId       { get; private set; }
         public Guid?  TenantId       { get; private set; }
+        public TaskInitiator? Initiator { get; private set; }
 
         public Task<RunbookRun> TriggerAsync(
             Guid runbookId, Guid environmentId, Guid targetId,
+            TaskInitiator initiator,
             Guid? tenantId = null, CancellationToken ct = default)
         {
             RunbookId     = runbookId;
             EnvironmentId = environmentId;
             TargetId      = targetId;
             TenantId      = tenantId;
+            Initiator     = initiator;
             return Task.FromResult(new RunbookRun
             {
                 Id            = Guid.NewGuid(),
@@ -186,6 +189,7 @@ public sealed class RunbookTransportTests
     {
         public Task<RunbookRun> TriggerAsync(
             Guid runbookId, Guid environmentId, Guid targetId,
+            TaskInitiator initiator,
             Guid? tenantId = null, CancellationToken ct = default)
             => Task.FromException<RunbookRun>(toThrow);
     }
