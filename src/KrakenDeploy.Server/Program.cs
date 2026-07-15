@@ -22,6 +22,7 @@ using KrakenDeploy.Server.Data.Services;
 using Microsoft.Extensions.Options;
 using KrakenDeploy.Server.Hangfire;
 using KrakenDeploy.Server.Maintenance;
+using KrakenDeploy.Server.Observability;
 using KrakenDeploy.Server.Services;
 using KrakenDeploy.Server.Transport;
 using KrakenDeploy.Server.Core.Domain.Lifecycles;
@@ -49,6 +50,7 @@ using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Radzen;
 using Serilog;
+using Serilog.Events;
 
 namespace KrakenDeploy.Server;
 
@@ -875,6 +877,21 @@ public static class Program
             options.MessageTemplate =
                 "HTTP {RequestMethod} {RequestPath} responded {StatusCode} " +
                 "in {Elapsed:0.0} ms";
+
+            // A8/T1-12 defense-in-depth: rebuild the RequestPath property with any
+            // ?access_token= value redacted. The query is excluded from RequestPath
+            // by default, so this changes nothing today — but it guarantees the
+            // agent bearer token can never surface here if query logging is ever
+            // enabled (IncludeQueryInRequestPath) or the framework request line is
+            // un-suppressed.
+            options.GetMessageTemplateProperties = (httpContext, requestPath, elapsedMs, statusCode) =>
+            [
+                new LogEventProperty("RequestMethod", new ScalarValue(httpContext.Request.Method)),
+                new LogEventProperty("RequestPath",
+                    new ScalarValue(RequestLogRedaction.RedactTokens(requestPath))),
+                new LogEventProperty("StatusCode", new ScalarValue(statusCode)),
+                new LogEventProperty("Elapsed", new ScalarValue(elapsedMs)),
+            ];
         });
 
         // Cross-customer boundary (multi-account / SaaS only): resolve the active
