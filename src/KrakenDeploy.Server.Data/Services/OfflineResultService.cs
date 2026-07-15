@@ -61,7 +61,13 @@ public class OfflineResultService(
         // Offline drops are single-target by design; the deployment's one
         // assignment carries the bundle/HMAC keys the result is verified
         // against, and its id is stamped onto the ingested step outcomes.
-        var target = deployment.ResolvedTargets().FirstOrDefault();
+        // A8/T1-15: without a resolved target we have no per-target key to verify
+        // the bundle against — fail closed rather than trust an unauthenticated
+        // result that drives status / step-outcome / output-variable DB writes.
+        var target = deployment.ResolvedTargets().FirstOrDefault()
+            ?? throw new InvalidOperationException(
+                $"Deployment {deploymentId} has no resolved target; cannot verify the offline " +
+                "result bundle's integrity. Refusing to ingest an unauthenticated result.");
 
         // Copy to a seekable memory stream so ZipArchive can read it
         using var ms = new MemoryStream();
@@ -123,32 +129,35 @@ public class OfflineResultService(
         // per-step outcomes + output variables). We ingest the same step-outcome
         // and output-variable rows an online deployment produces, so the
         // Steps/Variables tabs render identically.
-        var resultEntry = archive.GetEntry(OfflineBundleLayout.ResultFile);
-        if (resultEntry is null)
-        {
-            // No result file — mark as succeeded by convention.
-            deployment.Status = DeploymentStatus.Succeeded;
-            deployment.CompletedUtc = DateTimeOffset.UtcNow;
-        }
-        else
+        // A8/T1-15: the result file is mandatory. A bundle without it cannot be
+        // authenticated, and the old "succeeded by convention" fallback would have
+        // skipped signature verification entirely — an attacker could omit the
+        // file to mark a deployment Succeeded with no key.
+        var resultEntry = archive.GetEntry(OfflineBundleLayout.ResultFile)
+            ?? throw new InvalidOperationException(
+                "Result bundle is missing deployment-result.json — cannot verify or record the outcome.");
         {
             var resultBytes = await ReadEntryBytesAsync(resultEntry, ct).ConfigureAwait(false);
 
-            // The result drives DB writes, and it travels back over an untrusted
-            // channel — verify its signature against the per-target bundle key
-            // when one is configured.
-            var bundleKey = GetBundleKey(target);
-            if (bundleKey is not null)
+            // A8/T1-15: the result drives ALL DB writes and returns over an
+            // UNTRUSTED channel. Fail closed — the offline-drop target MUST have a
+            // bundle key and the result signature MUST be present and valid.
+            // (Outbound dispatch already REQUIRES the bundle key, so a
+            // legitimately-dispatched offline deployment always has one.)
+            var bundleKey = GetBundleKey(target)
+                ?? throw new InvalidOperationException(
+                    "Offline-drop target has no bundle signing key configured; cannot verify the " +
+                    "result bundle's integrity. Refusing to ingest an unauthenticated result. " +
+                    "Generate a bundle key for the target and re-issue the drop.");
+
+            var sigEntry = archive.GetEntry(OfflineBundleLayout.ResultSignatureFile)
+                ?? throw new InvalidOperationException(
+                    "Result bundle is missing result-signature.bin — result integrity check required.");
+            var resultSig = await ReadEntryBytesAsync(sigEntry, ct).ConfigureAwait(false);
+            if (!OfflineResultSigner.Verify(bundleKey, resultBytes, resultSig))
             {
-                var sigEntry = archive.GetEntry(OfflineBundleLayout.ResultSignatureFile)
-                    ?? throw new InvalidOperationException(
-                        "Result bundle is missing result-signature.bin — result integrity check required.");
-                var resultSig = await ReadEntryBytesAsync(sigEntry, ct).ConfigureAwait(false);
-                if (!OfflineResultSigner.Verify(bundleKey, resultBytes, resultSig))
-                {
-                    throw new InvalidOperationException(
-                        "Result signature verification failed — deployment-result.json may have been tampered with.");
-                }
+                throw new InvalidOperationException(
+                    "Result signature verification failed — deployment-result.json may have been tampered with.");
             }
 
             var result = JsonSerializer.Deserialize<OfflineDropResult>(resultBytes, JsonOpts);

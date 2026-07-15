@@ -32,9 +32,16 @@ namespace KrakenDeploy.Server.Data.Tests;
 public sealed class OfflineImportRetentionTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>
 {
+    // A8/T1-15: ingestion is now fail-closed — the offline-drop target must carry
+    // a bundle key and the result must be signed. Fixed master key so the same
+    // crypto service both stamps the target key and decrypts it at ingest.
+    private static readonly string MasterKey = Convert.ToBase64String(new byte[32]);
+    private static readonly byte[] BundleKey = SHA256.HashData("kraken-offline-test-bundle-key"u8.ToArray());
+
     [Fact]
     public async Task Offline_import_success_prunes_old_deployments_beyond_keep()
     {
+        var crypto = TestCrypto.Service(MasterKey);
         Guid pendingId, oldId;
         await using (var db = postgres.CreateContext())
         {
@@ -80,8 +87,8 @@ public sealed class OfflineImportRetentionTests(PostgresFixture postgres)
             };
             db.Releases.Add(release);
 
-            // Offline-drop target with NO OfflineDropConfig -> ingest skips the HMAC
-            // + result-signature checks, so a minimal unsigned bundle is accepted.
+            // Offline-drop target WITH a bundle key so the (now mandatory) result
+            // signature can be verified at ingest (A8/T1-15).
             var target = new DeploymentTarget
             {
                 SpaceId       = WellKnown.DefaultSpaceId,
@@ -89,6 +96,10 @@ public sealed class OfflineImportRetentionTests(PostgresFixture postgres)
                 Roles         = ["web"],
                 TransportMode = TransportMode.OfflineDrop,
                 Status        = TargetStatus.Unknown,
+                OfflineDropConfig = new OfflineDropConfig
+                {
+                    BundleKeyEncrypted = crypto.Encrypt(Convert.ToBase64String(BundleKey)),
+                },
             };
             db.DeploymentTargets.Add(target);
             await db.SaveChangesAsync();
@@ -121,7 +132,7 @@ public sealed class OfflineImportRetentionTests(PostgresFixture postgres)
         var service = new OfflineResultService(
             postgres,
             new UnusedArtifactStore(),
-            TestCrypto.Service(Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))),
+            crypto,
             new RetentionService(postgres, new DefaultSpaceContext(), NullLogger<RetentionService>.Instance),
             NullLogger<OfflineResultService>.Instance);
 
@@ -140,8 +151,8 @@ public sealed class OfflineImportRetentionTests(PostgresFixture postgres)
     }
 
     /// <summary>Smallest bundle IngestAsync accepts: a manifest carrying the current
-    /// bundle format + a successful, step-less result. No signatures (the target has
-    /// no keys), no log, no artifacts.</summary>
+    /// bundle format + a successful, step-less result + its bundle-key signature
+    /// (A8/T1-15 requires the result to be signed). No log, no artifacts.</summary>
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
     private static MemoryStream BuildSuccessBundle(Guid deploymentId)
@@ -161,9 +172,16 @@ public sealed class OfflineImportRetentionTests(PostgresFixture postgres)
                 CompletedUtc = DateTimeOffset.UtcNow,
                 Steps        = [],
             };
-            using (var w = new StreamWriter(zip.CreateEntry(OfflineBundleLayout.ResultFile).Open()))
+            var resultBytes = JsonSerializer.SerializeToUtf8Bytes(result, WebJson);
+            using (var s = zip.CreateEntry(OfflineBundleLayout.ResultFile).Open())
             {
-                w.Write(JsonSerializer.Serialize(result, WebJson));
+                s.Write(resultBytes, 0, resultBytes.Length);
+            }
+
+            var sig = OfflineResultSigner.Sign(BundleKey, resultBytes);
+            using (var s = zip.CreateEntry(OfflineBundleLayout.ResultSignatureFile).Open())
+            {
+                s.Write(sig, 0, sig.Length);
             }
         }
         ms.Position = 0;
