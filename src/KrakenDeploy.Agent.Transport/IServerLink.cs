@@ -12,14 +12,18 @@ public interface IServerLink : IAsyncDisposable
     bool IsConnected { get; }
 
     /// <summary>
-    /// Opens the connection and authenticates using <paramref name="agentJwt"/>.
+    /// Opens the connection, authenticating with the token returned by
+    /// <paramref name="agentJwtProvider"/>. A PROVIDER (not a snapshot) so
+    /// automatic reconnects always present the CURRENT token — the sliding
+    /// refresh (A8) replaces the token at half-life, and a long-lived process
+    /// reconnecting after the original token's expiry must not replay it.
     /// <paramref name="releaseId"/> is the blue-green version pin captured at
     /// registration (multi-node SaaS; null everywhere else) — sent as the
     /// <c>X-KD-Release</c> header so a mid-drain reconnect lands back on the slot
     /// that holds this agent's in-flight orchestration state. A stale pin is
     /// harmless: the router falls back to the current default release.
     /// </summary>
-    Task StartAsync(string serverUrl, string agentJwt, string? releaseId, CancellationToken ct);
+    Task StartAsync(string serverUrl, Func<string?> agentJwtProvider, string? releaseId, CancellationToken ct);
 
     /// <summary>Gracefully stops the hub connection.</summary>
     Task StopAsync(CancellationToken ct);

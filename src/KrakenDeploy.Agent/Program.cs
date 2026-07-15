@@ -183,10 +183,14 @@ static async Task<int> RunAsync(string[] args)
     // 1. RegistrationHostedService populates AgentContext.
     // 2. ServerLinkHostedService awaits AgentContext then opens the hub connection.
     // 3. HeartbeatHostedService awaits AgentContext then begins the 30-s tick.
+    // 4. TokenRefreshHostedService awaits AgentContext then renews the bearer
+    //    token at half-life (A8 sliding refresh).
+    builder.Services.AddSingleton(TimeProvider.System);
     builder.Services.AddHostedService<RegistrationHostedService>();
     builder.Services.AddHostedService<ServerLinkHostedService>();
     builder.Services.AddHostedService<HeartbeatHostedService>();
     builder.Services.AddHostedService<AgentUpdateService>();
+    builder.Services.AddHostedService<TokenRefreshHostedService>();
 
     var host = builder.Build();
     await host.RunAsync();

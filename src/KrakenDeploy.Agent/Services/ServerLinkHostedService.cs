@@ -58,8 +58,15 @@ public sealed class ServerLinkHostedService(
             serverLink.OnRunAdhocScript(cmd =>
                 Task.Run(() => adhocExecutor.HandleAsync(cmd), stoppingToken));
 
+            // Token as a PROVIDER over AgentContext: the sliding refresh (A8)
+            // swaps Identity for one carrying a fresh token, and reconnects must
+            // present the current token, not the boot-time snapshot.
             await serverLink
-                .StartAsync(serverUrl, identity.AgentToken, identity.ReleaseId, stoppingToken)
+                .StartAsync(
+                    serverUrl,
+                    () => context.Identity?.AgentToken,
+                    identity.ReleaseId,
+                    stoppingToken)
                 .ConfigureAwait(false);
 
             logger.LogInformation("Connected to server {ServerUrl}.", serverUrl);

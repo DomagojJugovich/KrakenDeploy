@@ -30,8 +30,12 @@ public sealed class AgentContext
     public string TransportMode { get; private set; } = "Reverse";
 
     /// <summary>
-    /// Called by <see cref="RegistrationHostedService"/> after a successful load or register.
-    /// Subsequent calls are silently ignored.
+    /// Called by <see cref="RegistrationHostedService"/> after a successful load or
+    /// register, and by <c>TokenRefreshHostedService</c> when the sliding refresh
+    /// (A8) replaces the bearer token. Each call swaps <see cref="Identity"/> (an
+    /// atomic reference write — consumers read the token through lazy accessors,
+    /// and with no token rotation both old and new remain valid during the swap);
+    /// the <see cref="IdentityReady"/> signal only completes once.
     /// </summary>
     internal void SetIdentity(AgentIdentity identity, string transportMode = "Reverse")
     {
