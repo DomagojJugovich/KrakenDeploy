@@ -180,6 +180,7 @@ public sealed class StepPackageCatalogServiceTests(PostgresFixture postgres)
             sp.GetRequiredService<IHttpClientFactory>(),
             stepPkgSvc,
             config,
+            Microsoft.Extensions.Options.Options.Create(new Net.SsrfOptions()),
             NullLogger<StepPackageCatalogService>.Instance);
     }
 

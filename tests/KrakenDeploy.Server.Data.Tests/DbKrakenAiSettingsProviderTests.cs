@@ -177,6 +177,7 @@ public sealed class DbKrakenAiSettingsProviderTests(PostgresFixture postgres)
             new SettingsService(postgres.ScopeFactory, TimeProvider.System),
             new FixedSpaceContext(spaceId),
             encryption ?? NewEncryptionService(),
+            Microsoft.Extensions.Options.Options.Create(new Net.SsrfOptions()),
             NullLogger<DbKrakenAiSettingsProvider>.Instance);
 
     private static AesEncryptionService NewEncryptionService() =>

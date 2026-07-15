@@ -422,7 +422,9 @@ public sealed class SubscriptionPollerJobTests(PostgresFixture postgres)
         Name                = name,
         SpaceId             = WellKnown.DefaultSpaceId,
         Transport           = SubscriptionTransport.Webhook,
-        TransportConfigJson = """{"url":"https://example.com/hook"}""",
+        // Literal public IP (TEST-NET-3, RFC5737) so the SSRF pre-flight skips
+        // DNS and the default policy allows it — keeps the test hermetic.
+        TransportConfigJson = """{"url":"https://203.0.113.10/hook"}""",
     };
 
     /// <summary>Builds a poller wired against a capturing HTTP handler so
@@ -435,7 +437,9 @@ public sealed class SubscriptionPollerJobTests(PostgresFixture postgres)
             new Dictionary<string, string?> { ["Server:BaseUrl"] = "https://kraken.example.com" }).Build();
 
         var webhook = new WebhookTransport(
-            httpClient, config, NullLogger<WebhookTransport>.Instance, TimeProvider.System);
+            httpClient, config,
+            Microsoft.Extensions.Options.Options.Create(new Net.SsrfOptions()),
+            NullLogger<WebhookTransport>.Instance, TimeProvider.System);
         var auditLog = new TestAuditLog(postgres);
 
         var dispatcher = new EventDispatcher(

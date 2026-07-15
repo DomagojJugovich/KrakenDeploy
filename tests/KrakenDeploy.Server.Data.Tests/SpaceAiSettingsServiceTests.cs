@@ -273,6 +273,7 @@ public sealed class SpaceAiSettingsServiceTests(PostgresFixture postgres)
             postgres,
             new FixedSpaceContext(WellKnown.DefaultSpaceId),
             NewEncryptionService(),
+            Microsoft.Extensions.Options.Options.Create(new Net.SsrfOptions()),
             NullLogger<SpaceAiSettingsService>.Instance);
 
     private static AesEncryptionService NewEncryptionService() =>

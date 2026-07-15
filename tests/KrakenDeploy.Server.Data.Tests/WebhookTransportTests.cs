@@ -34,7 +34,7 @@ public sealed class WebhookTransportTests
             Name                = "test",
             SpaceId             = WellKnown.DefaultSpaceId,
             Transport           = SubscriptionTransport.Webhook,
-            TransportConfigJson = $$"""{"url":"https://example.com/hook","secret":"{{Secret}}"}""",
+            TransportConfigJson = $$"""{"url":"https://203.0.113.10/hook","secret":"{{Secret}}"}""",
         };
         var evt = new AuditEntry
         {
@@ -54,7 +54,7 @@ public sealed class WebhookTransportTests
 
         stub.Captured.Should().NotBeNull("the transport must have made an HTTP call");
         stub.Captured!.Method.Should().Be(HttpMethod.Post);
-        stub.Captured.RequestUri!.ToString().Should().Be("https://example.com/hook");
+        stub.Captured.RequestUri!.ToString().Should().Be("https://203.0.113.10/hook");
 
         // Signature header present + matches expected HMAC.
         stub.Captured.Headers.TryGetValues("X-Kraken-Signature", out var sigHeaderEnum)
@@ -86,7 +86,7 @@ public sealed class WebhookTransportTests
             Name                = "test",
             SpaceId             = WellKnown.DefaultSpaceId,
             Transport           = SubscriptionTransport.Webhook,
-            TransportConfigJson = """{"url":"https://example.com/h"}""", // no secret = no sig
+            TransportConfigJson = """{"url":"https://203.0.113.10/h"}""", // no secret = no sig
         };
         var evt = new AuditEntry
         {
@@ -128,7 +128,7 @@ public sealed class WebhookTransportTests
             Name                = "test",
             SpaceId             = WellKnown.DefaultSpaceId,
             Transport           = SubscriptionTransport.Webhook,
-            TransportConfigJson = """{"url":"https://example.com/h"}""",
+            TransportConfigJson = """{"url":"https://203.0.113.10/h"}""",
         };
         var evt = new AuditEntry
         {
@@ -146,9 +146,13 @@ public sealed class WebhookTransportTests
     [InlineData(HttpStatusCode.BadRequest)]
     [InlineData(HttpStatusCode.Unauthorized)]
     [InlineData(HttpStatusCode.InternalServerError)]
-    public async Task Non_2xx_response_yields_failure_result(HttpStatusCode status)
+    public async Task Non_2xx_response_yields_failure_without_echoing_body(HttpStatusCode status)
     {
-        var stub = new CapturingHandler(status, "downstream is sad");
+        // A6 (T1-11): the downstream response body must NOT be echoed into the
+        // delivery result. It is persisted to subscription_deliveries.error_message
+        // and reflected into the audit log + history UI — echoing arbitrary
+        // downstream content there is a readable-SSRF sink.
+        var stub = new CapturingHandler(status, "SECRET-INTERNAL-BODY");
         var transport = NewTransport(stub);
 
         var result = await transport.DeliverAsync(
@@ -157,16 +161,88 @@ public sealed class WebhookTransportTests
                 Name                = "t",
                 SpaceId             = WellKnown.DefaultSpaceId,
                 Transport           = SubscriptionTransport.Webhook,
-                TransportConfigJson = """{"url":"https://example.com/h"}""",
+                TransportConfigJson = """{"url":"https://203.0.113.10/h"}""",
             },
             new AuditEntry { EventType = "Test", OccurredUtc = DateTimeOffset.UtcNow, UserDisplay = "t", SpaceId = WellKnown.DefaultSpaceId },
             default);
 
         result.Succeeded.Should().BeFalse();
         result.Error.Should().StartWith($"HTTP {(int)status}");
-        result.Error.Should().Contain("downstream is sad",
-            "the consumer's error message must surface to the operator so " +
-            "they can fix their endpoint without reading server logs");
+        result.Error.Should().NotContain("SECRET-INTERNAL-BODY",
+            "downstream response bodies must never be echoed into delivery history");
+    }
+
+    [Fact]
+    public async Task Redirect_status_reported_as_failure_without_following()
+    {
+        // With AllowAutoRedirect off on the real handler a 3xx surfaces here.
+        // The transport must report it as a delivery failure and not echo a body.
+        var stub = new CapturingHandler(HttpStatusCode.Found, "Location body ignored");
+        var transport = NewTransport(stub);
+
+        var result = await transport.DeliverAsync(
+            new EventSubscription
+            {
+                Name                = "t",
+                SpaceId             = WellKnown.DefaultSpaceId,
+                Transport           = SubscriptionTransport.Webhook,
+                TransportConfigJson = """{"url":"https://203.0.113.10/h"}""",
+            },
+            new AuditEntry { EventType = "Test", OccurredUtc = DateTimeOffset.UtcNow, UserDisplay = "t", SpaceId = WellKnown.DefaultSpaceId },
+            default);
+
+        result.Succeeded.Should().BeFalse();
+        result.Error.Should().Contain("redirect");
+        result.Error.Should().NotContain("Location body ignored");
+    }
+
+    [Theory]
+    [InlineData("http://127.0.0.1/hook")]         // loopback — denied by default
+    [InlineData("http://169.254.169.254/latest")] // metadata — hard-blocked
+    [InlineData("http://10.0.0.5/hook")]          // RFC1918 — denied by default
+    public async Task DeliverAsync_refuses_blocked_hosts_before_sending(string url)
+    {
+        var stub = new CapturingHandler(HttpStatusCode.OK, "ok");
+        var transport = NewTransport(stub); // default policy: deny loopback/private
+
+        var result = await transport.DeliverAsync(
+            new EventSubscription
+            {
+                Name                = "t",
+                SpaceId             = WellKnown.DefaultSpaceId,
+                Transport           = SubscriptionTransport.Webhook,
+                TransportConfigJson = $$"""{"url":"{{url}}"}""",
+            },
+            new AuditEntry { EventType = "Test", OccurredUtc = DateTimeOffset.UtcNow, UserDisplay = "t", SpaceId = WellKnown.DefaultSpaceId },
+            default);
+
+        result.Succeeded.Should().BeFalse();
+        stub.Captured.Should().BeNull("the guard must refuse before any HTTP call is made");
+    }
+
+    [Fact]
+    public async Task DeliverAsync_allows_private_host_when_allowlisted()
+    {
+        var stub = new CapturingHandler(HttpStatusCode.OK, "ok");
+        var ssrf = new Net.SsrfOptions
+        {
+            Webhook = new Net.SsrfPolicy { AllowedHosts = ["10.0.0.0/8"] },
+        };
+        var transport = NewTransport(stub, ssrf);
+
+        var result = await transport.DeliverAsync(
+            new EventSubscription
+            {
+                Name                = "t",
+                SpaceId             = WellKnown.DefaultSpaceId,
+                Transport           = SubscriptionTransport.Webhook,
+                TransportConfigJson = """{"url":"http://10.0.0.5/hook"}""",
+            },
+            new AuditEntry { EventType = "Test", OccurredUtc = DateTimeOffset.UtcNow, UserDisplay = "t", SpaceId = WellKnown.DefaultSpaceId },
+            default);
+
+        result.Succeeded.Should().BeTrue("an allowlisted RFC1918 host must be reachable");
+        stub.Captured.Should().NotBeNull();
     }
 
     [Fact]
@@ -181,7 +257,7 @@ public sealed class WebhookTransportTests
                 Name                = "t",
                 SpaceId             = WellKnown.DefaultSpaceId,
                 Transport           = SubscriptionTransport.Webhook,
-                TransportConfigJson = """{"url":"https://example.com/h"}""",
+                TransportConfigJson = """{"url":"https://203.0.113.10/h"}""",
             },
             new AuditEntry { EventType = "Test", OccurredUtc = DateTimeOffset.UtcNow, UserDisplay = "t", SpaceId = WellKnown.DefaultSpaceId },
             default);
@@ -210,7 +286,8 @@ public sealed class WebhookTransportTests
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
-    private static WebhookTransport NewTransport(HttpMessageHandler handler)
+    private static WebhookTransport NewTransport(
+        HttpMessageHandler handler, Net.SsrfOptions? ssrf = null)
     {
         var client = new HttpClient(handler);
         var config = new ConfigurationBuilder()
@@ -220,7 +297,9 @@ public sealed class WebhookTransportTests
             })
             .Build();
         return new WebhookTransport(
-            client, config, NullLogger<WebhookTransport>.Instance, TimeProvider.System);
+            client, config,
+            Microsoft.Extensions.Options.Options.Create(ssrf ?? new Net.SsrfOptions()),
+            NullLogger<WebhookTransport>.Instance, TimeProvider.System);
     }
 
     private static string ComputeExpectedHmac(string secret, byte[] body)
