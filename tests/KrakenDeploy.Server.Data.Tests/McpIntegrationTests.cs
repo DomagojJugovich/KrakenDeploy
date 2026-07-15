@@ -1,10 +1,13 @@
 using System.IO.Pipelines;
+using System.Security.Claims;
 using FluentAssertions;
 using KrakenDeploy.Mcp;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Data;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -53,6 +56,25 @@ public sealed class McpIntegrationTests(PostgresFixture postgres)
         services.AddKrakenDeployData(postgres.ConnectionString);
         services.AddKrakenMcp();
         services.AddLogging();
+        // T1-9 (A5): MCP read tools + resources now authorize via McpToolAuth,
+        // which needs an authenticated principal (IHttpContextAccessor) and an
+        // IPermissionEvaluator. This test's subject is the protocol + dispatch
+        // seam, not authorization (that lives in McpToolTests /
+        // McpEnabledGateMiddlewareTests), so supply an authed principal and an
+        // allow-all evaluator. The last registration wins over the ones
+        // AddKrakenDeployData added. Use an instance-backed accessor (not the
+        // AsyncLocal HttpContextAccessor) so the principal is visible on the
+        // server's dispatch flow regardless of async context.
+        services.AddSingleton<IHttpContextAccessor>(new FixedHttpContextAccessor(
+            new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(new ClaimsIdentity(
+                [
+                    new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString()),
+                    new Claim(ClaimTypes.Name, "mcp-integration-test"),
+                ], authenticationType: "test")),
+            }));
+        services.AddScoped<IPermissionEvaluator>(_ => new AllowAllPermissionEvaluator());
         // IEncryptionService isn't needed for the MCP read path, but the
         // data extension's VariableService registration wants it resolvable
         // if touched. None of the exercised tools touch it; skip.
@@ -125,6 +147,14 @@ public sealed class McpIntegrationTests(PostgresFixture postgres)
 
     private static string ContentText(CallToolResult result)
         => string.Concat(result.Content.OfType<TextContentBlock>().Select(c => c.Text));
+
+    /// <summary>Instance-backed <see cref="IHttpContextAccessor"/> — unlike the
+    /// framework's AsyncLocal-backed accessor, it returns the same context on any
+    /// async flow, so the MCP server's dispatch tasks see the seeded principal.</summary>
+    private sealed class FixedHttpContextAccessor(HttpContext context) : IHttpContextAccessor
+    {
+        public HttpContext? HttpContext { get => context; set { } }
+    }
 
     private async Task SeedProjectWithReleaseAsync()
     {
