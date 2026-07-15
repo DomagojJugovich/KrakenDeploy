@@ -29,6 +29,12 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\KrakenDeploy.Cli\KrakenDeploy.Cli.csproj" />
     <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
+    <!-- Test-only reference: the CLI deliberately does NOT depend on
+         Server.Core (it is a separate deployable talking REST), but the
+         drift test in ReleaseCommandsWaitTests asserts the CLI's string
+         terminal-status set stays in sync with the server's authoritative
+         DeploymentStatusExtensions.IsTerminal. -->
+    <ProjectReference Include="..\..\src\KrakenDeploy.Server.Core\KrakenDeploy.Server.Core.csproj" />
   </ItemGroup>
 
 </Project>

@@ -200,10 +200,25 @@ public static class ReleaseCommands
 
     // ── --wait polling ────────────────────────────────────────────────────────
 
-    private static readonly HashSet<string> TerminalStatuses =
-        new(StringComparer.OrdinalIgnoreCase) { "Succeeded", "Failed", "Cancelled" };
+    // Wire values are DeploymentStatus enum names. Must stay in sync with
+    // DeploymentStatusExtensions.IsTerminal in KrakenDeploy.Server.Core — the
+    // single authority for terminal states (a drift test in
+    // KrakenDeploy.Cli.Tests enforces this). PendingOfflineResult is
+    // deliberately NOT terminal: the deployment is parked awaiting an
+    // out-of-band result bundle, so --wait keeps polling until the result
+    // lands or the timeout trips.
+    internal static readonly HashSet<string> TerminalStatuses =
+        new(StringComparer.OrdinalIgnoreCase)
+        { "Succeeded", "SucceededWithWarnings", "Failed", "Cancelled" };
 
-    private static async Task<int> WaitForDeploymentAsync(
+    // SucceededWithWarnings means every Required step passed (only
+    // non-required steps failed), so CI gates treat it as success — the same
+    // semantics as the server's yellow badge and Octopus's exit code 0.
+    internal static readonly HashSet<string> SuccessStatuses =
+        new(StringComparer.OrdinalIgnoreCase)
+        { "Succeeded", "SucceededWithWarnings" };
+
+    internal static async Task<int> WaitForDeploymentAsync(
         KrakenApiClient client, Guid deploymentId, int timeoutSeconds)
     {
         var deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
@@ -242,7 +257,7 @@ public static class ReleaseCommands
             if (deployment is not null && TerminalStatuses.Contains(deployment.Status))
             {
                 Console.WriteLine($"\nDeployment {deployment.Status}.");
-                return deployment.Status.Equals("Succeeded", StringComparison.OrdinalIgnoreCase) ? 0 : 1;
+                return SuccessStatuses.Contains(deployment.Status) ? 0 : 1;
             }
 
             await Task.Delay(2_000).ConfigureAwait(false);
