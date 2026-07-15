@@ -110,6 +110,33 @@ public static class Program
         }
     }
 
+    /// <summary>
+    /// The single definition of the minimal-API JSON contract. Applied via
+    /// <c>ConfigureHttpJsonOptions</c> so every <c>/api</c> endpoint shares it,
+    /// and exercised directly by the wire-format test so the contract cannot
+    /// silently drift from what consumers (the CLI, external API-key callers)
+    /// expect.
+    /// <para>
+    /// Enums are serialized as their NAMES, not integers. The CLI's DTOs bind
+    /// status fields as <c>string</c> and compare enum names, so a numeric
+    /// token throws <c>JsonException</c> before a command does anything useful.
+    /// <see cref="System.Text.Json.Serialization.JsonStringEnumConverter"/>
+    /// reads BOTH numeric and string tokens, so request binding stays
+    /// backward-compatible for callers that still POST numeric enums.
+    /// </para>
+    /// <para>
+    /// <see cref="System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles"/>
+    /// tolerates EF navigation cycles (e.g. TagSet.Tags ↔ Tag.TagSet populated
+    /// by relationship fix-up on Include); without it those graphs throw
+    /// "possible object cycle detected" → 500.
+    /// </para>
+    /// </summary>
+    internal static void ConfigureHttpJson(System.Text.Json.JsonSerializerOptions options)
+    {
+        options.ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
+        options.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+    }
+
     private static async Task<int> RunWebAsync(string[] args)
     {
         var builder = WebApplication.CreateBuilder(args);
@@ -786,14 +813,10 @@ public static class Program
                 sp.GetRequiredService<IOptions<Microsoft.AspNetCore.Identity.IdentityOptions>>(),
                 sessionRevalidation));
 
-        // Minimal-API JSON: tolerate EF navigation cycles. Endpoints that return
-        // entity graphs with a bidirectional navigation (e.g. TagSet.Tags ↔
-        // Tag.TagSet, populated by EF relationship fix-up on Include) would
-        // otherwise throw "possible object cycle detected" → 500. IgnoreCycles
-        // writes null at the back-reference; non-cyclic graphs are unchanged.
-        builder.Services.ConfigureHttpJsonOptions(o =>
-            o.SerializerOptions.ReferenceHandler =
-                System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles);
+        // Minimal-API JSON contract (enum names + EF-cycle tolerance) lives in
+        // ConfigureHttpJson so it stays in one place and is unit-testable. See
+        // that method for the rationale behind each option.
+        builder.Services.ConfigureHttpJsonOptions(o => ConfigureHttpJson(o.SerializerOptions));
 
         // ── Build & configure pipeline ────────────────────────────────────────
         var app = builder.Build();
