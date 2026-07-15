@@ -193,6 +193,8 @@ public sealed class AdhocScriptExecutorTests
             IReadOnlyCollection<string> sensitiveOutputNames, CancellationToken ct) => Task.CompletedTask;
         public void OnRunDeployment(Func<DeploymentPlan, Task> handler) { }
         public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler) { }
+        public void OnClosed(Func<Exception?, Task> handler) { }
+        public void OnReconnected(Func<Task> handler) { }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 

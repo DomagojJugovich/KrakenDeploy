@@ -55,6 +55,8 @@ public sealed class FileSystemServerLink(
     public Task ReportAdhocResultAsync(AdhocScriptResult result, CancellationToken ct) => Task.CompletedTask;
     public void OnRunDeployment(Func<DeploymentPlan, Task> handler) { }
     public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler) { }
+    public void OnClosed(Func<Exception?, Task> handler) { }
+    public void OnReconnected(Func<Task> handler) { }
 
     public Task AppendLogAsync(Guid deploymentId, int stepIndex, string level, string message, CancellationToken ct)
     {

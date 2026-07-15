@@ -22,6 +22,13 @@ public interface IServerLink : IAsyncDisposable
     /// <c>X-KD-Release</c> header so a mid-drain reconnect lands back on the slot
     /// that holds this agent's in-flight orchestration state. A stale pin is
     /// harmless: the router falls back to the current default release.
+    /// <para>
+    /// B2: re-entrant. Calling it again after a permanent close tears down the
+    /// previous connection and opens a fresh one — the supervisor in
+    /// <c>ServerLinkHostedService</c> relies on this to restart the link without
+    /// restarting the process. Transient drops never need it: the connection's
+    /// own unbounded retry policy (<see cref="AgentReconnectPolicy"/>) handles those.
+    /// </para>
     /// </summary>
     Task StartAsync(string serverUrl, Func<string?> agentJwtProvider, string? releaseId, CancellationToken ct);
 
@@ -96,4 +103,25 @@ public interface IServerLink : IAsyncDisposable
     /// The handler MUST verify the signature before executing the script.
     /// </summary>
     void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler);
+
+    // ── Connection lifecycle (subscriptions) ──────────────────────────────
+
+    /// <summary>
+    /// B2 — registers a handler invoked when the connection closes PERMANENTLY:
+    /// the retry policy stopped (never, with <see cref="AgentReconnectPolicy"/>)
+    /// or the server ended the connection in a way automatic reconnect does not
+    /// cover. NOT invoked for transient drops the automatic reconnect is still
+    /// retrying, nor for closes the agent initiated itself
+    /// (<see cref="StopAsync"/> / re-entrant <see cref="StartAsync"/> / dispose).
+    /// The supervisor restarts the connection cycle from this signal.
+    /// </summary>
+    void OnClosed(Func<Exception?, Task> handler);
+
+    /// <summary>
+    /// B2 — registers a handler invoked after the automatic reconnect
+    /// re-establishes the connection. The server treats a reconnect as a brand
+    /// new connection (its <c>OnConnectedAsync</c> re-marks the target Online);
+    /// this hook lets the agent re-send registration and flush buffered reports.
+    /// </summary>
+    void OnReconnected(Func<Task> handler);
 }

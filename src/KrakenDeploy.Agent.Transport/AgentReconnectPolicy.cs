@@ -31,13 +31,13 @@ public sealed class AgentReconnectPolicy(
     Func<double>? jitterSource = null) : IRetryPolicy
 {
     /// <summary>Backoff ceiling for the first backed-off attempt.</summary>
-    internal static readonly TimeSpan BaseDelay = TimeSpan.FromSeconds(1);
+    public static readonly TimeSpan BaseDelay = TimeSpan.FromSeconds(1);
 
     /// <summary>Ceiling the jittered exponential backoff saturates at.</summary>
-    internal static readonly TimeSpan MaxDelay = TimeSpan.FromSeconds(30);
+    public static readonly TimeSpan MaxDelay = TimeSpan.FromSeconds(30);
 
     /// <summary>Fixed cadence while reconnect attempts fail with 401/403.</summary>
-    internal static readonly TimeSpan AuthFailureDelay = TimeSpan.FromMinutes(5);
+    public static readonly TimeSpan AuthFailureDelay = TimeSpan.FromMinutes(5);
 
     private readonly Func<double> _jitter = jitterSource ?? Random.Shared.NextDouble;
     private bool _inAuthFailureStreak;

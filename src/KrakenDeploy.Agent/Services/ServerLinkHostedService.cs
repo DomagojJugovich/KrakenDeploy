@@ -1,10 +1,10 @@
 using KrakenDeploy.Agent.Adhoc;
 using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.Deployment;
-using KrakenDeploy.Agent.Identity;
 using KrakenDeploy.Agent.Machine;
 using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
+using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -12,10 +12,26 @@ using Microsoft.Extensions.Options;
 namespace KrakenDeploy.Agent.Services;
 
 /// <summary>
-/// Opens and maintains the SignalR control-plane connection to the server.
+/// Opens and SUPERVISES the SignalR control-plane connection to the server.
 /// Waits for <see cref="AgentContext.IdentityReady"/> before connecting so it
 /// always has a valid bearer token.
-/// On shutdown it reports <c>ShuttingDown</c> status before disconnecting.
+/// <para>
+/// B2/T0-2 — the link must survive for the life of the process:
+/// <list type="bullet">
+/// <item>Initial connect retries with the same unbounded jittered backoff the
+/// connection's own retry policy uses (an agent booting while the server is
+/// down comes online by itself once the server does).</item>
+/// <item>Transient drops are handled INSIDE the connection by
+/// <see cref="AgentReconnectPolicy"/> (unbounded); they never reach this loop.</item>
+/// <item>A permanent close (anything automatic reconnect does not cover) is
+/// surfaced via <see cref="IServerLink.OnClosed"/> and restarts the whole
+/// connect cycle — the service never idles with a dead connection.</item>
+/// <item>Registration is (re-)sent after every connect and reconnect; the hub
+/// re-marks the target Online in its own OnConnectedAsync either way.</item>
+/// </list>
+/// Clean shutdown is distinguished from failure: on <paramref name="stoppingToken"/>
+/// the loop exits, reports <c>ShuttingDown</c> and stops the link deliberately.
+/// </para>
 /// </summary>
 public sealed class ServerLinkHostedService(
     AgentContext context,
@@ -25,9 +41,14 @@ public sealed class ServerLinkHostedService(
     MachineInfoCollector machineCollector,
     IOptions<ServerOptions> serverOptions,
     IOptions<AgentConfig> agentConfig,
+    TimeProvider timeProvider,
     ILogger<ServerLinkHostedService> logger)
     : BackgroundService
 {
+    // Signals the current supervision cycle that the link closed permanently.
+    // Replaced at the start of every cycle; the OnClosed handler resolves it.
+    private volatile TaskCompletionSource<Exception?>? _closedSignal;
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // ── Wait for registration to complete ────────────────────────────
@@ -40,49 +61,122 @@ public sealed class ServerLinkHostedService(
             return;
         }
 
-        var identity = context.Identity!;
         var serverUrl = serverOptions.Value.Url;
 
-        logger.LogInformation("Connecting to server {ServerUrl}.", serverUrl);
+        // ── One-time handler wiring (re-applied to every connection) ─────
+        // Register deployment handler BEFORE opening the connection so no
+        // RunDeploymentAsync messages can arrive before the handler is wired.
+        serverLink.OnRunDeployment(plan =>
+            Task.Run(() => deploymentExecutor.ExecuteAsync(plan), stoppingToken));
+
+        // M11.E.7 — same gate-before-open contract for ad-hoc commands.
+        // The executor is fail-closed: refuses on signature mismatch /
+        // missing public key, always reports back to the dispatcher.
+        serverLink.OnRunAdhocScript(cmd =>
+            Task.Run(() => adhocExecutor.HandleAsync(cmd), stoppingToken));
+
+        serverLink.OnClosed(ex =>
+        {
+            _closedSignal?.TrySetResult(ex);
+            return Task.CompletedTask;
+        });
+
+        serverLink.OnReconnected(async () =>
+        {
+            logger.LogInformation(
+                "Reconnected to server {ServerUrl}; re-sending registration.", serverUrl);
+            await TrySendRegistrationAsync(stoppingToken).ConfigureAwait(false);
+        });
+
+        // ── Supervision loop ──────────────────────────────────────────────
+        // Same pacing as the in-connection retry policy so operators see one
+        // consistent backoff story (incl. the slow 401/403 re-enroll lane).
+        var startBackoff = new AgentReconnectPolicy(logger);
+        var failedStartAttempts = 0L;
 
         try
         {
-            // Register deployment handler BEFORE opening the connection so no
-            // RunDeploymentAsync messages can arrive before the handler is wired.
-            serverLink.OnRunDeployment(plan =>
-                Task.Run(() => deploymentExecutor.ExecuteAsync(plan), stoppingToken));
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                _closedSignal = new TaskCompletionSource<Exception?>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
 
-            // M11.E.7 — same gate-before-open contract for ad-hoc commands.
-            // The executor is fail-closed: refuses on signature mismatch /
-            // missing public key, always reports back to the dispatcher.
-            serverLink.OnRunAdhocScript(cmd =>
-                Task.Run(() => adhocExecutor.HandleAsync(cmd), stoppingToken));
+                try
+                {
+                    logger.LogInformation("Connecting to server {ServerUrl}.", serverUrl);
 
-            // Token as a PROVIDER over AgentContext: the sliding refresh (A8)
-            // swaps Identity for one carrying a fresh token, and reconnects must
-            // present the current token, not the boot-time snapshot.
-            await serverLink
-                .StartAsync(
-                    serverUrl,
-                    () => context.Identity?.AgentToken,
-                    identity.ReleaseId,
-                    stoppingToken)
-                .ConfigureAwait(false);
+                    // Token as a PROVIDER over AgentContext: the sliding refresh
+                    // (A8) swaps Identity for one carrying a fresh token, and
+                    // (re)connects must present the current token, not a snapshot.
+                    await serverLink
+                        .StartAsync(
+                            serverUrl,
+                            () => context.Identity?.AgentToken,
+                            context.Identity?.ReleaseId,
+                            stoppingToken)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    // WithAutomaticReconnect never covers INITIAL start failures
+                    // (see AgentReconnectPolicy docs) — this loop is the retry.
+                    failedStartAttempts++;
+                    var delay = startBackoff.NextRetryDelay(new RetryContext
+                    {
+                        PreviousRetryCount = failedStartAttempts - 1,
+                        ElapsedTime = TimeSpan.Zero,
+                        RetryReason = ex,
+                    }) ?? AgentReconnectPolicy.MaxDelay;
 
-            logger.LogInformation("Connected to server {ServerUrl}.", serverUrl);
+                    logger.LogWarning(ex,
+                        "Could not connect to server {ServerUrl} (attempt {Attempt}); " +
+                        "retrying in {Delay}.",
+                        serverUrl, failedStartAttempts, delay);
+                    try
+                    {
+                        await Task.Delay(delay, timeProvider, stoppingToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                    continue;
+                }
 
-            await SendRegistrationAsync(identity, stoppingToken).ConfigureAwait(false);
+                failedStartAttempts = 0;
+                logger.LogInformation("Connected to server {ServerUrl}.", serverUrl);
 
-            // Hold open until the host signals shutdown.
-            await Task.Delay(Timeout.Infinite, stoppingToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            // Normal shutdown path — fall through to finally.
+                await TrySendRegistrationAsync(stoppingToken).ConfigureAwait(false);
+
+                // Park until the link closes PERMANENTLY (transient drops are
+                // retried inside the connection and never resolve this signal)
+                // or the host shuts down.
+                Exception? closeReason;
+                try
+                {
+                    closeReason = await _closedSignal.Task
+                        .WaitAsync(stoppingToken)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+
+                logger.LogWarning(closeReason,
+                    "Server link closed permanently; restarting the connection cycle.");
+                // Loop immediately — StartAsync failures pace any retries.
+            }
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Server link failed unexpectedly.");
+            // A supervisor crash would strand the agent offline for good —
+            // log loudly; the finally below still reports shutdown.
+            logger.LogError(ex, "Server link supervisor failed unexpectedly.");
         }
         finally
         {
@@ -92,7 +186,29 @@ public sealed class ServerLinkHostedService(
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
-    private async Task SendRegistrationAsync(AgentIdentity identity, CancellationToken ct)
+    /// <summary>
+    /// Best-effort registration: a failure is logged and NOT fatal to the
+    /// connection cycle — the next reconnect re-sends it, and the hub's
+    /// OnConnectedAsync has already marked the target Online regardless.
+    /// </summary>
+    private async Task TrySendRegistrationAsync(CancellationToken ct)
+    {
+        try
+        {
+            await SendRegistrationAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Shutdown — nothing to do.
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Sending registration failed — will re-send on the next (re)connect.");
+        }
+    }
+
+    private async Task SendRegistrationAsync(CancellationToken ct)
     {
         var machineInfo = machineCollector.Collect(agentConfig.Value.ResolvedDataPath);
 
@@ -110,7 +226,7 @@ public sealed class ServerLinkHostedService(
         }
 
         var request = new AgentRegistrationRequest(
-            TargetId: identity.AgentId,
+            TargetId: context.Identity!.AgentId,
             MachineName: machineInfo.MachineName,
             OperatingSystem: machineInfo.OperatingSystem,
             AgentVersion: machineInfo.AgentVersion,

@@ -16,9 +16,16 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
 {
     private HubConnection? _connection;
 
+    // Set before an agent-initiated teardown (StopAsync / re-entrant StartAsync /
+    // DisposeAsync) so the Closed event can tell a deliberate stop from a failure
+    // the supervisor must react to.
+    private volatile bool _deliberateStop;
+
     // Handlers registered before StartAsync; wired onto _connection in StartAsync.
     private readonly List<Func<DeploymentPlan, Task>> _deploymentHandlers = [];
     private readonly List<Func<AdhocScriptCommand, Task>> _adhocHandlers = [];
+    private readonly List<Func<Exception?, Task>> _closedHandlers = [];
+    private readonly List<Func<Task>> _reconnectedHandlers = [];
 
     // ── IServerLink ────────────────────────────────────────────────────────
 
@@ -29,9 +36,29 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
         ArgumentException.ThrowIfNullOrEmpty(serverUrl);
         ArgumentNullException.ThrowIfNull(agentJwtProvider);
 
+        // B2: re-entrant. Tear down any previous connection first so a
+        // supervisor restart never leaks the old one — and so its events can
+        // no longer reach the handlers (the closure guard below double-checks).
+        if (_connection is not null)
+        {
+            var previous = _connection;
+            _connection = null;
+            _deliberateStop = true;
+            try
+            {
+                await previous.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Disposing the previous hub connection failed — ignored.");
+            }
+        }
+
+        _deliberateStop = false;
+
         var hubUrl = $"{serverUrl.TrimEnd('/')}/hubs/agent";
 
-        _connection = new HubConnectionBuilder()
+        var connection = new HubConnectionBuilder()
             .WithUrl(hubUrl, options =>
             {
                 // Deliver JWT via query string so it survives the WebSocket upgrade.
@@ -54,20 +81,30 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
             .WithAutomaticReconnect(new AgentReconnectPolicy(logger))
             .Build();
 
-        _connection.Reconnecting += ex =>
+        connection.Reconnecting += ex =>
         {
             logger.LogWarning(ex, "SignalR connection lost; reconnecting (unbounded retry)…");
             return Task.CompletedTask;
         };
 
-        _connection.Reconnected += connectionId =>
+        connection.Reconnected += async connectionId =>
         {
             logger.LogInformation(
                 "SignalR connection re-established (connectionId={ConnectionId}).", connectionId);
-            return Task.CompletedTask;
+            foreach (var handler in _reconnectedHandlers)
+            {
+                try
+                {
+                    await handler().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "Reconnected handler failed — continuing.");
+                }
+            }
         };
 
-        _connection.Closed += ex =>
+        connection.Closed += async ex =>
         {
             if (ex is not null)
             {
@@ -78,27 +115,50 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
                 logger.LogInformation("SignalR connection closed cleanly.");
             }
 
-            return Task.CompletedTask;
+            // Surface only a permanent close of the CURRENT connection that the
+            // agent did not initiate itself — a replaced or deliberately stopped
+            // connection's Closed must not trigger a supervisor restart.
+            if (_deliberateStop || !ReferenceEquals(connection, _connection))
+            {
+                return;
+            }
+
+            foreach (var handler in _closedHandlers)
+            {
+                try
+                {
+                    await handler(ex).ConfigureAwait(false);
+                }
+                catch (Exception hx)
+                {
+                    logger.LogWarning(hx, "Closed handler failed — continuing.");
+                }
+            }
         };
 
         // Wire up server-push handlers BEFORE starting the connection so no
         // messages can arrive before the handlers are registered.
         foreach (var handler in _deploymentHandlers)
         {
-            _connection.On<DeploymentPlan>("RunDeploymentAsync", handler);
+            connection.On<DeploymentPlan>("RunDeploymentAsync", handler);
         }
         foreach (var handler in _adhocHandlers)
         {
-            _connection.On<AdhocScriptCommand>("RunAdhocScriptAsync", handler);
+            connection.On<AdhocScriptCommand>("RunAdhocScriptAsync", handler);
         }
 
-        await _connection.StartAsync(ct).ConfigureAwait(false);
+        // Publish before StartAsync: initial-start failures throw (no Closed
+        // event fires for them), and the supervisor's retry re-enters here.
+        _connection = connection;
+
+        await connection.StartAsync(ct).ConfigureAwait(false);
     }
 
     public async Task StopAsync(CancellationToken ct)
     {
         if (_connection is not null)
         {
+            _deliberateStop = true;
             await _connection.StopAsync(ct).ConfigureAwait(false);
         }
     }
@@ -206,12 +266,25 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
         _connection?.On<AdhocScriptCommand>("RunAdhocScriptAsync", handler);
     }
 
+    public void OnClosed(Func<Exception?, Task> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        _closedHandlers.Add(handler);
+    }
+
+    public void OnReconnected(Func<Task> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        _reconnectedHandlers.Add(handler);
+    }
+
     // ── IAsyncDisposable ───────────────────────────────────────────────────
 
     public async ValueTask DisposeAsync()
     {
         if (_connection is not null)
         {
+            _deliberateStop = true;
             await _connection.DisposeAsync().ConfigureAwait(false);
         }
     }
