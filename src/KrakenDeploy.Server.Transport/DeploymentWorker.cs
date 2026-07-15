@@ -715,12 +715,13 @@ public sealed class DeploymentWorker(
             {
                 var d = await finalDb.Deployments.FindAsync([deployment.Id], ct).ConfigureAwait(false);
                 finalCompletedUtc = DateTimeOffset.UtcNow;
-                // Never overwrite a cancellation. A concurrent CancelAsync may
-                // have moved this deployment to the terminal Cancelled state
-                // while the final wave completed (the agent protocol can't abort
-                // in-flight work, so the last wave always finishes). Cancel wins:
-                // leave the Cancelled status + its CompletedUtc untouched.
-                if (d is not null && d.Status != DeploymentStatus.Cancelled)
+                // Never overwrite a TERMINAL status. A concurrent CancelAsync may
+                // have moved this deployment to Cancelled while the final wave
+                // completed (the agent protocol can't abort in-flight work), and —
+                // B1 — the dispatch reconciler may have failed it as interrupted
+                // if this process stalled past the whole lease. The recorded
+                // verdict wins; a resumed zombie dispatch must not report success.
+                if (d is not null && !d.Status.IsTerminal())
                 {
                     d.Status       = terminalStatus;
                     d.CompletedUtc = finalCompletedUtc;
@@ -1101,11 +1102,19 @@ public sealed class DeploymentWorker(
     private async Task FailAsync(
         KrakenDbContext db, Deployment deployment, string reason, CancellationToken ct)
     {
-        // Never overwrite a cancellation with Failed. A CancelAsync landing while
-        // a wave was in flight (or during a pre-flight gate) makes Cancelled the
-        // terminal state; the projection reads the authoritative DB value (the
-        // tracked entity may still show Running/Queued). Cancel wins.
-        if (await IsCancellationRequestedAsync(db, deployment.Id, ct).ConfigureAwait(false))
+        // Never overwrite a TERMINAL status with Failed. A CancelAsync landing
+        // while a wave was in flight makes Cancelled the terminal state, and —
+        // B1 — the dispatch reconciler may already have failed this run as
+        // interrupted. The projection reads the authoritative DB value (the
+        // tracked entity may still show Running/Queued); the recorded verdict
+        // wins and, for the reconciler case, a duplicate Failed write + AI
+        // diagnosis is avoided.
+        var currentStatus = await db.Deployments
+            .Where(d => d.Id == deployment.Id)
+            .Select(d => d.Status)
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false);
+        if (currentStatus.IsTerminal())
         {
             return;
         }

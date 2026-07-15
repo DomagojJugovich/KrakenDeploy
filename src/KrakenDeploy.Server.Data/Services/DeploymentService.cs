@@ -220,10 +220,7 @@ public class DeploymentService(
             return null;
         }
 
-        if (deployment.Status is DeploymentStatus.Succeeded
-            or DeploymentStatus.SucceededWithWarnings
-            or DeploymentStatus.Failed
-            or DeploymentStatus.Cancelled)
+        if (deployment.Status.IsTerminal())
         {
             throw new InvalidOperationException(
                 $"Deployment {id} is already in a terminal state " +

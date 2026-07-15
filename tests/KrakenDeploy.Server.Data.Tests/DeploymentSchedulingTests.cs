@@ -89,7 +89,8 @@ public sealed class DeploymentSchedulingTests(PostgresFixture postgres)
         }
 
         var job = new ScheduledDeploymentDispatchJob(
-            postgres, queue, TimeProvider.System, new DisabledAccountContext(),
+            postgres, queue, new RunbookRunChannel(), TimeProvider.System,
+            new DisabledAccountContext(), new NullAuditLog(),
             NullLogger<ScheduledDeploymentDispatchJob>.Instance);
 
         // Two overlapping/retried job runs → two wake-ups (at-least-once is fine;

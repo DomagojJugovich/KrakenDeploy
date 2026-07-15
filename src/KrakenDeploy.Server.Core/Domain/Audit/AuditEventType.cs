@@ -59,6 +59,15 @@ public static class AuditEventType
     public const string DeploymentFailed    = "Deployment.Failed";
     public const string DeploymentCancelled = "Deployment.Cancelled";
 
+    /// <summary>B1 — the dispatch reconciler failed a <c>Running</c> deployment
+    /// whose lease had expired: the process orchestrating it died (crash,
+    /// restart) and its in-memory wave/sub-plan state cannot be resumed. The
+    /// terminal status is <c>Failed</c>; this event is what distinguishes
+    /// "interrupted by a dead server" from an ordinary step failure when an
+    /// operator asks why a deploy died at 03:00. Details: claim owner + lease
+    /// expiry.</summary>
+    public const string DeploymentInterrupted = "Deployment.Interrupted";
+
     // ── Runbook lifecycle ─────────────────────────────────────────────────────
     public const string RunbookRunStarted   = "RunbookRun.Started";
     public const string RunbookRunSucceeded = "RunbookRun.Succeeded";

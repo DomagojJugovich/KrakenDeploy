@@ -338,8 +338,24 @@ public sealed class AgentHub(
             return;
         }
 
+        // B1: never overwrite a terminal status. A late agent callback can race
+        // an operator cancel, or arrive after the dispatch reconciler already
+        // failed this task as interrupted (its sub-plan TCS died with the old
+        // process, so TryResolve above missed) — the recorded verdict wins over
+        // a stale "success" that reflects only one target's sub-plan.
+        if (task.Status.IsTerminal())
+        {
+            logger.LogWarning(
+                "CompleteDeployment for task {Id} ignored: already terminal ({Status}).",
+                deploymentId, task.Status);
+            return;
+        }
+
         task.Status = success ? DeploymentStatus.Succeeded : DeploymentStatus.Failed;
         task.CompletedUtc = completedAt;
+        // B1: terminal — release the dispatch lease (runbook hand-off hygiene).
+        task.ClaimedBy = null;
+        task.LeaseUntil = null;
         await db.SaveChangesAsync().ConfigureAwait(false);
 
         // Terminal: sweep any remaining staging lines into per-step blobs.

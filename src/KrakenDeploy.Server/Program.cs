@@ -3034,6 +3034,41 @@ public static class Program
             }
         }
 
+        // B1 — dispatch reconcile at boot: re-signal Queued tasks whose in-memory
+        // wake-up died with the previous process, and fail Running deployments
+        // whose lease expired (their orchestration state is unresumable). Runs
+        // BEFORE app.RunAsync(), i.e. before the workers start consuming, so
+        // re-signalled items simply wait in the unbounded channels. The same
+        // logic re-runs every minute via the Hangfire job, so a failure here is
+        // recovered on the next tick anyway.
+        await using (var scope = app.Services.CreateAsyncScope())
+        {
+            try
+            {
+                if (multiAccountEnabled)
+                {
+                    await scope.ServiceProvider
+                        .GetRequiredService<KrakenDeploy.ControlPlane.Provisioning.PerAccountRecurringJobRunner>()
+                        .RunForAllAccountsAsync(
+                            typeof(KrakenDeploy.Server.Data.Jobs.ScheduledDeploymentDispatchJob).AssemblyQualifiedName!,
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    await scope.ServiceProvider
+                        .GetRequiredService<KrakenDeploy.Server.Data.Jobs.ScheduledDeploymentDispatchJob>()
+                        .ExecuteAsync(CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex)
+            {
+                app.Logger.LogWarning(ex,
+                    "Dispatch reconcile at startup failed — the minutely job retries.");
+            }
+        }
+
         // Validate license on startup — warn in logs but don't block.
         // The UI also shows a banner to System Administrators.
         {
