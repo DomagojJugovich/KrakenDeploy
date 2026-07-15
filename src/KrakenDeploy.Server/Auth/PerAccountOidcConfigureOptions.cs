@@ -1,6 +1,7 @@
 using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data;
+using KrakenDeploy.Server.Data.Net;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -22,7 +23,9 @@ namespace KrakenDeploy.Server.Auth;
 /// acceptable here.
 /// </para>
 /// </summary>
-public sealed class PerAccountOidcConfigureOptions(IServiceScopeFactory scopeFactory)
+public sealed class PerAccountOidcConfigureOptions(
+    IServiceScopeFactory scopeFactory,
+    IOptions<SsrfOptions> ssrfOptions)
     : IConfigureNamedOptions<OpenIdConnectOptions>
 {
     public void Configure(string? name, OpenIdConnectOptions options)
@@ -62,6 +65,9 @@ public sealed class PerAccountOidcConfigureOptions(IServiceScopeFactory scopeFac
             options.Authority    = idp.Authority;
             options.ClientId     = idp.ClientId;
             options.ClientSecret = secret;
+            // SSRF: pin the validated IP per hop on the discovery/JWKS backchannel.
+            options.BackchannelHttpHandler =
+                SsrfHttpHandlerFactory.Create(ssrfOptions.Value.Oidc, allowAutoRedirect: true);
             options.ResponseType = "code";
             options.UsePkce      = true;
             options.SaveTokens   = false;

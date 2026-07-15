@@ -1,6 +1,8 @@
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Variables;
+using KrakenDeploy.Server.Data.Net;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace KrakenDeploy.Server.Data.Services;
 
@@ -12,8 +14,30 @@ namespace KrakenDeploy.Server.Data.Services;
 public class IdentityProviderService(
     IDbContextFactory<KrakenDbContext> dbFactory,
     IEncryptionService encryption,
+    IOptions<SsrfOptions> ssrfOptions,
     IOidcSchemeCacheInvalidator schemeCache)
 {
+    /// <summary>
+    /// SSRF check on the operator-supplied Authority URL. The discovery /
+    /// JWKS documents are fetched from it by the OIDC middleware, so an
+    /// internal Authority is an SSRF/metadata-probe vector. Enforced at save;
+    /// the OIDC backchannel handler pins the IP at fetch time as a backstop.
+    /// </summary>
+    private async Task EnsureAuthorityAllowedAsync(string? authority, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(authority))
+        {
+            return;
+        }
+        var refusal = await SsrfGuard
+            .ValidateOutboundUrlAsync(authority.Trim(), ssrfOptions.Value.Oidc, ct)
+            .ConfigureAwait(false);
+        if (refusal is not null)
+        {
+            throw new ArgumentException(
+                $"OIDC Authority rejected: {refusal}", nameof(authority));
+        }
+    }
     public async Task<List<IdentityProvider>> GetAllAsync(CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
@@ -36,6 +60,7 @@ public class IdentityProviderService(
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        await EnsureAuthorityAllowedAsync(authority, ct).ConfigureAwait(false);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
@@ -71,6 +96,8 @@ public class IdentityProviderService(
         bool autoProvision, bool isEnabled,
         CancellationToken ct = default)
     {
+        await EnsureAuthorityAllowedAsync(authority, ct).ConfigureAwait(false);
+
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var idp = await db.IdentityProviders

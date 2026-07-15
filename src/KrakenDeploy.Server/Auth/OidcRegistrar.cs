@@ -4,6 +4,7 @@ using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Identity;
+using KrakenDeploy.Server.Data.Net;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Identity;
@@ -171,6 +172,13 @@ public static class OidcRegistrar
 
         var authBuilder = builder.Services.AddAuthentication();
 
+        // SSRF: the OIDC middleware fetches discovery/JWKS from the Authority over
+        // its backchannel. Pin the validated IP per hop so an internal Authority
+        // (or a redirect to one) can't be reached. Save-time validation in
+        // IdentityProviderService is the first gate; this is the fetch-time backstop.
+        var oidcSsrfPolicy = builder.Configuration
+            .GetSection(SsrfOptions.SectionName).Get<SsrfOptions>()?.Oidc ?? new SsrfPolicy();
+
         foreach (var idp in providers)
         {
             string secret;
@@ -199,6 +207,8 @@ public static class OidcRegistrar
                 options.ResponseType = "code";
                 options.UsePkce      = true;
                 options.SaveTokens   = false;
+                options.BackchannelHttpHandler =
+                    SsrfHttpHandlerFactory.Create(oidcSsrfPolicy, allowAutoRedirect: true);
 
                 // Each scheme needs its own callback path to avoid conflicts.
                 options.CallbackPath = $"/signin-{scheme}";
