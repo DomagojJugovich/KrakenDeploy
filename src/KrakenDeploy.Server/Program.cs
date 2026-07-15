@@ -283,17 +283,51 @@ public static class Program
         // at a shared volume for HA). Without this, ASP.NET Core uses an ephemeral
         // key ring: every restart logs users out and 400s antiforgery-protected
         // POSTs, and HA nodes can't read each other's cookies/tokens.
+        // A7/T1-14 (+C2): default the ring under Server:DataPath (canonical key,
+        // matches BackupEngine + docker-compose Server__DataPath) so it lands on
+        // the mounted, backed-up volume — the old bare "DataPath" key was unset in
+        // every deployment, so the ring fell to a relative ./data outside backup.
         var keyRingPath = builder.Configuration["DataProtection:KeyPath"]
-            ?? Path.Combine(builder.Configuration["DataPath"] ?? "data", "dataprotection-keys");
+            ?? Path.Combine(builder.Configuration["Server:DataPath"] ?? "data", "dataprotection-keys");
         var dataProtection = builder.Services.AddDataProtection()
             .SetApplicationName("KrakenDeploy")
             .PersistKeysToFileSystem(new DirectoryInfo(keyRingPath));
         if (OperatingSystem.IsWindows())
         {
-            // Encrypt the key ring at rest with Windows DPAPI (single host). On a
-            // Linux host or in HA, protect the shared key directory via volume
-            // permissions or configure a certificate-based protector instead.
+            // Single Windows host: encrypt the key ring at rest with DPAPI.
             dataProtection.ProtectKeysWithDpapi();
+        }
+        else
+        {
+            // A7/T1-14: non-Windows (Linux / HA) has no DPAPI. Encrypt the ring
+            // with an X.509 certificate (PFX from file/KMS) so reading the key
+            // directory does not by itself let an attacker forge auth +
+            // antiforgery cookies. Without a protector the ring is PLAINTEXT and
+            // directory ACLs are the only control — refuse to boot like that in
+            // production (mirrors the Encryption:MasterKey fail-fast).
+            var certPath = builder.Configuration["DataProtection:CertificatePath"];
+            var certPassword = builder.Configuration["DataProtection:CertificatePassword"];
+            if (!string.IsNullOrWhiteSpace(certPath))
+            {
+                var cert = System.Security.Cryptography.X509Certificates.X509CertificateLoader
+                    .LoadPkcs12FromFile(certPath, certPassword);
+                dataProtection.ProtectKeysWithCertificate(cert);
+            }
+            else if (!builder.Environment.IsDevelopment())
+            {
+                throw new InvalidOperationException(
+                    "DataProtection:CertificatePath is required on non-Windows hosts in production: " +
+                    "without it the key ring is stored unencrypted, so anyone who can read the key " +
+                    "directory can forge authentication + antiforgery cookies. Provide a PFX " +
+                    "(file or KMS-exported) via DataProtection:CertificatePath (+ :CertificatePassword), " +
+                    "or run on Windows (DPAPI). See docs/auth-session-hardening.md.");
+            }
+            else
+            {
+                Console.Error.WriteLine(
+                    "WARNING: DataProtection key ring is UNENCRYPTED (non-Windows dev, no " +
+                    "DataProtection:CertificatePath). Never use this configuration in production.");
+            }
         }
 
         // ── Authentication ───────────────────────────────────────────────────
