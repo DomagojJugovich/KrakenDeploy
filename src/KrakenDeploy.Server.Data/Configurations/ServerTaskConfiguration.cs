@@ -44,6 +44,13 @@ public sealed class ServerTaskConfiguration : IEntityTypeConfiguration<ServerTas
         builder.HasIndex(x => x.ScheduledFor)
             .HasFilter("scheduled_for IS NOT NULL AND status = 0");
 
+        // ── Dispatch lease (B1) ──────────────────────────────────────────────
+        // ClaimedBy is forensic only; LeaseUntil drives the orphan reconciler.
+        // No extra index: the reconciler filters on Status (indexed above) and
+        // the Running set is small.
+        builder.Property(x => x.ClaimedBy).HasMaxLength(128);
+        builder.Property(x => x.LeaseUntil);
+
         builder.Property(x => x.NextLogSequence).IsRequired();
 
         // ── Denormalized ownership (decision 5) ──────────────────────────────

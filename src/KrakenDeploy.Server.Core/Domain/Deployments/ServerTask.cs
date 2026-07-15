@@ -60,6 +60,22 @@ public abstract class ServerTask : AuditableEntity, ISpaceScoped
     /// Hangfire scheduled-dispatch job enqueues it when due. <c>null</c> = now.</summary>
     public DateTimeOffset? ScheduledFor { get; set; }
 
+    // ── Dispatch lease (B1 durable dispatch) ─────────────────────────────────
+
+    /// <summary>Which process instance claimed this task (informational, for
+    /// forensics — liveness is decided by <see cref="LeaseUntil"/>, never by
+    /// matching this value). Stamped by the atomic <c>Queued→Running</c> claim;
+    /// cleared on terminal states and on the offline/agent hand-off.</summary>
+    public string? ClaimedBy { get; set; }
+
+    /// <summary>Lease expiry for the claim. The owning worker renews it while the
+    /// dispatch is in flight; the reconciler treats a <c>Running</c> DEPLOYMENT
+    /// whose lease has expired (or was never stamped) as orphaned by a dead
+    /// process and fails it. Runbook runs hand off to the agent after dispatch
+    /// (the lease is cleared then) and are never reconciled this way — their
+    /// terminal status arrives via the agent callback even across a restart.</summary>
+    public DateTimeOffset? LeaseUntil { get; set; }
+
     /// <summary>Relative path to the offline drop-bundle zip for offline-drop
     /// tasks; <c>null</c> for agent-dispatched tasks.</summary>
     public string? DropBundlePath { get; set; }

@@ -265,6 +265,9 @@ public sealed class DeploymentWorker(
             {
                 if (targets.Count > 1)
                 {
+                    // Static config refusal — deliberately BEFORE the claim so
+                    // StartedUtc stays null and the AI-diagnosis gate in
+                    // FailAsync skips this never-ran deployment.
                     await FailAsync(db, deployment,
                         "Offline-drop deployments must target a single machine. " +
                         "This deployment has multiple targets in its assignment set; " +
@@ -273,6 +276,26 @@ public sealed class DeploymentWorker(
                         .ConfigureAwait(false);
                     return;
                 }
+
+                // B1: the offline path claims too — a duplicate wake-up must not
+                // build (and deliver) the same bundle twice concurrently. Flow:
+                // Queued→Running (claimed, leased) → bundle build →
+                // PendingOfflineResult (lease released in the transition).
+                if (!await ServerTaskLease.TryClaimAsync(db, deployment.Id, timeProvider, ct)
+                        .ConfigureAwait(false))
+                {
+                    logger.LogInformation(
+                        "DeploymentWorker: offline deployment {Id} was not claimable (cancelled " +
+                        "or already claimed by another wake-up); skipping dispatch.",
+                        deploymentId);
+                    return;
+                }
+
+                ServerTaskLease.MirrorClaim(db, deployment, timeProvider);
+
+                await using var offlineLease = new ServerTaskLeaseRenewal(
+                    scopeFactory, deployment.Id, timeProvider, logger);
+
                 await DispatchOfflineDropAsync(scope.ServiceProvider, db, deployment, targets[0], ct)
                     .ConfigureAwait(false);
                 return;
@@ -445,29 +468,39 @@ public sealed class DeploymentWorker(
                 return;
             }
 
-            // ── Cancellation: last check before starting work ──────────────
-            // The dequeue-skip above ran immediately after load; the prep phase
-            // since (freeze lookup, per-target context build with variable
-            // resolution + DB round-trips, wave partitioning) does real I/O and
-            // widens the window for a concurrent CancelAsync. The Running write
-            // below is a blind UPDATE (the domain carries no optimistic-
-            // concurrency token), so re-read here to avoid clobbering a cancel
-            // that landed during prep back to Running. A tiny residual TOCTOU
-            // remains between this read and the save — the same window the
-            // finalisation + FailAsync guards accept — and the between-wave
-            // check is the backstop.
-            if (await IsCancellationRequestedAsync(db, deployment.Id, ct).ConfigureAwait(false))
+            // ── B1: atomic claim (Queued→Running) ──────────────────────────
+            // One conditional UPDATE replaces the old cancel-re-read + blind
+            // Running write. Exactly one wake-up wins the row: a duplicate
+            // enqueue (create + minutely job + reconciler are at-least-once),
+            // a cancel that landed during the prep I/O above, or a row already
+            // running elsewhere all fail the WHERE status=Queued and bail here.
+            // The claim also stamps the dispatch lease (renewed below) and
+            // clears ScheduledFor so the scheduled job never re-matches it.
+            if (!await ServerTaskLease.TryClaimAsync(db, deployment.Id, timeProvider, ct)
+                    .ConfigureAwait(false))
             {
                 logger.LogInformation(
-                    "DeploymentWorker: deployment {Id} cancelled during dispatch prep; not starting.",
+                    "DeploymentWorker: deployment {Id} was not claimable (cancelled or already " +
+                    "claimed by another wake-up); skipping dispatch.",
                     deploymentId);
                 return;
             }
 
-            // Transition to Running before doing any work so the UI updates immediately.
-            deployment.Status     = DeploymentStatus.Running;
-            deployment.StartedUtc = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            // Mirror the claim onto the tracked entity: ExecuteUpdate bypasses the
+            // change tracker, and downstream logic reads these (FailAsync gates the
+            // AI diagnosis on StartedUtc; finalisation clears the lease fields).
+            // CRITICAL: mark the mirrored properties NOT-modified — the DB already
+            // holds these values, and leaving them dirty would make any later
+            // SaveChanges (step outcomes, etc.) blindly re-assert Running over a
+            // Cancelled that landed in between.
+            ServerTaskLease.MirrorClaim(db, deployment, timeProvider);
+
+            // Renew the lease for as long as this dispatch is in flight — stops on
+            // dispose at every exit path of this method. While the process is
+            // alive (even parked on a long step or a future approval gate) the
+            // reconciler sees a live lease and leaves the run alone.
+            await using var leaseRenewal = new ServerTaskLeaseRenewal(
+                scopeFactory, deployment.Id, timeProvider, logger);
 
             var serverStepCount = waves
                 .Where(w => w.Kind == WavePartitioner.WaveKind.Server)
@@ -691,6 +724,9 @@ public sealed class DeploymentWorker(
                 {
                     d.Status       = terminalStatus;
                     d.CompletedUtc = finalCompletedUtc;
+                    // B1: terminal — release the dispatch lease.
+                    d.ClaimedBy    = null;
+                    d.LeaseUntil   = null;
                     await finalDb.SaveChangesAsync(ct).ConfigureAwait(false);
                     didSucceed = terminalStatus is DeploymentStatus.Succeeded
                         or DeploymentStatus.SucceededWithWarnings;
@@ -836,6 +872,11 @@ public sealed class DeploymentWorker(
         deployment.DropBundlePath = bundlePath;
         deployment.Status = DeploymentStatus.PendingOfflineResult;
         deployment.StartedUtc = DateTimeOffset.UtcNow;
+        // B1: the dispatch parks here awaiting an out-of-band offline result —
+        // no longer worker-owned, so release the lease (the reconciler ignores
+        // non-Running rows anyway; this is hygiene).
+        deployment.ClaimedBy = null;
+        deployment.LeaseUntil = null;
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         logger.LogInformation(
@@ -1071,6 +1112,9 @@ public sealed class DeploymentWorker(
 
         deployment.Status = DeploymentStatus.Failed;
         deployment.CompletedUtc = DateTimeOffset.UtcNow;
+        // B1: terminal — release the dispatch lease.
+        deployment.ClaimedBy = null;
+        deployment.LeaseUntil = null;
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         // M11.C — queue an AI diagnosis, but only for deployments that

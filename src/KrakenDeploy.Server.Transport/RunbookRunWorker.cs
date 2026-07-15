@@ -28,6 +28,7 @@ public sealed class RunbookRunWorker(
     IHubContext<AgentHub, IAgentHubClient> agentHub,
     IServiceScopeFactory scopeFactory,
     InFlightWorkGauge inFlightGauge,
+    TimeProvider timeProvider,
     ILogger<RunbookRunWorker> logger)
     : BackgroundService
 {
@@ -301,9 +302,24 @@ public sealed class RunbookRunWorker(
                 ArrayVariables: arrayVars,
                 SensitiveVariableNames: stepResolution.SensitiveNames);
 
-            run.Status = DeploymentStatus.Running;
-            run.StartedUtc = DateTimeOffset.UtcNow;
-            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            // ── B1: atomic claim (Queued→Running) ──────────────────────────
+            // Exactly one wake-up wins the row; a duplicate enqueue or a row no
+            // longer Queued bails here instead of the old blind Running write
+            // (which had no status guard at all on this path).
+            if (!await ServerTaskLease.TryClaimAsync(db, run.Id, timeProvider, ct)
+                    .ConfigureAwait(false))
+            {
+                logger.LogInformation(
+                    "RunbookRunWorker: run {Id} was not claimable (already claimed by another " +
+                    "wake-up or no longer Queued); skipping dispatch.",
+                    runId);
+                return;
+            }
+
+            // Mirror the claim onto the tracked entity, NOT-modified (ExecuteUpdate
+            // bypassed the change tracker; leaving these dirty would let a later
+            // SaveChanges blindly re-assert Running).
+            ServerTaskLease.MirrorClaim(db, run, timeProvider);
 
             logger.LogInformation(
                 "Dispatching runbook run {RunId} ({Runbook}) to connection {Conn}.",
@@ -312,6 +328,13 @@ public sealed class RunbookRunWorker(
             await agentHub.Clients.Client(connectionId)
                 .RunDeploymentAsync(plan)
                 .ConfigureAwait(false);
+
+            // B1: hand-off — the agent now owns execution and reports terminal
+            // status via AgentHub even if this server restarts meanwhile. Release
+            // the lease so the orphan reconciler (which only ever targets
+            // DEPLOYMENTS) has no claim to misread. (No entity mirror needed —
+            // nothing reads the tracked run after this point.)
+            await ServerTaskLease.ReleaseAsync(db, run.Id, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -341,6 +364,9 @@ public sealed class RunbookRunWorker(
     {
         run.Status = DeploymentStatus.Failed;
         run.CompletedUtc = DateTimeOffset.UtcNow;
+        // B1: terminal — release the dispatch lease.
+        run.ClaimedBy = null;
+        run.LeaseUntil = null;
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 }

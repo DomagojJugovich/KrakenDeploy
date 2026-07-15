@@ -230,6 +230,10 @@ public class DeploymentService(
         // the flip to Cancelled already excludes it — clear the schedule too so
         // it can never be resurrected.
         deployment.ScheduledFor = null;
+        // B1: terminal — release the dispatch lease (hygiene; the reconciler
+        // only ever looks at Running rows).
+        deployment.ClaimedBy    = null;
+        deployment.LeaseUntil   = null;
         // Saving a modified AuditableEntity auto-emits a "Deployment.Updated"
         // audit row via AuditLogInterceptor; callers additionally record the
         // semantic AuditEventType.DeploymentCancelled event.
