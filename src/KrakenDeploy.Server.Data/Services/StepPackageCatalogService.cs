@@ -4,9 +4,11 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using KrakenDeploy.Contracts.StepPackages;
 using KrakenDeploy.Server.Core.Domain.StepPackages;
+using KrakenDeploy.Server.Data.Net;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace KrakenDeploy.Server.Data.Services;
 
@@ -50,6 +52,7 @@ public class StepPackageCatalogService(
     IHttpClientFactory httpClientFactory,
     StepPackageService stepPackageService,
     IConfiguration config,
+    IOptions<SsrfOptions> ssrfOptions,
     ILogger<StepPackageCatalogService> logger)
 {
     /// <summary>Named <see cref="HttpClient"/> shared with the step-template catalog.</summary>
@@ -240,6 +243,19 @@ public class StepPackageCatalogService(
             ?? throw new InvalidOperationException(
                 $"Catalog entry for {name} {version} not found. " +
                 "Refresh the catalog and try again.");
+
+        // SSRF pre-flight — entry.DownloadUrl comes from upstream release JSON
+        // (browser_download_url) and its host is NOT constrained to github.com.
+        // The client's connect callback re-validates + pins each hop too, but a
+        // pre-flight check fails fast with a clear reason.
+        var refusal = await SsrfGuard
+            .ValidateOutboundUrlAsync(entry.DownloadUrl, ssrfOptions.Value.StepCatalog, ct)
+            .ConfigureAwait(false);
+        if (refusal is not null)
+        {
+            throw new InvalidOperationException(
+                $"Refusing to download {name} {version}: {refusal}");
+        }
 
         var http = httpClientFactory.CreateClient(HttpClientName);
 

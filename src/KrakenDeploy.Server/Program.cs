@@ -17,7 +17,9 @@ using KrakenDeploy.Server.Components;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Encryption;
 using KrakenDeploy.Server.Data.Identity;
+using KrakenDeploy.Server.Data.Net;
 using KrakenDeploy.Server.Data.Services;
+using Microsoft.Extensions.Options;
 using KrakenDeploy.Server.Hangfire;
 using KrakenDeploy.Server.Maintenance;
 using KrakenDeploy.Server.Services;
@@ -162,6 +164,10 @@ public static class Program
         {
             builder.Services.AddKrakenDeployData(connectionString, dataPath);
         }
+        // Bind the SSRF policy over the deny-by-default options registered by
+        // AddKrakenDeployData. No `Ssrf` section => secure defaults stand.
+        builder.Services.Configure<SsrfOptions>(
+            builder.Configuration.GetSection(SsrfOptions.SectionName));
         // Registers IKrakenAi + KrakenAiClientFactory + prompt sanitiser/cost
         // catalog. AddKrakenDeployData already registered the DB-backed
         // IKrakenAiSettingsProvider / IKrakenAiCallSink / IBudgetTracker, so
@@ -617,7 +623,15 @@ public static class Program
                 client.DefaultRequestHeaders.Authorization =
                     new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
             }
-        });
+        })
+        // SSRF: pin the validated IP on every hop. Redirects stay ON — GitHub
+        // release-asset URLs (browser_download_url) 302 to a CDN — but each hop's
+        // target is re-validated against the StepCatalog policy at connect time,
+        // so a redirect to an internal host is refused.
+        .ConfigurePrimaryHttpMessageHandler(sp =>
+            SsrfHttpHandlerFactory.Create(
+                sp.GetRequiredService<IOptions<SsrfOptions>>().Value.StepCatalog,
+                allowAutoRedirect: true));
 
         // ── Blazor UI ────────────────────────────────────────────────────────
         builder.Services.AddCascadingAuthenticationState();

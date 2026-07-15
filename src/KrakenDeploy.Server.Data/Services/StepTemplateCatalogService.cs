@@ -2,8 +2,10 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using KrakenDeploy.Server.Core.Domain.StepTemplates;
+using KrakenDeploy.Server.Data.Net;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace KrakenDeploy.Server.Data.Services;
 
@@ -32,6 +34,7 @@ public class StepTemplateCatalogService(
     IDbContextFactory<KrakenDbContext> dbFactory,
     IHttpClientFactory httpClientFactory,
     StepTemplateService stepTemplateService,
+    IOptions<SsrfOptions> ssrfOptions,
     ILogger<StepTemplateCatalogService> logger)
 {
     private const string Owner = "OctopusDeploy";
@@ -86,6 +89,17 @@ public class StepTemplateCatalogService(
         var entry = await db.StepTemplateCatalog
             .FirstOrDefaultAsync(e => e.Id == catalogEntryId, ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException("Catalog entry not found.");
+
+        // SSRF pre-flight — the client's connect callback pins each hop, but fail
+        // fast with a clear reason on an out-of-policy download URL.
+        var refusal = await SsrfGuard
+            .ValidateOutboundUrlAsync(entry.DownloadUrl, ssrfOptions.Value.StepCatalog, ct)
+            .ConfigureAwait(false);
+        if (refusal is not null)
+        {
+            throw new InvalidOperationException(
+                $"Refusing to download step template '{entry.Name}': {refusal}");
+        }
 
         var http = httpClientFactory.CreateClient(HttpClientName);
         var json = await http.GetStringAsync(entry.DownloadUrl, ct).ConfigureAwait(false);
