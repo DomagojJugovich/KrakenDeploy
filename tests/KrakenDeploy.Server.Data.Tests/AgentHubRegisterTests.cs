@@ -1,10 +1,13 @@
 using System.Security.Claims;
 using FluentAssertions;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Server.Core.Domain.Audit;
+using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Transport;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -70,14 +73,18 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
     }
 
     [Fact]
-    public async Task RegisterAsync_overwrites_roles_when_agent_sends_non_empty_list()
+    public async Task RegisterAsync_ignores_agent_supplied_roles()
     {
+        // T1-7: authorization roles drive secret scoping and are operator-assigned
+        // only. A registering agent must NOT be able to self-declare them — a
+        // compromised low-trust box could otherwise register with high-trust roles
+        // and receive those scoped secrets on its next deployment.
         await using var db = postgres.CreateContext();
 
         var target = new DeploymentTarget
         {
-            Name = "hub-test-roles-overwrite",
-            Roles = ["old-role"],
+            Name = "hub-test-roles-ignored",
+            Roles = ["operator-assigned"],
             TransportMode = TransportMode.Reverse,
         };
         db.DeploymentTargets.Add(target);
@@ -85,10 +92,21 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
 
         await BuildHub(postgres, target.Id).RegisterAsync(
             new AgentRegistrationRequest(target.Id, "m", "o", "v",
-                ["role-a", "role-b"], 0L, 0L));
+                ["db", "prod-secrets"], 0L, 0L));
 
         await db.Entry(target).ReloadAsync();
-        target.Roles.Should().Equal("role-a", "role-b");
+        string[] expectedRoles = ["operator-assigned"];
+        target.Roles.Should().Equal(expectedRoles,
+            because: "an agent-supplied Roles payload must be ignored; roles are operator-assigned");
+
+        // The rejected self-assignment attempt is audited (value ignored).
+        var audit = await db.AuditEntries.IgnoreQueryFilters()
+            .Where(e => e.SubjectType == "DeploymentTarget"
+                     && e.SubjectId == target.Id.ToString()
+                     && e.EventType == KrakenDeploy.Server.Core.Domain.Audit.AuditEventType.AgentRoleSelfAssignmentRejected)
+            .FirstOrDefaultAsync();
+        audit.Should().NotBeNull("a Roles payload signals a tampered/old agent and must be audited");
+        audit!.Details.Should().Contain("db").And.Contain("prod-secrets");
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
@@ -111,10 +129,41 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
             new NeverUsedPendingAdhocRegistry(),
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             TestCrypto.Service("S3Jha2VuRGVwbG95RGV2TWFzdGVyS2V5MzJCeXRlcyE="),
+            new RecordingAuditLog(postgres),
             NullLogger<AgentHub>.Instance);
 
         hub.Context = new FakeHubCallerContext(targetId);
         return hub;
+    }
+
+    // Writes audit rows to the test DB so the role-rejection assertion can read them.
+    private sealed class RecordingAuditLog(PostgresFixture postgres) : IAuditLog
+    {
+        public async Task RecordAsync(
+            string eventType,
+            string? subjectType = null,
+            string? subjectId = null,
+            string? subjectName = null,
+            string? details = null,
+            Guid? userId = null,
+            string? userDisplay = null,
+            CancellationToken ct = default)
+        {
+            await using var db = postgres.CreateContext();
+            db.AuditEntries.Add(new AuditEntry
+            {
+                EventType   = eventType,
+                SubjectType = subjectType,
+                SubjectId   = subjectId,
+                SubjectName = subjectName,
+                Details     = details,
+                OccurredUtc = DateTimeOffset.UtcNow,
+                SpaceId     = WellKnown.DefaultSpaceId,
+                UserId      = userId,
+                UserDisplay = userDisplay ?? "test",
+            });
+            await db.SaveChangesAsync(ct);
+        }
     }
 }
 

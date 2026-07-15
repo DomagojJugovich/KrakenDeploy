@@ -266,6 +266,7 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
             new OwnershipNeverUsedAdhocRegistry(),
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             TestCrypto.Service(DevMasterKey),
+            new OwnershipNoopAuditLog(),
             NullLogger<AgentHub>.Instance)
         {
             Context = new OwnershipFakeHubCallerContext(actingTargetId),
@@ -275,6 +276,14 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
 }
 
 // ── Test doubles (file-scoped) ───────────────────────────────────────────────
+
+file sealed class OwnershipNoopAuditLog : KrakenDeploy.Server.Core.Domain.Audit.IAuditLog
+{
+    public Task RecordAsync(
+        string eventType, string? subjectType = null, string? subjectId = null,
+        string? subjectName = null, string? details = null, Guid? userId = null,
+        string? userDisplay = null, CancellationToken ct = default) => Task.CompletedTask;
+}
 
 file sealed class OwnershipFakeHubCallerContext(Guid targetId) : HubCallerContext
 {

@@ -335,4 +335,12 @@ public static class AuditEventType
     /// <summary>Session auto-closed after hitting its iteration cap
     /// (M11.E.14). Details: cap + "manual intervention required".</summary>
     public const string AdhocSessionCapReached = "Adhoc.SessionCapReached";
+
+    // ── Agent registration (T1-7) ────────────────────────────────────────────
+
+    /// <summary>A registering agent supplied a non-empty authorization Roles
+    /// list. Roles are operator-assigned only (they drive secret scoping), so
+    /// the value is IGNORED and this event is recorded — it signals a tampered
+    /// or outdated agent. Details: target id + the rejected roles.</summary>
+    public const string AgentRoleSelfAssignmentRejected = "Agent.RoleSelfAssignmentRejected";
 }

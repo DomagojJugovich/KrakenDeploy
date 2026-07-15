@@ -89,12 +89,25 @@ public sealed class ServerLinkHostedService(
     {
         var machineInfo = machineCollector.Collect(agentConfig.Value.ResolvedDataPath);
 
+        // T1-7: roles are authorization (they drive secret scoping) and are
+        // assigned OPERATOR-side on the server, never self-declared by the agent.
+        // Send an empty list; the server ignores any roles it receives (and audits
+        // the attempt). Warn the operator if the local config still carries roles
+        // so they know it now has no effect (config removal is a later cleanup).
+        if (agentConfig.Value.Roles is { Count: > 0 } configuredRoles)
+        {
+            logger.LogWarning(
+                "Agent config lists {Count} role(s) — these are IGNORED. Target roles " +
+                "are assigned server-side (target settings / registration wizard).",
+                configuredRoles.Count);
+        }
+
         var request = new AgentRegistrationRequest(
             TargetId: identity.AgentId,
             MachineName: machineInfo.MachineName,
             OperatingSystem: machineInfo.OperatingSystem,
             AgentVersion: machineInfo.AgentVersion,
-            Roles: agentConfig.Value.Roles,
+            Roles: [],
             FreeDiskBytes: machineInfo.FreeDiskBytes,
             TotalRamBytes: machineInfo.TotalRamBytes);
 

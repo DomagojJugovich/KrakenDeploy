@@ -9,6 +9,14 @@ public sealed record AgentRegistrationRequest(
     string MachineName,
     string OperatingSystem,
     string AgentVersion,
+    /// <summary>
+    /// T1-7 CONTRACT CHANGE: informational/IGNORED. Authorization roles drive
+    /// secret scoping and are assigned OPERATOR-side (target settings /
+    /// registration wizard) — never self-declared by an agent. The current agent
+    /// sends an empty list; the server ignores any value and audits a non-empty
+    /// one (tampered/old agent). Field kept for wire compatibility; slated for
+    /// removal in the B6 contract pass.
+    /// </summary>
     IReadOnlyList<string> Roles,
     long FreeDiskBytes,
     long TotalRamBytes);

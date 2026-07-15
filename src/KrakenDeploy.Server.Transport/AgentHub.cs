@@ -32,6 +32,7 @@ public sealed class AgentHub(
     IPendingAdhocRegistry adhocPending,
     IAccountContext accountContext,
     KrakenDeploy.Server.Core.Domain.Variables.IEncryptionService encryption,
+    KrakenDeploy.Server.Core.Domain.Audit.IAuditLog auditLog,
     ILogger<AgentHub> logger)
     : Hub<IAgentHubClient>, IAgentHubServer
 {
@@ -157,28 +158,44 @@ public sealed class AgentHub(
             return;
         }
 
+        // T1-7: an agent reports machine capabilities only. Authorization roles
+        // drive secret scoping (VariableScope.Matches resolves against the
+        // target's CURRENT roles at dispatch), so they are OPERATOR-assigned via
+        // the registration wizard / target-edit UI / API — never self-declared.
+        // A compromised low-trust agent registering with Roles=["prod-secrets"]
+        // must not thereby receive those scoped secrets. request.Roles is ignored.
         target.MachineName = request.MachineName;
         target.OperatingSystem = request.OperatingSystem;
         target.AgentVersion = request.AgentVersion;
-        // Only overwrite roles when the agent sends a non-empty list; otherwise
-        // preserve what was configured in the registration wizard.
-        if (request.Roles.Count > 0)
-        {
-            target.Roles = request.Roles.ToList();
-        }
 
         target.Status = TargetStatus.Online;
         target.LastSeenUtc = timeProvider.GetUtcNow();
 
         await db.SaveChangesAsync().ConfigureAwait(false);
 
+        // A non-empty Roles payload signals a tampered or outdated agent. Record
+        // it (value ignored) so operators can spot the attempt.
+        if (request.Roles.Count > 0)
+        {
+            var rejected = string.Join(", ", request.Roles);
+            logger.LogWarning(
+                "Target {TargetId} sent a Roles payload on registration; ignoring it " +
+                "(roles are operator-assigned). Rejected: [{Roles}].",
+                targetId.Value, rejected);
+            await auditLog.RecordAsync(
+                KrakenDeploy.Server.Core.Domain.Audit.AuditEventType.AgentRoleSelfAssignmentRejected,
+                subjectType: "DeploymentTarget",
+                subjectId:   targetId.Value.ToString(),
+                subjectName: target.Name,
+                details:     $"Ignored self-declared roles: [{rejected}]").ConfigureAwait(false);
+        }
+
         logger.LogInformation(
-            "Target {TargetId} registered: machine={Machine}, OS={OS}, agent={Version}, roles=[{Roles}].",
+            "Target {TargetId} registered: machine={Machine}, OS={OS}, agent={Version}.",
             targetId.Value,
             request.MachineName,
             request.OperatingSystem,
-            request.AgentVersion,
-            string.Join(", ", request.Roles));
+            request.AgentVersion);
     }
 
     public async Task HeartbeatAsync(HeartbeatRequest request)
