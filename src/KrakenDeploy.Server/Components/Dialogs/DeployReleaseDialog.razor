@@ -749,6 +749,7 @@
                         environmentId:       envId,
                         targetId:            targetIds[0],
                         initiator:           initiator,
+                        caller:              CallerAuthorization.ForUser(actingUser),
                         tenantId:            tenantId,
                         scheduledFor:        scheduled,
                         additionalTargetIds: additional.Count > 0 ? additional : null,

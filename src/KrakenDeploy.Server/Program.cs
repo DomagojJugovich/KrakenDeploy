@@ -1912,12 +1912,17 @@ public static class Program
                             environmentId: req.EnvironmentId,
                             targetId:      req.TargetId,
                             initiator:     initiator,
+                            caller:        CallerAuthorization.ForUser(user),
                             tenantId:      req.TenantId,
                             scheduledFor:  req.ScheduledFor,
                             failureMode:   req.FailureMode,
                             ct:            ct)
                         .ConfigureAwait(false);
                     return Results.Created($"/api/deployments/{deployment.Id}", deployment);
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -2596,9 +2601,14 @@ public static class Program
                         : TaskInitiator.Api(user.GetUserId(), user.GetDisplayName());
                     var run = await runbookSvc.TriggerAsync(
                         runbookId, req.EnvironmentId, req.TargetId,
-                        initiator: initiator, tenantId: req.TenantId, ct: ct)
+                        initiator: initiator, caller: CallerAuthorization.ForUser(user),
+                        tenantId: req.TenantId, ct: ct)
                         .ConfigureAwait(false);
                     return Results.Created($"/api/runbook-runs/{run.Id}", run);
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
                 }
                 catch (InvalidOperationException ex)
                 {

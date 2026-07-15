@@ -146,7 +146,8 @@ public sealed class McpToolTests(PostgresFixture postgres)
         var audit = new SpyAuditLog();
         var queue = Channel.CreateUnbounded<KrakenDeploy.Server.Data.TenantWorkItem>();
         var service = new DeploymentService(postgres, queue, TimeProvider.System,
-            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
+            new AllowAllEvaluator());
 
         var result = await DeploymentTools.RetryDeploymentAsync(
             postgres, service, new AllowAllEvaluator(), AuthedAccessor(), audit,
@@ -171,7 +172,8 @@ public sealed class McpToolTests(PostgresFixture postgres)
     {
         var queue = Channel.CreateUnbounded<KrakenDeploy.Server.Data.TenantWorkItem>();
         var service = new DeploymentService(postgres, queue, TimeProvider.System,
-            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
+            new AllowAllEvaluator());
 
         var act = async () => await DeploymentTools.RetryDeploymentAsync(
             postgres, service, new AllowAllEvaluator(), AuthedAccessor(), new SpyAuditLog(),
@@ -188,7 +190,8 @@ public sealed class McpToolTests(PostgresFixture postgres)
         // DeploymentCreate must be rejected before any DB read.
         var queue = Channel.CreateUnbounded<KrakenDeploy.Server.Data.TenantWorkItem>();
         var service = new DeploymentService(postgres, queue, TimeProvider.System,
-            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
+            new AllowAllEvaluator());
         var audit = new SpyAuditLog();
 
         var act = async () => await DeploymentTools.RetryDeploymentAsync(
@@ -205,7 +208,8 @@ public sealed class McpToolTests(PostgresFixture postgres)
     {
         var queue = Channel.CreateUnbounded<KrakenDeploy.Server.Data.TenantWorkItem>();
         var service = new DeploymentService(postgres, queue, TimeProvider.System,
-            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
+            new AllowAllEvaluator());
 
         var anonymous = new HttpContextAccessor
         {

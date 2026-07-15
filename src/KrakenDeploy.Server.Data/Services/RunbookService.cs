@@ -4,6 +4,7 @@ using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
+using KrakenDeploy.Server.Core.Domain.Security;
 using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data.Services;
@@ -19,6 +20,7 @@ public interface IRunbookTrigger
         Guid environmentId,
         Guid targetId,
         TaskInitiator initiator,
+        CallerAuthorization caller,
         Guid? tenantId = null,
         CancellationToken ct = default);
 }
@@ -35,6 +37,7 @@ public class RunbookService(
     RunbookRunChannel runbookQueue,
     TimeProvider time,
     IAccountContext accountContext,
+    IPermissionEvaluator permissions,
     StepPackageResolver? stepPackageResolver = null)
     : IRunbookTrigger, IStepEditingHost
 {
@@ -381,11 +384,13 @@ public class RunbookService(
         Guid environmentId,
         Guid targetId,
         TaskInitiator initiator,
+        CallerAuthorization caller,
         Guid? tenantId = null,
         CancellationToken ct = default)
     {
         // Guard: reject a default/unset initiator before we do any work.
         initiator.EnsureValid();
+        ArgumentNullException.ThrowIfNull(caller);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
@@ -393,6 +398,18 @@ public class RunbookService(
             .FirstOrDefaultAsync(r => r.Id == runbookId, ct)
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Runbook {runbookId} not found.");
+
+        // T1-8: authoritative sub-Space authorization — running THIS runbook's
+        // project in THIS environment (+ tenant). Strict; runs for every surface.
+        // System-initiated (subscription) triggers skip it (authorized at origin).
+        await permissions.EnsureScopedAsync(
+            caller, Permission.RunbookRunCreate,
+            new PermissionScope(
+                SpaceId:       runbook.SpaceId,
+                ProjectId:     runbook.ProjectId,
+                EnvironmentId: environmentId,
+                TenantId:      tenantId),
+            ct).ConfigureAwait(false);
 
         var process = await db.Processes
             .Include(p => p.Steps.OrderBy(s => s.SortOrder))

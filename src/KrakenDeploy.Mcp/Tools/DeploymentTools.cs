@@ -178,17 +178,32 @@ public sealed class DeploymentTools
         // EnsureAsync yields Guid.Empty when the principal lacks a parseable id;
         // map that to null so the created_by_user_id FK stays clean.
         Guid? initiatorUserId = actingUserId == Guid.Empty ? null : actingUserId;
-        var child = await deploymentService.CreateAsync(
-            releaseId:           source.ReleaseId,
-            environmentId:       source.EnvironmentId,
-            targetId:            targetIds[0],
-            initiator:           TaskInitiator.Mcp(
-                                     initiatorUserId, actingDisplay,
-                                     detail: $"retry_deployment;source:{deploymentId}"),
-            tenantId:            source.TenantId,
-            scheduledFor:        null,
-            additionalTargetIds: targetIds.Skip(1).ToList(),
-            ct:                  ct).ConfigureAwait(false);
+        Deployment child;
+        try
+        {
+            // T1-8: CreateAsync runs the authoritative strict sub-Space check
+            // against the API-key owner. The Space-level EnsureAsync above is the
+            // coarse gate; this rejects e.g. an Environment=Test-scoped key
+            // retrying a Prod deployment.
+            child = await deploymentService.CreateAsync(
+                releaseId:           source.ReleaseId,
+                environmentId:       source.EnvironmentId,
+                targetId:            targetIds[0],
+                initiator:           TaskInitiator.Mcp(
+                                         initiatorUserId, actingDisplay,
+                                         detail: $"retry_deployment;source:{deploymentId}"),
+                caller:              CallerAuthorization.ForUser(httpContext.HttpContext!.User),
+                tenantId:            source.TenantId,
+                scheduledFor:        null,
+                additionalTargetIds: targetIds.Skip(1).ToList(),
+                ct:                  ct).ConfigureAwait(false);
+        }
+        catch (AuthorizationException ex)
+        {
+            await McpAudit.ToolInvokedAsync(audit, "retry_deployment",
+                $"deploymentId={deploymentId}", "forbidden", ct).ConfigureAwait(false);
+            throw new McpException(ex.Message);
+        }
 
         await McpAudit.ToolInvokedAsync(audit, "retry_deployment",
             $"sourceId={deploymentId}, newId={child.Id}", "ok", ct).ConfigureAwait(false);

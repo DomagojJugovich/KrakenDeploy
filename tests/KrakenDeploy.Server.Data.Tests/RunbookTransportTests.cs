@@ -3,6 +3,7 @@ using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Subscriptions;
 using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Data.Services.Subscriptions;
@@ -163,10 +164,11 @@ public sealed class RunbookTransportTests
         public Guid?  TargetId       { get; private set; }
         public Guid?  TenantId       { get; private set; }
         public TaskInitiator? Initiator { get; private set; }
+        public CallerAuthorization? Caller { get; private set; }
 
         public Task<RunbookRun> TriggerAsync(
             Guid runbookId, Guid environmentId, Guid targetId,
-            TaskInitiator initiator,
+            TaskInitiator initiator, CallerAuthorization caller,
             Guid? tenantId = null, CancellationToken ct = default)
         {
             RunbookId     = runbookId;
@@ -174,6 +176,7 @@ public sealed class RunbookTransportTests
             TargetId      = targetId;
             TenantId      = tenantId;
             Initiator     = initiator;
+            Caller        = caller;
             return Task.FromResult(new RunbookRun
             {
                 Id            = Guid.NewGuid(),
@@ -189,7 +192,7 @@ public sealed class RunbookTransportTests
     {
         public Task<RunbookRun> TriggerAsync(
             Guid runbookId, Guid environmentId, Guid targetId,
-            TaskInitiator initiator,
+            TaskInitiator initiator, CallerAuthorization caller,
             Guid? tenantId = null, CancellationToken ct = default)
             => Task.FromException<RunbookRun>(toThrow);
     }

@@ -97,6 +97,9 @@ public sealed class RunbookTransport(
                 runbookId, environmentId, targetId,
                 initiator: TaskInitiator.Subscription(
                     $"subscription:{subscription.Id};event:{auditEvent.Id};type:{auditEvent.EventType}"),
+                // System-initiated by an event subscription — authorized when an
+                // operator configured the subscription; no live principal here (T1-8).
+                caller: KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System,
                 tenantId: tenantId, ct: ct).ConfigureAwait(false);
 
             logger.LogInformation(

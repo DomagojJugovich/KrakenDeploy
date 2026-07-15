@@ -132,7 +132,8 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
         var g = await SeedOtherSpaceGraphAsync();
         var svc = new RunbookService(postgres, new RunbookRunChannel(),
             TimeProvider.System,
-            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
+            new AllowAllPermissionEvaluator());
 
         (await svc.DeleteStepAsync(g.RunbookStepId)).Should().BeFalse(
             "DELETE /api/runbook-steps/{stepId} must not delete another Space's step");
@@ -169,7 +170,8 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
         var runbookId = await SeedOtherSpaceRunbookAsync();
         var svc = new RunbookService(postgres, new RunbookRunChannel(),
             TimeProvider.System,
-            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
+            new AllowAllPermissionEvaluator());
 
         Func<Task> act = () => svc.AddStepAsync(
             runbookId, "x", "Kraken.Script", "pkg", [], new Dictionary<string, string>());

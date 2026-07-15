@@ -2,6 +2,7 @@ using KrakenDeploy.Contracts;
 using KrakenDeploy.Execution;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
@@ -222,6 +223,11 @@ public sealed class DeployReleaseStepRunner(
                 targetId:            parentTargetIds[0],
                 initiator:           TaskInitiator.ParentStep(
                                          parent.CreatedByUserId, parent.CreatedByDisplay, parentDeploymentId),
+                // System-initiated cascade: the parent deployment was already
+                // authorized when a user launched it, and this background scope has
+                // no live principal. The DeployRelease step type is itself gated at
+                // authoring time, so the child inherits that authorization (T1-8).
+                caller:              CallerAuthorization.System,
                 tenantId:            parent.TenantId,
                 scheduledFor:        null,
                 additionalTargetIds: parentAdditionalTargetIds,

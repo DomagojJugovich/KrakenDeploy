@@ -198,7 +198,8 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
         var queue = Channel.CreateUnbounded<KrakenDeploy.Server.Data.TenantWorkItem>();
         var service = new KrakenDeploy.Server.Data.Services.DeploymentService(
             postgres, queue, TimeProvider.System,
-            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext());
+            new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
+            new AllowAllPermissionEvaluator());
         var display = (await service.GetOutputVariablesAsync(g.DeploymentId))
             .ToDictionary(o => o.Name);
         display["Token"].Value.Should().Be("***");

@@ -1,6 +1,7 @@
 using System.Threading.Channels;
 using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Tenants;
 using Microsoft.EntityFrameworkCore;
 
@@ -13,7 +14,8 @@ public class DeploymentService(
     IDbContextFactory<KrakenDbContext> dbFactory,
     Channel<TenantWorkItem> deploymentQueue,
     TimeProvider time,
-    IAccountContext accountContext)
+    IAccountContext accountContext,
+    IPermissionEvaluator permissions)
 {
     // ── Create ─────────────────────────────────────────────────────────────
 
@@ -40,6 +42,7 @@ public class DeploymentService(
         Guid environmentId,
         Guid targetId,
         TaskInitiator initiator,
+        CallerAuthorization caller,
         Guid? tenantId = null,
         DateTimeOffset? scheduledFor = null,
         IReadOnlyCollection<Guid>? additionalTargetIds = null,
@@ -48,17 +51,33 @@ public class DeploymentService(
     {
         // Guard: reject a default/unset initiator before we do any work.
         initiator.EnsureValid();
+        ArgumentNullException.ThrowIfNull(caller);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
-        // Load the release's denormalized ownership (project + channel) to stamp
-        // onto the task at creation (decision 5), and validate it exists.
+        // Load the release's denormalized ownership (project + channel + Space) to
+        // stamp onto the task at creation (decision 5), and validate it exists.
         var release = await db.Releases
             .Where(r => r.Id == releaseId)
-            .Select(r => new { r.ProjectId, r.ChannelId })
+            .Select(r => new { r.ProjectId, r.ChannelId, r.SpaceId })
             .FirstOrDefaultAsync(ct)
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Release {releaseId} not found.");
+
+        // T1-8: authoritative sub-Space authorization — deploying to THIS
+        // project + environment (+ tenant). Strict, so an Environment=Test-scoped
+        // DeploymentCreate grant can't deploy to Prod. Runs for every surface
+        // (REST/CLI/MCP); system-initiated calls (parent DeployRelease step) skip
+        // it. Checked before any existence probe so a forbidden caller learns
+        // nothing about the environment/tenant.
+        await permissions.EnsureScopedAsync(
+            caller, Permission.DeploymentCreate,
+            new PermissionScope(
+                SpaceId:       release.SpaceId,
+                ProjectId:     release.ProjectId,
+                EnvironmentId: environmentId,
+                TenantId:      tenantId),
+            ct).ConfigureAwait(false);
 
         var envExists = await db.Environments.AnyAsync(e => e.Id == environmentId, ct)
             .ConfigureAwait(false);

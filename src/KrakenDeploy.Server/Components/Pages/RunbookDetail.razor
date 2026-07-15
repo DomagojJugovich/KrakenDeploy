@@ -515,7 +515,8 @@
                 Id,
                 _triggerEnvId.Value,
                 _triggerTargetId.Value,
-                initiator: TaskInitiator.Manual(actingUser.GetUserId(), actingUser.GetDisplayName()));
+                initiator: TaskInitiator.Manual(actingUser.GetUserId(), actingUser.GetDisplayName()),
+                caller: CallerAuthorization.ForUser(actingUser));
 
             _runs = [run, .. _runs];
             _triggerOpen   = false;
@@ -533,7 +534,7 @@
                 Duration = 4000,
             });
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex) when (ex is InvalidOperationException or AuthorizationException)
         {
             Notify.Notify(new NotificationMessage
             {
