@@ -40,6 +40,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -346,7 +347,12 @@ public static class Program
                 options.Cookie.Name = "KrakenDeploy.Auth";
                 options.Cookie.HttpOnly = true;
                 options.Cookie.SameSite = SameSiteMode.Lax;
-                options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+                // M2: force Secure outside Development so the auth cookie carries
+                // the Secure attribute even when the app sees HTTP behind a
+                // TLS-terminating proxy (SameAsRequest would drop it there).
+                options.Cookie.SecurePolicy = builder.Environment.IsDevelopment()
+                    ? CookieSecurePolicy.SameAsRequest
+                    : CookieSecurePolicy.Always;
                 options.LoginPath = "/login";
                 options.LogoutPath = "/logout";
                 options.AccessDeniedPath = "/login";
@@ -367,7 +373,52 @@ public static class Program
         // (used as an interim store between the IdP callback and our
         // OnTicketReceived handler that converts it to an application cookie).
         builder.Services.AddAuthentication()
-            .AddCookie(IdentityConstants.ExternalScheme);
+            .AddCookie(IdentityConstants.ExternalScheme, options =>
+            {
+                // M2: same Secure posture as the application cookie — the interim
+                // OIDC cookie carries a correlation/nonce and must not go over HTTP.
+                options.Cookie.SecurePolicy = builder.Environment.IsDevelopment()
+                    ? CookieSecurePolicy.SameAsRequest
+                    : CookieSecurePolicy.Always;
+            });
+
+        // M2: trust the reverse proxy's X-Forwarded-Proto/For so Request.IsHttps
+        // and RemoteIpAddress reflect the real client. Behind Caddy (TLS edge) /
+        // the blue-green Router the app receives plain HTTP; without this the
+        // Secure-cookie decision, HTTPS redirect, request logging, and the
+        // agent-register rate-limit partition all see the proxy, not the client.
+        builder.Services.Configure<ForwardedHeadersOptions>(options =>
+        {
+            options.ForwardedHeaders =
+                ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+            options.ForwardLimit =
+                builder.Configuration.GetValue<int?>("ForwardedHeaders:ForwardLimit") ?? 1;
+
+            // net10: forwarded headers from proxies NOT trusted here are IGNORED
+            // (the default trusts loopback only). The blue-green Router forwards
+            // over loopback (covered by the default), but the shipped single-host
+            // Caddy->container topology arrives from a non-loopback Docker-bridge
+            // IP, so the operator MUST list that proxy IP or subnet or the fix is
+            // a no-op. The lists are additive to the loopback defaults.
+            foreach (var proxy in builder.Configuration
+                         .GetSection("ForwardedHeaders:KnownProxies").Get<string[]>() ?? [])
+            {
+                if (System.Net.IPAddress.TryParse(proxy, out var ip))
+                {
+                    options.KnownProxies.Add(ip);
+                }
+            }
+            foreach (var cidr in builder.Configuration
+                         .GetSection("ForwardedHeaders:KnownNetworks").Get<string[]>() ?? [])
+            {
+                // net10: the old KnownNetworks (HttpOverrides.IPNetwork) is obsolete
+                // (ASPDEPR005); use KnownIPNetworks with System.Net.IPNetwork.
+                if (System.Net.IPNetwork.TryParse(cidr, out var net))
+                {
+                    options.KnownIPNetworks.Add(net);
+                }
+            }
+        });
 
         // External OIDC SSO. Single-instance: one global scheme per enabled
         // IdentityProvider, registered at startup. Multi-account (SaaS): per-tenant
@@ -718,6 +769,11 @@ public static class Program
 
         // ── Build & configure pipeline ────────────────────────────────────────
         var app = builder.Build();
+
+        // M2: apply X-Forwarded-* FIRST — before UseHsts / UseHttpsRedirection /
+        // request logging / auth / rate limiter — so every downstream component
+        // sees the real scheme + client IP (per ASP.NET Core proxy guidance).
+        app.UseForwardedHeaders();
 
         if (app.Environment.IsDevelopment() && multiAccountEnabled)
         {
