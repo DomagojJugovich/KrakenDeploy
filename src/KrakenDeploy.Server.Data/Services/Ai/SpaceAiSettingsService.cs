@@ -1,8 +1,10 @@
 using KrakenDeploy.Server.Core.Domain.Ai;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.Variables;
+using KrakenDeploy.Server.Data.Net;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace KrakenDeploy.Server.Data.Services.Ai;
 
@@ -32,6 +34,7 @@ public sealed class SpaceAiSettingsService(
     IDbContextFactory<KrakenDbContext>   dbFactory,
     ISpaceContext                          spaceContext,
     IEncryptionService                     encryption,
+    IOptions<SsrfOptions>                  ssrfOptions,
     ILogger<SpaceAiSettingsService>        logger)
 {
     /// <summary>
@@ -74,6 +77,21 @@ public sealed class SpaceAiSettingsService(
     {
         ArgumentNullException.ThrowIfNull(request);
         ValidateRequest(request);
+
+        // SSRF: refuse an internal/loopback AI endpoint at save (the Ai policy
+        // defaults to allow loopback for co-resident local model servers, but
+        // still denies private ranges + link-local/metadata unless allowlisted).
+        if (!string.IsNullOrWhiteSpace(request.BaseUrl))
+        {
+            var refusal = await SsrfGuard
+                .ValidateOutboundUrlAsync(request.BaseUrl, ssrfOptions.Value.Ai, ct)
+                .ConfigureAwait(false);
+            if (refusal is not null)
+            {
+                throw new ArgumentException(
+                    $"AI BaseUrl rejected: {refusal}", nameof(request));
+            }
+        }
 
         await settings.MutateAsync<SpaceAiSettings>(spaceContext.CurrentSpaceId, row =>
         {

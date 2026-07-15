@@ -2,7 +2,9 @@ using KrakenDeploy.Ai;
 using KrakenDeploy.Server.Core.Domain.Ai;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.Variables;
+using KrakenDeploy.Server.Data.Net;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace KrakenDeploy.Server.Data.Services.Ai;
 
@@ -36,6 +38,7 @@ public sealed class DbKrakenAiSettingsProvider(
     SettingsService                        settings,
     ISpaceContext                          spaceContext,
     IEncryptionService                     encryption,
+    IOptions<SsrfOptions>                  ssrfOptions,
     ILogger<DbKrakenAiSettingsProvider>    logger)
     : IKrakenAiSettingsProvider
 {
@@ -61,6 +64,24 @@ public sealed class DbKrakenAiSettingsProvider(
         }
 
         var provider = ParseProvider(row.Provider);
+
+        // SSRF (fetch-time): a stored BaseUrl is used verbatim as the provider
+        // endpoint by the SDK transport (which we don't own, so we can't pin the
+        // IP there). Re-validate on every read so a row that pre-dates the guard,
+        // or one written through another path, can't turn AI into an outbound
+        // probe. Cloud providers with no BaseUrl skip this.
+        if (!string.IsNullOrWhiteSpace(row.BaseUrl))
+        {
+            var refusal = await SsrfGuard
+                .ValidateOutboundUrlAsync(row.BaseUrl, ssrfOptions.Value.Ai, ct)
+                .ConfigureAwait(false);
+            if (refusal is not null)
+            {
+                throw new InvalidOperationException(
+                    $"AI endpoint blocked by SSRF policy: {refusal}");
+            }
+        }
+
         var apiKey   = DecryptApiKey(row.ApiKeyEncrypted, spaceId);
 
         return new KrakenAiSettings
