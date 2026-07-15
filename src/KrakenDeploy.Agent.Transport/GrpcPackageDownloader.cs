@@ -1,4 +1,3 @@
-using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using Grpc.Core;
 using Grpc.Net.Client;
@@ -28,6 +27,7 @@ public sealed class GrpcPackageDownloader(
     IPackageCache cache,
     Func<string> serverUrlAccessor,
     Func<string> agentTokenAccessor,
+    bool allowInsecureHttp,
     ILogger<GrpcPackageDownloader> logger) : IPackageSource, IAsyncDisposable
 {
     // Lazily created and cached; recreated if the server URL changes.
@@ -236,18 +236,7 @@ public sealed class GrpcPackageDownloader(
         _channel = null;
         _client  = null;
 
-        // Allow HTTP/2 over plain text for development / smoke-test environments.
-        AppContext.SetSwitch(
-            "System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
-
-        var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", agentToken);
-
-        _channel = GrpcChannel.ForAddress(serverUrl, new GrpcChannelOptions
-        {
-            HttpClient = httpClient,
-        });
+        _channel         = GrpcChannelFactory.Create(serverUrl, agentToken, allowInsecureHttp);
         _client          = new PackageDelivery.PackageDeliveryClient(_channel);
         _channelServerUrl = serverUrl;
         return _client;

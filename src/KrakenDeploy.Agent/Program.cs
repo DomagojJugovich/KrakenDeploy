@@ -115,6 +115,7 @@ static async Task<int> RunAsync(string[] args)
             sp.GetRequiredService<IPackageCache>(),
             () => ctx.Identity?.ServerUrl  ?? throw new InvalidOperationException("Agent identity not yet ready."),
             () => ctx.Identity?.AgentToken ?? throw new InvalidOperationException("Agent identity not yet ready."),
+            sp.GetRequiredService<IOptions<ServerOptions>>().Value.AllowInsecureHttp,
             sp.GetRequiredService<ILogger<GrpcPackageDownloader>>());
     });
     builder.Services.AddSingleton<IPackageSource>(sp => sp.GetRequiredService<GrpcPackageDownloader>());
@@ -125,6 +126,7 @@ static async Task<int> RunAsync(string[] args)
         return new GrpcArtifactUploader(
             () => ctx.Identity?.ServerUrl  ?? throw new InvalidOperationException("Agent identity not yet ready."),
             () => ctx.Identity?.AgentToken ?? throw new InvalidOperationException("Agent identity not yet ready."),
+            sp.GetRequiredService<IOptions<ServerOptions>>().Value.AllowInsecureHttp,
             sp.GetRequiredService<ILogger<GrpcArtifactUploader>>());
     });
     builder.Services.AddSingleton<IArtifactSink>(sp => sp.GetRequiredService<GrpcArtifactUploader>());
@@ -159,7 +161,8 @@ static async Task<int> RunAsync(string[] args)
                   .ExtractToCache(name, version, archivePath);
                 return Task.CompletedTask;
             },
-            logger: log);
+            logger: log,
+            allowInsecureHttp: sp.GetRequiredService<IOptions<ServerOptions>>().Value.AllowInsecureHttp);
     });
 
     // ── Step handlers ───────────────────────────────────────────────────

@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.Identity;
+using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -32,6 +33,22 @@ public sealed class RegistrationHostedService(
 
         if (identity is not null)
         {
+            // A8/T1-12: a persisted identity may carry a cleartext http:// URL from
+            // an older enrollment. Refuse it (unless the dev override is set) rather
+            // than silently connecting the control tunnel + gRPC channels in the
+            // clear.
+            var (persistedOk, persistedError) = AgentTransportSecurity.Validate(
+                identity.ServerUrl, serverOptions.Value.AllowInsecureHttp);
+            if (!persistedOk)
+            {
+                logger.LogError(
+                    "Stored agent identity rejected: {Error} Re-enroll the agent against " +
+                    "an https server, or set Server:AllowInsecureHttp for local development.",
+                    persistedError);
+                lifetime.StopApplication();
+                return;
+            }
+
             logger.LogInformation(
                 "Agent identity loaded from store. AgentId={AgentId}", identity.AgentId);
             context.SetIdentity(identity, identity.TransportMode);
@@ -46,6 +63,16 @@ public sealed class RegistrationHostedService(
             logger.LogError(
                 "Server:Url is not configured. Set it in appsettings.json or via the " +
                 "--Server:Url command-line argument and restart.");
+            lifetime.StopApplication();
+            return;
+        }
+
+        // A8/T1-12: refuse a cleartext server URL before registering (unless the
+        // dev override is set) — the token would otherwise cross the wire in clear.
+        var (urlOk, urlError) = AgentTransportSecurity.Validate(opts.Url, opts.AllowInsecureHttp);
+        if (!urlOk)
+        {
+            logger.LogError("Server:Url rejected: {Error}", urlError);
             lifetime.StopApplication();
             return;
         }

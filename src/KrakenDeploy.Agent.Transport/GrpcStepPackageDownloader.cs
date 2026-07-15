@@ -1,4 +1,3 @@
-using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using Grpc.Core;
 using Grpc.Net.Client;
@@ -30,6 +29,7 @@ public sealed class GrpcStepPackageDownloader : IStepPackageSource, IAsyncDispos
     private readonly Func<string> _serverUrl;
     private readonly Func<string> _agentToken;
     private readonly Func<string, string, string, Task> _extract;
+    private readonly bool _allowInsecureHttp;
     private readonly ILogger<GrpcStepPackageDownloader> _logger;
 
     private string? _channelServerUrl;
@@ -52,22 +52,28 @@ public sealed class GrpcStepPackageDownloader : IStepPackageSource, IAsyncDispos
     /// cache directory. Wired in production to <c>StepPackageLoader.ExtractToCache</c>;
     /// tests pass a stub.
     /// </param>
+    /// <param name="allowInsecureHttp">
+    /// A8/T1-12: permit a cleartext <c>http://</c> server URL (dev override,
+    /// <c>Server:AllowInsecureHttp</c>). Defaults false — https required.
+    /// </param>
     /// <param name="logger">Logger.</param>
     public GrpcStepPackageDownloader(
         Func<string> serverUrl,
         Func<string> agentToken,
         Func<string, string, string, Task> extract,
-        ILogger<GrpcStepPackageDownloader> logger)
+        ILogger<GrpcStepPackageDownloader> logger,
+        bool allowInsecureHttp = false)
     {
         ArgumentNullException.ThrowIfNull(serverUrl);
         ArgumentNullException.ThrowIfNull(agentToken);
         ArgumentNullException.ThrowIfNull(extract);
         ArgumentNullException.ThrowIfNull(logger);
 
-        _serverUrl  = serverUrl;
-        _agentToken = agentToken;
-        _extract    = extract;
-        _logger     = logger;
+        _serverUrl         = serverUrl;
+        _agentToken        = agentToken;
+        _extract           = extract;
+        _allowInsecureHttp = allowInsecureHttp;
+        _logger            = logger;
     }
 
     /// <inheritdoc />
@@ -178,18 +184,7 @@ public sealed class GrpcStepPackageDownloader : IStepPackageSource, IAsyncDispos
         _channel = null;
         _client  = null;
 
-        // Allow HTTP/2 over plain text for development / smoke-test envs.
-        AppContext.SetSwitch(
-            "System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
-
-        var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", agentToken);
-
-        _channel = GrpcChannel.ForAddress(serverUrl, new GrpcChannelOptions
-        {
-            HttpClient = httpClient,
-        });
+        _channel          = GrpcChannelFactory.Create(serverUrl, agentToken, _allowInsecureHttp);
         _client           = new StepPackageDelivery.StepPackageDeliveryClient(_channel);
         _channelServerUrl = serverUrl;
         return _client;

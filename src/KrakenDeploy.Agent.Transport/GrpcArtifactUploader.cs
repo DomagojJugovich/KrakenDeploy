@@ -1,4 +1,3 @@
-using System.Net.Http.Headers;
 using Grpc.Net.Client;
 using KrakenDeploy.Contracts.Grpc;
 using Microsoft.Extensions.Logging;
@@ -17,6 +16,7 @@ namespace KrakenDeploy.Agent.Transport;
 public sealed class GrpcArtifactUploader(
     Func<string> serverUrlAccessor,
     Func<string> agentTokenAccessor,
+    bool allowInsecureHttp,
     ILogger<GrpcArtifactUploader> logger) : IArtifactSink, IAsyncDisposable
 {
     private const int ChunkSize = 64 * 1024; // 64 KB
@@ -134,14 +134,7 @@ public sealed class GrpcArtifactUploader(
         _channel = null;
         _client  = null;
 
-        AppContext.SetSwitch(
-            "System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
-
-        var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Authorization =
-            new AuthenticationHeaderValue("Bearer", agentToken);
-
-        _channel           = GrpcChannel.ForAddress(serverUrl, new GrpcChannelOptions { HttpClient = httpClient });
+        _channel           = GrpcChannelFactory.Create(serverUrl, agentToken, allowInsecureHttp);
         _client            = new ArtifactUpload.ArtifactUploadClient(_channel);
         _channelServerUrl  = serverUrl;
         return _client;
