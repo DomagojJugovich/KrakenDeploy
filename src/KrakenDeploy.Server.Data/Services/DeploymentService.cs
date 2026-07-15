@@ -128,6 +128,15 @@ public class DeploymentService(
         // Enforce lifecycle phase gate (throws if gate not satisfied).
         await EnforceLifecycleGateAsync(db, releaseId, environmentId, tenantId, ct).ConfigureAwait(false);
 
+        // B1/T1-2: exactly ONE dispatch path per deployment. A due/past
+        // scheduledFor is normalized to null and dispatched immediately below —
+        // previously the past value was persisted AND the row enqueued, so the
+        // minutely dispatch job re-enqueued it during the worker's prep window
+        // (double-dispatch). Only a genuinely FUTURE instant is persisted, and
+        // then the scheduled job is the sole dispatcher.
+        var isScheduledForFuture = scheduledFor.HasValue &&
+            scheduledFor.Value > time.GetUtcNow();
+
         var deployment = new Deployment
         {
             ReleaseId = releaseId,
@@ -137,7 +146,7 @@ public class DeploymentService(
             TenantId = tenantId,
             Status = DeploymentStatus.Queued,
             FailureMode = failureMode,
-            ScheduledFor = scheduledFor,
+            ScheduledFor = isScheduledForFuture ? scheduledFor : null,
         };
         initiator.StampOnto(deployment);   // provenance (fix 6)
 
@@ -163,8 +172,6 @@ public class DeploymentService(
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         // Dispatch immediately unless the caller requested a future start time.
-        var isScheduledForFuture = scheduledFor.HasValue &&
-            scheduledFor.Value > time.GetUtcNow();
         if (!isScheduledForFuture)
         {
             var accountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;

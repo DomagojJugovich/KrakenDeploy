@@ -12,11 +12,14 @@ namespace KrakenDeploy.Server.Data.Jobs;
 /// <para>
 /// Deployments created with a future <c>ScheduledFor</c> are persisted in
 /// <c>Queued</c> state but NOT written to the dispatch channel by
-/// <c>DeploymentService.CreateAsync</c>. This job polls every minute, claims
-/// overdue entries by clearing their <c>ScheduledFor</c> field (preventing
-/// double-dispatch if the job overlaps), then writes their IDs to the
-/// in-process <see cref="Channel{Guid}"/> so <c>DeploymentWorker</c> picks
-/// them up normally.
+/// <c>DeploymentService.CreateAsync</c>. This job polls every minute and writes
+/// due IDs to the in-process channel — a pure, idempotent WAKE-UP with no state
+/// change of its own (B1). Exactly-once execution is the worker's atomic claim
+/// (<see cref="ServerTaskLease.TryClaimAsync"/>), which also clears
+/// <c>ScheduledFor</c>; until a wake-up is claimed the row simply stays due and
+/// gets re-signalled next tick. The previous design cleared <c>ScheduledFor</c>
+/// here BEFORE the channel writes — a crash between the two stranded the rows
+/// as <c>Queued, ScheduledFor=null</c>, invisible to every query, forever.
 /// </para>
 /// </summary>
 public sealed class ScheduledDeploymentDispatchJob(
@@ -51,20 +54,12 @@ public sealed class ScheduledDeploymentDispatchJob(
             return;
         }
 
-        // Atomically clear ScheduledFor so a concurrent run of this job (or a
-        // quick retry) cannot enqueue the same deployment a second time.
-        await db.Deployments
-            .IgnoreQueryFilters()
-            .Where(d => dueIds.Contains(d.Id))
-            .ExecuteUpdateAsync(s =>
-                s.SetProperty(d => d.ScheduledFor, (DateTimeOffset?)null),
-                ct)
-            .ConfigureAwait(false);
-
-        // Write IDs to the in-process dispatch channel.  DeploymentWorker picks
-        // them up and runs them exactly as it would an immediately-dispatched one.
-        // Runs inside the per-account fan-out (WithAccount) in multi-account mode, so
-        // CurrentAccountId is this account; Guid.Empty in single-instance mode.
+        // Write IDs to the in-process dispatch channel. DeploymentWorker picks
+        // them up and runs them exactly as it would an immediately-dispatched one;
+        // its atomic claim de-duplicates overlapping job runs / retries (a losing
+        // wake-up is a logged no-op). Runs inside the per-account fan-out
+        // (WithAccount) in multi-account mode, so CurrentAccountId is this
+        // account; Guid.Empty in single-instance mode.
         var accountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;
         foreach (var id in dueIds)
         {
