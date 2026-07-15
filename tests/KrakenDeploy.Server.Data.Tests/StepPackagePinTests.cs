@@ -122,8 +122,8 @@ public sealed class StepPackagePinTests(PostgresFixture postgres)
             targetRoles: [], config: new Dictionary<string, string>(),
             caller: CallerAuthorization.System);
 
-        var releaseSvc = new ReleaseService(postgres, new StepPackageResolver(postgres));
-        var release    = await releaseSvc.CreateAsync(projectId, "1.0.0");
+        var releaseSvc = new ReleaseService(postgres, new AllowAllPermissionEvaluator(), new StepPackageResolver(postgres));
+        var release    = await releaseSvc.CreateAsync(projectId, "1.0.0", CallerAuthorization.System);
 
         release.ProcessSnapshot.Should().HaveCount(1);
         var snap = release.ProcessSnapshot[0];
@@ -147,8 +147,8 @@ public sealed class StepPackagePinTests(PostgresFixture postgres)
         // Install the package *after* the step was added but before the release.
         await SeedStepPackageAsync(pkgName, "0.9.0", pkgName);
 
-        var releaseSvc = new ReleaseService(postgres, new StepPackageResolver(postgres));
-        var release    = await releaseSvc.CreateAsync(projectId, "1.0.0");
+        var releaseSvc = new ReleaseService(postgres, new AllowAllPermissionEvaluator(), new StepPackageResolver(postgres));
+        var release    = await releaseSvc.CreateAsync(projectId, "1.0.0", CallerAuthorization.System);
 
         release.ProcessSnapshot[0].StepPackageName.Should().Be(pkgName);
         release.ProcessSnapshot[0].StepPackageVersion.Should().Be("0.9.0",

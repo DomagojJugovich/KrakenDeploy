@@ -1,3 +1,4 @@
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Tenants;
 using Microsoft.EntityFrameworkCore;
 
@@ -8,8 +9,32 @@ namespace KrakenDeploy.Server.Data.Services;
 /// Tag sets moved to the Space-level extended-tag-sets model — see
 /// <see cref="TagService"/> (docs/extended-tag-sets-plan.md).
 /// </summary>
-public class TenantService(IDbContextFactory<KrakenDbContext> dbFactory)
+public class TenantService(
+    IDbContextFactory<KrakenDbContext> dbFactory,
+    IPermissionEvaluator permissions)
 {
+    // T1-8: the tenant-id-keyed mutations authorize against the specific tenant,
+    // so a grant scoped to Tenant=X can't edit tenant Y. (Create is Space-level —
+    // it carries no tenant dimension — and stays gated by the endpoint's coarse
+    // TenantCreate policy.) Resolve the tenant's Space filter-free so a
+    // foreign-Space id fails closed.
+    private async Task EnsureTenantScopeAsync(
+        KrakenDbContext db, CallerAuthorization caller, Guid tenantId,
+        Permission permission, CancellationToken ct)
+    {
+        if (caller.IsSystem)
+        {
+            return;
+        }
+        var spaceId = await db.Tenants.IgnoreQueryFilters()
+            .Where(t => t.Id == tenantId)
+            .Select(t => (Guid?)t.SpaceId)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        await permissions.EnsureScopedAsync(
+            caller, permission,
+            new PermissionScope(SpaceId: spaceId, TenantId: tenantId), ct).ConfigureAwait(false);
+    }
+
     // ── Tenant ─────────────────────────────────────────────────────────────────
 
     public async Task<List<Tenant>> GetAllAsync(CancellationToken ct = default)
@@ -78,12 +103,15 @@ public class TenantService(IDbContextFactory<KrakenDbContext> dbFactory)
         string name,
         string slug,
         string? description,
+        CallerAuthorization caller,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentException.ThrowIfNullOrWhiteSpace(slug);
+        ArgumentNullException.ThrowIfNull(caller);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await EnsureTenantScopeAsync(db, caller, id, Permission.TenantEdit, ct).ConfigureAwait(false);
 
         if (await db.Tenants.AnyAsync(t => t.Slug == slug && t.Id != id, ct).ConfigureAwait(false))
         {
@@ -103,9 +131,12 @@ public class TenantService(IDbContextFactory<KrakenDbContext> dbFactory)
         return tenant;
     }
 
-    public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
+    public async Task<bool> DeleteAsync(
+        Guid id, CallerAuthorization caller, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await EnsureTenantScopeAsync(db, caller, id, Permission.TenantDelete, ct).ConfigureAwait(false);
         var tenant = await db.Tenants.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
         if (tenant is null)
         {
@@ -120,9 +151,12 @@ public class TenantService(IDbContextFactory<KrakenDbContext> dbFactory)
     // ── Project ↔ Tenant connections ───────────────────────────────────────────
 
     /// <summary>Connects a project to a tenant (idempotent).</summary>
-    public async Task ConnectProjectAsync(Guid tenantId, Guid projectId, CancellationToken ct = default)
+    public async Task ConnectProjectAsync(
+        Guid tenantId, Guid projectId, CallerAuthorization caller, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await EnsureTenantScopeAsync(db, caller, tenantId, Permission.TenantEdit, ct).ConfigureAwait(false);
 
         var tenant = await db.Tenants
             .Include(t => t.Projects)
@@ -143,9 +177,12 @@ public class TenantService(IDbContextFactory<KrakenDbContext> dbFactory)
     }
 
     /// <summary>Disconnects a project from a tenant (idempotent).</summary>
-    public async Task DisconnectProjectAsync(Guid tenantId, Guid projectId, CancellationToken ct = default)
+    public async Task DisconnectProjectAsync(
+        Guid tenantId, Guid projectId, CallerAuthorization caller, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await EnsureTenantScopeAsync(db, caller, tenantId, Permission.TenantEdit, ct).ConfigureAwait(false);
 
         var tenant = await db.Tenants
             .Include(t => t.Projects)

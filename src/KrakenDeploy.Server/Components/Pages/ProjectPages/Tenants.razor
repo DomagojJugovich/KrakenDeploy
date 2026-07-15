@@ -172,7 +172,7 @@
         if (!await Guard.AllowAsync(Permission.ProjectEdit)) return;
         try
         {
-            await TenantSvc.ConnectProjectAsync(_addTenantId.Value, _project.Id);
+            await TenantSvc.ConnectProjectAsync(_addTenantId.Value, _project.Id, await Guard.CurrentCallerAsync());
             _connectedIds.Add(_addTenantId.Value);
             var name = _allTenants.FirstOrDefault(t => t.Id == _addTenantId)?.Name ?? "tenant";
             _addTenantId = null;
@@ -199,7 +199,7 @@
 
         if (confirmed != true) return;
 
-        await TenantSvc.DisconnectProjectAsync(t.Id, _project.Id);
+        await TenantSvc.DisconnectProjectAsync(t.Id, _project.Id, await Guard.CurrentCallerAsync());
         _connectedIds.Remove(t.Id);
         Notifications.Notify(NotificationSeverity.Success, "Disconnected",
             $"'{t.Name}' was disconnected.", 3000);

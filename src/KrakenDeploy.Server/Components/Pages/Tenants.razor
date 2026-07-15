@@ -137,7 +137,7 @@
             new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
         if (confirmed != true) return;
 
-        var deleted = await TenantSvc.DeleteAsync(tenant.Id);
+        var deleted = await TenantSvc.DeleteAsync(tenant.Id, await Guard.CurrentCallerAsync());
         if (deleted)
         {
             _tenants = _tenants.Where(t => t.Id != tenant.Id).ToList();

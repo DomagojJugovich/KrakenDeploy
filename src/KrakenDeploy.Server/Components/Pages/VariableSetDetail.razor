@@ -194,7 +194,7 @@ else
 
         if (confirmed == true)
         {
-            await VariableSvc.DeleteVariableAsync(v.Id);
+            await VariableSvc.DeleteVariableAsync(v.Id, await Guard.CurrentCallerAsync());
             await ReloadAsync();
             Notify.Notify(NotificationSeverity.Success, "Deleted", $"Variable '{v.Name}' was removed.", 3000);
         }

@@ -3,6 +3,7 @@ using KrakenDeploy.Server.Core.Domain.Channels;
 using KrakenDeploy.Server.Core.Domain.Environments;
 using KrakenDeploy.Server.Core.Domain.Packages;
 using KrakenDeploy.Server.Core.Domain.Projects;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.StepTemplates;
 using KrakenDeploy.Server.Core.Domain.Targets;
@@ -58,10 +59,10 @@ public sealed class CrossSpaceParentScopingTests(PostgresFixture postgres)
     public async Task TenantService_does_not_read_or_delete_other_space()
     {
         var g = await SeedAsync();
-        var svc = new TenantService(postgres);
+        var svc = new TenantService(postgres, new AllowAllPermissionEvaluator());
 
         (await svc.GetAsync(g.TenantId)).Should().BeNull();
-        (await svc.DeleteAsync(g.TenantId)).Should().BeFalse();
+        (await svc.DeleteAsync(g.TenantId, CallerAuthorization.System)).Should().BeFalse();
         await AssertStillExistsAsync<Tenant>(g.TenantId);
     }
 

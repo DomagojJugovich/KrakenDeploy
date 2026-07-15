@@ -4,6 +4,7 @@ using KrakenDeploy.Server.Core.Domain.Environments;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data.Encryption;
@@ -25,7 +26,7 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
     private const string DevMasterKey = "S3Jha2VuRGVwbG95RGV2TWFzdGVyS2V5MzJCeXRlcyE=";
 
     private static VariableService NewSvc(IDbContextFactory<KrakenDbContext> f)
-        => new(f, TestCrypto.Service(DevMasterKey));
+        => new(f, TestCrypto.Service(DevMasterKey), new AllowAllPermissionEvaluator());
 
     // ── CRUD ────────────────────────────────────────────────────────────────
 
@@ -49,8 +50,8 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
         var svc = NewSvc(postgres);
         var project = await SeedProjectAsync();
         var set = await svc.CreateLibrarySetAsync("Temp", null);
-        await svc.CreateVariableInSetAsync(set.Id, "K", "v", VariableType.Text, null);
-        await svc.IncludeSetAsync(project.Id, set.Id);
+        await svc.CreateVariableInSetAsync(set.Id, "K", "v", VariableType.Text, null, CallerAuthorization.System);
+        await svc.IncludeSetAsync(project.Id, set.Id, CallerAuthorization.System);
 
         (await svc.DeleteLibrarySetAsync(set.Id)).Should().BeTrue();
 
@@ -69,8 +70,8 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
         var (project, env, target) = await SeedContextAsync(["web"]);
 
         var set = await svc.CreateLibrarySetAsync("Lib", null);
-        await svc.CreateVariableInSetAsync(set.Id, "Shared", "from-library", VariableType.Text, null);
-        await svc.IncludeSetAsync(project.Id, set.Id);
+        await svc.CreateVariableInSetAsync(set.Id, "Shared", "from-library", VariableType.Text, null, CallerAuthorization.System);
+        await svc.IncludeSetAsync(project.Id, set.Id, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles);
 
@@ -84,10 +85,10 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
         var (project, env, target) = await SeedContextAsync(["web"]);
 
         var set = await svc.CreateLibrarySetAsync("Lib", null);
-        await svc.CreateVariableInSetAsync(set.Id, "Db", "lib-db", VariableType.Text, null);
-        await svc.IncludeSetAsync(project.Id, set.Id);
+        await svc.CreateVariableInSetAsync(set.Id, "Db", "lib-db", VariableType.Text, null, CallerAuthorization.System);
+        await svc.IncludeSetAsync(project.Id, set.Id, CallerAuthorization.System);
 
-        await svc.CreateVariableAsync(project.Id, "Db", "project-db", VariableType.Text, null);
+        await svc.CreateVariableAsync(project.Id, "Db", "project-db", VariableType.Text, null, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles);
 
@@ -106,10 +107,10 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
 
         var set = await svc.CreateLibrarySetAsync("Lib", null);
         await svc.CreateVariableInSetAsync(set.Id, "Db", "lib-env-db", VariableType.Text,
-            new VariableScope { EnvironmentId = env.Id });
-        await svc.IncludeSetAsync(project.Id, set.Id);
+            new VariableScope { EnvironmentId = env.Id }, CallerAuthorization.System);
+        await svc.IncludeSetAsync(project.Id, set.Id, CallerAuthorization.System);
 
-        await svc.CreateVariableAsync(project.Id, "Db", "project-db", VariableType.Text, null);
+        await svc.CreateVariableAsync(project.Id, "Db", "project-db", VariableType.Text, null, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles);
 
@@ -125,10 +126,10 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
         var (project, env, target) = await SeedContextAsync(["web"]);
 
         var set = await svc.CreateLibrarySetAsync("Lib", null);
-        await svc.CreateVariableInSetAsync(set.Id, "Db", "lib-db", VariableType.Text, null);
-        await svc.IncludeSetAsync(project.Id, set.Id);
+        await svc.CreateVariableInSetAsync(set.Id, "Db", "lib-db", VariableType.Text, null, CallerAuthorization.System);
+        await svc.IncludeSetAsync(project.Id, set.Id, CallerAuthorization.System);
 
-        await svc.CreateVariableAsync(project.Id, "Db", "project-db", VariableType.Text, null);
+        await svc.CreateVariableAsync(project.Id, "Db", "project-db", VariableType.Text, null, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles);
 
@@ -144,15 +145,15 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
         var (project, env, target) = await SeedContextAsync(["web"]);
 
         await svc.CreateVariableAsync(project.Id, "X", "env", VariableType.Text,
-            new VariableScope { EnvironmentId = env.Id });
+            new VariableScope { EnvironmentId = env.Id }, CallerAuthorization.System);
         await svc.CreateVariableAsync(project.Id, "X", "role", VariableType.Text,
-            new VariableScope { Roles = ["web"] });
+            new VariableScope { Roles = ["web"] }, CallerAuthorization.System);
 
         var roleWins = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles);
         roleWins["X"].Should().Be("role", because: "a role/tag scope is more specific than an environment scope");
 
         await svc.CreateVariableAsync(project.Id, "X", "target", VariableType.Text,
-            new VariableScope { TargetId = target.Id });
+            new VariableScope { TargetId = target.Id }, CallerAuthorization.System);
 
         var targetWins = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles);
         targetWins["X"].Should().Be("target", because: "a machine/target scope is the most specific dimension");
@@ -165,14 +166,14 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
         var (project, env, target) = await SeedContextAsync([]);
 
         var first = await svc.CreateLibrarySetAsync("First", null);
-        await svc.CreateVariableInSetAsync(first.Id, "Color", "from-first", VariableType.Text, null);
+        await svc.CreateVariableInSetAsync(first.Id, "Color", "from-first", VariableType.Text, null, CallerAuthorization.System);
 
         var second = await svc.CreateLibrarySetAsync("Second", null);
-        await svc.CreateVariableInSetAsync(second.Id, "Color", "from-second", VariableType.Text, null);
+        await svc.CreateVariableInSetAsync(second.Id, "Color", "from-second", VariableType.Text, null, CallerAuthorization.System);
 
         // Included in order → second gets the higher SortOrder → wins.
-        await svc.IncludeSetAsync(project.Id, first.Id);
-        await svc.IncludeSetAsync(project.Id, second.Id);
+        await svc.IncludeSetAsync(project.Id, first.Id, CallerAuthorization.System);
+        await svc.IncludeSetAsync(project.Id, second.Id, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles);
 
@@ -187,9 +188,9 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
         var (project, env, target) = await SeedContextAsync([]);
 
         var set = await svc.CreateLibrarySetAsync("Lib", null);
-        await svc.CreateVariableInSetAsync(set.Id, "Shared", "x", VariableType.Text, null);
-        await svc.IncludeSetAsync(project.Id, set.Id);
-        await svc.ExcludeSetAsync(project.Id, set.Id);
+        await svc.CreateVariableInSetAsync(set.Id, "Shared", "x", VariableType.Text, null, CallerAuthorization.System);
+        await svc.IncludeSetAsync(project.Id, set.Id, CallerAuthorization.System);
+        await svc.ExcludeSetAsync(project.Id, set.Id, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles);
 
@@ -205,13 +206,13 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
         var (project, env, _) = await SeedProjectWithEnvAsync();
 
         var set = await svc.CreateLibrarySetAsync("Lib", null);
-        await svc.CreateVariableInSetAsync(set.Id, "OnlyLib", "lib-value", VariableType.Text, null);
-        await svc.IncludeSetAsync(project.Id, set.Id);
+        await svc.CreateVariableInSetAsync(set.Id, "OnlyLib", "lib-value", VariableType.Text, null, CallerAuthorization.System);
+        await svc.IncludeSetAsync(project.Id, set.Id, CallerAuthorization.System);
 
-        await svc.CreateVariableAsync(project.Id, "ProjVar", "proj-value", VariableType.Text, null);
+        await svc.CreateVariableAsync(project.Id, "ProjVar", "proj-value", VariableType.Text, null, CallerAuthorization.System);
         await SeedSimpleProcessAsync(project.Id);
 
-        var release = await new ReleaseService(postgres).CreateAsync(project.Id, "1.0.0");
+        var release = await new ReleaseService(postgres, new AllowAllPermissionEvaluator()).CreateAsync(project.Id, "1.0.0", CallerAuthorization.System);
 
         release.VariableSnapshot.Should().Contain(v =>
             v.Name == "OnlyLib" && v.Value == "lib-value" && v.Layer == 0);
@@ -226,14 +227,14 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
         var (project, env, target) = await SeedProjectWithEnvAsync();
 
         var set = await svc.CreateLibrarySetAsync("Lib", null);
-        await svc.CreateVariableInSetAsync(set.Id, "Db", "lib-db", VariableType.Text, null);
-        await svc.CreateVariableInSetAsync(set.Id, "OnlyLib", "lib-only", VariableType.Text, null);
-        await svc.IncludeSetAsync(project.Id, set.Id);
+        await svc.CreateVariableInSetAsync(set.Id, "Db", "lib-db", VariableType.Text, null, CallerAuthorization.System);
+        await svc.CreateVariableInSetAsync(set.Id, "OnlyLib", "lib-only", VariableType.Text, null, CallerAuthorization.System);
+        await svc.IncludeSetAsync(project.Id, set.Id, CallerAuthorization.System);
 
-        await svc.CreateVariableAsync(project.Id, "Db", "proj-db", VariableType.Text, null);
+        await svc.CreateVariableAsync(project.Id, "Db", "proj-db", VariableType.Text, null, CallerAuthorization.System);
         await SeedSimpleProcessAsync(project.Id);
 
-        var release = await new ReleaseService(postgres).CreateAsync(project.Id, "1.0.0");
+        var release = await new ReleaseService(postgres, new AllowAllPermissionEvaluator()).CreateAsync(project.Id, "1.0.0", CallerAuthorization.System);
 
         var resolved = await svc.ResolveFromSnapshotAsync(
             release.VariableSnapshot, env.Id, target.Id, []);
@@ -251,9 +252,9 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
         var (project, env, target) = await SeedContextAsync([]);
         var channel = Guid.NewGuid();
 
-        await svc.CreateVariableAsync(project.Id, "Feed", "default", VariableType.Text, null);
+        await svc.CreateVariableAsync(project.Id, "Feed", "default", VariableType.Text, null, CallerAuthorization.System);
         await svc.CreateVariableAsync(project.Id, "Feed", "channel", VariableType.Text,
-            new VariableScope { ChannelId = channel });
+            new VariableScope { ChannelId = channel }, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles, null, channel);
 
@@ -267,7 +268,7 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
         var (project, env, target) = await SeedContextAsync([]);
 
         await svc.CreateVariableAsync(project.Id, "Feed", "channel-a", VariableType.Text,
-            new VariableScope { ChannelId = Guid.NewGuid() });
+            new VariableScope { ChannelId = Guid.NewGuid() }, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles, null, Guid.NewGuid());
 
@@ -284,9 +285,9 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
         var channel = Guid.NewGuid();
 
         await svc.CreateVariableAsync(project.Id, "X", "from-channel", VariableType.Text,
-            new VariableScope { ChannelId = channel });
+            new VariableScope { ChannelId = channel }, CallerAuthorization.System);
         await svc.CreateVariableAsync(project.Id, "X", "from-env", VariableType.Text,
-            new VariableScope { EnvironmentId = env.Id });
+            new VariableScope { EnvironmentId = env.Id }, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles, null, channel);
 
@@ -352,12 +353,12 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
         var set = await svc.CreateLibrarySetAsync("Lib", null);
 
         var stepScoped = () => svc.CreateVariableInSetAsync(
-            set.Id, "X", "v", VariableType.Text, new VariableScope { StepName = "Run SQL" });
+            set.Id, "X", "v", VariableType.Text, new VariableScope { StepName = "Run SQL" }, CallerAuthorization.System);
         await stepScoped.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*steps or channels*");
 
         var channelScoped = () => svc.CreateVariableInSetAsync(
-            set.Id, "Y", "v", VariableType.Text, new VariableScope { ChannelId = Guid.NewGuid() });
+            set.Id, "Y", "v", VariableType.Text, new VariableScope { ChannelId = Guid.NewGuid() }, CallerAuthorization.System);
         await channelScoped.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*steps or channels*");
     }
@@ -371,9 +372,9 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
         var stepX = Guid.NewGuid();
         var stepY = Guid.NewGuid();
 
-        await svc.CreateVariableAsync(project.Id, "Conn", "default", VariableType.Text, null);
+        await svc.CreateVariableAsync(project.Id, "Conn", "default", VariableType.Text, null, CallerAuthorization.System);
         await svc.CreateVariableAsync(project.Id, "Conn", "for-x", VariableType.Text,
-            new VariableScope { StepName = "Step X" });
+            new VariableScope { StepName = "Step X" }, CallerAuthorization.System);
 
         var res = await svc.ResolveWithStepsAsync(
             project.Id, env.Id, target.Id, target.Roles, tenantId: null, channelId: null,

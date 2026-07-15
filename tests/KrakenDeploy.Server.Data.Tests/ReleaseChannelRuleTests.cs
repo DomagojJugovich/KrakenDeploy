@@ -3,6 +3,7 @@ using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Packages;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Projects;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
 
@@ -26,9 +27,9 @@ public sealed class ReleaseChannelRuleTests(PostgresFixture postgres)
     public async Task Explicit_package_version_outside_the_channel_range_is_rejected()
     {
         var (projectId, channelId) = await SeedProjectChannelAsync(range: "[1.0,2.0)", tag: null);
-        var svc = new ReleaseService(postgres);
+        var svc = new ReleaseService(postgres, new AllowAllPermissionEvaluator());
 
-        var act = async () => await svc.CreateAsync(projectId, "rel-1",
+        var act = async () => await svc.CreateAsync(projectId, "rel-1", caller: CallerAuthorization.System,
             packageVersions: new Dictionary<string, string> { [StepName] = "2.5.0" },
             channelId: channelId);
 
@@ -40,9 +41,9 @@ public sealed class ReleaseChannelRuleTests(PostgresFixture postgres)
     public async Task Explicit_package_version_inside_the_channel_range_is_accepted()
     {
         var (projectId, channelId) = await SeedProjectChannelAsync(range: "[1.0,2.0)", tag: null);
-        var svc = new ReleaseService(postgres);
+        var svc = new ReleaseService(postgres, new AllowAllPermissionEvaluator());
 
-        var release = await svc.CreateAsync(projectId, "rel-1",
+        var release = await svc.CreateAsync(projectId, "rel-1", caller: CallerAuthorization.System,
             packageVersions: new Dictionary<string, string> { [StepName] = "1.5.0" },
             channelId: channelId);
 
@@ -53,9 +54,9 @@ public sealed class ReleaseChannelRuleTests(PostgresFixture postgres)
     public async Task Prerelease_is_rejected_when_the_channel_requires_stable()
     {
         var (projectId, channelId) = await SeedProjectChannelAsync(range: null, tag: "^$");
-        var svc = new ReleaseService(postgres);
+        var svc = new ReleaseService(postgres, new AllowAllPermissionEvaluator());
 
-        var act = async () => await svc.CreateAsync(projectId, "rel-1",
+        var act = async () => await svc.CreateAsync(projectId, "rel-1", caller: CallerAuthorization.System,
             packageVersions: new Dictionary<string, string> { [StepName] = "1.5.0-beta" },
             channelId: channelId);
 
@@ -69,9 +70,9 @@ public sealed class ReleaseChannelRuleTests(PostgresFixture postgres)
         // Newest upload is a pre-release; the newest STABLE is 2.1.0.
         await SeedPackagesAsync(
             ("1.5.0", -3), ("2.1.0", -2), ("2.2.0-beta", -1));
-        var svc = new ReleaseService(postgres);
+        var svc = new ReleaseService(postgres, new AllowAllPermissionEvaluator());
 
-        var release = await svc.CreateAsync(projectId, "rel-1",
+        var release = await svc.CreateAsync(projectId, "rel-1", caller: CallerAuthorization.System,
             packageVersions: null, channelId: channelId);
 
         release.ProcessSnapshot.Single(s => s.Name == StepName).PackageVersion.Should().Be("2.1.0",
@@ -83,9 +84,9 @@ public sealed class ReleaseChannelRuleTests(PostgresFixture postgres)
     {
         var (projectId, channelId) = await SeedProjectChannelAsync(range: null, tag: "^$");
         await SeedPackagesAsync(("2.0.0-beta", -1)); // only a pre-release exists
-        var svc = new ReleaseService(postgres);
+        var svc = new ReleaseService(postgres, new AllowAllPermissionEvaluator());
 
-        var act = async () => await svc.CreateAsync(projectId, "rel-1",
+        var act = async () => await svc.CreateAsync(projectId, "rel-1", caller: CallerAuthorization.System,
             packageVersions: null, channelId: channelId);
 
         await act.Should().ThrowAsync<InvalidOperationException>();
@@ -97,9 +98,9 @@ public sealed class ReleaseChannelRuleTests(PostgresFixture postgres)
         // The CLI + "use project default" UI path send no channelId; the default
         // channel's rule must still apply.
         var (projectId, _) = await SeedProjectChannelAsync(range: "[1.0,2.0)", tag: null, isDefault: true);
-        var svc = new ReleaseService(postgres);
+        var svc = new ReleaseService(postgres, new AllowAllPermissionEvaluator());
 
-        var act = async () => await svc.CreateAsync(projectId, "rel-1",
+        var act = async () => await svc.CreateAsync(projectId, "rel-1", caller: CallerAuthorization.System,
             packageVersions: new Dictionary<string, string> { [StepName] = "3.0.0" },
             channelId: null);
 

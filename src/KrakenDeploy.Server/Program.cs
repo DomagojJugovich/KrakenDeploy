@@ -1318,15 +1318,20 @@ public static class Program
 
         app.MapPost("/api/projects/{projectId:guid}/releases",
             async (Guid projectId, CreateReleaseRequest req, ReleaseService releaseSvc,
-                CancellationToken ct) =>
+                ClaimsPrincipal user, CancellationToken ct) =>
             {
                 try
                 {
                     var release = await releaseSvc.CreateAsync(
-                        projectId, req.Version, req.PackageVersions, req.ReleaseNotes, req.ChannelId, ct)
+                        projectId, req.Version, CallerAuthorization.ForUser(user),
+                        req.PackageVersions, req.ReleaseNotes, req.ChannelId, ct)
                         .ConfigureAwait(false);
                     return Results.Created(
                         $"/api/projects/{projectId}/releases/{release.Id}", release);
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -1366,7 +1371,7 @@ public static class Program
 
         app.MapPost("/api/projects/{projectId:guid}/variables",
             async (Guid projectId, UpsertVariableRequest req,
-                VariableService variableSvc, CancellationToken ct) =>
+                VariableService variableSvc, ClaimsPrincipal user, CancellationToken ct) =>
             {
                 if (!Enum.TryParse<VariableType>(req.Type, ignoreCase: true, out var type))
                 {
@@ -1389,12 +1394,17 @@ public static class Program
                 try
                 {
                     var variable = await variableSvc
-                        .CreateVariableAsync(projectId, req.Name, req.Value, type, scope, ct)
+                        .CreateVariableAsync(projectId, req.Name, req.Value, type, scope,
+                            CallerAuthorization.ForUser(user), ct)
                         .ConfigureAwait(false);
 
                     return Results.Created(
                         $"/api/projects/{projectId}/variables/{variable.Id}",
                         new { variable.Id, variable.Name, Type = variable.Type.ToString(), variable.Scope });
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -1404,7 +1414,7 @@ public static class Program
 
         app.MapPut("/api/projects/{projectId:guid}/variables/{variableId:guid}",
             async (Guid projectId, Guid variableId, UpsertVariableRequest req,
-                VariableService variableSvc, CancellationToken ct) =>
+                VariableService variableSvc, ClaimsPrincipal user, CancellationToken ct) =>
             {
                 if (!Enum.TryParse<VariableType>(req.Type, ignoreCase: true, out var type))
                 {
@@ -1424,18 +1434,36 @@ public static class Program
                     StepName = req.ScopeStepName,
                 };
 
-                var variable = await variableSvc
-                    .UpdateVariableAsync(variableId, req.Name, req.Value, type, scope, ct)
-                    .ConfigureAwait(false);
+                try
+                {
+                    var variable = await variableSvc
+                        .UpdateVariableAsync(variableId, req.Name, req.Value, type, scope,
+                            CallerAuthorization.ForUser(user), ct)
+                        .ConfigureAwait(false);
 
-                return variable is null ? Results.NotFound() : Results.Ok(variable);
+                    return variable is null ? Results.NotFound() : Results.Ok(variable);
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+                }
             }).RequirePermission(Permission.VariableEdit);
 
         app.MapDelete("/api/projects/{projectId:guid}/variables/{variableId:guid}",
-            async (Guid projectId, Guid variableId, VariableService variableSvc, CancellationToken ct) =>
+            async (Guid projectId, Guid variableId, VariableService variableSvc,
+                ClaimsPrincipal user, CancellationToken ct) =>
             {
-                var deleted = await variableSvc.DeleteVariableAsync(variableId, ct).ConfigureAwait(false);
-                return deleted ? Results.NoContent() : Results.NotFound();
+                try
+                {
+                    var deleted = await variableSvc
+                        .DeleteVariableAsync(variableId, CallerAuthorization.ForUser(user), ct)
+                        .ConfigureAwait(false);
+                    return deleted ? Results.NoContent() : Results.NotFound();
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+                }
             }).RequirePermission(Permission.VariableEdit);
 
         // ── Step-template API ────────────────────────────────────────────────
@@ -2224,13 +2252,19 @@ public static class Program
             }).RequirePermission(Permission.TenantCreate);
 
         app.MapPut("/api/tenants/{id:guid}",
-            async (Guid id, CreateTenantRequest req, TenantService tenantSvc, CancellationToken ct) =>
+            async (Guid id, CreateTenantRequest req, TenantService tenantSvc,
+                ClaimsPrincipal user, CancellationToken ct) =>
             {
                 try
                 {
-                    var tenant = await tenantSvc.UpdateAsync(id, req.Name, req.Slug, req.Description, ct)
+                    var tenant = await tenantSvc.UpdateAsync(
+                        id, req.Name, req.Slug, req.Description, CallerAuthorization.ForUser(user), ct)
                         .ConfigureAwait(false);
                     return tenant is null ? Results.NotFound() : Results.Ok(tenant);
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -2239,20 +2273,35 @@ public static class Program
             }).RequirePermission(Permission.TenantEdit);
 
         app.MapDelete("/api/tenants/{id:guid}",
-            async (Guid id, TenantService tenantSvc, CancellationToken ct) =>
+            async (Guid id, TenantService tenantSvc, ClaimsPrincipal user, CancellationToken ct) =>
             {
-                var deleted = await tenantSvc.DeleteAsync(id, ct).ConfigureAwait(false);
-                return deleted ? Results.NoContent() : Results.NotFound();
+                try
+                {
+                    var deleted = await tenantSvc
+                        .DeleteAsync(id, CallerAuthorization.ForUser(user), ct).ConfigureAwait(false);
+                    return deleted ? Results.NoContent() : Results.NotFound();
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+                }
             }).RequirePermission(Permission.TenantDelete);
 
         // Project-Tenant connections
         app.MapPost("/api/tenants/{tenantId:guid}/projects/{projectId:guid}",
-            async (Guid tenantId, Guid projectId, TenantService tenantSvc, CancellationToken ct) =>
+            async (Guid tenantId, Guid projectId, TenantService tenantSvc,
+                ClaimsPrincipal user, CancellationToken ct) =>
             {
                 try
                 {
-                    await tenantSvc.ConnectProjectAsync(tenantId, projectId, ct).ConfigureAwait(false);
+                    await tenantSvc
+                        .ConnectProjectAsync(tenantId, projectId, CallerAuthorization.ForUser(user), ct)
+                        .ConfigureAwait(false);
                     return Results.NoContent();
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -2261,10 +2310,20 @@ public static class Program
             }).RequirePermission(Permission.TenantEdit);
 
         app.MapDelete("/api/tenants/{tenantId:guid}/projects/{projectId:guid}",
-            async (Guid tenantId, Guid projectId, TenantService tenantSvc, CancellationToken ct) =>
+            async (Guid tenantId, Guid projectId, TenantService tenantSvc,
+                ClaimsPrincipal user, CancellationToken ct) =>
             {
-                await tenantSvc.DisconnectProjectAsync(tenantId, projectId, ct).ConfigureAwait(false);
-                return Results.NoContent();
+                try
+                {
+                    await tenantSvc
+                        .DisconnectProjectAsync(tenantId, projectId, CallerAuthorization.ForUser(user), ct)
+                        .ConfigureAwait(false);
+                    return Results.NoContent();
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+                }
             }).RequirePermission(Permission.TenantEdit);
 
         // ── Tag Sets API (Space-level extended tag sets) ─────────────────────

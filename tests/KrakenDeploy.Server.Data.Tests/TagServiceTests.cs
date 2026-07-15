@@ -1,5 +1,6 @@
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Tags;
 using KrakenDeploy.Server.Core.Domain.Tenants;
 using KrakenDeploy.Server.Data.Services;
@@ -225,7 +226,7 @@ public sealed class TagServiceTests(PostgresFixture postgres)
     public async Task Deleting_a_tagged_entity_removes_its_applications_in_the_same_save()
     {
         var svc = NewSvc();
-        var tenantSvc = new TenantService(postgres);
+        var tenantSvc = new TenantService(postgres, new AllowAllPermissionEvaluator());
         var tenant = await tenantSvc.CreateAsync(
             Unique("tagged-tenant"), Unique("tagged-tenant"), null);
 
@@ -234,7 +235,7 @@ public sealed class TagServiceTests(PostgresFixture postgres)
         var a = await svc.CreateTagAsync(set.Id, "a", null, null);
         await svc.SetAppliedTagsAsync(set.Id, TaggableEntityKind.Tenant, tenant.Id, [a.Id]);
 
-        (await tenantSvc.DeleteAsync(tenant.Id)).Should().BeTrue();
+        (await tenantSvc.DeleteAsync(tenant.Id, CallerAuthorization.System)).Should().BeTrue();
 
         await using var db = postgres.CreateContext();
         (await db.TagApplications.IgnoreQueryFilters()

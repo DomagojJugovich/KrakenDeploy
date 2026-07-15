@@ -125,7 +125,7 @@ internal static class SeedDemoCommands
 
             await using var rdb = await dbFactory.CreateDbContextAsync();
             var release = await rdb.Releases.FirstOrDefaultAsync(r => r.ProjectId == project.Id && r.Version == version)
-                          ?? await releaseSvc.CreateAsync(project.Id, version).ConfigureAwait(false);
+                          ?? await releaseSvc.CreateAsync(project.Id, version, KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System).ConfigureAwait(false);
             releases.Add((release.Id, name, version));
         }
 
@@ -328,7 +328,7 @@ internal static class SeedDemoCommands
 
             foreach (var version in LadderVersions(existingVersions))
             {
-                await releaseSvc.CreateAsync(project.Id, version).ConfigureAwait(false);
+                await releaseSvc.CreateAsync(project.Id, version, KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System).ConfigureAwait(false);
             }
 
             // Ladder = up to 4 newest releases by version; promotion pattern
@@ -457,7 +457,7 @@ internal static class SeedDemoCommands
                 if (projectIds.TryGetValue(ps, out var pid))
                 {
                     // ConnectProjectAsync is a no-op when already connected.
-                    await tenantSvc.ConnectProjectAsync(tenant.Id, pid).ConfigureAwait(false);
+                    await tenantSvc.ConnectProjectAsync(tenant.Id, pid, KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System).ConfigureAwait(false);
                 }
             }
         }

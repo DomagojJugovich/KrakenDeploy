@@ -1,5 +1,6 @@
 using System.Text.Json;
 using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Tenants;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using Microsoft.EntityFrameworkCore;
@@ -9,8 +10,62 @@ namespace KrakenDeploy.Server.Data.Services;
 /// <summary>
 /// CRUD and scope-resolution for project <see cref="VariableSet"/>s and <see cref="Variable"/>s.
 /// </summary>
-public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncryptionService encryption)
+public class VariableService(
+    IDbContextFactory<KrakenDbContext> dbFactory,
+    IEncryptionService encryption,
+    IPermissionEvaluator permissions)
 {
+    // ── T1-8 authoritative scope check ───────────────────────────────────────
+    // Project variables are scoped to the owning project (VariableEdit); library
+    // sets are Space-level (LibraryVariableSetEdit). Resolve filter-free so a
+    // foreign-Space id fails closed.
+
+    private async Task EnsureProjectVariableScopeAsync(
+        KrakenDbContext db, CallerAuthorization caller, Guid projectId, CancellationToken ct)
+    {
+        if (caller.IsSystem)
+        {
+            return;
+        }
+        var spaceId = await db.Projects.IgnoreQueryFilters()
+            .Where(p => p.Id == projectId)
+            .Select(p => (Guid?)p.SpaceId)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        await permissions.EnsureScopedAsync(
+            caller, Permission.VariableEdit,
+            new PermissionScope(SpaceId: spaceId, ProjectId: projectId), ct).ConfigureAwait(false);
+    }
+
+    // Resolve the owning project (or library kind) from the set so a by-id edit
+    // is authorized against the variable's REAL owner (closes the by-id IDOR).
+    private async Task EnsureSetEditScopeAsync(
+        KrakenDbContext db, CallerAuthorization caller, Guid setId, CancellationToken ct)
+    {
+        if (caller.IsSystem)
+        {
+            return;
+        }
+        var set = await db.VariableSets.IgnoreQueryFilters()
+            .Where(vs => vs.Id == setId)
+            .Select(vs => new { vs.Kind, vs.ProjectId, vs.SpaceId })
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+
+        if (set is { Kind: VariableSetKind.Library })
+        {
+            // Library sets are Space-level, not project-scoped.
+            await permissions.EnsureScopedAsync(
+                caller, Permission.LibraryVariableSetEdit,
+                new PermissionScope(SpaceId: set.SpaceId), ct).ConfigureAwait(false);
+        }
+        else
+        {
+            // Project set (or unknown → null project → fail closed).
+            await permissions.EnsureScopedAsync(
+                caller, Permission.VariableEdit,
+                new PermissionScope(SpaceId: set?.SpaceId, ProjectId: set?.ProjectId), ct)
+                .ConfigureAwait(false);
+        }
+    }
     // ── Set management ─────────────────────────────────────────────────────
 
     /// <summary>
@@ -72,12 +127,15 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
         string value,
         VariableType type,
         VariableScope? scope,
+        CallerAuthorization caller,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(value);
+        ArgumentNullException.ThrowIfNull(caller);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await EnsureProjectVariableScopeAsync(db, caller, projectId, ct).ConfigureAwait(false);
         var set = await GetOrCreateSetCoreAsync(db, projectId, ct).ConfigureAwait(false);
 
         var storedValue = type switch
@@ -115,9 +173,11 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
         string? value,
         VariableType type,
         VariableScope? scope,
+        CallerAuthorization caller,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(caller);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
@@ -129,6 +189,8 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
         {
             return null;
         }
+
+        await EnsureSetEditScopeAsync(db, caller, variable.SetId, ct).ConfigureAwait(false);
 
         if (scope is not null && (!string.IsNullOrEmpty(scope.StepName) || scope.ChannelId.HasValue))
         {
@@ -161,8 +223,10 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
     /// <summary>
     /// Deletes a variable by ID. Returns <c>false</c> if not found.
     /// </summary>
-    public async Task<bool> DeleteVariableAsync(Guid id, CancellationToken ct = default)
+    public async Task<bool> DeleteVariableAsync(
+        Guid id, CallerAuthorization caller, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var variable = await db.Variables
@@ -173,6 +237,8 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
         {
             return false;
         }
+
+        await EnsureSetEditScopeAsync(db, caller, variable.SetId, ct).ConfigureAwait(false);
 
         db.Variables.Remove(variable);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
@@ -297,12 +363,15 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
         string value,
         VariableType type,
         VariableScope? scope,
+        CallerAuthorization caller,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(value);
+        ArgumentNullException.ThrowIfNull(caller);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await EnsureSetEditScopeAsync(db, caller, setId, ct).ConfigureAwait(false);
         var setKind = await db.VariableSets
             .Where(vs => vs.Id == setId)
             .Select(vs => (VariableSetKind?)vs.Kind)
@@ -382,9 +451,12 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
     }
 
     /// <summary>Includes a library set in a project (idempotent), appended at the end of the overlay order.</summary>
-    public async Task IncludeSetAsync(Guid projectId, Guid setId, CancellationToken ct = default)
+    public async Task IncludeSetAsync(
+        Guid projectId, Guid setId, CallerAuthorization caller, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await EnsureProjectVariableScopeAsync(db, caller, projectId, ct).ConfigureAwait(false);
 
         // Validate BOTH ends are in the current Space before linking (belt; the
         // composite FKs (space_id, project_id)/(space_id, variable_set_id) are the
@@ -428,9 +500,12 @@ public class VariableService(IDbContextFactory<KrakenDbContext> dbFactory, IEncr
     }
 
     /// <summary>Removes a library set from a project's inclusions (idempotent).</summary>
-    public async Task ExcludeSetAsync(Guid projectId, Guid setId, CancellationToken ct = default)
+    public async Task ExcludeSetAsync(
+        Guid projectId, Guid setId, CallerAuthorization caller, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await EnsureProjectVariableScopeAsync(db, caller, projectId, ct).ConfigureAwait(false);
         var link = await db.ProjectVariableSetLinks
             .FirstOrDefaultAsync(l => l.ProjectId == projectId && l.VariableSetId == setId, ct)
             .ConfigureAwait(false);

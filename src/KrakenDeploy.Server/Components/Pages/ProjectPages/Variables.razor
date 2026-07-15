@@ -623,7 +623,7 @@
         try
         {
             await VariableSvc.UpdateVariableAsync(
-                v.Id, v.Name, v.Value, v.Type, v.Scope);
+                v.Id, v.Name, v.Value, v.Type, v.Scope, await Guard.CurrentCallerAsync());
             await ReloadAsync();
         }
         catch (Exception ex)
@@ -657,7 +657,7 @@
             // dimension) and were applied for cartesian — see SaveScopeAsync.
             // For the simple inline-new case we just save one variable.
             await VariableSvc.CreateVariableAsync(
-                _project.Id, _newName, _newValue ?? "", _newType, _newScope);
+                _project.Id, _newName, _newValue ?? "", _newType, _newScope, await Guard.CurrentCallerAsync());
 
             _newName = "";
             _newValue = "";
@@ -714,7 +714,7 @@
         if (_project is null) return;
         if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
         await VariableSvc.CreateVariableAsync(
-            _project.Id, v.Name, "", VariableType.Text, new VariableScope());
+            _project.Id, v.Name, "", VariableType.Text, new VariableScope(), await Guard.CurrentCallerAsync());
         await ReloadAsync();
     }
 
@@ -731,7 +731,7 @@
                 TenantId      = v.Scope.TenantId,
                 TargetId      = v.Scope.TargetId,
                 Roles         = v.Scope.Roles is { Count: > 0 } r ? [..r] : null,
-            });
+            }, await Guard.CurrentCallerAsync());
         await ReloadAsync();
     }
 
@@ -746,7 +746,7 @@
 
         if (confirmed == true)
         {
-            await VariableSvc.DeleteVariableAsync(v.Id);
+            await VariableSvc.DeleteVariableAsync(v.Id, await Guard.CurrentCallerAsync());
             await ReloadAsync();
             Notifications.Notify(NotificationSeverity.Success, "Deleted",
                 $"Variable '{v.Name}' was removed.", 3000);
@@ -863,7 +863,7 @@
                         };
                         await VariableSvc.CreateVariableAsync(
                             _project.Id, _newName, _newValue ?? "",
-                            _newType, scope);
+                            _newType, scope, await Guard.CurrentCallerAsync());
                     }
 
             _newName = "";
@@ -893,7 +893,7 @@
             };
             await VariableSvc.UpdateVariableAsync(
                 _popupEditingVar.Id, _popupEditingVar.Name, null,
-                _popupEditingVar.Type, scope);
+                _popupEditingVar.Type, scope, await Guard.CurrentCallerAsync());
         }
         else
         {
@@ -905,7 +905,7 @@
             var value = _popupEditingVar.Value;
             var type  = _popupEditingVar.Type;
 
-            await VariableSvc.DeleteVariableAsync(_popupEditingVar.Id);
+            await VariableSvc.DeleteVariableAsync(_popupEditingVar.Id, await Guard.CurrentCallerAsync());
 
             foreach (var e in envSet)
                 foreach (var t in tenantSet)
@@ -921,7 +921,7 @@
                             Roles         = roles.Count > 0 ? [..roles] : null,
                         };
                         await VariableSvc.CreateVariableAsync(
-                            _project.Id, name, value, type, scope);
+                            _project.Id, name, value, type, scope, await Guard.CurrentCallerAsync());
                     }
         }
 
@@ -1033,7 +1033,7 @@
         {
             await VariableSvc.UpdateVariableAsync(
                 _arrayEditingVar.Id, _arrayEditingVar.Name, json,
-                _arrayEditingVar.Type, _arrayEditingVar.Scope);
+                _arrayEditingVar.Type, _arrayEditingVar.Scope, await Guard.CurrentCallerAsync());
             await ReloadAsync();
             Notifications.Notify(NotificationSeverity.Success, "Saved",
                 "Array value updated.", 3000);

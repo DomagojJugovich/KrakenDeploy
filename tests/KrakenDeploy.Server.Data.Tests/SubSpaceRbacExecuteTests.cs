@@ -10,6 +10,7 @@ using KrakenDeploy.Server.Core.Domain.Runbooks;
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data.Accounts;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
@@ -152,6 +153,64 @@ public sealed class SubSpaceRbacExecuteTests(PostgresFixture postgres) : IClassF
         updated!.Name.Should().Be("A-step-renamed");
     }
 
+    // ── Variable edits (cross-project IDOR) + release create ─────────────────
+
+    [Fact]
+    public async Task Variable_edit_is_rejected_on_a_project_outside_the_users_scope()
+    {
+        var g = await SeedTwoProjectsScopedGrantAsync(Permission.VariableEdit);
+        var svc = new VariableService(
+            postgres, TestCrypto.Service("S3Jha2VuRGVwbG95RGV2TWFzdGVyS2V5MzJCeXRlcyE="),
+            new PermissionEvaluator(postgres, TimeProvider.System));
+
+        // A variable exists in project B (added by a system caller).
+        var varB = await svc.CreateVariableAsync(
+            g.ProjectB, "k", "v", VariableType.Text, null, CallerAuthorization.System);
+
+        // The A-scoped user cannot edit/delete B's variable by id (IDOR).
+        var editB = () => svc.UpdateVariableAsync(
+            varB.Id, "k", "hacked", VariableType.Text, null,
+            CallerAuthorization.ForUser(User(g.UserId)));
+        await editB.Should().ThrowAsync<AuthorizationException>();
+
+        var deleteB = () => svc.DeleteVariableAsync(varB.Id, CallerAuthorization.ForUser(User(g.UserId)));
+        await deleteB.Should().ThrowAsync<AuthorizationException>();
+
+        // Nor create a variable in project B.
+        var addToB = () => svc.CreateVariableAsync(
+            g.ProjectB, "x", "y", VariableType.Text, null,
+            CallerAuthorization.ForUser(User(g.UserId)));
+        await addToB.Should().ThrowAsync<AuthorizationException>();
+    }
+
+    [Fact]
+    public async Task Variable_edit_is_allowed_on_the_users_own_project()
+    {
+        var g = await SeedTwoProjectsScopedGrantAsync(Permission.VariableEdit);
+        var svc = new VariableService(
+            postgres, TestCrypto.Service("S3Jha2VuRGVwbG95RGV2TWFzdGVyS2V5MzJCeXRlcyE="),
+            new PermissionEvaluator(postgres, TimeProvider.System));
+
+        var v = await svc.CreateVariableAsync(
+            g.ProjectA, "k", "v", VariableType.Text, null,
+            CallerAuthorization.ForUser(User(g.UserId)));
+        v.Name.Should().Be("k");
+    }
+
+    [Fact]
+    public async Task Release_create_is_rejected_on_a_project_outside_the_users_scope()
+    {
+        var g = await SeedTwoProjectsScopedGrantAsync(Permission.ReleaseCreate);
+        var svc = new ReleaseService(postgres, new PermissionEvaluator(postgres, TimeProvider.System));
+
+        // The authz check runs first (before the process load), so a project the
+        // user isn't scoped to is rejected outright.
+        var createB = () => svc.CreateAsync(
+            g.ProjectB, "1.0.0", CallerAuthorization.ForUser(User(g.UserId)));
+        await createB.Should().ThrowAsync<AuthorizationException>(
+            "a ReleaseCreate grant scoped to Project A must not create a release for Project B");
+    }
+
     // ── Service factories (real evaluator) ───────────────────────────────────
 
     private DeploymentService NewDeploymentService() =>
@@ -249,7 +308,12 @@ public sealed class SubSpaceRbacExecuteTests(PostgresFixture postgres) : IClassF
 
     private sealed record ProcessGraph(Guid UserId, Guid ProjectA, Guid ProjectB);
 
-    private async Task<ProcessGraph> SeedProjectScopedProcessEditAsync()
+    private Task<ProcessGraph> SeedProjectScopedProcessEditAsync()
+        => SeedTwoProjectsScopedGrantAsync(Permission.ProcessEdit);
+
+    // Two projects (A, B) in the default Space; the user gets <paramref name="permission"/>
+    // scoped to Project A only.
+    private async Task<ProcessGraph> SeedTwoProjectsScopedGrantAsync(Permission permission)
     {
         var userId = Guid.NewGuid();
         await using var db = postgres.CreateContext();
@@ -261,8 +325,7 @@ public sealed class SubSpaceRbacExecuteTests(PostgresFixture postgres) : IClassF
         db.Projects.AddRange(a, b);
         await db.SaveChangesAsync();
 
-        // Grant ProcessEdit scoped to Project A only.
-        var role = new Role { Name = $"proj-edit-{Guid.NewGuid():N}", GrantedPermissions = [Permission.ProcessEdit] };
+        var role = new Role { Name = $"proj-scoped-{Guid.NewGuid():N}", GrantedPermissions = [permission] };
         var team = new Team { Name = $"team-{Guid.NewGuid():N}", SpaceId = space };
         db.Roles.Add(role);
         db.Teams.Add(team);

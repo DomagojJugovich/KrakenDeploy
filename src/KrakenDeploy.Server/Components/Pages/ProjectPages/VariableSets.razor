@@ -114,7 +114,7 @@
         if (_project is null || _selectedSetId is null) return;
         if (!await Guard.AllowAsync(Permission.ProjectEdit)) return;
 
-        await VariableSvc.IncludeSetAsync(_project.Id, _selectedSetId.Value);
+        await VariableSvc.IncludeSetAsync(_project.Id, _selectedSetId.Value, await Guard.CurrentCallerAsync());
         await ReloadAsync();
         Notify.Notify(NotificationSeverity.Success, "Included", "Variable set added to project.", 3000);
     }
@@ -124,7 +124,7 @@
         if (_project is null) return;
         if (!await Guard.AllowAsync(Permission.ProjectEdit)) return;
 
-        await VariableSvc.ExcludeSetAsync(_project.Id, set.Id);
+        await VariableSvc.ExcludeSetAsync(_project.Id, set.Id, await Guard.CurrentCallerAsync());
         await ReloadAsync();
         Notify.Notify(NotificationSeverity.Info, "Removed", $"'{set.Name}' removed from project.", 3000);
     }

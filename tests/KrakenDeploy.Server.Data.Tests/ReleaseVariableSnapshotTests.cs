@@ -4,6 +4,7 @@ using KrakenDeploy.Server.Core.Domain.Environments;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data.Encryption;
@@ -39,7 +40,7 @@ public sealed class ReleaseVariableSnapshotTests(PostgresFixture postgres)
     private const string DevMasterKey = "S3Jha2VuRGVwbG95RGV2TWFzdGVyS2V5MzJCeXRlcyE=";
 
     private static VariableService NewVarService(IDbContextFactory<KrakenDbContext> f)
-        => new(f, TestCrypto.Service(DevMasterKey));
+        => new(f, TestCrypto.Service(DevMasterKey), new AllowAllPermissionEvaluator());
 
     // ── ReleaseService.CreateAsync ────────────────────────────────────────
 
@@ -50,13 +51,13 @@ public sealed class ReleaseVariableSnapshotTests(PostgresFixture postgres)
 
         // Seed the project's variable set: one unscoped + one env-scoped.
         var vars = NewVarService(postgres);
-        await vars.CreateVariableAsync(project.Id, "Greeting", "Hello",   VariableType.Text, scope: new VariableScope());
-        await vars.CreateVariableAsync(project.Id, "Db.Host",  "prod-db", VariableType.Text, scope: new VariableScope { EnvironmentId = env.Id });
+        await vars.CreateVariableAsync(project.Id, "Greeting", "Hello",   VariableType.Text, scope: new VariableScope(), caller: CallerAuthorization.System);
+        await vars.CreateVariableAsync(project.Id, "Db.Host",  "prod-db", VariableType.Text, scope: new VariableScope { EnvironmentId = env.Id }, caller: CallerAuthorization.System);
         await SeedSimpleProcessAsync(project.Id);
 
         // Cut the release.
-        var releaseSvc = new ReleaseService(postgres);
-        var release    = await releaseSvc.CreateAsync(project.Id, "1.0.0");
+        var releaseSvc = new ReleaseService(postgres, new AllowAllPermissionEvaluator());
+        var release    = await releaseSvc.CreateAsync(project.Id, "1.0.0", CallerAuthorization.System);
 
         // Snapshot exists + timestamped + carries both variables verbatim.
         release.VariableSnapshotUpdatedUtc.Should().NotBeNull();
@@ -73,8 +74,8 @@ public sealed class ReleaseVariableSnapshotTests(PostgresFixture postgres)
         var (project, _, _) = await SeedProjectWithEnvAsync();
         await SeedSimpleProcessAsync(project.Id);
 
-        var releaseSvc = new ReleaseService(postgres);
-        var release    = await releaseSvc.CreateAsync(project.Id, "1.0.0");
+        var releaseSvc = new ReleaseService(postgres, new AllowAllPermissionEvaluator());
+        var release    = await releaseSvc.CreateAsync(project.Id, "1.0.0", CallerAuthorization.System);
 
         release.VariableSnapshot.Should().BeEmpty();
         release.VariableSnapshotUpdatedUtc.Should().NotBeNull(
@@ -91,18 +92,18 @@ public sealed class ReleaseVariableSnapshotTests(PostgresFixture postgres)
         var (project, env, _) = await SeedProjectWithEnvAsync();
         var vars = NewVarService(postgres);
         var liveVar = await vars.CreateVariableAsync(project.Id, "Db.Host", "old-db", VariableType.Text,
-            scope: new VariableScope { EnvironmentId = env.Id });
+            scope: new VariableScope { EnvironmentId = env.Id }, caller: CallerAuthorization.System);
         await SeedSimpleProcessAsync(project.Id);
 
         // Cut release with the old value.
-        var releaseSvc = new ReleaseService(postgres);
-        var release    = await releaseSvc.CreateAsync(project.Id, "1.0.0");
+        var releaseSvc = new ReleaseService(postgres, new AllowAllPermissionEvaluator());
+        var release    = await releaseSvc.CreateAsync(project.Id, "1.0.0", CallerAuthorization.System);
         release.VariableSnapshot.Single(v => v.Name == "Db.Host").Value.Should().Be("old-db");
         var firstStamp = release.VariableSnapshotUpdatedUtc;
 
         // Variable changes after the release was cut — old snapshot must stay frozen.
         await vars.UpdateVariableAsync(liveVar.Id, "Db.Host", "new-db", VariableType.Text,
-            scope: new VariableScope { EnvironmentId = env.Id });
+            scope: new VariableScope { EnvironmentId = env.Id }, caller: CallerAuthorization.System);
         await using (var db = postgres.CreateContext())
         {
             var reloaded = await db.Releases.FirstAsync(r => r.Id == release.Id);
@@ -120,7 +121,7 @@ public sealed class ReleaseVariableSnapshotTests(PostgresFixture postgres)
     [Fact]
     public async Task UpdateVariablesAsync_throws_when_release_does_not_exist()
     {
-        var svc = new ReleaseService(postgres);
+        var svc = new ReleaseService(postgres, new AllowAllPermissionEvaluator());
         await svc.Invoking(s => s.UpdateVariablesAsync(Guid.NewGuid()))
             .Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*not found*");
@@ -139,14 +140,14 @@ public sealed class ReleaseVariableSnapshotTests(PostgresFixture postgres)
         // environment, so for a deployment to (env, target, role=web) the
         // role-scoped value wins.
         await vars.CreateVariableAsync(project.Id, "Db.Host", "default-host", VariableType.Text,
-            scope: new VariableScope());
+            scope: new VariableScope(), caller: CallerAuthorization.System);
         await vars.CreateVariableAsync(project.Id, "Db.Host", "env-host", VariableType.Text,
-            scope: new VariableScope { EnvironmentId = env.Id });
+            scope: new VariableScope { EnvironmentId = env.Id }, caller: CallerAuthorization.System);
         await vars.CreateVariableAsync(project.Id, "Db.Host", "role-host", VariableType.Text,
-            scope: new VariableScope { Roles = ["web"] });
+            scope: new VariableScope { Roles = ["web"] }, caller: CallerAuthorization.System);
         await SeedSimpleProcessAsync(project.Id);
 
-        var release = await new ReleaseService(postgres).CreateAsync(project.Id, "1.0.0");
+        var release = await new ReleaseService(postgres, new AllowAllPermissionEvaluator()).CreateAsync(project.Id, "1.0.0", CallerAuthorization.System);
 
         var resolved = await vars.ResolveFromSnapshotAsync(
             release.VariableSnapshot,
@@ -164,10 +165,10 @@ public sealed class ReleaseVariableSnapshotTests(PostgresFixture postgres)
         var (project, env, target) = await SeedProjectWithEnvAsync();
         var vars = NewVarService(postgres);
         await vars.CreateVariableAsync(project.Id, "ApiKey", "super-secret", VariableType.Sensitive,
-            scope: new VariableScope());
+            scope: new VariableScope(), caller: CallerAuthorization.System);
         await SeedSimpleProcessAsync(project.Id);
 
-        var release = await new ReleaseService(postgres).CreateAsync(project.Id, "1.0.0");
+        var release = await new ReleaseService(postgres, new AllowAllPermissionEvaluator()).CreateAsync(project.Id, "1.0.0", CallerAuthorization.System);
 
         // Snapshot stores ciphertext (NOT the plaintext).
         var snap = release.VariableSnapshot.Single(v => v.Name == "ApiKey");

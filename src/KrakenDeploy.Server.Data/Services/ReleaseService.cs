@@ -2,6 +2,7 @@ using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Server.Core.Domain.Channels;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -21,6 +22,7 @@ namespace KrakenDeploy.Server.Data.Services;
 /// </remarks>
 public class ReleaseService(
     IDbContextFactory<KrakenDbContext> dbFactory,
+    IPermissionEvaluator permissions,
     StepPackageResolver? stepPackageResolver = null,
     ILogger<ReleaseService>? logger = null)
 {
@@ -40,14 +42,29 @@ public class ReleaseService(
     public async Task<Release> CreateAsync(
         Guid projectId,
         string version,
+        CallerAuthorization caller,
         IReadOnlyDictionary<string, string>? packageVersions = null,
         string? releaseNotes = null,
         Guid? channelId = null,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(version);
+        ArgumentNullException.ThrowIfNull(caller);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // T1-8: authoritative sub-Space authorization — creating a release for
+        // THIS project. Strict; runs for every surface (REST/CLI/UI).
+        if (!caller.IsSystem)
+        {
+            var spaceId = await db.Projects.IgnoreQueryFilters()
+                .Where(p => p.Id == projectId)
+                .Select(p => (Guid?)p.SpaceId)
+                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            await permissions.EnsureScopedAsync(
+                caller, Permission.ReleaseCreate,
+                new PermissionScope(SpaceId: spaceId, ProjectId: projectId), ct).ConfigureAwait(false);
+        }
 
         var duplicate = await db.Releases
             .AnyAsync(r => r.ProjectId == projectId && r.Version == version, ct)

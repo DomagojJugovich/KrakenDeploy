@@ -89,7 +89,7 @@
         try
         {
             await ReleaseSvc.CreateAsync(
-                ProjectId, _form.Version,
+                ProjectId, _form.Version, await Guard.CurrentCallerAsync(),
                 packageVersions: null,
                 releaseNotes: _form.ReleaseNotes,
                 channelId: _form.ChannelId);

@@ -60,11 +60,11 @@ public sealed class DekRotationWalkTests(PostgresFixture postgres)
         // ── Seed under DEK_old ────────────────────────────────────────────────
         // Variable + release snapshot via the real services (encrypt under old).
         var (project, env, _) = await SeedProjectWithEnvAsync();
-        var vars = new VariableService(postgres, TestCrypto.Service(OldDekB64));
+        var vars = new VariableService(postgres, TestCrypto.Service(OldDekB64), new AllowAllPermissionEvaluator());
         await vars.CreateVariableAsync(project.Id, "ApiKey", "super-secret",
-            VariableType.Sensitive, scope: new VariableScope());
+            VariableType.Sensitive, scope: new VariableScope(), caller: CallerAuthorization.System);
         await SeedSimpleProcessAsync(project.Id);
-        var release = await new ReleaseService(postgres).CreateAsync(project.Id, "1.0.0");
+        var release = await new ReleaseService(postgres, new AllowAllPermissionEvaluator()).CreateAsync(project.Id, "1.0.0", CallerAuthorization.System);
         // Sanity: snapshot froze the ciphertext (not plaintext) under DEK_old.
         var seededSnap = release.VariableSnapshot.Single(v => v.Name == "ApiKey");
         AesGcmCipher.Decrypt(OldDek, seededSnap.Value).Should().Be("super-secret");

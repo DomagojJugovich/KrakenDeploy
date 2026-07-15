@@ -293,17 +293,17 @@
                     : _model.Value ?? "";
 
                 await VariableSvc.UpdateVariableAsync(
-                    Variable!.Id, _model.Name, valueToSend, _model.Type, scope);
+                    Variable!.Id, _model.Name, valueToSend, _model.Type, scope, await Guard.CurrentCallerAsync());
             }
             else if (SetId is { } setId)
             {
                 await VariableSvc.CreateVariableInSetAsync(
-                    setId, _model.Name, _model.Value ?? "", _model.Type, scope);
+                    setId, _model.Name, _model.Value ?? "", _model.Type, scope, await Guard.CurrentCallerAsync());
             }
             else if (ProjectId is { } projectId)
             {
                 await VariableSvc.CreateVariableAsync(
-                    projectId, _model.Name, _model.Value ?? "", _model.Type, scope);
+                    projectId, _model.Name, _model.Value ?? "", _model.Type, scope, await Guard.CurrentCallerAsync());
             }
             else
             {

@@ -2,6 +2,7 @@ using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Environments;
 using KrakenDeploy.Server.Core.Domain.Projects;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data.Encryption;
@@ -22,7 +23,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
     private const string DevMasterKey = "S3Jha2VuRGVwbG95RGV2TWFzdGVyS2V5MzJCeXRlcyE=";
 
     private static VariableService CreateService(IDbContextFactory<KrakenDbContext> factory)
-        => new(factory, TestCrypto.Service(DevMasterKey));
+        => new(factory, TestCrypto.Service(DevMasterKey), new AllowAllPermissionEvaluator());
 
     // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -73,7 +74,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         var project = await SeedProjectAsync(db);
 
         var variable = await svc.CreateVariableAsync(
-            project.Id, "MyVar", "hello-world", VariableType.Text, null);
+            project.Id, "MyVar", "hello-world", VariableType.Text, null, CallerAuthorization.System);
 
         variable.Id.Should().NotBeEmpty();
         variable.Name.Should().Be("MyVar");
@@ -89,7 +90,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         var project = await SeedProjectAsync(db);
 
         var variable = await svc.CreateVariableAsync(
-            project.Id, "SecretKey", "s3cr3t!", VariableType.Sensitive, null);
+            project.Id, "SecretKey", "s3cr3t!", VariableType.Sensitive, null, CallerAuthorization.System);
 
         // Stored value must NOT be the plaintext.
         variable.Value.Should().NotBe("s3cr3t!", because: "sensitive vars must be encrypted at rest");
@@ -106,8 +107,8 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         var svc = CreateService(postgres);
         var project = await SeedProjectAsync(db);
 
-        await svc.CreateVariableAsync(project.Id, "PlainVar", "visible", VariableType.Text, null);
-        await svc.CreateVariableAsync(project.Id, "SecretVar", "hidden", VariableType.Sensitive, null);
+        await svc.CreateVariableAsync(project.Id, "PlainVar", "visible", VariableType.Text, null, CallerAuthorization.System);
+        await svc.CreateVariableAsync(project.Id, "SecretVar", "hidden", VariableType.Sensitive, null, CallerAuthorization.System);
 
         var dtos = await svc.GetVariablesAsync(project.Id);
 
@@ -125,9 +126,9 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         var project = await SeedProjectAsync(db);
 
         var variable = await svc.CreateVariableAsync(
-            project.Id, "ToDelete", "bye", VariableType.Text, null);
+            project.Id, "ToDelete", "bye", VariableType.Text, null, CallerAuthorization.System);
 
-        var deleted = await svc.DeleteVariableAsync(variable.Id);
+        var deleted = await svc.DeleteVariableAsync(variable.Id, CallerAuthorization.System);
         deleted.Should().BeTrue();
 
         var remaining = await svc.GetVariablesAsync(project.Id);
@@ -144,7 +145,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         var project = await SeedProjectAsync(db);
 
         var variable = await svc.CreateVariableAsync(
-            project.Id, "Tags", "alpha, beta, gamma", VariableType.StringArray, null);
+            project.Id, "Tags", "alpha, beta, gamma", VariableType.StringArray, null, CallerAuthorization.System);
 
         // Should be stored as JSON array.
         variable.Value.Should().StartWith("[", because: "StringArray values are stored as JSON arrays");
@@ -159,7 +160,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         var svc = CreateService(postgres);
         var (project, env, target) = await SeedContextAsync(db, ["web"]);
 
-        await svc.CreateVariableAsync(project.Id, "Greeting", "hello", VariableType.Text, null);
+        await svc.CreateVariableAsync(project.Id, "Greeting", "hello", VariableType.Text, null, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles);
 
@@ -174,11 +175,11 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         var (project, env, target) = await SeedContextAsync(db, ["web"]);
 
         // Unscoped fallback.
-        await svc.CreateVariableAsync(project.Id, "DbServer", "dev-db", VariableType.Text, null);
+        await svc.CreateVariableAsync(project.Id, "DbServer", "dev-db", VariableType.Text, null, CallerAuthorization.System);
 
         // Environment-scoped — should win.
         await svc.CreateVariableAsync(project.Id, "DbServer", "prod-db", VariableType.Text,
-            new VariableScope { EnvironmentId = env.Id });
+            new VariableScope { EnvironmentId = env.Id }, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles);
 
@@ -195,11 +196,11 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
 
         // Env-scoped only (score +4).
         await svc.CreateVariableAsync(project.Id, "MaxWorkers", "4", VariableType.Text,
-            new VariableScope { EnvironmentId = env.Id });
+            new VariableScope { EnvironmentId = env.Id }, CallerAuthorization.System);
 
         // Env + role scoped (score +4 +2 = +6).
         await svc.CreateVariableAsync(project.Id, "MaxWorkers", "8", VariableType.Text,
-            new VariableScope { EnvironmentId = env.Id, Roles = ["web"] });
+            new VariableScope { EnvironmentId = env.Id, Roles = ["web"] }, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles);
 
@@ -218,7 +219,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
 
         // Only scoped to otherEnv — should not match the real env.
         await svc.CreateVariableAsync(project.Id, "OnlyForOtherEnv", "xyz", VariableType.Text,
-            new VariableScope { EnvironmentId = otherEnvId });
+            new VariableScope { EnvironmentId = otherEnvId }, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, null, []);
 
@@ -232,7 +233,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         var svc = CreateService(postgres);
         var (project, env, target) = await SeedContextAsync(db, ["web"]);
 
-        await svc.CreateVariableAsync(project.Id, "ApiKey", "topsecret", VariableType.Sensitive, null);
+        await svc.CreateVariableAsync(project.Id, "ApiKey", "topsecret", VariableType.Sensitive, null, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles);
 
@@ -263,10 +264,10 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         var project = await SeedProjectAsync(db);
 
         var variable = await svc.CreateVariableAsync(
-            project.Id, "OldName", "old-value", VariableType.Text, null);
+            project.Id, "OldName", "old-value", VariableType.Text, null, CallerAuthorization.System);
 
         var updated = await svc.UpdateVariableAsync(
-            variable.Id, "NewName", "new-value", VariableType.Text, null);
+            variable.Id, "NewName", "new-value", VariableType.Text, null, CallerAuthorization.System);
 
         updated.Should().NotBeNull();
         updated!.Name.Should().Be("NewName");
@@ -281,10 +282,10 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         var project = await SeedProjectAsync(db);
 
         var variable = await svc.CreateVariableAsync(
-            project.Id, "SecKey", "original-secret", VariableType.Sensitive, null);
+            project.Id, "SecKey", "original-secret", VariableType.Sensitive, null, CallerAuthorization.System);
 
         var updated = await svc.UpdateVariableAsync(
-            variable.Id, "SecKey", "updated-secret", VariableType.Sensitive, null);
+            variable.Id, "SecKey", "updated-secret", VariableType.Sensitive, null, CallerAuthorization.System);
 
         updated.Should().NotBeNull();
         updated!.Value.Should().NotBe("updated-secret",
@@ -301,7 +302,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         var svc = CreateService(postgres);
 
         var result = await svc.UpdateVariableAsync(
-            Guid.NewGuid(), "Ghost", "value", VariableType.Text, null);
+            Guid.NewGuid(), "Ghost", "value", VariableType.Text, null, CallerAuthorization.System);
 
         result.Should().BeNull();
     }
@@ -314,7 +315,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         await using var db = postgres.CreateContext();
         var svc = CreateService(postgres);
 
-        var deleted = await svc.DeleteVariableAsync(Guid.NewGuid());
+        var deleted = await svc.DeleteVariableAsync(Guid.NewGuid(), CallerAuthorization.System);
 
         deleted.Should().BeFalse();
     }
@@ -344,11 +345,11 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         var (project, env, target) = await SeedContextAsync(db, ["api"]);
 
         // Unscoped fallback.
-        await svc.CreateVariableAsync(project.Id, "Host", "global-host", VariableType.Text, null);
+        await svc.CreateVariableAsync(project.Id, "Host", "global-host", VariableType.Text, null, CallerAuthorization.System);
 
         // Target-scoped — should win.
         await svc.CreateVariableAsync(project.Id, "Host", "target-host", VariableType.Text,
-            new VariableScope { TargetId = target.Id });
+            new VariableScope { TargetId = target.Id }, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles);
 
@@ -367,7 +368,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
 
         // Only scoped to a different target — must not match.
         await svc.CreateVariableAsync(project.Id, "TargetOnly", "secret", VariableType.Text,
-            new VariableScope { TargetId = otherTargetId });
+            new VariableScope { TargetId = otherTargetId }, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, null, []);
 
@@ -384,7 +385,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
 
         // Variable scoped to role "web" — target only has "worker".
         await svc.CreateVariableAsync(project.Id, "WebOnly", "web-value", VariableType.Text,
-            new VariableScope { Roles = ["web"] });
+            new VariableScope { Roles = ["web"] }, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles);
 
@@ -400,19 +401,19 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         var (project, env, target) = await SeedContextAsync(db, ["web"]);
 
         // Unscoped (score 0).
-        await svc.CreateVariableAsync(project.Id, "Priority", "score-0", VariableType.Text, null);
+        await svc.CreateVariableAsync(project.Id, "Priority", "score-0", VariableType.Text, null, CallerAuthorization.System);
 
         // Env-only (score +4).
         await svc.CreateVariableAsync(project.Id, "Priority", "score-4", VariableType.Text,
-            new VariableScope { EnvironmentId = env.Id });
+            new VariableScope { EnvironmentId = env.Id }, CallerAuthorization.System);
 
         // Env + roles (score +6).
         await svc.CreateVariableAsync(project.Id, "Priority", "score-6", VariableType.Text,
-            new VariableScope { EnvironmentId = env.Id, Roles = ["web"] });
+            new VariableScope { EnvironmentId = env.Id, Roles = ["web"] }, CallerAuthorization.System);
 
         // Env + target + roles (score +7 — maximum).
         await svc.CreateVariableAsync(project.Id, "Priority", "score-7", VariableType.Text,
-            new VariableScope { EnvironmentId = env.Id, TargetId = target.Id, Roles = ["web"] });
+            new VariableScope { EnvironmentId = env.Id, TargetId = target.Id, Roles = ["web"] }, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles);
 
@@ -428,7 +429,7 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         var (project, env, target) = await SeedContextAsync(db, []);
 
         await svc.CreateVariableAsync(
-            project.Id, "Tags", "alpha, beta, gamma", VariableType.StringArray, null);
+            project.Id, "Tags", "alpha, beta, gamma", VariableType.StringArray, null, CallerAuthorization.System);
 
         var resolved = await svc.ResolveAsync(project.Id, env.Id, target.Id, target.Roles);
 

@@ -2,6 +2,7 @@ using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Projects;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.StepPackages;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
@@ -93,8 +94,8 @@ public sealed class StepPackageUninstallTests(PostgresFixture postgres)
         // Live step so ReleaseService.CreateAsync has at least one step to snapshot.
         await SeedDeploymentStepAsync(projectId, stepType: name, pkgName: name, pkgVersion: version);
 
-        var release = await new ReleaseService(postgres)
-            .CreateAsync(projectId, "1.0.0");
+        var release = await new ReleaseService(postgres, new AllowAllPermissionEvaluator())
+            .CreateAsync(projectId, "1.0.0", CallerAuthorization.System);
 
         // Remove the live step so only the release snapshot keeps the pin alive.
         await using (var db = postgres.CreateContext())
