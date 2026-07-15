@@ -83,7 +83,9 @@ public sealed class AgentHub(
         registry.Add(
             Context.ConnectionId,
             targetId.Value,
-            accountId);
+            accountId,
+            // A8/T1-12: lets a token revocation drop this live tunnel immediately.
+            Context.Abort);
 
         target.Status = TargetStatus.Online;
         target.LastSeenUtc = timeProvider.GetUtcNow();

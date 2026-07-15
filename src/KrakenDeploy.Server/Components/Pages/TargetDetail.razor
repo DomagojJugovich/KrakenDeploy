@@ -10,15 +10,18 @@
 @using KrakenDeploy.Server.Core.Domain.Tenants
 @using KrakenDeploy.Server.Core.Domain.Variables
 @using KrakenDeploy.Server.Data.Services
+@using KrakenDeploy.Server.Auth
 @inject TargetService TargetSvc
 @inject EnvironmentService EnvironmentSvc
 @inject TenantService TenantSvc
 @inject DeploymentService DeploymentSvc
 @inject RunbookService RunbookSvc
 @inject AuditLogService AuditSvc
+@inject AgentAccessRevoker AgentRevoker
 @inject ISpaceContext SpaceCtx
 @inject IEncryptionService Encryption
 @inject NotificationService Notify
+@inject DialogService Dialog
 @inject UiActionGuard Guard
 
 <PageTitle>Target @(Target?.Name ?? "…") - KrakenDeploy</PageTitle>
@@ -354,6 +357,29 @@ else
                             <span class="cell-muted" style="margin-left:14px;">@(Target.OperatingSystem ?? "")</span>
                         </div>
                     </div>
+
+                    @* A8/T1-12: revoke this agent's bearer token(s). Live-agent
+                       (Reverse) targets only — offline-drop targets carry no JWT. *@
+                    @if (Target.TransportMode == TransportMode.Reverse)
+                    {
+                        <div class="kraken-def">
+                            <div class="kraken-def-label">Agent access
+                                <div class="kraken-def-sub">
+                                    Revoke this agent's access token if the host is compromised or
+                                    being decommissioned. The live connection drops immediately and
+                                    the agent must be re-enrolled with a new registration token.
+                                </div>
+                            </div>
+                            <div class="kraken-def-value" style="padding-top:6px;">
+                                <RequirePermission Permission="Permission.MachineEdit">
+                                    <RadzenButton Text="Revoke agent access" Icon="gpp_bad"
+                                                  Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Danger"
+                                                  Variant="Variant.Flat"
+                                                  IsBusy="_revokingAgent" Click="RevokeAgentAccessAsync" />
+                                </RequirePermission>
+                            </div>
+                        </div>
+                    }
                 </div>
             }
 
@@ -529,6 +555,7 @@ else
     private List<Tenant> _tenants = [];
     private bool _savingSettings;
     private bool _savingLock;
+    private bool _revokingAgent;
     private readonly TargetRiskLevel[] _riskLevels = Enum.GetValues<TargetRiskLevel>();
 
     // ── Tab data (lazy) ────────────────────────────────────────────────────
@@ -689,6 +716,45 @@ else
         finally
         {
             _savingLock = false;
+        }
+    }
+
+    // A8/T1-12: revoke the agent's bearer token(s). Server-side re-checks the
+    // permission (UiActionGuard, bypassing the UI cache) before mutating.
+    private async Task RevokeAgentAccessAsync()
+    {
+        if (Target is null) return;
+        if (!await Guard.AllowAsync(Permission.MachineEdit)) return;
+
+        var confirmed = await Dialog.Confirm(
+            $"Revoke agent access for '{Target.Name}'? Its live connection drops " +
+            "immediately and the agent must be re-enrolled with a new registration token.",
+            "Revoke agent access",
+            new ConfirmOptions { OkButtonText = "Revoke", CancelButtonText = "Cancel" });
+        if (confirmed != true) return;
+
+        _revokingAgent = true;
+        try
+        {
+            var ok = await AgentRevoker.RevokeAsync(Target.Id);
+            if (ok)
+            {
+                Notify.Notify(NotificationSeverity.Success, "Agent access revoked",
+                    "The token is invalidated and the connection dropped. Re-enroll the agent.", 5000);
+            }
+            else
+            {
+                Notify.Notify(NotificationSeverity.Warning, "Nothing to revoke",
+                    "The target could not be found in this Space.", 5000);
+            }
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error, "Revoke failed", ex.Message, 6000);
+        }
+        finally
+        {
+            _revokingAgent = false;
         }
     }
 

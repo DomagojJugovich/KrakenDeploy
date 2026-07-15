@@ -153,4 +153,35 @@ public class TargetService(IDbContextFactory<KrakenDbContext> dbFactory)
         db.DeploymentTargets.Update(target);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// A8/T1-12: revokes all outstanding agent bearer tokens for the target by
+    /// bumping its <see cref="DeploymentTarget.AgentTokenVersion"/>. The agent's
+    /// next connect/call fails the version check (see
+    /// <see cref="AgentTokenValidator"/>); the operator must re-enroll it. Atomic
+    /// increment (no read-modify-write race). Returns the new version, or
+    /// <c>null</c> if the target does not exist (or is outside the caller's Space —
+    /// ExecuteUpdate honours the Space query filter).
+    /// </summary>
+    public async Task<int?> RevokeAgentTokenAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var rows = await db.DeploymentTargets
+            .Where(t => t.Id == id)
+            .ExecuteUpdateAsync(
+                s => s.SetProperty(t => t.AgentTokenVersion, t => t.AgentTokenVersion + 1),
+                ct)
+            .ConfigureAwait(false);
+
+        if (rows == 0)
+        {
+            return null;
+        }
+
+        return await db.DeploymentTargets
+            .Where(t => t.Id == id)
+            .Select(t => (int?)t.AgentTokenVersion)
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false);
+    }
 }

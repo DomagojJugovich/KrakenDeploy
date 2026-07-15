@@ -343,4 +343,10 @@ public static class AuditEventType
     /// the value is IGNORED and this event is recorded — it signals a tampered
     /// or outdated agent. Details: target id + the rejected roles.</summary>
     public const string AgentRoleSelfAssignmentRejected = "Agent.RoleSelfAssignmentRejected";
+
+    /// <summary>A8/T1-12 — an operator revoked a target's agent bearer token(s)
+    /// by bumping its token version. Any outstanding token is rejected on next
+    /// connect/call and the live tunnel (if any) is dropped immediately; the
+    /// agent must re-enroll. Details: target id + new token version.</summary>
+    public const string AgentTokenRevoked = "Agent.TokenRevoked";
 }

@@ -552,6 +552,8 @@ public static class Program
         // cross-account guard (P3-8 Phase 5) works.
         builder.Services.AddSingleton<IAgentConnectionRegistry, InMemoryAgentConnectionRegistry>();
         builder.Services.AddSingleton<AgentJwtService>();
+        // A8/T1-12: agent-token revocation (bump version + drop live tunnel + audit).
+        builder.Services.AddScoped<AgentAccessRevoker>();
         builder.Services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
         builder.Services.AddSingleton<TargetStatusPublisher>();
         builder.Services.AddSingleton<ServerAgentUpdateService>();
@@ -2377,6 +2379,18 @@ public static class Program
                 // offline target (the runner needs it to decrypt plan.enc). The
                 // server only ever persists the encrypted form.
                 return Results.Ok(new { bundleKey = base64Key });
+            }).RequirePermission(Permission.MachineEdit);
+
+        // A8/T1-12: revoke a target's agent bearer token(s). Bumps the token
+        // version (every outstanding token is rejected on next connect/call),
+        // drops the live tunnel now, and audits. The agent must re-enroll.
+        app.MapPost("/api/targets/{id:guid}/revoke-agent-token",
+            async (Guid id, AgentAccessRevoker revoker, CancellationToken ct) =>
+            {
+                var revoked = await revoker.RevokeAsync(id, ct).ConfigureAwait(false);
+                return revoked
+                    ? Results.Ok(new { revoked = true })
+                    : Results.NotFound();
             }).RequirePermission(Permission.MachineEdit);
 
         // ── Tenant API ─────────────────────────────────────────────────────────────
