@@ -10,6 +10,8 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Microsoft.Web.Xdt" />
+    <!-- A8/T1-12: DPAPI protection of the at-rest bearer token (Windows only). -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" />
     <PackageReference Include="Octostache" />
     <PackageReference Include="Serilog.Extensions.Hosting" />
     <PackageReference Include="Serilog.Sinks.Console" />

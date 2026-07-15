@@ -93,6 +93,14 @@
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.8" />
   </ItemGroup>
 
+  <ItemGroup Label="Security / cryptography">
+    <!-- DPAPI (ProtectedData) — the agent (net10.0, cross-platform TFM) encrypts
+         its at-rest bearer token in agent.json on Windows (A8/T1-12). The API is
+         Windows-only at runtime and always called under an OperatingSystem.IsWindows()
+         guard. -->
+    <PackageVersion Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
+  </ItemGroup>
+
   <ItemGroup Label="Variables / templating">
     <!-- Octostache: Octopus Deploy's #{VarName} template engine -->
     <PackageVersion Include="Octostache" Version="3.9.2" />

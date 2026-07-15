@@ -91,7 +91,7 @@ public sealed class RegistrationServiceTests : IAsyncDisposable
     private AgentIdentityStore CreateStore()
     {
         var opts = Options.Create(new AgentConfig { DataPath = _dataDir });
-        return new AgentIdentityStore(opts);
+        return new AgentIdentityStore(opts, NullLogger<AgentIdentityStore>.Instance);
     }
 
     private RegistrationHostedService CreateService(
@@ -104,11 +104,14 @@ public sealed class RegistrationServiceTests : IAsyncDisposable
         {
             Url = serverUrl,
             RegistrationToken = token,
+            // The fake registration server is local http:// — the dev override the
+            // A8/T1-12 https gate is designed for. https URLs pass regardless.
+            AllowInsecureHttp = true,
         });
         var agentOpts = Options.Create(new AgentConfig { DataPath = _dataDir });
         return new RegistrationHostedService(
             context,
-            new AgentIdentityStore(agentOpts),
+            new AgentIdentityStore(agentOpts, NullLogger<AgentIdentityStore>.Instance),
             serverOpts,
             lifetime ?? new FakeApplicationLifetime(),
             NullLogger<RegistrationHostedService>.Instance);
