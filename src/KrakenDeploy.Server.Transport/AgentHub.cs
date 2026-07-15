@@ -285,7 +285,7 @@ public sealed class AgentHub(
     }
 
     public async Task CompleteDeploymentAsync(
-        Guid deploymentId, bool success, string? errorMessage)
+        Guid deploymentId, Guid dispatchId, bool success, string? errorMessage)
     {
         // If this is a sub-plan completion (the worker is mid-orchestration
         // for a multi-target or mixed-side process), resolve the pending TCS
@@ -294,21 +294,37 @@ public sealed class AgentHub(
         // wave / target has completed.
         //
         // M-RollingDeployments Phase 1b: slot key is (deployment, target);
-        // the target id comes from the connection's NameIdentifier claim, so
-        // no wire-contract change. Pre-1b single-target dispatch is reached
-        // through the same path (the orchestrator registers under the same
-        // single target id).
+        // the target id comes from the connection's NameIdentifier claim.
+        // B2 (B6.2): dispatchId pins the completion to the attempt that
+        // produced it — the agent's at-least-once report outbox may deliver a
+        // completion late (after the wave was cancelled/re-dispatched) or
+        // twice (ack lost in a disconnect). Neither may resolve a DIFFERENT
+        // attempt's TCS, and neither may fall through to the DB fallback
+        // below, which would finalize a mid-flight deployment.
         var connectionTargetId = GetTargetId();
-        if (connectionTargetId is not null
-            && subPlans.TryResolve(
-                deploymentId, connectionTargetId.Value,
-                new SubPlanResult(success, errorMessage)))
+        if (connectionTargetId is not null)
         {
-            logger.LogDebug(
-                "Sub-plan complete for deployment {Id} target {Target} (success={Success}); " +
-                "orchestrator will continue.",
-                deploymentId, connectionTargetId.Value, success);
-            return;
+            var route = subPlans.RouteCompletion(
+                deploymentId, connectionTargetId.Value, dispatchId,
+                new SubPlanResult(success, errorMessage));
+
+            if (route == SubPlanCompletionRoute.ResolvedPending)
+            {
+                logger.LogDebug(
+                    "Sub-plan complete for deployment {Id} target {Target} dispatch {Dispatch} " +
+                    "(success={Success}); orchestrator will continue.",
+                    deploymentId, connectionTargetId.Value, dispatchId, success);
+                return;
+            }
+
+            if (route == SubPlanCompletionRoute.StaleOrDuplicate)
+            {
+                logger.LogWarning(
+                    "Stale or duplicate completion for deployment {Id} target {Target} " +
+                    "dispatch {Dispatch} (success={Success}); swallowed.",
+                    deploymentId, connectionTargetId.Value, dispatchId, success);
+                return;
+            }
         }
 
         var completedAt = timeProvider.GetUtcNow();
@@ -398,6 +414,7 @@ public sealed class AgentHub(
     /// </summary>
     public async Task ReportStepCompletedAsync(
         Guid deploymentId,
+        Guid dispatchId,
         int stepIndex,
         string stepName,
         bool success,
@@ -414,16 +431,18 @@ public sealed class AgentHub(
         // Register the per-step outcome with the sub-plan registry FIRST so
         // even if DB persistence fails, the orchestrator gets attribution
         // for the wave's per-step Required gate. Late reports for waves
-        // that already resolved are dropped silently inside RecordStepResult.
+        // that already resolved — and, B2, stale reports whose dispatchId
+        // belongs to a previous attempt of a re-dispatched wave — are
+        // dropped silently inside RecordStepResult.
         //
         // M-RollingDeployments Phase 1b: slot key is (deployment, this
         // connection's target id). The target id comes from the connection's
-        // NameIdentifier claim — no wire-contract change.
+        // NameIdentifier claim.
         var connectionTargetId = GetTargetId();
         if (connectionTargetId is not null)
         {
             subPlans.RecordStepResult(
-                deploymentId, connectionTargetId.Value,
+                deploymentId, connectionTargetId.Value, dispatchId,
                 new SubPlanStepResult(
                     StepIndex:    stepIndex,
                     StepName:     stepName,

@@ -163,8 +163,9 @@ internal sealed class FakeAgentClient(
         foreach (var step in plan.Steps)
         {
             var response = agent.ResponseFor(step.Name);
+            // Echo plan.DispatchId exactly like the real DeploymentExecutor (B2).
             subPlans.RecordStepResult(
-                plan.DeploymentId, agent.TargetId,
+                plan.DeploymentId, agent.TargetId, plan.DispatchId,
                 new SubPlanStepResult(
                     StepIndex:    step.Index,
                     StepName:     step.Name,
@@ -180,8 +181,8 @@ internal sealed class FakeAgentClient(
             }
         }
 
-        subPlans.TryResolve(
-            plan.DeploymentId, agent.TargetId,
+        subPlans.RouteCompletion(
+            plan.DeploymentId, agent.TargetId, plan.DispatchId,
             new SubPlanResult(allSuccess, firstError));
 
         // Optional offline-after-N-waves simulation: agent drops its

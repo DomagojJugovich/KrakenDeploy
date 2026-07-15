@@ -244,12 +244,12 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
             => Task.CompletedTask;
 
         public Task CompleteDeploymentAsync(
-            Guid deploymentId, bool success, string? errorMessage, CancellationToken ct)
+            Guid deploymentId, Guid dispatchId, bool success, string? errorMessage, CancellationToken ct)
             => Task.CompletedTask;
 
         public Task ReportStepCompletedAsync(
-            Guid deploymentId, int stepIndex, string stepName, bool success, string? errorMessage,
-            IReadOnlyDictionary<string, string> outputVariables,
+            Guid deploymentId, Guid dispatchId, int stepIndex, string stepName, bool success,
+            string? errorMessage, IReadOnlyDictionary<string, string> outputVariables,
             IReadOnlyCollection<string> sensitiveOutputNames, CancellationToken ct)
             => Task.CompletedTask;
 

@@ -32,7 +32,21 @@ public sealed record DeploymentPlan(
     /// it (prior no-masking behaviour); a newer agent reading an older plan masks
     /// nothing extra.
     /// </summary>
-    IReadOnlyCollection<string>? SensitiveVariableNames = null);
+    IReadOnlyCollection<string>? SensitiveVariableNames = null,
+    /// <summary>
+    /// B2 (pulled forward from B6.2) — per-DISPATCH idempotency key. The server
+    /// stamps a fresh id on every dispatch ATTEMPT (wave retries re-dispatch the
+    /// same steps under a new id); the agent echoes it in
+    /// <c>CompleteDeploymentAsync</c> / <c>ReportStepCompletedAsync</c> so the
+    /// server can (a) match a completion to the attempt that produced it — a
+    /// stale completion from a previous attempt cannot resolve the current
+    /// attempt's pending sub-plan — and (b) swallow duplicates created by the
+    /// agent's at-least-once report outbox instead of letting them fall through
+    /// to the DB fallback finalizer. <see cref="Guid.Empty"/> (default) means
+    /// "no key": offline bundles and pre-B2 plans keep today's match-by-
+    /// (deployment, target) behaviour.
+    /// </summary>
+    Guid DispatchId = default);
 
 /// <summary>
 /// One step within a <see cref="DeploymentPlan"/>.

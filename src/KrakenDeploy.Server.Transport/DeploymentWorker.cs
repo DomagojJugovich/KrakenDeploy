@@ -1764,9 +1764,17 @@ public sealed class DeploymentWorker(
         var attempt = 0;
         while (true)
         {
+            // B2 (B6.2): fresh idempotency key per dispatch ATTEMPT. Wave
+            // retries re-dispatch the same steps under the same
+            // (deployment, target) slot key — a late completion of a previous
+            // attempt (e.g. buffered on a disconnected agent and flushed on
+            // reconnect) must not resolve THIS attempt's TCS, and a duplicate
+            // must not reach the hub's DB fallback finalizer.
+            var attemptPlan = subPlan with { DispatchId = Guid.NewGuid() };
+
             var tcs = new TaskCompletionSource<SubPlanResult>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
-            subPlans.Register(deployment.Id, targetId, tcs);
+            subPlans.Register(deployment.Id, targetId, attemptPlan.DispatchId, tcs);
 
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             if (waveTimeoutSeconds > 0)
@@ -1778,7 +1786,7 @@ public sealed class DeploymentWorker(
             try
             {
                 await agentHub.Clients.Client(connectionId)
-                    .RunDeploymentAsync(subPlan).ConfigureAwait(false);
+                    .RunDeploymentAsync(attemptPlan).ConfigureAwait(false);
 
                 using var ctr = linkedCts.Token.Register(
                     () => tcs.TrySetCanceled(linkedCts.Token));

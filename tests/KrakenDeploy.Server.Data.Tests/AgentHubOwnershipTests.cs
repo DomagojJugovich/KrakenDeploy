@@ -46,7 +46,7 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
 
         // foreign target is NOT in the deployment's target set.
         await BuildHub(postgres, g.Foreign.Id)
-            .CompleteDeploymentAsync(g.DeploymentId, success: true, errorMessage: null);
+            .CompleteDeploymentAsync(g.DeploymentId, Guid.Empty, success: true, errorMessage: null);
 
         await using var db = harness.CreateContext();
         var dep = await db.Deployments.IgnoreQueryFilters()
@@ -63,7 +63,7 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
         var g = await SeedAsync(harness);
 
         await BuildHub(postgres, g.Primary.Id)
-            .CompleteDeploymentAsync(g.DeploymentId, success: false, errorMessage: "boom");
+            .CompleteDeploymentAsync(g.DeploymentId, Guid.Empty, success: false, errorMessage: "boom");
 
         await using var db = harness.CreateContext();
         var dep = await db.Deployments.IgnoreQueryFilters()
@@ -80,7 +80,7 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
         var g = await SeedAsync(harness);
 
         await BuildHub(postgres, g.Secondary.Id)
-            .CompleteDeploymentAsync(g.DeploymentId, success: false, errorMessage: "boom");
+            .CompleteDeploymentAsync(g.DeploymentId, Guid.Empty, success: false, errorMessage: "boom");
 
         await using var db = harness.CreateContext();
         var dep = await db.Deployments.IgnoreQueryFilters()
@@ -132,7 +132,7 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
         var g = await SeedAsync(harness);
 
         await BuildHub(postgres, g.Foreign.Id).ReportStepCompletedAsync(
-            g.DeploymentId, 0, "Deploy", success: true, errorMessage: null,
+            g.DeploymentId, Guid.Empty, 0, "Deploy", success: true, errorMessage: null,
             outputVariables: new Dictionary<string, string> { ["Injected"] = "evil" },
             sensitiveOutputNames: []);
 
@@ -149,7 +149,7 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
         var g = await SeedAsync(harness);
 
         await BuildHub(postgres, g.Primary.Id).ReportStepCompletedAsync(
-            g.DeploymentId, 0, "Deploy", success: true, errorMessage: null,
+            g.DeploymentId, Guid.Empty, 0, "Deploy", success: true, errorMessage: null,
             outputVariables: new Dictionary<string, string> { ["Url"] = "https://x" },
             sensitiveOutputNames: []);
 
@@ -171,7 +171,7 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
         const string plain  = "https://public.example";
 
         await BuildHub(postgres, g.Primary.Id).ReportStepCompletedAsync(
-            g.DeploymentId, 0, "Deploy", success: true, errorMessage: null,
+            g.DeploymentId, Guid.Empty, 0, "Deploy", success: true, errorMessage: null,
             outputVariables: new Dictionary<string, string>
             {
                 ["Token"] = secret,
@@ -300,15 +300,16 @@ file sealed class OwnershipFakeHubCallerContext(Guid targetId) : HubCallerContex
     public override void Abort() { }
 }
 
-/// <summary>Sub-plan registry whose TryResolve always returns false, forcing
-/// CompleteDeploymentAsync down the direct-write (legacy) path where the
-/// ownership gate lives; all other members are harmless no-ops.</summary>
+/// <summary>Sub-plan registry whose RouteCompletion always reports no pending
+/// sub-plan, forcing CompleteDeploymentAsync down the direct-write (legacy)
+/// path where the ownership gate lives; all other members are harmless no-ops.</summary>
 file sealed class FalseSubPlanRegistry : IPendingSubPlanRegistry
 {
-    public void Register(Guid deploymentId, Guid targetId, TaskCompletionSource<SubPlanResult> tcs) { }
-    public bool TryResolve(Guid deploymentId, Guid targetId, SubPlanResult result) => false;
+    public void Register(Guid deploymentId, Guid targetId, Guid dispatchId, TaskCompletionSource<SubPlanResult> tcs) { }
+    public SubPlanCompletionRoute RouteCompletion(Guid deploymentId, Guid targetId, Guid dispatchId, SubPlanResult result)
+        => SubPlanCompletionRoute.NoPendingSubPlan;
     public void Cancel(Guid deploymentId, Guid targetId, string reason) { }
-    public void RecordStepResult(Guid deploymentId, Guid targetId, SubPlanStepResult result) { }
+    public void RecordStepResult(Guid deploymentId, Guid targetId, Guid dispatchId, SubPlanStepResult result) { }
     public IReadOnlyList<SubPlanStepResult> DrainStepResults(Guid deploymentId, Guid targetId)
         => [];
     public bool HasSlot(Guid deploymentId, Guid targetId) => false;

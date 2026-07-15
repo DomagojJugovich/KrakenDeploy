@@ -18,17 +18,19 @@ public sealed class PendingSubPlanRegistryMultiTargetTests
         var deploymentId = Guid.NewGuid();
         var targetA = Guid.NewGuid();
         var targetB = Guid.NewGuid();
+        var dispatchA = Guid.NewGuid();
+        var dispatchB = Guid.NewGuid();
 
         var tcsA = new TaskCompletionSource<SubPlanResult>();
         var tcsB = new TaskCompletionSource<SubPlanResult>();
-        registry.Register(deploymentId, targetA, tcsA);
-        registry.Register(deploymentId, targetB, tcsB);
+        registry.Register(deploymentId, targetA, dispatchA, tcsA);
+        registry.Register(deploymentId, targetB, dispatchB, tcsB);
 
-        registry.RecordStepResult(deploymentId, targetA, MakeResult(0, "A-step", true));
-        registry.RecordStepResult(deploymentId, targetB, MakeResult(0, "B-step", false));
+        registry.RecordStepResult(deploymentId, targetA, dispatchA, MakeResult(0, "A-step", true));
+        registry.RecordStepResult(deploymentId, targetB, dispatchB, MakeResult(0, "B-step", false));
 
-        registry.TryResolve(deploymentId, targetA, new SubPlanResult(true, null))
-            .Should().BeTrue();
+        registry.RouteCompletion(deploymentId, targetA, dispatchA, new SubPlanResult(true, null))
+            .Should().Be(SubPlanCompletionRoute.ResolvedPending);
 
         var resolvedA = await tcsA.Task;
         resolvedA.Success.Should().BeTrue();
@@ -53,8 +55,8 @@ public sealed class PendingSubPlanRegistryMultiTargetTests
 
         var tcsA = new TaskCompletionSource<SubPlanResult>();
         var tcsB = new TaskCompletionSource<SubPlanResult>();
-        registry.Register(deploymentId, targetA, tcsA);
-        registry.Register(deploymentId, targetB, tcsB);
+        registry.Register(deploymentId, targetA, Guid.NewGuid(), tcsA);
+        registry.Register(deploymentId, targetB, Guid.NewGuid(), tcsB);
 
         registry.Cancel(deploymentId, targetA, "abort A");
 
@@ -77,10 +79,11 @@ public sealed class PendingSubPlanRegistryMultiTargetTests
         var deploymentId = Guid.NewGuid();
         var targetA = Guid.NewGuid();
         var targetB = Guid.NewGuid();
+        var dispatchA = Guid.NewGuid();
 
-        registry.Register(deploymentId, targetA, new TaskCompletionSource<SubPlanResult>());
+        registry.Register(deploymentId, targetA, dispatchA, new TaskCompletionSource<SubPlanResult>());
 
-        registry.RecordStepResult(deploymentId, targetB, MakeResult(0, "ghost-B", true));
+        registry.RecordStepResult(deploymentId, targetB, dispatchA, MakeResult(0, "ghost-B", true));
 
         registry.DrainStepResults(deploymentId, targetA).Should().BeEmpty();
         registry.DrainStepResults(deploymentId, targetB).Should().BeEmpty();

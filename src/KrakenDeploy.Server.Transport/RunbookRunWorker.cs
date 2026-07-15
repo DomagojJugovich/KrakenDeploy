@@ -294,13 +294,17 @@ public sealed class RunbookRunWorker(
             }
 
             // The plan uses RunbookRun.Id as DeploymentId — AgentHub resolves both tables.
+            // B2: runbook runs get a DispatchId too (uniform logging / dedup), but no
+            // sub-plan slot is registered — their completion takes the hub's direct
+            // finalize path by design, where the IsTerminal guard dedups.
             var plan = new DeploymentPlan(
                 DeploymentId: run.Id,
                 EnvironmentName: run.Environment.Name,
                 Steps: steps,
                 Variables: flatVars,
                 ArrayVariables: arrayVars,
-                SensitiveVariableNames: stepResolution.SensitiveNames);
+                SensitiveVariableNames: stepResolution.SensitiveNames,
+                DispatchId: Guid.NewGuid());
 
             // ── B1: atomic claim (Queued→Running) ──────────────────────────
             // Exactly one wake-up wins the row; a duplicate enqueue or a row no

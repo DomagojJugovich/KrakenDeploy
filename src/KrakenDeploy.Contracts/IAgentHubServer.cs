@@ -30,8 +30,18 @@ public interface IAgentHubServer
     /// <summary>
     /// Called by the agent when all steps have finished (or a step has failed).
     /// The server transitions the deployment to <c>Succeeded</c> or <c>Failed</c>.
+    /// <para>
+    /// B2 (B6.2 pulled forward) — <paramref name="dispatchId"/> echoes
+    /// <see cref="DeploymentPlan.DispatchId"/> so the server resolves exactly
+    /// the dispatch attempt that produced this completion: stale completions
+    /// from a previous wave attempt and duplicates from the agent's
+    /// at-least-once report outbox are swallowed instead of resolving the
+    /// wrong TCS or reaching the DB fallback finalizer.
+    /// <see cref="Guid.Empty"/> = legacy/offline plan without a key.
+    /// </para>
     /// </summary>
-    Task CompleteDeploymentAsync(Guid deploymentId, bool success, string? errorMessage);
+    Task CompleteDeploymentAsync(
+        Guid deploymentId, Guid dispatchId, bool success, string? errorMessage);
 
     /// <summary>
     /// M14.4 — reports the per-step boundary back to the server: success/
@@ -56,6 +66,12 @@ public interface IAgentHubServer
     /// inside ForEach iterations (M15) or duplicate-name authoring.
     /// </para>
     /// </summary>
+    /// <param name="dispatchId">
+    /// B2 (B6.2 pulled forward) — echoes <see cref="DeploymentPlan.DispatchId"/>;
+    /// the server records the per-step outcome only against the MATCHING
+    /// dispatch attempt, so stale step reports from a previous wave attempt
+    /// cannot pollute the current attempt's attribution bag.
+    /// </param>
     /// <param name="sensitiveOutputNames">
     /// T0-6: subset of <paramref name="outputVariables"/> keys emitted with
     /// <c>Set-OctopusVariable -sensitive</c>. The server encrypts those values
@@ -63,6 +79,7 @@ public interface IAgentHubServer
     /// </param>
     Task ReportStepCompletedAsync(
         Guid deploymentId,
+        Guid dispatchId,
         int stepIndex,
         string stepName,
         bool success,

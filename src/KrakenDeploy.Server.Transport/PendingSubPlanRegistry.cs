@@ -55,23 +55,46 @@ public sealed record SubPlanStepResult(
 public interface IPendingSubPlanRegistry
 {
     /// <summary>
-    /// Register a TCS that <see cref="TryResolve"/> will complete when the
-    /// agent reports sub-plan completion. Clears any per-step results left
-    /// over from a previous wave so the new wave starts with an empty bag.
+    /// Register a TCS that <see cref="RouteCompletion"/> will complete when the
+    /// agent reports sub-plan completion for this exact dispatch attempt.
+    /// Clears any per-step results left over from a previous wave so the new
+    /// wave starts with an empty bag.
+    /// <paramref name="dispatchId"/> is the attempt's idempotency key
+    /// (<see cref="KrakenDeploy.Contracts.DeploymentPlan.DispatchId"/>);
+    /// <see cref="Guid.Empty"/> preserves the legacy match-by-(deployment,
+    /// target) behaviour for callers without a key.
     /// </summary>
-    void Register(Guid deploymentId, Guid targetId, TaskCompletionSource<SubPlanResult> tcs);
+    void Register(Guid deploymentId, Guid targetId, Guid dispatchId, TaskCompletionSource<SubPlanResult> tcs);
 
     /// <summary>
-    /// Resolve a pending TCS if one is registered. Returns <c>true</c> if a
-    /// TCS was waiting (caller should NOT finalize the deployment); <c>false</c>
-    /// if the deployment was not running a sub-plan (caller should finalize
-    /// as usual).
+    /// B2 (B6.2 pulled forward) — route an agent completion to the pending
+    /// sub-plan state:
+    /// <list type="bullet">
+    /// <item><see cref="SubPlanCompletionRoute.ResolvedPending"/> — a slot for
+    /// this exact dispatch attempt was waiting and has been resolved; the
+    /// caller must NOT finalize the deployment (the orchestrator will).</item>
+    /// <item><see cref="SubPlanCompletionRoute.StaleOrDuplicate"/> — the
+    /// completion belongs to an attempt that was already resolved/cancelled,
+    /// or to a different attempt than the one currently awaited; the caller
+    /// must swallow it (finalizing would corrupt a mid-flight deployment).</item>
+    /// <item><see cref="SubPlanCompletionRoute.NoPendingSubPlan"/> — nothing
+    /// here knows the dispatch; the caller falls back to the direct DB
+    /// finalize (runbook runs, post-restart lates — both guarded by
+    /// <c>IsTerminal</c> downstream).</item>
+    /// </list>
+    /// An <paramref name="dispatchId"/> of <see cref="Guid.Empty"/> (legacy
+    /// agent / offline-era plan) matches whatever slot is open for the
+    /// (deployment, target) pair — the pre-B2 behaviour.
     /// </summary>
-    bool TryResolve(Guid deploymentId, Guid targetId, SubPlanResult result);
+    SubPlanCompletionRoute RouteCompletion(
+        Guid deploymentId, Guid targetId, Guid dispatchId, SubPlanResult result);
 
     /// <summary>
     /// Forcefully cancel any pending TCS for this (deployment, target) pair
-    /// (used on cleanup when the worker bails out of a dispatch loop).
+    /// (used on cleanup when the worker bails out of a dispatch loop). The
+    /// cancelled attempt's dispatch id is retired, so a late completion for it
+    /// routes as <see cref="SubPlanCompletionRoute.StaleOrDuplicate"/> instead
+    /// of reaching the DB fallback finalizer.
     /// </summary>
     void Cancel(Guid deploymentId, Guid targetId, string reason);
 
@@ -80,9 +103,11 @@ public interface IPendingSubPlanRegistry
     /// <c>AgentHub.ReportStepCompletedAsync</c>. Silently no-ops if no
     /// sub-plan is currently registered for the (deployment, target) pair
     /// (e.g. the wave already timed out and was cancelled — late reports are
-    /// dropped).
+    /// dropped) or if <paramref name="dispatchId"/> does not match the
+    /// registered attempt (stale report from a previous wave attempt).
+    /// <see cref="Guid.Empty"/> matches any open slot (legacy behaviour).
     /// </summary>
-    void RecordStepResult(Guid deploymentId, Guid targetId, SubPlanStepResult result);
+    void RecordStepResult(Guid deploymentId, Guid targetId, Guid dispatchId, SubPlanStepResult result);
 
     /// <summary>
     /// M14.4 — drain the per-step outcomes accumulated for the currently
@@ -106,53 +131,107 @@ public interface IPendingSubPlanRegistry
     bool HasSlot(Guid deploymentId, Guid targetId);
 }
 
+/// <summary>How <see cref="IPendingSubPlanRegistry.RouteCompletion"/> classified
+/// an agent completion — drives <c>AgentHub.CompleteDeploymentAsync</c>.</summary>
+public enum SubPlanCompletionRoute
+{
+    /// <summary>The awaited attempt's slot was resolved; the orchestrator continues.</summary>
+    ResolvedPending,
+
+    /// <summary>Already resolved/cancelled attempt, or a different attempt than
+    /// the awaited one — swallow; never finalize from this.</summary>
+    StaleOrDuplicate,
+
+    /// <summary>No sub-plan state knows this dispatch — direct DB finalize path
+    /// (runbook runs, post-restart lates; IsTerminal-guarded downstream).</summary>
+    NoPendingSubPlan,
+}
+
 public sealed class PendingSubPlanRegistry : IPendingSubPlanRegistry
 {
-    private readonly ConcurrentDictionary<(Guid DeploymentId, Guid TargetId), TaskCompletionSource<SubPlanResult>> _pending = new();
+    private sealed record Slot(Guid DispatchId, TaskCompletionSource<SubPlanResult> Tcs);
+
+    private readonly ConcurrentDictionary<(Guid DeploymentId, Guid TargetId), Slot> _pending = new();
     // Per-(deployment, target) per-step results bag. Survives until the next
-    // Register call clears it, so the orchestrator can drain after TryResolve.
+    // Register call clears it, so the orchestrator can drain after RouteCompletion.
     private readonly ConcurrentDictionary<(Guid DeploymentId, Guid TargetId), List<SubPlanStepResult>> _stepResults = new();
 
-    public void Register(Guid deploymentId, Guid targetId, TaskCompletionSource<SubPlanResult> tcs)
+    // B2: dispatch ids whose attempt ended (resolved or cancelled). A late or
+    // duplicate completion carrying one of these is swallowed. Process-lifetime
+    // and bounded: after a server restart the set is empty, but then the TCS is
+    // gone too and the dispatch reconciler + IsTerminal guard own the outcome.
+    private const int RetiredCapacity = 4096;
+    private readonly ConcurrentDictionary<Guid, byte> _retired = new();
+    private readonly ConcurrentQueue<Guid> _retiredOrder = new();
+
+    public void Register(Guid deploymentId, Guid targetId, Guid dispatchId, TaskCompletionSource<SubPlanResult> tcs)
     {
         ArgumentNullException.ThrowIfNull(tcs);
         var key = (deploymentId, targetId);
         // Overwrite any stale entry (should not normally happen — caller
         // guarantees only one sub-plan per (deployment, target) at a time).
-        _pending[key] = tcs;
+        _pending[key] = new Slot(dispatchId, tcs);
         // New wave starts with a clean per-step bag.
         _stepResults[key] = [];
     }
 
-    public bool TryResolve(Guid deploymentId, Guid targetId, SubPlanResult result)
+    public SubPlanCompletionRoute RouteCompletion(
+        Guid deploymentId, Guid targetId, Guid dispatchId, SubPlanResult result)
     {
         ArgumentNullException.ThrowIfNull(result);
-        if (_pending.TryRemove((deploymentId, targetId), out var tcs))
+        var key = (deploymentId, targetId);
+
+        if (_pending.TryGetValue(key, out var slot))
         {
-            tcs.TrySetResult(result);
-            return true;
+            if (!Matches(slot.DispatchId, dispatchId))
+            {
+                // A slot is open but for a DIFFERENT attempt — this completion
+                // is from a previous (timed-out / re-dispatched) attempt. It
+                // must neither resolve the current attempt nor fall through to
+                // the DB fallback (the deployment is mid-flight).
+                return SubPlanCompletionRoute.StaleOrDuplicate;
+            }
+
+            // Remove-if-same-slot: a concurrent Register (next attempt) may
+            // have replaced the slot between TryGetValue and here — in that
+            // case this completion just became stale.
+            if (_pending.TryRemove(new KeyValuePair<(Guid, Guid), Slot>(key, slot)))
+            {
+                Retire(slot.DispatchId);
+                slot.Tcs.TrySetResult(result);
+                return SubPlanCompletionRoute.ResolvedPending;
+            }
+            return SubPlanCompletionRoute.StaleOrDuplicate;
         }
-        return false;
+
+        if (dispatchId != Guid.Empty && _retired.ContainsKey(dispatchId))
+        {
+            return SubPlanCompletionRoute.StaleOrDuplicate;
+        }
+
+        return SubPlanCompletionRoute.NoPendingSubPlan;
     }
 
     public void Cancel(Guid deploymentId, Guid targetId, string reason)
     {
-        if (_pending.TryRemove((deploymentId, targetId), out var tcs))
+        if (_pending.TryRemove((deploymentId, targetId), out var slot))
         {
-            tcs.TrySetResult(new SubPlanResult(false, reason));
+            Retire(slot.DispatchId);
+            slot.Tcs.TrySetResult(new SubPlanResult(false, reason));
         }
     }
 
-    public void RecordStepResult(Guid deploymentId, Guid targetId, SubPlanStepResult result)
+    public void RecordStepResult(Guid deploymentId, Guid targetId, Guid dispatchId, SubPlanStepResult result)
     {
         ArgumentNullException.ThrowIfNull(result);
         var key = (deploymentId, targetId);
-        // Append iff a sub-plan is currently in flight — otherwise we'd leak
-        // unbounded state from late reports of cancelled waves. The
-        // _pending check is the in-flight gate; the _stepResults bag is
-        // populated by Register so the absence of _pending means "nobody's
-        // listening".
-        if (!_pending.ContainsKey(key))
+        // Append iff a sub-plan is currently in flight FOR THIS ATTEMPT —
+        // otherwise we'd leak unbounded state from late reports of cancelled
+        // waves, or pollute a retried attempt's bag with a previous attempt's
+        // stale reports. The _pending check is the in-flight gate; the
+        // _stepResults bag is populated by Register so the absence of
+        // _pending means "nobody's listening".
+        if (!_pending.TryGetValue(key, out var slot) || !Matches(slot.DispatchId, dispatchId))
         {
             return;
         }
@@ -181,4 +260,30 @@ public sealed class PendingSubPlanRegistry : IPendingSubPlanRegistry
 
     public bool HasSlot(Guid deploymentId, Guid targetId)
         => _pending.ContainsKey((deploymentId, targetId));
+
+    // ── Helpers ─────────────────────────────────────────────────────────────
+
+    /// <summary>An incoming Guid.Empty (legacy agent / offline-era plan) matches
+    /// any open slot — the pre-B2 behaviour. A non-empty id must match exactly.</summary>
+    private static bool Matches(Guid slotDispatchId, Guid incomingDispatchId)
+        => incomingDispatchId == Guid.Empty || slotDispatchId == incomingDispatchId;
+
+    private void Retire(Guid dispatchId)
+    {
+        // Guid.Empty is the shared "no key" marker — never retire it, or every
+        // legacy completion after the first would be misread as a duplicate.
+        if (dispatchId == Guid.Empty)
+        {
+            return;
+        }
+        if (_retired.TryAdd(dispatchId, 0))
+        {
+            _retiredOrder.Enqueue(dispatchId);
+            while (_retiredOrder.Count > RetiredCapacity
+                   && _retiredOrder.TryDequeue(out var evicted))
+            {
+                _retired.TryRemove(evicted, out _);
+            }
+        }
+    }
 }

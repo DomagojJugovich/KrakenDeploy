@@ -171,6 +171,7 @@ public sealed class DeploymentExecutor(
             await serverLink
                 .CompleteDeploymentAsync(
                     plan.DeploymentId,
+                    plan.DispatchId,
                     success:      deploymentSucceeded,
                     errorMessage: firstFailureMessage,
                     ct)
@@ -183,7 +184,7 @@ public sealed class DeploymentExecutor(
             try
             {
                 await serverLink
-                    .CompleteDeploymentAsync(plan.DeploymentId, false, ex.Message,
+                    .CompleteDeploymentAsync(plan.DeploymentId, plan.DispatchId, false, ex.Message,
                         CancellationToken.None)
                     .ConfigureAwait(false);
             }
@@ -352,6 +353,7 @@ public sealed class DeploymentExecutor(
         {
             await serverLink.ReportStepCompletedAsync(
                 basePlan.DeploymentId,
+                basePlan.DispatchId,
                 stepIndex:            step.Index,
                 stepName:             reportingKey,
                 success:              success,

@@ -73,6 +73,7 @@ public sealed class FileSystemServerLink(
 
     public Task ReportStepCompletedAsync(
         Guid deploymentId,
+        Guid dispatchId,
         int stepIndex,
         string stepName,
         bool success,
@@ -81,6 +82,7 @@ public sealed class FileSystemServerLink(
         IReadOnlyCollection<string> sensitiveOutputNames,
         CancellationToken ct)
     {
+        _ = dispatchId; // offline: no wire, no attempt correlation — result file is per-run
         _steps[stepIndex] = new OfflineStepResult
         {
             StepIndex = stepIndex,
@@ -94,8 +96,9 @@ public sealed class FileSystemServerLink(
     }
 
     public async Task CompleteDeploymentAsync(
-        Guid deploymentId, bool success, string? errorMessage, CancellationToken ct)
+        Guid deploymentId, Guid dispatchId, bool success, string? errorMessage, CancellationToken ct)
     {
+        _ = dispatchId; // offline: reconciliation happens via the signed result upload
         var result = new OfflineDropResult
         {
             DeploymentId = deploymentId,

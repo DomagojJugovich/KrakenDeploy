@@ -199,16 +199,17 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
     }
 
     public Task CompleteDeploymentAsync(
-        Guid deploymentId, bool success, string? errorMessage, CancellationToken ct)
+        Guid deploymentId, Guid dispatchId, bool success, string? errorMessage, CancellationToken ct)
     {
         return _connection is not null
             ? _connection.InvokeAsync("CompleteDeploymentAsync",
-                deploymentId, success, errorMessage, ct)
+                deploymentId, dispatchId, success, errorMessage, ct)
             : Task.CompletedTask;
     }
 
     public Task ReportStepCompletedAsync(
         Guid deploymentId,
+        Guid dispatchId,
         int stepIndex,
         string stepName,
         bool success,
@@ -237,7 +238,7 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
 
         return _connection.InvokeAsync(
             "ReportStepCompletedAsync",
-            deploymentId, stepIndex, stepName, success, errorMessage, payload, sensitive, ct);
+            deploymentId, dispatchId, stepIndex, stepName, success, errorMessage, payload, sensitive, ct);
     }
 
     public Task ReportAdhocResultAsync(AdhocScriptResult result, CancellationToken ct)

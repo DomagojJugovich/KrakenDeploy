@@ -21,6 +21,7 @@ namespace KrakenDeploy.Server.Tests;
 public sealed class PendingSubPlanRegistryStepResultsTests
 {
     private static readonly Guid TargetId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    private static readonly Guid DispatchId = Guid.Parse("22222222-2222-2222-2222-222222222222");
 
     [Fact]
     public void RecordStepResult_without_Register_is_dropped()
@@ -31,7 +32,7 @@ public sealed class PendingSubPlanRegistryStepResultsTests
         var registry = new PendingSubPlanRegistry();
         var deploymentId = Guid.NewGuid();
 
-        registry.RecordStepResult(deploymentId, TargetId, MakeResult(0, "ghost", true));
+        registry.RecordStepResult(deploymentId, TargetId, DispatchId, MakeResult(0, "ghost", true));
 
         registry.DrainStepResults(deploymentId, TargetId).Should().BeEmpty();
     }
@@ -44,13 +45,13 @@ public sealed class PendingSubPlanRegistryStepResultsTests
 
         // First wave: register, record one result, never drain.
         var firstTcs = new TaskCompletionSource<SubPlanResult>();
-        registry.Register(deploymentId, TargetId, firstTcs);
-        registry.RecordStepResult(deploymentId, TargetId, MakeResult(0, "first", true));
+        registry.Register(deploymentId, TargetId, DispatchId, firstTcs);
+        registry.RecordStepResult(deploymentId, TargetId, DispatchId, MakeResult(0, "first", true));
 
         // Second wave: re-register. The bag should be clean even though
         // the first wave's result was never drained.
         var secondTcs = new TaskCompletionSource<SubPlanResult>();
-        registry.Register(deploymentId, TargetId, secondTcs);
+        registry.Register(deploymentId, TargetId, DispatchId, secondTcs);
 
         registry.DrainStepResults(deploymentId, TargetId).Should().BeEmpty();
     }
@@ -61,11 +62,11 @@ public sealed class PendingSubPlanRegistryStepResultsTests
         var registry = new PendingSubPlanRegistry();
         var deploymentId = Guid.NewGuid();
         var tcs = new TaskCompletionSource<SubPlanResult>();
-        registry.Register(deploymentId, TargetId, tcs);
+        registry.Register(deploymentId, TargetId, DispatchId, tcs);
 
-        registry.RecordStepResult(deploymentId, TargetId, MakeResult(2, "C", true));
-        registry.RecordStepResult(deploymentId, TargetId, MakeResult(0, "A", false));
-        registry.RecordStepResult(deploymentId, TargetId, MakeResult(1, "B", true));
+        registry.RecordStepResult(deploymentId, TargetId, DispatchId, MakeResult(2, "C", true));
+        registry.RecordStepResult(deploymentId, TargetId, DispatchId, MakeResult(0, "A", false));
+        registry.RecordStepResult(deploymentId, TargetId, DispatchId, MakeResult(1, "B", true));
 
         var drained = registry.DrainStepResults(deploymentId, TargetId);
 
@@ -81,30 +82,30 @@ public sealed class PendingSubPlanRegistryStepResultsTests
         var registry = new PendingSubPlanRegistry();
         var deploymentId = Guid.NewGuid();
         var tcs = new TaskCompletionSource<SubPlanResult>();
-        registry.Register(deploymentId, TargetId, tcs);
+        registry.Register(deploymentId, TargetId, DispatchId, tcs);
 
-        registry.RecordStepResult(deploymentId, TargetId, MakeResult(0, "A", true));
+        registry.RecordStepResult(deploymentId, TargetId, DispatchId, MakeResult(0, "A", true));
 
         registry.DrainStepResults(deploymentId, TargetId).Should().HaveCount(1);
         registry.DrainStepResults(deploymentId, TargetId).Should().BeEmpty();
     }
 
     [Fact]
-    public void TryResolve_then_Drain_returns_the_accumulated_results()
+    public void RouteCompletion_then_Drain_returns_the_accumulated_results()
     {
         // The orchestrator's typical happy path: Register → agent sends
-        // per-step + final → TryResolve fires the TCS → Drain returns
+        // per-step + final → RouteCompletion fires the TCS → Drain returns
         // the wave's per-step reports for the Required + collision pass.
         var registry = new PendingSubPlanRegistry();
         var deploymentId = Guid.NewGuid();
         var tcs = new TaskCompletionSource<SubPlanResult>();
-        registry.Register(deploymentId, TargetId, tcs);
+        registry.Register(deploymentId, TargetId, DispatchId, tcs);
 
-        registry.RecordStepResult(deploymentId, TargetId, MakeResult(0, "A", true));
-        registry.RecordStepResult(deploymentId, TargetId, MakeResult(1, "B", false));
+        registry.RecordStepResult(deploymentId, TargetId, DispatchId, MakeResult(0, "A", true));
+        registry.RecordStepResult(deploymentId, TargetId, DispatchId, MakeResult(1, "B", false));
 
-        registry.TryResolve(deploymentId, TargetId, new SubPlanResult(false, "B failed"))
-            .Should().BeTrue();
+        registry.RouteCompletion(deploymentId, TargetId, DispatchId, new SubPlanResult(false, "B failed"))
+            .Should().Be(SubPlanCompletionRoute.ResolvedPending);
 
         var drained = registry.DrainStepResults(deploymentId, TargetId);
         drained.Should().HaveCount(2);

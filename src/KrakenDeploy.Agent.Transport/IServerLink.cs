@@ -51,9 +51,12 @@ public interface IServerLink : IAsyncDisposable
     /// to (-1 for plan-level lines) so the server can compact logs per step.</summary>
     Task AppendLogAsync(Guid deploymentId, int stepIndex, string level, string message, CancellationToken ct);
 
-    /// <summary>Reports deployment completion (success or failure) to the server.</summary>
+    /// <summary>Reports deployment completion (success or failure) to the server.
+    /// <paramref name="dispatchId"/> echoes <c>DeploymentPlan.DispatchId</c> so the
+    /// server matches the completion to the dispatch attempt that produced it
+    /// (B2 — stale/duplicate completions are swallowed server-side).</summary>
     Task CompleteDeploymentAsync(
-        Guid deploymentId, bool success, string? errorMessage, CancellationToken ct);
+        Guid deploymentId, Guid dispatchId, bool success, string? errorMessage, CancellationToken ct);
 
     /// <summary>
     /// M14.4 — reports per-step boundary: success/failure outcome, optional
@@ -71,6 +74,7 @@ public interface IServerLink : IAsyncDisposable
     /// </summary>
     Task ReportStepCompletedAsync(
         Guid deploymentId,
+        Guid dispatchId,
         int stepIndex,
         string stepName,
         bool success,
