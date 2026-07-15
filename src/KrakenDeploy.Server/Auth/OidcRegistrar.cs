@@ -495,6 +495,18 @@ public static class OidcRegistrar
 
                 await userManager.UpdateAsync(user);
 
+                // A7/T1-13: refuse OIDC sign-in for administratively disabled
+                // accounts (offboarded users must not re-enter via SSO).
+                if (user.IsDisabled)
+                {
+                    logger.LogWarning(
+                        "OIDC [{Scheme}]: refusing sign-in for disabled account {Email}.",
+                        scheme, email);
+                    context.Response.Redirect("/login?error=disabled");
+                    context.HandleResponse();
+                    return;
+                }
+
                 // ── 5. Sign in with the Identity application cookie ───────────
                 await signInMgr.SignInAsync(user, isPersistent: true);
 

@@ -297,6 +297,15 @@ public static class Program
         }
 
         // ── Authentication ───────────────────────────────────────────────────
+        // A7/T1-13: session-revocation revalidation interval. The cookie's
+        // SecurityStampValidator and the Blazor circuit's revalidating auth-state
+        // provider share it, so it is the effective revocation latency (a password
+        // reset / disable / stamp bump takes effect within this window). Sliding
+        // expiration keeps a live session alive indefinitely, so ExpireTimeSpan is
+        // NOT the revocation bound — this interval is.
+        var sessionRevalidation = TimeSpan.FromMinutes(
+            builder.Configuration.GetValue<int?>("Auth:SessionRevalidationMinutes") ?? 15);
+
         builder.Services.AddAuthentication(IdentityConstants.ApplicationScheme)
             .AddCookie(IdentityConstants.ApplicationScheme, options =>
             {
@@ -309,7 +318,16 @@ public static class Program
                 options.AccessDeniedPath = "/login";
                 options.ExpireTimeSpan = TimeSpan.FromDays(7);
                 options.SlidingExpiration = true;
+                // Re-validate the security stamp per interval: a bumped stamp
+                // (password reset / disable) rejects the cookie -> sign-out.
+                options.Events.OnValidatePrincipal = SecurityStampValidator.ValidatePrincipalAsync;
             });
+
+        // SecurityStampValidator machinery (AddIdentityCore doesn't register it;
+        // AddIdentity would). Needed by the cookie OnValidatePrincipal above.
+        builder.Services.Configure<SecurityStampValidatorOptions>(
+            o => o.ValidationInterval = sessionRevalidation);
+        builder.Services.AddScoped<ISecurityStampValidator, SecurityStampValidator<ApplicationUser>>();
 
         // The external-scheme cookie is needed by the OIDC sign-in flow
         // (used as an interim store between the IdP callback and our
@@ -643,6 +661,17 @@ public static class Program
             {
                 options.DetailedErrors = builder.Environment.IsDevelopment();
             });
+
+        // A7/T1-13: revalidate the circuit's principal against the DB on the same
+        // interval as the cookie stamp check, so a disabled account / reset
+        // password / stamp bump terminates a live interactive circuit (the
+        // framework default provider never re-checks after circuit start).
+        builder.Services.AddScoped<Microsoft.AspNetCore.Components.Authorization.AuthenticationStateProvider>(
+            sp => new KrakenDeploy.Server.Auth.RevalidatingIdentityAuthenticationStateProvider(
+                sp.GetRequiredService<ILoggerFactory>(),
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<IOptions<Microsoft.AspNetCore.Identity.IdentityOptions>>(),
+                sessionRevalidation));
 
         // Minimal-API JSON: tolerate EF navigation cycles. Endpoints that return
         // entity graphs with a bidirectional navigation (e.g. TagSet.Tags ↔

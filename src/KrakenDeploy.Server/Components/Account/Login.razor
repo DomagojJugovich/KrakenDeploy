@@ -228,6 +228,14 @@
             return;
         }
 
+        // A7/T1-13: refuse sign-in for administratively disabled accounts.
+        // (Kept generic-ish but explicit — an offboarded user should know why.)
+        if (user.IsDisabled)
+        {
+            _errorMessage = "This account has been disabled. Contact your administrator.";
+            return;
+        }
+
         var result = await SignInManager.PasswordSignInAsync(
             user, Input.Password, isPersistent: true, lockoutOnFailure: true);
 

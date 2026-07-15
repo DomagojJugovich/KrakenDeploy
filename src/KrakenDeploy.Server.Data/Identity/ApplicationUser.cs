@@ -24,6 +24,16 @@ public class ApplicationUser : IdentityUser<Guid>
     public UserKind Kind { get; set; } = UserKind.Human;
 
     /// <summary>
+    /// When true the account is administratively disabled (offboarded/suspended):
+    /// new password/OIDC sign-ins are refused, and existing sessions/circuits are
+    /// terminated on the next security-stamp revalidation. Distinct from Identity
+    /// lockout (which is failed-attempt driven and time-boxed). Defaults false so
+    /// existing rows migrate as enabled. Disabling also bumps the security stamp
+    /// (see <c>UserService.SetDisabledAsync</c>) so live sessions are revoked.
+    /// </summary>
+    public bool IsDisabled { get; set; }
+
+    /// <summary>
     /// The <see cref="KrakenDeploy.Server.Core.Domain.Security.IdentityProvider"/> used
     /// for the most recent OIDC sign-in.  Null for local (password) accounts.
     /// </summary>
