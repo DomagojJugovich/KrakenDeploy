@@ -143,12 +143,38 @@ verification entirely. Now:
 
 ## Operational notes
 
-- **Revoking an agent**: target → Connectivity → *Revoke agent access* (or the REST
-  endpoint). The live tunnel drops immediately; re-enroll the agent with a fresh
-  registration token.
-- **Upgrade**: agents must re-enroll to obtain a token carrying the `atv` claim (the
-  old validation was permissive; enforcement is now on). Pre-production, so no live
-  fleet is affected.
+### Re-enrollment is manual — not automatic
+
+An agent registers **only when it has no stored identity**: on startup
+`RegistrationHostedService` loads `agent.json` and, if an identity is present, uses
+that token and skips registration. An agent whose token the server now rejects
+(missing `atv`, wrong version, expired) therefore does **not** self-re-enroll — it
+retries the connection and keeps getting `401`. Re-enrollment is an operator action:
+
+1. Generate a fresh one-time registration token in the Targets UI for the target.
+2. On the agent host, delete `agent.json` from the data directory
+   (`Agent:DataPath`, default `%ProgramData%\KrakenDeploy\Agent` on Windows /
+   `/var/lib/krakendeploy-agent` on Unix).
+3. Restart the agent with the new token
+   (`--Server:RegistrationToken=<token>` or in `appsettings.json`).
+
+The agent then registers again and receives a token carrying `atv`. (A self-heal
+path isn't available anyway: the one-time token is consumed server-side after first
+use, so a running agent has nothing to re-register with.)
+
+> The DPAPI **content** migration (plaintext `agent.json` → protected) *is*
+> automatic on first read — that is separate from token re-enrollment, which turns
+> on the token's *claims*, not its at-rest encoding.
+
+- **Revoking an agent**: target → Connectivity → *Revoke agent access* (or
+  `POST /api/targets/{id}/revoke-agent-token`). The live tunnel drops immediately
+  and every outstanding token is rejected. The lockout is intended to persist until
+  an operator re-enrolls the agent (steps above) — a kill switch that auto-healed
+  would defeat the purpose.
+- **Upgrade from a pre-A8 agent**: existing tokens predate the `atv` claim, so
+  enabling this enforcement breaks already-enrolled agents until they are re-enrolled
+  (steps above). Pre-production, so there is no live fleet — but any dev/test agent
+  already enrolled must be re-enrolled after this upgrade.
 - **Windows service account**: DPAPI uses LocalMachine scope, so an account change
   does not strand `agent.json`; the `icacls` grant targets the running account, so
   re-run enrollment (or re-save) after changing the service identity.
