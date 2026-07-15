@@ -233,8 +233,7 @@ public sealed class AdhocTools
         }
     }
 
-    private static readonly JsonSerializerOptions JsonOpts =
-        new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOpts = McpJsonOptions.ForResources;
 }
 
 /// <summary>Result of <c>run_adhoc_action</c> — what the MCP caller gets back

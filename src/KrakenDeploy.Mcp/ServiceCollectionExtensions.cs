@@ -53,9 +53,15 @@ public static class ServiceCollectionExtensions
             Version = ResolveAssemblyVersion(mcpAssembly),
         };
 
+        // Tool results are marshalled by the SDK with the options passed here;
+        // McpJsonOptions.ForTools emits enums as names (matching REST). The
+        // WithResourcesFromAssembly overload takes no serializer options, but
+        // resources hand-serialize their payloads with McpJsonOptions.ForResources
+        // and return the text directly, so the SDK's resource marshalling never
+        // sees a domain enum.
         services.AddMcpServer(opts => opts.ServerInfo = serverInfo)
             .WithHttpTransport()
-            .WithToolsFromAssembly(mcpAssembly)
+            .WithToolsFromAssembly(mcpAssembly, McpJsonOptions.ForTools)
             .WithResourcesFromAssembly(mcpAssembly);
 
         return services;

@@ -26,7 +26,7 @@ namespace KrakenDeploy.Mcp.Resources;
 [McpServerResourceType]
 public sealed class StepConfigResources
 {
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions Json = McpJsonOptions.ForResources;
 
     [McpServerResource(
         UriTemplate = "kraken://projects/{projectSlug}/process/steps/{index}/config",

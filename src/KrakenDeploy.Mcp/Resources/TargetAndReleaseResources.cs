@@ -19,7 +19,7 @@ namespace KrakenDeploy.Mcp.Resources;
 [McpServerResourceType]
 public sealed class TargetAndReleaseResources
 {
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions Json = McpJsonOptions.ForResources;
 
     [McpServerResource(
         UriTemplate = "kraken://targets/{targetName}/health",

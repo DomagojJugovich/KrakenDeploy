@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.Text.Json;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Security;
@@ -231,10 +230,6 @@ public sealed class DeploymentTools
             $"sourceId={deploymentId}, newId={child.Id}", "ok", ct).ConfigureAwait(false);
         return new RetryDeploymentResultDto(child.Id, source.Id);
     }
-
-    // Compact serialisation for any tool that hand-builds JSON (none today,
-    // but keeps a single options instance available if one needs it).
-    internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 }
 
 /// <summary>Result of <c>retry_deployment</c> — the new deployment's id +

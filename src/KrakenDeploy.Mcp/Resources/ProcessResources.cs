@@ -24,7 +24,7 @@ namespace KrakenDeploy.Mcp.Resources;
 [McpServerResourceType]
 public sealed class ProcessResources
 {
-    internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    internal static readonly JsonSerializerOptions Json = McpJsonOptions.ForResources;
 
     [McpServerResource(
         UriTemplate = "kraken://projects/{projectSlug}/process",

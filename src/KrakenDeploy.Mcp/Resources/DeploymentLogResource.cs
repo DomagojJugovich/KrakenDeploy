@@ -21,7 +21,7 @@ namespace KrakenDeploy.Mcp.Resources;
 [McpServerResourceType]
 public sealed class DeploymentLogResource
 {
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions Json = McpJsonOptions.ForResources;
 
     [McpServerResource(
         UriTemplate = "kraken://deployments/{deploymentId}/log",
