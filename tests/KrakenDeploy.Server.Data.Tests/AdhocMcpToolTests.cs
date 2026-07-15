@@ -238,7 +238,7 @@ public sealed class AdhocMcpToolTests(PostgresFixture postgres)
         public Task<bool> HasPermissionAsync(
             ClaimsPrincipal user, Permission permission,
             PermissionScope scope = default, bool bypassCache = false,
-            CancellationToken ct = default)
+            bool strictScope = false, CancellationToken ct = default)
             => Task.FromResult(allow);
 
         public Task<IReadOnlySet<Permission>> GetPermissionsAsync(

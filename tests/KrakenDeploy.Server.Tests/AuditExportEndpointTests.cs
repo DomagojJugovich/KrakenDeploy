@@ -189,7 +189,7 @@ public sealed class AuditExportEndpointTests
     {
         public Task<bool> HasPermissionAsync(
             ClaimsPrincipal user, Permission permission, PermissionScope scope = default,
-            bool bypassCache = false, CancellationToken ct = default) => Task.FromResult(
+            bool bypassCache = false, bool strictScope = false, CancellationToken ct = default) => Task.FromResult(
             permission switch
             {
                 Permission.AdministerSystem => isSysAdmin,

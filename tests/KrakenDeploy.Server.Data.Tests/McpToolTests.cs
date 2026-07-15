@@ -246,7 +246,8 @@ public sealed class McpToolTests(PostgresFixture postgres)
     {
         public Task<bool> HasPermissionAsync(
             ClaimsPrincipal user, Permission permission, PermissionScope scope = default,
-            bool bypassCache = false, CancellationToken ct = default) => Task.FromResult(true);
+            bool bypassCache = false, bool strictScope = false, CancellationToken ct = default)
+            => Task.FromResult(true);
 
         public Task<IReadOnlySet<Permission>> GetPermissionsAsync(
             ClaimsPrincipal user, PermissionScope scope = default, CancellationToken ct = default)
@@ -262,7 +263,8 @@ public sealed class McpToolTests(PostgresFixture postgres)
     {
         public Task<bool> HasPermissionAsync(
             ClaimsPrincipal user, Permission permission, PermissionScope scope = default,
-            bool bypassCache = false, CancellationToken ct = default) => Task.FromResult(false);
+            bool bypassCache = false, bool strictScope = false, CancellationToken ct = default)
+            => Task.FromResult(false);
 
         public Task<IReadOnlySet<Permission>> GetPermissionsAsync(
             ClaimsPrincipal user, PermissionScope scope = default, CancellationToken ct = default)

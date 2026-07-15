@@ -26,12 +26,20 @@ public interface IPermissionEvaluator
     /// authorize a privileged operation. UI rendering checks leave it
     /// <c>false</c> to keep the per-render cache (bounded by the evaluator's TTL).
     /// </para>
+    /// <para>
+    /// Set <paramref name="strictScope"/> (T1-8) for WRITE/execute checks: a
+    /// dimension the grant RESTRICTS but the caller left <c>null</c> fails
+    /// closed instead of optimistically passing, so the caller must supply the
+    /// concrete Project/Environment/Tenant. Leave it <c>false</c> for broad
+    /// read/UI checks (the "could I act somewhere?" semantics).
+    /// </para>
     /// </summary>
     Task<bool> HasPermissionAsync(
         ClaimsPrincipal user,
         Permission permission,
         PermissionScope scope = default,
         bool bypassCache = false,
+        bool strictScope = false,
         CancellationToken ct = default);
 
     /// <summary>

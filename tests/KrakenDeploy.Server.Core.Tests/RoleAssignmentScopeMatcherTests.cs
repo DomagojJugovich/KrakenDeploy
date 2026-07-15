@@ -215,4 +215,69 @@ public sealed class RoleAssignmentScopeMatcherTests
         Assignment(tenants: [TenantX]).IsUnscoped.Should().BeFalse();
         Assignment(projectGroups: [GroupAlpha]).IsUnscoped.Should().BeFalse();
     }
+
+    // ── Strict mode (T1-8): a restricted-but-unpinned dimension fails closed ──
+
+    [Fact]
+    public void Strict_denies_when_a_restricted_dimension_is_left_null()
+    {
+        // Grant scoped to Environment=Prod. A write check that pins only the
+        // project (Environment null) optimistically passes today — strict denies.
+        var assignment = Assignment(environments: [Prod]);
+        var scope = new PermissionScope(ProjectId: ProjectA); // Environment null
+
+        RoleAssignmentScopeMatcher.Matches(assignment, scope, strict: false).Should().BeTrue(
+            "optimistic mode auto-passes an unpinned restricted dimension");
+        RoleAssignmentScopeMatcher.Matches(assignment, scope, strict: true).Should().BeFalse(
+            "strict mode requires the caller to pin every dimension the grant restricts");
+    }
+
+    [Fact]
+    public void Strict_still_allows_a_fully_pinned_matching_scope()
+    {
+        // Env=Test-scoped grant, deploy to Test → allowed even in strict mode.
+        var assignment = Assignment(environments: [Staging]);
+        var scope = new PermissionScope(ProjectId: ProjectA, EnvironmentId: Staging);
+
+        RoleAssignmentScopeMatcher.Matches(assignment, scope, strict: true).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Strict_rejects_a_pinned_non_matching_scope()
+    {
+        // Env=Test-scoped grant, deploy to Prod → denied (same as optimistic;
+        // the pinned mismatch is caught either way).
+        var assignment = Assignment(environments: [Staging]);
+        var scope = new PermissionScope(ProjectId: ProjectA, EnvironmentId: Prod);
+
+        RoleAssignmentScopeMatcher.Matches(assignment, scope, strict: true).Should().BeFalse();
+        RoleAssignmentScopeMatcher.Matches(assignment, scope, strict: false).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Strict_unrestricted_grant_still_matches_everything()
+    {
+        // A Space-wide grant (no scope rows) legitimately covers every entity,
+        // even in strict mode with an unpinned scope.
+        var assignment = new RoleAssignment();
+
+        RoleAssignmentScopeMatcher.Matches(assignment, default, strict: true).Should().BeTrue();
+        RoleAssignmentScopeMatcher.Matches(assignment,
+            new PermissionScope(ProjectId: ProjectA), strict: true).Should().BeTrue();
+    }
+
+    [Fact]
+    public void Strict_multi_dimension_grant_requires_all_restricted_dimensions_pinned()
+    {
+        // Grant scoped to (Project=A AND Environment=Prod). Pinning only the
+        // project leaves Environment null → strict denies.
+        var assignment = Assignment(projects: [ProjectA], environments: [Prod]);
+
+        RoleAssignmentScopeMatcher.Matches(assignment,
+            new PermissionScope(ProjectId: ProjectA), strict: true)
+            .Should().BeFalse("Environment is restricted but unpinned");
+        RoleAssignmentScopeMatcher.Matches(assignment,
+            new PermissionScope(ProjectId: ProjectA, EnvironmentId: Prod), strict: true)
+            .Should().BeTrue("both restricted dimensions pinned and matching");
+    }
 }

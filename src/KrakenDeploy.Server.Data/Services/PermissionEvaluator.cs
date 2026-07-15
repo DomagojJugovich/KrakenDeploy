@@ -53,6 +53,7 @@ public sealed class PermissionEvaluator(
         Permission permission,
         PermissionScope scope = default,
         bool bypassCache = false,
+        bool strictScope = false,
         CancellationToken ct = default)
     {
         // A Space-restricted API key (M13.C.4) is caged to its bound Space —
@@ -88,7 +89,7 @@ public sealed class PermissionEvaluator(
         foreach (var a in assignments)
         {
             if (a.Role.GrantedPermissions.Contains(permission)
-                && RoleAssignmentScopeMatcher.Matches(a, scope))
+                && RoleAssignmentScopeMatcher.Matches(a, scope, strictScope))
             {
                 return true;
             }

@@ -52,7 +52,7 @@ public sealed class UiActionGuard(
         var state = await authState.GetAuthenticationStateAsync().ConfigureAwait(false);
         var effective = scope ?? new PermissionScope(SpaceId: spaceContext.CurrentSpaceId);
 
-        if (await evaluator.HasPermissionAsync(state.User, permission, effective, bypassCache: true, ct)
+        if (await evaluator.HasPermissionAsync(state.User, permission, effective, bypassCache: true, ct: ct)
                 .ConfigureAwait(false))
         {
             return true;
