@@ -12,8 +12,9 @@ namespace KrakenDeploy.Agent.Transport;
 /// upgrades — matching what the server's JwtBearerEvents.OnMessageReceived
 /// expects.
 /// </summary>
-public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServerLink
+public sealed class SignalRServerLink : IServerLink
 {
+    private readonly ILogger<SignalRServerLink> logger;
     private HubConnection? _connection;
 
     // Set before an agent-initiated teardown (StopAsync / re-entrant StartAsync /
@@ -26,6 +27,20 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
     private readonly List<Func<AdhocScriptCommand, Task>> _adhocHandlers = [];
     private readonly List<Func<Exception?, Task>> _closedHandlers = [];
     private readonly List<Func<Task>> _reconnectedHandlers = [];
+
+    // B2 — at-least-once FIFO buffer for work-result reports (logs, step /
+    // deployment completions, adhoc results). Survives connection replacement:
+    // the pump reads the CURRENT _connection at each send. Started lazily on
+    // the first StartAsync; runs until DisposeAsync.
+    private readonly ServerLinkOutbox _outbox;
+    private readonly CancellationTokenSource _pumpCts = new();
+    private Task? _pumpTask;
+
+    public SignalRServerLink(ILogger<SignalRServerLink> logger)
+    {
+        this.logger = logger;
+        _outbox = new ServerLinkOutbox(SendOutboxItemAsync, () => IsConnected, logger);
+    }
 
     // ── IServerLink ────────────────────────────────────────────────────────
 
@@ -151,6 +166,10 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
         // event fires for them), and the supervisor's retry re-enters here.
         _connection = connection;
 
+        // First StartAsync brings the report pump up; it outlives individual
+        // connections (buffered reports must survive a supervisor restart).
+        _pumpTask ??= Task.Run(() => _outbox.PumpAsync(_pumpCts.Token), CancellationToken.None);
+
         await connection.StartAsync(ct).ConfigureAwait(false);
     }
 
@@ -189,22 +208,25 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
             : Task.CompletedTask;
     }
 
+    // B2: work-result reports go through the outbox — the call returns once the
+    // report is QUEUED; a single pump delivers strictly in order with
+    // at-least-once retry across disconnects (DispatchId dedups server-side).
+    // Pre-B2 these were direct InvokeAsync calls that simply failed (and lost
+    // the report) whenever the connection was down.
+
     public Task AppendLogAsync(
         Guid deploymentId, int stepIndex, string level, string message, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(message);
-        return _connection is not null
-            ? _connection.InvokeAsync("AppendLogAsync", deploymentId, stepIndex, level, message, ct)
-            : Task.CompletedTask;
+        _outbox.Enqueue(new OutboxItem.Log(deploymentId, stepIndex, level, message));
+        return Task.CompletedTask;
     }
 
     public Task CompleteDeploymentAsync(
         Guid deploymentId, Guid dispatchId, bool success, string? errorMessage, CancellationToken ct)
     {
-        return _connection is not null
-            ? _connection.InvokeAsync("CompleteDeploymentAsync",
-                deploymentId, dispatchId, success, errorMessage, ct)
-            : Task.CompletedTask;
+        _outbox.Enqueue(new OutboxItem.DeploymentCompleted(deploymentId, dispatchId, success, errorMessage));
+        return Task.CompletedTask;
     }
 
     public Task ReportStepCompletedAsync(
@@ -220,33 +242,54 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
     {
         ArgumentException.ThrowIfNullOrEmpty(stepName);
         ArgumentNullException.ThrowIfNull(outputVariables);
-        if (_connection is null)
-        {
-            return Task.CompletedTask;
-        }
 
         // SignalR JSON serialiser handles IReadOnlyDictionary fine, but the hub
         // signature uses Dictionary<string,string> for symmetry with the typed
-        // interface. Materialise once at the boundary.
-        var payload = outputVariables as Dictionary<string, string>
-                      ?? new Dictionary<string, string>(outputVariables, StringComparer.OrdinalIgnoreCase);
+        // interface. Materialise once at the boundary (also snapshots the maps —
+        // the outbox may deliver long after the executor mutates its locals).
+        var payload = new Dictionary<string, string>(outputVariables, StringComparer.OrdinalIgnoreCase);
 
         // T0-6: the sensitive-name subset travels as a List<string> so the hub
         // knows which values to encrypt at rest + mask. Never null on the wire.
-        var sensitive = sensitiveOutputNames as List<string>
-                        ?? (sensitiveOutputNames?.ToList() ?? []);
+        var sensitive = sensitiveOutputNames?.ToList() ?? [];
 
-        return _connection.InvokeAsync(
-            "ReportStepCompletedAsync",
-            deploymentId, dispatchId, stepIndex, stepName, success, errorMessage, payload, sensitive, ct);
+        _outbox.Enqueue(new OutboxItem.StepCompleted(
+            deploymentId, dispatchId, stepIndex, stepName, success, errorMessage, payload, sensitive));
+        return Task.CompletedTask;
     }
 
     public Task ReportAdhocResultAsync(AdhocScriptResult result, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(result);
-        return _connection is not null
-            ? _connection.InvokeAsync("ReportAdhocResultAsync", result, ct)
-            : Task.CompletedTask;
+        _outbox.Enqueue(new OutboxItem.AdhocResult(result));
+        return Task.CompletedTask;
+    }
+
+    /// <summary>The outbox pump's sender: one hub invocation per item, against
+    /// the CURRENT connection (replaced across supervisor restarts).</summary>
+    private Task SendOutboxItemAsync(OutboxItem item, CancellationToken ct)
+    {
+        var connection = _connection
+            ?? throw new InvalidOperationException("Hub connection is not started.");
+
+        return item switch
+        {
+            OutboxItem.Log log => connection.InvokeAsync(
+                "AppendLogAsync", log.DeploymentId, log.StepIndex, log.Level, log.Message, ct),
+
+            OutboxItem.StepCompleted s => connection.InvokeAsync(
+                "ReportStepCompletedAsync",
+                s.DeploymentId, s.DispatchId, s.StepIndex, s.StepName, s.Success,
+                s.ErrorMessage, s.OutputVariables, s.SensitiveOutputNames, ct),
+
+            OutboxItem.DeploymentCompleted d => connection.InvokeAsync(
+                "CompleteDeploymentAsync", d.DeploymentId, d.DispatchId, d.Success, d.ErrorMessage, ct),
+
+            OutboxItem.AdhocResult a => connection.InvokeAsync(
+                "ReportAdhocResultAsync", a.Result, ct),
+
+            _ => throw new NotSupportedException($"Unknown outbox item {item.GetType().Name}."),
+        };
     }
 
     // ── Server → Agent ─────────────────────────────────────────────────────
@@ -283,9 +326,24 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
 
     public async ValueTask DisposeAsync()
     {
+        _deliberateStop = true;
+
+        await _pumpCts.CancelAsync().ConfigureAwait(false);
+        if (_pumpTask is not null)
+        {
+            try
+            {
+                await _pumpTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected shutdown path.
+            }
+        }
+        _pumpCts.Dispose();
+
         if (_connection is not null)
         {
-            _deliberateStop = true;
             await _connection.DisposeAsync().ConfigureAwait(false);
         }
     }
