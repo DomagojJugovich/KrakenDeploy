@@ -1,6 +1,8 @@
+using System.Globalization;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using KrakenDeploy.Contracts;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
 
@@ -10,18 +12,25 @@ namespace KrakenDeploy.Server.Services;
 /// Issues HS256 JWT tokens for registered agents.
 /// The token's <c>sub</c> claim carries the target's <see cref="Guid"/>;
 /// <see cref="AgentHub"/> reads it back via <c>ClaimTypes.NameIdentifier</c>.
+/// The <c>atv</c> claim (<see cref="AgentTokenClaims.TokenVersion"/>) carries the
+/// target's token version so the server can revoke it (A8/T1-12).
 /// </summary>
 public sealed class AgentJwtService
 {
-    /// <summary>Token issuer — stamped on issue; enforced once agents rotate.</summary>
+    /// <summary>Token issuer — stamped and (A8/T1-12) enforced on validation.</summary>
     public const string Issuer = "KrakenDeploy";
 
-    /// <summary>Token audience — stamped on issue; enforced once agents rotate.</summary>
+    /// <summary>Token audience — stamped and (A8/T1-12) enforced on validation.</summary>
     public const string Audience = "KrakenDeploy.Agent";
 
     private readonly SymmetricSecurityKey _key;
     private readonly TimeProvider _timeProvider;
-    private static readonly TimeSpan TokenLifetime = TimeSpan.FromDays(365);
+
+    // A8/T1-12: 90 days (was 365). Short enough to bound an UNKNOWN leak, long
+    // enough to avoid a refresh subsystem for a controlled agent fleet. A KNOWN
+    // leak is revoked immediately via the token-version bump — expiry is the
+    // backstop for leaks we never learn about.
+    private static readonly TimeSpan TokenLifetime = TimeSpan.FromDays(90);
 
     public AgentJwtService(IConfiguration configuration, TimeProvider timeProvider)
     {
@@ -45,11 +54,14 @@ public sealed class AgentJwtService
     }
 
     /// <summary>
-    /// Creates a long-lived bearer token for the agent identified by
-    /// <paramref name="targetId"/>. The token is valid for one year; rotate
-    /// via the Targets UI to issue a shorter-lived replacement if needed.
+    /// Creates a 90-day bearer token for the agent identified by
+    /// <paramref name="targetId"/>. <paramref name="agentTokenVersion"/> is the
+    /// target's current <c>AgentTokenVersion</c>; it is stamped into the
+    /// <c>atv</c> claim and compared on every connect/call so the token can be
+    /// revoked by bumping the target's version. Revoke + re-enroll via the
+    /// Targets UI (or <c>POST /api/targets/{id}/revoke-agent-token</c>).
     /// </summary>
-    public string Issue(Guid targetId)
+    public string Issue(Guid targetId, int agentTokenVersion)
     {
         var now = _timeProvider.GetUtcNow().UtcDateTime;
 
@@ -58,6 +70,9 @@ public sealed class AgentJwtService
             Subject = new ClaimsIdentity(
             [
                 new Claim(ClaimTypes.NameIdentifier, targetId.ToString()),
+                new Claim(
+                    AgentTokenClaims.TokenVersion,
+                    agentTokenVersion.ToString(CultureInfo.InvariantCulture)),
             ]),
             NotBefore = now,
             Expires = now.Add(TokenLifetime),

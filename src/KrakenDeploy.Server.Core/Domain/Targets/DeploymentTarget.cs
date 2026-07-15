@@ -30,6 +30,16 @@ public class DeploymentTarget : AuditableEntity, ISpaceScoped
     public DateTimeOffset? RegistrationTokenExpiresUtc { get; set; }
 
     /// <summary>
+    /// A8/T1-12: monotonic version stamped into every agent bearer token this
+    /// target is issued (the <c>atv</c> claim). The token is accepted only while
+    /// its claim equals this value; bumping it (see
+    /// <c>TargetService.RevokeAgentTokenAsync</c>) revokes all outstanding tokens
+    /// for the target WITHOUT deleting it or rotating the shared signing key. The
+    /// agent must then re-enroll. Defaults to 0.
+    /// </summary>
+    public int AgentTokenVersion { get; set; }
+
+    /// <summary>
     /// Configuration for offline drop delivery. Populated only when
     /// <see cref="TransportMode"/> is <see cref="Targets.TransportMode.OfflineDrop"/>.
     /// Stored as JSONB.

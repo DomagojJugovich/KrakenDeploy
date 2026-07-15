@@ -469,15 +469,18 @@ public static class Program
                 {
                     ValidateIssuerSigningKey = true,
                     IssuerSigningKey = new SymmetricSecurityKey(agentJwtKeyBytes),
-                    // Issuer/Audience are stamped on newly issued tokens (see
-                    // AgentJwtService) but NOT yet enforced here: already-issued
-                    // long-lived tokens carry no iss/aud and would be rejected.
-                    // Flip ValidateIssuer/Audience to true after an agent
-                    // re-registration window so old tokens have rotated out.
+                    // A8/T1-12: iss/aud are now enforced. AgentJwtService always
+                    // stamps them, so every token issued by this server carries
+                    // them; validation just rejects a token minted for another
+                    // audience/issuer. (Pre-production: agents re-enroll on upgrade.)
                     ValidIssuer = AgentJwtService.Issuer,
                     ValidAudience = AgentJwtService.Audience,
-                    ValidateIssuer = false,
-                    ValidateAudience = false,
+                    ValidateIssuer = true,
+                    ValidateAudience = true,
+                    // Pinned explicitly so a future default change (or a stray edit)
+                    // can never silently disable expiry enforcement on a long-lived
+                    // agent credential.
+                    ValidateLifetime = true,
                     ClockSkew = TimeSpan.FromMinutes(2),
                 };
                 // SignalR WebSocket upgrades cannot carry custom headers,
@@ -495,6 +498,27 @@ public static class Program
                         }
 
                         return Task.CompletedTask;
+                    },
+                    // A8/T1-12: per-target revocation. The signature/lifetime/iss/aud
+                    // are already valid here; reject the token if its `atv` claim no
+                    // longer matches the target's current AgentTokenVersion (bumped
+                    // by a revoke). Runs once per hub connect and once per gRPC call.
+                    OnTokenValidated = async context =>
+                    {
+                        var dbFactory = context.HttpContext.RequestServices
+                            .GetRequiredService<IDbContextFactory<KrakenDbContext>>();
+                        var outcome = await AgentTokenValidator
+                            .ValidateAsync(
+                                context.Principal, dbFactory, context.HttpContext.RequestAborted)
+                            .ConfigureAwait(false);
+                        if (outcome != AgentTokenValidator.Outcome.Valid)
+                        {
+                            // Fail closed. The reason is an enum, not token content,
+                            // so it is safe to log; the token/target id are not.
+                            Log.Warning(
+                                "Rejected agent token: {Reason}.", outcome);
+                            context.Fail("Agent token is no longer valid.");
+                        }
                     },
                 };
             });
@@ -991,7 +1015,7 @@ public static class Program
                     return Results.Unauthorized();
                 }
 
-                var jwt = jwtSvc.Issue(target.Id);
+                var jwt = jwtSvc.Issue(target.Id, target.AgentTokenVersion);
                 return Results.Ok(new RegisterAgentResponse(
                     target.Id, jwt, target.TransportMode.ToString()));
             }).AllowAnonymous().RequireRateLimiting("agent-register");

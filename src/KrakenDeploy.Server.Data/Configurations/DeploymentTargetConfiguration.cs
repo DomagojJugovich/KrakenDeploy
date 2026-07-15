@@ -54,6 +54,11 @@ public class DeploymentTargetConfiguration : IEntityTypeConfiguration<Deployment
         builder.Property(x => x.RegistrationKeyHash).HasMaxLength(128);
         builder.Property(x => x.RegistrationTokenExpiresUtc);
 
+        // A8/T1-12: agent-token version (the JWT `atv` claim). Store-default 0 so
+        // it backfills existing rows; 0 is the natural CLR default too, so no
+        // HasSentinel dance is needed (unlike RiskLevel above).
+        builder.Property(x => x.AgentTokenVersion).IsRequired().HasDefaultValue(0);
+
         // Offline-drop configuration — nullable JSONB, only populated when
         // TransportMode == OfflineDrop. Suppressing CS8620: the converter handles
         // null values correctly via EF Core's built-in null propagation.
