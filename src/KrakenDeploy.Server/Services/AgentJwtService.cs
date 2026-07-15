@@ -26,11 +26,14 @@ public sealed class AgentJwtService
     private readonly SymmetricSecurityKey _key;
     private readonly TimeProvider _timeProvider;
 
-    // A8/T1-12: 90 days (was 365). Short enough to bound an UNKNOWN leak, long
-    // enough to avoid a refresh subsystem for a controlled agent fleet. A KNOWN
-    // leak is revoked immediately via the token-version bump — expiry is the
-    // backstop for leaks we never learn about.
-    private static readonly TimeSpan TokenLifetime = TimeSpan.FromDays(90);
+    // A8/T1-12: 90 days by default (was 365), overridable via
+    // Agent:TokenLifetimeDays. With sliding refresh (A8 follow-up) the agent
+    // renews at half-life, so the lifetime is effectively the maximum tolerated
+    // OFFLINE gap before a manual re-enroll — not an operator chore interval. A
+    // KNOWN leak is revoked immediately via the token-version bump; expiry is the
+    // backstop for tokens that stop refreshing (dead/decommissioned boxes age out).
+    private const int DefaultTokenLifetimeDays = 90;
+    private readonly TimeSpan _tokenLifetime;
 
     public AgentJwtService(IConfiguration configuration, TimeProvider timeProvider)
     {
@@ -49,6 +52,15 @@ public sealed class AgentJwtService
                 "Agent:JwtSigningKey must be at least 32 bytes (256 bits) for HS256.");
         }
 
+        var lifetimeDays = configuration.GetValue<int?>("Agent:TokenLifetimeDays")
+            ?? DefaultTokenLifetimeDays;
+        if (lifetimeDays < 1)
+        {
+            throw new InvalidOperationException(
+                "Agent:TokenLifetimeDays must be at least 1 day.");
+        }
+
+        _tokenLifetime = TimeSpan.FromDays(lifetimeDays);
         _key = new SymmetricSecurityKey(keyBytes);
         _timeProvider = timeProvider;
     }
@@ -75,7 +87,7 @@ public sealed class AgentJwtService
                     agentTokenVersion.ToString(CultureInfo.InvariantCulture)),
             ]),
             NotBefore = now,
-            Expires = now.Add(TokenLifetime),
+            Expires = now.Add(_tokenLifetime),
             Issuer = Issuer,
             Audience = Audience,
             SigningCredentials = new SigningCredentials(

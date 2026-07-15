@@ -349,4 +349,11 @@ public static class AuditEventType
     /// connect/call and the live tunnel (if any) is dropped immediately; the
     /// agent must re-enroll. Details: target id + new token version.</summary>
     public const string AgentTokenRevoked = "Agent.TokenRevoked";
+
+    /// <summary>A8 — an agent renewed its bearer token via the sliding-refresh
+    /// endpoint, authenticated by its current (non-revoked) token. One row per
+    /// refresh gives a forensic trail of which agent renewed when — an anomaly
+    /// spike here can indicate a stolen token being kept alive. Details: none
+    /// beyond the subject (never token content).</summary>
+    public const string AgentTokenRefreshed = "Agent.TokenRefreshed";
 }

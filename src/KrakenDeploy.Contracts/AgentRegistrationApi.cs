@@ -7,6 +7,13 @@ public sealed record RegisterAgentRequest(string Token);
 public sealed record RegisterAgentResponse(Guid AgentId, string AgentJwt, string TransportMode);
 
 /// <summary>
+/// Response body for <c>POST /api/agents/refresh-token</c> — sliding renewal of
+/// the agent bearer token (A8). The request is authenticated with the CURRENT
+/// (still-valid, non-revoked) token; no one-time registration token is involved.
+/// </summary>
+public sealed record RefreshAgentTokenResponse(string AgentJwt);
+
+/// <summary>
 /// Custom claim names carried by the agent bearer token. Shared between the
 /// issuer (<c>AgentJwtService</c>, in the server app) and the validator
 /// (<c>AgentTokenValidator</c>, in the data layer) so the wire contract has a

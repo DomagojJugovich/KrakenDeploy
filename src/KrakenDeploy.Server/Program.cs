@@ -1039,6 +1039,55 @@ public static class Program
                     target.Id, jwt, target.TransportMode.ToString()));
             }).AllowAnonymous().RequireRateLimiting("agent-register");
 
+        // A8 sliding token refresh — the agent renews its bearer token with its
+        // CURRENT (still-valid) token before expiry, so the 90-day lifetime never
+        // becomes a fleet-wide manual re-enroll chore. AgentJwt-only (an API key
+        // must not mint agent tokens). The scheme's OnTokenValidated has already
+        // run the atv revocation check, so a revoked/expired token cannot reach
+        // this handler; the validator is re-run here anyway and the NEW token is
+        // stamped with the CLAIM's version — a revoke landing between the auth
+        // check and issuance yields a dead-on-arrival token, never a laundered
+        // fresh one. No rotation: the old token stays valid until its own exp
+        // (deliberate — rotation's crash window would brick agents).
+        var agentJwtOnlyPolicy = new AuthorizationPolicyBuilder("AgentJwt")
+            .RequireAuthenticatedUser()
+            .Build();
+
+        app.MapPost("/api/agents/refresh-token",
+            async (
+                ClaimsPrincipal principal,
+                IDbContextFactory<KrakenDbContext> dbFactory,
+                AgentJwtService jwtSvc,
+                IAuditLog audit,
+                CancellationToken ct) =>
+            {
+                var outcome = await AgentTokenValidator
+                    .ValidateAsync(principal, dbFactory, ct)
+                    .ConfigureAwait(false);
+                if (outcome != AgentTokenValidator.Outcome.Valid)
+                {
+                    return Results.Unauthorized();
+                }
+
+                // Claims are well-formed if the validator returned Valid.
+                var targetId = Guid.Parse(
+                    principal.FindFirst(ClaimTypes.NameIdentifier)!.Value);
+                var claimVersion = int.Parse(
+                    principal.FindFirst(AgentTokenClaims.TokenVersion)!.Value,
+                    CultureInfo.InvariantCulture);
+
+                var jwt = jwtSvc.Issue(targetId, claimVersion);
+
+                await audit.RecordAsync(
+                    AuditEventType.AgentTokenRefreshed,
+                    subjectType: "DeploymentTarget",
+                    subjectId:   targetId.ToString(),
+                    details:     "Agent bearer token refreshed (sliding renewal).",
+                    ct:          ct).ConfigureAwait(false);
+
+                return Results.Ok(new RefreshAgentTokenResponse(jwt));
+            }).RequireAuthorization(agentJwtOnlyPolicy);
+
         // NOTE: the agent REST API (heartbeat / status / logs / complete /
         // pending-work) that mirrored the SignalR hub for the Direct and Polling
         // transports was removed — KrakenDeploy is SignalR-only for live agents,

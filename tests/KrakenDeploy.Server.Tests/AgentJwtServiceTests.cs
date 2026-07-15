@@ -21,11 +21,13 @@ public sealed class AgentJwtServiceTests
     // HS256 needs >= 32 bytes. Test-only key; never a real secret.
     private const string SigningKey = "kraken-unit-test-agent-jwt-signing-key-32b";
 
-    private static AgentJwtService Build() =>
+    private static AgentJwtService Build(int? lifetimeDays = null) =>
         new(new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?>
                 {
                     ["Agent:JwtSigningKey"] = SigningKey,
+                    ["Agent:TokenLifetimeDays"] = lifetimeDays?.ToString(
+                        System.Globalization.CultureInfo.InvariantCulture),
                 })
                 .Build(),
             TimeProvider.System);
@@ -70,11 +72,27 @@ public sealed class AgentJwtServiceTests
     }
 
     [Fact]
-    public void Issue_token_lives_ninety_days()
+    public void Issue_token_lives_ninety_days_by_default()
     {
         var (_, token) = Validate(Build().Issue(Guid.NewGuid(), agentTokenVersion: 0));
 
         // Independent of wall-clock: the window between nbf and exp is exactly 90 days.
         (token.ValidTo - token.ValidFrom).Should().Be(TimeSpan.FromDays(90));
+    }
+
+    [Fact]
+    public void Issue_honours_configured_lifetime()
+    {
+        var (_, token) = Validate(Build(lifetimeDays: 200).Issue(Guid.NewGuid(), agentTokenVersion: 0));
+
+        (token.ValidTo - token.ValidFrom).Should().Be(TimeSpan.FromDays(200));
+    }
+
+    [Fact]
+    public void Ctor_refuses_a_non_positive_lifetime()
+    {
+        var act = () => Build(lifetimeDays: 0);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*TokenLifetimeDays*");
     }
 }
