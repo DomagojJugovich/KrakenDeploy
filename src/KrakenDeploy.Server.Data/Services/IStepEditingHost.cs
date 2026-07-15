@@ -1,4 +1,5 @@
 using KrakenDeploy.Server.Core.Domain.Processes;
+using KrakenDeploy.Server.Core.Domain.Security;
 
 namespace KrakenDeploy.Server.Data.Services;
 
@@ -51,6 +52,7 @@ public interface IStepEditingHost
         string? stepPackageVersion,
         StepExecutionKnobs? knobs,
         Guid? parentStepId,
+        CallerAuthorization caller,
         CancellationToken ct);
 
     /// <summary>
@@ -68,6 +70,7 @@ public interface IStepEditingHost
         string? stepPackageVersion,
         StepExecutionKnobs? knobs,
         UpdateParent? updateParent,
+        CallerAuthorization caller,
         CancellationToken ct);
 
     /// <summary>

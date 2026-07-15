@@ -1249,26 +1249,44 @@ public static class Program
             }).RequirePermission(Permission.ProcessView);
 
         app.MapPost("/api/projects/{projectId:guid}/process/steps",
-            async (Guid projectId, AddStepRequest req, ProcessService processSvc, CancellationToken ct) =>
+            async (Guid projectId, AddStepRequest req, ProcessService processSvc,
+                ClaimsPrincipal user, CancellationToken ct) =>
             {
-                var step = await processSvc.AddStepAsync(
-                    projectId, req.Name, req.StepType, req.PackageId,
-                    req.TargetRoles, req.Config,
-                    req.StepPackageName, req.StepPackageVersion,
-                    knobs: null, ct: ct).ConfigureAwait(false);
-                return Results.Created($"/api/projects/{projectId}/process/steps/{step.Id}", step);
+                try
+                {
+                    var step = await processSvc.AddStepAsync(
+                        projectId, req.Name, req.StepType, req.PackageId,
+                        req.TargetRoles, req.Config, CallerAuthorization.ForUser(user),
+                        req.StepPackageName, req.StepPackageVersion,
+                        knobs: null, ct: ct).ConfigureAwait(false);
+                    return Results.Created($"/api/projects/{projectId}/process/steps/{step.Id}", step);
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+                }
             }).RequirePermission(Permission.ProcessEdit);
 
         app.MapDelete("/api/projects/{projectId:guid}/process/steps/{stepId:guid}",
-            async (Guid projectId, Guid stepId, ProcessService processSvc, CancellationToken ct) =>
+            async (Guid projectId, Guid stepId, ProcessService processSvc,
+                ClaimsPrincipal user, CancellationToken ct) =>
             {
-                var removed = await processSvc.RemoveStepAsync(stepId, ct).ConfigureAwait(false);
-                return removed ? Results.NoContent() : Results.NotFound();
+                try
+                {
+                    var removed = await processSvc
+                        .RemoveStepAsync(stepId, CallerAuthorization.ForUser(user), ct)
+                        .ConfigureAwait(false);
+                    return removed ? Results.NoContent() : Results.NotFound();
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+                }
             }).RequirePermission(Permission.ProcessEdit);
 
         app.MapPost("/api/projects/{projectId:guid}/process/import-octopus",
             async (Guid projectId, ImportDeploymentProcessRequest req,
-                ProcessService processSvc, CancellationToken ct) =>
+                ProcessService processSvc, ClaimsPrincipal user, CancellationToken ct) =>
             {
                 if (string.IsNullOrWhiteSpace(req.Json))
                 {
@@ -1277,9 +1295,14 @@ public static class Program
                 try
                 {
                     var summary = await processSvc
-                        .ImportDeploymentProcessAsync(projectId, req.Json, req.Replace, ct)
+                        .ImportDeploymentProcessAsync(
+                            projectId, req.Json, req.Replace, CallerAuthorization.ForUser(user), ct)
                         .ConfigureAwait(false);
                     return Results.Ok(summary);
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -2548,30 +2571,58 @@ public static class Program
 
         // Runbook steps
         app.MapPost("/api/runbooks/{runbookId:guid}/steps",
-            async (Guid runbookId, AddStepRequest req, RunbookService runbookSvc, CancellationToken ct) =>
+            async (Guid runbookId, AddStepRequest req, RunbookService runbookSvc,
+                ClaimsPrincipal user, CancellationToken ct) =>
             {
-                var step = await runbookSvc.AddStepAsync(
-                    runbookId, req.Name, req.StepType, req.PackageId, req.TargetRoles, req.Config,
-                    req.StepPackageName, req.StepPackageVersion, ct: ct)
-                    .ConfigureAwait(false);
-                return Results.Created($"/api/runbooks/{runbookId}/steps/{step.Id}", step);
+                try
+                {
+                    var step = await runbookSvc.AddStepAsync(
+                        runbookId, req.Name, req.StepType, req.PackageId, req.TargetRoles, req.Config,
+                        CallerAuthorization.ForUser(user),
+                        req.StepPackageName, req.StepPackageVersion, ct: ct)
+                        .ConfigureAwait(false);
+                    return Results.Created($"/api/runbooks/{runbookId}/steps/{step.Id}", step);
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+                }
             }).RequirePermission(Permission.RunbookEdit);
 
         app.MapPut("/api/runbook-steps/{stepId:guid}",
-            async (Guid stepId, AddStepRequest req, RunbookService runbookSvc, CancellationToken ct) =>
+            async (Guid stepId, AddStepRequest req, RunbookService runbookSvc,
+                ClaimsPrincipal user, CancellationToken ct) =>
             {
-                var step = await runbookSvc.UpdateStepAsync(
-                    stepId, req.Name, req.PackageId, req.TargetRoles, req.Config,
-                    req.StepPackageName, req.StepPackageVersion, ct: ct)
-                    .ConfigureAwait(false);
-                return step is null ? Results.NotFound() : Results.Ok(step);
+                try
+                {
+                    var step = await runbookSvc.UpdateStepAsync(
+                        stepId, req.Name, req.PackageId, req.TargetRoles, req.Config,
+                        CallerAuthorization.ForUser(user),
+                        req.StepPackageName, req.StepPackageVersion, ct: ct)
+                        .ConfigureAwait(false);
+                    return step is null ? Results.NotFound() : Results.Ok(step);
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+                }
             }).RequirePermission(Permission.RunbookEdit);
 
         app.MapDelete("/api/runbook-steps/{stepId:guid}",
-            async (Guid stepId, RunbookService runbookSvc, CancellationToken ct) =>
+            async (Guid stepId, RunbookService runbookSvc,
+                ClaimsPrincipal user, CancellationToken ct) =>
             {
-                var deleted = await runbookSvc.DeleteStepAsync(stepId, ct).ConfigureAwait(false);
-                return deleted ? Results.NoContent() : Results.NotFound();
+                try
+                {
+                    var deleted = await runbookSvc
+                        .DeleteStepAsync(stepId, CallerAuthorization.ForUser(user), ct)
+                        .ConfigureAwait(false);
+                    return deleted ? Results.NoContent() : Results.NotFound();
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+                }
             }).RequirePermission(Permission.RunbookEdit);
 
         // Runbook runs

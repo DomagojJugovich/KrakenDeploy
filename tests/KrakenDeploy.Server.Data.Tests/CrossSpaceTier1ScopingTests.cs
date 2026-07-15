@@ -2,6 +2,7 @@ using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.Tags;
 using KrakenDeploy.Server.Core.Domain.Tenants;
@@ -108,7 +109,7 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
     public async Task GetProcessByIdAsync_does_not_return_other_space_process()
     {
         var g = await SeedOtherSpaceGraphAsync();
-        var svc = new ProcessService(postgres);
+        var svc = new ProcessService(postgres, new AllowAllPermissionEvaluator());
 
         (await svc.GetProcessByIdAsync(g.DeploymentProcessId)).Should().BeNull();
     }
@@ -117,9 +118,9 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
     public async Task RemoveStepAsync_cannot_delete_other_space_deployment_step()
     {
         var g = await SeedOtherSpaceGraphAsync();
-        var svc = new ProcessService(postgres);
+        var svc = new ProcessService(postgres, new AllowAllPermissionEvaluator());
 
-        (await svc.RemoveStepAsync(g.DeploymentStepId)).Should().BeFalse(
+        (await svc.RemoveStepAsync(g.DeploymentStepId, CallerAuthorization.System)).Should().BeFalse(
             "the process step delete-by-id must not reach across Spaces");
         await AssertStillExistsAsync<ProcessStep>(g.DeploymentStepId);
     }
@@ -135,7 +136,7 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             new AllowAllPermissionEvaluator());
 
-        (await svc.DeleteStepAsync(g.RunbookStepId)).Should().BeFalse(
+        (await svc.DeleteStepAsync(g.RunbookStepId, CallerAuthorization.System)).Should().BeFalse(
             "DELETE /api/runbook-steps/{stepId} must not delete another Space's step");
         await AssertStillExistsAsync<ProcessStep>(g.RunbookStepId);
     }
@@ -150,10 +151,11 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
     public async Task ProcessAddStepAsync_throws_for_other_space_project_and_creates_no_process()
     {
         var projectId = await SeedOtherSpaceProjectAsync();
-        var svc = new ProcessService(postgres);
+        var svc = new ProcessService(postgres, new AllowAllPermissionEvaluator());
 
         Func<Task> act = () => svc.AddStepAsync(
-            projectId, "x", "Kraken.Script", "pkg", [], new Dictionary<string, string>());
+            projectId, "x", "Kraken.Script", "pkg", [], new Dictionary<string, string>(),
+            CallerAuthorization.System);
 
         await act.Should().ThrowAsync<InvalidOperationException>(
             "creating a process/step for a project in another Space must be refused");
@@ -174,7 +176,8 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
             new AllowAllPermissionEvaluator());
 
         Func<Task> act = () => svc.AddStepAsync(
-            runbookId, "x", "Kraken.Script", "pkg", [], new Dictionary<string, string>());
+            runbookId, "x", "Kraken.Script", "pkg", [], new Dictionary<string, string>(),
+            CallerAuthorization.System);
 
         await act.Should().ThrowAsync<InvalidOperationException>(
             "creating a process/step for a runbook in another Space must be refused");

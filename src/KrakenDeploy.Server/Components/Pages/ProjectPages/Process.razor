@@ -738,7 +738,7 @@
     private async Task MoveAsync(Guid stepId, int direction)
     {
         if (!await Guard.AllowAsync(Permission.ProcessEdit)) return;
-        await ProcessSvc.MoveStepAsync(stepId, direction);
+        await ProcessSvc.MoveStepAsync(stepId, direction, await Guard.CurrentCallerAsync());
         await ReloadStepsAsync();
     }
 
@@ -863,6 +863,7 @@
             await ProcessSvc.UpdateStepAsync(
                 source.Id, source.Name, source.PackageId,
                 source.TargetRoles, source.Config,
+                await Guard.CurrentCallerAsync(),
                 stepPackageName:    source.StepPackageName,
                 stepPackageVersion: source.StepPackageVersion,
                 knobs:              null,
@@ -923,7 +924,7 @@
 
         if (confirmed == true)
         {
-            await ProcessSvc.RemoveStepAsync(step.Id);
+            await ProcessSvc.RemoveStepAsync(step.Id, await Guard.CurrentCallerAsync());
             await ReloadStepsAsync();
             Notifications.Notify(NotificationSeverity.Success, "Deleted",
                 $"Step '{step.Name}' was removed.", 4000);

@@ -36,6 +36,18 @@ public sealed class UiActionGuard(
     NotificationService notifications)
 {
     /// <summary>
+    /// The current interactive user as a <see cref="CallerAuthorization"/> to hand
+    /// to a mutating service that runs its own authoritative T1-8 scope check
+    /// (e.g. process/variable step edits). The UI's <see cref="AllowAsync"/> is
+    /// the coarse pre-check; the service is the authority.
+    /// </summary>
+    public async Task<CallerAuthorization> CurrentCallerAsync()
+    {
+        var state = await authState.GetAuthenticationStateAsync().ConfigureAwait(false);
+        return CallerAuthorization.ForUser(state.User);
+    }
+
+    /// <summary>
     /// Authoritative (uncached) permission check for an interactive action.
     /// Returns <c>true</c> when allowed; on denial fires an error notification
     /// and returns <c>false</c> so the caller can early-return.

@@ -53,10 +53,10 @@ public class RunbookService(
         List<string> targetRoles, Dictionary<string, string> config,
         string? stepPackageName, string? stepPackageVersion,
         StepExecutionKnobs? knobs, Guid? parentStepId,
-        CancellationToken ct)
+        CallerAuthorization caller, CancellationToken ct)
     {
         var step = await AddStepAsync(
-            containerId, name, stepType, packageId, targetRoles, config,
+            containerId, name, stepType, packageId, targetRoles, config, caller,
             stepPackageName, stepPackageVersion, knobs, parentStepId, ct)
             .ConfigureAwait(false);
         return step.Id;
@@ -67,10 +67,10 @@ public class RunbookService(
         List<string> targetRoles, Dictionary<string, string> config,
         string? stepPackageName, string? stepPackageVersion,
         StepExecutionKnobs? knobs, UpdateParent? updateParent,
-        CancellationToken ct)
+        CallerAuthorization caller, CancellationToken ct)
     {
         await UpdateStepAsync(
-            stepId, name, packageId, targetRoles, config,
+            stepId, name, packageId, targetRoles, config, caller,
             stepPackageName, stepPackageVersion, knobs, updateParent, ct)
             .ConfigureAwait(false);
     }
@@ -113,6 +113,47 @@ public class RunbookService(
             .Where(r => r.Id == process.OwnerId)
             .Select(r => (Guid?)r.ProjectId)
             .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false);
+    }
+
+    // ── T1-8 authoritative scope check ───────────────────────────────────────
+    // Runbook step editing is scoped to the runbook's owning project (permission
+    // RunbookEdit). Resolve filter-free so a foreign-Space id fails closed.
+
+    private async Task EnsureRunbookScopeAsync(
+        KrakenDbContext db, CallerAuthorization caller, Guid runbookId, CancellationToken ct)
+    {
+        if (caller.IsSystem)
+        {
+            return;
+        }
+        var rb = await db.Runbooks.IgnoreQueryFilters()
+            .Where(r => r.Id == runbookId)
+            .Select(r => new { r.SpaceId, r.ProjectId })
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        await permissions.EnsureScopedAsync(
+            caller, Permission.RunbookEdit,
+            new PermissionScope(SpaceId: rb?.SpaceId, ProjectId: rb?.ProjectId), ct)
+            .ConfigureAwait(false);
+    }
+
+    // By-step-id: resolve the owning runbook's project from the step so an edit is
+    // authorized against the step's REAL project (closes the by-step-id IDOR).
+    private async Task EnsureStepScopeAsync(
+        KrakenDbContext db, CallerAuthorization caller, ProcessStep step, CancellationToken ct)
+    {
+        if (caller.IsSystem)
+        {
+            return;
+        }
+        var projectId = await (
+            from p in db.Processes.IgnoreQueryFilters()
+            where p.Id == step.ProcessId && p.OwnerKind == ProcessOwnerKind.Runbook
+            join r in db.Runbooks.IgnoreQueryFilters() on p.OwnerId equals r.Id
+            select (Guid?)r.ProjectId).FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        await permissions.EnsureScopedAsync(
+            caller, Permission.RunbookEdit,
+            new PermissionScope(SpaceId: step.SpaceId, ProjectId: projectId), ct)
             .ConfigureAwait(false);
     }
 
@@ -221,13 +262,16 @@ public class RunbookService(
         string packageId,
         List<string> targetRoles,
         Dictionary<string, string> config,
+        CallerAuthorization caller,
         string? stepPackageName = null,
         string? stepPackageVersion = null,
         StepExecutionKnobs? knobs = null,
         Guid? parentStepId = null,
         CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await EnsureRunbookScopeAsync(db, caller, runbookId, ct).ConfigureAwait(false);
         var process = await GetOrCreateProcessAsync(db, runbookId, ct).ConfigureAwait(false);
 
         var siblings = process.Steps.Where(s => s.ParentStepId == parentStepId).ToList();
@@ -273,18 +317,22 @@ public class RunbookService(
         string packageId,
         List<string> targetRoles,
         Dictionary<string, string> config,
+        CallerAuthorization caller,
         string? stepPackageName = null,
         string? stepPackageVersion = null,
         StepExecutionKnobs? knobs = null,
         UpdateParent? updateParent = null,
         CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var step = await db.ProcessSteps.FindAsync([stepId], ct).ConfigureAwait(false);
         if (step is null)
         {
             return null;
         }
+
+        await EnsureStepScopeAsync(db, caller, step, ct).ConfigureAwait(false);
 
         step.Name        = name;
         step.PackageId   = packageId;
@@ -358,14 +406,18 @@ public class RunbookService(
             .ResolveLatestForStepTypeAsync(stepType, ct).ConfigureAwait(false);
     }
 
-    public async Task<bool> DeleteStepAsync(Guid stepId, CancellationToken ct = default)
+    public async Task<bool> DeleteStepAsync(
+        Guid stepId, CallerAuthorization caller, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var step = await db.ProcessSteps.FindAsync([stepId], ct).ConfigureAwait(false);
         if (step is null)
         {
             return false;
         }
+
+        await EnsureStepScopeAsync(db, caller, step, ct).ConfigureAwait(false);
 
         db.ProcessSteps.Remove(step);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);

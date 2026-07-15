@@ -1,6 +1,7 @@
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Projects;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Data.Services;
 
 namespace KrakenDeploy.Server.Data.Tests;
@@ -18,12 +19,13 @@ public sealed class ProcessServiceImportTests(PostgresFixture postgres)
     public async Task Import_appends_steps_to_an_empty_project_process()
     {
         var projectId = await SeedProjectAsync();
-        var svc = new ProcessService(postgres);
+        var svc = new ProcessService(postgres, new AllowAllPermissionEvaluator());
 
         var result = await svc.ImportDeploymentProcessAsync(
             projectId,
             json: LoadTestData("argosy-process.json"),
-            replace: false);
+            replace: false,
+            caller: CallerAuthorization.System);
 
         result.Imported.Should().BeGreaterThan(0);
         result.ReplacedExisting.Should().Be(0);
@@ -38,16 +40,17 @@ public sealed class ProcessServiceImportTests(PostgresFixture postgres)
     public async Task Import_with_replace_clears_existing_steps_first()
     {
         var projectId = await SeedProjectAsync();
-        var svc = new ProcessService(postgres);
+        var svc = new ProcessService(postgres, new AllowAllPermissionEvaluator());
 
         // Seed one step manually so we have something to be replaced.
         await svc.AddStepAsync(projectId, "Existing", "Kraken.Script", "ManualPkg",
-            targetRoles: [], config: []);
+            targetRoles: [], config: [], caller: CallerAuthorization.System);
 
         var result = await svc.ImportDeploymentProcessAsync(
             projectId,
             json: LoadTestData("argosy-process.json"),
-            replace: true);
+            replace: true,
+            caller: CallerAuthorization.System);
 
         result.ReplacedExisting.Should().Be(1);
         result.Imported.Should().BeGreaterThan(0);
@@ -62,15 +65,16 @@ public sealed class ProcessServiceImportTests(PostgresFixture postgres)
     public async Task Import_without_replace_appends_after_existing_steps()
     {
         var projectId = await SeedProjectAsync();
-        var svc = new ProcessService(postgres);
+        var svc = new ProcessService(postgres, new AllowAllPermissionEvaluator());
 
         await svc.AddStepAsync(projectId, "Existing", "Kraken.Script", "ManualPkg",
-            targetRoles: [], config: []);
+            targetRoles: [], config: [], caller: CallerAuthorization.System);
 
         var result = await svc.ImportDeploymentProcessAsync(
             projectId,
             json: LoadTestData("argosy-process.json"),
-            replace: false);
+            replace: false,
+            caller: CallerAuthorization.System);
 
         var process = await svc.GetAsync(projectId);
         process!.Steps.Should().HaveCount(1 + result.Imported);
@@ -82,12 +86,13 @@ public sealed class ProcessServiceImportTests(PostgresFixture postgres)
     public async Task Import_preserves_octopus_property_keys_verbatim()
     {
         var projectId = await SeedProjectAsync();
-        var svc = new ProcessService(postgres);
+        var svc = new ProcessService(postgres, new AllowAllPermissionEvaluator());
 
         await svc.ImportDeploymentProcessAsync(
             projectId,
             json: LoadTestData("webargosy-virtual-app.json"),
-            replace: false);
+            replace: false,
+            caller: CallerAuthorization.System);
 
         var process = await svc.GetAsync(projectId);
         process.Should().NotBeNull();

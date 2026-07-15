@@ -483,7 +483,7 @@
     private async Task DeleteStepAsync(ProcessStep step)
     {
         if (!await Guard.AllowAsync(Permission.RunbookEdit)) return;
-        var deleted = await RunbookSvc.DeleteStepAsync(step.Id);
+        var deleted = await RunbookSvc.DeleteStepAsync(step.Id, await Guard.CurrentCallerAsync());
         if (deleted)
         {
             await ReloadStepsAsync();
@@ -695,6 +695,7 @@
             await RunbookSvc.UpdateStepAsync(
                 source.Id, source.Name, source.PackageId,
                 source.TargetRoles, source.Config,
+                await Guard.CurrentCallerAsync(),
                 stepPackageName:    source.StepPackageName,
                 stepPackageVersion: source.StepPackageVersion,
                 updateParent:       UpdateParent.To(newParentId));

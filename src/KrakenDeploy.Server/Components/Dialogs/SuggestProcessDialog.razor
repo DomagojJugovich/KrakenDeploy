@@ -184,7 +184,8 @@
                     stepType:    row.Step.StepType,
                     packageId:   "",
                     targetRoles: [],
-                    config:      new Dictionary<string, string>());
+                    config:      new Dictionary<string, string>(),
+                    caller:      await Guard.CurrentCallerAsync());
                 created++;
             }
             DialogService.Close(created > 0);

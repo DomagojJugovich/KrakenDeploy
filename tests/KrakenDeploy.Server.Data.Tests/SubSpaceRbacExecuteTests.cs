@@ -107,6 +107,51 @@ public sealed class SubSpaceRbacExecuteTests(PostgresFixture postgres) : IClassF
         run.EnvironmentId.Should().Be(g.TestEnvId);
     }
 
+    // ── Process step edits (cross-project IDOR) ──────────────────────────────
+
+    [Fact]
+    public async Task Process_step_edit_is_rejected_on_a_project_outside_the_users_scope()
+    {
+        var g = await SeedProjectScopedProcessEditAsync();
+        var svc = new ProcessService(postgres, new PermissionEvaluator(postgres, TimeProvider.System));
+
+        // A step exists in project B (added by a system caller).
+        var stepB = await svc.AddStepAsync(
+            g.ProjectB, "B-step", "Kraken.Script", "", [], new Dictionary<string, string>(),
+            CallerAuthorization.System);
+
+        // The A-scoped user cannot edit B's step by its id (IDOR: the route/parent
+        // is never trusted — authz resolves the step's REAL owning project).
+        var editB = () => svc.UpdateStepAsync(
+            stepB.Id, "hacked", "", [], new Dictionary<string, string>(),
+            CallerAuthorization.ForUser(User(g.UserId)));
+        await editB.Should().ThrowAsync<AuthorizationException>(
+            "a ProcessEdit grant scoped to Project A must not edit Project B's step");
+
+        // Nor add a step to project B.
+        var addToB = () => svc.AddStepAsync(
+            g.ProjectB, "x", "Kraken.Script", "", [], new Dictionary<string, string>(),
+            CallerAuthorization.ForUser(User(g.UserId)));
+        await addToB.Should().ThrowAsync<AuthorizationException>();
+    }
+
+    [Fact]
+    public async Task Process_step_edit_is_allowed_on_the_users_own_project()
+    {
+        var g = await SeedProjectScopedProcessEditAsync();
+        var svc = new ProcessService(postgres, new PermissionEvaluator(postgres, TimeProvider.System));
+
+        var stepA = await svc.AddStepAsync(
+            g.ProjectA, "A-step", "Kraken.Script", "", [], new Dictionary<string, string>(),
+            CallerAuthorization.ForUser(User(g.UserId)));
+        stepA.Name.Should().Be("A-step");
+
+        var updated = await svc.UpdateStepAsync(
+            stepA.Id, "A-step-renamed", "", [], new Dictionary<string, string>(),
+            CallerAuthorization.ForUser(User(g.UserId)));
+        updated!.Name.Should().Be("A-step-renamed");
+    }
+
     // ── Service factories (real evaluator) ───────────────────────────────────
 
     private DeploymentService NewDeploymentService() =>
@@ -200,6 +245,38 @@ public sealed class SubSpaceRbacExecuteTests(PostgresFixture postgres) : IClassF
         await db.SaveChangesAsync();
 
         return new RunbookGraph(userId, runbook.Id, testEnv.Id, prodEnv.Id, target.Id);
+    }
+
+    private sealed record ProcessGraph(Guid UserId, Guid ProjectA, Guid ProjectB);
+
+    private async Task<ProcessGraph> SeedProjectScopedProcessEditAsync()
+    {
+        var userId = Guid.NewGuid();
+        await using var db = postgres.CreateContext();
+        var space = WellKnown.DefaultSpaceId;
+        var pg = await TestData.EnsureProjectGroupAsync(db, space);
+
+        var a = new Project { Name = "A", Slug = $"a-{Guid.NewGuid():N}", ProjectGroupId = pg };
+        var b = new Project { Name = "B", Slug = $"b-{Guid.NewGuid():N}", ProjectGroupId = pg };
+        db.Projects.AddRange(a, b);
+        await db.SaveChangesAsync();
+
+        // Grant ProcessEdit scoped to Project A only.
+        var role = new Role { Name = $"proj-edit-{Guid.NewGuid():N}", GrantedPermissions = [Permission.ProcessEdit] };
+        var team = new Team { Name = $"team-{Guid.NewGuid():N}", SpaceId = space };
+        db.Roles.Add(role);
+        db.Teams.Add(team);
+        await db.SaveChangesAsync();
+        db.RoleAssignments.Add(new RoleAssignment
+        {
+            TeamId = team.Id, RoleId = role.Id, SpaceId = space,
+            Scopes = [new RoleAssignmentScope { ProjectId = a.Id }],
+        });
+        await TestData.EnsureUserAsync(db, userId);
+        db.Add(new TeamMember { TeamId = team.Id, UserId = userId, AddedUtc = DateTimeOffset.UtcNow });
+        await db.SaveChangesAsync();
+
+        return new ProcessGraph(userId, a.Id, b.Id);
     }
 
     /// <summary>

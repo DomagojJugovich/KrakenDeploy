@@ -1,4 +1,5 @@
 using KrakenDeploy.Server.Core.Domain.Processes;
+using KrakenDeploy.Server.Core.Domain.Security;
 using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data.Services;
@@ -9,14 +10,54 @@ namespace KrakenDeploy.Server.Data.Services;
 /// </summary>
 /// <remarks>
 /// <paramref name="stepPackageResolver"/> is optional so tests/fixtures that don't
-/// care about D-6 pinning can keep using <c>new ProcessService(db)</c>; when null,
-/// auto-pinning of <c>StepPackageVersion</c> is skipped.
+/// care about D-6 pinning can keep using <c>new ProcessService(db, permissions)</c>;
+/// when null, auto-pinning of <c>StepPackageVersion</c> is skipped.
 /// </remarks>
 public class ProcessService(
     IDbContextFactory<KrakenDbContext> dbFactory,
+    IPermissionEvaluator permissions,
     StepPackageResolver? stepPackageResolver = null)
     : IStepEditingHost
 {
+    // ── T1-8 authoritative scope check ───────────────────────────────────────
+    // Process editing is scoped to the owning project. These resolve the project
+    // + its real Space (filter-free, so a foreign-Space id fails closed rather
+    // than resolving to null and slipping past) and run the strict check.
+
+    private async Task EnsureProjectScopeAsync(
+        KrakenDbContext db, CallerAuthorization caller, Guid projectId, CancellationToken ct)
+    {
+        if (caller.IsSystem)
+        {
+            return;
+        }
+        var spaceId = await db.Projects.IgnoreQueryFilters()
+            .Where(p => p.Id == projectId)
+            .Select(p => (Guid?)p.SpaceId)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        await permissions.EnsureScopedAsync(
+            caller, Permission.ProcessEdit,
+            new PermissionScope(SpaceId: spaceId, ProjectId: projectId), ct).ConfigureAwait(false);
+    }
+
+    // Resolve the owning project from a step (its process owner) so an edit is
+    // authorized against the step's REAL project — closing the by-step-id IDOR
+    // (route parent id is never trusted for authz).
+    private async Task EnsureStepScopeAsync(
+        KrakenDbContext db, CallerAuthorization caller, ProcessStep step, CancellationToken ct)
+    {
+        if (caller.IsSystem)
+        {
+            return;
+        }
+        var ownerId = await db.Processes.IgnoreQueryFilters()
+            .Where(p => p.Id == step.ProcessId && p.OwnerKind == ProcessOwnerKind.Project)
+            .Select(p => (Guid?)p.OwnerId)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        await permissions.EnsureScopedAsync(
+            caller, Permission.ProcessEdit,
+            new PermissionScope(SpaceId: step.SpaceId, ProjectId: ownerId), ct).ConfigureAwait(false);
+    }
     // ── IStepEditingHost ───────────────────────────────────────────────
     // Process editor supports the full M14 execution-knobs surface.
 
@@ -27,10 +68,10 @@ public class ProcessService(
         List<string> targetRoles, Dictionary<string, string> config,
         string? stepPackageName, string? stepPackageVersion,
         StepExecutionKnobs? knobs, Guid? parentStepId,
-        CancellationToken ct)
+        CallerAuthorization caller, CancellationToken ct)
     {
         var step = await AddStepAsync(
-            containerId, name, stepType, packageId, targetRoles, config,
+            containerId, name, stepType, packageId, targetRoles, config, caller,
             stepPackageName, stepPackageVersion, knobs, parentStepId, ct)
             .ConfigureAwait(false);
         return step.Id;
@@ -41,10 +82,10 @@ public class ProcessService(
         List<string> targetRoles, Dictionary<string, string> config,
         string? stepPackageName, string? stepPackageVersion,
         StepExecutionKnobs? knobs, UpdateParent? updateParent,
-        CancellationToken ct)
+        CallerAuthorization caller, CancellationToken ct)
     {
         await UpdateStepAsync(
-            stepId, name, packageId, targetRoles, config,
+            stepId, name, packageId, targetRoles, config, caller,
             stepPackageName, stepPackageVersion, knobs, updateParent, ct)
             .ConfigureAwait(false);
     }
@@ -124,13 +165,16 @@ public class ProcessService(
         string packageId,
         List<string> targetRoles,
         Dictionary<string, string> config,
+        CallerAuthorization caller,
         string? stepPackageName = null,
         string? stepPackageVersion = null,
         StepExecutionKnobs? knobs = null,
         Guid? parentStepId = null,
         CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await EnsureProjectScopeAsync(db, caller, projectId, ct).ConfigureAwait(false);
         var process = await GetOrCreateCoreAsync(db, projectId, ct).ConfigureAwait(false);
 
         // M15 — SortOrder is scoped to siblings (per-parent).
@@ -189,18 +233,24 @@ public class ProcessService(
         string packageId,
         List<string> targetRoles,
         Dictionary<string, string> config,
+        CallerAuthorization caller,
         string? stepPackageName = null,
         string? stepPackageVersion = null,
         StepExecutionKnobs? knobs = null,
         UpdateParent? updateParent = null,
         CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var step = await db.ProcessSteps.FindAsync([stepId], ct).ConfigureAwait(false);
         if (step is null)
         {
             return null;
         }
+
+        // T1-8: authorize against the step's REAL owning project (IDOR: the route
+        // parent id is not trusted). Runs before any mutation.
+        await EnsureStepScopeAsync(db, caller, step, ct).ConfigureAwait(false);
 
         step.Name        = name;
         step.PackageId   = packageId;
@@ -277,12 +327,14 @@ public class ProcessService(
     /// Moves the step one position up or down in the process. <paramref name="direction"/>
     /// is <c>-1</c> for up, <c>+1</c> for down. No-op if already at the edge.
     /// </summary>
-    public async Task<bool> MoveStepAsync(Guid stepId, int direction, CancellationToken ct = default)
+    public async Task<bool> MoveStepAsync(
+        Guid stepId, int direction, CallerAuthorization caller, CancellationToken ct = default)
     {
         if (direction != -1 && direction != 1)
         {
             throw new ArgumentOutOfRangeException(nameof(direction), "Must be -1 (up) or +1 (down).");
         }
+        ArgumentNullException.ThrowIfNull(caller);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
@@ -291,6 +343,8 @@ public class ProcessService(
         {
             return false;
         }
+
+        await EnsureStepScopeAsync(db, caller, step, ct).ConfigureAwait(false);
 
         // M15 — siblings are scoped to the same ParentStepId.
         var siblings = await db.ProcessSteps
@@ -315,8 +369,10 @@ public class ProcessService(
     }
 
     /// <summary>Removes a step and re-sequences the remaining steps.</summary>
-    public async Task<bool> RemoveStepAsync(Guid stepId, CancellationToken ct = default)
+    public async Task<bool> RemoveStepAsync(
+        Guid stepId, CallerAuthorization caller, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         var step = await db.ProcessSteps
@@ -328,6 +384,8 @@ public class ProcessService(
         {
             return false;
         }
+
+        await EnsureStepScopeAsync(db, caller, step, ct).ConfigureAwait(false);
 
         var processId = step.ProcessId;
         db.ProcessSteps.Remove(step);
@@ -360,11 +418,14 @@ public class ProcessService(
         Guid projectId,
         string json,
         bool replace,
+        CallerAuthorization caller,
         CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         var parsed = OctopusDeploymentProcessImporter.Parse(json);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await EnsureProjectScopeAsync(db, caller, projectId, ct).ConfigureAwait(false);
         var process = await GetOrCreateCoreAsync(db, projectId, ct).ConfigureAwait(false);
 
         int replaced = 0;

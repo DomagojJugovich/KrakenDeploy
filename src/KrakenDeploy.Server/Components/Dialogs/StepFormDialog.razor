@@ -1519,6 +1519,7 @@
                     _stepPackageName, _stepPackageVersion,
                     executionKnobs,
                     parentUpdate,
+                    await Guard.CurrentCallerAsync(),
                     default);
             }
             else
@@ -1540,6 +1541,7 @@
                     _stepPackageName, _stepPackageVersion,
                     executionKnobs,
                     parentStepId: _selectedParentStepId,
+                    caller: await Guard.CurrentCallerAsync(),
                     ct: default);
             }
             Dialog.Close(true);

@@ -187,7 +187,8 @@
             }
 
             _result = await ProcessSvc.ImportDeploymentProcessAsync(
-                project.Id, probe.ProcessJson, replace: true);
+                project.Id, probe.ProcessJson, replace: true,
+                caller: await Guard.CurrentCallerAsync());
             _createdSlug = project.Slug;
         }
         catch (InvalidOperationException ex)

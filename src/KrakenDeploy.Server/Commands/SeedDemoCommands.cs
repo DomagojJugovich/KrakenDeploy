@@ -118,9 +118,9 @@ internal static class SeedDemoCommands
             if (project is null)
             {
                 project = await projectSvc.CreateAsync(name, slug, $"{name} — demo project").ConfigureAwait(false);
-                await processSvc.AddStepAsync(project.Id, "Deploy package to IIS", "Script", "", ["web-server"], []).ConfigureAwait(false);
-                await processSvc.AddStepAsync(project.Id, "Run database migrations", "Script", "", ["db"], []).ConfigureAwait(false);
-                await processSvc.AddStepAsync(project.Id, "Smoke test — health endpoint", "Script", "", ["web-server"], []).ConfigureAwait(false);
+                await processSvc.AddStepAsync(project.Id, "Deploy package to IIS", "Script", "", ["web-server"], [], KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System).ConfigureAwait(false);
+                await processSvc.AddStepAsync(project.Id, "Run database migrations", "Script", "", ["db"], [], KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System).ConfigureAwait(false);
+                await processSvc.AddStepAsync(project.Id, "Smoke test — health endpoint", "Script", "", ["web-server"], [], KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System).ConfigureAwait(false);
             }
 
             await using var rdb = await dbFactory.CreateDbContextAsync();
@@ -315,9 +315,9 @@ internal static class SeedDemoCommands
             var process = await processSvc.GetAsync(project.Id).ConfigureAwait(false);
             if (process is null || process.Steps.Count == 0)
             {
-                await processSvc.AddStepAsync(project.Id, "Deploy package to IIS", "Script", "", ["web-server"], []).ConfigureAwait(false);
-                await processSvc.AddStepAsync(project.Id, "Run database migrations", "Script", "", ["db"], []).ConfigureAwait(false);
-                await processSvc.AddStepAsync(project.Id, "Smoke test — health endpoint", "Script", "", ["web-server"], []).ConfigureAwait(false);
+                await processSvc.AddStepAsync(project.Id, "Deploy package to IIS", "Script", "", ["web-server"], [], KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System).ConfigureAwait(false);
+                await processSvc.AddStepAsync(project.Id, "Run database migrations", "Script", "", ["db"], [], KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System).ConfigureAwait(false);
+                await processSvc.AddStepAsync(project.Id, "Smoke test — health endpoint", "Script", "", ["web-server"], [], KrakenDeploy.Server.Core.Domain.Security.CallerAuthorization.System).ConfigureAwait(false);
             }
 
             await using var pdb = await dbFactory.CreateDbContextAsync();

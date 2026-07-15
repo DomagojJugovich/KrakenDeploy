@@ -1,6 +1,7 @@
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Projects;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.StepPackages;
 using KrakenDeploy.Server.Data.Services;
 
@@ -24,10 +25,11 @@ public sealed class StepPackagePinTests(PostgresFixture postgres)
         await SeedStepPackageAsync(pkgName, "1.0.0", pkgName);
         await SeedStepPackageAsync(pkgName, "1.4.2", pkgName);
 
-        var svc = new ProcessService(postgres, new StepPackageResolver(postgres));
+        var svc = new ProcessService(postgres, new AllowAllPermissionEvaluator(), new StepPackageResolver(postgres));
         var step = await svc.AddStepAsync(
             projectId, "S1", pkgName, packageId: "",
-            targetRoles: [], config: new Dictionary<string, string>());
+            targetRoles: [], config: new Dictionary<string, string>(),
+            caller: CallerAuthorization.System);
 
         step.StepPackageName.Should().Be(pkgName);
         step.StepPackageVersion.Should().Be("1.4.2",
@@ -42,10 +44,11 @@ public sealed class StepPackagePinTests(PostgresFixture postgres)
         await SeedStepPackageAsync(pkgName, "1.0.0", pkgName);
         await SeedStepPackageAsync(pkgName, "2.0.0", pkgName);
 
-        var svc = new ProcessService(postgres, new StepPackageResolver(postgres));
+        var svc = new ProcessService(postgres, new AllowAllPermissionEvaluator(), new StepPackageResolver(postgres));
         var step = await svc.AddStepAsync(
             projectId, "S1", pkgName, packageId: "",
             targetRoles: [], config: new Dictionary<string, string>(),
+            caller: CallerAuthorization.System,
             stepPackageName: pkgName,
             stepPackageVersion: "1.0.0");
 
@@ -60,10 +63,11 @@ public sealed class StepPackagePinTests(PostgresFixture postgres)
         // No step package seeded — step type is unique to this test.
         var stepType  = "kraken.no-such-" + Guid.NewGuid().ToString("N");
 
-        var svc = new ProcessService(postgres, new StepPackageResolver(postgres));
+        var svc = new ProcessService(postgres, new AllowAllPermissionEvaluator(), new StepPackageResolver(postgres));
         var step = await svc.AddStepAsync(
             projectId, "S1", stepType, packageId: "",
-            targetRoles: [], config: new Dictionary<string, string>());
+            targetRoles: [], config: new Dictionary<string, string>(),
+            caller: CallerAuthorization.System);
 
         step.StepPackageName.Should().BeNull();
         step.StepPackageVersion.Should().BeNull(
@@ -77,10 +81,11 @@ public sealed class StepPackagePinTests(PostgresFixture postgres)
         var projectId = await SeedProjectAsync();
         await SeedStepPackageAsync(pkgName, "1.0.0", pkgName);
 
-        var svc  = new ProcessService(postgres, new StepPackageResolver(postgres));
+        var svc  = new ProcessService(postgres, new AllowAllPermissionEvaluator(), new StepPackageResolver(postgres));
         var step = await svc.AddStepAsync(
             projectId, "S1", pkgName, packageId: "",
-            targetRoles: [], config: new Dictionary<string, string>());
+            targetRoles: [], config: new Dictionary<string, string>(),
+            caller: CallerAuthorization.System);
 
         step.StepPackageVersion.Should().Be("1.0.0");
 
@@ -88,6 +93,7 @@ public sealed class StepPackagePinTests(PostgresFixture postgres)
         var updated = await svc.UpdateStepAsync(
             step.Id, "S1", packageId: "",
             targetRoles: [], config: new Dictionary<string, string>(),
+            caller: CallerAuthorization.System,
             stepPackageName: pkgName,
             stepPackageVersion: "2.0.0");
 
@@ -96,7 +102,8 @@ public sealed class StepPackagePinTests(PostgresFixture postgres)
         // Call again with neither name nor version → pin stays untouched.
         var unchanged = await svc.UpdateStepAsync(
             step.Id, "S1", packageId: "",
-            targetRoles: [], config: new Dictionary<string, string>());
+            targetRoles: [], config: new Dictionary<string, string>(),
+            caller: CallerAuthorization.System);
 
         unchanged!.StepPackageVersion.Should().Be("2.0.0",
             "calling UpdateStepAsync without pin args must not clear the existing pin");
@@ -109,10 +116,11 @@ public sealed class StepPackagePinTests(PostgresFixture postgres)
         var projectId = await SeedProjectAsync();
         await SeedStepPackageAsync(pkgName, "1.7.0", pkgName);
 
-        var processSvc = new ProcessService(postgres, new StepPackageResolver(postgres));
+        var processSvc = new ProcessService(postgres, new AllowAllPermissionEvaluator(), new StepPackageResolver(postgres));
         await processSvc.AddStepAsync(
             projectId, "S1", pkgName, packageId: "",
-            targetRoles: [], config: new Dictionary<string, string>());
+            targetRoles: [], config: new Dictionary<string, string>(),
+            caller: CallerAuthorization.System);
 
         var releaseSvc = new ReleaseService(postgres, new StepPackageResolver(postgres));
         var release    = await releaseSvc.CreateAsync(projectId, "1.0.0");
@@ -130,10 +138,11 @@ public sealed class StepPackagePinTests(PostgresFixture postgres)
         var pkgName   = UniquePackageName();
         var projectId = await SeedProjectAsync();
         // Step lives with no installed package; pin is null.
-        var processSvc = new ProcessService(postgres, stepPackageResolver: null);
+        var processSvc = new ProcessService(postgres, new AllowAllPermissionEvaluator(), stepPackageResolver: null);
         await processSvc.AddStepAsync(
             projectId, "S1", pkgName, packageId: "",
-            targetRoles: [], config: new Dictionary<string, string>());
+            targetRoles: [], config: new Dictionary<string, string>(),
+            caller: CallerAuthorization.System);
 
         // Install the package *after* the step was added but before the release.
         await SeedStepPackageAsync(pkgName, "0.9.0", pkgName);

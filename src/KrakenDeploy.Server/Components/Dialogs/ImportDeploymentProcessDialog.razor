@@ -128,7 +128,8 @@
         _busy = true;
         try
         {
-            _result = await ProcessSvc.ImportDeploymentProcessAsync(ProjectId, _json, _replace);
+            _result = await ProcessSvc.ImportDeploymentProcessAsync(
+                ProjectId, _json, _replace, await Guard.CurrentCallerAsync());
         }
         catch (Exception ex)
         {
