@@ -15,10 +15,12 @@ using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Data.Services.Ai.Curators;
 using KrakenDeploy.Server.Data.Spaces;
 using KrakenDeploy.Server.Data.Storage;
+using KrakenDeploy.Server.Data.Net;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 
 namespace KrakenDeploy.Server.Data;
 
@@ -48,6 +50,10 @@ public static class ServiceCollectionExtensions
         bool multiAccount = false)
     {
         services.TryAddTimeProvider();
+        // SSRF policy options. Secure defaults (deny loopback/private) apply when the
+        // host binds no `Ssrf` config section; the Server host binds the section over
+        // these. See SsrfOptions / SsrfGuard.
+        services.AddOptions<SsrfOptions>();
         services.AddSingleton<AuditableEntityInterceptor>();
         // AuditLogInterceptor uses IHttpContextAccessor — register it here so
         // AddHttpContextAccessor() is called before AddDbContext (the interceptor
@@ -271,7 +277,14 @@ public static class ServiceCollectionExtensions
         // Subscriptions transports — registered as IEventTransport so the
         // dispatcher can pick the matching implementation by enum. Add a
         // new transport: implement IEventTransport + register here.
-        services.AddHttpClient<KrakenDeploy.Server.Data.Services.Subscriptions.WebhookTransport>();
+        services.AddHttpClient<KrakenDeploy.Server.Data.Services.Subscriptions.WebhookTransport>()
+            // SSRF: pin the validated IP per connection and refuse redirects (a
+            // webhook receiver returning 3xx is treated as a delivery failure, not
+            // followed to a potentially internal target).
+            .ConfigurePrimaryHttpMessageHandler(sp =>
+                SsrfHttpHandlerFactory.Create(
+                    sp.GetRequiredService<IOptions<SsrfOptions>>().Value.Webhook,
+                    allowAutoRedirect: false));
         services.AddScoped<
             KrakenDeploy.Server.Data.Services.Subscriptions.IEventTransport,
             KrakenDeploy.Server.Data.Services.Subscriptions.WebhookTransport>(

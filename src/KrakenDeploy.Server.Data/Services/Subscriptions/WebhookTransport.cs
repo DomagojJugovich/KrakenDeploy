@@ -5,8 +5,10 @@ using System.Text;
 using System.Text.Json;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Subscriptions;
+using KrakenDeploy.Server.Data.Net;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace KrakenDeploy.Server.Data.Services.Subscriptions;
 
@@ -46,6 +48,7 @@ namespace KrakenDeploy.Server.Data.Services.Subscriptions;
 public sealed class WebhookTransport(
     HttpClient httpClient,
     IConfiguration configuration,
+    IOptions<SsrfOptions> ssrfOptions,
     ILogger<WebhookTransport> logger,
     TimeProvider time) : IEventTransport
 {
@@ -95,11 +98,12 @@ public sealed class WebhookTransport(
             return EventTransportResult.Failure("Webhook url is empty.");
         }
 
-        // SSRF guard — refuse delivery to loopback / link-local / metadata
-        // addresses. Internal RFC1918 hosts stay reachable (on-prem webhook
-        // receivers legitimately live there).
-        var ssrfRefusal = await Net.SsrfGuard
-            .ValidateOutboundUrlAsync(config.Url, ct).ConfigureAwait(false);
+        // SSRF guard (pre-flight) — refuse delivery to loopback / link-local /
+        // metadata / private addresses per the Webhook policy. The DI-registered
+        // handler additionally pins the validated IP and refuses redirects, so a
+        // redirect to an internal host is blocked at connect time too.
+        var ssrfRefusal = await SsrfGuard
+            .ValidateOutboundUrlAsync(config.Url, ssrfOptions.Value.Webhook, ct).ConfigureAwait(false);
         if (ssrfRefusal is not null)
         {
             logger.LogWarning(
@@ -149,30 +153,26 @@ public sealed class WebhookTransport(
         {
             using var response = await httpClient.SendAsync(request, ct).ConfigureAwait(false);
             var status = (int)response.StatusCode;
-            // Per Octopus convention: any 2xx is success; everything else fails
-            // (we let Hangfire retry on 5xx + transient; 4xx repeats are still
-            // attempted by the default retry policy — operator configuration
-            // bug is the typical 4xx cause).
+            // Per Octopus convention: any 2xx is success; everything else fails.
             if (response.IsSuccessStatusCode)
             {
                 logger.LogDebug(
                     "Webhook OK: sub={SubId} event={EventId} status={Status}",
                     subscription.Id, auditEvent.Id, status);
-                return EventTransportResult.Success(
-                    $"HTTP {status}; {response.ReasonPhrase ?? "OK"}");
+                return EventTransportResult.Success($"HTTP {status} {response.ReasonPhrase ?? "OK"}");
             }
-            // Read up to 512 chars of the response body for the error blurb —
-            // helps the operator see "your endpoint says 'invalid signature'"
-            // without exposing arbitrary downstream content.
-            string? snippet = null;
-            try
+            // Do NOT echo the downstream response body. The delivery outcome is
+            // persisted to subscription_deliveries.error_message and reflected into
+            // the audit log + history UI; echoing arbitrary downstream content there
+            // is a readable-SSRF sink. Record only the status line.
+            if (status is >= 300 and < 400)
             {
-                var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-                snippet = body.Length > 512 ? body[..512] + "…" : body;
+                // With redirects disabled on the webhook handler a 3xx surfaces here;
+                // treat it as a delivery failure rather than following it internally.
+                return EventTransportResult.Failure(
+                    $"HTTP {status} {response.ReasonPhrase}: redirect responses are not followed for webhook delivery.");
             }
-            catch { /* couldn't read body — fine, status is still informative */ }
-            return EventTransportResult.Failure(
-                $"HTTP {status} {response.ReasonPhrase}: {snippet}");
+            return EventTransportResult.Failure($"HTTP {status} {response.ReasonPhrase}");
         }
         catch (TaskCanceledException) when (ct.IsCancellationRequested)
         {
