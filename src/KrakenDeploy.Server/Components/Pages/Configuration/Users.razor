@@ -105,11 +105,44 @@
                 }
             </Template>
         </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="ApplicationUser" Title="" Width="70px"
+        <RadzenDataGridColumn TItem="ApplicationUser" Property="IsDisabled" Title="Status"
+                              Width="110px" Sortable="true" Filterable="false">
+            <Template Context="u">
+                @if (u.IsDisabled)
+                {
+                    <RadzenBadge Text="Disabled" BadgeStyle="BadgeStyle.Danger" IsPill="true" />
+                }
+                else
+                {
+                    <RadzenBadge Text="Enabled" BadgeStyle="BadgeStyle.Success" IsPill="true" />
+                }
+            </Template>
+        </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="ApplicationUser" Title="" Width="170px"
                               Filterable="false" Sortable="false"
                               TextAlign="TextAlign.Right">
             <Template Context="u">
+                @if (u.Kind != UserKind.ServiceAccount)
+                {
+                    <RequirePermission Permission="Permission.UserChangePassword">
+                        <RadzenButton Icon="password" ButtonStyle="ButtonStyle.Light"
+                                      Size="ButtonSize.ExtraSmall"
+                                      Click="@(() => ResetPasswordAsync(u))" title="Reset password" />
+                    </RequirePermission>
+                }
                 <RequirePermission Permission="Permission.UserEdit">
+                    @if (u.IsDisabled)
+                    {
+                        <RadzenButton Icon="lock_open" ButtonStyle="ButtonStyle.Success"
+                                      Size="ButtonSize.ExtraSmall"
+                                      Click="@(() => ToggleDisabledAsync(u))" title="Enable user" />
+                    }
+                    else
+                    {
+                        <RadzenButton Icon="block" ButtonStyle="ButtonStyle.Warning"
+                                      Size="ButtonSize.ExtraSmall"
+                                      Click="@(() => ToggleDisabledAsync(u))" title="Disable user" />
+                    }
                     <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
                                   Size="ButtonSize.ExtraSmall"
                                   Click="@(() => DeleteAsync(u))" title="Delete user" />
@@ -206,5 +239,50 @@
         _users = await UserSvc.GetAllAsync();
         Notify.Notify(NotificationSeverity.Success, "Deleted",
             user.UserName ?? user.Email ?? "", 4000);
+    }
+
+    private async Task ToggleDisabledAsync(ApplicationUser user)
+    {
+        if (!await Guard.AllowAsync(Permission.UserEdit)) return;
+
+        var disabling = !user.IsDisabled;
+        if (disabling)
+        {
+            var confirmed = await Dialog.Confirm(
+                $"Disable '{user.Email ?? user.UserName}'? They are signed out within the " +
+                "revalidation window and cannot sign in until re-enabled.",
+                "Confirm Disable",
+                new ConfirmOptions { OkButtonText = "Disable", CancelButtonText = "Cancel" });
+            if (confirmed != true) return;
+        }
+
+        await UserSvc.SetDisabledAsync(user.Id, disabling);
+        _users = await UserSvc.GetAllAsync();
+        Notify.Notify(NotificationSeverity.Success, disabling ? "Disabled" : "Enabled",
+            user.Email ?? user.UserName ?? "", 4000);
+    }
+
+    private async Task ResetPasswordAsync(ApplicationUser user)
+    {
+        if (!await Guard.AllowAsync(Permission.UserChangePassword)) return;
+
+        var confirmed = await Dialog.Confirm(
+            $"Reset the password for '{user.Email}'? A new temporary password is generated " +
+            "and their other active sessions are signed out.",
+            "Confirm Password Reset",
+            new ConfirmOptions { OkButtonText = "Reset", CancelButtonText = "Cancel" });
+        if (confirmed != true) return;
+
+        var temp = await UserSvc.ResetPasswordAsync(user.Id);
+        if (temp is null)
+        {
+            Notify.Notify(NotificationSeverity.Error, "Not found", "User no longer exists.", 4000);
+            return;
+        }
+
+        await Dialog.Alert(
+            $"Temporary password for {user.Email}:\n\n{temp}\n\n" +
+            "Share it securely. The user should change it after signing in.",
+            "Password Reset");
     }
 }

@@ -169,6 +169,86 @@ public class UserService(
         return result.Succeeded;
     }
 
+    /// <summary>
+    /// Enables or disables an account (A7/T1-13). Disabling refuses future
+    /// sign-ins (checked in the login + OIDC paths) AND bumps the security stamp
+    /// so any live session/circuit is revoked at the next revalidation interval.
+    /// Idempotent; returns false if the user was not found.
+    /// </summary>
+    public async Task<bool> SetDisabledAsync(Guid id, bool disabled, CancellationToken ct = default)
+    {
+        var user = await userManager.FindByIdAsync(id.ToString()).ConfigureAwait(false);
+        if (user is null)
+        {
+            return false;
+        }
+        if (user.IsDisabled == disabled)
+        {
+            return true; // no-op
+        }
+
+        user.IsDisabled = disabled;
+        var update = await userManager.UpdateAsync(user).ConfigureAwait(false);
+        if (!update.Succeeded)
+        {
+            throw new InvalidOperationException(
+                "Failed to update user: " + string.Join(", ", update.Errors.Select(e => e.Description)));
+        }
+
+        // Revoke live sessions/circuits on disable. (Re-enabling doesn't need a
+        // bump — the account simply becomes usable again on next sign-in.)
+        if (disabled)
+        {
+            await userManager.UpdateSecurityStampAsync(user).ConfigureAwait(false);
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Admin password reset (A7/T1-13). Sets a freshly generated temporary
+    /// password and returns it so the admin can convey it; the user should
+    /// change it on next sign-in. Replacing the password hash bumps the security
+    /// stamp, so the target's other active sessions are revoked at the next
+    /// revalidation interval. Refuses service accounts (they have no password).
+    /// Returns null if the user was not found.
+    /// </summary>
+    public async Task<string?> ResetPasswordAsync(Guid id, CancellationToken ct = default)
+    {
+        var user = await userManager.FindByIdAsync(id.ToString()).ConfigureAwait(false);
+        if (user is null)
+        {
+            return null;
+        }
+        if (user.Kind == UserKind.ServiceAccount)
+        {
+            throw new InvalidOperationException(
+                "Service accounts authenticate via API keys and have no password to reset.");
+        }
+
+        var tempPassword = GenerateTempPassword();
+
+        // Remove-then-add (no token providers required). Both operations update
+        // the password hash, which regenerates the security stamp -> live
+        // sessions are revoked at the next revalidation interval.
+        if (await userManager.HasPasswordAsync(user).ConfigureAwait(false))
+        {
+            var removed = await userManager.RemovePasswordAsync(user).ConfigureAwait(false);
+            if (!removed.Succeeded)
+            {
+                throw new InvalidOperationException(
+                    "Failed to clear password: " + string.Join(", ", removed.Errors.Select(e => e.Description)));
+            }
+        }
+
+        var added = await userManager.AddPasswordAsync(user, tempPassword).ConfigureAwait(false);
+        if (!added.Succeeded)
+        {
+            throw new InvalidOperationException(
+                "Failed to set password: " + string.Join(", ", added.Errors.Select(e => e.Description)));
+        }
+        return tempPassword;
+    }
+
     /// <summary>Persist the user's Radzen theme choice. No-op if user not found.</summary>
     public async Task UpdateThemeAsync(Guid userId, string? theme, CancellationToken ct = default)
     {
