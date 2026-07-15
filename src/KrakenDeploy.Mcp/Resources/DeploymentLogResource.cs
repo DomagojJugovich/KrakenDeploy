@@ -1,8 +1,10 @@
 using System.Text;
 using System.Text.Json;
 using KrakenDeploy.Server.Core.Domain.Audit;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
@@ -31,10 +33,16 @@ public sealed class DeploymentLogResource
         "Ordered by sequence. Empty body when the deployment has no log yet.")]
     public static async Task<TextResourceContents> GetDeploymentLogAsync(
         IDbContextFactory<KrakenDbContext> dbFactory,
+        IPermissionEvaluator permissions,
+        IHttpContextAccessor httpContext,
         IAuditLog audit,
         Guid deploymentId,
         CancellationToken ct)
     {
+        // T1-9: resources authorize too — the full log needs DeploymentView.
+        await McpToolAuth.EnsureAsync(
+            permissions, httpContext, "deployment_log", Permission.DeploymentView, audit, ct)
+            .ConfigureAwait(false);
         var uri = $"kraken://deployments/{deploymentId}/log";
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 

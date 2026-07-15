@@ -1,6 +1,8 @@
 using System.Text.Json;
 using KrakenDeploy.Server.Core.Domain.Audit;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Data.Services.Ai.ContextBuilders;
+using Microsoft.AspNetCore.Http;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -28,10 +30,15 @@ public sealed class TargetAndReleaseResources
         "info, roles, and last deployment result.")]
     public static async Task<TextResourceContents> GetTargetHealthAsync(
         TargetHealthBuilder builder,
+        IPermissionEvaluator permissions,
+        IHttpContextAccessor httpContext,
         IAuditLog audit,
         string targetName,
         CancellationToken ct)
     {
+        await McpToolAuth.EnsureAsync(
+            permissions, httpContext, "target_health", Permission.MachineView, audit, ct)
+            .ConfigureAwait(false);
         var uri = $"kraken://targets/{targetName}/health";
         var health = await builder.GetByNameAsync(targetName, ct).ConfigureAwait(false);
         if (health is null)
@@ -58,11 +65,16 @@ public sealed class TargetAndReleaseResources
         "list, read the .../process sub-resource.")]
     public static async Task<TextResourceContents> GetReleaseManifestAsync(
         ReleaseContextBuilder builder,
+        IPermissionEvaluator permissions,
+        IHttpContextAccessor httpContext,
         IAuditLog audit,
         string projectSlug,
         string version,
         CancellationToken ct)
     {
+        await McpToolAuth.EnsureAsync(
+            permissions, httpContext, "release_manifest", Permission.ReleaseView, audit, ct)
+            .ConfigureAwait(false);
         var uri = $"kraken://releases/{projectSlug}/{version}";
         var manifest = await builder.GetAsync(projectSlug, version, ct).ConfigureAwait(false);
         if (manifest is null)

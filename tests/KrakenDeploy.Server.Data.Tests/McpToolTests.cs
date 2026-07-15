@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Security.Claims;
 using System.Threading.Channels;
 using FluentAssertions;
@@ -52,7 +53,7 @@ public sealed class McpToolTests(PostgresFixture postgres)
         var audit = new SpyAuditLog();
 
         var result = await DeploymentTools.ListFailedDeploymentsAsync(
-            new DeploymentContextBuilder(postgres), audit,
+            new DeploymentContextBuilder(postgres), new AllowAllEvaluator(), AuthedAccessor(), audit,
             environmentName: null, projectSlug: null, sinceHours: null, CancellationToken.None);
 
         result.Should().ContainSingle().Which.Status.Should().Be(DeploymentStatus.Failed);
@@ -72,11 +73,11 @@ public sealed class McpToolTests(PostgresFixture postgres)
         var audit = new SpyAuditLog();
 
         var config = await DeploymentTools.GetStepConfigAsync(
-            postgres, audit, depId, stepIndex: 0, CancellationToken.None);
+            postgres, new AllowAllEvaluator(), AuthedAccessor(), audit, depId, stepIndex: 0, CancellationToken.None);
         config["Octopus.Action.Script.ScriptBody"].Should().Be("full body");
 
         var act = async () => await DeploymentTools.GetStepConfigAsync(
-            postgres, audit, depId, stepIndex: 5, CancellationToken.None);
+            postgres, new AllowAllEvaluator(), AuthedAccessor(), audit, depId, stepIndex: 5, CancellationToken.None);
         await act.Should().ThrowAsync<McpException>().WithMessage("*out of range*");
     }
 
@@ -87,11 +88,11 @@ public sealed class McpToolTests(PostgresFixture postgres)
         var audit = new SpyAuditLog();
 
         var health = await TargetTools.GetTargetHealthAsync(
-            new TargetHealthBuilder(postgres), audit, target.Name, CancellationToken.None);
+            new TargetHealthBuilder(postgres), new AllowAllEvaluator(), AuthedAccessor(), audit, target.Name, CancellationToken.None);
         health.Name.Should().Be(target.Name);
 
         var act = async () => await TargetTools.GetTargetHealthAsync(
-            new TargetHealthBuilder(postgres), audit, "ghost", CancellationToken.None);
+            new TargetHealthBuilder(postgres), new AllowAllEvaluator(), AuthedAccessor(), audit, "ghost", CancellationToken.None);
         await act.Should().ThrowAsync<McpException>();
     }
 
@@ -111,7 +112,8 @@ public sealed class McpToolTests(PostgresFixture postgres)
         var audit = new SpyAuditLog();
 
         var dbTargets = await TargetTools.QueryTargetsAsync(
-            new TargetHealthBuilder(postgres), audit, role: "db", environmentName: null, CancellationToken.None);
+            new TargetHealthBuilder(postgres), new AllowAllEvaluator(), AuthedAccessor(), audit,
+            role: "db", environmentName: null, CancellationToken.None);
 
         dbTargets.Should().ContainSingle().Which.Name.Should().Be("db-1");
     }
@@ -126,9 +128,49 @@ public sealed class McpToolTests(PostgresFixture postgres)
         var audit = new SpyAuditLog();
 
         var history = await ReleaseTools.GetReleaseHistoryAsync(
-            new ReleaseContextBuilder(postgres), audit, "alpha", count: 0, CancellationToken.None);
+            new ReleaseContextBuilder(postgres), new AllowAllEvaluator(), AuthedAccessor(), audit,
+            "alpha", count: 0, CancellationToken.None);
 
         history.Select(r => r.Version).Should().Equal("2.0", "1.0");
+    }
+
+    // ── T1-9: read tools/resources authorize ─────────────────────────────────
+
+    [Fact]
+    public async Task get_deployment_log_is_denied_without_DeploymentView()
+    {
+        // The gate runs before any DB read, so no deployment need exist: a caller
+        // whose evaluator denies DeploymentView is rejected outright.
+        var act = async () => await DeploymentTools.GetDeploymentLogAsync(
+            new DeploymentContextBuilder(postgres), new DenyAllEvaluator(), AuthedAccessor(),
+            new SpyAuditLog(), Guid.NewGuid(), tailLines: 50, CancellationToken.None);
+
+        (await act.Should().ThrowAsync<McpException>()).WithMessage("*DeploymentView*");
+    }
+
+    [Fact]
+    public void Every_mcp_tool_and_resource_has_an_authorization_gate()
+    {
+        // Fail-closed guard: every [McpServerTool]/[McpServerResource] method must
+        // depend on IPermissionEvaluator, i.e. it can (and does) call
+        // McpToolAuth.EnsureAsync. A new tool added without the gate fails here.
+        var asm = typeof(DeploymentTools).Assembly;
+        var handlers = asm.GetTypes()
+            .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Static | BindingFlags.Instance))
+            .Where(m => m.GetCustomAttributes(inherit: false).Any(a =>
+                a.GetType().Name is "McpServerToolAttribute" or "McpServerResourceAttribute"))
+            .ToList();
+
+        handlers.Should().NotBeEmpty("the MCP assembly must expose tools/resources");
+
+        var ungated = handlers
+            .Where(m => m.GetParameters().All(p => p.ParameterType != typeof(IPermissionEvaluator)))
+            .Select(m => $"{m.DeclaringType!.Name}.{m.Name}")
+            .ToList();
+
+        ungated.Should().BeEmpty(
+            "every MCP tool/resource must gate on IPermissionEvaluator (T1-9); ungated: "
+            + string.Join(", ", ungated));
     }
 
     [Fact]

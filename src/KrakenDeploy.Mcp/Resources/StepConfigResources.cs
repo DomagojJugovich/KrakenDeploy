@@ -1,7 +1,9 @@
 using System.Text.Json;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Processes;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Data;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
@@ -36,11 +38,16 @@ public sealed class StepConfigResources
         "curated summary in the process resource isn't enough to diagnose a step.")]
     public static async Task<TextResourceContents> GetProjectStepConfigAsync(
         IDbContextFactory<KrakenDbContext> dbFactory,
+        IPermissionEvaluator permissions,
+        IHttpContextAccessor httpContext,
         IAuditLog audit,
         string projectSlug,
         int index,
         CancellationToken ct)
     {
+        await McpToolAuth.EnsureAsync(
+            permissions, httpContext, "project_step_config", Permission.ProcessView, audit, ct)
+            .ConfigureAwait(false);
         var uri = $"kraken://projects/{projectSlug}/process/steps/{index}/config";
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
@@ -75,12 +82,17 @@ public sealed class StepConfigResources
         "frozen process snapshot, addressed by zero-based index.")]
     public static async Task<TextResourceContents> GetReleaseStepConfigAsync(
         IDbContextFactory<KrakenDbContext> dbFactory,
+        IPermissionEvaluator permissions,
+        IHttpContextAccessor httpContext,
         IAuditLog audit,
         string projectSlug,
         string version,
         int index,
         CancellationToken ct)
     {
+        await McpToolAuth.EnsureAsync(
+            permissions, httpContext, "release_step_config", Permission.ProcessView, audit, ct)
+            .ConfigureAwait(false);
         var uri = $"kraken://releases/{projectSlug}/{version}/steps/{index}/config";
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 

@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using System.Text.Json;
 using FluentAssertions;
 using KrakenDeploy.Mcp.Resources;
@@ -8,6 +9,7 @@ using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Data.Services.Ai.ContextBuilders;
 using KrakenDeploy.Server.Data.Services.Ai.Curators;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol;
 
@@ -48,7 +50,7 @@ public sealed class McpResourceTests(PostgresFixture postgres)
         var audit = new SpyAuditLog();
 
         var result = await ProcessResources.GetProjectProcessAsync(
-            NewBuilder(), audit, "argosy", CancellationToken.None);
+            NewBuilder(), new AllowAllPermissionEvaluator(), Authed(), audit, "argosy", CancellationToken.None);
 
         result.MimeType.Should().Be("application/json");
         result.Uri.Should().Be("kraken://projects/argosy/process");
@@ -66,7 +68,7 @@ public sealed class McpResourceTests(PostgresFixture postgres)
         var audit = new SpyAuditLog();
 
         var act = async () => await ProcessResources.GetProjectProcessAsync(
-            NewBuilder(), audit, "nope", CancellationToken.None);
+            NewBuilder(), new AllowAllPermissionEvaluator(), Authed(), audit, "nope", CancellationToken.None);
 
         await act.Should().ThrowAsync<McpException>().WithMessage("*nope*");
         audit.Events.Should().ContainSingle()
@@ -80,7 +82,7 @@ public sealed class McpResourceTests(PostgresFixture postgres)
         var audit = new SpyAuditLog();
 
         var result = await StepConfigResources.GetProjectStepConfigAsync(
-            postgres, audit, "argosy", index: 0, CancellationToken.None);
+            postgres, new AllowAllPermissionEvaluator(), Authed(), audit, "argosy", 0, CancellationToken.None);
 
         var config = JsonSerializer.Deserialize<Dictionary<string, string>>(result.Text!)!;
         config["Octopus.Action.Script.ScriptBody"].Should().Be("Write-Host secret-full-body",
@@ -94,7 +96,7 @@ public sealed class McpResourceTests(PostgresFixture postgres)
         var audit = new SpyAuditLog();
 
         var act = async () => await StepConfigResources.GetProjectStepConfigAsync(
-            postgres, audit, "argosy", index: 99, CancellationToken.None);
+            postgres, new AllowAllPermissionEvaluator(), Authed(), audit, "argosy", 99, CancellationToken.None);
 
         await act.Should().ThrowAsync<McpException>().WithMessage("*out of range*");
     }
@@ -106,7 +108,7 @@ public sealed class McpResourceTests(PostgresFixture postgres)
         var audit = new SpyAuditLog();
 
         var result = await DeploymentLogResource.GetDeploymentLogAsync(
-            postgres, audit, deploymentId, CancellationToken.None);
+            postgres, new AllowAllPermissionEvaluator(), Authed(), audit, deploymentId, CancellationToken.None);
 
         result.MimeType.Should().Be("application/x-ndjson");
         var lines = result.Text!.Split('\n', StringSplitOptions.RemoveEmptyEntries);
@@ -121,12 +123,23 @@ public sealed class McpResourceTests(PostgresFixture postgres)
         var audit = new SpyAuditLog();
 
         var act = async () => await DeploymentLogResource.GetDeploymentLogAsync(
-            postgres, audit, Guid.NewGuid(), CancellationToken.None);
+            postgres, new AllowAllPermissionEvaluator(), Authed(), audit, Guid.NewGuid(), CancellationToken.None);
 
         await act.Should().ThrowAsync<McpException>();
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────
+
+    // An authenticated API-key-style principal so the T1-9 gate resolves a user;
+    // paired with AllowAllPermissionEvaluator the gate passes.
+    private static HttpContextAccessor Authed() => new()
+    {
+        HttpContext = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity(
+                [new Claim(ClaimTypes.NameIdentifier, Guid.NewGuid().ToString())], "Test")),
+        },
+    };
 
     private ProcessContextBuilder NewBuilder()
     {

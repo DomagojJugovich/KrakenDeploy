@@ -1,6 +1,8 @@
 using System.Text.Json;
 using KrakenDeploy.Server.Core.Domain.Audit;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Data.Services.Ai.ContextBuilders;
+using Microsoft.AspNetCore.Http;
 using ModelContextProtocol;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
@@ -34,10 +36,15 @@ public sealed class ProcessResources
         "fullConfigUri for drilling into the complete config when needed.")]
     public static async Task<TextResourceContents> GetProjectProcessAsync(
         ProcessContextBuilder builder,
+        IPermissionEvaluator permissions,
+        IHttpContextAccessor httpContext,
         IAuditLog audit,
         string projectSlug,
         CancellationToken ct)
     {
+        await McpToolAuth.EnsureAsync(
+            permissions, httpContext, "project_process", Permission.ProcessView, audit, ct)
+            .ConfigureAwait(false);
         var uri = $"kraken://projects/{projectSlug}/process";
         var ctx = await builder.BuildForProjectAsync(projectSlug, ct).ConfigureAwait(false);
         if (ctx is null)
@@ -64,11 +71,16 @@ public sealed class ProcessResources
         "live process. Same slim shape as the live process resource.")]
     public static async Task<TextResourceContents> GetReleaseProcessAsync(
         ProcessContextBuilder builder,
+        IPermissionEvaluator permissions,
+        IHttpContextAccessor httpContext,
         IAuditLog audit,
         string projectSlug,
         string version,
         CancellationToken ct)
     {
+        await McpToolAuth.EnsureAsync(
+            permissions, httpContext, "release_process", Permission.ProcessView, audit, ct)
+            .ConfigureAwait(false);
         var uri = $"kraken://releases/{projectSlug}/{version}/process";
         var ctx = await builder.BuildForReleaseAsync(projectSlug, version, ct).ConfigureAwait(false);
         if (ctx is null)

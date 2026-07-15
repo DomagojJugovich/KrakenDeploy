@@ -29,12 +29,18 @@ public sealed class DeploymentTools
         "'what's broken right now?'.")]
     public static async Task<IReadOnlyList<DeploymentSummaryDto>> ListFailedDeploymentsAsync(
         DeploymentContextBuilder builder,
+        IPermissionEvaluator permissions,
+        IHttpContextAccessor httpContext,
         IAuditLog audit,
         [Description("Filter to this environment name (optional).")] string? environmentName,
         [Description("Filter to this project slug (optional).")] string? projectSlug,
         [Description("Only deployments created within the last N hours (optional).")] int? sinceHours,
         CancellationToken ct)
     {
+        // T1-9: read tools authorize too — mirror the REST DeploymentView gate.
+        await McpToolAuth.EnsureAsync(
+            permissions, httpContext, "list_failed_deployments", Permission.DeploymentView, audit, ct)
+            .ConfigureAwait(false);
         await McpAudit.ToolInvokedAsync(audit, "list_failed_deployments",
             $"env={environmentName}, project={projectSlug}, sinceHours={sinceHours}", "ok", ct)
             .ConfigureAwait(false);
@@ -50,11 +56,16 @@ public sealed class DeploymentTools
         "kraken://deployments/{id}/log resource instead.")]
     public static async Task<DeploymentLogTailDto> GetDeploymentLogAsync(
         DeploymentContextBuilder builder,
+        IPermissionEvaluator permissions,
+        IHttpContextAccessor httpContext,
         IAuditLog audit,
         [Description("The deployment id (GUID).")] Guid deploymentId,
         [Description("How many trailing log lines to return (default 50, max 1000).")] int tailLines,
         CancellationToken ct)
     {
+        await McpToolAuth.EnsureAsync(
+            permissions, httpContext, "get_deployment_log", Permission.DeploymentView, audit, ct)
+            .ConfigureAwait(false);
         var effectiveTail = tailLines <= 0 ? 50 : tailLines;
         var result = await builder.GetLogTailAsync(deploymentId, effectiveTail, ct).ConfigureAwait(false);
         if (result is null)
@@ -76,10 +87,15 @@ public sealed class DeploymentTools
         "spot a regression's cause.")]
     public static async Task<DeploymentDiffDto> GetDeploymentDiffAsync(
         DeploymentDiffBuilder builder,
+        IPermissionEvaluator permissions,
+        IHttpContextAccessor httpContext,
         IAuditLog audit,
         [Description("The deployment id (GUID).")] Guid deploymentId,
         CancellationToken ct)
     {
+        await McpToolAuth.EnsureAsync(
+            permissions, httpContext, "get_deployment_diff", Permission.DeploymentView, audit, ct)
+            .ConfigureAwait(false);
         var diff = await builder.BuildAsync(deploymentId, ct).ConfigureAwait(false);
         if (diff is null)
         {
@@ -98,11 +114,17 @@ public sealed class DeploymentTools
         "deployment's frozen process snapshot, addressed by zero-based index.")]
     public static async Task<IReadOnlyDictionary<string, string>> GetStepConfigAsync(
         IDbContextFactory<KrakenDbContext> dbFactory,
+        IPermissionEvaluator permissions,
+        IHttpContextAccessor httpContext,
         IAuditLog audit,
         [Description("The deployment id (GUID).")] Guid deploymentId,
         [Description("Zero-based step index into the process snapshot.")] int stepIndex,
         CancellationToken ct)
     {
+        // Step config is process detail — gate on ProcessView (matches REST).
+        await McpToolAuth.EnsureAsync(
+            permissions, httpContext, "get_step_config", Permission.ProcessView, audit, ct)
+            .ConfigureAwait(false);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var release = await db.Deployments.AsNoTracking()
             .Where(d => d.Id == deploymentId)

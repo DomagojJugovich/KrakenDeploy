@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using KrakenDeploy.Server.Core.Domain.Audit;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Data.Services.Ai.ContextBuilders;
+using Microsoft.AspNetCore.Http;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 
@@ -17,10 +19,15 @@ public sealed class TargetTools
         "when diagnosing whether a failure is target-side (offline, stale agent).")]
     public static async Task<TargetHealthDto> GetTargetHealthAsync(
         TargetHealthBuilder builder,
+        IPermissionEvaluator permissions,
+        IHttpContextAccessor httpContext,
         IAuditLog audit,
         [Description("The target's name.")] string targetName,
         CancellationToken ct)
     {
+        await McpToolAuth.EnsureAsync(
+            permissions, httpContext, "get_target_health", Permission.MachineView, audit, ct)
+            .ConfigureAwait(false);
         var health = await builder.GetByNameAsync(targetName, ct).ConfigureAwait(false);
         if (health is null)
         {
@@ -40,11 +47,16 @@ public sealed class TargetTools
         "Returns slim rows: name, status, roles, last-seen.")]
     public static async Task<IReadOnlyList<TargetSummaryDto>> QueryTargetsAsync(
         TargetHealthBuilder builder,
+        IPermissionEvaluator permissions,
+        IHttpContextAccessor httpContext,
         IAuditLog audit,
         [Description("Filter to targets carrying this role (optional).")] string? role,
         [Description("Filter to targets used in this environment (optional).")] string? environmentName,
         CancellationToken ct)
     {
+        await McpToolAuth.EnsureAsync(
+            permissions, httpContext, "query_targets", Permission.MachineView, audit, ct)
+            .ConfigureAwait(false);
         await McpAudit.ToolInvokedAsync(audit, "query_targets",
             $"role={role}, env={environmentName}", "ok", ct).ConfigureAwait(false);
         return await builder.QueryAsync(role, environmentName, ct).ConfigureAwait(false);
@@ -62,11 +74,16 @@ public sealed class ReleaseTools
         "known-good version?' style questions.")]
     public static async Task<IReadOnlyList<ReleaseManifestDto>> GetReleaseHistoryAsync(
         ReleaseContextBuilder builder,
+        IPermissionEvaluator permissions,
+        IHttpContextAccessor httpContext,
         IAuditLog audit,
         [Description("The project slug.")] string projectSlug,
         [Description("How many releases to return (default 20, max 100).")] int count,
         CancellationToken ct)
     {
+        await McpToolAuth.EnsureAsync(
+            permissions, httpContext, "get_release_history", Permission.ReleaseView, audit, ct)
+            .ConfigureAwait(false);
         var effectiveCount = count <= 0 ? 20 : count;
         await McpAudit.ToolInvokedAsync(audit, "get_release_history",
             $"projectSlug={projectSlug}, count={effectiveCount}", "ok", ct).ConfigureAwait(false);
