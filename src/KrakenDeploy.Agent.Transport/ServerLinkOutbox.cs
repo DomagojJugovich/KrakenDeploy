@@ -1,6 +1,5 @@
 using System.Threading.Channels;
 using KrakenDeploy.Contracts.Adhoc;
-using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Logging;
 
 namespace KrakenDeploy.Agent.Transport;
@@ -163,19 +162,15 @@ public sealed class ServerLinkOutbox(
             {
                 throw;
             }
-            catch (HubException ex)
-            {
-                // The hub method itself threw — retrying would repeat it.
-                logger.LogError(ex,
-                    "Server rejected outbox item {Item}; dropped (hub-side error).", item.GetType().Name);
-                return;
-            }
             catch (Exception ex)
             {
                 // Transient by default: connection dropped before/during the
                 // invocation (the connection may already have flipped to
                 // reconnecting). Retry the SAME item — order is preserved, and
                 // the DispatchId key makes a might-have-arrived duplicate safe.
+                // Hub-side errors (HubException) take the same capped path: a
+                // transient server fault (e.g. DB blip inside the hub method)
+                // gets retried; a deterministic rejection drops after the cap.
                 connectedAttempts++;
                 if (connectedAttempts >= MaxSendAttemptsPerItem)
                 {

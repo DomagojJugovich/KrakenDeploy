@@ -160,7 +160,10 @@ public sealed class PendingSubPlanRegistry : IPendingSubPlanRegistry
     // duplicate completion carrying one of these is swallowed. Process-lifetime
     // and bounded: after a server restart the set is empty, but then the TCS is
     // gone too and the dispatch reconciler + IsTerminal guard own the outcome.
-    private const int RetiredCapacity = 4096;
+    // Sized so one long-running deployment's ids survive heavy system-wide wave
+    // churn (~256 KB worst case) — eviction reopens only the IsTerminal-guarded
+    // fallback, never a TCS resolve.
+    private const int RetiredCapacity = 16_384;
     private readonly ConcurrentDictionary<Guid, byte> _retired = new();
     private readonly ConcurrentQueue<Guid> _retiredOrder = new();
 

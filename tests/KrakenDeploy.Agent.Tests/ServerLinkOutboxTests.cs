@@ -130,13 +130,23 @@ public sealed class ServerLinkOutboxTests
     }
 
     [Fact]
-    public async Task Hub_rejection_drops_the_item_and_the_queue_keeps_moving()
+    public async Task Hub_rejection_gets_capped_retries_then_drops_and_the_queue_keeps_moving()
     {
+        // A HubException may be a TRANSIENT server fault (DB blip inside the hub
+        // method) — it gets the same capped retries as any failure; only a
+        // persistent rejection is dropped, so the queue can never wedge.
         var h = new Harness();
+        var attempts = 0;
         var poison = new OutboxItem.Log(Guid.NewGuid(), -1, "info", "poison");
-        h.FailWith = item => ReferenceEquals(item, poison)
-            ? new HubException("method rejected the payload")
-            : null;
+        h.FailWith = item =>
+        {
+            if (ReferenceEquals(item, poison))
+            {
+                Interlocked.Increment(ref attempts);
+                return new HubException("method rejected the payload");
+            }
+            return null;
+        };
 
         using var cts = new CancellationTokenSource();
         var pump = h.Outbox.PumpAsync(cts.Token);
@@ -145,8 +155,9 @@ public sealed class ServerLinkOutboxTests
         h.Outbox.Enqueue(new OutboxItem.DeploymentCompleted(Guid.NewGuid(), Guid.NewGuid(), true, null));
 
         await h.WaitForSentAsync(1);
+        attempts.Should().Be(ServerLinkOutbox.MaxSendAttemptsPerItem);
         h.Sent.Single().Should().BeOfType<OutboxItem.DeploymentCompleted>(
-            "the hub-rejected item is dropped, not retried forever in front of the queue");
+            "the persistently rejected item is dropped, not retried forever in front of the queue");
 
         cts.Cancel();
         await pump;

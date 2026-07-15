@@ -172,12 +172,12 @@ public sealed class ServerLinkHostedService(
                 // Loop immediately — StartAsync failures pace any retries.
             }
         }
-        catch (Exception ex)
-        {
-            // A supervisor crash would strand the agent offline for good —
-            // log loudly; the finally below still reports shutdown.
-            logger.LogError(ex, "Server link supervisor failed unexpectedly.");
-        }
+        // No broad catch: an unexpected supervisor crash must NOT leave the
+        // process running with a permanently dead link (the exact T0-2 failure
+        // this service exists to prevent). Letting it propagate stops the host
+        // (BackgroundServiceExceptionBehavior.StopHost, .NET 6+ default) so
+        // service-manager recovery restarts the agent — a visible crash-loop
+        // beats a silent zombie. The finally still reports shutdown.
         finally
         {
             await ReportShutdownAndDisconnectAsync().ConfigureAwait(false);
