@@ -50,9 +50,9 @@ public sealed class TargetTools
         IPermissionEvaluator permissions,
         IHttpContextAccessor httpContext,
         IAuditLog audit,
-        [Description("Filter to targets carrying this role (optional).")] string? role,
-        [Description("Filter to targets used in this environment (optional).")] string? environmentName,
-        CancellationToken ct)
+        [Description("Filter to targets carrying this role (optional).")] string? role = null,
+        [Description("Filter to targets used in this environment (optional).")] string? environmentName = null,
+        CancellationToken ct = default)
     {
         await McpToolAuth.EnsureAsync(
             permissions, httpContext, "query_targets", Permission.MachineView, audit, ct)
@@ -78,8 +78,8 @@ public sealed class ReleaseTools
         IHttpContextAccessor httpContext,
         IAuditLog audit,
         [Description("The project slug.")] string projectSlug,
-        [Description("How many releases to return (default 20, max 100).")] int count,
-        CancellationToken ct)
+        [Description("How many releases to return (default 20, max 100).")] int count = 20,
+        CancellationToken ct = default)
     {
         await McpToolAuth.EnsureAsync(
             permissions, httpContext, "get_release_history", Permission.ReleaseView, audit, ct)

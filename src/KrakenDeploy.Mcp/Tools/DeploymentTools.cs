@@ -31,10 +31,10 @@ public sealed class DeploymentTools
         IPermissionEvaluator permissions,
         IHttpContextAccessor httpContext,
         IAuditLog audit,
-        [Description("Filter to this environment name (optional).")] string? environmentName,
-        [Description("Filter to this project slug (optional).")] string? projectSlug,
-        [Description("Only deployments created within the last N hours (optional).")] int? sinceHours,
-        CancellationToken ct)
+        [Description("Filter to this environment name (optional).")] string? environmentName = null,
+        [Description("Filter to this project slug (optional).")] string? projectSlug = null,
+        [Description("Only deployments created within the last N hours (optional).")] int? sinceHours = null,
+        CancellationToken ct = default)
     {
         // T1-9: read tools authorize too — mirror the REST DeploymentView gate.
         await McpToolAuth.EnsureAsync(
@@ -59,8 +59,8 @@ public sealed class DeploymentTools
         IHttpContextAccessor httpContext,
         IAuditLog audit,
         [Description("The deployment id (GUID).")] Guid deploymentId,
-        [Description("How many trailing log lines to return (default 50, max 1000).")] int tailLines,
-        CancellationToken ct)
+        [Description("How many trailing log lines to return (default 50, max 1000).")] int tailLines = 50,
+        CancellationToken ct = default)
     {
         await McpToolAuth.EnsureAsync(
             permissions, httpContext, "get_deployment_log", Permission.DeploymentView, audit, ct)

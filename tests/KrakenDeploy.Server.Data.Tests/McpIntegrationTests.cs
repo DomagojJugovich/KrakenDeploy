@@ -133,16 +133,12 @@ public sealed class McpIntegrationTests(PostgresFixture postgres)
 
         await WithMcpClientAsync(async (client, ct) =>
         {
-            // All three filters are declared string?/int? but carry no default,
-            // so the SDK requires the keys to be present (nullability != optional).
+            // Empty args: the filters now carry defaults, so the SDK marks them
+            // optional. Before that fix this call threw "missing a value for the
+            // required parameter 'environmentName'".
             var result = await client.CallToolAsync(
                 "list_failed_deployments",
-                new Dictionary<string, object?>
-                {
-                    ["environmentName"] = null,
-                    ["projectSlug"] = null,
-                    ["sinceHours"] = null,
-                },
+                new Dictionary<string, object?>(),
                 cancellationToken: ct);
 
             var text = ContentText(result);
@@ -152,6 +148,26 @@ public sealed class McpIntegrationTests(PostgresFixture postgres)
                 because: "MCP tool output must carry the enum NAME, matching the REST wire");
             text.Should().NotContain("\"status\":3",
                 because: "the numeric enum form is exactly the divergence being fixed");
+        });
+    }
+
+    [Fact]
+    public async Task Optional_filter_tool_accepts_empty_arguments()
+    {
+        // query_targets' role/environmentName filters are optional; calling with
+        // no arguments must succeed. Before defaults were added the SDK required
+        // every filter key and this threw. No seed needed — an empty target set
+        // is a valid, non-error result.
+        await WithMcpClientAsync(async (client, ct) =>
+        {
+            var result = await client.CallToolAsync(
+                "query_targets",
+                new Dictionary<string, object?>(),
+                cancellationToken: ct);
+
+            result.IsError.Should().NotBe(true,
+                because: "optional filters must be omittable | server logs: {0}",
+                string.Join(" || ", _serverLogs));
         });
     }
 
