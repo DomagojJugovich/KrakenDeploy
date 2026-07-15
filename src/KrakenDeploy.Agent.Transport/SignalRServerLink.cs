@@ -49,12 +49,14 @@ public sealed class SignalRServerLink(ILogger<SignalRServerLink> logger) : IServ
                     options.Headers["X-KD-Release"] = releaseId;
                 }
             })
-            .WithAutomaticReconnect()
+            // B2/T0-2: unbounded jittered backoff — the connection retries for
+            // the life of the process instead of giving up after ~40 s.
+            .WithAutomaticReconnect(new AgentReconnectPolicy(logger))
             .Build();
 
         _connection.Reconnecting += ex =>
         {
-            logger.LogWarning(ex, "SignalR connection lost; attempting to reconnect…");
+            logger.LogWarning(ex, "SignalR connection lost; reconnecting (unbounded retry)…");
             return Task.CompletedTask;
         };
 
