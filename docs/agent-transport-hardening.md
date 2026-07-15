@@ -2,12 +2,17 @@
 
 | | |
 |---|---|
-| **Version** | 1.0 |
+| **Version** | 1.1 |
 | **Date** | 2026-07-15 |
 | **Authors** | Domagoj Jugovic, Claude (Opus 4.8) |
 | **Status** | Approved |
 | **Technologies** | .NET 10, JWT (HS256), SignalR, gRPC (HTTP/2), DPAPI, Serilog |
 | **Projects** | KrakenDeploy.Server, KrakenDeploy.Server.Data, KrakenDeploy.Server.Transport, KrakenDeploy.Agent, KrakenDeploy.Agent.Transport, KrakenDeploy.Contracts |
+
+| Version | Change |
+|---|---|
+| 1.0 | A8 initial: revocation, 90 d lifetime, iss/aud, cleartext gating, agent.json at rest, redaction, offline fail-closed. |
+| 1.1 | Sliding token auto-refresh (§1a) + configurable lifetime — routine re-enrollment eliminated. |
 
 ## Purpose
 
@@ -48,18 +53,54 @@ agent access** button on the target Connectivity tab (Reverse targets). The agen
 must re-enroll afterwards.
 
 > Deliberate scope decision: role changes do **not** bump the version (RBAC is
-> live-resolved on every action). The chosen posture is **90-day lifetime +
-> revocation, no refresh subsystem** — revocation gives an instant kill for a known
-> leak, at-rest protection (§3) closes the primary leak vector, and the shortened
-> lifetime bounds an unknown leak. A refresh flow can be added later if a shorter
-> lifetime is wanted.
+> live-resolved on every action).
 
 ### iss/aud + lifetime
 
 `ValidateIssuer`/`ValidateAudience` are now **true** (every issued token already
 carried `iss=KrakenDeploy` / `aud=KrakenDeploy.Agent`), and `ValidateLifetime` is
 pinned explicitly so a future default change can't silently disable expiry. Lifetime
-is **90 days** (`AgentJwtService.TokenLifetime`).
+defaults to **90 days** and is configurable via `Agent:TokenLifetimeDays` (server
+side, ≥ 1 enforced at startup). With auto-refresh (§1a) the lifetime is **not** an
+operator chore interval — it is the *maximum tolerated offline gap* before a manual
+re-enroll, and the window in which a token that has stopped refreshing (dead or
+decommissioned box) silently ages out of trust.
+
+## 1a. Sliding token auto-refresh
+
+A fixed lifetime without renewal would mean a fleet-wide manual re-enroll every
+90 days (~150 targets = a real operational chore), and a 5-year token was rejected
+as a long-lived bearer credential riding every WebSocket handshake. Instead the
+agent **renews its own token** — chosen fork: *auto-refresh, no rotation*.
+
+- **Server** — `POST /api/agents/refresh-token`, authenticated by the **current**
+  agent token under an AgentJwt-only policy (an API key cannot mint agent tokens).
+  The scheme's `OnTokenValidated` has already run the `atv` revocation check, so a
+  **revoked or expired token cannot refresh** — revocation cannot be outrun by
+  renewing. The handler re-runs `AgentTokenValidator` and stamps the new token with
+  the **claim's** version, so a revoke racing the refresh yields a dead-on-arrival
+  token, never a laundered fresh one. Every refresh writes an
+  `Agent.TokenRefreshed` audit row (forensic trail; an anomaly spike can indicate a
+  stolen token being kept alive).
+- **Agent** — `TokenRefreshHostedService` checks the token's own `nbf`/`exp` (no
+  server round-trip) every 6 h and immediately on boot; once past **half** of the
+  validity window it calls the endpoint, persists the new identity to `agent.json`
+  **first**, then swaps it into `AgentContext`. The SignalR `AccessTokenProvider`
+  and the gRPC token accessors resolve the token **lazily**, so reconnects and new
+  channels pick up the fresh token without a restart.
+- **No rotation (deliberate)** — the old token stays valid until its own `exp`.
+  Rotation (bump `atv` per refresh) would give single-live-token semantics and
+  theft detection, but its crash window (server bumped, `agent.json` not yet
+  persisted) bricks agents — reintroducing random manual re-enrolls. With no
+  rotation there is no failure window at all. Consequence to be aware of: a stolen
+  token *copy* remains valid until its `exp` even after the legitimate agent
+  refreshed — the answer to a **known** leak remains revocation, which kills the
+  stolen copy and every refresh attempt instantly.
+
+Net effect: an agent that is online at least once per half-lifetime (45 d at
+defaults) **never needs re-enrollment**. Re-enrollment remains only for: a revoked
+agent, an agent offline longer than the full lifetime, or an undecryptable
+`agent.json` (§3).
 
 ## 2. Cleartext HTTP/2 gating + https enforcement (T1-12)
 
@@ -137,19 +178,22 @@ verification entirely. Now:
 | Key | Default | Meaning |
 |---|---|---|
 | `Agent:JwtSigningKey` (server) | — (required) | HS256 signing key (≥32 bytes). |
+| `Agent:TokenLifetimeDays` (server) | `90` | Agent token lifetime; with auto-refresh (§1a) this is the maximum tolerated offline gap, not a chore interval. ≥ 1. |
 | `Server:Url` (agent) | — | Server base URL; **https required**. |
 | `Server:AllowInsecureHttp` (agent) | `false` | Dev-only override allowing an `http://` URL + cleartext h2c. |
 | `Agent:DataPath` (agent) | OS default | Directory holding the DPAPI-protected `agent.json`. |
 
 ## Operational notes
 
-### Re-enrollment is manual — not automatic
+### Re-enrollment is manual — and, with auto-refresh, exceptional
 
 An agent registers **only when it has no stored identity**: on startup
 `RegistrationHostedService` loads `agent.json` and, if an identity is present, uses
-that token and skips registration. An agent whose token the server now rejects
-(missing `atv`, wrong version, expired) therefore does **not** self-re-enroll — it
-retries the connection and keeps getting `401`. Re-enrollment is an operator action:
+that token and skips registration. An agent whose token the server rejects
+(revoked, offline past the full lifetime, pre-A8 token without `atv`) does **not**
+self-re-enroll — it retries the connection and keeps getting `401`. Routine expiry
+is handled by the sliding refresh (§1a), so under normal operation re-enrollment
+never recurs; when it *is* needed, it is an operator action:
 
 1. Generate a fresh one-time registration token in the Targets UI for the target.
 2. On the agent host, delete `agent.json` from the data directory
