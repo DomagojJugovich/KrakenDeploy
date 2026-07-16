@@ -39,6 +39,9 @@
     <ProjectReference Include="..\..\src\KrakenDeploy.Server.Core\KrakenDeploy.Server.Core.csproj" />
     <ProjectReference Include="..\..\src\KrakenDeploy.Server.Data\KrakenDeploy.Server.Data.csproj" />
     <ProjectReference Include="..\..\src\KrakenDeploy.Server.Transport\KrakenDeploy.Server.Transport.csproj" />
+    <ProjectReference Include="..\..\src\KrakenDeploy.Agent\KrakenDeploy.Agent.csproj" />
+    <ProjectReference Include="..\..\src\KrakenDeploy.Agent.Transport\KrakenDeploy.Agent.Transport.csproj" />
+    <ProjectReference Include="..\..\src\KrakenDeploy.Server\KrakenDeploy.Server.csproj" />
     <ProjectReference Include="..\..\src\KrakenDeploy.Mcp\KrakenDeploy.Mcp.csproj" />
     <!-- Blue-green release registry + drain decision (catalog-backed). -->
     <ProjectReference Include="..\..\src\KrakenDeploy.ControlPlane\KrakenDeploy.ControlPlane.csproj" />

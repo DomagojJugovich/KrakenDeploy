@@ -394,6 +394,11 @@ public sealed class StepBuilder
     public KrakenDeploy.Execution.StepCondition Condition { get; init; }
         = KrakenDeploy.Execution.StepCondition.Success;
 
+    // B8 — step-package pin. The REAL agent resolves its handler exclusively
+    // from this pin (no hardcoded fallback); the fake-agent harness ignores it.
+    public string? StepPackageName { get; init; }
+    public string? StepPackageVersion { get; init; }
+
     public static StepBuilder Script(string name, bool required = true)
         => new() { Name = name, StepType = "Octopus.Script", Required = required };
 
@@ -427,18 +432,20 @@ public sealed class StepBuilder
 
     internal StepSnapshot ToSnapshot(int sortOrder) => new()
     {
-        Id             = Id,
-        Name           = Name,
-        StepType       = StepType,
-        Required       = Required,
-        SortOrder      = sortOrder,
-        ParentStepId   = ParentStepId,
-        Config         = Config ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
-        PackageId      = "",
-        PackageVersion = "",
-        TimeoutSeconds = TimeoutSeconds,
-        MaxRetries     = MaxRetries,
-        Condition      = Condition,
+        Id                 = Id,
+        Name               = Name,
+        StepType           = StepType,
+        Required           = Required,
+        SortOrder          = sortOrder,
+        ParentStepId       = ParentStepId,
+        Config             = Config ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+        PackageId          = "",
+        PackageVersion     = "",
+        TimeoutSeconds     = TimeoutSeconds,
+        MaxRetries         = MaxRetries,
+        Condition          = Condition,
+        StepPackageName    = StepPackageName,
+        StepPackageVersion = StepPackageVersion,
     };
 }
 
