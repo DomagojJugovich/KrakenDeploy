@@ -2,12 +2,15 @@
 
 | | |
 |---|---|
-| **Version** | 1.0 |
-| **Date** | 2026-07-01 |
+| **Version** | 1.1 |
+| **Date** | 2026-07-16 |
 | **Authors** | Domagoj Jugović (LAUS CC) — drafted with Claude Code |
 | **Status** | `Review` |
-| **Technologies** | .NET 10, ASP.NET Core / SignalR, PostgreSQL, Caddy |
+| **Technologies** | .NET 10, ASP.NET Core / SignalR, PostgreSQL, Caddy, PgBouncer |
 | **Projects** | `KrakenDeploy.Server`, `KrakenDeploy.Server.Transport` |
+
+> **History** — v1.1 (2026-07-16): added the [Database connections](#database-connections)
+> budget + PgBouncer guidance (C3/T1-19). v1.0 (2026-07-01): initial pair topology.
 
 A KrakenDeploy HA pair is two server nodes sharing a single PostgreSQL instance,
 behind a **sticky-session Caddy edge that is itself run HA** — a single Caddy node
@@ -110,6 +113,39 @@ routing does the coordination.
 > **`Server__HaMode` is currently inert.** The env var still appears in the
 > on-prem compose/`.env.example`/README as a placeholder, but application code
 > ignores it (there is no Postgres-backed registry to select). Do not rely on it.
+
+### Database connections
+
+Both nodes point at **one** Postgres, so the server-side connection budget is
+shared. Postgres defaults to `max_connections = 100` (minus a few reserved for
+superusers), and each source of connections is per-node:
+
+| Source | Per-node connections | Notes |
+|---|---|---|
+| EF Core pool (`KrakenDb`) | up to `Database:MaxPoolSize` (**default 50**) | The tenant `KrakenDbContext`. Cap it via `Database:MaxPoolSize`; `<= 0` uncaps to Npgsql's default of 100. |
+| Hangfire (`UsePostgreSqlStorage`) | roughly `WorkerCount` + a small overhead | A **separate** pool from EF — not covered by `Database:MaxPoolSize`. |
+| One-shot | a few | OIDC scheme registrar, migrations, `database setup`. |
+
+For a pair this doubles: `2 × (MaxPoolSize + Hangfire)`. With the default cap of
+50 and a modest `WorkerCount`, two nodes alone approach or exceed the default
+`max_connections = 100`. Pick one:
+
+- **Front Postgres with PgBouncer in `transaction` pooling mode (recommended for a
+  pair).** App-side pools multiplex onto far fewer real server connections, so the
+  cap becomes a client-side concurrency limit rather than a hard server ceiling.
+  Point `ConnectionStrings__KrakenDb` (and Hangfire's) at PgBouncer. Note: with
+  transaction pooling, avoid session-level features (advisory locks held across
+  statements, `SET` that must persist); KrakenDeploy's tenant path uses none.
+- **Or raise `max_connections`** (e.g. 200) on Postgres and size `MaxPoolSize`
+  so `2 × (MaxPoolSize + Hangfire) + reserve` stays under it — simplest, but each
+  Postgres connection costs memory.
+
+Single-instance (one node — the common LAUS on-prem shape) fits comfortably in the
+default `max_connections = 100` with the default cap of 50. In-flight queries are
+retried on a transient blip / failover (`Database:EnableRetryOnFailure`, default
+on) — a retry storm during a failover must still fit the pool, so do not set the
+cap so high that a stalled node can exhaust `max_connections` before failover
+completes.
 
 ### Shared state across nodes
 
