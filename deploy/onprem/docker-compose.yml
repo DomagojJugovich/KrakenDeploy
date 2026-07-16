@@ -43,6 +43,16 @@ services:
       ConnectionStrings__KrakenDb: >
         Host=postgres;Port=5432;Database=${POSTGRES_DB:-krakendeploy};
         Username=${POSTGRES_USER:-kraken};Password=${POSTGRES_PASSWORD}
+      # T0-8: `database setup` provisions the data-encryption key (DEK), wrapped
+      # under the KEK from Encryption__MasterKey. Without these two, setup would
+      # default to Development and wrap the DEK under an EPHEMERAL random key
+      # discarded on exit — kraken-server then boots Production with the real
+      # ENCRYPTION_KEY and can never unwrap it (CryptographicException on the
+      # first sensitive-variable access). They MUST match kraken-server's, and
+      # DOTNET_ENVIRONMENT=Production turns a missing key into a clean fail-fast
+      # instead of a silent brick.
+      Encryption__MasterKey: ${ENCRYPTION_KEY:?Required — base64-encoded 32 bytes}
+      DOTNET_ENVIRONMENT: Production
     entrypoint:
       - dotnet
       - KrakenDeploy.Server.dll
@@ -66,11 +76,18 @@ services:
       ConnectionStrings__KrakenDb: >
         Host=postgres;Port=5432;Database=${POSTGRES_DB:-krakendeploy};
         Username=${POSTGRES_USER:-kraken};Password=${POSTGRES_PASSWORD}
-      Server__DataPath: /data
+      # T0-9: the image runs as the non-root `kraken` user and only
+      # /var/lib/krakendeploy is pre-created + chowned (see Dockerfile.server).
+      # DataPath, the DataProtection key ring and the agent binaries all live
+      # under it so a non-root process can write, the named volume persists
+      # them, and every DataPath-reading code site (all now on Server:DataPath)
+      # agrees on one tree.
+      Server__DataPath: /var/lib/krakendeploy
+      DataProtection__KeyPath: /var/lib/krakendeploy/dataprotection-keys
+      AgentUpdate__BinariesPath: /var/lib/krakendeploy/agents
       Agent__JwtSigningKey: ${AGENT_JWT_KEY:?Required — minimum 32 characters}
       Encryption__MasterKey: ${ENCRYPTION_KEY:?Required — base64-encoded 32 bytes}
       KRAKEN_LICENSE_KEY: ${KRAKEN_LICENSE_KEY:-}
-      AgentUpdate__BinariesPath: /data/agents
       Server__HaMode: ${HA_MODE:-}
       DOTNET_ENVIRONMENT: Production
       # B8: cleartext has no ALPN, so ONE plaintext port cannot serve HTTP/1.1
@@ -85,7 +102,7 @@ services:
       Kestrel__Endpoints__Grpc__Url: http://0.0.0.0:5081
       Kestrel__Endpoints__Grpc__Protocols: Http2
     volumes:
-      - kraken-data:/data
+      - kraken-data:/var/lib/krakendeploy
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:5080/healthz || exit 1"]
       interval: 15s
