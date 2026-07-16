@@ -158,11 +158,11 @@ connection options; a stale pin falls back to the default release).
 
 ## Known residuals (deliberate, tracked)
 
-- **B3** owns disconnect reconciliation server-side: wave deadlines
-  (`TimeoutSeconds=0` still waits forever), cancelling open slots on agent
-  disconnect, and `InFlightWorkGauge` drain interplay. B2's buffered
-  completions make the post-outage completion *arrive*; B3 makes the server
-  give up *waiting* when it should.
+- **B3 — LANDED 2026-07-16** (`docs/disconnect-reconciliation.md`): wave
+  deadlines, the mid-wave disconnect monitor (grace tuned to this outbox's
+  flush window), and the runbook-run reap. B2's buffered completions make the
+  post-outage completion *arrive*; B3 makes the server give up *waiting* when
+  it should.
 - **B6** (pre-freeze wire pass) still owes: `DispatchId` on `AppendLogAsync`
   (log-line attempt attribution), `CancelDeploymentAsync` (cooperative abort),
   `ContractVersion` negotiation.

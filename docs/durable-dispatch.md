@@ -2,12 +2,17 @@
 
 | | |
 |---|---|
-| **Version** | 1.0 |
-| **Date** | 2026-07-15 |
+| **Version** | 1.1 |
+| **Date** | 2026-07-16 |
 | **Authors** | Domagoj Jugovic, Claude (Opus 4.8) |
 | **Status** | Approved |
 | **Technologies** | .NET 10, EF Core 10, PostgreSQL, Hangfire, Channels |
 | **Projects** | KrakenDeploy.Server, KrakenDeploy.Server.Data, KrakenDeploy.Server.Transport, KrakenDeploy.Server.Core |
+
+| Version | Date | Change |
+|---|---|---|
+| 1.1 | 2026-07-16 | B3: the reconciler gained step 4 (overdue runbook runs) — the "runbook runs are never reconciled" statement below now applies only to the deployments-only orphan step 3. See `docs/disconnect-reconciliation.md`. |
+| 1.0 | 2026-07-15 | Initial (B1). |
 
 ## Purpose
 
