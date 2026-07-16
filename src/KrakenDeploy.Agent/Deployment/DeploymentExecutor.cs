@@ -30,8 +30,12 @@ public sealed class DeploymentExecutor(
     IArtifactSink artifactUploader,
     StepPackageLoader stepPackageLoader,
     IOptions<AgentConfig> agentConfig,
-    ILogger<DeploymentExecutor> logger)
+    ILogger<DeploymentExecutor> logger) : IDisposable
 {
+    /// <summary>App-lifetime singleton; the DI container disposes it at
+    /// shutdown (releases the execution gate's wait handle).</summary>
+    public void Dispose() => _executionGate.Dispose();
+
 
     /// <summary>
     /// True while a deployment is executing. Read by <see cref="Services.AgentUpdateService"/>
@@ -53,6 +57,14 @@ public sealed class DeploymentExecutor(
     /// attempt to unwind before force-detaching it (a kill normally unwinds in
     /// well under a second; this only guards a pathologically stuck reap).</summary>
     internal static readonly TimeSpan SupersedeUnwindTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// B7 — the machine's execution slot: ONE plan (deployment or runbook run)
+    /// executes at a time on this agent, FIFO for async waiters. Registration
+    /// in <see cref="_running"/> happens BEFORE queueing, so a queued plan is
+    /// still cancellable / supersedable; the wait observes the run's token.
+    /// </summary>
+    private readonly SemaphoreSlim _executionGate = new(1, 1);
 
     private sealed class RunningDeployment(Guid dispatchId)
     {
@@ -200,6 +212,24 @@ public sealed class DeploymentExecutor(
 
         try
         {
+            // ── B7: the machine's execution slot ────────────────────────
+            // ONE plan executes at a time on this agent (Octopus tentacle-
+            // mutex parity): concurrent deployments and runbook runs hitting
+            // the same box serialize FIFO instead of interleaving file/IIS/
+            // service mutations. Waves WITHIN a plan keep their parallelism.
+            // A cancel or supersede while queued unblocks the wait via the
+            // run token — the OperationCanceledException lands in the
+            // aborted-completion catch below with nothing executed.
+            if (!await _executionGate.WaitAsync(TimeSpan.Zero, ct).ConfigureAwait(false))
+            {
+                await LogAsync(plan.DeploymentId, "info",
+                    "--- Waiting for another task to finish on this machine ---", ct)
+                    .ConfigureAwait(false);
+                await _executionGate.WaitAsync(ct).ConfigureAwait(false);
+            }
+            try
+            {
+
             // ── M14.4 — partition into waves agent-side ─────────────────
             // The server already pre-flattens waves (one wave per sub-plan
             // dispatched), but the agent re-walks the trigger field so its
@@ -283,6 +313,15 @@ public sealed class DeploymentExecutor(
                     errorMessage: firstFailureMessage,
                     ct)
                 .ConfigureAwait(false);
+
+            }
+            finally
+            {
+                // B7: hand the machine to the next queued plan. Reached only
+                // when the slot WAS acquired — a cancel while queued throws
+                // out of WaitAsync above, before this try.
+                _executionGate.Release();
+            }
         }
         catch (OperationCanceledException) when (run.Cts.IsCancellationRequested)
         {
