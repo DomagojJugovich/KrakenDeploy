@@ -50,7 +50,10 @@ public sealed class NodeTaskGate(int maxConcurrentTasks) : IDisposable
         {
             if (Interlocked.Exchange(ref _released, 1) == 0)
             {
-                slots.Release();
+                // Disposed-guard: host shutdown can dispose the gate while an
+                // in-flight dispatch is still unwinding toward this release.
+                try { slots.Release(); }
+                catch (ObjectDisposedException) { }
             }
         }
     }

@@ -319,8 +319,10 @@ public sealed class DeploymentExecutor(
             {
                 // B7: hand the machine to the next queued plan. Reached only
                 // when the slot WAS acquired — a cancel while queued throws
-                // out of WaitAsync above, before this try.
-                _executionGate.Release();
+                // out of WaitAsync above, before this try. The disposed-guard
+                // covers host shutdown racing an in-flight plan's unwind.
+                try { _executionGate.Release(); }
+                catch (ObjectDisposedException) { }
             }
         }
         catch (OperationCanceledException) when (run.Cts.IsCancellationRequested)
