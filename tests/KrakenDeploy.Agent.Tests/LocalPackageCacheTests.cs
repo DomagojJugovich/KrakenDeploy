@@ -100,11 +100,16 @@ public sealed class LocalPackageCacheTests : IDisposable
         var cache = CreateCache();
 
         await cache.StoreAsync("Pkg", "1.0.0", CreateTempFile("first"));
-        await cache.StoreAsync("Pkg", "1.0.0", CreateTempFile("second"));  // overwrite
+        await cache.StoreAsync("Pkg", "1.0.0", CreateTempFile("second"));
 
         var cachedPath = cache.TryGetCachedPath("Pkg", "1.0.0")!;
         var content    = await File.ReadAllTextAsync(cachedPath);
-        content.Should().Be("second", because: "overwrite should replace the previous cache entry");
+        // B7 semantics change: a (packageId, version) entry is content-addressed
+        // and SHA-verified by the downloader before it is ever stored — a
+        // re-store KEEPS the existing entry instead of replacing it (replacing
+        // would race a concurrent extraction holding the zip open).
+        content.Should().Be("first",
+            because: "an existing verified entry is kept, not overwritten");
     }
 
     [Fact]
@@ -138,6 +143,89 @@ public sealed class LocalPackageCacheTests : IDisposable
     }
 
     // ── Private helper ────────────────────────────────────────────────────────
+
+    // ── B7: crash/concurrency safety ──────────────────────────────────────────
+
+    [Fact]
+    public async Task Concurrent_stores_and_reads_never_yield_a_torn_package()
+    {
+        // Pre-B7 StoreAsync truncated the FINAL path in place (FileMode.Create),
+        // so TryGetCachedPath could return a half-written zip to a concurrent
+        // reader. Now the entry is renamed into place whole: every hit must
+        // read back the complete expected content, every time.
+        var cache = CreateCache();
+        var payload = new string('x', 512 * 1024); // large enough to make a torn copy observable
+        var sourcePath = CreateTempFile(payload);
+
+        for (var iteration = 0; iteration < 10; iteration++)
+        {
+            var version = $"1.0.{iteration}";
+            using var stop = new CancellationTokenSource();
+
+            var reader = Task.Run(async () =>
+            {
+                while (!stop.IsCancellationRequested)
+                {
+                    var hit = cache.TryGetCachedPath("Race.Pkg", version);
+                    if (hit is not null)
+                    {
+                        // A hit must NEVER be torn or locked-for-write.
+                        var content = await File.ReadAllTextAsync(hit);
+                        content.Length.Should().Be(payload.Length,
+                            "a cache hit must always be the complete package");
+                    }
+                    await Task.Delay(1);
+                }
+            });
+
+            var writers = Enumerable.Range(0, 4).Select(_ => Task.Run(
+                () => cache.StoreAsync("Race.Pkg", version, sourcePath)));
+            var paths = await Task.WhenAll(writers);
+            paths.Should().AllSatisfy(p => File.Exists(p).Should().BeTrue());
+
+            stop.Cancel();
+            await reader;
+        }
+    }
+
+    [Fact]
+    public async Task Tmp_files_are_never_reported_as_hits_or_versions()
+    {
+        // A crash mid-store leaves only .tmp-* siblings — they must be
+        // invisible to both the hit check and version enumeration (pre-B7 a
+        // crash left a truncated zip at the FINAL path, poisoning the cache).
+        var cache = CreateCache();
+        var sourcePath = CreateTempFile("real content");
+        var realPath = await cache.StoreAsync("Crashy", "2.0.0", sourcePath);
+
+        var orphanDir = Path.Combine(_cacheRoot, "Crashy", "3.0.0");
+        Directory.CreateDirectory(orphanDir);
+        await File.WriteAllTextAsync(
+            Path.Combine(orphanDir, "Crashy.3.0.0.zip.tmp-deadbeef"), "half-written");
+
+        cache.TryGetCachedPath("Crashy", "3.0.0").Should().BeNull(
+            "an interrupted store must never look like a cached package");
+        cache.GetCachedVersions("Crashy").Should().BeEquivalentTo(["2.0.0"]);
+        File.Exists(realPath).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Storing_an_existing_entry_skips_the_rewrite()
+    {
+        // Entries are content-addressed by (packageId, version) and the
+        // downloader verified the bytes before storing — a re-store must not
+        // touch the existing file (which a concurrent extraction may have open).
+        var cache = CreateCache();
+        var first = await cache.StoreAsync("Dedup", "1.0.0", CreateTempFile("original"));
+        var writeTime = File.GetLastWriteTimeUtc(first);
+
+        var second = await cache.StoreAsync("Dedup", "1.0.0", CreateTempFile("different bytes"));
+
+        second.Should().Be(first);
+        File.GetLastWriteTimeUtc(first).Should().Be(writeTime,
+            "the existing verified entry must not be rewritten");
+        (await File.ReadAllTextAsync(first)).Should().Be("original");
+    }
 
     private string CreateTempFile(string content)
     {

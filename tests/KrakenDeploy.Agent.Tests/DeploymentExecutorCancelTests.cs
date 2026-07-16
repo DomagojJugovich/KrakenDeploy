@@ -104,6 +104,66 @@ public sealed class DeploymentExecutorCancelTests
         executor.TryCancel(Guid.NewGuid(), "nothing runs").Should().BeFalse();
     }
 
+    // ── B7: the machine execution queue ────────────────────────────────────
+
+    [Fact]
+    public async Task Plans_for_different_tasks_serialize_FIFO()
+    {
+        // Two DIFFERENT tasks (B6's single-flight only dedups the SAME task):
+        // the second must not execute until the first releases the machine.
+        var link = new GateLink();
+        var executor = BuildExecutor(link);
+        var taskA = Guid.NewGuid();
+        var taskB = Guid.NewGuid();
+
+        var runA = Task.Run(() => executor.ExecuteAsync(Plan(taskA, Guid.NewGuid())));
+        await WaitUntilAsync(() => executor.IsExecuting,
+            "task A must hold the machine (blocked in its completion send)");
+
+        var runB = Task.Run(() => executor.ExecuteAsync(Plan(taskB, Guid.NewGuid())));
+        // Give B ample time to (incorrectly) run if the gate were absent —
+        // its zero-step body would complete in microseconds.
+        await Task.Delay(300);
+        link.Completions.Should().BeEmpty(
+            "task B must be QUEUED behind task A, not executing concurrently");
+
+        link.ReleaseFirstCompletion.Release();
+        await Task.WhenAll(runA, runB).WaitAsync(TestTimeout);
+
+        link.Completions.Select(c => c.Dep).Should().Equal([taskA, taskB],
+            "the machine queue is FIFO");
+        link.Completions.Should().AllSatisfy(c => c.Success.Should().BeTrue());
+    }
+
+    [Fact]
+    public async Task Cancel_while_queued_aborts_without_executing()
+    {
+        var link = new GateLink();
+        var executor = BuildExecutor(link);
+        var taskA = Guid.NewGuid();
+        var taskB = Guid.NewGuid();
+
+        var runA = Task.Run(() => executor.ExecuteAsync(Plan(taskA, Guid.NewGuid())));
+        await WaitUntilAsync(() => executor.IsExecuting, "task A must hold the machine");
+
+        var runB = Task.Run(() => executor.ExecuteAsync(Plan(taskB, Guid.NewGuid())));
+        await WaitUntilAsync(() => executor.TryCancel(taskB, "operator changed their mind"),
+            "task B must be registered (queued) and cancellable");
+        await runB.WaitAsync(TestTimeout);
+
+        // B's aborted completion arrives while A still holds the machine —
+        // proof the cancel didn't wait for (or take) the execution slot.
+        var aborted = link.Completions.Should().ContainSingle().Subject;
+        aborted.Dep.Should().Be(taskB);
+        aborted.Success.Should().BeFalse();
+        aborted.Error.Should().Contain("operator changed their mind");
+
+        link.ReleaseFirstCompletion.Release();
+        await runA.WaitAsync(TestTimeout);
+        link.Completions.Last().Dep.Should().Be(taskA);
+        link.Completions.Last().Success.Should().BeTrue();
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private static DeploymentExecutor BuildExecutor(GateLink link) => new(

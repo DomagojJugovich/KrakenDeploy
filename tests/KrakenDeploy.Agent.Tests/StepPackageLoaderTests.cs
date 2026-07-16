@@ -208,6 +208,38 @@ public sealed class StepPackageLoaderTests : IDisposable
             "ExtractToCache keeps the original archive alongside the extracted form");
     }
 
+    [Fact]
+    public async Task ExtractToCache_is_safe_under_concurrent_extractions()
+    {
+        // B7: pre-B7 this deleted + extracted IN PLACE — concurrent extractions
+        // of the same version deleted each other's files mid-extract, and a
+        // crash left a half-populated dir the loader's Directory.Exists hit
+        // trusted. Now each extraction lands whole via a tmp-dir move; losers
+        // reuse the winner's complete directory.
+        var archive = Path.Combine(_root, "race.kdeploy-step");
+        using (var fs  = File.Create(archive))
+        using (var zip = new ZipArchive(fs, ZipArchiveMode.Create, leaveOpen: false))
+        {
+            var entry = zip.CreateEntry(StepPackageFiles.ManifestFileName);
+            using var w = new StreamWriter(entry.Open());
+            w.Write(StepPackageManifestJson.Serialize(BuildManifest()));
+        }
+
+        var loader = NewLoader();
+        var dirs = await Task.WhenAll(Enumerable.Range(0, 6).Select(_ =>
+            Task.Run(() => loader.ExtractToCache("kraken.race", "1.0.0", archive))));
+
+        dirs.Distinct().Should().ContainSingle("every extraction resolves to the one cache dir");
+        var dir = dirs[0];
+        File.Exists(Path.Combine(dir, StepPackageFiles.ManifestFileName)).Should().BeTrue();
+        File.Exists(Path.Combine(dir, "package" + StepPackageFiles.Extension)).Should().BeTrue();
+
+        // No half-extracted temp siblings survive.
+        var parent = Path.GetDirectoryName(dir)!;
+        Directory.EnumerateDirectories(parent, "*.tmp-*").Should().BeEmpty(
+            "temp extraction dirs are moved into place or cleaned up");
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────
 
     private StepPackageLoader NewLoader(bool allowUnsignedLoads = true)

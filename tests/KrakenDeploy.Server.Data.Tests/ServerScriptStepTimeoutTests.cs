@@ -23,9 +23,9 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// (<c>RunServerStepWithRetriesAsync</c>) against a real sleeping shell process.
 /// </para>
 /// <para>
-/// NB: the fix does not kill the spawned process on timeout (pre-existing, out of
-/// scope), so this test leaves a short-lived sleeping shell process that self-exits
-/// a few seconds after the test completes.
+/// B7 closed the companion leak: the runner now KILLS the spawned process tree
+/// when the wait is cancelled (see the kill test below), so a timed-out step no
+/// longer leaves an orphan shell mutating server-side state.
 /// </para>
 /// </summary>
 [Trait("Category", "Docker")]
@@ -83,5 +83,86 @@ public sealed class ServerScriptStepTimeoutTests(PostgresFixture postgres)
             "TimedOut — RunServerWaveAsync maps this to StepOutcomeKind.TimedOut + the " +
             "DeploymentStepTimedOut audit — instead of being swallowed into a Failed");
         outcome.Result.Success.Should().BeFalse("the timed-out attempt is a failed result");
+    }
+
+    [Fact]
+    public async Task Timed_out_server_step_kills_the_spawned_process()
+    {
+        // B7: WaitForExitAsync(ct) only stops WAITING — pre-B7 every per-step
+        // timeout and deployment cancel leaked the shell process, which kept
+        // running (and kept mutating server-side state). The script publishes
+        // its own PID and sleeps far past the timeout; after the timed-out
+        // outcome the PID must be gone.
+        var runner = new ServerScriptStepRunner(
+            postgres.ScopeFactory,
+            new NullUiHubContext(),
+            TimeProvider.System,
+            NullLogger<ServerScriptStepRunner>.Instance);
+
+        var pidFile = Path.Combine(
+            Path.GetTempPath(), $"kraken-srv-kill-{Guid.NewGuid():N}.pid");
+        var (syntax, body, edition) = OperatingSystem.IsWindows()
+            ? ("PowerShell",
+               $"Set-Content -LiteralPath '{pidFile}' -Value $PID\nStart-Sleep -Seconds 120",
+               "Desktop")
+            : ("Bash", $"echo $$ > '{pidFile}'\nsleep 120", (string?)null);
+
+        var config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Octopus.Action.Script.ScriptBody"] = body,
+            ["Octopus.Action.Script.Syntax"]     = syntax,
+        };
+        if (edition is not null)
+        {
+            config["Octopus.Action.PowerShell.Edition"] = edition;
+        }
+        var step = new DeploymentStepPlan(0, "SleepForever", "Octopus.Script", "", "", config);
+
+        try
+        {
+            var outcome = await StepRetryRunner.RunAsync<ServerScriptResult>(
+                stepName:                step.Name,
+                maxRetries:              0,
+                retryDelaySeconds:       0,
+                timeoutSeconds:          3,
+                runAttempt:              ct => runner.ExecuteAsync(
+                    Guid.NewGuid(), step, new Dictionary<string, string>(),
+                    new SecretRedactor(), ct),
+                isSuccess:               r => r.Success,
+                onTimeoutResult:         () => ServerScriptResult.Failure,
+                onAttemptTimedOutAsync:  null,
+                onRetryAsync:            null,
+                onLateSuccessAsync:      null,
+                ct:                      CancellationToken.None);
+
+            outcome.TimedOut.Should().BeTrue();
+
+            File.Exists(pidFile).Should().BeTrue("the script must have started");
+            var pid = int.Parse(
+                (await File.ReadAllTextAsync(pidFile)).Trim(),
+                System.Globalization.CultureInfo.InvariantCulture);
+
+            var gone = false;
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+            while (DateTime.UtcNow < deadline)
+            {
+                try
+                {
+                    using var p = System.Diagnostics.Process.GetProcessById(pid);
+                    if (p.HasExited) { gone = true; break; }
+                }
+                catch (ArgumentException)
+                {
+                    gone = true;
+                    break;
+                }
+                await Task.Delay(100);
+            }
+            gone.Should().BeTrue("the timed-out script's process must be killed, not orphaned");
+        }
+        finally
+        {
+            try { File.Delete(pidFile); } catch (IOException) { }
+        }
     }
 }
