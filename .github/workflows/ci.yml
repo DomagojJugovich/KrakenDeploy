@@ -73,9 +73,10 @@ jobs:
   smoke:
     name: Smoke Test
     runs-on: ubuntu-latest
-    # Only run on pushes to main; PRs run build-and-test only.
-    # Building both Docker images on every PR is too slow for a quick feedback loop.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # B8: the single-instance smoke now triggers a REAL deployment (agent
+    # round trip), so it runs on PRs too — a wire-contract drift must fail
+    # the PR, not land on main first. The heavier multi-account and
+    # blue-green smokes stay push-to-main only (step-level conditions).
     needs: build-and-test
 
     steps:
@@ -90,6 +91,7 @@ jobs:
       # (a separate job runs on a fresh runner with no Docker cache, doubling the
       # ~image build cost). Each script tears its own compose stack down on exit.
       - name: Run smoke test (multi-account SaaS)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: bash scripts/smoke-multiaccount.sh
 
       # Blue-green slot-router smoke: two live "releases" behind the per-node
@@ -97,4 +99,5 @@ jobs:
       # (docs/blue-green-slot-deployment.md §8). Reuses the server image layers
       # built above; adds only the small router image.
       - name: Run smoke test (blue-green slot router)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: bash scripts/smoke-bluegreen.sh

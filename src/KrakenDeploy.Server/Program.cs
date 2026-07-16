@@ -3045,6 +3045,150 @@ public static class Program
                         .ConfigureAwait(false);
                     return Results.Ok(new { token });
                 }).AllowAnonymous();
+
+            // B8 dev-only: seeds a minimal deployable graph against the smoke
+            // target and triggers a REAL deployment through the production
+            // dispatch path (worker → hub → connected agent → step-package
+            // download → script execution → completion). The CI smoke polls
+            // the companion GET until the deployment is terminal — asserting
+            // the whole transport round trip, not just connectivity.
+            app.MapPost("/api/dev/smoke-deploy",
+                async (
+                    IDbContextFactory<KrakenDbContext> dbFactory,
+                    StepPackageResolver stepPackages,
+                    DeploymentService deploymentSvc,
+                    CancellationToken ct) =>
+                {
+                    await using var db = await dbFactory.CreateDbContextAsync(ct)
+                        .ConfigureAwait(false);
+
+                    var target = await db.DeploymentTargets
+                        .FirstOrDefaultAsync(t => t.Name == "smoke-agent", ct)
+                        .ConfigureAwait(false);
+                    if (target is null)
+                    {
+                        return Results.BadRequest(new
+                        {
+                            error = "smoke target not found — call /api/dev/smoke-register " +
+                                    "and connect the agent first.",
+                        });
+                    }
+
+                    // The seeded script step must carry a step-package pin — the
+                    // agent resolves its handler exclusively from it. The boot
+                    // seeder installed the bundled packages, so the script type
+                    // resolves; fail loudly if not (broken image/seeding).
+                    var pin = await stepPackages
+                        .ResolveLatestForStepTypeAsync("Octopus.Script", ct)
+                        .ConfigureAwait(false);
+                    if (pin is null)
+                    {
+                        return Results.Json(
+                            new { error = "no installed step package claims Octopus.Script." },
+                            statusCode: StatusCodes.Status500InternalServerError);
+                    }
+
+                    var tag = Guid.NewGuid().ToString("N")[..8];
+                    var env = new KrakenDeploy.Server.Core.Domain.Environments.DeploymentEnvironment
+                    {
+                        SpaceId = KrakenDeploy.Server.Core.Domain.Common.WellKnown.DefaultSpaceId,
+                        Name = $"smoke-env-{tag}", Slug = $"smoke-env-{tag}",
+                        SortOrder = 1,
+                    };
+                    db.Environments.Add(env);
+
+                    var lifecycle = new KrakenDeploy.Server.Core.Domain.Lifecycles.Lifecycle
+                    {
+                        SpaceId = KrakenDeploy.Server.Core.Domain.Common.WellKnown.DefaultSpaceId,
+                        Name = $"smoke-lc-{tag}",
+                        Phases = [new KrakenDeploy.Server.Core.Domain.Lifecycles.LifecyclePhase { Name = "Smoke", EnvironmentIds = [env.Id] }],
+                    };
+                    db.Lifecycles.Add(lifecycle);
+                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+                    var groupId = await db.ProjectGroups
+                        .Where(g => g.SpaceId == KrakenDeploy.Server.Core.Domain.Common.WellKnown.DefaultSpaceId)
+                        .Select(g => g.Id)
+                        .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+                    if (groupId == Guid.Empty)
+                    {
+                        var group = new KrakenDeploy.Server.Core.Domain.Projects.ProjectGroup
+                        {
+                            SpaceId = KrakenDeploy.Server.Core.Domain.Common.WellKnown.DefaultSpaceId,
+                            Name = "Default Project Group",
+                            Slug = "default-project-group",
+                        };
+                        db.ProjectGroups.Add(group);
+                        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                        groupId = group.Id;
+                    }
+
+                    var project = new KrakenDeploy.Server.Core.Domain.Projects.Project
+                    {
+                        SpaceId = KrakenDeploy.Server.Core.Domain.Common.WellKnown.DefaultSpaceId,
+                        Name = $"smoke-project-{tag}", Slug = $"smoke-project-{tag}",
+                        LifecycleId = lifecycle.Id,
+                        ProjectGroupId = groupId,
+                    };
+                    db.Projects.Add(project);
+
+                    var release = new KrakenDeploy.Server.Core.Domain.Releases.Release
+                    {
+                        SpaceId = KrakenDeploy.Server.Core.Domain.Common.WellKnown.DefaultSpaceId,
+                        ProjectId = project.Id,
+                        Version = "1.0.0",
+                        ProcessSnapshot =
+                        [
+                            new KrakenDeploy.Server.Core.Domain.Releases.StepSnapshot
+                            {
+                                Id = Guid.NewGuid(),
+                                Name = "smoke-step",
+                                StepType = "Octopus.Script",
+                                Required = true,
+                                SortOrder = 0,
+                                Config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                                {
+                                    // The smoke agent container is Linux; a real
+                                    // shell round trip, not an echo into the void.
+                                    ["Octopus.Action.Script.ScriptBody"] = "echo smoke-deploy-ok",
+                                    ["Octopus.Action.Script.Syntax"]     = "Bash",
+                                },
+                                PackageId = "",
+                                PackageVersion = "",
+                                StepPackageName = pin.Name,
+                                StepPackageVersion = pin.Version,
+                            },
+                        ],
+                        VariableSnapshot = [],
+                        VariableSnapshotUpdatedUtc = DateTimeOffset.UtcNow,
+                    };
+                    db.Releases.Add(release);
+                    await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+                    var deployment = await deploymentSvc.CreateAsync(
+                        release.Id, env.Id, target.Id,
+                        initiator: TaskInitiator.Api(null, "smoke-test"),
+                        caller: CallerAuthorization.System,
+                        ct: ct).ConfigureAwait(false);
+
+                    return Results.Ok(new { deploymentId = deployment.Id });
+                }).AllowAnonymous();
+
+            // Companion poll endpoint for the smoke script (the regular
+            // deployment GET requires an authenticated principal).
+            app.MapGet("/api/dev/smoke-deploy/{id:guid}",
+                async (Guid id, IDbContextFactory<KrakenDbContext> dbFactory, CancellationToken ct) =>
+                {
+                    await using var db = await dbFactory.CreateDbContextAsync(ct)
+                        .ConfigureAwait(false);
+                    var status = await db.Deployments
+                        .Where(d => d.Id == id)
+                        .Select(d => (DeploymentStatus?)d.Status)
+                        .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+                    return status is null
+                        ? Results.NotFound()
+                        : Results.Ok(new { status = status.Value.ToString() });
+                }).AllowAnonymous();
         }
 
         // Register Hangfire recurring jobs after the app is built so the storage

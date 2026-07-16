@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Cross-platform smoke test.
 # Builds server + agent Docker images, starts them with Postgres, generates a
-# registration token via the dev-only endpoint, connects an agent, and asserts
-# the target goes Online by polling /healthz for connectedAgents >= 1.
+# registration token via the dev-only endpoint, connects an agent, asserts the
+# target goes Online — and then (B8) TRIGGERS A REAL DEPLOYMENT through the
+# production dispatch path (worker -> hub -> agent -> step-package download ->
+# bash script) and asserts it reaches Succeeded. Connectivity alone proved
+# nothing about the wire contract; this exercises the full round trip.
 #
 # Usage: bash scripts/smoke-test.sh
 # Requires: docker compose v2, curl, jq
@@ -27,15 +30,15 @@ echo "======================================"
 
 # ── 1. Build images ────────────────────────────────────────────────────────
 echo ""
-echo "[1/5] Building Docker images..."
+echo "[1/6] Building Docker images..."
 $COMPOSE build --quiet
 
 # ── 2. Start Postgres + Server ─────────────────────────────────────────────
-echo "[2/5] Starting Postgres and Server..."
+echo "[2/6] Starting Postgres and Server..."
 $COMPOSE up -d postgres server
 
 # ── 3. Wait for server /healthz ────────────────────────────────────────────
-echo "[3/5] Waiting for Server to become healthy (up to ${TIMEOUT_SEC}s)..."
+echo "[3/6] Waiting for Server to become healthy (up to ${TIMEOUT_SEC}s)..."
 deadline=$((SECONDS + TIMEOUT_SEC))
 until curl -sf "$SERVER_URL/healthz" > /dev/null 2>&1; do
     if [[ $SECONDS -ge $deadline ]]; then
@@ -48,7 +51,7 @@ done
 echo "      Server is healthy."
 
 # ── 4. Get a smoke registration token ─────────────────────────────────────
-echo "[4/5] Requesting smoke registration token..."
+echo "[4/6] Requesting smoke registration token..."
 SMOKE_TOKEN=$(curl -sf -X POST "$SERVER_URL/api/dev/smoke-register" \
     | jq -r '.token')
 
@@ -60,7 +63,7 @@ fi
 echo "      Token obtained (first 8 chars): ${SMOKE_TOKEN:0:8}..."
 
 # ── 5. Start Agent and wait for it to appear Online ───────────────────────
-echo "[5/5] Starting Agent and waiting for it to connect..."
+echo "[5/6] Starting Agent and waiting for it to connect..."
 export SMOKE_TOKEN
 $COMPOSE up -d agent
 
@@ -74,9 +77,49 @@ until [[ $(curl -sf "$SERVER_URL/healthz" \
     fi
     sleep 3
 done
+echo "      Agent is Online."
+
+# ── 6. Trigger a REAL deployment and assert it succeeds (B8) ───────────────
+echo "[6/6] Triggering a real deployment against the connected agent..."
+DEPLOYMENT_ID=$(curl -sf -X POST "$SERVER_URL/api/dev/smoke-deploy" \
+    | jq -r '.deploymentId')
+
+if [[ -z "$DEPLOYMENT_ID" || "$DEPLOYMENT_ID" == "null" ]]; then
+    echo "ERROR: Failed to trigger the smoke deployment."
+    $COMPOSE logs server
+    exit 1
+fi
+echo "      Deployment ${DEPLOYMENT_ID:0:8}... dispatched; polling for terminal status."
+
+STATUS="Unknown"
+deadline=$((SECONDS + TIMEOUT_SEC))
+while :; do
+    STATUS=$(curl -sf "$SERVER_URL/api/dev/smoke-deploy/$DEPLOYMENT_ID" \
+        | jq -r '.status // "Unknown"')
+    case "$STATUS" in
+        Succeeded)
+            break
+            ;;
+        Failed|Cancelled|SucceededWithWarnings)
+            echo "ERROR: Deployment ended in status '$STATUS' (expected Succeeded)."
+            $COMPOSE logs server
+            $COMPOSE logs agent
+            exit 1
+            ;;
+    esac
+    if [[ $SECONDS -ge $deadline ]]; then
+        echo "ERROR: Deployment did not reach a terminal status in time (last: $STATUS)."
+        $COMPOSE logs server
+        $COMPOSE logs agent
+        exit 1
+    fi
+    sleep 3
+done
+echo "      Deployment Succeeded."
 
 echo ""
 echo "======================================"
 echo " SMOKE TEST PASSED"
-echo " Agent is Online — smoke exit criterion met."
+echo " Agent connected AND a real deployment"
+echo " round-tripped to Succeeded."
 echo "======================================"
