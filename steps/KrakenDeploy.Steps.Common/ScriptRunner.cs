@@ -122,15 +122,26 @@ public sealed class ScriptRunner
 
         using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
 
+        // stdout and stderr callbacks fire on DIFFERENT threadpool threads —
+        // List<T>.Add is not thread-safe, so both the adds and the final
+        // snapshot take the gate (same defect class B4 fixed in the server-side
+        // runner).
         var outputTasks = new List<Task>();
+        var outputGate = new Lock();
 
         process.OutputDataReceived += (_, e) =>
         {
-            if (e.Data is not null) { outputTasks.Add(onOutput("info", e.Data)); }
+            if (e.Data is not null)
+            {
+                lock (outputGate) { outputTasks.Add(onOutput("info", e.Data)); }
+            }
         };
         process.ErrorDataReceived += (_, e) =>
         {
-            if (e.Data is not null) { outputTasks.Add(onOutput("error", e.Data)); }
+            if (e.Data is not null)
+            {
+                lock (outputGate) { outputTasks.Add(onOutput("error", e.Data)); }
+            }
         };
 
         _logger.LogDebug("Starting script process: {Exe} {Args}", exe, args);
@@ -138,8 +149,45 @@ public sealed class ScriptRunner
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
-        await process.WaitForExitAsync(ct).ConfigureAwait(false);
-        await Task.WhenAll(outputTasks).ConfigureAwait(false);
+        try
+        {
+            await process.WaitForExitAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // B6 (cancel push) + per-step timeout: WaitForExitAsync(ct) only
+            // stops WAITING — the child and everything it spawned keep running,
+            // which leaked orphan process trees on every cancel/timeout. Kill
+            // the whole tree, reap briefly so the handle isn't abandoned
+            // mid-exit, then let the cancellation propagate.
+            try
+            {
+                process.Kill(entireProcessTree: true);
+                _logger.LogWarning("Script process tree killed (cancelled or timed out).");
+            }
+            catch (InvalidOperationException)
+            {
+                // Already exited between the cancellation and the kill.
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to kill the script process tree.");
+            }
+            try
+            {
+                using var reap = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await process.WaitForExitAsync(reap.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogWarning("Script process did not exit within 10 s of the kill.");
+            }
+            throw;
+        }
+
+        Task[] pendingOutput;
+        lock (outputGate) { pendingOutput = outputTasks.ToArray(); }
+        await Task.WhenAll(pendingOutput).ConfigureAwait(false);
 
         var exitCode = process.ExitCode;
         _logger.LogDebug("Script exited with code {ExitCode}.", exitCode);

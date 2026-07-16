@@ -75,6 +75,28 @@ public sealed class ServerLinkHostedService(
         serverLink.OnRunAdhocScript(cmd =>
             Task.Run(() => adhocExecutor.HandleAsync(cmd), stoppingToken));
 
+        // B6 — cooperative abort push. Synchronous signal (no Task.Run): it
+        // only flips the in-flight run's CancellationTokenSource; the heavy
+        // lifting (process-tree kill, failed completion) happens on the
+        // executor's own flow. Unknown task id = best-effort no-op.
+        serverLink.OnCancelDeployment((taskId, reason) =>
+        {
+            var cancelled = deploymentExecutor.TryCancel(taskId, reason);
+            if (cancelled)
+            {
+                logger.LogInformation(
+                    "Server requested cancellation of task {TaskId}: {Reason}",
+                    taskId, reason ?? "no reason given");
+            }
+            else
+            {
+                logger.LogInformation(
+                    "Server requested cancellation of task {TaskId}, but it is not in flight; ignored.",
+                    taskId);
+            }
+            return Task.CompletedTask;
+        });
+
         serverLink.OnClosed(ex =>
         {
             _closedSignal?.TrySetResult(ex);

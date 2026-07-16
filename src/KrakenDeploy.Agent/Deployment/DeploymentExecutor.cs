@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.StepPackages;
@@ -36,7 +37,54 @@ public sealed class DeploymentExecutor(
     /// True while a deployment is executing. Read by <see cref="Services.AgentUpdateService"/>
     /// to avoid swapping the agent binary during an in-flight deployment.
     /// </summary>
-    public bool IsExecuting { get; private set; }
+    public bool IsExecuting => !_running.IsEmpty;
+
+    /// <summary>
+    /// B6 — in-flight tasks by task id (<c>DeploymentPlan.DeploymentId</c>;
+    /// covers runbook runs too). One entry per task: duplicate dispatches of
+    /// the SAME attempt are ignored, a NEWER attempt supersedes (cancels) the
+    /// old one, and <see cref="TryCancel"/> signals the entry's token — which
+    /// flows through every step handler into <c>ScriptRunner</c>'s
+    /// process-tree kill.
+    /// </summary>
+    private readonly ConcurrentDictionary<Guid, RunningDeployment> _running = new();
+
+    /// <summary>How long a superseding dispatch waits for the cancelled old
+    /// attempt to unwind before force-detaching it (a kill normally unwinds in
+    /// well under a second; this only guards a pathologically stuck reap).</summary>
+    internal static readonly TimeSpan SupersedeUnwindTimeout = TimeSpan.FromSeconds(30);
+
+    private sealed class RunningDeployment(Guid dispatchId)
+    {
+        public Guid DispatchId { get; } = dispatchId;
+        public CancellationTokenSource Cts { get; } = new();
+        public TaskCompletionSource Completed { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        /// <summary>Why the token fired (server push reason / supersede note).
+        /// Written before <see cref="Cts"/>.Cancel(), read after the token
+        /// observes cancellation — the cancel call is the memory barrier.</summary>
+        public string? CancelReason { get; set; }
+    }
+
+    /// <summary>
+    /// B6 — cooperatively aborts the in-flight task <paramref name="taskId"/>:
+    /// signals its cancellation token (the running step's process tree is
+    /// killed by <c>ScriptRunner</c>) and lets <see cref="ExecuteAsync"/>
+    /// report a failed completion for the attempt. Returns <c>false</c> when
+    /// the task is not in flight (already finished, never received, or a
+    /// duplicate cancel) — a no-op by design, the push is best-effort.
+    /// </summary>
+    public bool TryCancel(Guid taskId, string? reason)
+    {
+        if (!_running.TryGetValue(taskId, out var run))
+        {
+            return false;
+        }
+        run.CancelReason = reason;
+        run.Cts.Cancel();
+        return true;
+    }
 
     // Per-step-flow current step index, stored +1 so the AsyncLocal default (0)
     // reads as "no step / plan-level" (-1). Set at the top of RunStepInWaveAsync;
@@ -72,7 +120,56 @@ public sealed class DeploymentExecutor(
     {
         ArgumentNullException.ThrowIfNull(plan);
 
-        IsExecuting = true;
+        // ── B6: single-flight per task id ─────────────────────────────────
+        // Exactly one attempt of a task runs at a time. A re-delivered copy of
+        // the SAME attempt (at-least-once transport) is dropped — the original
+        // in-flight run will report. A NEWER attempt (different DispatchId)
+        // supersedes: the server only re-dispatches after abandoning the old
+        // attempt (wave deadline / retry), so the old one is cancelled and
+        // awaited before the new one starts — two attempts must never touch
+        // the same extract dirs / IIS handles concurrently. The old attempt's
+        // late reports carry the old DispatchId and are swallowed server-side.
+        var run = new RunningDeployment(plan.DispatchId);
+        while (true)
+        {
+            var existing = _running.GetOrAdd(plan.DeploymentId, run);
+            if (ReferenceEquals(existing, run))
+            {
+                break;
+            }
+            if (existing.DispatchId == plan.DispatchId)
+            {
+                logger.LogWarning(
+                    "Duplicate dispatch of task {DeploymentId} attempt {DispatchId} ignored — " +
+                    "the original delivery is still executing.",
+                    plan.DeploymentId, plan.DispatchId);
+                return;
+            }
+
+            logger.LogWarning(
+                "Task {DeploymentId} re-dispatched as attempt {NewDispatch} while attempt " +
+                "{OldDispatch} is still running; cancelling the old attempt.",
+                plan.DeploymentId, plan.DispatchId, existing.DispatchId);
+            existing.CancelReason = "Superseded by a newer dispatch of the same task.";
+            existing.Cts.Cancel();
+            var unwound = await Task
+                .WhenAny(existing.Completed.Task, Task.Delay(SupersedeUnwindTimeout))
+                .ConfigureAwait(false) == existing.Completed.Task;
+            if (!unwound)
+            {
+                // Pathological: the old attempt's kill/reap is stuck. Detach its
+                // registry entry so the new attempt can proceed; the stuck run
+                // can no longer be addressed by TryCancel but its late reports
+                // are already stale server-side.
+                logger.LogError(
+                    "Old attempt {OldDispatch} of task {DeploymentId} did not unwind within " +
+                    "{Timeout}; detaching it and proceeding with the new attempt.",
+                    existing.DispatchId, plan.DeploymentId, SupersedeUnwindTimeout);
+                ((ICollection<KeyValuePair<Guid, RunningDeployment>>)_running)
+                    .Remove(new(plan.DeploymentId, existing));
+            }
+        }
+
         try
         {
 
@@ -86,8 +183,10 @@ public sealed class DeploymentExecutor(
             "Starting deployment {DeploymentId} ({StepCount} step(s)) in environment {Env}.",
             plan.DeploymentId, plan.Steps.Length, plan.EnvironmentName);
 
-        using var cts = new CancellationTokenSource();
-        var ct = cts.Token;
+        // The per-run token: fired by a server cancel push (TryCancel) or a
+        // superseding dispatch. Flows into every step handler and from there
+        // into ScriptRunner's process-tree kill.
+        var ct = run.Cts.Token;
 
         // Accumulates Set-OctopusVariable captures per step name across the run.
         // Made available to subsequent steps as Octopus.Action[StepName].Output.X.
@@ -185,6 +284,32 @@ public sealed class DeploymentExecutor(
                     ct)
                 .ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (run.Cts.IsCancellationRequested)
+        {
+            // B6: cooperative abort — a server cancel push or a superseding
+            // dispatch fired this run's token; the running step's process tree
+            // was killed by ScriptRunner. Report a failed completion for THIS
+            // attempt (CancellationToken.None — the report must outlive the
+            // cancelled token): for an operator cancel the server already
+            // recorded the Cancelled verdict and the terminal guard swallows
+            // this; for a superseded attempt the stale DispatchId drops it.
+            var reason = run.CancelReason ?? "Cancelled on server request.";
+            logger.LogInformation(
+                "Deployment {DeploymentId} attempt {DispatchId} aborted: {Reason}",
+                plan.DeploymentId, plan.DispatchId, reason);
+            try
+            {
+                await serverLink
+                    .CompleteDeploymentAsync(plan.DeploymentId, plan.DispatchId, false,
+                        $"Aborted on the agent: {reason}", CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception inner)
+            {
+                logger.LogError(inner,
+                    "Failed to report the aborted completion for {DeploymentId}.", plan.DeploymentId);
+            }
+        }
         catch (Exception ex)
         {
             logger.LogError(ex,
@@ -205,7 +330,14 @@ public sealed class DeploymentExecutor(
         }
         finally
         {
-            IsExecuting = false;
+            // Remove exactly OUR entry — a superseding attempt may have already
+            // force-detached it and registered its own. Signal completion so a
+            // waiting superseder proceeds. The CTS is deliberately not disposed:
+            // TryCancel may race the teardown, and an undisposed CTS without a
+            // timer costs nothing.
+            ((ICollection<KeyValuePair<Guid, RunningDeployment>>)_running)
+                .Remove(new(plan.DeploymentId, run));
+            run.Completed.TrySetResult();
         }
     }
 
