@@ -357,22 +357,29 @@ public sealed class AgentHub(
         // B1: never overwrite a terminal status. A late agent callback can race
         // an operator cancel, or arrive after the dispatch reconciler already
         // failed this task as interrupted (its sub-plan TCS died with the old
-        // process, so TryResolve above missed) — the recorded verdict wins over
-        // a stale "success" that reflects only one target's sub-plan.
-        if (task.Status.IsTerminal())
+        // process, so the completion routing above missed) — the recorded
+        // verdict wins over a stale "success" that reflects only one target's
+        // sub-plan. B5: the guarded writer makes the check atomic — a cancel
+        // landing between the old status read and the save can no longer be
+        // flipped back, and retention/compaction below never run for a write
+        // this callback didn't win.
+        var wrote = await ServerTaskStatusWriter.TryTransitionAsync(
+            db, task, t =>
+            {
+                t.Status = success ? DeploymentStatus.Succeeded : DeploymentStatus.Failed;
+                t.CompletedUtc = completedAt;
+                // B1: terminal — release the dispatch lease (runbook hand-off hygiene).
+                t.ClaimedBy = null;
+                t.LeaseUntil = null;
+            }).ConfigureAwait(false);
+        if (!wrote)
         {
             logger.LogWarning(
-                "CompleteDeployment for task {Id} ignored: already terminal ({Status}).",
+                "CompleteDeployment for task {Id} ignored: already terminal or pruned " +
+                "(last read status: {Status}).",
                 deploymentId, task.Status);
             return;
         }
-
-        task.Status = success ? DeploymentStatus.Succeeded : DeploymentStatus.Failed;
-        task.CompletedUtc = completedAt;
-        // B1: terminal — release the dispatch lease (runbook hand-off hygiene).
-        task.ClaimedBy = null;
-        task.LeaseUntil = null;
-        await db.SaveChangesAsync().ConfigureAwait(false);
 
         // Terminal: sweep any remaining staging lines into per-step blobs.
         await TaskLogService.CompactRemainingAsync(db, deploymentId, completedAt).ConfigureAwait(false);

@@ -366,11 +366,20 @@ public sealed class RunbookRunWorker(
     private static async Task FailAsync(
         KrakenDbContext db, Core.Domain.Runbooks.RunbookRun run, string reason, CancellationToken ct)
     {
-        run.Status = DeploymentStatus.Failed;
-        run.CompletedUtc = DateTimeOffset.UtcNow;
-        // B1: terminal — release the dispatch lease.
-        run.ClaimedBy = null;
-        run.LeaseUntil = null;
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        // B5: this was the last BLIND terminal write on the spine — no status
+        // guard at all, so a run cancelled between the B1 claim and a flatten
+        // failure (or already reaped by the B3 reconciler) was flipped
+        // Cancelled/Failed → Failed with a fresh CompletedUtc. The guarded
+        // writer re-reads the authoritative status and lets the recorded
+        // verdict stand.
+        await ServerTaskStatusWriter.TryTransitionAsync(
+            db, run, static r =>
+            {
+                r.Status = DeploymentStatus.Failed;
+                r.CompletedUtc = DateTimeOffset.UtcNow;
+                // B1: terminal — release the dispatch lease.
+                r.ClaimedBy = null;
+                r.LeaseUntil = null;
+            }, ct: ct).ConfigureAwait(false);
     }
 }
