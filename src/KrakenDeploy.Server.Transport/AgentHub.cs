@@ -449,7 +449,10 @@ public sealed class AgentHub(
                     Success:      success,
                     ErrorMessage: errorMessage,
                     Outputs:      new Dictionary<string, string>(
-                                      outputVariables, StringComparer.OrdinalIgnoreCase)));
+                                      outputVariables, StringComparer.OrdinalIgnoreCase),
+                    // B4: sensitivity rides into the registry so the online
+                    // output merge can mask these in later waves' plans.
+                    SensitiveOutputNames: sensitiveOutputNames));
         }
 
         var capturedAt = timeProvider.GetUtcNow();

@@ -14,7 +14,9 @@ namespace KrakenDeploy.Server.Data.Tests.OrchestratorHarness;
 public sealed record FakeStepResponse(
     bool Success,
     string? ErrorMessage = null,
-    IReadOnlyDictionary<string, string>? Outputs = null)
+    IReadOnlyDictionary<string, string>? Outputs = null,
+    // B4 — subset of Outputs keys the (fake) agent flags sensitive (T0-6).
+    IReadOnlyCollection<string>? SensitiveOutputs = null)
 {
     public static FakeStepResponse Ok { get; } = new(Success: true);
     public static FakeStepResponse Fail(string reason) => new(Success: false, ErrorMessage: reason);
@@ -51,6 +53,11 @@ public sealed class FakeAgent
     /// dispatches (the harness removes its registry entry). Lets tests cover
     /// mid-deployment offline drop-outs.</summary>
     public int? GoOfflineAfterWaves { get; set; }
+
+    /// <summary>B4 — every plan this agent received, in dispatch order. Lets
+    /// tests assert what a LATER wave's sub-plan carried (merged output
+    /// variables, extended sensitive-name list).</summary>
+    public List<DeploymentPlan> ReceivedPlans { get; } = [];
 
     /// <summary>B3 — the agent receives the wave, drops its connection and
     /// reports NOTHING (crashed mid-execution). The wave's TCS stays pending;
@@ -166,6 +173,10 @@ internal sealed class FakeAgentClient(
     {
         ArgumentNullException.ThrowIfNull(plan);
 
+        // B4 — record what this wave's sub-plan actually carried (merged
+        // output variables, sensitive names) for test assertions.
+        agent.ReceivedPlans.Add(plan);
+
         // B3 failure-mode simulations: the plan was DELIVERED but the agent
         // never reports back. VanishBeforeReporting additionally drops the
         // connection (crash) so the worker's disconnect monitor fires;
@@ -188,16 +199,19 @@ internal sealed class FakeAgentClient(
         {
             var response = agent.ResponseFor(step.Name);
             // Echo plan.DispatchId exactly like the real DeploymentExecutor (B2).
+            // B4: report against the ACCUMULATOR KEY like the real agent
+            // (AccumulatorKey for ForEach iterations, display name otherwise).
             subPlans.RecordStepResult(
                 plan.DeploymentId, agent.TargetId, plan.DispatchId,
                 new SubPlanStepResult(
                     StepIndex:    step.Index,
-                    StepName:     step.Name,
+                    StepName:     step.AccumulatorKey ?? step.Name,
                     Success:      response.Success,
                     ErrorMessage: response.ErrorMessage,
                     Outputs:      response.Outputs is null
                         ? new Dictionary<string, string>()
-                        : new Dictionary<string, string>(response.Outputs, StringComparer.OrdinalIgnoreCase)));
+                        : new Dictionary<string, string>(response.Outputs, StringComparer.OrdinalIgnoreCase),
+                    SensitiveOutputNames: response.SensitiveOutputs));
             if (!response.Success)
             {
                 allSuccess = false;

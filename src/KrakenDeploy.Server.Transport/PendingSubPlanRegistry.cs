@@ -26,7 +26,17 @@ public sealed record SubPlanStepResult(
     string StepName,
     bool Success,
     string? ErrorMessage,
-    IReadOnlyDictionary<string, string> Outputs);
+    IReadOnlyDictionary<string, string> Outputs,
+    /// <summary>
+    /// B4 — the subset of <see cref="Outputs"/> keys the agent flagged
+    /// sensitive (T0-6). The hub already uses the wire list for at-rest
+    /// encryption; threading it through the registry lets the orchestrator's
+    /// online output merge extend the NEXT wave's
+    /// <c>DeploymentPlan.SensitiveVariableNames</c>, so the agent's log
+    /// redactor masks a prior step's sensitive output in later waves too.
+    /// Null (legacy callers) means none.
+    /// </summary>
+    IReadOnlyCollection<string>? SensitiveOutputNames = null);
 
 /// <summary>
 /// Shared singleton state coordinating piecewise agent dispatches between
