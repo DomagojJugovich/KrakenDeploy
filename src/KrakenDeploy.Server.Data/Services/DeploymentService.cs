@@ -15,7 +15,11 @@ public class DeploymentService(
     Channel<TenantWorkItem> deploymentQueue,
     TimeProvider time,
     IAccountContext accountContext,
-    IPermissionEvaluator permissions)
+    IPermissionEvaluator permissions,
+    // B6: optional — registered in the server host; tests that construct the
+    // service directly (and the CLI) skip the agent push and keep the
+    // wave-boundary cancel semantics.
+    IAgentCancelPusher? cancelPusher = null)
 {
     // ── Create ─────────────────────────────────────────────────────────────
 
@@ -197,11 +201,13 @@ public class DeploymentService(
     ///     dispatched — this is the "cancelling a pending deployment prevents
     ///     dispatch" guarantee. <c>ScheduledFor</c> is also cleared so the
     ///     Hangfire re-dispatch job can never pick it up.</item>
-    ///   <item><b>Running</b>: cancellation is cooperative and takes effect at the
-    ///     next wave boundary — a wave already dispatched to an agent runs to
-    ///     completion (the agent protocol exposes no in-flight abort), but the
-    ///     orchestrator starts no further waves and leaves this terminal status
-    ///     in place.</item>
+    ///   <item><b>Running</b>: the recorded verdict is pushed to the connected
+    ///     agent(s) as a cooperative abort (B6) — the running step's process
+    ///     tree is killed within seconds and the attempt reports a swallowed
+    ///     late failure. When the agent is offline (or the push is lost) the
+    ///     pre-B6 fallback applies: the wave runs to completion and the
+    ///     orchestrator stops at the next wave boundary. Either way this
+    ///     terminal status stands (B5 guards).</item>
     /// </list>
     /// <para>
     /// Returns the updated deployment, or <c>null</c> when it does not exist.
@@ -249,6 +255,17 @@ public class DeploymentService(
             throw new InvalidOperationException(
                 $"Deployment {id} is already in a terminal state " +
                 $"({deployment.Status}) and cannot be cancelled.");
+        }
+
+        // B6: best-effort push to the connected agent(s) so an in-flight step's
+        // process tree dies within seconds instead of running to completion.
+        // Fired AFTER the Cancelled verdict is durably recorded — the push
+        // failing (or the agent being offline) degrades to the wave-boundary
+        // semantics, never to a lost cancel.
+        if (cancelPusher is not null)
+        {
+            await cancelPusher.PushCancelAsync(id, "Cancelled by operator.", ct)
+                .ConfigureAwait(false);
         }
         return deployment;
     }

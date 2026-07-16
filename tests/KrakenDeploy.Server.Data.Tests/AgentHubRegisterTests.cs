@@ -182,6 +182,9 @@ file sealed class NeverUsedPendingSubPlanRegistry : IPendingSubPlanRegistry
     public IReadOnlyList<SubPlanStepResult> DrainStepResults(Guid deploymentId, Guid targetId)
         => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
 
+    public bool IsRetiredDispatch(Guid dispatchId)
+        => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
+
     public bool HasSlot(Guid deploymentId, Guid targetId)
         => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
 }

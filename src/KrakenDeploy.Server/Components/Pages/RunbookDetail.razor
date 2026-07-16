@@ -9,10 +9,12 @@
 @using KrakenDeploy.Server.Core.Domain.Processes
 @using KrakenDeploy.Server.Core.Domain.Runbooks
 @using KrakenDeploy.Server.Core.Domain.Targets
+@using KrakenDeploy.Server.Core.Domain.Audit
 @using KrakenDeploy.Server.Data.Services
 @using KrakenDeploy.Server.Auth
 @using Microsoft.AspNetCore.Components.Authorization
 @inject AuthenticationStateProvider AuthState
+@inject IAuditLog Audit
 @inject RunbookService RunbookSvc
 @inject EnvironmentService EnvSvc
 @inject TargetService TargetSvc
@@ -241,6 +243,23 @@
                     <RadzenDataGridColumn TItem="RunbookRun" Title="Initiated by" Width="150px">
                         <Template Context="r">
                             <span title="@(r.Cause.ToString() + (string.IsNullOrEmpty(r.CauseDetail) ? "" : " (" + r.CauseDetail + ")"))">@r.CreatedByDisplay</span>
+                        </Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="RunbookRun" Title="" Width="52px" Sortable="false" TextAlign="TextAlign.Center">
+                        <Template Context="r">
+                            @if (r.Status is DeploymentStatus.Queued or DeploymentStatus.Running)
+                            {
+                                @* B6 — cancel a queued/running run. stopPropagation: the
+                                   row's RowClick toggles the log viewer (Deployments.razor
+                                   pattern). *@
+                                <RequirePermission Permission="Permission.TaskCancel">
+                                    <RadzenButton Icon="cancel" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
+                                                  Variant="Variant.Text"
+                                                  Click="@(async () => await CancelRunAsync(r))"
+                                                  @onclick:stopPropagation="true"
+                                                  title="Cancel run" />
+                                </RequirePermission>
+                            }
                         </Template>
                     </RadzenDataGridColumn>
                 </Columns>
@@ -553,6 +572,63 @@
         _runs = await RunbookSvc.GetRunsAsync(Id);
         _selectedRun = null;
         _selectedRunLogs = [];
+    }
+
+    // B6 — cancel a queued/running run: guarded server-side re-check, confirm,
+    // service flip (B5 guarded write) + agent abort push, semantic audit.
+    // Mirrors Deployments.razor's CancelDeploymentAsync.
+    private async Task CancelRunAsync(RunbookRun run)
+    {
+        // Server-authoritative re-check (the button's visibility is cosmetic).
+        if (!await Guard.AllowAsync(Permission.TaskCancel)) return;
+
+        var running = run.Status == DeploymentStatus.Running;
+        var confirmed = await Dialog.Confirm(
+            running
+                ? "Cancel this running runbook run? The abort is pushed to the agent, " +
+                  "which stops the running step."
+                : "Cancel this queued run before it starts?",
+            "Cancel runbook run",
+            new ConfirmOptions { OkButtonText = "Cancel run", CancelButtonText = "Keep running" });
+        if (confirmed != true)
+        {
+            return;
+        }
+
+        try
+        {
+            var updated = await RunbookSvc.CancelRunAsync(run.Id);
+            if (updated is not null)
+            {
+                await Audit.RecordAsync(
+                    AuditEventType.RunbookRunCancelled,
+                    subjectType: "RunbookRun",
+                    subjectId:   run.Id.ToString(),
+                    details:     "Runbook run cancelled from the runbook detail page.");
+
+                run.Status       = updated.Status;
+                run.CompletedUtc = updated.CompletedUtc;
+                Notify.Notify(new NotificationMessage
+                {
+                    Severity = NotificationSeverity.Success,
+                    Summary  = "Cancelled",
+                    Detail   = running
+                        ? "The abort was pushed to the agent."
+                        : "The queued run was cancelled.",
+                    Duration = 4000,
+                });
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Warning,
+                Summary  = "Could not cancel",
+                Detail   = ex.Message,
+                Duration = 5000,
+            });
+        }
     }
 
     private async Task ToggleRunLog(RunbookRun run)

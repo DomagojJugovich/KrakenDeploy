@@ -343,6 +343,7 @@ file sealed class FalseSubPlanRegistry : IPendingSubPlanRegistry
     public void Register(Guid deploymentId, Guid targetId, Guid dispatchId, TaskCompletionSource<SubPlanResult> tcs) { }
     public SubPlanCompletionRoute RouteCompletion(Guid deploymentId, Guid targetId, Guid dispatchId, SubPlanResult result)
         => SubPlanCompletionRoute.NoPendingSubPlan;
+    public bool IsRetiredDispatch(Guid dispatchId) => false;
     public void Cancel(Guid deploymentId, Guid targetId, string reason) { }
     public void RecordStepResult(Guid deploymentId, Guid targetId, Guid dispatchId, SubPlanStepResult result) { }
     public IReadOnlyList<SubPlanStepResult> DrainStepResults(Guid deploymentId, Guid targetId)

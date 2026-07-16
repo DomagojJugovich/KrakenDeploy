@@ -86,6 +86,10 @@ public static class AuditEventType
     /// reap is swallowed by the hub's terminal-status guard.</summary>
     public const string RunbookRunTimedOut = "RunbookRun.TimedOut";
 
+    /// <summary>B6 — an operator cancelled a runbook run (runbook analogue of
+    /// <see cref="DeploymentCancelled"/>; same TaskCancel permission).</summary>
+    public const string RunbookRunCancelled = "RunbookRun.Cancelled";
+
     /// <summary>B6 — an agent registered with a wire-contract version this
     /// server does not speak. The registration was refused, the connection
     /// removed from the dispatch registry and the target marked Offline; the

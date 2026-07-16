@@ -564,15 +564,17 @@ public sealed class DeploymentWorker(
             foreach (var wave in waves)
             {
                 // ── Cancellation: stop at the next wave boundary ────────────
-                // The agent protocol exposes no in-flight abort (IAgentHubClient
-                // = Ping / RunDeployment / RunAdhocScript), so cancellation is
-                // cooperative: a wave already dispatched to an agent runs to
-                // completion, but once a cancel has landed
-                // (DeploymentService.CancelAsync → Status=Cancelled) we start no
-                // further waves. CancelAsync already wrote the terminal Cancelled
-                // status + CompletedUtc; we log the boundary and return, leaving
-                // that terminal state to stand — the finalisation + FailAsync
-                // writes below are guarded to never overwrite Cancelled.
+                // B6 added a cooperative in-flight abort (CancelDeploymentAsync
+                // push → the agent kills the running step's process tree), but
+                // this boundary check REMAINS the authoritative fallback: the
+                // push is best-effort (agent offline, push lost), and even a
+                // killed wave resolves its TCS through the normal failure path.
+                // Once a cancel has landed (DeploymentService.CancelAsync →
+                // Status=Cancelled) we start no further waves. CancelAsync
+                // already wrote the terminal Cancelled status + CompletedUtc; we
+                // log the boundary and return, leaving that terminal state to
+                // stand — the finalisation + FailAsync writes below are guarded
+                // to never overwrite Cancelled.
                 if (await IsCancellationRequestedAsync(db, deployment.Id, ct).ConfigureAwait(false))
                 {
                     await logSeq.AppendAsync(-1, null, "warning",
@@ -2766,8 +2768,30 @@ public sealed class DeploymentWorker(
         var droppedTargets = new List<DroppedTargetInfo>();
         var failedTargets = new List<string>();
 
-        foreach (var (ctx, stepsToRun, waveResult, waveTimedOut, perStepResults) in perTargetOutcomes)
+        foreach (var (ctx, stepsToRun, waveResult, waveTimedOut, rawPerStepResults) in perTargetOutcomes)
         {
+            // B6: range-guard the agent-supplied step indices ONCE before every
+            // consumer below indexes SnapshotByPlanIndex with them. The hub
+            // already rejects negatives at the trust boundary, but it cannot
+            // know the plan's size — an out-of-range index (buggy or malicious
+            // agent) would otherwise throw inside this fold and abort the whole
+            // cross-target deployment.
+            var perStepResults = rawPerStepResults;
+            if (perStepResults.Any(r => r.StepIndex < 0 || r.StepIndex >= ctx.SnapshotByPlanIndex.Length))
+            {
+                foreach (var bad in perStepResults.Where(r =>
+                    r.StepIndex < 0 || r.StepIndex >= ctx.SnapshotByPlanIndex.Length))
+                {
+                    logger.LogWarning(
+                        "Discarding step report with out-of-range index {Index} " +
+                        "(plan has {Count} steps) for deployment {Id}, target {Target}.",
+                        bad.StepIndex, ctx.SnapshotByPlanIndex.Length, deployment.Id, ctx.Target.Id);
+                }
+                perStepResults = perStepResults
+                    .Where(r => r.StepIndex >= 0 && r.StepIndex < ctx.SnapshotByPlanIndex.Length)
+                    .ToList();
+            }
+
             var reportedIndices = new HashSet<int>();
             foreach (var r in perStepResults)
             {

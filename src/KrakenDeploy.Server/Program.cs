@@ -639,6 +639,10 @@ public static class Program
         // collaborators are resolved from the caller's IServiceProvider.
         builder.Services.AddSingleton<OfflineDropBundleBuilder>();
         builder.Services.AddSingleton<IPendingSubPlanRegistry, PendingSubPlanRegistry>();
+        // B6 — cooperative-abort push (DeploymentService/RunbookService fire it
+        // after recording the Cancelled verdict; the agent kills the running
+        // step's process tree).
+        builder.Services.AddSingleton<IAgentCancelPusher, AgentCancelPusher>();
         // M11.E.7 — per-target adhoc-script dispatch + result collation.
         builder.Services.AddSingleton<IPendingAdhocRegistry, PendingAdhocRegistry>();
         builder.Services.AddSingleton<IAdhocAgentPusher, HubContextAdhocAgentPusher>();
@@ -2234,9 +2238,10 @@ public static class Program
             }).RequirePermission(Permission.DeploymentCreate);
 
         // Cancel a Queued or Running deployment. A queued one never dispatches;
-        // a running one stops at the next wave boundary (the agent protocol has
-        // no in-flight abort) — see DeploymentService.CancelAsync. Gated on
-        // TaskCancel (Octopus models a deployment as a cancellable task).
+        // a running one gets the B6 abort push (the agent kills the running
+        // step's process tree) with the wave-boundary stop as the offline
+        // fallback — see DeploymentService.CancelAsync. Gated on TaskCancel
+        // (Octopus models a deployment as a cancellable task).
         app.MapPost("/api/deployments/{id:guid}/cancel",
             async (Guid id, DeploymentService deploymentSvc, IAuditLog audit,
                 CancellationToken ct) =>
@@ -2960,6 +2965,37 @@ public static class Program
                 var run = await runbookSvc.GetRunAsync(runId, ct).ConfigureAwait(false);
                 return run is null ? Results.NotFound() : Results.Ok(run);
             }).RequirePermission(Permission.RunbookRunView);
+
+        // B6 — cancel a Queued or Running runbook run. A queued one is never
+        // claimed; a running one is agent-owned, so the cancel is pushed to the
+        // agent, which kills the running step's process tree. Same TaskCancel
+        // permission as the deployment cancel.
+        app.MapPost("/api/runbook-runs/{runId:guid}/cancel",
+            async (Guid runId, RunbookService runbookSvc, IAuditLog audit,
+                CancellationToken ct) =>
+            {
+                try
+                {
+                    var run = await runbookSvc.CancelRunAsync(runId, ct).ConfigureAwait(false);
+                    if (run is null)
+                    {
+                        return Results.NotFound();
+                    }
+
+                    await audit.RecordAsync(
+                        AuditEventType.RunbookRunCancelled,
+                        subjectType: "RunbookRun",
+                        subjectId:   runId.ToString(),
+                        details:     "Runbook run cancelled via API.",
+                        ct:          ct).ConfigureAwait(false);
+
+                    return Results.Ok(new { run.Id, Status = run.Status.ToString() });
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.TaskCancel);
 
         app.MapPost("/api/runbooks/{runbookId:guid}/runs",
             async (Guid runbookId, TriggerRunbookRunRequest req, RunbookService runbookSvc,

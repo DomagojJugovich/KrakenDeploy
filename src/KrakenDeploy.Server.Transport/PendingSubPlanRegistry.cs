@@ -139,6 +139,17 @@ public interface IPendingSubPlanRegistry
     /// slot by intersecting with the connection's claimed target id.
     /// </summary>
     bool HasSlot(Guid deploymentId, Guid targetId);
+
+    /// <summary>
+    /// B6 — <c>true</c> when this dispatch attempt has POSITIVELY ended
+    /// (resolved or cancelled) in this process. The hub drops log lines from a
+    /// retired attempt so a superseded/timed-out attempt's outbox flush cannot
+    /// interleave noise into the current attempt's log.
+    /// <see cref="Guid.Empty"/> (legacy/offline plans) is never retired, and an
+    /// unknown id (runbook hand-offs never register slots; post-restart the set
+    /// is empty) is NOT retired — only positive knowledge drops a line.
+    /// </summary>
+    bool IsRetiredDispatch(Guid dispatchId);
 }
 
 /// <summary>How <see cref="IPendingSubPlanRegistry.RouteCompletion"/> classified
@@ -224,6 +235,9 @@ public sealed class PendingSubPlanRegistry : IPendingSubPlanRegistry
 
         return SubPlanCompletionRoute.NoPendingSubPlan;
     }
+
+    public bool IsRetiredDispatch(Guid dispatchId)
+        => dispatchId != Guid.Empty && _retired.ContainsKey(dispatchId);
 
     public void Cancel(Guid deploymentId, Guid targetId, string reason)
     {

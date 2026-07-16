@@ -38,7 +38,10 @@ public class RunbookService(
     TimeProvider time,
     IAccountContext accountContext,
     IPermissionEvaluator permissions,
-    StepPackageResolver? stepPackageResolver = null)
+    StepPackageResolver? stepPackageResolver = null,
+    // B6: optional — registered in the server host; tests that construct the
+    // service directly skip the agent push.
+    IAgentCancelPusher? cancelPusher = null)
     : IRunbookTrigger, IStepEditingHost
 {
     // ── IStepEditingHost ───────────────────────────────────────────────
@@ -572,6 +575,53 @@ public class RunbookService(
             .Include(r => r.Environment)
             .Include(r => r.Targets).ThenInclude(a => a.Target)
             .FirstOrDefaultAsync(r => r.Id == runId, ct);
+    }
+
+    /// <summary>
+    /// B6 — transitions a non-terminal runbook run to <c>Cancelled</c> (B5
+    /// guarded write) and best-effort pushes the abort to the executing agent.
+    /// A <c>Queued</c> run is never claimed afterwards (the B1 conditional
+    /// claim skips non-Queued rows); a <c>Running</c> run is agent-owned after
+    /// the hand-off, so the push is what actually stops it — the killed
+    /// attempt's late completion is swallowed by the terminal guard. Returns
+    /// <c>null</c> when the run does not exist (or is outside the active
+    /// Space); throws <see cref="InvalidOperationException"/> when it is
+    /// already terminal.
+    /// </summary>
+    public async Task<RunbookRun?> CancelRunAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var run = await db.RunbookRuns
+            .FirstOrDefaultAsync(r => r.Id == id, ct)
+            .ConfigureAwait(false);
+        if (run is null)
+        {
+            return null;
+        }
+
+        var cancelled = await ServerTaskStatusWriter.TryTransitionAsync(
+            db, run, r =>
+            {
+                r.Status       = DeploymentStatus.Cancelled;
+                r.CompletedUtc = time.GetUtcNow();
+                r.ScheduledFor = null;
+                r.ClaimedBy    = null;
+                r.LeaseUntil   = null;
+            }, ct: ct).ConfigureAwait(false);
+        if (!cancelled)
+        {
+            throw new InvalidOperationException(
+                $"Runbook run {id} is already in a terminal state " +
+                $"({run.Status}) and cannot be cancelled.");
+        }
+
+        if (cancelPusher is not null)
+        {
+            await cancelPusher
+                .PushCancelAsync(id, "Runbook run cancelled by operator.", ct)
+                .ConfigureAwait(false);
+        }
+        return run;
     }
 
     /// <summary>A runbook run's full log, stitched from compacted step blobs + live

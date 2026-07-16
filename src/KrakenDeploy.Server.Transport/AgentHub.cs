@@ -276,6 +276,28 @@ public sealed class AgentHub(
     {
         ArgumentNullException.ThrowIfNull(message);
 
+        // B6: agent-supplied stepIndex sanity — it is persisted and used for
+        // per-step log grouping; -1 is the plan-level sentinel, anything below
+        // is malformed. (It is never used as an array index on this path, but
+        // clamping keeps the compactor's grouping keys sane.)
+        if (stepIndex < -1)
+        {
+            stepIndex = -1;
+        }
+
+        // B6: drop lines from a dispatch attempt the registry has POSITIVELY
+        // retired (superseded / timed-out wave attempt still flushing its
+        // outbox) — an abandoned attempt must not interleave noise into the
+        // current attempt's log. Guid.Empty (legacy/offline) and unknown ids
+        // (runbook hand-offs never register slots) are always accepted.
+        if (subPlans.IsRetiredDispatch(dispatchId))
+        {
+            logger.LogDebug(
+                "AppendLog for task {Id} dropped: dispatch {Dispatch} is retired.",
+                deploymentId, dispatchId);
+            return;
+        }
+
         var connectionTargetId = GetTargetId();
         var timestamp = timeProvider.GetUtcNow();
 
@@ -463,6 +485,20 @@ public sealed class AgentHub(
         ArgumentNullException.ThrowIfNull(outputVariables);
         // Older agents / offline JSON may omit the sensitive-name list.
         sensitiveOutputNames ??= [];
+
+        // B6: bounds-check the agent-supplied step index at the trust boundary.
+        // The orchestrator resolves it against the plan's StepSnapshot array —
+        // an out-of-range value (int.MaxValue from a buggy/malicious agent)
+        // would throw inside the wave fold and abort the whole cross-target
+        // deployment. -1 is not meaningful here either: step reports are
+        // always step-scoped.
+        if (stepIndex < 0)
+        {
+            logger.LogWarning(
+                "ReportStepCompleted for task {Id} rejected: step index {Index} is out of range.",
+                deploymentId, stepIndex);
+            return;
+        }
 
         // Register the per-step outcome with the sub-plan registry FIRST so
         // even if DB persistence fails, the orchestrator gets attribution
