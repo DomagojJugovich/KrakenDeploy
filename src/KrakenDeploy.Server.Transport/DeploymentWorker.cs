@@ -19,6 +19,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Octostache;
 
 namespace KrakenDeploy.Server.Transport;
@@ -55,6 +56,7 @@ public sealed class DeploymentWorker(
     DeploymentDiagnosisChannel diagnosisChannel,
     InFlightWorkGauge inFlightGauge,
     TimeProvider timeProvider,
+    IOptions<EngineOptions> engineOptions,
     ILogger<DeploymentWorker> logger)
     : BackgroundService
 {
@@ -1762,8 +1764,41 @@ public sealed class DeploymentWorker(
         IReadOnlyList<SubPlanStepResult> lastPerStepResults = [];
         var timedOut = false;
         var attempt = 0;
+
+        // B3: the wave never waits unbounded. An explicit step TimeoutSeconds
+        // is honoured as-is (even above the ceiling — operator intent); the
+        // engine ceiling only replaces "unlimited" (0). Pre-B3 the default
+        // config awaited the TCS forever: the lease renewal kept the B1
+        // reconciler away (the process IS alive), the in-flight gauge stayed
+        // up, and one dead agent blocked blue-green retirement indefinitely.
+        var stepTimeoutConfigured = waveTimeoutSeconds > 0;
+        var configuredCeiling = engineOptions.Value.MaxTargetWaveDuration;
+        var effectiveDeadline = stepTimeoutConfigured
+            ? TimeSpan.FromSeconds(waveTimeoutSeconds)
+            // Non-positive config would mean "immediately" — fall back to the
+            // shipped default rather than reintroducing an unbounded wait.
+            : (configuredCeiling > TimeSpan.Zero ? configuredCeiling : TimeSpan.FromHours(1));
+
         while (true)
         {
+            // B3/B7-sliver: re-resolve the connection per ATTEMPT. Retries used
+            // to re-dispatch to the connection id captured before attempt 1 —
+            // after a disconnect that id is dead and Clients.Client() silently
+            // no-ops, burning a full deadline window per retry. A reconnected
+            // agent gets the fresh id; a still-offline agent fails fast here.
+            var currentConnectionId = attempt == 0
+                ? connectionId
+                : registry.GetConnectionId(targetId);
+            if (currentConnectionId is null)
+            {
+                subPlanResult = new SubPlanResult(
+                    Success: false,
+                    ErrorMessage:
+                        "Agent went offline during the wave; remaining retries abandoned.");
+                timedOut = false;
+                break;
+            }
+
             // B2 (B6.2): fresh idempotency key per dispatch ATTEMPT. Wave
             // retries re-dispatch the same steps under the same
             // (deployment, target) slot key — a late completion of a previous
@@ -1777,15 +1812,19 @@ public sealed class DeploymentWorker(
             subPlans.Register(deployment.Id, targetId, attemptPlan.DispatchId, tcs);
 
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            if (waveTimeoutSeconds > 0)
-            {
-                linkedCts.CancelAfter(TimeSpan.FromSeconds(waveTimeoutSeconds));
-            }
+            linkedCts.CancelAfter(effectiveDeadline);
             var thisAttemptTimedOut = false;
+
+            // B3: watch the agent's connection while this attempt is awaited —
+            // a CONTINUOUS disconnect past the grace cancels the slot so the
+            // wave resolves per the deployment's failure mode instead of
+            // waiting out the whole deadline on an agent that is gone.
+            var monitorTask = MonitorAgentConnectionDuringWaveAsync(
+                deployment.Id, targetId, linkedCts.Token);
 
             try
             {
-                await agentHub.Clients.Client(connectionId)
+                await agentHub.Clients.Client(currentConnectionId)
                     .RunDeploymentAsync(attemptPlan).ConfigureAwait(false);
 
                 using var ctr = linkedCts.Token.Register(
@@ -1803,8 +1842,11 @@ public sealed class DeploymentWorker(
                         thisAttemptTimedOut = true;
                         subPlanResult = new SubPlanResult(
                             Success: false,
-                            ErrorMessage:
-                                $"Target step wave timed out after {waveTimeoutSeconds}s.");
+                            ErrorMessage: stepTimeoutConfigured
+                                ? $"Target step wave timed out after {waveTimeoutSeconds}s."
+                                : "Target step wave exceeded the server-side maximum " +
+                                  $"duration ({effectiveDeadline}) with no step timeout " +
+                                  "configured; the agent never reported completion.");
                     }
                     else
                     {
@@ -1814,6 +1856,19 @@ public sealed class DeploymentWorker(
             }
             finally
             {
+                // Stop the disconnect monitor BEFORE the CTS is disposed — a
+                // pending Task.Delay on a disposed-but-uncancelled source never
+                // completes and would leak the monitor task.
+                await linkedCts.CancelAsync().ConfigureAwait(false);
+                try
+                {
+                    await monitorTask.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Monitor honoured the cancel — expected.
+                }
+
                 // Drain whatever the agent reported THIS attempt and clear the
                 // registry slot. Cancel() also resolves a still-pending TCS
                 // (no-op if already resolved by the agent's CompleteDeployment).
@@ -1871,6 +1926,70 @@ public sealed class DeploymentWorker(
         }
 
         return (subPlanResult, timedOut, lastPerStepResults);
+    }
+
+    /// <summary>
+    /// B3 — watches the target's live connection while a wave attempt is
+    /// awaited. After a CONTINUOUS disconnect of
+    /// <see cref="EngineOptions.AgentDisconnectWaveGrace"/> the pending
+    /// sub-plan slot is cancelled, resolving the wave as a failure ("agent
+    /// disconnected") into the deployment's BestEffort/Atomic failure mode.
+    /// A reconnect within the grace resets the clock: the B2 agent reconnects
+    /// with unbounded retry and FLUSHES its buffered wave results, which
+    /// resolves the wave normally — this monitor only gives up on agents that
+    /// stay gone. Grace deliberately exceeds the hub's 30 s offline-marking
+    /// grace for exactly that reason. Cancelled attempts retire their
+    /// DispatchId (B2), so a later flush of that attempt is swallowed as
+    /// stale rather than corrupting a re-dispatched attempt.
+    /// </summary>
+    private async Task MonitorAgentConnectionDuringWaveAsync(
+        Guid deploymentId, Guid targetId, CancellationToken ct)
+    {
+        var grace = engineOptions.Value.AgentDisconnectWaveGrace;
+        if (grace <= TimeSpan.Zero)
+        {
+            return; // disconnect monitor disabled; the wave deadline still applies
+        }
+
+        // Sample fast enough that short (test) graces work, slow enough to be
+        // free in production — one registry lookup per poll per in-flight wave.
+        var poll = TimeSpan.FromMilliseconds(
+            Math.Clamp(grace.TotalMilliseconds / 4, 25, 5_000));
+
+        DateTimeOffset? disconnectedSince = null;
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(poll, timeProvider, ct).ConfigureAwait(false);
+
+                if (registry.HasConnectionFor(targetId))
+                {
+                    disconnectedSince = null;
+                    continue;
+                }
+
+                var now = timeProvider.GetUtcNow();
+                disconnectedSince ??= now;
+                if (now - disconnectedSince < grace)
+                {
+                    continue;
+                }
+
+                logger.LogWarning(
+                    "Deployment {Id}: target {Target} has been disconnected for {Grace}; " +
+                    "cancelling the in-flight wave (resolves per the deployment's failure mode).",
+                    deploymentId, targetId, grace);
+                subPlans.Cancel(
+                    deploymentId, targetId,
+                    $"Agent disconnected mid-wave and did not reconnect within {grace}.");
+                return;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Attempt ended (agent completed / deadline / shutdown) — done.
+        }
     }
 
     /// <summary>

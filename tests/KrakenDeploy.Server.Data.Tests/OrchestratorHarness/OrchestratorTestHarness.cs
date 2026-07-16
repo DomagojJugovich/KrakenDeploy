@@ -66,7 +66,7 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
     private readonly DeploymentWorker _worker;
     private int _connectionCounter;
 
-    public OrchestratorTestHarness(PostgresFixture postgres)
+    public OrchestratorTestHarness(PostgresFixture postgres, EngineOptions? engineOptions = null)
     {
         ArgumentNullException.ThrowIfNull(postgres);
         _postgres = postgres;
@@ -134,10 +134,20 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             diagnosisChannel:      DiagnosisChannel,
             // Blue-green slot telemetry — a fresh gauge per harness; tests may
             // assert in-flight counts but the default harness ignores it.
-            inFlightGauge:         new InFlightWorkGauge(),
+            inFlightGauge:         Gauge,
             timeProvider:          TimeProvider.System,
+            // B3 — production defaults unless a test passes short ceilings
+            // (wave deadline / disconnect grace scenarios).
+            engineOptions:         Microsoft.Extensions.Options.Options.Create(
+                                       engineOptions ?? new EngineOptions()),
             logger:                NullLogger<DeploymentWorker>.Instance);
     }
+
+    /// <summary>The worker's in-flight gauge. NOTE: <see cref="RunDeploymentAsync"/>
+    /// drives the worker through the test seam, which bypasses the production
+    /// <c>TrackedDispatchAsync</c> wrapper — tests that assert drain behaviour
+    /// wrap the call in <c>using (Gauge.Track())</c> to mirror it.</summary>
+    public InFlightWorkGauge Gauge { get; } = new();
 
     /// <summary>The diagnosis channel the worker writes failed-deployment ids
     /// to. Tests can drain <c>DiagnosisChannel.Reader</c> to assert the
@@ -367,6 +377,9 @@ public sealed class StepBuilder
     public Guid? ParentStepId { get; init; }
     public Guid Id { get; init; } = Guid.NewGuid();
     public Dictionary<string, string>? Config { get; init; }
+    // B3 — explicit per-step timeout / retry knobs for deadline + retry tests.
+    public int TimeoutSeconds { get; init; }
+    public int MaxRetries { get; init; }
 
     public static StepBuilder Script(string name, bool required = true)
         => new() { Name = name, StepType = "Octopus.Script", Required = required };
@@ -410,6 +423,8 @@ public sealed class StepBuilder
         Config         = Config ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
         PackageId      = "",
         PackageVersion = "",
+        TimeoutSeconds = TimeoutSeconds,
+        MaxRetries     = MaxRetries,
     };
 }
 

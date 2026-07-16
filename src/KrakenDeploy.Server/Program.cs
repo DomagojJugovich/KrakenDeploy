@@ -198,6 +198,10 @@ public static class Program
         // AddKrakenDeployData. No `Ssrf` section => secure defaults stand.
         builder.Services.Configure<SsrfOptions>(
             builder.Configuration.GetSection(SsrfOptions.SectionName));
+        // B3 — engine resilience ceilings (wave deadline, disconnect grace,
+        // runbook max duration). No `Engine` section => sane defaults stand.
+        builder.Services.Configure<KrakenDeploy.Server.Data.EngineOptions>(
+            builder.Configuration.GetSection(KrakenDeploy.Server.Data.EngineOptions.SectionName));
         // Registers IKrakenAi + KrakenAiClientFactory + prompt sanitiser/cost
         // catalog. AddKrakenDeployData already registered the DB-backed
         // IKrakenAiSettingsProvider / IKrakenAiCallSink / IBudgetTracker, so

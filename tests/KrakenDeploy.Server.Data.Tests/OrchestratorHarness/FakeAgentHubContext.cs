@@ -52,6 +52,16 @@ public sealed class FakeAgent
     /// mid-deployment offline drop-outs.</summary>
     public int? GoOfflineAfterWaves { get; set; }
 
+    /// <summary>B3 — the agent receives the wave, drops its connection and
+    /// reports NOTHING (crashed mid-execution). The wave's TCS stays pending;
+    /// the worker's disconnect monitor must cancel it after the grace.</summary>
+    public bool VanishBeforeReporting { get; set; }
+
+    /// <summary>B3 — the agent receives the wave, STAYS connected and reports
+    /// nothing (hung script, default TimeoutSeconds=0). The wave's TCS stays
+    /// pending; the server-side wave deadline must fire.</summary>
+    public bool NeverReport { get; set; }
+
     /// <summary>Optional callback invoked at the end of each
     /// <c>RunDeploymentAsync</c> — after the wave's steps are recorded + the TCS
     /// is resolved — receiving the 1-based wave count. Lets a test mutate
@@ -155,6 +165,20 @@ internal sealed class FakeAgentClient(
     public async Task RunDeploymentAsync(DeploymentPlan plan)
     {
         ArgumentNullException.ThrowIfNull(plan);
+
+        // B3 failure-mode simulations: the plan was DELIVERED but the agent
+        // never reports back. VanishBeforeReporting additionally drops the
+        // connection (crash) so the worker's disconnect monitor fires;
+        // NeverReport keeps it (hung script) so the wave deadline fires.
+        if (agent.VanishBeforeReporting)
+        {
+            connectionRegistry.TryRemove(agent.ConnectionId, out _);
+            return;
+        }
+        if (agent.NeverReport)
+        {
+            return;
+        }
 
         // Per-step boundary reports — order matches plan.Steps so the
         // orchestrator's drain order matches what the real agent emits.
