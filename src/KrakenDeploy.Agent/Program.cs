@@ -113,7 +113,7 @@ static async Task<int> RunAsync(string[] args)
         var ctx = sp.GetRequiredService<AgentContext>();
         return new GrpcPackageDownloader(
             sp.GetRequiredService<IPackageCache>(),
-            () => ctx.Identity?.ServerUrl  ?? throw new InvalidOperationException("Agent identity not yet ready."),
+            () => GrpcBaseUrl(sp) ?? ctx.Identity?.ServerUrl  ?? throw new InvalidOperationException("Agent identity not yet ready."),
             () => ctx.Identity?.AgentToken ?? throw new InvalidOperationException("Agent identity not yet ready."),
             sp.GetRequiredService<IOptions<ServerOptions>>().Value.AllowInsecureHttp,
             sp.GetRequiredService<ILogger<GrpcPackageDownloader>>());
@@ -124,7 +124,7 @@ static async Task<int> RunAsync(string[] args)
     {
         var ctx = sp.GetRequiredService<AgentContext>();
         return new GrpcArtifactUploader(
-            () => ctx.Identity?.ServerUrl  ?? throw new InvalidOperationException("Agent identity not yet ready."),
+            () => GrpcBaseUrl(sp) ?? ctx.Identity?.ServerUrl  ?? throw new InvalidOperationException("Agent identity not yet ready."),
             () => ctx.Identity?.AgentToken ?? throw new InvalidOperationException("Agent identity not yet ready."),
             sp.GetRequiredService<IOptions<ServerOptions>>().Value.AllowInsecureHttp,
             sp.GetRequiredService<ILogger<GrpcArtifactUploader>>());
@@ -153,7 +153,7 @@ static async Task<int> RunAsync(string[] args)
         // Defer the loader lookup to first download — keeps the DI graph
         // acyclic (loader → source → loader is broken by the lazy resolve).
         return new GrpcStepPackageDownloader(
-            serverUrl:  () => ctx.Identity?.ServerUrl  ?? throw new InvalidOperationException("Agent identity not yet ready."),
+            serverUrl:  () => GrpcBaseUrl(sp) ?? ctx.Identity?.ServerUrl  ?? throw new InvalidOperationException("Agent identity not yet ready."),
             agentToken: () => ctx.Identity?.AgentToken ?? throw new InvalidOperationException("Agent identity not yet ready."),
             extract:    (name, version, archivePath) =>
             {
@@ -250,4 +250,14 @@ static string? GetArgValue(string[] args, string name)
 {
     var i = Array.IndexOf(args, name);
     return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
+}
+
+// B8 — the gRPC channels' base URL: Server:GrpcUrl when configured (a
+// cleartext deployment's dedicated Http2-only h2c endpoint — one plaintext
+// port cannot serve HTTP/1.1 and HTTP/2 without ALPN), null otherwise so the
+// accessors fall back to the identity's server URL.
+static string? GrpcBaseUrl(IServiceProvider sp)
+{
+    var url = sp.GetRequiredService<IOptions<ServerOptions>>().Value.GrpcUrl;
+    return string.IsNullOrWhiteSpace(url) ? null : url;
 }

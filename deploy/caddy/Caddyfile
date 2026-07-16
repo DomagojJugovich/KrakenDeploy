@@ -58,7 +58,11 @@
     # path). A /kraken.* matcher never matches these. Caddy negotiates H2C to the
     # backend via h2c:// transport so gRPC streaming works.
     handle /krakendeploy.v1.* {
-        reverse_proxy h2c://kraken-server:5080 {
+        # B8: 5081 is the server's dedicated Http2-only h2c endpoint — one
+        # cleartext port cannot serve HTTP/1.1 and HTTP/2 (no ALPN), so the
+        # old h2c://kraken-server:5080 target was answered with
+        # HTTP_1_1_REQUIRED and every agent gRPC call through Caddy failed.
+        reverse_proxy h2c://kraken-server:5081 {
             header_up X-Forwarded-Proto {scheme}
             header_up X-Forwarded-For {remote_host}
         }

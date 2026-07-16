@@ -73,7 +73,17 @@ services:
       AgentUpdate__BinariesPath: /data/agents
       Server__HaMode: ${HA_MODE:-}
       DOTNET_ENVIRONMENT: Production
-      ASPNETCORE_URLS: http://0.0.0.0:5080
+      # B8: cleartext has no ALPN, so ONE plaintext port cannot serve HTTP/1.1
+      # (REST/SignalR/UI via Caddy) and HTTP/2 (the agents' gRPC h2c hop that
+      # the Caddyfile forwards). Kestrel answers the h2 preface on a mixed
+      # cleartext endpoint with HTTP_1_1_REQUIRED — so the internal hop is
+      # split: 5080 HTTP/1.1, 5081 Http2-only h2c (Caddy's gRPC handle targets
+      # it). These MUST be Kestrel config endpoints — ASPNETCORE_URLS-created
+      # endpoints ignore protocol configuration.
+      Kestrel__Endpoints__Http__Url: http://0.0.0.0:5080
+      Kestrel__Endpoints__Http__Protocols: Http1
+      Kestrel__Endpoints__Grpc__Url: http://0.0.0.0:5081
+      Kestrel__Endpoints__Grpc__Protocols: Http2
     volumes:
       - kraken-data:/data
     healthcheck:

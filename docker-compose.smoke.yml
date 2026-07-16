@@ -18,10 +18,24 @@ services:
       dockerfile: Dockerfile.server
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      ASPNETCORE_URLS: http://+:5080
+      # Cleartext has no ALPN, so ONE plaintext port cannot serve HTTP/1.1
+      # (REST + SignalR) and HTTP/2 (agent gRPC): Kestrel answers the h2
+      # preface on a Http1AndHttp2 cleartext endpoint with HTTP_1_1_REQUIRED.
+      # Split them: 5080 stays HTTP/1.1, 5081 is the Http2-only h2c endpoint
+      # the agent's Server__GrpcUrl targets. (Over TLS this split is not
+      # needed — ALPN negotiates both on one port.)
+      Kestrel__Endpoints__Http__Url: http://0.0.0.0:5080
+      Kestrel__Endpoints__Http__Protocols: Http1
+      Kestrel__Endpoints__Grpc__Url: http://0.0.0.0:5081
+      Kestrel__Endpoints__Grpc__Protocols: Http2
       # KrakenDeploy reads nested config keys via double-underscore in env vars.
       ConnectionStrings__KrakenDb: "Host=postgres;Port=5432;Database=krakendeploy_dev;Username=postgres;Password=postgres"
       Agent__JwtSigningKey: "smoke-test-only-jwt-signing-key-at-least-32-characters-!"
+      # The image runs as the non-root `kraken` user; /var/lib/krakendeploy is
+      # the canonical pre-chowned writable DataPath. Without it the default
+      # (./data under /app) is root-owned and the step-package store fails
+      # with UnauthorizedAccessException.
+      DataPath: /var/lib/krakendeploy
     ports:
       - "5080:5080"
     depends_on:
@@ -45,9 +59,16 @@ services:
       # explicitly overridden — the smoke stack talks plain HTTP inside the
       # compose network, so opt in here (CI/dev only; never production).
       Server__AllowInsecureHttp: "true"
+      # gRPC needs the server's dedicated h2c endpoint on cleartext (see the
+      # server service's Kestrel endpoints).
+      Server__GrpcUrl: http://server:5081
       # The bundled step packages carry the unsigned-dev-build sentinel; the
       # smoke deployment's script step loads one on the agent (CI/dev only).
       StepPackages__AllowUnsignedLoads: "true"
+      # The step-package loader/caches key off top-level DataPath; the image's
+      # pre-chowned writable dir (non-root `kraken` user, same reasoning as
+      # the server's) — the relative default would land in root-owned /app.
+      DataPath: /var/lib/krakendeploy-agent
       # SMOKE_TOKEN is injected by scripts/smoke-test.sh after calling /api/dev/smoke-register.
       Server__RegistrationToken: ${SMOKE_TOKEN:-}
     depends_on:

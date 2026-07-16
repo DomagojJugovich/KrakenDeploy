@@ -88,6 +88,17 @@ public static class SpaceRouting
             return true;
         }
 
+        // B8 — the agent's gRPC services: /krakendeploy.v1.<Service>/<Method>.
+        // The FIRST segment is dotted, so segment matching can't express it,
+        // and the method segment has no dot, so the asset heuristic below does
+        // not catch it either: without this check the middleware 302-redirected
+        // every agent gRPC call into /s/default/… (the gRPC client followed
+        // the redirect as a GET into the UI's 401).
+        if (value.StartsWith("/krakendeploy.v1.", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
         foreach (var prefix in AgnosticPrefixes)
         {
             if (path.StartsWithSegments(prefix, StringComparison.OrdinalIgnoreCase))

@@ -23,4 +23,16 @@ public sealed class ServerOptions
     /// development against an http server; NEVER in production.
     /// </summary>
     public bool AllowInsecureHttp { get; set; }
+
+    /// <summary>
+    /// B8 — optional dedicated base URL for the agent's gRPC channels
+    /// (package / step-package download, artifact upload). Needed when
+    /// <see cref="Url"/> is CLEARTEXT http: without TLS there is no ALPN, and
+    /// Kestrel cannot serve HTTP/1.1 (REST + SignalR) and HTTP/2 (gRPC) on
+    /// one plaintext port — the server exposes a second, Http2-only h2c
+    /// endpoint and this points at it (e.g. <c>http://server:5081</c>).
+    /// Irrelevant over https (ALPN negotiates both on one port). Defaults to
+    /// <see cref="Url"/>.
+    /// </summary>
+    public string? GrpcUrl { get; set; }
 }
