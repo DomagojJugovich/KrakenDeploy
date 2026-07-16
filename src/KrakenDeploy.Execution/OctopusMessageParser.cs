@@ -1,10 +1,12 @@
 using System.Text;
 using System.Text.RegularExpressions;
 
-namespace KrakenDeploy.Agent.Deployment;
+namespace KrakenDeploy.Execution;
 
 /// <summary>
-/// Parses the <c>##octopus[...]</c> stdout markers Octopus community step
+/// Shared by the agent (step stdout interception) and the server
+/// (<c>ServerScriptStepRunner</c>, B4/T1-6) so both sides capture output
+/// variables identically. Parses the <c>##octopus[...]</c> stdout markers Octopus community step
 /// templates emit to signal back to the runner. Compatible with the format
 /// documented at <see href="https://octopus.com/docs/projects/custom-scripts/logging-messages-in-scripts"/>.
 /// <para>

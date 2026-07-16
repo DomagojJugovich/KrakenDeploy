@@ -1,9 +1,9 @@
-using KrakenDeploy.Contracts;
-
-namespace KrakenDeploy.Agent.Deployment;
+namespace KrakenDeploy.Contracts;
 
 /// <summary>
-/// M15 follow-up — output-variable accumulation logic extracted from
+/// M15 follow-up (moved to Contracts in B4 — the key format IS the
+/// operator-facing contract, and the server's online sub-plan merge now
+/// shares it) — output-variable accumulation logic extracted from
 /// <see cref="DeploymentExecutor"/> so the cross-iteration reference
 /// contract (synthetic accumulator key → Octostache resolution) can be
 /// unit-tested without spinning up the full executor.

@@ -1,6 +1,6 @@
 using System.Text;
 using FluentAssertions;
-using KrakenDeploy.Agent.Deployment;
+using KrakenDeploy.Execution;
 using Xunit;
 
 namespace KrakenDeploy.Agent.Tests;
