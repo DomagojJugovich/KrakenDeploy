@@ -34,8 +34,9 @@ services:
       # The image runs as the non-root `kraken` user; /var/lib/krakendeploy is
       # the canonical pre-chowned writable DataPath. Without it the default
       # (./data under /app) is root-owned and the step-package store fails
-      # with UnauthorizedAccessException.
-      DataPath: /var/lib/krakendeploy
+      # with UnauthorizedAccessException. (C2: Server__DataPath is now the one
+      # key every server-side site reads — the bare "DataPath" split is gone.)
+      Server__DataPath: /var/lib/krakendeploy
     ports:
       - "5080:5080"
     depends_on:
