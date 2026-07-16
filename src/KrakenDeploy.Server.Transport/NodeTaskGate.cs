@@ -16,9 +16,13 @@ namespace KrakenDeploy.Server.Transport;
 /// to the surviving slot if this node retires first.
 /// </para>
 /// </summary>
-public sealed class NodeTaskGate(int maxConcurrentTasks)
+public sealed class NodeTaskGate(int maxConcurrentTasks) : IDisposable
 {
     public const int DefaultMaxConcurrentTasks = 5;
+
+    /// <summary>Owned by the worker for its (application) lifetime; disposed
+    /// with it. Waiters are gone by then — the host stops the reader loop first.</summary>
+    public void Dispose() => _slots.Dispose();
 
     private readonly SemaphoreSlim _slots = new(
         maxConcurrentTasks > 0 ? maxConcurrentTasks : DefaultMaxConcurrentTasks,

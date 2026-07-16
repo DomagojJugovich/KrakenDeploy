@@ -208,7 +208,49 @@ public sealed class ServerScriptStepRunner(
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
-            await process.WaitForExitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                await process.WaitForExitAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // B7: kill the spawned process TREE — WaitForExitAsync only stops
+                // WAITING, so every per-step timeout and deployment cancel used to
+                // leak an orphan process that kept running (and kept mutating
+                // server-side state). Mirrors the agent's ScriptRunner kill (B6),
+                // with the same bounded reap. Rethrown for the outer catch to
+                // classify (timeout vs cancel).
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                    logger.LogWarning(
+                        "Server-side script step '{Step}' for deployment {Id}: process tree " +
+                        "killed (timed out or cancelled).",
+                        step.Name, deploymentId);
+                }
+                catch (InvalidOperationException)
+                {
+                    // Already exited between the cancellation and the kill.
+                }
+                catch (Exception killEx)
+                {
+                    logger.LogWarning(killEx,
+                        "Failed to kill the server-side script process tree for step '{Step}' " +
+                        "of deployment {Id}.", step.Name, deploymentId);
+                }
+                try
+                {
+                    using var reap = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                    await process.WaitForExitAsync(reap.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    logger.LogWarning(
+                        "Server-side script process for step '{Step}' of deployment {Id} did " +
+                        "not exit within 10 s of the kill.", step.Name, deploymentId);
+                }
+                throw;
+            }
             // Streams are closed once WaitForExit completes and the final null
             // callbacks fired; snapshot under the gate for a consistent view.
             Task[] pendingSnapshot;
@@ -232,8 +274,8 @@ public sealed class ServerScriptStepRunner(
             // Propagate so StepRetryRunner can classify it: a per-step timeout becomes
             // StepOutcomeKind.TimedOut (the generic catch below would otherwise mis-
             // report it as Failed), and a deployment cancel propagates as cancellation.
-            // NB: the spawned OS process is NOT killed on timeout — that orphan is
-            // pre-existing and out of scope for this reporting fix.
+            // B7: the spawned process tree was already killed + reaped at the wait
+            // site above — no orphan survives this path anymore.
             throw;
         }
         catch (Exception ex)

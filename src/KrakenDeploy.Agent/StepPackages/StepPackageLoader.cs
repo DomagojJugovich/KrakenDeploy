@@ -391,26 +391,60 @@ public sealed class StepPackageLoader(
         }
 
         var dir = ResolveCacheDir(name, version);
-        if (Directory.Exists(dir))
+
+        // B7: extract into a unique sibling directory and move it into place —
+        // the final directory only ever EXISTS complete, because the loader's
+        // disk hit is a bare Directory.Exists. Pre-B7 this deleted and
+        // re-extracted IN PLACE: a crash mid-extract left a half-populated dir
+        // every later load trusted, and two concurrent extractions of the same
+        // version deleted each other's files while extracting.
+        var tempDir = $"{dir}.tmp-{Guid.NewGuid():N}";
+        Directory.CreateDirectory(tempDir);
+        try
         {
-            // Idempotent overwrite — re-extracting the same archive on top of
-            // itself shouldn't fail.
-            try { Directory.Delete(dir, recursive: true); } catch { /* tolerate races */ }
-        }
-        Directory.CreateDirectory(dir);
+            using (var fs  = File.OpenRead(archivePath))
+            using (var zip = new ZipArchive(fs, ZipArchiveMode.Read, leaveOpen: false))
+            {
+                ExtractZipSafely(zip, tempDir);
+            }
 
-        using (var fs   = File.OpenRead(archivePath))
-        using (var zip  = new ZipArchive(fs, ZipArchiveMode.Read, leaveOpen: false))
+            // Keep a copy of the archive alongside the extraction so signature
+            // verification has the exact bytes the signer used.
+            var archiveCopy = Path.Combine(tempDir, "package" + StepPackageFiles.Extension);
+            File.Copy(archivePath, archiveCopy, overwrite: true);
+
+            // A completed extraction of this exact (name, version) already
+            // exists — reuse it. Step-package versions are immutable and the
+            // archive was SHA-verified upstream, so the bytes are the same; a
+            // live swap is impossible anyway (a loaded package's assemblies
+            // are locked by its ALC). Repairing a suspect entry = uninstall +
+            // reinstall.
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(tempDir, recursive: true);
+                return dir;
+            }
+
+            try
+            {
+                Directory.Move(tempDir, dir);
+            }
+            catch (IOException) when (Directory.Exists(dir))
+            {
+                // Lost the move race to a concurrent extraction — the winner's
+                // directory is complete by construction.
+                Directory.Delete(tempDir, recursive: true);
+            }
+
+            return dir;
+        }
+        catch
         {
-            ExtractZipSafely(zip, dir);
+            try { Directory.Delete(tempDir, recursive: true); }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            throw;
         }
-
-        // Keep a copy of the archive alongside the extraction so signature
-        // verification has the exact bytes the signer used.
-        var archiveCopy = Path.Combine(dir, "package" + StepPackageFiles.Extension);
-        File.Copy(archivePath, archiveCopy, overwrite: true);
-
-        return dir;
     }
 
     private static void ExtractZipSafely(ZipArchive zip, string destinationRoot)
