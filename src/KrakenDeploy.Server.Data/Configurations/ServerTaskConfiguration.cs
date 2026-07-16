@@ -51,6 +51,22 @@ public sealed class ServerTaskConfiguration : IEntityTypeConfiguration<ServerTas
         builder.Property(x => x.ClaimedBy).HasMaxLength(128);
         builder.Property(x => x.LeaseUntil);
 
+        // ── Optimistic concurrency (B5) ──────────────────────────────────────
+        // Postgres's xmin system column as the row-version token: every tracked
+        // UPDATE of a ServerTask carries WHERE xmin = <original>, so two status
+        // writers can't silently last-writer-win each other (cancel vs late
+        // completion, finalize vs reconciler). No DDL — xmin exists on every
+        // row already. IMPORTANT: xmin changes on ANY update of the row,
+        // including the raw log-sequence allocation (TaskLogService) and the
+        // B1 lease renewal, both of which bypass the change tracker — so a
+        // long-lived tracked entity's token goes stale within seconds of
+        // dispatch. Status writers therefore MUST go through
+        // ServerTaskStatusWriter (reload → guard → write) instead of saving a
+        // stale tracked instance directly.
+        builder.Property<uint>("xmin")
+            .HasColumnName("xmin")
+            .IsRowVersion();
+
         builder.Property(x => x.NextLogSequence).IsRequired();
 
         // ── Denormalized ownership (decision 5) ──────────────────────────────
