@@ -23,15 +23,18 @@ public sealed class LocalArtifactStore(string dataPath, IAccountContext accountC
         Stream content,
         CancellationToken ct = default)
     {
-        // Sanitise the step name for use as a directory component.
+        // Sanitise the step name + file name for use as path components.
         var safeStep = SanitiseName(stepName);
         var safeFile = SanitiseName(fileName);
 
-        var dir = Path.Combine(RootPath, deploymentId.ToString("N"), safeStep);
-        Directory.CreateDirectory(dir);
+        var relative   = Path.Combine(deploymentId.ToString("N"), safeStep, safeFile);
+        // Defence in depth (T0-5 parity with LocalPackageStore): the names are
+        // already sanitised, but a store must never write outside its root — so
+        // assert containment on the resolved path before creating anything.
+        var filePath   = ResolveWithinRoot(relative);
+        var storedPath = relative;
 
-        var filePath   = Path.Combine(dir, safeFile);
-        var storedPath = Path.Combine(deploymentId.ToString("N"), safeStep, safeFile);
+        Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
 
         await using var fs = new FileStream(
             filePath, FileMode.Create, FileAccess.Write, FileShare.None,
@@ -44,7 +47,7 @@ public sealed class LocalArtifactStore(string dataPath, IAccountContext accountC
     /// <inheritdoc/>
     public Task<Stream> OpenReadAsync(string storedPath, CancellationToken ct = default)
     {
-        var fullPath = Path.Combine(RootPath, storedPath);
+        var fullPath = ResolveWithinRoot(storedPath);
         if (!File.Exists(fullPath))
         {
             throw new FileNotFoundException("Artifact file not found.", fullPath);
@@ -59,11 +62,35 @@ public sealed class LocalArtifactStore(string dataPath, IAccountContext accountC
     /// <inheritdoc/>
     public void Delete(string storedPath)
     {
-        var fullPath = Path.Combine(RootPath, storedPath);
+        var fullPath = ResolveWithinRoot(storedPath);
         try { File.Delete(fullPath); } catch { /* best effort */ }
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Resolves <paramref name="relative"/> against <see cref="RootPath"/> and asserts
+    /// the result stays strictly under the root. Mirrors
+    /// <c>LocalPackageStore.ResolveWithinRoot</c> — the read/delete inputs are
+    /// server-constructed from sanitised parts today (no injection route), but a
+    /// store must never read/write/delete outside its root regardless of how the
+    /// path was produced. Covers the multi-account <c>accounts/{id}/artifacts</c>
+    /// root too.
+    /// </summary>
+    private string ResolveWithinRoot(string relative)
+    {
+        var root = Path.GetFullPath(RootPath);
+        var rootWithSep = root.EndsWith(Path.DirectorySeparatorChar)
+            ? root
+            : root + Path.DirectorySeparatorChar;
+        var full = Path.GetFullPath(Path.Combine(root, relative));
+        if (!full.StartsWith(rootWithSep, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Resolved artifact path escapes the artifact storage root.");
+        }
+        return full;
+    }
 
     private static string SanitiseName(string name)
     {
