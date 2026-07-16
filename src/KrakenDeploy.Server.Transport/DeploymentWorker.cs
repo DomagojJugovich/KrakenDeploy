@@ -65,6 +65,10 @@ public sealed class DeploymentWorker(
     // FailAsync to tag the AI-diagnosis work item with the right account.
     private readonly AsyncLocal<Guid> _dispatchAccountId = new();
 
+    // B7 — the node task cap (Engine:MaxConcurrentTasks, default 5). Excess
+    // deployments wait FIFO inside their fire-and-forget task.
+    private readonly NodeTaskGate _taskGate = new(engineOptions.Value.MaxConcurrentTasks);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await foreach (var item in queue.Reader.ReadAllAsync(stoppingToken))
@@ -78,8 +82,21 @@ public sealed class DeploymentWorker(
 
     private async Task TrackedDispatchAsync(TenantWorkItem item, CancellationToken ct)
     {
-        using var tracking = inFlightGauge.Track();
-        await DispatchAsync(item, ct).ConfigureAwait(false);
+        try
+        {
+            // B7: the task-cap slot is taken BEFORE the in-flight gauge — a
+            // queued-but-unstarted deployment must not block blue-green drain
+            // (it is still Queued in the DB; the B1 claim + reconciler hand it
+            // to the surviving slot if this node retires first).
+            using var slot = await _taskGate.AcquireAsync(ct).ConfigureAwait(false);
+            using var tracking = inFlightGauge.Track();
+            await DispatchAsync(item, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Shutdown while waiting for a slot — the item stays Queued in the
+            // DB; the boot reconciler re-enqueues it on the next start.
+        }
     }
 
     /// <summary>

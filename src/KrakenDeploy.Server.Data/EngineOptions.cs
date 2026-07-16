@@ -40,4 +40,16 @@ public sealed class EngineOptions
     /// the dispatch reconciler fails it. Raise for long maintenance runbooks.
     /// </summary>
     public TimeSpan MaxRunbookRunDuration { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// B7 — how many deployment orchestrations this node runs concurrently
+    /// (Octopus's task cap; same default of 5). Excess deployments stay queued
+    /// on the dispatch channel until a slot frees. Each orchestration holds DB
+    /// contexts, a log sequencer and per-target dispatch state for its whole
+    /// duration — pre-B7 the worker fire-and-forgot every item unbounded.
+    /// Non-positive falls back to the default. Runbook-run dispatch is NOT
+    /// counted: the server-side hand-off is milliseconds (the run executes on
+    /// the agent, serialized there by the agent's execution queue).
+    /// </summary>
+    public int MaxConcurrentTasks { get; set; } = 5;
 }
