@@ -89,6 +89,41 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
             "a non-primary target in the wave legitimately completes its sub-plan");
     }
 
+    [Fact]
+    public async Task CompleteDeploymentAsync_never_overwrites_a_cancelled_task()
+    {
+        // B5 (T1-1): the fallback write yields to a terminal verdict. A late
+        // agent completion — delivered by B2's at-least-once outbox after an
+        // operator cancel, or after the reconciler already failed the task —
+        // must not flip the recorded verdict back to Succeeded, and must not
+        // re-stamp CompletedUtc.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var g = await SeedAsync(harness);
+
+        var cancelStamp = DateTimeOffset.UtcNow;
+        await using (var db = harness.CreateContext())
+        {
+            await db.ServerTasks.IgnoreQueryFilters()
+                .Where(t => t.Id == g.DeploymentId)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(t => t.Status, DeploymentStatus.Cancelled)
+                    .SetProperty(t => t.CompletedUtc, cancelStamp));
+        }
+
+        // From an ASSIGNED target — passes the ownership gate, reaches the
+        // guarded fallback write.
+        await BuildHub(postgres, g.Primary.Id)
+            .CompleteDeploymentAsync(g.DeploymentId, Guid.Empty, success: true, errorMessage: null);
+
+        await using var verify = harness.CreateContext();
+        var dep = await verify.Deployments.IgnoreQueryFilters()
+            .FirstAsync(d => d.Id == g.DeploymentId);
+        dep.Status.Should().Be(DeploymentStatus.Cancelled,
+            "the operator's cancel is the recorded verdict — a late agent success must not flip it");
+        dep.CompletedUtc.Should().NotBeNull();
+        dep.CompletedUtc!.Value.Should().BeCloseTo(cancelStamp, TimeSpan.FromMilliseconds(1));
+    }
+
     // ── AppendLogAsync ───────────────────────────────────────────────────────
 
     [Fact]

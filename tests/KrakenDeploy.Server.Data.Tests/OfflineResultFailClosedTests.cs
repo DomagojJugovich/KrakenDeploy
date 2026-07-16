@@ -14,6 +14,7 @@ using KrakenDeploy.Server.Data.ArtifactStorage;
 using KrakenDeploy.Server.Data.Encryption;
 using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Data.Spaces;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace KrakenDeploy.Server.Data.Tests;
@@ -84,6 +85,49 @@ public sealed class OfflineResultFailClosedTests(PostgresFixture postgres)
         var ingested = await service.IngestAsync(id, bundle);
 
         ingested.Status.Should().Be(DeploymentStatus.Succeeded);
+    }
+
+    [Fact]
+    public async Task Rejects_a_result_for_a_deployment_cancelled_mid_ingest()
+    {
+        // B5 (T1-1): the ingest's verify/extract phase is a long window between
+        // the up-front PendingOfflineResult check and the final write. A cancel
+        // landing inside it must reject the upload — the old shape resurrected
+        // the cancelled deployment to a terminal Succeeded/Failed and persisted
+        // the ingested children. The wrapper stream flips the row to Cancelled
+        // on the FIRST read, which is after IngestAsync's load + status check
+        // (the bundle copy is the first thing that touches the stream) — i.e.
+        // exactly inside the old race window.
+        var crypto = TestCrypto.Service(MasterKey);
+        var id = await SeedPendingAsync(crypto, withBundleKey: true);
+        var service = NewService(crypto);
+
+        var cancelStamp = DateTimeOffset.UtcNow;
+        await using var inner = BuildBundle(id, sign: true, tamper: false, steps:
+        [
+            new OfflineStepResult { StepIndex = 0, StepName = "s1", Success = true },
+        ]);
+        await using var bundle = new CancelOnFirstReadStream(inner, async () =>
+        {
+            await using var db = postgres.CreateContext();
+            await db.Deployments
+                .Where(d => d.Id == id)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(d => d.Status, DeploymentStatus.Cancelled)
+                    .SetProperty(d => d.CompletedUtc, cancelStamp));
+        });
+
+        var act = () => service.IngestAsync(id, bundle);
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*not 'PendingOfflineResult'*");
+
+        await using var verify = postgres.CreateContext();
+        var dep = await verify.Deployments.FirstAsync(d => d.Id == id);
+        dep.Status.Should().Be(DeploymentStatus.Cancelled,
+            "the cancel is the recorded verdict — a result upload must not resurrect the deployment");
+        dep.CompletedUtc!.Value.Should().BeCloseTo(cancelStamp, TimeSpan.FromMilliseconds(1));
+        (await verify.TaskStepOutcomes.CountAsync(o => o.TaskId == id))
+            .Should().Be(0, "a rejected ingest must persist nothing");
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
@@ -167,7 +211,8 @@ public sealed class OfflineResultFailClosedTests(PostgresFixture postgres)
 
     private static readonly JsonSerializerOptions WebJson = new(JsonSerializerDefaults.Web);
 
-    private static MemoryStream BuildBundle(Guid deploymentId, bool sign, bool tamper)
+    private static MemoryStream BuildBundle(
+        Guid deploymentId, bool sign, bool tamper, List<OfflineStepResult>? steps = null)
     {
         var ms = new MemoryStream();
         using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, leaveOpen: true))
@@ -179,7 +224,8 @@ public sealed class OfflineResultFailClosedTests(PostgresFixture postgres)
 
             var result = new OfflineDropResult
             {
-                DeploymentId = deploymentId, Success = true, CompletedUtc = DateTimeOffset.UtcNow, Steps = [],
+                DeploymentId = deploymentId, Success = true, CompletedUtc = DateTimeOffset.UtcNow,
+                Steps = steps ?? [],
             };
             var resultBytes = JsonSerializer.SerializeToUtf8Bytes(result, WebJson);
 
@@ -217,4 +263,57 @@ public sealed class OfflineResultFailClosedTests(PostgresFixture postgres)
 
         public void Delete(string storedPath) => throw new NotSupportedException();
     }
+}
+
+/// <summary>
+/// B5 test seam: fires <c>onFirstRead</c> exactly once, before the first byte
+/// is served. <c>IngestAsync</c> copies the uploaded bundle right after its
+/// deployment load + status check, so the callback lands deterministically
+/// inside the old check-then-write race window.
+/// </summary>
+file sealed class CancelOnFirstReadStream(Stream inner, Func<Task> onFirstRead) : Stream
+{
+    private bool _fired;
+
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => inner.Length;
+    public override long Position
+    {
+        get => inner.Position;
+        set => throw new NotSupportedException();
+    }
+
+    public override async ValueTask<int> ReadAsync(
+        Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        await FireOnceAsync().ConfigureAwait(false);
+        return await inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+    }
+
+    public override Task<int> ReadAsync(
+        byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        => ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        FireOnceAsync().GetAwaiter().GetResult();
+        return inner.Read(buffer, offset, count);
+    }
+
+    private async Task FireOnceAsync()
+    {
+        if (_fired)
+        {
+            return;
+        }
+        _fired = true;
+        await onFirstRead().ConfigureAwait(false);
+    }
+
+    public override void Flush() { }
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }
