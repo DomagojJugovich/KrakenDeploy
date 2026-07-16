@@ -47,8 +47,18 @@ public static class ServiceCollectionExtensions
         this IServiceCollection services,
         string connectionString,
         string dataPath = "data",
-        bool multiAccount = false)
+        bool multiAccount = false,
+        KrakenDataOptions? dataOptions = null)
     {
+        // C3/T1-19 — connection resiliency. Defaults to OFF so CLI callers keep
+        // their current bare behaviour (retry is incompatible with the CLI's
+        // rotate-dek transaction; see KrakenDataOptions). The web host passes an
+        // instance with retry + a pool cap.
+        var opts = dataOptions ?? new KrakenDataOptions();
+        var effectiveConnectionString = opts.MaxPoolSize is int cap
+            ? NpgsqlConnectionStrings.WithMaxPoolSize(connectionString, cap)
+            : connectionString;
+
         services.TryAddTimeProvider();
         // SSRF policy options. Secure defaults (deny loopback/private) apply when the
         // host binds no `Ssrf` config section; the Server host binds the section over
@@ -106,7 +116,21 @@ public static class ServiceCollectionExtensions
             // Single-instance / fallback connection. In multi-account mode the
             // connection is overridden per request in KrakenDbContext.OnConfiguring
             // from the resolved IAccountContext (the factory is Scoped and injects it).
-            options.UseNpgsql(connectionString);
+            // NOTE: the MA override re-calls UseNpgsql there without this resiliency
+            // config, so retry currently applies to single-instance only. That is
+            // fine while MA is fenced off (Program.cs refuses to boot MA), but the
+            // OnConfiguring override must mirror this when per-account DEK lands.
+            options.UseNpgsql(effectiveConnectionString, npgsql =>
+            {
+                // C3/T1-19 — retry transient failures (connection drop, Postgres
+                // failover) instead of hard-failing the query. Web-host only; see
+                // KrakenDataOptions for why the CLI must NOT enable this.
+                if (opts.EnableRetryOnFailure)
+                {
+                    npgsql.EnableRetryOnFailure(
+                        opts.MaxRetryCount, opts.MaxRetryDelay, errorCodesToAdd: null);
+                }
+            });
             options.UseSnakeCaseNamingConvention();
             options.AddInterceptors(
                 sp.GetRequiredService<AuditableEntityInterceptor>(),
