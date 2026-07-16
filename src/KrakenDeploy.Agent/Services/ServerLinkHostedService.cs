@@ -85,7 +85,15 @@ public sealed class ServerLinkHostedService(
         {
             logger.LogInformation(
                 "Reconnected to server {ServerUrl}; re-sending registration.", serverUrl);
-            await TrySendRegistrationAsync(stoppingToken).ConfigureAwait(false);
+            var outcome = await TrySendRegistrationAsync(stoppingToken).ConfigureAwait(false);
+            if (outcome == RegistrationOutcome.Refused)
+            {
+                // B6: refusal after an automatic reconnect (e.g. the server was
+                // upgraded mid-connection). Stop the link — the Closed signal
+                // wakes the supervision loop, whose initial-connect path gets
+                // the same refusal and paces on the slow lane.
+                await serverLink.StopAsync(stoppingToken).ConfigureAwait(false);
+            }
         });
 
         // ── Supervision loop ──────────────────────────────────────────────
@@ -150,7 +158,35 @@ public sealed class ServerLinkHostedService(
                 failedStartAttempts = 0;
                 logger.LogInformation("Connected to server {ServerUrl}.", serverUrl);
 
-                await TrySendRegistrationAsync(stoppingToken).ConfigureAwait(false);
+                var registration = await TrySendRegistrationAsync(stoppingToken).ConfigureAwait(false);
+                if (registration == RegistrationOutcome.Refused)
+                {
+                    // B6: contract-version refusal. The server has already
+                    // dropped this connection from its dispatch registry, so
+                    // keeping the link up would be a zombie. Stop it and pace
+                    // like the auth-failure lane — the refusal only clears
+                    // when the agent binary is upgraded, so hammering the
+                    // normal backoff would be noise. Self-heals after update.
+                    try
+                    {
+                        await serverLink.StopAsync(stoppingToken).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        logger.LogDebug(ex, "Stopping the refused link failed; continuing.");
+                    }
+                    try
+                    {
+                        await Task.Delay(
+                                AgentReconnectPolicy.AuthFailureDelay, timeProvider, stoppingToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                    continue;
+                }
 
                 // Park until the link closes PERMANENTLY (transient drops are
                 // retried inside the connection and never resolve this signal)
@@ -186,16 +222,40 @@ public sealed class ServerLinkHostedService(
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
+    private enum RegistrationOutcome
+    {
+        /// <summary>Accepted, or failed transiently (re-sent on next (re)connect).</summary>
+        SentOrRetryable,
+
+        /// <summary>B6: the server refused the contract version — the connection
+        /// is dispatch-dead until the agent is upgraded; pace on the slow lane.</summary>
+        Refused,
+    }
+
     /// <summary>
-    /// Best-effort registration: a failure is logged and NOT fatal to the
-    /// connection cycle — the next reconnect re-sends it, and the hub's
-    /// OnConnectedAsync has already marked the target Online regardless.
+    /// Best-effort registration: a transient failure is logged and NOT fatal to
+    /// the connection cycle — the next reconnect re-sends it, and the hub's
+    /// OnConnectedAsync has already marked the target Online regardless. A B6
+    /// contract-version REFUSAL is different: it is deterministic until the
+    /// agent binary changes, so it is surfaced to the caller for slow-lane
+    /// pacing instead of a hot retry.
     /// </summary>
-    private async Task TrySendRegistrationAsync(CancellationToken ct)
+    private async Task<RegistrationOutcome> TrySendRegistrationAsync(CancellationToken ct)
     {
         try
         {
-            await SendRegistrationAsync(ct).ConfigureAwait(false);
+            var result = await SendRegistrationAsync(ct).ConfigureAwait(false);
+            if (result is { Accepted: false })
+            {
+                logger.LogError(
+                    "Server REFUSED this agent's registration: {Message} " +
+                    "(server contract v{ServerVersion}, this agent speaks v{AgentVersion}). " +
+                    "Update the agent binary; retrying on the slow lane until then.",
+                    result.Message ?? "no reason given",
+                    result.ServerContractVersion,
+                    AgentContract.CurrentVersion);
+                return RegistrationOutcome.Refused;
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -206,17 +266,17 @@ public sealed class ServerLinkHostedService(
             logger.LogWarning(ex,
                 "Sending registration failed — will re-send on the next (re)connect.");
         }
+        return RegistrationOutcome.SentOrRetryable;
     }
 
-    private async Task SendRegistrationAsync(CancellationToken ct)
+    private async Task<AgentRegistrationResult> SendRegistrationAsync(CancellationToken ct)
     {
         var machineInfo = machineCollector.Collect(agentConfig.Value.ResolvedDataPath);
 
-        // T1-7: roles are authorization (they drive secret scoping) and are
-        // assigned OPERATOR-side on the server, never self-declared by the agent.
-        // Send an empty list; the server ignores any roles it receives (and audits
-        // the attempt). Warn the operator if the local config still carries roles
-        // so they know it now has no effect (config removal is a later cleanup).
+        // T1-7 / B6: roles are authorization (they drive secret scoping) and are
+        // assigned OPERATOR-side on the server — the wire field is gone entirely.
+        // Warn the operator if the local config still carries roles so they know
+        // it has no effect (config removal is a later cleanup).
         if (agentConfig.Value.Roles is { Count: > 0 } configuredRoles)
         {
             logger.LogWarning(
@@ -230,11 +290,11 @@ public sealed class ServerLinkHostedService(
             MachineName: machineInfo.MachineName,
             OperatingSystem: machineInfo.OperatingSystem,
             AgentVersion: machineInfo.AgentVersion,
-            Roles: [],
             FreeDiskBytes: machineInfo.FreeDiskBytes,
-            TotalRamBytes: machineInfo.TotalRamBytes);
+            TotalRamBytes: machineInfo.TotalRamBytes,
+            ContractVersion: AgentContract.CurrentVersion);
 
-        await serverLink.RegisterAsync(request, ct).ConfigureAwait(false);
+        var result = await serverLink.RegisterAsync(request, ct).ConfigureAwait(false);
 
         logger.LogInformation(
             "Sent registration: machine={Machine}, OS={OS}, agent={AgentVersion}, " +
@@ -244,6 +304,8 @@ public sealed class ServerLinkHostedService(
             machineInfo.AgentVersion,
             machineInfo.FreeDiskBytes / 1_048_576,
             machineInfo.TotalRamBytes / 1_048_576);
+
+        return result;
     }
 
     private async Task ReportShutdownAndDisconnectAsync()

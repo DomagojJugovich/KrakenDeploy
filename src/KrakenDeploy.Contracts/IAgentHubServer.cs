@@ -10,8 +10,15 @@ namespace KrakenDeploy.Contracts;
 /// </summary>
 public interface IAgentHubServer
 {
-    /// <summary>Called once after the SignalR connection is up to supply machine info.</summary>
-    Task RegisterAsync(AgentRegistrationRequest request);
+    /// <summary>
+    /// Called once after the SignalR connection is up to supply machine info.
+    /// B6 CONTRACT CHANGE: returns the server's verdict — a
+    /// <see cref="AgentRegistrationRequest.ContractVersion"/> mismatch is
+    /// refused (<see cref="AgentRegistrationResult.Accepted"/> = false) and the
+    /// server drops the connection from its dispatch registry; the agent must
+    /// disconnect and retry on its slow lane (self-heals after an upgrade).
+    /// </summary>
+    Task<AgentRegistrationResult> RegisterAsync(AgentRegistrationRequest request);
 
     /// <summary>Called every 30 s to keep <c>LastSeenUtc</c> fresh.</summary>
     Task HeartbeatAsync(HeartbeatRequest request);
@@ -24,8 +31,18 @@ public interface IAgentHubServer
     /// (staged per step for compaction) and broadcasts it to the UI in real time.
     /// <paramref name="stepIndex"/> is the plan-level step index the line belongs
     /// to, or -1 for plan-level lines.
+    /// <para>
+    /// B6 CONTRACT CHANGE: <paramref name="dispatchId"/> echoes
+    /// <see cref="DeploymentPlan.DispatchId"/> — completing the B2 attempt
+    /// correlation for the last report type that lacked it. The server drops a
+    /// line whose dispatch attempt it has positively retired (a superseded /
+    /// timed-out wave attempt still flushing its outbox), so an abandoned
+    /// attempt can no longer interleave noise into the current attempt's log.
+    /// <see cref="Guid.Empty"/> = legacy/offline plan without a key — always
+    /// accepted (runbook hand-offs and offline imports have no re-dispatch).
+    /// </para>
     /// </summary>
-    Task AppendLogAsync(Guid deploymentId, int stepIndex, string level, string message);
+    Task AppendLogAsync(Guid deploymentId, Guid dispatchId, int stepIndex, string level, string message);
 
     /// <summary>
     /// Called by the agent when all steps have finished (or a step has failed).

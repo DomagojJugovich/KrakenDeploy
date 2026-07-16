@@ -220,7 +220,13 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
             return Task.CompletedTask;
         }
 
-        public Task RegisterAsync(AgentRegistrationRequest request, CancellationToken ct)
+        /// <summary>B6 — the verdict RegisterAsync returns; defaults to accepted.
+        /// Set a refusal to drive the slow-lane pacing tests.</summary>
+        public AgentRegistrationResult RegistrationResult { get; set; } =
+            new(Accepted: true, AgentContract.CurrentVersion);
+
+        public Task<AgentRegistrationResult> RegisterAsync(
+            AgentRegistrationRequest request, CancellationToken ct)
         {
             var attempt = Interlocked.Increment(ref _registerAttempts);
             if (attempt <= FailRegisterAttempts)
@@ -228,7 +234,7 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
                 throw new InvalidOperationException("registration hub call failed");
             }
             Interlocked.Increment(ref _registerCalls);
-            return Task.CompletedTask;
+            return Task.FromResult(RegistrationResult);
         }
 
         public Task HeartbeatAsync(HeartbeatRequest request, CancellationToken ct) => Task.CompletedTask;
@@ -240,7 +246,8 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
         }
 
         public Task AppendLogAsync(
-            Guid deploymentId, int stepIndex, string level, string message, CancellationToken ct)
+            Guid deploymentId, Guid dispatchId, int stepIndex, string level, string message,
+            CancellationToken ct)
             => Task.CompletedTask;
 
         public Task CompleteDeploymentAsync(
@@ -258,6 +265,7 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
 
         public void OnRunDeployment(Func<DeploymentPlan, Task> handler) { }
         public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler) { }
+        public void OnCancelDeployment(Func<Guid, string?, Task> handler) { }
         public void OnClosed(Func<Exception?, Task> handler) => _closedHandlers.Add(handler);
         public void OnReconnected(Func<Task> handler) => _reconnectedHandlers.Add(handler);
 

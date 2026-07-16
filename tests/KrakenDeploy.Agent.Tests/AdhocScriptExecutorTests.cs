@@ -183,16 +183,18 @@ public sealed class AdhocScriptExecutorTests
         public bool IsConnected => true;
         public Task StartAsync(string serverUrl, Func<string?> agentJwtProvider, string? releaseId, CancellationToken ct) => Task.CompletedTask;
         public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
-        public Task RegisterAsync(AgentRegistrationRequest request, CancellationToken ct) => Task.CompletedTask;
+        public Task<AgentRegistrationResult> RegisterAsync(AgentRegistrationRequest request, CancellationToken ct)
+            => Task.FromResult(new AgentRegistrationResult(true, AgentContract.CurrentVersion));
         public Task HeartbeatAsync(HeartbeatRequest request, CancellationToken ct) => Task.CompletedTask;
         public Task ReportStatusAsync(string status, CancellationToken ct) => Task.CompletedTask;
-        public Task AppendLogAsync(Guid deploymentId, int stepIndex, string level, string message, CancellationToken ct) => Task.CompletedTask;
+        public Task AppendLogAsync(Guid deploymentId, Guid dispatchId, int stepIndex, string level, string message, CancellationToken ct) => Task.CompletedTask;
         public Task CompleteDeploymentAsync(Guid deploymentId, Guid dispatchId, bool success, string? errorMessage, CancellationToken ct) => Task.CompletedTask;
         public Task ReportStepCompletedAsync(Guid deploymentId, Guid dispatchId, int stepIndex, string stepName, bool success,
             string? errorMessage, IReadOnlyDictionary<string, string> outputVariables,
             IReadOnlyCollection<string> sensitiveOutputNames, CancellationToken ct) => Task.CompletedTask;
         public void OnRunDeployment(Func<DeploymentPlan, Task> handler) { }
         public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler) { }
+        public void OnCancelDeployment(Func<Guid, string?, Task> handler) { }
         public void OnClosed(Func<Exception?, Task> handler) { }
         public void OnReconnected(Func<Task> handler) { }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;

@@ -86,6 +86,14 @@ public static class AuditEventType
     /// reap is swallowed by the hub's terminal-status guard.</summary>
     public const string RunbookRunTimedOut = "RunbookRun.TimedOut";
 
+    /// <summary>B6 — an agent registered with a wire-contract version this
+    /// server does not speak. The registration was refused, the connection
+    /// removed from the dispatch registry and the target marked Offline; the
+    /// agent binary must be upgraded. Fires on every refused registration —
+    /// a persistently outdated agent produces a row per reconnect, which is
+    /// deliberate visibility, not noise.</summary>
+    public const string AgentContractVersionRejected = "Agent.ContractVersionRejected";
+
     // ── Step package lifecycle (Phase D) ─────────────────────────────────────
     public const string StepPackageInstalled    = "StepPackage.Installed";
     public const string StepPackageUninstalled  = "StepPackage.Uninstalled";

@@ -7,7 +7,8 @@ namespace KrakenDeploy.Agent.Transport;
 /// <summary>One buffered agent→server report message. See <see cref="ServerLinkOutbox"/>.</summary>
 public abstract record OutboxItem
 {
-    public sealed record Log(Guid DeploymentId, int StepIndex, string Level, string Message) : OutboxItem;
+    public sealed record Log(
+        Guid DeploymentId, Guid DispatchId, int StepIndex, string Level, string Message) : OutboxItem;
 
     public sealed record StepCompleted(
         Guid DeploymentId,

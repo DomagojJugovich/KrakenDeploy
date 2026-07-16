@@ -59,6 +59,9 @@ public sealed class FakeAgent
     /// variables, extended sensitive-name list).</summary>
     public List<DeploymentPlan> ReceivedPlans { get; } = [];
 
+    /// <summary>B6 — every CancelDeploymentAsync push this agent received.</summary>
+    public List<(Guid TaskId, string? Reason)> CancelPushes { get; } = [];
+
     /// <summary>B3 — the agent receives the wave, drops its connection and
     /// reports NOTHING (crashed mid-execution). The wave's TCS stays pending;
     /// the worker's disconnect monitor must cancel it after the grace.</summary>
@@ -160,6 +163,16 @@ internal sealed class FakeAgentClient(
     : IAgentHubClient
 {
     public Task PingAsync() => Task.CompletedTask;
+
+    /// <summary>B6 — records the push on the <see cref="FakeAgent"/> so tests can
+    /// assert the orchestrator/cancel service actually notified the agent. The
+    /// fake runs waves synchronously inside RunDeploymentAsync, so there is
+    /// nothing in flight to abort here.</summary>
+    public Task CancelDeploymentAsync(Guid taskId, string? reason)
+    {
+        agent.CancelPushes.Add((taskId, reason));
+        return Task.CompletedTask;
+    }
 
     public Task RunAdhocScriptAsync(KrakenDeploy.Contracts.Adhoc.AdhocScriptCommand command)
     {

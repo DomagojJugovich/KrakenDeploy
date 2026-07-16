@@ -133,7 +133,7 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
         var g = await SeedAsync(harness);
 
         await BuildHub(postgres, g.Foreign.Id)
-            .AppendLogAsync(g.DeploymentId, 0, "Information", "injected");
+            .AppendLogAsync(g.DeploymentId, Guid.Empty, 0, "Information", "injected");
 
         await using var db = harness.CreateContext();
         (await db.TaskLogLive.IgnoreQueryFilters()
@@ -150,7 +150,7 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
         // secondary (join-only) must be allowed — all wave targets log against
         // the same deployment id.
         await BuildHub(postgres, g.Secondary.Id)
-            .AppendLogAsync(g.DeploymentId, 0, "Information", "legit");
+            .AppendLogAsync(g.DeploymentId, Guid.Empty, 0, "Information", "legit");
 
         await using var db = harness.CreateContext();
         (await db.TaskLogLive.IgnoreQueryFilters()

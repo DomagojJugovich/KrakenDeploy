@@ -49,18 +49,24 @@ public sealed class FileSystemServerLink(
 
     public Task StartAsync(string serverUrl, Func<string?> agentJwtProvider, string? releaseId, CancellationToken ct) => Task.CompletedTask;
     public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
-    public Task RegisterAsync(AgentRegistrationRequest request, CancellationToken ct) => Task.CompletedTask;
+    public Task<AgentRegistrationResult> RegisterAsync(AgentRegistrationRequest request, CancellationToken ct)
+        => Task.FromResult(new AgentRegistrationResult(
+            Accepted: true, AgentContract.CurrentVersion, "offline: no server"));
     public Task HeartbeatAsync(HeartbeatRequest request, CancellationToken ct) => Task.CompletedTask;
     public Task ReportStatusAsync(string status, CancellationToken ct) => Task.CompletedTask;
     public Task ReportAdhocResultAsync(AdhocScriptResult result, CancellationToken ct) => Task.CompletedTask;
     public void OnRunDeployment(Func<DeploymentPlan, Task> handler) { }
     public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler) { }
+    public void OnCancelDeployment(Func<Guid, string?, Task> handler) { }
     public void OnClosed(Func<Exception?, Task> handler) { }
     public void OnReconnected(Func<Task> handler) { }
 
-    public Task AppendLogAsync(Guid deploymentId, int stepIndex, string level, string message, CancellationToken ct)
+    public Task AppendLogAsync(
+        Guid deploymentId, Guid dispatchId, int stepIndex, string level, string message,
+        CancellationToken ct)
     {
         _ = stepIndex; // offline log is a flat file; step attribution is added on result import
+        _ = dispatchId; // offline: no wire, no attempt correlation
         var ts = DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture);
         var line = $"{ts} | {level} | {message}{Environment.NewLine}";
         lock (_logLock)

@@ -136,14 +136,15 @@ public sealed class AgentHub(
 
     // ── IAgentHubServer implementation ─────────────────────────────────────
 
-    public async Task RegisterAsync(AgentRegistrationRequest request)
+    public async Task<AgentRegistrationResult> RegisterAsync(AgentRegistrationRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
 
         var targetId = GetTargetId();
         if (targetId is null)
         {
-            return;
+            return new AgentRegistrationResult(
+                Accepted: false, AgentContract.CurrentVersion, "No valid agent identity.");
         }
 
         await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
@@ -157,15 +158,57 @@ public sealed class AgentHub(
 
         if (target is null)
         {
-            return;
+            return new AgentRegistrationResult(
+                Accepted: false, AgentContract.CurrentVersion, "Unknown target.");
         }
 
-        // T1-7: an agent reports machine capabilities only. Authorization roles
-        // drive secret scoping (VariableScope.Matches resolves against the
+        // B6: contract-version gate. An agent speaking a different wire version
+        // must not receive work — before this gate an old agent connected fine
+        // and every report it sent was silently dropped by signature mismatch
+        // (the stepIndex-on-AppendLog change did exactly that). Refuse loudly:
+        // remove the connection from the dispatch registry (undispatchable NOW),
+        // mark the target Offline immediately (no 30 s flicker grace — this is a
+        // deterministic refusal, not a blip), audit, and tell the agent why. A
+        // pre-B6 agent deserializes ContractVersion=0 and lands here; it ignores
+        // the result payload, but the server-side removal is what protects it
+        // from being dispatched to.
+        if (request.ContractVersion != AgentContract.CurrentVersion)
+        {
+            registry.TryRemove(Context.ConnectionId, out _);
+            target.Status = TargetStatus.Offline;
+            target.AgentVersion = request.AgentVersion;
+            await db.SaveChangesAsync().ConfigureAwait(false);
+
+            var message =
+                $"This server requires agent contract v{AgentContract.CurrentVersion}; " +
+                $"this agent registered with v{request.ContractVersion}. Update the agent binary.";
+            logger.LogWarning(
+                "Target {TargetId} (agent {AgentVersion}) REFUSED: contract v{Sent} != server v{Required}.",
+                targetId.Value, request.AgentVersion,
+                request.ContractVersion, AgentContract.CurrentVersion);
+            await auditLog.RecordAsync(
+                KrakenDeploy.Server.Core.Domain.Audit.AuditEventType.AgentContractVersionRejected,
+                subjectType: "DeploymentTarget",
+                subjectId:   targetId.Value.ToString(),
+                subjectName: target.Name,
+                details:     $"AgentVersion={request.AgentVersion}, " +
+                             $"SentContract={request.ContractVersion}, " +
+                             $"RequiredContract={AgentContract.CurrentVersion}").ConfigureAwait(false);
+
+            var accountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;
+            await statusPublisher
+                .PublishAsync(targetId.Value, TargetStatus.Offline, target.LastSeenUtc, accountId)
+                .ConfigureAwait(false);
+
+            return new AgentRegistrationResult(
+                Accepted: false, AgentContract.CurrentVersion, message);
+        }
+
+        // T1-7 / B6: an agent reports machine capabilities only. Authorization
+        // roles drive secret scoping (VariableScope.Matches resolves against the
         // target's CURRENT roles at dispatch), so they are OPERATOR-assigned via
-        // the registration wizard / target-edit UI / API — never self-declared.
-        // A compromised low-trust agent registering with Roles=["prod-secrets"]
-        // must not thereby receive those scoped secrets. request.Roles is ignored.
+        // the registration wizard / target-edit UI / API — the wire field was
+        // removed in the B6 contract pass, so there is nothing to ignore anymore.
         target.MachineName = request.MachineName;
         target.OperatingSystem = request.OperatingSystem;
         target.AgentVersion = request.AgentVersion;
@@ -175,29 +218,15 @@ public sealed class AgentHub(
 
         await db.SaveChangesAsync().ConfigureAwait(false);
 
-        // A non-empty Roles payload signals a tampered or outdated agent. Record
-        // it (value ignored) so operators can spot the attempt.
-        if (request.Roles.Count > 0)
-        {
-            var rejected = string.Join(", ", request.Roles);
-            logger.LogWarning(
-                "Target {TargetId} sent a Roles payload on registration; ignoring it " +
-                "(roles are operator-assigned). Rejected: [{Roles}].",
-                targetId.Value, rejected);
-            await auditLog.RecordAsync(
-                KrakenDeploy.Server.Core.Domain.Audit.AuditEventType.AgentRoleSelfAssignmentRejected,
-                subjectType: "DeploymentTarget",
-                subjectId:   targetId.Value.ToString(),
-                subjectName: target.Name,
-                details:     $"Ignored self-declared roles: [{rejected}]").ConfigureAwait(false);
-        }
-
         logger.LogInformation(
-            "Target {TargetId} registered: machine={Machine}, OS={OS}, agent={Version}.",
+            "Target {TargetId} registered: machine={Machine}, OS={OS}, agent={Version}, contract=v{Contract}.",
             targetId.Value,
             request.MachineName,
             request.OperatingSystem,
-            request.AgentVersion);
+            request.AgentVersion,
+            request.ContractVersion);
+
+        return new AgentRegistrationResult(Accepted: true, AgentContract.CurrentVersion);
     }
 
     public async Task HeartbeatAsync(HeartbeatRequest request)
@@ -242,7 +271,8 @@ public sealed class AgentHub(
         return Task.CompletedTask;
     }
 
-    public async Task AppendLogAsync(Guid deploymentId, int stepIndex, string level, string message)
+    public async Task AppendLogAsync(
+        Guid deploymentId, Guid dispatchId, int stepIndex, string level, string message)
     {
         ArgumentNullException.ThrowIfNull(message);
 

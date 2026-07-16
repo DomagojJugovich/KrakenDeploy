@@ -53,7 +53,8 @@ public sealed class ServerLinkOutboxTests
         }
     }
 
-    private static OutboxItem.Log LogLine(int n) => new(Guid.NewGuid(), -1, "info", $"line {n}");
+    private static OutboxItem.Log LogLine(int n)
+        => new(Guid.NewGuid(), Guid.Empty, -1, "info", $"line {n}");
 
     [Fact]
     public async Task Items_are_delivered_in_fifo_order_across_kinds()
@@ -64,7 +65,7 @@ public sealed class ServerLinkOutboxTests
 
         var deploymentId = Guid.NewGuid();
         var dispatchId = Guid.NewGuid();
-        h.Outbox.Enqueue(new OutboxItem.Log(deploymentId, 0, "info", "step output"));
+        h.Outbox.Enqueue(new OutboxItem.Log(deploymentId, Guid.Empty, 0, "info", "step output"));
         h.Outbox.Enqueue(new OutboxItem.StepCompleted(
             deploymentId, dispatchId, 0, "Deploy", true, null, [], []));
         h.Outbox.Enqueue(new OutboxItem.DeploymentCompleted(deploymentId, dispatchId, true, null));
@@ -137,7 +138,7 @@ public sealed class ServerLinkOutboxTests
         // persistent rejection is dropped, so the queue can never wedge.
         var h = new Harness();
         var attempts = 0;
-        var poison = new OutboxItem.Log(Guid.NewGuid(), -1, "info", "poison");
+        var poison = new OutboxItem.Log(Guid.NewGuid(), Guid.Empty, -1, "info", "poison");
         h.FailWith = item =>
         {
             if (ReferenceEquals(item, poison))
@@ -168,7 +169,7 @@ public sealed class ServerLinkOutboxTests
     {
         var h = new Harness();
         var attempts = 0;
-        var victim = new OutboxItem.Log(Guid.NewGuid(), -1, "info", "always fails");
+        var victim = new OutboxItem.Log(Guid.NewGuid(), Guid.Empty, -1, "info", "always fails");
         h.FailWith = item =>
         {
             if (ReferenceEquals(item, victim))

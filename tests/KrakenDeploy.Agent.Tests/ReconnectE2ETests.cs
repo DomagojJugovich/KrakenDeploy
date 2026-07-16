@@ -56,10 +56,11 @@ public sealed class ReconnectE2ETests
 
     public sealed class RecordingAgentHub(HubCallRecorder recorder) : Hub
     {
-        public Task RegisterAsync(AgentRegistrationRequest request)
+        public Task<AgentRegistrationResult> RegisterAsync(AgentRegistrationRequest request)
         {
             recorder.Calls.Enqueue(("Register", request.MachineName));
-            return Task.CompletedTask;
+            return Task.FromResult(
+                new AgentRegistrationResult(Accepted: true, AgentContract.CurrentVersion));
         }
 
         public Task HeartbeatAsync(HeartbeatRequest request)
@@ -74,7 +75,8 @@ public sealed class ReconnectE2ETests
             return Task.CompletedTask;
         }
 
-        public Task AppendLogAsync(Guid deploymentId, int stepIndex, string level, string message)
+        public Task AppendLogAsync(
+            Guid deploymentId, Guid dispatchId, int stepIndex, string level, string message)
         {
             recorder.Calls.Enqueue(("Log", message));
             return Task.CompletedTask;
@@ -154,7 +156,7 @@ public sealed class ReconnectE2ETests
             // Reports produced while the server is down are buffered, not lost.
             var deploymentId = Guid.NewGuid();
             var dispatchId = Guid.NewGuid();
-            await link.AppendLogAsync(deploymentId, 0, "info", "offline line", CancellationToken.None);
+            await link.AppendLogAsync(deploymentId, dispatchId, 0, "info", "offline line", CancellationToken.None);
             await link.ReportStepCompletedAsync(
                 deploymentId, dispatchId, 0, "Deploy", success: true, errorMessage: null,
                 outputVariables: new Dictionary<string, string> { ["Url"] = "https://x" },
@@ -213,9 +215,9 @@ public sealed class ReconnectE2ETests
         MachineName: marker,
         OperatingSystem: "TestOS",
         AgentVersion: "0.0-test",
-        Roles: [],
         FreeDiskBytes: 0,
-        TotalRamBytes: 0);
+        TotalRamBytes: 0,
+        ContractVersion: AgentContract.CurrentVersion);
 
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout, string because)
     {

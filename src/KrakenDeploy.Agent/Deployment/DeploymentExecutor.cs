@@ -44,6 +44,13 @@ public sealed class DeploymentExecutor(
     // Task.WhenAll, so each branch keeps its own value — parallel steps don't clash.
     private readonly AsyncLocal<int> _stepIndexPlusOne = new();
 
+    // B6: the running plan's DispatchId, stamped onto every AppendLog line so the
+    // server can drop log noise from a dispatch attempt it has already retired.
+    // AsyncLocal for the same reason as the step index — it must flow into the
+    // wave's parallel step branches, and a superseding dispatch (new attempt of
+    // the same task) must not relabel the old attempt's still-flushing lines.
+    private readonly AsyncLocal<Guid> _dispatchId = new();
+
     // T0-6: value-based secret redactor for the running plan. Seeded from the
     // plan's sensitive variable values at the top of ExecuteAsync and grown as
     // sensitive output variables are captured mid-run. Every log line the agent
@@ -73,6 +80,7 @@ public sealed class DeploymentExecutor(
         // any step runs, so every log line — including plan-level ones below —
         // is masked. Grows later as sensitive output variables are captured.
         _redactor.Value = SecretRedactor.ForPlan(plan);
+        _dispatchId.Value = plan.DispatchId;
 
         logger.LogInformation(
             "Starting deployment {DeploymentId} ({StepCount} step(s)) in environment {Env}.",
@@ -878,7 +886,8 @@ public sealed class DeploymentExecutor(
         var stepIndex = _stepIndexPlusOne.Value - 1;
         try
         {
-            await serverLink.AppendLogAsync(deploymentId, stepIndex, level, message, ct)
+            await serverLink
+                .AppendLogAsync(deploymentId, _dispatchId.Value, stepIndex, level, message, ct)
                 .ConfigureAwait(false);
         }
         catch (Exception ex)

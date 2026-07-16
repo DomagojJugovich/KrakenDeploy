@@ -38,9 +38,9 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
         await db.SaveChangesAsync();
 
         var hub = BuildHub(postgres, target.Id);
-        // Roles = [] — server-side roles should be preserved when agent sends empty list.
         await hub.RegisterAsync(new AgentRegistrationRequest(
-            target.Id, "test-machine", "Linux 6.0", "1.0.0", [], 0L, 0L));
+            target.Id, "test-machine", "Linux 6.0", "1.0.0", 0L, 0L,
+            AgentContract.CurrentVersion));
 
         await db.Entry(target).ReloadAsync();
         target.MachineName.Should().Be("test-machine");
@@ -63,41 +63,17 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
         db.DeploymentTargets.Add(target);
         await db.SaveChangesAsync();
 
+        // B6: the Roles wire field was REMOVED outright (T1-7's end state) —
+        // self-declaration is unrepresentable, so "registration must not touch
+        // server-side roles" is the property left to pin.
         await BuildHub(postgres, target.Id).RegisterAsync(
-            new AgentRegistrationRequest(target.Id, "m", "o", "v", [], 0L, 0L));
+            new AgentRegistrationRequest(target.Id, "m", "o", "v", 0L, 0L,
+                AgentContract.CurrentVersion));
 
         await db.Entry(target).ReloadAsync();
         string[] expectedRoles = ["wizard-role"];
         target.Roles.Should().Equal(expectedRoles,
-            because: "an empty role list from the agent must not overwrite server-configured roles");
-    }
-
-    [Fact]
-    public async Task RegisterAsync_ignores_agent_supplied_roles()
-    {
-        // T1-7: authorization roles drive secret scoping and are operator-assigned
-        // only. A registering agent must NOT be able to self-declare them — a
-        // compromised low-trust box could otherwise register with high-trust roles
-        // and receive those scoped secrets on its next deployment.
-        await using var db = postgres.CreateContext();
-
-        var target = new DeploymentTarget
-        {
-            Name = "hub-test-roles-ignored",
-            Roles = ["operator-assigned"],
-            TransportMode = TransportMode.Reverse,
-        };
-        db.DeploymentTargets.Add(target);
-        await db.SaveChangesAsync();
-
-        await BuildHub(postgres, target.Id).RegisterAsync(
-            new AgentRegistrationRequest(target.Id, "m", "o", "v",
-                ["db", "prod-secrets"], 0L, 0L));
-
-        await db.Entry(target).ReloadAsync();
-        string[] expectedRoles = ["operator-assigned"];
-        target.Roles.Should().Equal(expectedRoles,
-            because: "an agent-supplied Roles payload must be ignored; roles are operator-assigned");
+            because: "registration carries no roles at all and must not overwrite server-configured ones");
 
         // The rejected self-assignment attempt is audited (value ignored).
         var audit = await db.AuditEntries.IgnoreQueryFilters()

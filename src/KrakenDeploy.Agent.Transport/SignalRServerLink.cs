@@ -25,6 +25,7 @@ public sealed class SignalRServerLink : IServerLink
     // Handlers registered before StartAsync; wired onto _connection in StartAsync.
     private readonly List<Func<DeploymentPlan, Task>> _deploymentHandlers = [];
     private readonly List<Func<AdhocScriptCommand, Task>> _adhocHandlers = [];
+    private readonly List<Func<Guid, string?, Task>> _cancelHandlers = [];
     private readonly List<Func<Exception?, Task>> _closedHandlers = [];
     private readonly List<Func<Task>> _reconnectedHandlers = [];
 
@@ -161,6 +162,10 @@ public sealed class SignalRServerLink : IServerLink
         {
             connection.On<AdhocScriptCommand>("RunAdhocScriptAsync", handler);
         }
+        foreach (var handler in _cancelHandlers)
+        {
+            connection.On<Guid, string?>("CancelDeploymentAsync", handler);
+        }
 
         // Publish before StartAsync: initial-start failures throw (no Closed
         // event fires for them), and the supervisor's retry re-enters here.
@@ -184,12 +189,14 @@ public sealed class SignalRServerLink : IServerLink
 
     // ── Agent → Server ─────────────────────────────────────────────────────
 
-    public Task RegisterAsync(AgentRegistrationRequest request, CancellationToken ct)
+    public Task<AgentRegistrationResult> RegisterAsync(
+        AgentRegistrationRequest request, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(request);
         return _connection is not null
-            ? _connection.InvokeAsync("RegisterAsync", request, ct)
-            : Task.CompletedTask;
+            ? _connection.InvokeAsync<AgentRegistrationResult>("RegisterAsync", request, ct)
+            : throw new InvalidOperationException(
+                "Cannot register: the hub connection has not been started.");
     }
 
     public Task HeartbeatAsync(HeartbeatRequest request, CancellationToken ct)
@@ -215,10 +222,11 @@ public sealed class SignalRServerLink : IServerLink
     // the report) whenever the connection was down.
 
     public Task AppendLogAsync(
-        Guid deploymentId, int stepIndex, string level, string message, CancellationToken ct)
+        Guid deploymentId, Guid dispatchId, int stepIndex, string level, string message,
+        CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(message);
-        _outbox.Enqueue(new OutboxItem.Log(deploymentId, stepIndex, level, message));
+        _outbox.Enqueue(new OutboxItem.Log(deploymentId, dispatchId, stepIndex, level, message));
         return Task.CompletedTask;
     }
 
@@ -275,7 +283,8 @@ public sealed class SignalRServerLink : IServerLink
         return item switch
         {
             OutboxItem.Log log => connection.InvokeAsync(
-                "AppendLogAsync", log.DeploymentId, log.StepIndex, log.Level, log.Message, ct),
+                "AppendLogAsync",
+                log.DeploymentId, log.DispatchId, log.StepIndex, log.Level, log.Message, ct),
 
             OutboxItem.StepCompleted s => connection.InvokeAsync(
                 "ReportStepCompletedAsync",
@@ -308,6 +317,13 @@ public sealed class SignalRServerLink : IServerLink
         ArgumentNullException.ThrowIfNull(handler);
         _adhocHandlers.Add(handler);
         _connection?.On<AdhocScriptCommand>("RunAdhocScriptAsync", handler);
+    }
+
+    public void OnCancelDeployment(Func<Guid, string?, Task> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        _cancelHandlers.Add(handler);
+        _connection?.On<Guid, string?>("CancelDeploymentAsync", handler);
     }
 
     public void OnClosed(Func<Exception?, Task> handler)

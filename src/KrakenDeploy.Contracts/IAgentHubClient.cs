@@ -21,6 +21,19 @@ public interface IAgentHubClient
     Task RunDeploymentAsync(DeploymentPlan plan);
 
     /// <summary>
+    /// B6 CONTRACT CHANGE — instructs the agent to cooperatively abort the
+    /// in-flight task <paramref name="taskId"/> (a deployment or a runbook run;
+    /// the agent knows it as <see cref="DeploymentPlan.DeploymentId"/>). The
+    /// agent signals the task's cancellation token — which kills the running
+    /// step's process tree — and reports a failed completion for the attempt;
+    /// the server has already recorded the Cancelled verdict, so that late
+    /// completion is swallowed by the terminal guard. Unknown / already
+    /// finished taskId is a no-op (the push is best-effort; an offline agent
+    /// falls back to the wave-boundary cancel semantics).
+    /// </summary>
+    Task CancelDeploymentAsync(Guid taskId, string? reason);
+
+    /// <summary>
     /// M11.E.7 — instructs the agent to verify and run an operator-approved
     /// ad-hoc script. The agent MUST verify
     /// <see cref="AdhocScriptCommand.Signature"/> via

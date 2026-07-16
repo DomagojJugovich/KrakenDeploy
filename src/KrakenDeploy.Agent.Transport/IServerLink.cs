@@ -37,8 +37,14 @@ public interface IServerLink : IAsyncDisposable
 
     // ── Agent → Server ─────────────────────────────────────────────────────
 
-    /// <summary>Sends full machine info to the server hub.</summary>
-    Task RegisterAsync(AgentRegistrationRequest request, CancellationToken ct);
+    /// <summary>
+    /// Sends full machine info to the server hub and returns the server's
+    /// verdict (B6). A refusal (<see cref="AgentRegistrationResult.Accepted"/>
+    /// = false — contract-version mismatch) means the server has already
+    /// removed this connection from its dispatch registry; the caller must
+    /// stop the link and retry on the slow lane.
+    /// </summary>
+    Task<AgentRegistrationResult> RegisterAsync(AgentRegistrationRequest request, CancellationToken ct);
 
     /// <summary>Sends a periodic heartbeat with optional updated machine info.</summary>
     Task HeartbeatAsync(HeartbeatRequest request, CancellationToken ct);
@@ -48,8 +54,13 @@ public interface IServerLink : IAsyncDisposable
 
     /// <summary>Sends a single log line from an executing step to the server.
     /// <paramref name="stepIndex"/> is the plan-level step index the line belongs
-    /// to (-1 for plan-level lines) so the server can compact logs per step.</summary>
-    Task AppendLogAsync(Guid deploymentId, int stepIndex, string level, string message, CancellationToken ct);
+    /// to (-1 for plan-level lines) so the server can compact logs per step.
+    /// <paramref name="dispatchId"/> echoes <c>DeploymentPlan.DispatchId</c> (B6)
+    /// so the server can drop lines from a positively-retired dispatch attempt;
+    /// <see cref="Guid.Empty"/> for plan-less lines is always accepted.</summary>
+    Task AppendLogAsync(
+        Guid deploymentId, Guid dispatchId, int stepIndex, string level, string message,
+        CancellationToken ct);
 
     /// <summary>Reports deployment completion (success or failure) to the server.
     /// <paramref name="dispatchId"/> echoes <c>DeploymentPlan.DispatchId</c> so the
@@ -107,6 +118,13 @@ public interface IServerLink : IAsyncDisposable
     /// The handler MUST verify the signature before executing the script.
     /// </summary>
     void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler);
+
+    /// <summary>
+    /// B6 — registers a handler for the <c>CancelDeploymentAsync</c> server-push
+    /// message (cooperative abort of an in-flight task; taskId covers both
+    /// deployments and runbook runs). Must be called before <see cref="StartAsync"/>.
+    /// </summary>
+    void OnCancelDeployment(Func<Guid, string?, Task> handler);
 
     // ── Connection lifecycle (subscriptions) ──────────────────────────────
 
