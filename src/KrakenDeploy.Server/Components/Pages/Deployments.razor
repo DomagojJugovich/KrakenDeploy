@@ -160,8 +160,8 @@
         var running = d.Status == DeploymentStatus.Running;
         var confirmed = await Dialog.Confirm(
             running
-                ? "Cancel this running deployment? A wave already running on an agent will " +
-                  "finish, but no further steps will start."
+                ? "Cancel this running deployment? The abort is pushed to the agent, which " +
+                  "stops the running step; no further steps will start."
                 : "Cancel this queued deployment before it starts?",
             "Cancel deployment",
             new ConfirmOptions { OkButtonText = "Cancel deployment", CancelButtonText = "Keep running" });
@@ -194,7 +194,7 @@
                     Severity = NotificationSeverity.Success,
                     Summary  = "Cancelled",
                     Detail   = running
-                        ? "The deployment will stop at the next wave boundary."
+                        ? "The abort was pushed to the agent."
                         : "The queued deployment was cancelled.",
                     Duration = 4000,
                 });

@@ -513,8 +513,8 @@ else
             or DeploymentStatus.Cancelled;
 
     private string CancelTooltip => Deployment?.Status == DeploymentStatus.Running
-        ? "Cancel this deployment. A wave already running on an agent finishes " +
-          "(the agent protocol has no mid-step abort); no further steps start."
+        ? "Cancel this deployment. The abort is pushed to the agent (the running " +
+          "step's process is stopped); no further steps start."
         : "Cancel this deployment before it starts.";
 
     protected override async Task OnInitializedAsync()
@@ -628,8 +628,8 @@ else
         var running = Deployment.Status == DeploymentStatus.Running;
         var confirmed = await DialogService.Confirm(
             running
-                ? "Cancel this running deployment? A wave already running on an agent will " +
-                  "finish, but no further steps will start."
+                ? "Cancel this running deployment? The abort is pushed to the agent, which " +
+                  "stops the running step; no further steps will start."
                 : "Cancel this queued deployment before it starts?",
             "Cancel deployment",
             new ConfirmOptions { OkButtonText = "Cancel deployment", CancelButtonText = "Keep running" });
@@ -656,7 +656,7 @@ else
                     Severity = NotificationSeverity.Success,
                     Summary  = "Cancelled",
                     Detail   = running
-                        ? "The deployment will stop at the next wave boundary."
+                        ? "The abort was pushed to the agent."
                         : "The queued deployment was cancelled.",
                     Duration = 4000,
                 });
