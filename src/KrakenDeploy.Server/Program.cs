@@ -201,6 +201,21 @@ public static class Program
         var multiAccountEnabled = builder.Configuration.GetValue(
             $"{MultiAccountOptions.SectionName}:{nameof(MultiAccountOptions.Enabled)}", false);
 
+        // C3/T1-19 — DB connection resiliency for the web host (retry + pool cap).
+        // MaxPoolSize defaults to 50 (a value <= 0 disables the cap, falling back to
+        // any connection-string value or Npgsql's default of 100). The shared single
+        // Postgres behind an HA pair sees 2 x this plus Hangfire's pool — see the
+        // connection-budget section in docs/ha-pair.md.
+        var configuredMaxPool = builder.Configuration.GetValue("Database:MaxPoolSize", 50);
+        var dataOptions = new KrakenDataOptions
+        {
+            EnableRetryOnFailure = builder.Configuration.GetValue("Database:EnableRetryOnFailure", true),
+            MaxRetryCount = builder.Configuration.GetValue("Database:MaxRetryCount", 6),
+            MaxRetryDelay = TimeSpan.FromSeconds(
+                builder.Configuration.GetValue("Database:MaxRetryDelaySeconds", 30)),
+            MaxPoolSize = configuredMaxPool > 0 ? configuredMaxPool : (int?)null,
+        };
+
         if (multiAccountEnabled)
         {
             // Tenant connection is resolved per request from the active account
@@ -210,11 +225,11 @@ public static class Program
                     "MultiAccount is enabled but connection string 'Catalog' is not configured. " +
                     "Set ConnectionStrings:Catalog.");
             builder.Services.AddKrakenControlPlane(builder.Configuration, catalogConnectionString, dataPath);
-            builder.Services.AddKrakenDeployData(connectionString, dataPath, multiAccount: true);
+            builder.Services.AddKrakenDeployData(connectionString, dataPath, multiAccount: true, dataOptions);
         }
         else
         {
-            builder.Services.AddKrakenDeployData(connectionString, dataPath);
+            builder.Services.AddKrakenDeployData(connectionString, dataPath, dataOptions: dataOptions);
         }
         // Bind the SSRF policy over the deny-by-default options registered by
         // AddKrakenDeployData. No `Ssrf` section => secure defaults stand.
@@ -332,6 +347,14 @@ public static class Program
                 "tenant DBs have no DEK row. Run single-instance until per-account DEK lands.");
         }
         builder.Services.AddKrakenDeployEncryption(masterKey);
+
+        // C3/P1 — deep readiness probe behind /health/ready (DEK round-trip +
+        // data-dir write + DB reachable). Singleton: it depends only on the
+        // singleton IEncryptionService and the data path; the scoped DbContext is
+        // passed per request, so it is not a captive dependency.
+        builder.Services.AddSingleton(sp => new KrakenDeploy.Server.Health.ReadinessProbe(
+            sp.GetRequiredService<KrakenDeploy.Server.Core.Domain.Variables.IEncryptionService>(),
+            dataPath));
 
         // ── Data Protection ─────────────────────────────────────────────────
         // Persist the key ring so auth cookies + antiforgery tokens survive
@@ -1259,6 +1282,40 @@ public static class Program
                     targets,
                     connectedAgents = registry.Count,
                 });
+            }).AllowAnonymous();
+
+        // C3/P1 — deep readiness (vs /healthz liveness). Probes the prerequisites
+        // for serving a deployment: DB reachable, DEK decrypt round-trip, and a
+        // writable data directory. Returns 503 with per-probe booleans when any
+        // fails so an orchestrator / load balancer drains this instance instead of
+        // routing deployments to a node that is up but cannot actually serve them.
+        app.MapGet("/health/ready",
+            async (
+                KrakenDbContext db,
+                KrakenDeploy.Server.Health.ReadinessProbe probe,
+                ILoggerFactory loggerFactory,
+                CancellationToken ct) =>
+            {
+                var result = await probe.CheckAsync(db, ct).ConfigureAwait(false);
+                var payload = new
+                {
+                    status = result.Ready ? "ready" : "unready",
+                    database = result.Database,
+                    encryption = result.Encryption,
+                    dataDirectory = result.DataDirectory,
+                    detail = result.Detail,
+                };
+                if (result.Ready)
+                {
+                    return Results.Ok(payload);
+                }
+
+                // Log the failure server-side (the payload is already sanitised).
+                loggerFactory.CreateLogger("Health.Ready").LogWarning(
+                    "Readiness probe FAILED: database={Database} encryption={Encryption} " +
+                    "dataDirectory={DataDirectory} detail={Detail}",
+                    result.Database, result.Encryption, result.DataDirectory, result.Detail);
+                return Results.Json(payload, statusCode: 503);
             }).AllowAnonymous();
 
         // ── Project API (CLI / REST) ─────────────────────────────────────────
