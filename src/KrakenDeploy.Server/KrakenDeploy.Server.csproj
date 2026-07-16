@@ -90,4 +90,16 @@
     <Message Importance="high" Text="Seeded %(_KrakenSeedPackages.Filename)%(_KrakenSeedPackages.Extension) → $(OutputPath)seed\step-packages\" Condition="'@(_KrakenSeedPackages)' != ''" />
   </Target>
 
+  <!-- B8: the Build-time copy above never reaches `dotnet publish` output, so
+       every published/containerized server shipped WITHOUT the built-in step
+       packages and the boot seeder found an empty (or missing) seed dir.
+       Mirror the copy into $(PublishDir). -->
+  <Target Name="PublishBuiltInStepPackages" AfterTargets="Publish">
+    <ItemGroup>
+      <_KrakenPublishSeedPackages Include="..\..\steps\**\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_KrakenPublishSeedPackages)" DestinationFolder="$(PublishDir)seed\step-packages\" SkipUnchangedFiles="true" Condition="'@(_KrakenPublishSeedPackages)' != ''" />
+    <Message Importance="high" Text="Published seed %(_KrakenPublishSeedPackages.Filename)%(_KrakenPublishSeedPackages.Extension) → $(PublishDir)seed\step-packages\" Condition="'@(_KrakenPublishSeedPackages)' != ''" />
+  </Target>
+
 </Project>

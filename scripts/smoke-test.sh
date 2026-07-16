@@ -13,7 +13,11 @@
 set -euo pipefail
 
 COMPOSE_FILE="docker-compose.smoke.yml"
-COMPOSE="docker compose -f $COMPOSE_FILE"
+# Dedicated project name (smoke-multiaccount.sh precedent): without it the
+# stack shares the default working-directory project name and `down -v
+# --remove-orphans` REMOVES unrelated local containers named krakendeploy-*
+# (e.g. a developer's dev Postgres).
+COMPOSE="docker compose -p krakendeploy-smoke -f $COMPOSE_FILE"
 SERVER_URL="http://localhost:5080"
 TIMEOUT_SEC=90
 
@@ -81,8 +85,10 @@ echo "      Agent is Online."
 
 # ── 6. Trigger a REAL deployment and assert it succeeds (B8) ───────────────
 echo "[6/6] Triggering a real deployment against the connected agent..."
-DEPLOYMENT_ID=$(curl -sf -X POST "$SERVER_URL/api/dev/smoke-deploy" \
-    | jq -r '.deploymentId')
+# No -f and a trailing `|| true`: under `set -e -o pipefail` a non-2xx would
+# abort inside the substitution BEFORE the diagnostic branch below runs.
+DEPLOYMENT_ID=$(curl -s -X POST "$SERVER_URL/api/dev/smoke-deploy" \
+    | jq -r '.deploymentId // empty' || true)
 
 if [[ -z "$DEPLOYMENT_ID" || "$DEPLOYMENT_ID" == "null" ]]; then
     echo "ERROR: Failed to trigger the smoke deployment."
@@ -94,8 +100,8 @@ echo "      Deployment ${DEPLOYMENT_ID:0:8}... dispatched; polling for terminal 
 STATUS="Unknown"
 deadline=$((SECONDS + TIMEOUT_SEC))
 while :; do
-    STATUS=$(curl -sf "$SERVER_URL/api/dev/smoke-deploy/$DEPLOYMENT_ID" \
-        | jq -r '.status // "Unknown"')
+    STATUS=$(curl -s "$SERVER_URL/api/dev/smoke-deploy/$DEPLOYMENT_ID" \
+        | jq -r '.status // "Unknown"' || true)
     case "$STATUS" in
         Succeeded)
             break

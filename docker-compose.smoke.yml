@@ -41,6 +41,13 @@ services:
     environment:
       DOTNET_ENVIRONMENT: Development
       Server__Url: http://server:5080
+      # A8 hardened the agent transport to refuse cleartext http:// unless
+      # explicitly overridden — the smoke stack talks plain HTTP inside the
+      # compose network, so opt in here (CI/dev only; never production).
+      Server__AllowInsecureHttp: "true"
+      # The bundled step packages carry the unsigned-dev-build sentinel; the
+      # smoke deployment's script step loads one on the agent (CI/dev only).
+      StepPackages__AllowUnsignedLoads: "true"
       # SMOKE_TOKEN is injected by scripts/smoke-test.sh after calling /api/dev/smoke-register.
       Server__RegistrationToken: ${SMOKE_TOKEN:-}
     depends_on:

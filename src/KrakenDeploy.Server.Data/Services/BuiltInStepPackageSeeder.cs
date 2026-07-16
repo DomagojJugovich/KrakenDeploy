@@ -33,7 +33,12 @@ public sealed class BuiltInStepPackageSeeder(
     /// </summary>
     public async Task SeedAsync(CancellationToken ct = default)
     {
-        var seedDir = config["StepPackages:SeedDirectory"] ?? "seed/step-packages";
+        // B8: anchor the default to the APPLICATION directory, not the process
+        // CWD — under `dotnet run` the CWD is the project dir while the build
+        // copies the archives next to the binaries, so the relative default
+        // silently found nothing in local dev.
+        var seedDir = config["StepPackages:SeedDirectory"]
+            ?? Path.Combine(AppContext.BaseDirectory, "seed", "step-packages");
         if (!Directory.Exists(seedDir))
         {
             logger.LogDebug(
