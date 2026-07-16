@@ -757,15 +757,20 @@ public sealed class DeploymentWorker(
                 // B1 — the dispatch reconciler may have failed it as interrupted
                 // if this process stalled past the whole lease. The recorded
                 // verdict wins; a resumed zombie dispatch must not report success.
-                if (d is not null && !d.Status.IsTerminal())
+                // B5: the guarded writer makes that check-then-save atomic — a
+                // cancel landing inside the old window can no longer be clobbered.
+                if (d is not null)
                 {
-                    d.Status       = terminalStatus;
-                    d.CompletedUtc = finalCompletedUtc;
-                    // B1: terminal — release the dispatch lease.
-                    d.ClaimedBy    = null;
-                    d.LeaseUntil   = null;
-                    await finalDb.SaveChangesAsync(ct).ConfigureAwait(false);
-                    didSucceed = terminalStatus is DeploymentStatus.Succeeded
+                    var wrote = await ServerTaskStatusWriter.TryTransitionAsync(
+                        finalDb, d, dep =>
+                        {
+                            dep.Status       = terminalStatus;
+                            dep.CompletedUtc = finalCompletedUtc;
+                            // B1: terminal — release the dispatch lease.
+                            dep.ClaimedBy    = null;
+                            dep.LeaseUntil   = null;
+                        }, ct: ct).ConfigureAwait(false);
+                    didSucceed = wrote && terminalStatus is DeploymentStatus.Succeeded
                         or DeploymentStatus.SucceededWithWarnings;
                 }
             }
@@ -895,26 +900,33 @@ public sealed class DeploymentWorker(
 
         // A cancel may have landed while the bundle was being built — don't
         // resurrect the deployment to PendingOfflineResult over a Cancelled
-        // row (same blind-write hazard as the online Running transition). The
-        // built bundle is simply orphaned on disk (DropBundlePath stays unset).
-        if (await IsCancellationRequestedAsync(db, deployment.Id, ct).ConfigureAwait(false))
+        // row. B5: the guarded writer checks and writes atomically (the old
+        // read-then-save left a race window), and its default guard also
+        // refuses a row the reconciler failed as interrupted meanwhile. On
+        // refusal the built bundle is simply orphaned on disk (DropBundlePath
+        // stays unset). The reload inside the writer is what makes this write
+        // possible at all under the xmin token — the tracked entity's token
+        // went stale the moment the B1 claim ran.
+        var parked = await ServerTaskStatusWriter.TryTransitionAsync(
+            db, deployment, d =>
+            {
+                d.DropBundlePath = bundlePath;
+                d.Status = DeploymentStatus.PendingOfflineResult;
+                d.StartedUtc = DateTimeOffset.UtcNow;
+                // B1: the dispatch parks here awaiting an out-of-band offline
+                // result — no longer worker-owned, so release the lease (the
+                // reconciler ignores non-Running rows anyway; this is hygiene).
+                d.ClaimedBy = null;
+                d.LeaseUntil = null;
+            }, ct: ct).ConfigureAwait(false);
+        if (!parked)
         {
             logger.LogInformation(
-                "DeploymentWorker: deployment {Id} cancelled during offline-bundle build; " +
-                "not marking PendingOfflineResult.",
-                deployment.Id);
+                "DeploymentWorker: deployment {Id} reached a terminal state ({Status}) during " +
+                "the offline-bundle build; not marking PendingOfflineResult.",
+                deployment.Id, deployment.Status);
             return;
         }
-
-        deployment.DropBundlePath = bundlePath;
-        deployment.Status = DeploymentStatus.PendingOfflineResult;
-        deployment.StartedUtc = DateTimeOffset.UtcNow;
-        // B1: the dispatch parks here awaiting an out-of-band offline result —
-        // no longer worker-owned, so release the lease (the reconciler ignores
-        // non-Running rows anyway; this is hygiene).
-        deployment.ClaimedBy = null;
-        deployment.LeaseUntil = null;
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         logger.LogInformation(
             "Offline drop bundle generated for deployment {DeploymentId}: {Path}.",
@@ -1149,26 +1161,24 @@ public sealed class DeploymentWorker(
         // Never overwrite a TERMINAL status with Failed. A CancelAsync landing
         // while a wave was in flight makes Cancelled the terminal state, and —
         // B1 — the dispatch reconciler may already have failed this run as
-        // interrupted. The projection reads the authoritative DB value (the
-        // tracked entity may still show Running/Queued); the recorded verdict
-        // wins and, for the reconciler case, a duplicate Failed write + AI
-        // diagnosis is avoided.
-        var currentStatus = await db.Deployments
-            .Where(d => d.Id == deployment.Id)
-            .Select(d => d.Status)
-            .FirstOrDefaultAsync(ct)
-            .ConfigureAwait(false);
-        if (currentStatus.IsTerminal())
+        // interrupted; the recorded verdict wins and, for the reconciler case,
+        // a duplicate Failed write + AI diagnosis is avoided. B5: the guarded
+        // writer also cures the tracked entity's stale xmin (lease renewals +
+        // log-sequence bumps churn the row constantly while a dispatch runs)
+        // and closes the old check-then-save race window atomically.
+        var failed = await ServerTaskStatusWriter.TryTransitionAsync(
+            db, deployment, static d =>
+            {
+                d.Status = DeploymentStatus.Failed;
+                d.CompletedUtc = DateTimeOffset.UtcNow;
+                // B1: terminal — release the dispatch lease.
+                d.ClaimedBy = null;
+                d.LeaseUntil = null;
+            }, ct: ct).ConfigureAwait(false);
+        if (!failed)
         {
             return;
         }
-
-        deployment.Status = DeploymentStatus.Failed;
-        deployment.CompletedUtc = DateTimeOffset.UtcNow;
-        // B1: terminal — release the dispatch lease.
-        deployment.ClaimedBy = null;
-        deployment.LeaseUntil = null;
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         // M11.C — queue an AI diagnosis, but only for deployments that
         // actually started executing. Pre-flight refusals (no target, no
