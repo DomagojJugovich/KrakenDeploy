@@ -13,23 +13,25 @@ option csharp_namespace = "KrakenDeploy.Contracts.Grpc";
 //   full zip.  The agent applies the delta to its cached copy to produce the
 //   target version, which is then stored in the cache.
 //
-// Resumable full transfer:
-//   Set resume_offset to the number of bytes already written to resume a
-//   previously interrupted full download.
+// Interrupted full transfers RESTART from zero (B6): the former resume_offset
+// was never set by any agent and a resumed partial range could not carry the
+// full-file sha256, which made resumption an unverified-download path. Delta
+// transfer already minimizes re-download cost for agents with a cached base.
 
 service PackageDelivery {
     rpc Download(DownloadRequest) returns (stream DownloadChunk);
 }
 
 message DownloadRequest {
+    // B6: field 4 was resume_offset — removed (see the service comment).
+    reserved 4;
+    reserved "resume_offset";
+
     string package_id    = 1;
     string version       = 2;
     // Optional: if set and the server can find the base package, the response
     // will be an Octodiff delta (base_version → version) rather than the full file.
     string base_version  = 3;
-    // Optional: byte offset into the full file at which to resume streaming.
-    // Ignored when base_version is also set.
-    int64  resume_offset = 4;
 }
 
 message DownloadChunk {
@@ -41,9 +43,9 @@ message DownloadChunk {
     // True when the stream contains Octodiff delta bytes rather than the raw zip.
     bool   is_delta    = 4;
     // SHA-256 of the full zip, lower-case hex. Populated only on the LAST chunk
-    // of a NON-delta, non-resumed transfer; empty otherwise. The agent verifies
-    // the assembled zip before caching/extracting. Delta transfers are integrity-
-    // checked end-to-end by Octodiff's DeltaApplier instead.
+    // of a NON-delta transfer; empty otherwise. The agent verifies the assembled
+    // zip before caching/extracting. Delta transfers are integrity-checked
+    // end-to-end by Octodiff's DeltaApplier instead.
     string sha256      = 5;
 }
 

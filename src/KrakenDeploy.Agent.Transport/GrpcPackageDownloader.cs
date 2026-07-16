@@ -18,8 +18,9 @@ namespace KrakenDeploy.Agent.Transport;
 ///   <item>Delta — the agent has a different version of the same package in cache;
 ///   the server is asked for an Octodiff delta.  The agent applies it to the cached
 ///   file to produce the target version.</item>
-///   <item>Full download — no usable cache entry; the full zip is streamed.
-///   Supports a <c>resume_offset</c> to restart an interrupted transfer.</item>
+///   <item>Full download — no usable cache entry; the full zip is streamed and
+///   SHA-256-verified on assembly. An interrupted transfer restarts from zero
+///   (B6 removed the never-used resume mode — it could not be hash-verified).</item>
 /// </list>
 /// </para>
 /// </summary>

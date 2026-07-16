@@ -21,8 +21,11 @@ namespace KrakenDeploy.Server.Transport;
 ///   <item><b>Delta</b> — when the agent supplies a <c>base_version</c> it already
 ///   has in cache, the server streams an Octodiff delta instead of the full zip.
 ///   Falls back to a full download if delta generation fails or the base is missing.</item>
-///   <item><b>Full / resumable</b> — optional <c>resume_offset</c> causes the server
-///   to seek into the file and stream from that byte position onward.</item>
+///   <item><b>Full</b> — the whole zip, SHA-256 emitted on the last chunk for
+///   agent-side verification. (B6 removed the never-used <c>resume_offset</c>:
+///   a resumed range cannot carry the full-file hash, making it an unverified
+///   download path — an interrupted transfer simply restarts, and delta
+///   transfer already minimizes the cost for agents with a cached base.)</item>
 /// </list>
 /// </para>
 /// </summary>
@@ -88,7 +91,7 @@ public sealed class GrpcPackageDeliveryService(
         }
         else
         {
-            await ServeFullAsync(request, package, responseStream, ct).ConfigureAwait(false);
+            await ServeFullAsync(package, responseStream, ct).ConfigureAwait(false);
         }
     }
 
@@ -111,7 +114,7 @@ public sealed class GrpcPackageDeliveryService(
             logger.LogWarning(
                 "Delta requested but base {PackageId} v{Base} not found; serving full file.",
                 request.PackageId, request.BaseVersion);
-            await ServeFullAsync(request, package, responseStream, ct).ConfigureAwait(false);
+            await ServeFullAsync(package, responseStream, ct).ConfigureAwait(false);
             return;
         }
 
@@ -133,7 +136,7 @@ public sealed class GrpcPackageDeliveryService(
 
         if (delta is null)
         {
-            await ServeFullAsync(request, package, responseStream, ct).ConfigureAwait(false);
+            await ServeFullAsync(package, responseStream, ct).ConfigureAwait(false);
             return;
         }
 
@@ -152,39 +155,25 @@ public sealed class GrpcPackageDeliveryService(
         }
     }
 
-    // ── Full / resumable path ─────────────────────────────────────────────────
+    // ── Full path ─────────────────────────────────────────────────────────────
 
     private async Task ServeFullAsync(
-        DownloadRequest request,
         Package package,
         IServerStreamWriter<DownloadChunk> responseStream,
         CancellationToken ct)
     {
-        var resumeOffset = request.ResumeOffset;
-        var reportedSize = resumeOffset > 0
-            ? package.SizeBytes - resumeOffset
-            : package.SizeBytes;
-
         logger.LogInformation(
-            "Streaming package {PackageId} v{Version} ({Bytes:N0} bytes){Resume}.",
-            package.PackageId, package.Version, package.SizeBytes,
-            resumeOffset > 0 ? $" from offset {resumeOffset:N0}" : string.Empty);
+            "Streaming package {PackageId} v{Version} ({Bytes:N0} bytes).",
+            package.PackageId, package.Version, package.SizeBytes);
 
         await using var fileStream = await packageStore
             .OpenReadAsync(package.StoredPath, ct).ConfigureAwait(false);
 
-        if (resumeOffset > 0 && fileStream.CanSeek)
-        {
-            fileStream.Seek(resumeOffset, SeekOrigin.Begin);
-        }
-
-        // Only emit the integrity hash when this transfer covers the WHOLE file.
-        // A resumed transfer streams a partial range, so its on-the-fly hash
-        // wouldn't match the full zip — suppress it then (the current agent never
-        // resumes; verification still applies to the normal full path).
+        // Full transfers always emit the integrity hash — B6 removed the
+        // resumed partial-range mode whose hash could not cover the whole zip.
         await StreamFromAsync(
-            fileStream, isDelta: false, totalBytes: reportedSize,
-            emitHash: resumeOffset == 0, responseStream, ct)
+            fileStream, isDelta: false, totalBytes: package.SizeBytes,
+            emitHash: true, responseStream, ct)
             .ConfigureAwait(false);
     }
 
