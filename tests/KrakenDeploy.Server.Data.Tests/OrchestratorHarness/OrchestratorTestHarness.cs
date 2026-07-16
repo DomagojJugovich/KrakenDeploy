@@ -111,6 +111,15 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         services.AddSingleton<IHubContext<UiHub, IUiHubClient>>(new NullUiHubContext());
         services.AddSingleton<TargetStatusPublisher>();
         services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
+        // B6 — the real cancel pusher over the fake hub: CancelDeploymentAsync
+        // through the harness exercises the push, and each FakeAgent records
+        // what it received in CancelPushes.
+        services.AddSingleton<KrakenDeploy.Server.Data.Services.IAgentCancelPusher>(
+            sp => new AgentCancelPusher(
+                _postgres,
+                _connectionRegistry,
+                sp.GetRequiredService<IHubContext<AgentHub, IAgentHubClient>>(),
+                NullLogger<AgentCancelPusher>.Instance));
 
         _services = services.BuildServiceProvider();
 

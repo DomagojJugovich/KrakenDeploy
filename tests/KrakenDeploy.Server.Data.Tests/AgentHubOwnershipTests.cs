@@ -158,6 +158,57 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
             .Should().Be(1);
     }
 
+    [Fact]
+    public async Task AppendLogAsync_drops_lines_from_a_retired_dispatch()
+    {
+        // B6: a superseded/timed-out attempt's outbox keeps flushing after the
+        // wave was re-dispatched — its lines must not interleave into the
+        // current attempt's log. Only POSITIVE retirement drops a line:
+        // Guid.Empty and unknown dispatch ids are always accepted.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var g = await SeedAsync(harness);
+
+        var registry = new PendingSubPlanRegistry();
+        var retiredDispatch = Guid.NewGuid();
+        registry.Register(g.DeploymentId, g.Primary.Id, retiredDispatch,
+            new TaskCompletionSource<SubPlanResult>());
+        registry.Cancel(g.DeploymentId, g.Primary.Id, "wave re-dispatched");
+
+        var hub = BuildHub(postgres, g.Primary.Id, subPlans: registry);
+        await hub.AppendLogAsync(g.DeploymentId, retiredDispatch, 0, "info", "stale attempt noise");
+        await hub.AppendLogAsync(g.DeploymentId, Guid.Empty, 0, "info", "legacy line");
+        await hub.AppendLogAsync(g.DeploymentId, Guid.NewGuid(), 0, "info", "unknown dispatch line");
+
+        await using var db = harness.CreateContext();
+        var messages = await db.TaskLogLive.IgnoreQueryFilters()
+            .Where(e => e.TaskId == g.DeploymentId)
+            .Select(e => e.Message)
+            .ToListAsync();
+        messages.Should().BeEquivalentTo(["legacy line", "unknown dispatch line"],
+            "only the positively-retired dispatch's line is dropped");
+    }
+
+    [Fact]
+    public async Task ReportStepCompletedAsync_rejects_a_negative_step_index()
+    {
+        // B6 trust boundary: the step index is agent-supplied and downstream
+        // resolves it against the plan's snapshot array — a malformed value
+        // must die here, not abort the deployment inside the wave fold.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var g = await SeedAsync(harness);
+
+        await BuildHub(postgres, g.Primary.Id).ReportStepCompletedAsync(
+            g.DeploymentId, Guid.Empty, stepIndex: -7, stepName: "Deploy",
+            success: true, errorMessage: null,
+            outputVariables: new Dictionary<string, string> { ["X"] = "1" },
+            sensitiveOutputNames: []);
+
+        await using var db = harness.CreateContext();
+        (await db.TaskOutputVariables.IgnoreQueryFilters()
+            .CountAsync(v => v.TaskId == g.DeploymentId))
+            .Should().Be(0, "a rejected report must persist nothing");
+    }
+
     // ── ReportStepCompletedAsync (output-variable injection) ─────────────────
 
     [Fact]
@@ -284,7 +335,8 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
         return new Graph(deploymentId, members[0], members[1], foreign);
     }
 
-    private static AgentHub BuildHub(PostgresFixture postgres, Guid actingTargetId)
+    private static AgentHub BuildHub(
+        PostgresFixture postgres, Guid actingTargetId, IPendingSubPlanRegistry? subPlans = null)
     {
         var publisher = new TargetStatusPublisher(
             new InMemoryTargetStatusNotifier(),
@@ -298,7 +350,7 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
             publisher,
             TimeProvider.System,
             new OwnershipNullUiHubContext(),
-            new FalseSubPlanRegistry(),
+            subPlans ?? new FalseSubPlanRegistry(),
             new OwnershipNeverUsedAdhocRegistry(),
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             TestCrypto.Service(DevMasterKey),

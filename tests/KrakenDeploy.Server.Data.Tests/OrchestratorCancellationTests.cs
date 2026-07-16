@@ -119,4 +119,30 @@ public sealed class OrchestratorCancellationTests(PostgresFixture postgres)
             because: "the terminal-status finaliser must not overwrite a cancellation " +
                      "that landed while the final wave was completing");
     }
+
+    [Fact]
+    public async Task Cancelling_pushes_the_abort_to_connected_agents()
+    {
+        // B6: CancelAsync fires IAgentCancelPusher AFTER recording the verdict —
+        // the harness wires the real AgentCancelPusher over the fake hub, and
+        // each FakeAgent records what it received. A cancel must reach every
+        // CONNECTED assigned target; the recorded verdict must stand regardless.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var project = await harness.SeedProjectAsync($"p-{Guid.NewGuid():N}"[..16]);
+        var env = await harness.SeedEnvironmentAsync($"e-{Guid.NewGuid():N}"[..16]);
+        var targets = await harness.SeedTargetsAsync("t1", "t2");
+        var release = await harness.SeedReleaseAsync(project.Id, "1.0",
+            StepBuilder.Script("s1"));
+        var deploymentId = await harness.CreateDeploymentAsync(release.Id, env.Id, targets);
+
+        // Only t1 is connected — t2 is offline and must be skipped, not fail the push.
+        var connected = harness.ConnectFakeAgent(targets[0]);
+
+        await harness.CancelDeploymentAsync(deploymentId);
+
+        connected.CancelPushes.Should().ContainSingle().Which.Should().Be(
+            (deploymentId, "Cancelled by operator."));
+        (await harness.GetDeploymentAsync(deploymentId)).Status
+            .Should().Be(DeploymentStatus.Cancelled);
+    }
 }

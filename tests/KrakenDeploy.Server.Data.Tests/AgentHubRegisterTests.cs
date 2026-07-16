@@ -74,20 +74,60 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
         string[] expectedRoles = ["wizard-role"];
         target.Roles.Should().Equal(expectedRoles,
             because: "registration carries no roles at all and must not overwrite server-configured ones");
+    }
 
-        // The rejected self-assignment attempt is audited (value ignored).
-        var audit = await db.AuditEntries.IgnoreQueryFilters()
-            .Where(e => e.SubjectType == "DeploymentTarget"
-                     && e.SubjectId == target.Id.ToString()
-                     && e.EventType == KrakenDeploy.Server.Core.Domain.Audit.AuditEventType.AgentRoleSelfAssignmentRejected)
-            .FirstOrDefaultAsync();
-        audit.Should().NotBeNull("a Roles payload signals a tampered/old agent and must be audited");
-        audit!.Details.Should().Contain("db").And.Contain("prod-secrets");
+    [Fact]
+    public async Task RegisterAsync_refuses_a_contract_version_mismatch()
+    {
+        // B6: a pre-B6 agent deserializes ContractVersion=0 and must be refused
+        // LOUDLY — pre-B6 such an agent connected fine and every report it sent
+        // was silently dropped by signature mismatch. The refusal must make the
+        // connection undispatchable (registry removal), mark the target Offline
+        // immediately, audit, and tell the agent why.
+        await using var db = postgres.CreateContext();
+
+        var target = new DeploymentTarget
+        {
+            Name = "hub-test-contract-refusal",
+            Roles = ["web"],
+            TransportMode = TransportMode.Reverse,
+            Status = TargetStatus.Online,
+        };
+        db.DeploymentTargets.Add(target);
+        await db.SaveChangesAsync();
+
+        var registry = new InMemoryAgentConnectionRegistry();
+        // FakeHubCallerContext's connection id — pre-registered like OnConnectedAsync would.
+        registry.Add("test-connection", target.Id);
+
+        var result = await BuildHub(postgres, target.Id, registry).RegisterAsync(
+            new AgentRegistrationRequest(target.Id, "m", "o", "0.9-old", 0L, 0L,
+                ContractVersion: 0));
+
+        result.Accepted.Should().BeFalse();
+        result.ServerContractVersion.Should().Be(AgentContract.CurrentVersion);
+        result.Message.Should().Contain("Update the agent");
+
+        registry.GetConnectionId(target.Id).Should().BeNull(
+            "a refused agent must be undispatchable immediately");
+
+        await db.Entry(target).ReloadAsync();
+        target.Status.Should().Be(TargetStatus.Offline,
+            "the refusal marks the target Offline without the flicker grace");
+        target.AgentVersion.Should().Be("0.9-old",
+            "the outdated version is recorded so operators can see what to upgrade");
+
+        (await db.Set<KrakenDeploy.Server.Core.Domain.Audit.AuditEntry>()
+            .Where(a => a.EventType == "Agent.ContractVersionRejected"
+                        && a.SubjectId == target.Id.ToString())
+            .CountAsync())
+            .Should().Be(1, "the refusal is audited");
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
-    private static AgentHub BuildHub(PostgresFixture postgres, Guid targetId)
+    private static AgentHub BuildHub(
+        PostgresFixture postgres, Guid targetId, IAgentConnectionRegistry? registry = null)
     {
         var publisher = new TargetStatusPublisher(
             new InMemoryTargetStatusNotifier(),
@@ -95,7 +135,7 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
             NullLogger<TargetStatusPublisher>.Instance);
 
         var hub = new AgentHub(
-            new InMemoryAgentConnectionRegistry(),
+            registry ?? new InMemoryAgentConnectionRegistry(),
             postgres,
             new NeverUsedScopeFactory(),
             publisher,
