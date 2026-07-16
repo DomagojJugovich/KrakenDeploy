@@ -538,7 +538,7 @@ public sealed class StepPackageService(
 
     private string ResolveDir(string name, string version)
     {
-        var root = config["DataPath"] ?? "data";
+        var root = config["Server:DataPath"] ?? "data";
         return Path.Combine(root, "step-packages", SanitisePathSegment(name),
             SanitisePathSegment(version));
     }

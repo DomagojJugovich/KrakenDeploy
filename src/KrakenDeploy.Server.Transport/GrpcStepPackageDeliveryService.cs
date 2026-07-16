@@ -81,7 +81,7 @@ public sealed class GrpcStepPackageDeliveryService(
                 $"Step package '{request.Name}' version '{request.Version}' is not installed."));
 
         // ── Resolve the archive path ──────────────────────────────────────────
-        var root        = config["DataPath"] ?? "data";
+        var root        = config["Server:DataPath"] ?? "data";
         var archivePath = Path.Combine(root, "step-packages",
             SanitisePathSegment(row.Name), SanitisePathSegment(row.Version),
             "package" + StepPackageFiles.Extension);

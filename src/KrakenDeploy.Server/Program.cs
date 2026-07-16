@@ -2309,7 +2309,7 @@ public static class Program
                     return Results.NotFound(new { error = "No drop bundle available for this deployment." });
                 }
 
-                var dataPath = config["DataPath"] ?? "data";
+                var dataPath = config["Server:DataPath"] ?? "data";
                 try
                 {
                     var stream = DropBundleService.OpenRead(deployment.DropBundlePath, dataPath);

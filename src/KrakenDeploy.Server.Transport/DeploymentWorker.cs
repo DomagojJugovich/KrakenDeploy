@@ -915,7 +915,7 @@ public sealed class DeploymentWorker(
             return;
         }
 
-        var dataPath = sp.GetRequiredService<IConfiguration>()["DataPath"] ?? "data";
+        var dataPath = sp.GetRequiredService<IConfiguration>()["Server:DataPath"] ?? "data";
 
         // A cancel may have landed while the bundle was being built — don't
         // resurrect the deployment to PendingOfflineResult over a Cancelled

@@ -65,7 +65,7 @@ public sealed class OfflineDropBundleBuilder(ILogger<OfflineDropBundleBuilder> l
         var encryption = sp.GetRequiredService<IEncryptionService>();
         var config = sp.GetRequiredService<IConfiguration>();
         var dbFactory = sp.GetRequiredService<IDbContextFactory<KrakenDbContext>>();
-        var dataPath = config["DataPath"] ?? "data";
+        var dataPath = config["Server:DataPath"] ?? "data";
         var serverBaseUrl = config["Server:BaseUrl"];
 
         // Offline drops use the frozen release snapshot, exactly like online —
