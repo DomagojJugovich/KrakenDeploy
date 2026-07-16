@@ -73,6 +73,19 @@ public static class AuditEventType
     public const string RunbookRunSucceeded = "RunbookRun.Succeeded";
     public const string RunbookRunFailed    = "RunbookRun.Failed";
 
+    /// <summary>B3 — the dispatch reconciler failed a <c>Running</c> runbook run
+    /// whose lease had EXPIRED: the dispatching process died between the atomic
+    /// claim and the agent hand-off, so the plan never reached the agent.
+    /// Runbook analogue of <see cref="DeploymentInterrupted"/>.</summary>
+    public const string RunbookRunInterrupted = "RunbookRun.Interrupted";
+
+    /// <summary>B3 — the dispatch reconciler failed an agent-owned <c>Running</c>
+    /// runbook run (lease released at hand-off) whose <c>StartedUtc</c> exceeded
+    /// <c>Engine:MaxRunbookRunDuration</c>: the agent never reported completion
+    /// and nothing else can ever finalize the run. A late completion after this
+    /// reap is swallowed by the hub's terminal-status guard.</summary>
+    public const string RunbookRunTimedOut = "RunbookRun.TimedOut";
+
     // ── Step package lifecycle (Phase D) ─────────────────────────────────────
     public const string StepPackageInstalled    = "StepPackage.Installed";
     public const string StepPackageUninstalled  = "StepPackage.Uninstalled";

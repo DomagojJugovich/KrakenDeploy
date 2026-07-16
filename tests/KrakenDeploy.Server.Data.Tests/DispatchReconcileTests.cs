@@ -143,12 +143,108 @@ public sealed class DispatchReconcileTests(PostgresFixture postgres)
             .Should().Be(DeploymentStatus.PendingOfflineResult);
     }
 
+    // ── B3: overdue runbook runs ───────────────────────────────────────────
+
+    [Fact]
+    public async Task Runbook_run_with_expired_lease_is_failed_with_interrupted_audit()
+    {
+        // The dispatch process died between the atomic claim and the agent
+        // hand-off — the plan never reached the agent, and step 3 (deployments
+        // only) would never touch it.
+        var id = await SeedRunbookRunAsync();
+        await SetRunbookRunningAsync(id,
+            leaseUntil: DateTimeOffset.UtcNow.AddMinutes(-1),
+            claimedBy: "kraken:dead-node",
+            startedAgo: TimeSpan.FromMinutes(5));
+        var (job, _, _, audit) = NewJob();
+
+        await job.ExecuteAsync(CancellationToken.None);
+
+        await using var db = postgres.CreateContext();
+        var run = await db.ServerTasks.IgnoreQueryFilters().AsNoTracking().FirstAsync(t => t.Id == id);
+        run.Status.Should().Be(DeploymentStatus.Failed);
+        run.CompletedUtc.Should().NotBeNull();
+        run.LeaseUntil.Should().BeNull();
+
+        audit.Entries.Should().ContainSingle(e =>
+            e.EventType == AuditEventType.RunbookRunInterrupted && e.SubjectId == id.ToString());
+    }
+
+    [Fact]
+    public async Task Agent_owned_runbook_run_past_the_max_duration_is_failed_with_timeout_audit()
+    {
+        // Lease released at hand-off (agent-owned), agent never called back —
+        // pre-B3 this row stayed Running forever.
+        var id = await SeedRunbookRunAsync();
+        await SetRunbookRunningAsync(id,
+            leaseUntil: null, claimedBy: null, startedAgo: TimeSpan.FromMinutes(10));
+        var (job, _, _, audit) = NewJob(new EngineOptions
+        {
+            MaxRunbookRunDuration = TimeSpan.FromMinutes(5),
+        });
+
+        await job.ExecuteAsync(CancellationToken.None);
+
+        await using var db = postgres.CreateContext();
+        (await db.ServerTasks.IgnoreQueryFilters().AsNoTracking()
+                .Where(t => t.Id == id).Select(t => t.Status).FirstAsync())
+            .Should().Be(DeploymentStatus.Failed);
+        audit.Entries.Should().ContainSingle(e =>
+            e.EventType == AuditEventType.RunbookRunTimedOut && e.SubjectId == id.ToString());
+    }
+
+    [Fact]
+    public async Task Agent_owned_runbook_run_within_the_max_duration_is_left_alone()
+    {
+        var id = await SeedRunbookRunAsync();
+        await SetRunbookRunningAsync(id,
+            leaseUntil: null, claimedBy: null, startedAgo: TimeSpan.FromMinutes(10));
+        var (job, _, _, audit) = NewJob(new EngineOptions
+        {
+            MaxRunbookRunDuration = TimeSpan.FromHours(1),
+        });
+
+        await job.ExecuteAsync(CancellationToken.None);
+
+        await using var db = postgres.CreateContext();
+        (await db.ServerTasks.IgnoreQueryFilters().AsNoTracking()
+                .Where(t => t.Id == id).Select(t => t.Status).FirstAsync())
+            .Should().Be(DeploymentStatus.Running,
+                "an agent-owned run inside the ceiling is presumed in flight — the B2 " +
+                "outbox delivers its completion even across disconnects");
+        audit.Entries.Should().NotContain(e => e.SubjectId == id.ToString());
+    }
+
+    [Fact]
+    public async Task Live_lease_runbook_run_is_never_touched()
+    {
+        // Mid-dispatch (claim taken, hand-off not yet done) with a healthy
+        // renewing lease — hands off, exactly like deployments.
+        var id = await SeedRunbookRunAsync();
+        await SetRunbookRunningAsync(id,
+            leaseUntil: DateTimeOffset.UtcNow.AddMinutes(4),
+            claimedBy: "kraken:live-node",
+            startedAgo: TimeSpan.FromHours(3)); // old StartedUtc must NOT matter while leased
+        var (job, _, _, audit) = NewJob(new EngineOptions
+        {
+            MaxRunbookRunDuration = TimeSpan.FromMinutes(5),
+        });
+
+        await job.ExecuteAsync(CancellationToken.None);
+
+        await using var db = postgres.CreateContext();
+        (await db.ServerTasks.IgnoreQueryFilters().AsNoTracking()
+                .Where(t => t.Id == id).Select(t => t.Status).FirstAsync())
+            .Should().Be(DeploymentStatus.Running);
+        audit.Entries.Should().NotContain(e => e.SubjectId == id.ToString());
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private (ScheduledDeploymentDispatchJob Job,
              Channel<TenantWorkItem> Deployments,
              RunbookRunChannel Runbooks,
-             TestAuditLog Audit) NewJob()
+             TestAuditLog Audit) NewJob(EngineOptions? engineOptions = null)
     {
         var deployments = Channel.CreateUnbounded<TenantWorkItem>();
         var runbooks = new RunbookRunChannel();
@@ -156,6 +252,7 @@ public sealed class DispatchReconcileTests(PostgresFixture postgres)
         var job = new ScheduledDeploymentDispatchJob(
             postgres, deployments, runbooks, TimeProvider.System,
             new DisabledAccountContext(), audit,
+            Microsoft.Extensions.Options.Options.Create(engineOptions ?? new EngineOptions()),
             NullLogger<ScheduledDeploymentDispatchJob>.Instance);
         return (job, deployments, runbooks, audit);
     }
@@ -176,6 +273,50 @@ public sealed class DispatchReconcileTests(PostgresFixture postgres)
         await db.ServerTasks.IgnoreQueryFilters().Where(t => t.Id == id)
             .ExecuteUpdateAsync(s => s.SetProperty(
                 t => t.CreatedUtc, DateTimeOffset.UtcNow - createdAgo));
+    }
+
+    /// <summary>Seeds a minimum-viable RunbookRun (project + env + runbook +
+    /// Queued run) in the Default Space.</summary>
+    private async Task<Guid> SeedRunbookRunAsync()
+    {
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var project = await harness.SeedProjectAsync($"rbp-{Guid.NewGuid():N}"[..16]);
+        var env = await harness.SeedEnvironmentAsync($"rbe-{Guid.NewGuid():N}"[..16]);
+
+        await using var db = postgres.CreateContext();
+        var runbook = new KrakenDeploy.Server.Core.Domain.Runbooks.Runbook
+        {
+            SpaceId   = KrakenDeploy.Server.Core.Domain.Common.WellKnown.DefaultSpaceId,
+            ProjectId = project.Id,
+            Name      = $"rb-{Guid.NewGuid():N}"[..12],
+        };
+        db.Add(runbook);
+        await db.SaveChangesAsync();
+
+        var run = new KrakenDeploy.Server.Core.Domain.Runbooks.RunbookRun
+        {
+            SpaceId       = KrakenDeploy.Server.Core.Domain.Common.WellKnown.DefaultSpaceId,
+            ProjectId     = project.Id,
+            EnvironmentId = env.Id,
+            RunbookId     = runbook.Id,
+            Status        = DeploymentStatus.Queued,
+        };
+        db.Add(run);
+        await db.SaveChangesAsync();
+        return run.Id;
+    }
+
+    private async Task SetRunbookRunningAsync(
+        Guid id, DateTimeOffset? leaseUntil, string? claimedBy, TimeSpan startedAgo)
+    {
+        await using var db = postgres.CreateContext();
+        await db.ServerTasks.IgnoreQueryFilters().Where(t => t.Id == id)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(t => t.Status, DeploymentStatus.Running)
+                .SetProperty(t => t.StartedUtc, DateTimeOffset.UtcNow - startedAgo)
+                .SetProperty(t => t.LeaseUntil, leaseUntil)
+                .SetProperty(t => t.ClaimedBy, claimedBy)
+                .SetProperty(t => t.CreatedUtc, DateTimeOffset.UtcNow - startedAgo));
     }
 
     private async Task SetRunningAsync(Guid id, DateTimeOffset? leaseUntil, string? claimedBy)

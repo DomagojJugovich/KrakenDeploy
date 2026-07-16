@@ -4,6 +4,7 @@ using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace KrakenDeploy.Server.Data.Jobs;
 
@@ -29,6 +30,13 @@ namespace KrakenDeploy.Server.Data.Jobs;
 ///   that is what keeps a draining blue-green slot's runs safe — and runbook
 ///   runs are excluded entirely (after dispatch they are agent-owned; the hub
 ///   writes their terminal status even across a server restart).</item>
+///   <item><b>Overdue runbook runs (B3)</b> — the runbook analogue step 3
+///   deliberately skips: a <c>Running</c> run with an EXPIRED lease died
+///   between claim and agent hand-off (the plan never reached the agent);
+///   a <c>Running</c> run with a RELEASED lease is agent-owned, and one whose
+///   <c>StartedUtc</c> exceeds <c>Engine:MaxRunbookRunDuration</c> never got
+///   its completion callback — nothing else can ever finalize either, so both
+///   flip to <c>Failed</c> with their own audit events.</item>
 /// </list>
 /// The same <see cref="ExecuteAsync"/> body runs once at startup (before the
 /// workers begin consuming) and every minute thereafter, so recovery does not
@@ -42,6 +50,7 @@ public sealed class ScheduledDeploymentDispatchJob(
     TimeProvider time,
     IAccountContext accountContext,
     IAuditLog auditLog,
+    IOptions<EngineOptions> engineOptions,
     ILogger<ScheduledDeploymentDispatchJob> logger)
 {
     /// <summary>How long a fresh Queued row is left alone before it is treated
@@ -63,6 +72,7 @@ public sealed class ScheduledDeploymentDispatchJob(
         await SignalDueScheduledAsync(db, now, accountId, ct).ConfigureAwait(false);
         await SignalStaleQueuedAsync(db, now, accountId, ct).ConfigureAwait(false);
         await ReconcileOrphanedRunningAsync(db, now, ct).ConfigureAwait(false);
+        await ReconcileOverdueRunbookRunsAsync(db, now, ct).ConfigureAwait(false);
     }
 
     // ── 1. Due scheduled deployments ─────────────────────────────────────────
@@ -186,6 +196,123 @@ public sealed class ScheduledDeploymentDispatchJob(
                              $"(owner {orphan.ClaimedBy ?? "<none>"}, expiry " +
                              $"{orphan.LeaseUntil?.ToString("O") ?? "<never stamped>"}) was not " +
                              "renewed. In-memory orchestration state is unresumable; marked Failed.",
+                ct:          ct).ConfigureAwait(false);
+        }
+    }
+
+    // ── 4. Overdue runbook runs (B3) ─────────────────────────────────────────
+
+    private async Task ReconcileOverdueRunbookRunsAsync(
+        KrakenDbContext db, DateTimeOffset now, CancellationToken ct)
+    {
+        // 4a — dispatch died PRE-hand-off: Running with an EXPIRED lease. The
+        // worker holds (and renews) the lease only between the atomic claim and
+        // the RunDeploymentAsync push; an expired lease means that process died
+        // and the plan never reached the agent. Step 3 deliberately excludes
+        // runbook runs because a RELEASED lease is their normal agent-owned
+        // state — this is their equivalent for the pre-hand-off window.
+        var preHandoffOrphans = await db.RunbookRuns
+            .IgnoreQueryFilters()
+            .Where(r => r.Status == DeploymentStatus.Running
+                     && r.LeaseUntil != null && r.LeaseUntil < now)
+            .Select(r => new { r.Id, r.ClaimedBy, r.LeaseUntil })
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        foreach (var orphan in preHandoffOrphans)
+        {
+            // Conditional flip — fail-closed against racing a live owner that
+            // renewed or handed off between the SELECT and this UPDATE.
+            var rows = await db.RunbookRuns
+                .IgnoreQueryFilters()
+                .Where(r => r.Id == orphan.Id
+                         && r.Status == DeploymentStatus.Running
+                         && r.LeaseUntil != null && r.LeaseUntil < now)
+                .ExecuteUpdateAsync(s => s
+                        .SetProperty(r => r.Status, DeploymentStatus.Failed)
+                        .SetProperty(r => r.CompletedUtc, now)
+                        .SetProperty(r => r.ClaimedBy, (string?)null)
+                        .SetProperty(r => r.LeaseUntil, (DateTimeOffset?)null),
+                    ct)
+                .ConfigureAwait(false);
+            if (rows == 0)
+            {
+                continue;
+            }
+
+            logger.LogWarning(
+                "Dispatch reconcile: runbook run {Id} was Running with an expired lease " +
+                "(owner {Owner}, lease {Lease}) — the dispatching process died before the " +
+                "agent hand-off; marked Failed.",
+                orphan.Id, orphan.ClaimedBy ?? "<none>", orphan.LeaseUntil);
+
+            await auditLog.RecordAsync(
+                AuditEventType.RunbookRunInterrupted,
+                subjectType: "RunbookRun",
+                subjectId:   orphan.Id.ToString(),
+                details:     $"Interrupted by server crash/restart: the dispatch lease " +
+                             $"(owner {orphan.ClaimedBy ?? "<none>"}, expiry " +
+                             $"{orphan.LeaseUntil?.ToString("O") ?? "<never stamped>"}) expired " +
+                             "before the agent hand-off; the plan never reached the agent. " +
+                             "Marked Failed.",
+                ct:          ct).ConfigureAwait(false);
+        }
+
+        // 4b — agent-owned run never finished: the lease is RELEASED at
+        // hand-off and the hub finalizes on the agent's completion callback.
+        // If the agent died (or lost the run) nothing else can ever finalize
+        // the row, so a run older than Engine:MaxRunbookRunDuration is failed.
+        // The B2 agent buffers and re-sends completions across reconnects, so
+        // a run still genuinely in flight is finalized by the flush long before
+        // a sane ceiling; a late completion AFTER this reap is swallowed by the
+        // hub's IsTerminal guard.
+        var ceiling = engineOptions.Value.MaxRunbookRunDuration;
+        if (ceiling <= TimeSpan.Zero)
+        {
+            // Non-positive config would reap everything instantly — keep a
+            // ceiling rather than reintroducing the unbounded hang.
+            ceiling = TimeSpan.FromHours(1);
+        }
+        var overdueBefore = now - ceiling;
+
+        var overdue = await db.RunbookRuns
+            .IgnoreQueryFilters()
+            .Where(r => r.Status == DeploymentStatus.Running
+                     && r.LeaseUntil == null
+                     && r.StartedUtc != null && r.StartedUtc < overdueBefore)
+            .Select(r => new { r.Id, r.StartedUtc })
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        foreach (var run in overdue)
+        {
+            var rows = await db.RunbookRuns
+                .IgnoreQueryFilters()
+                .Where(r => r.Id == run.Id
+                         && r.Status == DeploymentStatus.Running
+                         && r.LeaseUntil == null)
+                .ExecuteUpdateAsync(s => s
+                        .SetProperty(r => r.Status, DeploymentStatus.Failed)
+                        .SetProperty(r => r.CompletedUtc, now),
+                    ct)
+                .ConfigureAwait(false);
+            if (rows == 0)
+            {
+                continue;
+            }
+
+            logger.LogWarning(
+                "Dispatch reconcile: runbook run {Id} started {Started} and never reported " +
+                "completion within {Ceiling} — marked Failed.",
+                run.Id, run.StartedUtc, ceiling);
+
+            await auditLog.RecordAsync(
+                AuditEventType.RunbookRunTimedOut,
+                subjectType: "RunbookRun",
+                subjectId:   run.Id.ToString(),
+                details:     $"Agent never reported completion: started {run.StartedUtc:O}, " +
+                             $"exceeded Engine:MaxRunbookRunDuration ({ceiling}). Marked Failed. " +
+                             "A late agent completion will be ignored (terminal-status guard).",
                 ct:          ct).ConfigureAwait(false);
         }
     }
