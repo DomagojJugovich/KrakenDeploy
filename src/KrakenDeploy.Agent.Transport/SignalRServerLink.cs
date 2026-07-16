@@ -324,8 +324,19 @@ public sealed class SignalRServerLink : IServerLink
 
     // ── IAsyncDisposable ───────────────────────────────────────────────────
 
+    private int _disposed;
+
     public async ValueTask DisposeAsync()
     {
+        // Idempotent: the agent host registers this singleton under BOTH
+        // SignalRServerLink and IServerLink, so the DI container disposes the
+        // same instance twice — the second pass must be a no-op (the CTS
+        // below is not double-dispose-safe).
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _deliberateStop = true;
 
         await _pumpCts.CancelAsync().ConfigureAwait(false);
