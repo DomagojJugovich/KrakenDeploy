@@ -380,6 +380,10 @@ public sealed class StepBuilder
     // B3 — explicit per-step timeout / retry knobs for deadline + retry tests.
     public int TimeoutSeconds { get; init; }
     public int MaxRetries { get; init; }
+    // B4 — Run Condition (e.g. Always for cleanup steps consuming a failed
+    // step's outputs).
+    public KrakenDeploy.Execution.StepCondition Condition { get; init; }
+        = KrakenDeploy.Execution.StepCondition.Success;
 
     public static StepBuilder Script(string name, bool required = true)
         => new() { Name = name, StepType = "Octopus.Script", Required = required };
@@ -425,6 +429,7 @@ public sealed class StepBuilder
         PackageVersion = "",
         TimeoutSeconds = TimeoutSeconds,
         MaxRetries     = MaxRetries,
+        Condition      = Condition,
     };
 }
 

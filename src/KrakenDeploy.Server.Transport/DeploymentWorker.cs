@@ -544,10 +544,18 @@ public sealed class DeploymentWorker(
             // T0-6: value-based log redactor for server-side steps. Built once
             // from the canonical plan's sensitive values (identical across
             // targets — only substituted Configs differ, not which variables are
-            // sensitive). Server steps capture no output variables today
-            // (see RunServerStepWithRetriesAsync docs), so a static redactor is
-            // complete. Threaded into RunServerWaveAsync → ServerScriptStepRunner.
+            // sensitive). B4: sensitive CAPTURED outputs are folded in live by
+            // the output accumulator below, mirroring the agent's live fold.
+            // Threaded into RunServerWaveAsync → ServerScriptStepRunner.
             var serverRedactor = SecretRedactor.ForPlan(canonicalCtx.Plan);
+
+            // B4 (T0-4) — online cross-wave output propagation. Captured
+            // outputs from each wave fold in here and augment every subsequent
+            // dispatch (per-target sub-plan Variables + SensitiveVariableNames,
+            // server-wave env view, Variable run-condition bags). Mirrors the
+            // agent's within-dispatch accumulator so online == offline.
+            var outputAccumulator = new DeploymentOutputAccumulator(
+                contexts, canonicalCtx.VarDict, serverRedactor);
 
             foreach (var wave in waves)
             {
@@ -586,10 +594,14 @@ public sealed class DeploymentWorker(
                     // single-execution semantic. Operators authoring server
                     // steps in a multi-target deployment see the canonical
                     // target's machine context (same as single-target).
+                    // B4: server waves evaluate conditions against the
+                    // accumulator's server bag (canonical clone + output keys)
+                    // and receive an env view with prior outputs merged in.
                     var serverOutcomes = await RunServerWaveAsync(
                         wave, canonicalCtx.SnapshotByPlanIndex, hasFailed,
-                        canonicalCtx.VarDict, deployment, db, auditLog, logSeq,
-                        canonicalCtx.FlatVars, serverRedactor, ct).ConfigureAwait(false);
+                        outputAccumulator.ServerConditionVarDict, deployment, db, auditLog, logSeq,
+                        outputAccumulator.AugmentServerVariables(canonicalCtx.FlatVars),
+                        serverRedactor, ct).ConfigureAwait(false);
 
                     var firstRequiredFailure = serverOutcomes.FirstOrDefault(o =>
                         !o.Skipped && !o.Ok && canonicalCtx.SnapshotByPlanIndex[o.Step.Index].Required);
@@ -635,7 +647,7 @@ public sealed class DeploymentWorker(
                     var targetWaveResult = await DispatchTargetWaveAcrossTargetsAsync(
                         wave, aliveTargets, contexts, canonicalCtx.SnapshotByPlanIndex,
                         snapshotById, failureMode, hasFailed, softFailedTargets, deployment,
-                        db, auditLog, logSeq, ct).ConfigureAwait(false);
+                        db, auditLog, logSeq, outputAccumulator, ct).ConfigureAwait(false);
 
                     foreach (var dropped in targetWaveResult.DroppedTargets)
                     {
@@ -2445,6 +2457,7 @@ public sealed class DeploymentWorker(
         KrakenDbContext db,
         IAuditLog auditLog,
         LogSequencer logSeq,
+        DeploymentOutputAccumulator outputAccumulator,
         CancellationToken ct)
     {
         // ── Per-target Condition + role filter ─────────────────────────
@@ -2625,7 +2638,7 @@ public sealed class DeploymentWorker(
             }
 
             var batchOutcome = await DispatchOneBatchAsync(
-                batch, deployment, db, auditLog, logSeq, ct).ConfigureAwait(false);
+                batch, deployment, db, auditLog, logSeq, outputAccumulator, ct).ConfigureAwait(false);
 
             // Phase 3 — accumulate drop-outs from this batch into the
             // wave's aggregate; subsequent batches still run (a failed
@@ -2681,6 +2694,7 @@ public sealed class DeploymentWorker(
         KrakenDbContext db,
         IAuditLog auditLog,
         LogSequencer logSeq,
+        DeploymentOutputAccumulator outputAccumulator,
         CancellationToken ct)
     {
         var waveStartedUtc = DateTimeOffset.UtcNow;
@@ -2688,8 +2702,13 @@ public sealed class DeploymentWorker(
         {
             var (ctx, stepsToRun) = tuple;
             var connectionId = registry.GetConnectionId(ctx.Target.Id)!;
+            // B4: this wave's sub-plan carries every prior wave's captured
+            // outputs for THIS target (merged Variables + sensitive names) —
+            // the agent's handlers and $OctopusParameters resolve them exactly
+            // like the offline whole-plan path.
+            var augmentedPlan = outputAccumulator.AugmentPlanForTarget(ctx.Target.Id, ctx.Plan);
             var (waveResult, waveTimedOut, perStepResults) = await DispatchTargetWaveAsync(
-                ctx.Plan, stepsToRun, ctx.SnapshotByPlanIndex, deployment,
+                augmentedPlan, stepsToRun, ctx.SnapshotByPlanIndex, deployment,
                 ctx.Target.Id, connectionId, auditLog, logSeq, ct)
                 .ConfigureAwait(false);
             return (ctx, stepsToRun, waveResult, waveTimedOut, perStepResults);
@@ -2747,6 +2766,15 @@ public sealed class DeploymentWorker(
                     targetId:     ctx.Target.Id).ConfigureAwait(false);
             }
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+            // B4: fold this target's captured outputs so LATER waves' dispatches
+            // (and server waves / run conditions) see them. Captures fold
+            // regardless of step success — parity with the agent's accumulator.
+            foreach (var r in perStepResults)
+            {
+                outputAccumulator.RecordTargetStep(
+                    ctx.Target.Id, r.StepName, r.Outputs, r.SensitiveOutputNames);
+            }
 
             await EmitWaveCollisionsAsync(
                 perStepResults, stepsToRun, deployment, db, auditLog, logSeq, ct)
