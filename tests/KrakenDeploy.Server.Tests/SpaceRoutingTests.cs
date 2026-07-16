@@ -50,6 +50,7 @@ public sealed class SpaceRoutingTests
     [InlineData("/hubs/agent", true)]
     [InlineData("/hangfire", true)]
     [InlineData("/healthz", true)]
+    [InlineData("/health/ready", true)]      // C3/P1 deep readiness — must not be 302'd into /s/default/…
     [InlineData("/login", true)]
     [InlineData("/logout", true)]
     [InlineData("/Error", true)]

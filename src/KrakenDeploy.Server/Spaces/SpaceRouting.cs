@@ -123,6 +123,11 @@ public static class SpaceRouting
         "/hubs",
         "/hangfire",
         "/healthz",
+        // C3/P1 — /health/ready (deep readiness). Its first segment is "health",
+        // not "healthz", so the /healthz prefix above does NOT cover it; without
+        // this entry SpaceUrlRedirectMiddleware would 302 the probe into
+        // /s/default/health/ready (the same trap that hid the agent gRPC calls).
+        "/health",
         // Blue-green slot telemetry — an infra probe endpoint like /healthz
         // (queried by the drain-watcher), never a Space-scoped page.
         "/slot-metrics",
