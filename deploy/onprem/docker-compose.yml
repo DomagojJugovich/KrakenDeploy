@@ -89,6 +89,16 @@ services:
       Encryption__MasterKey: ${ENCRYPTION_KEY:?Required — base64-encoded 32 bytes}
       KRAKEN_LICENSE_KEY: ${KRAKEN_LICENSE_KEY:-}
       Server__HaMode: ${HA_MODE:-}
+      # A7/T1-14: the image is Linux (no DPAPI), so the DataProtection key ring
+      # MUST be encrypted at rest with an operator-provided X.509 cert —
+      # otherwise anyone who can read the key directory can forge auth +
+      # antiforgery cookies, and the server refuses to boot in Production. The
+      # PFX is mounted read-only from a host path (DP_CERT_PATH) that is
+      # DELIBERATELY OUTSIDE the kraken-data volume: co-locating the key with
+      # the ring it protects would defeat the point. See the README for how to
+      # generate one. (In an HA pair every node must mount the SAME cert.)
+      DataProtection__CertificatePath: /etc/krakendeploy/dp-cert.pfx
+      DataProtection__CertificatePassword: ${DP_CERT_PASSWORD:-}
       DOTNET_ENVIRONMENT: Production
       # B8: cleartext has no ALPN, so ONE plaintext port cannot serve HTTP/1.1
       # (REST/SignalR/UI via Caddy) and HTTP/2 (the agents' gRPC h2c hop that
@@ -103,6 +113,9 @@ services:
       Kestrel__Endpoints__Grpc__Protocols: Http2
     volumes:
       - kraken-data:/var/lib/krakendeploy
+      # Operator-provided DataProtection cert, read-only. DP_CERT_PATH is a host
+      # path to a PFX kept OUTSIDE the data volume (see the env note above).
+      - ${DP_CERT_PATH:?Required — host path to the DataProtection PFX; see deploy/onprem/README.md}:/etc/krakendeploy/dp-cert.pfx:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:5080/healthz || exit 1"]
       interval: 15s

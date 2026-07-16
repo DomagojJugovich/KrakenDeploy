@@ -20,17 +20,47 @@ COMPOSE_FILE="docker-compose.smoke.yml"
 COMPOSE="docker compose -p krakendeploy-smoke -f $COMPOSE_FILE"
 SERVER_URL="http://localhost:5080"
 TIMEOUT_SEC=90
+# Throwaway DataProtection cert for the run — see step 0. A relative path so
+# the compose file's bind mount resolves it (compose dir == repo root).
+DP_CERT_FILE=".smoke-dp.pfx"
+export DP_CERT_PASSWORD="smoke-dp-pass"
 
 cleanup() {
     echo ""
     echo "--- Tearing down smoke environment ---"
     $COMPOSE down -v --remove-orphans 2>/dev/null || true
+    rm -f "$DP_CERT_FILE" .smoke-dp-key.pem .smoke-dp-crt.pem
 }
 trap cleanup EXIT
 
 echo "======================================"
 echo " KrakenDeploy Smoke Test"
 echo "======================================"
+
+# ── 0. Generate a throwaway DataProtection cert ─────────────────────────────
+# The server is Linux (no DPAPI); production requires an operator-provided PFX
+# to encrypt the key ring. The smoke generates a self-signed one and feeds it
+# via DataProtection__CertificatePath (see docker-compose.smoke.yml) so the
+# real ProtectKeysWithCertificate path is exercised, not the dev bypass. The
+# cert is world-readable on purpose (the container's non-root user must read
+# the bind-mounted file) and is a disposable test key.
+echo ""
+echo "[0/6] Generating a throwaway DataProtection cert..."
+# MSYS_NO_PATHCONV=1: on Git-Bash (Windows) MSYS2 would path-translate the
+# leading "/" in -subj into "C:/Program Files/Git/CN=..."; it is a no-op on
+# Linux (CI). Intermediates are relative (no leading slash) so they aren't
+# mangled either. Errors are NOT silenced — a generation failure must be
+# visible, not a set -e teardown at step 0.
+MSYS_NO_PATHCONV=1 openssl req -x509 -newkey rsa:2048 -keyout .smoke-dp-key.pem \
+    -out .smoke-dp-crt.pem -days 1 -nodes -subj "/CN=krakendeploy-smoke-dp"
+openssl pkcs12 -export -out "$DP_CERT_FILE" \
+    -inkey .smoke-dp-key.pem -in .smoke-dp-crt.pem \
+    -passout "pass:${DP_CERT_PASSWORD}"
+rm -f .smoke-dp-key.pem .smoke-dp-crt.pem
+# World-readable: the bind-mounted file is read by the container's non-root
+# `kraken` user, and the PFX is password-protected anyway.
+chmod 644 "$DP_CERT_FILE"
+echo "      Cert written to $DP_CERT_FILE."
 
 # ── 1. Build images ────────────────────────────────────────────────────────
 echo ""

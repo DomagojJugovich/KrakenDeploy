@@ -39,9 +39,49 @@ Internet → :80/:443 → Caddy → kraken-server:5080 → Postgres:5432
 | `AGENT_JWT_KEY` | Yes | Minimum 32 chars — agent authentication signing key |
 | `ENCRYPTION_KEY` | Yes | Base64 32 bytes — the master key (KEK) that wraps the DB-resident data-encryption key. See the warning below. |
 | `KRAKEN_LICENSE_KEY` | No | License key (can also be uploaded via UI) |
+| `DP_CERT_PATH` | Yes | Host path to the DataProtection PFX (Linux key-ring encryption). See below. |
+| `DP_CERT_PASSWORD` | No | Password for the PFX (recommended) |
 | `DOMAIN` | No | Public domain for auto-HTTPS (defaults to localhost) |
 | `HA_MODE` | No | Set to "Postgres" for a 2-node HA pair |
 | `SERVER_IMAGE` | No | Docker image tag (default: krakendeploy-server:latest) |
+
+### DataProtection certificate (required on Linux)
+
+The server runs in a Linux container, which has no Windows DPAPI, so the
+ASP.NET DataProtection key ring — the keys that sign and encrypt auth and
+antiforgery cookies — is encrypted at rest with an X.509 certificate. Without
+one the ring would be plaintext on disk and anyone who could read the key
+directory could forge login cookies, so the server **refuses to boot in
+production without it**.
+
+Provide your own PFX (from your PKI or a self-signed one) and keep it **outside
+the `kraken-data` volume** — co-locating the key with the ring it protects
+defeats the purpose. Generate a self-signed one valid for 10 years:
+
+```bash
+mkdir -p secrets
+openssl req -x509 -newkey rsa:2048 -keyout secrets/dp-key.pem \
+  -out secrets/dp-crt.pem -days 3650 -nodes -subj "/CN=krakendeploy-dataprotection"
+openssl pkcs12 -export -out secrets/dp-cert.pfx \
+  -inkey secrets/dp-key.pem -in secrets/dp-crt.pem -passout pass:CHANGE_ME
+rm secrets/dp-key.pem secrets/dp-crt.pem   # the PFX is self-contained
+chmod 644 secrets/dp-cert.pfx              # readable by the container's non-root user
+```
+
+The PFX must be **world-readable** (`chmod 644`): it is mounted read-only and
+read by the container's non-root `kraken` user, and the password (not the file
+permissions) is what protects it.
+
+Then in `.env`: `DP_CERT_PATH=./secrets/dp-cert.pfx` and
+`DP_CERT_PASSWORD=CHANGE_ME`. Back the PFX up independently — losing it logs
+every user out (a new ring is generated), but it is not catastrophic like
+`ENCRYPTION_KEY`. In an **HA pair**, every node must mount the **same** PFX so
+they can read each other's cookies. On a **Windows** host DPAPI is used
+automatically and no cert is needed.
+
+> A future guided on-prem installer is planned to offer generating this
+> certificate (and `ENCRYPTION_KEY`) during setup; until then it is a manual
+> prerequisite.
 
 > **⚠ ENCRYPTION_KEY is not in the backup — preserve it separately.**
 > `ENCRYPTION_KEY` is an **env-only KEK**. Every sensitive value in the database
