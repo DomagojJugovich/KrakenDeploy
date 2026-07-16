@@ -90,11 +90,35 @@ never worked anywhere** — three stacked defects, fixed in this WP:
    build output). Anchored to `AppContext.BaseDirectory`; a local boot now
    installs the 7 built-ins on first run.
 
+And two **product defects in the agent gRPC path itself** — dead in every
+full-pipeline deployment, invisible to every fake-side test (including this
+WP's own round-trip host, which doesn't run the full middleware pipeline):
+
+4. **Space-redirect ate gRPC** — `SpaceUrlRedirectMiddleware` 302-redirected
+   every `/krakendeploy.v1.<Service>/<Method>` call into `/s/default/…` (a
+   dotted *first* segment defeats segment matching; a dot-less *method*
+   segment defeats the asset heuristic), and the gRPC client followed the
+   redirect as a GET into the UI's 401. Package, step-package and artifact
+   transfer have been broken since the Space-in-URL feature landed. Fixed
+   with a literal prefix check.
+5. **One cleartext port can't serve HTTP/1.1 + HTTP/2** — no TLS ⇒ no ALPN;
+   Kestrel answers the h2 preface on a mixed plaintext endpoint with
+   `HTTP_1_1_REQUIRED`, so the Caddy topology's assumed
+   `h2c://kraken-server:5080` hop never worked. The server now exposes a
+   dedicated Http2-only h2c endpoint (5081), the agent gained an optional
+   `Server:GrpcUrl` (falls back to `Server:Url`; irrelevant over https), and
+   the smoke + on-prem compose + Caddyfile use the split. The Kestrel
+   endpoints must be **config** endpoints — `ASPNETCORE_URLS` ones ignore
+   protocol configuration. (The on-prem/Caddy edits mirror the
+   smoke-verified mechanism but were not run locally.)
+
 Plus two environmental traps: the smoke agent could not even boot against
 the in-compose `http://` server since A8's cleartext hardening (CI never
 saw it — origin/main predates A8), and the smoke's default compose project
 name made its `down -v --remove-orphans` remove a developer's unrelated
-local `krakendeploy-*` containers — it now uses a dedicated `-p`.
+local `krakendeploy-*` containers — it now uses a dedicated `-p`. Both
+containers also need the images' pre-chowned writable `DataPath` (non-root
+users; audit T0-9's unwritable-DataPath observed in the wild).
 
 ## Verification notes
 
