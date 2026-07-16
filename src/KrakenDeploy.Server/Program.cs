@@ -141,6 +141,28 @@ public static class Program
     {
         var builder = WebApplication.CreateBuilder(args);
 
+        // ── DI validation (C3/T1-18) ─────────────────────────────────────────
+        // Validate the service graph in EVERY environment, not just Development.
+        // WebApplication.CreateBuilder turns ValidateScopes + ValidateOnBuild on
+        // in Development only, so a captive-dependency / unresolvable-service
+        // defect that Dev catches at build would slip to a first-resolution
+        // runtime failure in Production. This codebase has had captive-dependency
+        // cascades before (a Singleton capturing the Scoped IDbContextFactory —
+        // see AgentCancelPusher / DekProvider), so fail the boot, not the request.
+        //   * ValidateOnBuild — validates every registered descriptor at build.
+        //     Note: it does NOT validate middleware activation (conventional
+        //     middleware is built once from the root provider), so those still
+        //     surface at host start — hence the boot check, not just a build.
+        //   * ValidateScopes — throws when a scoped service is resolved from the
+        //     root scope (the captive-dependency footgun).
+        // The CLI host (Commands/CliHost.cs) deliberately keeps ValidateOnBuild
+        // OFF: CLI commands register only a subset of the graph.
+        builder.Host.UseDefaultServiceProvider(options =>
+        {
+            options.ValidateScopes = true;
+            options.ValidateOnBuild = true;
+        });
+
         // ── Serilog ─────────────────────────────────────────────────────────
         // ReadFrom.Configuration picks up the "Serilog" section in appsettings
         // (level overrides, minimum level, etc.).  ReadFrom.Services enables
