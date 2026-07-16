@@ -153,7 +153,7 @@ public sealed class StepPackageCatalogServiceTests(PostgresFixture postgres)
     {
         var configValues = new Dictionary<string, string?>
         {
-            ["DataPath"]                          = Path.Combine(Path.GetTempPath(),
+            ["Server:DataPath"]                          = Path.Combine(Path.GetTempPath(),
                 $"kraken-catalog-test-{Guid.NewGuid():N}"),
             ["StepPackages:AllowUnsignedUploads"] = "true",
             ["StepPackages:Catalog:Owner"]        = "KrakenDeploy",

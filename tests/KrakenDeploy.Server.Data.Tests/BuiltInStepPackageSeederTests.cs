@@ -117,7 +117,7 @@ public sealed class BuiltInStepPackageSeederTests(PostgresFixture postgres)
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["DataPath"]                        = dataDir,
+                ["Server:DataPath"]                        = dataDir,
                 ["StepPackages:SeedDirectory"]      = seedDir,
                 ["StepPackages:AllowUnsignedUploads"] = "true",
             })

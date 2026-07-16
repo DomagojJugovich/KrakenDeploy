@@ -152,7 +152,7 @@ public sealed class StepPackageBulkUpgradeTests(PostgresFixture postgres)
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["DataPath"]                          = Path.Combine(
+                ["Server:DataPath"]                          = Path.Combine(
                     Path.GetTempPath(), $"kraken-bulk-{Guid.NewGuid():N}"),
                 ["StepPackages:AllowUnsignedUploads"] = "true",
             })

@@ -105,7 +105,7 @@ public sealed class StepPackageChangelogTests(PostgresFixture postgres)
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["DataPath"]                          = _dataDir,
+                ["Server:DataPath"]                          = _dataDir,
                 ["StepPackages:AllowUnsignedUploads"] = "true",
             })
             .Build();
