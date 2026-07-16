@@ -65,14 +65,14 @@ public sealed class ServerScriptStepTimeoutTests(PostgresFixture postgres)
 
         // Mirror DeploymentWorker.RunServerStepWithRetriesAsync: StepRetryRunner
         // wraps the runner with a per-attempt timeout (1s) and no retries.
-        var outcome = await StepRetryRunner.RunAsync<bool>(
+        var outcome = await StepRetryRunner.RunAsync<ServerScriptResult>(
             stepName:                step.Name,
             maxRetries:              0,
             retryDelaySeconds:       0,
             timeoutSeconds:          1,
             runAttempt:              ct => runner.ExecuteAsync(Guid.NewGuid(), step, planVars, new SecretRedactor(), ct),
-            isSuccess:               ok => ok,
-            onTimeoutResult:         () => false,
+            isSuccess:               r => r.Success,
+            onTimeoutResult:         () => ServerScriptResult.Failure,
             onAttemptTimedOutAsync:  null,
             onRetryAsync:            null,
             onLateSuccessAsync:      null,
@@ -82,6 +82,6 @@ public sealed class ServerScriptStepTimeoutTests(PostgresFixture postgres)
             "a server-side script step that exceeds TimeoutSeconds must surface as " +
             "TimedOut — RunServerWaveAsync maps this to StepOutcomeKind.TimedOut + the " +
             "DeploymentStepTimedOut audit — instead of being swallowed into a Failed");
-        outcome.Result.Should().BeFalse("the timed-out attempt is a failed result");
+        outcome.Result.Success.Should().BeFalse("the timed-out attempt is a failed result");
     }
 }

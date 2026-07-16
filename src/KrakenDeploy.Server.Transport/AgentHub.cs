@@ -426,7 +426,6 @@ public sealed class AgentHub(
         ArgumentNullException.ThrowIfNull(outputVariables);
         // Older agents / offline JSON may omit the sensitive-name list.
         sensitiveOutputNames ??= [];
-        var sensitiveSet = new HashSet<string>(sensitiveOutputNames, StringComparer.OrdinalIgnoreCase);
 
         // Register the per-step outcome with the sub-plan registry FIRST so
         // even if DB persistence fails, the orchestrator gets attribution
@@ -487,43 +486,12 @@ public sealed class AgentHub(
             return;
         }
 
-        if (outputVariables.Count > 0)
-        {
-            var spaceId = scope.SpaceId;
-            var existing = await db.TaskOutputVariables
-                .Where(o => o.TaskId == deploymentId && o.StepName == stepName)
-                .ToDictionaryAsync(o => o.Name, StringComparer.OrdinalIgnoreCase)
-                .ConfigureAwait(false);
-
-            foreach (var (name, value) in outputVariables)
-            {
-                // T0-6: a sensitive output is stored encrypted (never plaintext);
-                // the read path masks it. Non-sensitive values are stored as-is.
-                var isSensitive = sensitiveSet.Contains(name);
-                var storedValue = isSensitive ? encryption.Encrypt(value) : value;
-                if (existing.TryGetValue(name, out var row))
-                {
-                    row.Value = storedValue;
-                    row.IsSensitive = isSensitive;
-                    row.CapturedUtc = capturedAt;
-                }
-                else
-                {
-                    db.TaskOutputVariables.Add(new TaskOutputVariable
-                    {
-                        SpaceId     = spaceId,
-                        TaskId      = deploymentId,
-                        StepName    = stepName,
-                        Name        = name,
-                        Value       = storedValue,
-                        IsSensitive = isSensitive,
-                        CapturedUtc = capturedAt,
-                    });
-                }
-            }
-
-            await db.SaveChangesAsync().ConfigureAwait(false);
-        }
+        // B4: single upsert path shared with the server-side capture fold
+        // (DeploymentWorker / ServerScriptStepRunner) — same encryption rules.
+        await TaskOutputVariableStore.UpsertAsync(
+            db, deploymentId, scope.SpaceId, stepName,
+            outputVariables, sensitiveOutputNames, capturedAt, encryption)
+            .ConfigureAwait(false);
 
         // Step-completion compaction (decision 3): fold this (task, step, target)'s
         // staging log lines into a single blob. No-op when the step logged nothing.

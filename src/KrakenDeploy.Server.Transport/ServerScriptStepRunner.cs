@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Contracts.Logging;
+using KrakenDeploy.Execution;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
@@ -12,6 +13,23 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace KrakenDeploy.Server.Transport;
+
+/// <summary>
+/// One server-side script execution's result: exit-code success plus the
+/// output variables captured from <c>##octopus[setVariable]</c> stdout
+/// markers (B4/T1-6) with their sensitive subset (T0-6). Failure paths carry
+/// empty captures.
+/// </summary>
+public sealed record ServerScriptResult(
+    bool Success,
+    IReadOnlyDictionary<string, string> Outputs,
+    IReadOnlyCollection<string> SensitiveOutputNames)
+{
+    public static ServerScriptResult Failure { get; } = new(
+        false,
+        new Dictionary<string, string>(),
+        []);
+}
 
 /// <summary>
 /// Executes <c>Octopus.Action.RunOnServer = "true"</c> script steps in the
@@ -33,11 +51,15 @@ public sealed class ServerScriptStepRunner(
     ILogger<ServerScriptStepRunner> logger)
 {
     /// <summary>
-    /// Runs <paramref name="step"/> in the server process. Returns
-    /// <c>true</c> on exit code 0. Logs are streamed to the deployment's log
-    /// and to the live-log UI hub.
+    /// Runs <paramref name="step"/> in the server process. Success = exit
+    /// code 0. Logs are streamed to the deployment's log and to the live-log
+    /// UI hub. B4/T1-6: <c>##octopus[setVariable]</c> markers in stdout are
+    /// captured as output variables via the shared
+    /// <see cref="OctopusMessageParser"/> — exactly like the agent — and the
+    /// marker line itself is CONSUMED, never logged (pre-B4 the raw marker,
+    /// including the base64 of a sensitive value, landed in the task log).
     /// </summary>
-    public async Task<bool> ExecuteAsync(
+    public async Task<ServerScriptResult> ExecuteAsync(
         Guid deploymentId,
         DeploymentStepPlan step,
         IReadOnlyDictionary<string, string> planVariables,
@@ -55,7 +77,7 @@ public sealed class ServerScriptStepRunner(
         {
             await AppendLogAsync(deploymentId, step.Index, "error",
                 "Step has no script body.", redactor, ct).ConfigureAwait(false);
-            return false;
+            return ServerScriptResult.Failure;
         }
 
         // Env vars: plan variables + current-step keys (mirror of agent's
@@ -108,12 +130,55 @@ public sealed class ServerScriptStepRunner(
             using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
             var pending = new List<Task>();
 
+            // B4 — captured output variables. OutputDataReceived events for one
+            // stream are raised serially, so the dict/list/sticky-level need no
+            // locking; stderr never carries markers and stays a plain pipe.
+            var captured = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var sensitiveNames = new List<string>();
+            var stickyLevel = "info";
+
             process.OutputDataReceived += (_, e) =>
             {
-                if (e.Data is not null)
+                if (e.Data is null)
                 {
-                    pending.Add(AppendLogAsync(deploymentId, step.Index, "info", e.Data, redactor, ct));
+                    return;
                 }
+
+                switch (OctopusMessageParser.TryParse(e.Data))
+                {
+                    case SetVariableMessage v:
+                        captured[v.Name] = v.Value;
+                        if (v.Sensitive)
+                        {
+                            if (!sensitiveNames.Contains(v.Name, StringComparer.OrdinalIgnoreCase))
+                            {
+                                sensitiveNames.Add(v.Name);
+                            }
+                            // Mask the value in every SUBSEQUENT line immediately
+                            // (agent parity — T0-6 live fold).
+                            if (v.Value.Length > 0)
+                            {
+                                redactor.Add([v.Value]);
+                            }
+                        }
+                        return; // marker consumed — never logged
+                    case SetLogLevelMessage l:
+                        stickyLevel = l.Level;
+                        return;
+                    case CreateArtifactMessage a:
+                        // Server-side steps have no artifact collection dir; the
+                        // marker is surfaced informationally (agent parity).
+                        pending.Add(AppendLogAsync(deploymentId, step.Index, "info",
+                            $"[Artifact] {a.Name} ({a.Path})", redactor, ct));
+                        return;
+                    case ProgressMessage p:
+                        pending.Add(AppendLogAsync(deploymentId, step.Index, "info",
+                            $"[Progress {p.Percentage}%] {p.Message}", redactor, ct));
+                        return;
+                    // UnknownMessage / null: plain log line — fall through.
+                }
+
+                pending.Add(AppendLogAsync(deploymentId, step.Index, stickyLevel, e.Data, redactor, ct));
             };
             process.ErrorDataReceived += (_, e) =>
             {
@@ -135,7 +200,7 @@ public sealed class ServerScriptStepRunner(
                 success ? "info" : "error",
                 success ? $"Step '{step.Name}' succeeded." : $"Step '{step.Name}' failed (exit {process.ExitCode}).",
                 redactor, ct).ConfigureAwait(false);
-            return success;
+            return new ServerScriptResult(success, captured, sensitiveNames);
         }
         catch (OperationCanceledException)
         {
@@ -155,7 +220,7 @@ public sealed class ServerScriptStepRunner(
                 step.Name, deploymentId);
             await AppendLogAsync(deploymentId, step.Index, "error",
                 $"Server-side execution crashed: {ex.Message}", redactor, ct).ConfigureAwait(false);
-            return false;
+            return ServerScriptResult.Failure;
         }
         finally
         {

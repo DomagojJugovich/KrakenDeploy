@@ -130,6 +130,10 @@ public sealed class DeploymentWorker(
         var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
         var spaceContext = scope.ServiceProvider.GetRequiredService<ISpaceContext>();
         var variableService = scope.ServiceProvider.GetRequiredService<VariableService>();
+        // B4: server-side captures persist through the shared output store,
+        // which encrypts sensitive values at rest (T0-6).
+        var encryption = scope.ServiceProvider
+            .GetRequiredService<KrakenDeploy.Server.Core.Domain.Variables.IEncryptionService>();
         var serverBaseUrl = scope.ServiceProvider
             .GetRequiredService<IConfiguration>()["Server:BaseUrl"];
 
@@ -603,6 +607,24 @@ public sealed class DeploymentWorker(
                         outputAccumulator.AugmentServerVariables(canonicalCtx.FlatVars),
                         serverRedactor, ct).ConfigureAwait(false);
 
+                    // B4 (T1-6): fold server-step captures so later waves (agent
+                    // AND server) see them, and persist through the same store —
+                    // and encryption rules — the agent-report path uses.
+                    foreach (var o in serverOutcomes)
+                    {
+                        if (o.CapturedOutputs is not { Count: > 0 } capturedOutputs)
+                        {
+                            continue;
+                        }
+                        var stepKey = o.Step.AccumulatorKey ?? o.Step.Name;
+                        outputAccumulator.RecordServerStep(
+                            stepKey, capturedOutputs, o.SensitiveOutputNames);
+                        await TaskOutputVariableStore.UpsertAsync(
+                            db, deployment.Id, deployment.SpaceId, stepKey,
+                            capturedOutputs, o.SensitiveOutputNames,
+                            DateTimeOffset.UtcNow, encryption, ct).ConfigureAwait(false);
+                    }
+
                     var firstRequiredFailure = serverOutcomes.FirstOrDefault(o =>
                         !o.Skipped && !o.Ok && canonicalCtx.SnapshotByPlanIndex[o.Step.Index].Required);
                     if (firstRequiredFailure is not null)
@@ -1010,7 +1032,7 @@ public sealed class DeploymentWorker(
     /// <c>Octopus.DeployRelease</c>) route to a dedicated runner; everything
     /// else falls through to the generic <see cref="ServerScriptStepRunner"/>.
     /// </summary>
-    private Task<bool> ExecuteServerStepAsync(
+    private async Task<ServerScriptResult> ExecuteServerStepAsync(
         Guid deploymentId,
         DeploymentStepPlan step,
         IReadOnlyDictionary<string, string> flatVars,
@@ -1028,7 +1050,13 @@ public sealed class DeploymentWorker(
             // parent's Space — thread spaceId so CreateAsync stamps it and the
             // child-log polling resolves in the right Space. (The runner opens
             // its own DI scope, so the worker's WithSpace doesn't reach it.)
-            return deployReleaseRunner.ExecuteAsync(deploymentId, step, effectiveVars, spaceId, ct);
+            // DeployRelease captures no output variables (B4).
+            var ok = await deployReleaseRunner
+                .ExecuteAsync(deploymentId, step, effectiveVars, spaceId, ct)
+                .ConfigureAwait(false);
+            return ok
+                ? new ServerScriptResult(true, new Dictionary<string, string>(), [])
+                : ServerScriptResult.Failure;
         }
         // ServerScriptStepRunner only writes deployment-log rows and scopes those
         // short-lived writes itself (IgnoreQueryFilters + explicit SpaceId stamp),
@@ -1036,7 +1064,9 @@ public sealed class DeploymentWorker(
         // every log line the runner emits (T0-6). DeployRelease steps route to a
         // child deployment whose own worker run redacts its logs, so they don't
         // take the redactor here.
-        return serverRunner.ExecuteAsync(deploymentId, step, effectiveVars, redactor, ct);
+        return await serverRunner
+            .ExecuteAsync(deploymentId, step, effectiveVars, redactor, ct)
+            .ConfigureAwait(false);
     }
 
     private static IReadOnlyDictionary<string, string> OverlayStepVariables(
@@ -1180,16 +1210,13 @@ public sealed class DeploymentWorker(
     /// </para>
     ///
     /// <para>
-    /// <strong>Output variables on retry:</strong> server-side script
-    /// steps don't currently capture <c>Set-OctopusVariable</c> output
-    /// into <c>deployment_output_variables</c> (the <c>##octopus[setVariable]</c>
-    /// lines pass through as log entries verbatim), so there's nothing
-    /// to discard between retry attempts. When server-side output capture
-    /// lands, this is the place to clear the partial output bucket between
-    /// failed attempts.
+    /// <strong>Output variables on retry (B4):</strong> each attempt returns a
+    /// fresh <see cref="ServerScriptResult"/>, so only the FINAL attempt's
+    /// captures are returned — a failed attempt's partial outputs are
+    /// discarded naturally by the retry.
     /// </para>
     /// </summary>
-    private async Task<(bool Ok, bool TimedOut, int AttemptCount, DateTimeOffset StartedUtc)>
+    private async Task<(bool Ok, bool TimedOut, int AttemptCount, DateTimeOffset StartedUtc, ServerScriptResult Result)>
         RunServerStepWithRetriesAsync(
             Guid deploymentId,
             DeploymentStepPlan step,
@@ -1212,8 +1239,8 @@ public sealed class DeploymentWorker(
             snapshot.TimeoutSeconds,
             runAttempt: (CancellationToken attemptCt) =>
                 ExecuteServerStepAsync(deploymentId, step, flatVars, deployment.SpaceId, redactor, attemptCt),
-            isSuccess: ok => ok,
-            onTimeoutResult: () => false,
+            isSuccess: r => r.Success,
+            onTimeoutResult: () => ServerScriptResult.Failure,
             // Server surfaces the per-step timeout ONCE via the final TimedOut
             // (RunServerWaveAsync logs + audits it), not per timed-out attempt.
             onAttemptTimedOutAsync: null,
@@ -1239,8 +1266,9 @@ public sealed class DeploymentWorker(
                 $"{attemptCount.ToString(CultureInfo.InvariantCulture)} ---", ct),
             ct).ConfigureAwait(false);
 
-        return (Ok: outcome.Result, TimedOut: outcome.TimedOut,
-                AttemptCount: outcome.AttemptCount, StartedUtc: startedUtc);
+        return (Ok: outcome.Result.Success, TimedOut: outcome.TimedOut,
+                AttemptCount: outcome.AttemptCount, StartedUtc: startedUtc,
+                Result: outcome.Result);
     }
 
     private static async Task LogAndAuditStepSkippedAsync(
@@ -1573,7 +1601,12 @@ public sealed class DeploymentWorker(
         bool Ok,
         bool TimedOut,
         int AttemptCount,
-        DateTimeOffset? StartedUtc);
+        DateTimeOffset? StartedUtc,
+        // B4: output variables captured from ##octopus[setVariable] markers
+        // (final attempt only) + their sensitive subset. Null when the step
+        // was skipped or is a kind that captures nothing (DeployRelease).
+        IReadOnlyDictionary<string, string>? CapturedOutputs = null,
+        IReadOnlyCollection<string>? SensitiveOutputNames = null);
 
     /// <summary>
     /// Runs every step in a server-side wave concurrently. Each step retains
@@ -1672,7 +1705,7 @@ public sealed class DeploymentWorker(
         var stepTasks = toRun.Select(async s =>
         {
             var snap = snapshotSteps[s.Index];
-            var (ok, timedOut, attemptCount, startedUtc) =
+            var (ok, timedOut, attemptCount, startedUtc, result) =
                 await RunServerStepWithRetriesAsync(
                     deployment.Id, s, snap, deployment, auditLog,
                     logSeq, flatVars, redactor, ct).ConfigureAwait(false);
@@ -1687,7 +1720,9 @@ public sealed class DeploymentWorker(
                 Ok:           ok,
                 TimedOut:     timedOut,
                 AttemptCount: attemptCount,
-                StartedUtc:   startedUtc);
+                StartedUtc:   startedUtc,
+                CapturedOutputs:      result.Outputs,
+                SensitiveOutputNames: result.SensitiveOutputNames);
         }).ToArray();
 
         var outcomes = (await Task.WhenAll(stepTasks).ConfigureAwait(false)).ToList();
