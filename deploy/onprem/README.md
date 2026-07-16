@@ -37,30 +37,53 @@ Internet → :80/:443 → Caddy → kraken-server:5080 → Postgres:5432
 |----------|----------|-------------|
 | `POSTGRES_PASSWORD` | Yes | Postgres superuser password |
 | `AGENT_JWT_KEY` | Yes | Minimum 32 chars — agent authentication signing key |
-| `ENCRYPTION_KEY` | Yes | Base64 32 bytes — AES-256-GCM master key for sensitive variables |
+| `ENCRYPTION_KEY` | Yes | Base64 32 bytes — the master key (KEK) that wraps the DB-resident data-encryption key. See the warning below. |
 | `KRAKEN_LICENSE_KEY` | No | License key (can also be uploaded via UI) |
 | `DOMAIN` | No | Public domain for auto-HTTPS (defaults to localhost) |
 | `HA_MODE` | No | Set to "Postgres" for a 2-node HA pair |
 | `SERVER_IMAGE` | No | Docker image tag (default: krakendeploy-server:latest) |
 
+> **⚠ ENCRYPTION_KEY is not in the backup — preserve it separately.**
+> `ENCRYPTION_KEY` is an **env-only KEK**. Every sensitive value in the database
+> (variables, agent bundle/HMAC keys, integration secrets) is encrypted under a
+> data-encryption key that is itself wrapped by this KEK. The backup bundle
+> contains the database dump and the data directory, but **deliberately never
+> the KEK** — a leaked dump must not also carry the key that decrypts it. That
+> means a database dump is **undecryptable without the exact same
+> `ENCRYPTION_KEY`**. Store it in a secrets manager / offline vault, back it up
+> independently, and rotate it only via the documented `rotate-kek` flow.
+> Losing it is unrecoverable: the encrypted data cannot be read back.
+>
+> It must be identical across `kraken-init` and `kraken-server` (compose wires
+> both from the one `.env` value); `kraken-init` fails fast at
+> `database setup` if it is missing, rather than silently provisioning an
+> unrecoverable key.
+
 ## Backup
+
+The data directory lives at `/var/lib/krakendeploy` inside the container (the
+persisted `kraken-data` volume). The KEK (`ENCRYPTION_KEY`) is **not** included —
+see the warning above.
 
 ```bash
 # Full backup (database + data directory)
-docker compose exec kraken-server dotnet KrakenDeploy.Server.dll backup --to /data/backups
+docker compose exec kraken-server dotnet KrakenDeploy.Server.dll backup --to /var/lib/krakendeploy/backups
 
 # Copy backup off-host
-docker compose cp kraken-server:/data/backups/kraken-backup-<timestamp> ./backup/
+docker compose cp kraken-server:/var/lib/krakendeploy/backups/kraken-backup-<timestamp> ./backup/
 ```
 
 ## Restore
 
+Restore requires the original `ENCRYPTION_KEY` in `.env` — the dump is
+undecryptable without it.
+
 ```bash
 # Copy backup to server container
-docker compose cp ./backup/kraken-backup-<timestamp> kraken-server:/data/restore/
+docker compose cp ./backup/kraken-backup-<timestamp> kraken-server:/var/lib/krakendeploy/restore/
 
 # Restore
-docker compose exec kraken-server dotnet KrakenDeploy.Server.dll restore --from /data/restore/kraken-backup-<timestamp>
+docker compose exec kraken-server dotnet KrakenDeploy.Server.dll restore --from /var/lib/krakendeploy/restore/kraken-backup-<timestamp>
 ```
 
 ## Upgrade
@@ -80,7 +103,7 @@ docker compose up -d
 docker compose stop kraken-server
 
 # 2. Restore database from backup
-docker compose exec kraken-server dotnet KrakenDeploy.Server.dll restore --from /data/restore/kraken-backup-<timestamp>
+docker compose exec kraken-server dotnet KrakenDeploy.Server.dll restore --from /var/lib/krakendeploy/restore/kraken-backup-<timestamp>
 
 # 3. Switch image tag and restart
 export SERVER_IMAGE=krakendeploy-server:previous
