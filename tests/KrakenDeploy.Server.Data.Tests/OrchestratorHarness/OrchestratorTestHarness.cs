@@ -116,7 +116,7 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         // what it received in CancelPushes.
         services.AddSingleton<KrakenDeploy.Server.Data.Services.IAgentCancelPusher>(
             sp => new AgentCancelPusher(
-                _postgres,
+                sp.GetRequiredService<IServiceScopeFactory>(),
                 _connectionRegistry,
                 sp.GetRequiredService<IHubContext<AgentHub, IAgentHubClient>>(),
                 NullLogger<AgentCancelPusher>.Instance));
