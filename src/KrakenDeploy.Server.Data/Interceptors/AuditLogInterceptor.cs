@@ -39,11 +39,24 @@ public sealed class AuditLogInterceptor(
     // (a) clutter the diff UI and (b) cause Before != After on otherwise
     // no-op updates (ModifiedUtc is bumped on every save by
     // AuditableEntityInterceptor before this one runs).
+    // "xmin" is the B5 concurrency token on server_tasks — a Postgres system
+    // column, meaningless in an audit diff.
     private static readonly HashSet<string> AuditMetadataProperties =
     [
         "CreatedUtc",
         "ModifiedUtc",
+        "xmin",
     ];
+
+    // B5 — audit entries staged by the LAST SavingChanges per context, so a
+    // FAILED save can detach them. Without this, a caller that catches the
+    // failure and keeps using the context (the guarded status writer's
+    // concurrency retry, or any recovery path) would persist the stale rows
+    // with its next successful save: duplicates on a retry, and — worse —
+    // audit records describing changes that never actually happened. Keyed
+    // weakly so a context abandoned mid-failure doesn't leak.
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<DbContext, List<AuditEntry>>
+        _stagedBySave = new();
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -66,6 +79,76 @@ public sealed class AuditLogInterceptor(
     {
         AppendAuditEntries(eventData.Context);
         return base.SavingChangesAsync(eventData, result, cancellationToken);
+    }
+
+    public override int SavedChanges(SaveChangesCompletedEventData eventData, int result)
+    {
+        ForgetStaged(eventData.Context);
+        return base.SavedChanges(eventData, result);
+    }
+
+    public override ValueTask<int> SavedChangesAsync(
+        SaveChangesCompletedEventData eventData, int result, CancellationToken cancellationToken = default)
+    {
+        ForgetStaged(eventData.Context);
+        return base.SavedChangesAsync(eventData, result, cancellationToken);
+    }
+
+    public override void SaveChangesFailed(DbContextErrorEventData eventData)
+    {
+        DetachStaged(eventData.Context);
+        base.SaveChangesFailed(eventData);
+    }
+
+    public override Task SaveChangesFailedAsync(
+        DbContextErrorEventData eventData, CancellationToken cancellationToken = default)
+    {
+        DetachStaged(eventData.Context);
+        return base.SaveChangesFailedAsync(eventData, cancellationToken);
+    }
+
+    // Concurrency conflicts surface through their own interception point
+    // (ThrowingConcurrencyException), not only SaveChangesFailed — and the
+    // guarded status writer's retry is exactly the caller that continues
+    // using the context afterwards, so the staged cohort must be detached
+    // here too.
+    public override InterceptionResult ThrowingConcurrencyException(
+        ConcurrencyExceptionEventData eventData, InterceptionResult result)
+    {
+        DetachStaged(eventData.Context);
+        return base.ThrowingConcurrencyException(eventData, result);
+    }
+
+    public override ValueTask<InterceptionResult> ThrowingConcurrencyExceptionAsync(
+        ConcurrencyExceptionEventData eventData, InterceptionResult result,
+        CancellationToken cancellationToken = default)
+    {
+        DetachStaged(eventData.Context);
+        return base.ThrowingConcurrencyExceptionAsync(eventData, result, cancellationToken);
+    }
+
+    private void ForgetStaged(DbContext? context)
+    {
+        if (context is not null)
+        {
+            _stagedBySave.Remove(context);
+        }
+    }
+
+    /// <summary>The save rolled back — the changes these entries describe did
+    /// NOT happen. Detach them so a later save on the same context (a retry, a
+    /// recovery path) doesn't persist stale or duplicate audit records.</summary>
+    private void DetachStaged(DbContext? context)
+    {
+        if (context is null || !_stagedBySave.TryGetValue(context, out var staged))
+        {
+            return;
+        }
+        foreach (var entry in staged)
+        {
+            context.Entry(entry).State = EntityState.Detached;
+        }
+        _stagedBySave.Remove(context);
     }
 
     // ── Core logic ────────────────────────────────────────────────────────────
@@ -92,6 +175,8 @@ public sealed class AuditLogInterceptor(
                                 or EntityState.Modified
                                 or EntityState.Deleted)
             .ToList();
+
+        var staged = new List<AuditEntry>();
 
         foreach (var entry in changed)
         {
@@ -144,7 +229,7 @@ public sealed class AuditLogInterceptor(
                 continue;
             }
 
-            context.Set<AuditEntry>().Add(new AuditEntry
+            var auditEntry = new AuditEntry
             {
                 OccurredUtc = now,
                 SpaceId     = spaceId,
@@ -158,7 +243,18 @@ public sealed class AuditLogInterceptor(
                 UserAgent   = userAgent,
                 BeforeJson  = beforeJson,
                 AfterJson   = afterJson,
-            });
+            };
+            context.Set<AuditEntry>().Add(auditEntry);
+            staged.Add(auditEntry);
+        }
+
+        // Remember THIS save's cohort so a failed save can detach it (see
+        // DetachStaged). Replaces any previous cohort — that one either
+        // committed (forgotten on SavedChanges) or was already detached.
+        _stagedBySave.Remove(context);
+        if (staged.Count > 0)
+        {
+            _stagedBySave.Add(context, staged);
         }
     }
 

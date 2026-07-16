@@ -1,8 +1,12 @@
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Data;
+using KrakenDeploy.Server.Data.Interceptors;
+using KrakenDeploy.Server.Data.Spaces;
 using KrakenDeploy.Server.Data.Tests.OrchestratorHarness;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace KrakenDeploy.Server.Data.Tests;
 
@@ -189,6 +193,62 @@ public sealed class ServerTaskStatusWriterTests(PostgresFixture postgres)
         var persisted = await verify.ServerTasks.IgnoreQueryFilters().FirstAsync(t => t.Id == taskId);
         var expected = results[0] ? DeploymentStatus.Succeeded : DeploymentStatus.Cancelled;
         persisted.Status.Should().Be(expected, "the persisted verdict belongs to the winning writer");
+    }
+
+    [Fact]
+    public async Task Retried_transition_emits_exactly_one_audit_entry()
+    {
+        // The AuditLogInterceptor stages an AuditEntry per dirty auditable
+        // entity on EVERY SavingChanges. A failed save used to leave that row
+        // tracked, so the writer's concurrency retry would persist the failed
+        // attempt's audit record alongside the winning attempt's — two
+        // "Deployment.Updated" rows for one transition, the first describing
+        // a save that never happened. The interceptor now detaches its staged
+        // cohort when the save fails.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var taskId = await SeedTaskAsync(harness);
+
+        // Bespoke context WITH the audit-log interceptor (the fixture's
+        // default context omits it), mirroring the production registration.
+        var spaceContext = new DefaultSpaceContext();
+        var options = new DbContextOptionsBuilder<KrakenDbContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .UseSnakeCaseNamingConvention()
+            .AddInterceptors(
+                new AuditableEntityInterceptor(TimeProvider.System),
+                new AuditLogInterceptor(new HttpContextAccessor(), TimeProvider.System),
+                new SpaceScopingInterceptor(spaceContext))
+            .ConfigureWarnings(w => w.Ignore(RelationalEventId.PendingModelChangesWarning))
+            .Options;
+        await using var db = new KrakenDbContext(options, spaceContext);
+
+        var task = await db.ServerTasks.IgnoreQueryFilters().FirstAsync(t => t.Id == taskId);
+
+        var applyCalls = 0;
+        var wrote = await ServerTaskStatusWriter.TryTransitionAsync(
+            db, task, t =>
+            {
+                if (++applyCalls == 1)
+                {
+                    using var other = harness.CreateContext();
+                    other.Database.ExecuteSqlInterpolated(
+                        $"UPDATE server_tasks SET next_log_sequence = next_log_sequence + 1 WHERE id = {taskId}");
+                }
+                t.Status = DeploymentStatus.Cancelled;
+                t.CompletedUtc = DateTimeOffset.UtcNow;
+            });
+
+        wrote.Should().BeTrue();
+        applyCalls.Should().Be(2, "the first save must conflict for this test to exercise the retry");
+
+        await using var verify = harness.CreateContext();
+        var audits = await verify.Set<KrakenDeploy.Server.Core.Domain.Audit.AuditEntry>()
+            .Where(a => a.SubjectId == taskId.ToString() && a.EventType == "Deployment.Updated")
+            .ToListAsync();
+        audits.Should().HaveCount(1,
+            "the failed attempt's staged audit row must be detached, not persisted by the retry");
+        audits[0].AfterJson.Should().NotContain("xmin",
+            "the concurrency token is bookkeeping, not audit-diff material");
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────
