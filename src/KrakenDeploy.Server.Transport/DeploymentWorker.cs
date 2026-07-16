@@ -1786,9 +1786,25 @@ public sealed class DeploymentWorker(
             // after a disconnect that id is dead and Clients.Client() silently
             // no-ops, burning a full deadline window per retry. A reconnected
             // agent gets the fresh id; a still-offline agent fails fast here.
+            // P3-8 Phase 5 parity: the refreshed connection must belong to the
+            // dispatching account, same defense-in-depth as the initial
+            // dispatch guard — treat a cross-account hit like offline.
             var currentConnectionId = attempt == 0
                 ? connectionId
                 : registry.GetConnectionId(targetId);
+            if (currentConnectionId is not null
+                && attempt > 0
+                && _dispatchAccountId.Value != Guid.Empty
+                && registry.GetAccountForTarget(targetId) != _dispatchAccountId.Value)
+            {
+                logger.LogError(
+                    "Cross-account dispatch blocked on wave retry for deployment {Deployment}: " +
+                    "target {Target}'s live connection belongs to account {ConnectionAccount}, " +
+                    "not the dispatch account {DispatchAccount}; abandoning retries.",
+                    deployment.Id, targetId,
+                    registry.GetAccountForTarget(targetId), _dispatchAccountId.Value);
+                currentConnectionId = null;
+            }
             if (currentConnectionId is null)
             {
                 subPlanResult = new SubPlanResult(
