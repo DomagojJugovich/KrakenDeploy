@@ -203,11 +203,21 @@ public sealed class OfflineDropBundleBuilder(ILogger<OfflineDropBundleBuilder> l
         // The path is deterministic ({dataPath}/drop-bundles/{id}/drop-{id}.zip)
         // and the file was overwritten in place, so DropBundlePath is unchanged
         // in the common case — persist defensively for older rows that never
-        // recorded it.
+        // recorded it. B5: the write is status-guarded — a cancel landing while
+        // the bundle regenerated must not be raced by this save (the fresh
+        // bundle is orphaned on disk, same as a cancelled dispatch).
         if (deployment.DropBundlePath != path)
         {
-            deployment.DropBundlePath = path;
-            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            var wrote = await ServerTaskStatusWriter.TryTransitionAsync(
+                db, deployment, d => d.DropBundlePath = path,
+                canTransitionFrom: static s => s == DeploymentStatus.PendingOfflineResult,
+                ct: ct).ConfigureAwait(false);
+            if (!wrote)
+            {
+                throw new InvalidOperationException(
+                    "The drop bundle can only be regenerated while the deployment is awaiting " +
+                    $"its offline result (current status: {deployment.Status}).");
+            }
         }
 
         // Regeneration re-materialises a secret-bearing deployable (plan.enc is

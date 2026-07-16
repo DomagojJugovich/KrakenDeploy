@@ -220,28 +220,36 @@ public class DeploymentService(
             return null;
         }
 
-        if (deployment.Status.IsTerminal())
+        // B5: one guarded, atomic transition — the old read-check-write let a
+        // finalize/complete landing in the window be overwritten by Cancelled
+        // (or vice versa). The writer's retry also absorbs the xmin churn a
+        // busy Running row sees from log-sequence bumps and lease renewals,
+        // which would otherwise surface as a spurious concurrency error on a
+        // perfectly valid cancel. Saving a modified AuditableEntity auto-emits
+        // a "Deployment.Updated" audit row via AuditLogInterceptor; callers
+        // additionally record the semantic AuditEventType.DeploymentCancelled
+        // event.
+        var cancelled = await ServerTaskStatusWriter.TryTransitionAsync(
+            db, deployment, d =>
+            {
+                d.Status       = DeploymentStatus.Cancelled;
+                d.CompletedUtc = time.GetUtcNow();
+                // Belt-and-braces: a future-dated deployment sits Queued with a
+                // ScheduledFor; the dispatch job only re-queues Status==Queued
+                // rows, so the flip to Cancelled already excludes it — clear the
+                // schedule too so it can never be resurrected.
+                d.ScheduledFor = null;
+                // B1: terminal — release the dispatch lease (hygiene; the
+                // reconciler only ever looks at Running rows).
+                d.ClaimedBy    = null;
+                d.LeaseUntil   = null;
+            }, ct: ct).ConfigureAwait(false);
+        if (!cancelled)
         {
             throw new InvalidOperationException(
                 $"Deployment {id} is already in a terminal state " +
                 $"({deployment.Status}) and cannot be cancelled.");
         }
-
-        deployment.Status       = DeploymentStatus.Cancelled;
-        deployment.CompletedUtc = time.GetUtcNow();
-        // Belt-and-braces: a future-dated deployment sits Queued with a
-        // ScheduledFor; the dispatch job only re-queues Status==Queued rows, so
-        // the flip to Cancelled already excludes it — clear the schedule too so
-        // it can never be resurrected.
-        deployment.ScheduledFor = null;
-        // B1: terminal — release the dispatch lease (hygiene; the reconciler
-        // only ever looks at Running rows).
-        deployment.ClaimedBy    = null;
-        deployment.LeaseUntil   = null;
-        // Saving a modified AuditableEntity auto-emits a "Deployment.Updated"
-        // audit row via AuditLogInterceptor; callers additionally record the
-        // semantic AuditEventType.DeploymentCancelled event.
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return deployment;
     }
 

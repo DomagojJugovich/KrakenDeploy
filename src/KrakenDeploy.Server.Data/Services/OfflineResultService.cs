@@ -136,6 +136,8 @@ public class OfflineResultService(
         var resultEntry = archive.GetEntry(OfflineBundleLayout.ResultFile)
             ?? throw new InvalidOperationException(
                 "Result bundle is missing deployment-result.json — cannot verify or record the outcome.");
+        DeploymentStatus terminalStatus;
+        DateTimeOffset terminalCompletedUtc;
         {
             var resultBytes = await ReadEntryBytesAsync(resultEntry, ct).ConfigureAwait(false);
 
@@ -161,10 +163,17 @@ public class OfflineResultService(
             }
 
             var result = JsonSerializer.Deserialize<OfflineDropResult>(resultBytes, JsonOpts);
+            // B5: the terminal verdict is COMPUTED here but only WRITTEN at the
+            // end of the ingest, through the guarded status writer. Setting the
+            // tracked entity this early would carry a stale xmin token into the
+            // final save (the log import below allocates sequence numbers with a
+            // raw UPDATE that bumps this row), and the guarded write is what
+            // stops a result upload from resurrecting a deployment that was
+            // cancelled while this ingest was verifying/extracting.
             if (result is null)
             {
-                deployment.Status = DeploymentStatus.Succeeded;
-                deployment.CompletedUtc = DateTimeOffset.UtcNow;
+                terminalStatus = DeploymentStatus.Succeeded;
+                terminalCompletedUtc = DateTimeOffset.UtcNow;
             }
             else
             {
@@ -172,12 +181,12 @@ public class OfflineResultService(
                 // A non-Required step failure leaves Success=true but warrants the
                 // yellow SucceededWithWarnings, matching the online path.
                 var anyNonSkippedFailure = result.Steps.Any(s => !s.Skipped && !s.Success);
-                deployment.Status = !result.Success
+                terminalStatus = !result.Success
                     ? DeploymentStatus.Failed
                     : anyNonSkippedFailure
                         ? DeploymentStatus.SucceededWithWarnings
                         : DeploymentStatus.Succeeded;
-                deployment.CompletedUtc = completedUtc;
+                terminalCompletedUtc = completedUtc;
 
                 foreach (var step in result.Steps)
                 {
@@ -316,7 +325,28 @@ public class OfflineResultService(
                 fileName, entry.Length, deploymentId);
         }
 
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        // B5: atomic finalize — every child row staged above (step outcomes,
+        // output variables, imported log lines, artifacts) commits together
+        // with the status flip, and the guard re-checks the AUTHORITATIVE
+        // status: if the deployment left PendingOfflineResult while this
+        // ingest was verifying/extracting (an operator cancel), nothing is
+        // persisted and the upload is rejected the same way the up-front
+        // check would have. Artifact files already extracted to disk stay
+        // orphaned, mirroring the orphaned bundle on a cancelled dispatch.
+        var finalized = await ServerTaskStatusWriter.TryTransitionAsync(
+            db, deployment, d =>
+            {
+                d.Status = terminalStatus;
+                d.CompletedUtc = terminalCompletedUtc;
+            },
+            canTransitionFrom: static s => s == DeploymentStatus.PendingOfflineResult,
+            ct: ct).ConfigureAwait(false);
+        if (!finalized)
+        {
+            throw new InvalidOperationException(
+                $"Deployment {deploymentId} is in status '{deployment.Status}', " +
+                "not 'PendingOfflineResult'. Only pending offline deployments accept result bundles.");
+        }
 
         // Compact the imported (unattributed) staging lines into a single blob so
         // the offline path stores logs identically to the online compactor.
