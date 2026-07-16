@@ -128,7 +128,11 @@ public sealed class ServerScriptStepRunner(
             }
 
             using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
+            // stdout + stderr callbacks fire on separate threadpool threads;
+            // List<T>.Add is not thread-safe, so every Add takes this lock
+            // (pre-existing race, surfaced by the B4 review).
             var pending = new List<Task>();
+            var pendingGate = new object();
 
             // B4 — captured output variables. OutputDataReceived events for one
             // stream are raised serially, so the dict/list/sticky-level need no
@@ -168,23 +172,35 @@ public sealed class ServerScriptStepRunner(
                     case CreateArtifactMessage a:
                         // Server-side steps have no artifact collection dir; the
                         // marker is surfaced informationally (agent parity).
-                        pending.Add(AppendLogAsync(deploymentId, step.Index, "info",
-                            $"[Artifact] {a.Name} ({a.Path})", redactor, ct));
+                        lock (pendingGate)
+                        {
+                            pending.Add(AppendLogAsync(deploymentId, step.Index, "info",
+                                $"[Artifact] {a.Name} ({a.Path})", redactor, ct));
+                        }
                         return;
                     case ProgressMessage p:
-                        pending.Add(AppendLogAsync(deploymentId, step.Index, "info",
-                            $"[Progress {p.Percentage}%] {p.Message}", redactor, ct));
+                        lock (pendingGate)
+                        {
+                            pending.Add(AppendLogAsync(deploymentId, step.Index, "info",
+                                $"[Progress {p.Percentage}%] {p.Message}", redactor, ct));
+                        }
                         return;
                     // UnknownMessage / null: plain log line — fall through.
                 }
 
-                pending.Add(AppendLogAsync(deploymentId, step.Index, stickyLevel, e.Data, redactor, ct));
+                lock (pendingGate)
+                {
+                    pending.Add(AppendLogAsync(deploymentId, step.Index, stickyLevel, e.Data, redactor, ct));
+                }
             };
             process.ErrorDataReceived += (_, e) =>
             {
                 if (e.Data is not null)
                 {
-                    pending.Add(AppendLogAsync(deploymentId, step.Index, "error", e.Data, redactor, ct));
+                    lock (pendingGate)
+                    {
+                        pending.Add(AppendLogAsync(deploymentId, step.Index, "error", e.Data, redactor, ct));
+                    }
                 }
             };
 
@@ -193,7 +209,14 @@ public sealed class ServerScriptStepRunner(
             process.BeginErrorReadLine();
 
             await process.WaitForExitAsync(ct).ConfigureAwait(false);
-            await Task.WhenAll(pending).ConfigureAwait(false);
+            // Streams are closed once WaitForExit completes and the final null
+            // callbacks fired; snapshot under the gate for a consistent view.
+            Task[] pendingSnapshot;
+            lock (pendingGate)
+            {
+                pendingSnapshot = pending.ToArray();
+            }
+            await Task.WhenAll(pendingSnapshot).ConfigureAwait(false);
 
             var success = process.ExitCode == 0;
             await AppendLogAsync(deploymentId, step.Index,
