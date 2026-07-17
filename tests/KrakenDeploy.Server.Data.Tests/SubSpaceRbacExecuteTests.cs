@@ -13,7 +13,10 @@ using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data.Accounts;
 using KrakenDeploy.Server.Data.Services;
+using KrakenDeploy.Server.Transport;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace KrakenDeploy.Server.Data.Tests;
 
@@ -211,6 +214,158 @@ public sealed class SubSpaceRbacExecuteTests(PostgresFixture postgres) : IClassF
             "a ReleaseCreate grant scoped to Project A must not create a release for Project B");
     }
 
+    // ── Runbook create / rename / delete (cross-project) ─────────────────────
+
+    [Fact]
+    public async Task Runbook_edit_is_rejected_on_a_project_outside_the_users_scope()
+    {
+        var g = await SeedTwoProjectsScopedGrantAsync(Permission.RunbookEdit);
+        var svc = NewRunbookService();
+
+        // A runbook exists in project B (created by a system caller).
+        var rbB = await svc.CreateAsync(g.ProjectB, "B-rb", null, CallerAuthorization.System);
+
+        // The A-scoped user cannot create/rename/delete a runbook in project B.
+        var createB = () => svc.CreateAsync(g.ProjectB, "x", null, CallerAuthorization.ForUser(User(g.UserId)));
+        await createB.Should().ThrowAsync<AuthorizationException>(
+            "a RunbookEdit grant scoped to Project A must not create a runbook in Project B");
+
+        var renameB = () => svc.UpdateAsync(rbB.Id, "hacked", null, CallerAuthorization.ForUser(User(g.UserId)));
+        await renameB.Should().ThrowAsync<AuthorizationException>();
+
+        var deleteB = () => svc.DeleteAsync(rbB.Id, CallerAuthorization.ForUser(User(g.UserId)));
+        await deleteB.Should().ThrowAsync<AuthorizationException>();
+    }
+
+    [Fact]
+    public async Task Runbook_edit_is_allowed_on_the_users_own_project()
+    {
+        var g = await SeedTwoProjectsScopedGrantAsync(Permission.RunbookEdit);
+        var svc = NewRunbookService();
+        var caller = CallerAuthorization.ForUser(User(g.UserId));
+
+        var rbA = await svc.CreateAsync(g.ProjectA, "A-rb", null, caller);
+        rbA.Name.Should().Be("A-rb");
+
+        var renamed = await svc.UpdateAsync(rbA.Id, "A-rb-renamed", null, caller);
+        renamed!.Name.Should().Be("A-rb-renamed");
+
+        (await svc.DeleteAsync(rbA.Id, caller)).Should().BeTrue();
+    }
+
+    // ── Deployment / runbook-run cancel (cross-environment) ──────────────────
+
+    [Fact]
+    public async Task Deployment_cancel_is_rejected_for_an_environment_outside_the_users_scope()
+    {
+        var g = await SeedEnvScopedCancelGraphAsync();
+        var svc = NewDeploymentService();
+
+        // A Prod deployment created by a system caller (authorized at origin).
+        var prod = await svc.CreateAsync(
+            releaseId: g.ReleaseId, environmentId: g.ProdEnvId, targetId: g.TargetId,
+            initiator: TaskInitiator.Api(g.UserId, "test"), caller: CallerAuthorization.System);
+
+        // The user holds TaskCancel scoped to Test only → cannot cancel Prod.
+        var cancelProd = () => svc.CancelAsync(prod.Id, CallerAuthorization.ForUser(User(g.UserId)));
+        await cancelProd.Should().ThrowAsync<AuthorizationException>(
+            "a TaskCancel grant scoped to Environment=Test must not cancel a Prod deployment");
+    }
+
+    [Fact]
+    public async Task Deployment_cancel_is_allowed_for_an_environment_inside_the_users_scope()
+    {
+        var g = await SeedEnvScopedCancelGraphAsync();
+        var svc = NewDeploymentService();
+
+        var test = await svc.CreateAsync(
+            releaseId: g.ReleaseId, environmentId: g.TestEnvId, targetId: g.TargetId,
+            initiator: TaskInitiator.Api(g.UserId, "test"), caller: CallerAuthorization.System);
+
+        var cancelled = await svc.CancelAsync(test.Id, CallerAuthorization.ForUser(User(g.UserId)));
+        cancelled!.Status.Should().Be(DeploymentStatus.Cancelled);
+    }
+
+    [Fact]
+    public async Task Runbook_run_cancel_is_rejected_for_an_environment_outside_the_users_scope()
+    {
+        var g = await SeedEnvScopedCancelGraphAsync();
+        var svc = NewRunbookService();
+
+        var prodRun = await svc.TriggerAsync(
+            g.RunbookId, g.ProdEnvId, g.TargetId,
+            initiator: TaskInitiator.Api(g.UserId, "test"), caller: CallerAuthorization.System);
+
+        var cancelProd = () => svc.CancelRunAsync(prodRun.Id, CallerAuthorization.ForUser(User(g.UserId)));
+        await cancelProd.Should().ThrowAsync<AuthorizationException>(
+            "a TaskCancel grant scoped to Environment=Test must not cancel a Prod runbook run");
+    }
+
+    [Fact]
+    public async Task Runbook_run_cancel_is_allowed_for_an_environment_inside_the_users_scope()
+    {
+        var g = await SeedEnvScopedCancelGraphAsync();
+        var svc = NewRunbookService();
+
+        var testRun = await svc.TriggerAsync(
+            g.RunbookId, g.TestEnvId, g.TargetId,
+            initiator: TaskInitiator.Api(g.UserId, "test"), caller: CallerAuthorization.System);
+
+        var cancelled = await svc.CancelRunAsync(testRun.Id, CallerAuthorization.ForUser(User(g.UserId)));
+        cancelled!.Status.Should().Be(DeploymentStatus.Cancelled);
+    }
+
+    // ── Regenerate offline drop bundle (cross-environment) ───────────────────
+
+    [Fact]
+    public async Task Regenerate_drop_bundle_is_rejected_for_an_environment_outside_the_users_scope()
+    {
+        var g = await SeedEnvScopedDeploymentCreateAsync(); // grants DeploymentCreate @ Test
+
+        // A Prod deployment created by a system caller (authorized at origin).
+        var prod = await NewDeploymentService().CreateAsync(
+            releaseId: g.ReleaseId, environmentId: g.ProdEnvId, targetId: g.TargetId,
+            initiator: TaskInitiator.Api(g.UserId, "test"), caller: CallerAuthorization.System);
+
+        await using var sp = new ServiceCollection()
+            .AddSingleton<IDbContextFactory<KrakenDbContext>>(postgres)
+            .AddSingleton<IPermissionEvaluator>(new PermissionEvaluator(postgres, TimeProvider.System))
+            .BuildServiceProvider();
+        var builder = new OfflineDropBundleBuilder(NullLogger<OfflineDropBundleBuilder>.Instance);
+
+        // The scope check runs before the offline-drop-only validation, so a
+        // DeploymentCreate grant scoped to Test is denied on the Prod deployment.
+        var regenProd = () => builder.RegenerateForDeploymentAsync(
+            prod.Id, sp, CallerAuthorization.ForUser(User(g.UserId)));
+        await regenProd.Should().ThrowAsync<AuthorizationException>(
+            "a DeploymentCreate grant scoped to Environment=Test must not regenerate a Prod bundle");
+    }
+
+    // ── Release "update variables" re-snapshot (cross-project) ───────────────
+
+    [Fact]
+    public async Task Release_update_variables_is_rejected_on_a_project_outside_the_users_scope()
+    {
+        var g = await SeedTwoProjectsScopedGrantAsync(Permission.ReleaseEdit);
+        var releaseB = await SeedReleaseAsync(g.ProjectB);
+        var svc = new ReleaseService(postgres, new PermissionEvaluator(postgres, TimeProvider.System));
+
+        var updateB = () => svc.UpdateVariablesAsync(releaseB, CallerAuthorization.ForUser(User(g.UserId)));
+        await updateB.Should().ThrowAsync<AuthorizationException>(
+            "a ReleaseEdit grant scoped to Project A must not re-snapshot Project B's release");
+    }
+
+    [Fact]
+    public async Task Release_update_variables_is_allowed_on_the_users_own_project()
+    {
+        var g = await SeedTwoProjectsScopedGrantAsync(Permission.ReleaseEdit);
+        var releaseA = await SeedReleaseAsync(g.ProjectA);
+        var svc = new ReleaseService(postgres, new PermissionEvaluator(postgres, TimeProvider.System));
+
+        var updated = await svc.UpdateVariablesAsync(releaseA, CallerAuthorization.ForUser(User(g.UserId)));
+        updated.Id.Should().Be(releaseA);
+    }
+
     // ── Service factories (real evaluator) ───────────────────────────────────
 
     private DeploymentService NewDeploymentService() =>
@@ -304,6 +459,73 @@ public sealed class SubSpaceRbacExecuteTests(PostgresFixture postgres) : IClassF
         await db.SaveChangesAsync();
 
         return new RunbookGraph(userId, runbook.Id, testEnv.Id, prodEnv.Id, target.Id);
+    }
+
+    private sealed record CancelGraph(
+        Guid UserId, Guid ReleaseId, Guid RunbookId, Guid TestEnvId, Guid ProdEnvId, Guid TargetId);
+
+    // Seeds a project with Test+Prod envs, a release, a runbook (+ one step), and a
+    // target, then grants the user TaskCancel scoped to Test only. Tasks are
+    // created via a System caller in the tests and cancelled by the scoped user.
+    private async Task<CancelGraph> SeedEnvScopedCancelGraphAsync()
+    {
+        var userId = Guid.NewGuid();
+        await using var db = postgres.CreateContext();
+        var space = WellKnown.DefaultSpaceId;
+
+        var testEnv = new DeploymentEnvironment { Name = "Test", Slug = $"test-{Guid.NewGuid():N}", SortOrder = 1 };
+        var prodEnv = new DeploymentEnvironment { Name = "Prod", Slug = $"prod-{Guid.NewGuid():N}", SortOrder = 2 };
+        var project = new Project
+        {
+            Name = "P", Slug = $"p-{Guid.NewGuid():N}",
+            ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, space),
+        };
+        var target = new DeploymentTarget
+        {
+            Name = $"tgt-{Guid.NewGuid():N}", Roles = ["web"], TransportMode = TransportMode.Reverse,
+        };
+        db.Environments.AddRange(testEnv, prodEnv);
+        db.Projects.Add(project);
+        db.DeploymentTargets.Add(target);
+        await db.SaveChangesAsync();
+
+        var release = new Release
+        {
+            ProjectId = project.Id, Version = "1.0.0",
+            VariableSnapshotUpdatedUtc = DateTimeOffset.UtcNow,
+        };
+        var runbook = new Runbook { Name = "RB", ProjectId = project.Id };
+        db.Releases.Add(release);
+        db.Runbooks.Add(runbook);
+        await db.SaveChangesAsync();
+
+        var process = new Process { OwnerKind = ProcessOwnerKind.Runbook, OwnerId = runbook.Id };
+        db.Processes.Add(process);
+        await db.SaveChangesAsync();
+        db.ProcessSteps.Add(new ProcessStep
+        {
+            ProcessId = process.Id, Name = "Run", StepType = "Kraken.Script",
+            PackageId = "", TargetRoles = [], Config = [], SortOrder = 0,
+        });
+
+        await SeedEnvScopedGrantAsync(db, space, userId, Permission.TaskCancel, testEnv.Id);
+        await db.SaveChangesAsync();
+
+        return new CancelGraph(userId, release.Id, runbook.Id, testEnv.Id, prodEnv.Id, target.Id);
+    }
+
+    // Inserts a bare release into a project (SpaceId is stamped by the interceptor).
+    private async Task<Guid> SeedReleaseAsync(Guid projectId)
+    {
+        await using var db = postgres.CreateContext();
+        var release = new Release
+        {
+            ProjectId = projectId, Version = "1.0.0",
+            VariableSnapshotUpdatedUtc = DateTimeOffset.UtcNow,
+        };
+        db.Releases.Add(release);
+        await db.SaveChangesAsync();
+        return release.Id;
     }
 
     private sealed record ProcessGraph(Guid UserId, Guid ProjectA, Guid ProjectB);
