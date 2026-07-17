@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.0 |
-| **Date** | 2026-07-13 |
+| **Version** | 1.1 |
+| **Date** | 2026-07-13 (Status column + progress tracking added 2026-07-16) |
 | **Status** | Review |
 | **Source** | [production-readiness-audit-2026-07-13.md](production-readiness-audit-2026-07-13.md) (finding IDs T0-*/T1-*/T2-* below refer to it) |
 | **Assumes merged first** | `finish-plan-2026-07-05.md` WP1–WP15 **and** the `fix/db-schema-hardening` chain. Line numbers in the audit will have shifted — **re-locate every anchor by symbol name, not line.** |
@@ -26,39 +26,47 @@ One WP per session/branch. Branch names suggested per WP. Build + affected tests
 
 ## 1. Dependency & sequence table
 
-| WP | Title | Tier | Findings | Size | Depends-on |
-|---|---|---|---|---|---|
-| **A1** | Package-upload path sanitization | T0 | T0-5 | XS | — |
-| **A2** | Secret masking in logs + sensitivity plumbing | T0 | T0-6, T1-6(out-vars) | M | — |
-| **A3** | Remove agent role self-assignment | T1 | T1-7 | S | — |
-| **A4** | Enforce sub-Space RBAC on the execution surface | T1 | T1-8 | L | — |
-| **A5** | MCP read-tool authorization | T1 | T1-9 | S | — |
-| **A6** | SSRF hardening (redirects, RFC1918, catalog/OIDC/AI) | T1 | T1-11 | M | — |
-| **A7** | Auth-session hardening (revocation, DP-ring, cookie) | T1 | T1-13, T1-14, M2 | M | — |
-| **A8** | Agent transport auth hardening | T1 | T1-12, T1-15 | M | B6 (wire) helps but not required |
-| **B1** | Durable dispatch + startup reconciler + atomic claim | T0 | T0-1, T1-2 | L | — |
-| **B2** | Agent reconnect: unbounded + supervised | T0 | T0-2 | S | — |
-| **B3** | Disconnect reconciliation + server-side wave deadline | T0 | T0-3 | M | B2 |
-| **B4** | Online cross-step output variables + server capture | T0 | T0-4, T1-6 | M | — |
-| **B5** | Optimistic concurrency + cancel-guard all writers | T1 | T1-1, T1-5 | M | B1 |
-| **B6** | Agent abort + attempt-idempotency wire contract | T2 | T2-5, T1-3 | L | — |
-| **B7** | Node concurrency cap + safe cache + retry re-resolve | T1 | T1-3, T1-4 | M | B6 |
-| **B8** | Server↔agent transport round-trip test | test | §7 gap | M | B1–B7 land first |
-| **C1** | Backup/restore image + round-trip CI | T0 | T0-7 | S | — |
-| **C2** | On-prem compose: DEK init + DataPath unify | T0 | T0-8, T0-9 | M | — |
-| **C3** | Production hardening (DI validate, Npgsql, healthz) | T1 | T1-18, T1-19, P1 | S | — |
-| **C4** | Migration data-correctness tests + expand/contract | T1 | T1-17, §7 gap | M | — |
-| **C5** | Windows/Croatian script correctness (BOM + pwsh) | T1 | T1-20 | S | — |
-| **C6** | Agent self-upgrade atomicity + rollback | T1 | T1-21 | M | — |
-| **D1** | Finish server_tasks ENGINE merge | T2 | T2-1, T2-3 | XL | B1–B5 |
-| **D2** | Rename Deployment→Task wire/enum surface | T2 | T2-2 | L | D1 |
-| **D3** | Promote control-flow config keys to columns | T2 | T2-4 | M | — |
-| **D4** | Split Server.Data → Data + Application | T2 | T2-6 | L | — |
-| **D5** | Decouple ControlPlane/HA from MultiAccount flag | T2 | T2-7, strategic | L | — |
-| **D6** | DbContext factory mode-dependent pooling | T2 | T2-9 | S | D5 |
-| **D7** | Architecture-enforcement tests | T2 | T2-10 | S | D4, D5 |
+| WP | Title | Status | Tier | Findings | Size | Depends-on |
+|---|---|---|---|---|---|---|
+| **A1** | Package-upload path sanitization | ✅ Done | T0 | T0-5 | XS | — |
+| **A2** | Secret masking in logs + sensitivity plumbing | ✅ Done | T0 | T0-6, T1-6(out-vars) | M | — |
+| **A3** | Remove agent role self-assignment | ✅ Done | T1 | T1-7 | S | — |
+| **A4** | Enforce sub-Space RBAC on the execution surface | ⬜ Open | T1 | T1-8 | L | — |
+| **A5** | MCP read-tool authorization | ✅ Done | T1 | T1-9 | S | — |
+| **A6** | SSRF hardening (redirects, RFC1918, catalog/OIDC/AI) | ✅ Done | T1 | T1-11 | M | — |
+| **A7** | Auth-session hardening (revocation, DP-ring, cookie) | ✅ Done | T1 | T1-13, T1-14, M2 | M | — |
+| **A8** | Agent transport auth hardening | ✅ Done | T1 | T1-12, T1-15 | M | B6 (wire) helps but not required |
+| **B1** | Durable dispatch + startup reconciler + atomic claim | ✅ Done | T0 | T0-1, T1-2 | L | — |
+| **B2** | Agent reconnect: unbounded + supervised | ✅ Done | T0 | T0-2 | S | — |
+| **B3** | Disconnect reconciliation + server-side wave deadline | ✅ Done | T0 | T0-3 | M | B2 |
+| **B4** | Online cross-step output variables + server capture | ✅ Done | T0 | T0-4, T1-6 | M | — |
+| **B5** | Optimistic concurrency + cancel-guard all writers | ✅ Done | T1 | T1-1, T1-5 | M | B1 |
+| **B6** | Agent abort + attempt-idempotency wire contract | ✅ Done | T2 | T2-5, T1-3 | L | — |
+| **B7** | Node concurrency cap + safe cache + retry re-resolve | ✅ Done | T1 | T1-3, T1-4 | M | B6 |
+| **B8** | Server↔agent transport round-trip test | ✅ Done | test | §7 gap | M | B1–B7 land first |
+| **C1** | Backup/restore image + round-trip CI | ⬜ Open | T0 | T0-7 | S | — |
+| **C2** | On-prem compose: DEK init + DataPath unify | ✅ Done | T0 | T0-8, T0-9 | M | — |
+| **C3** | Production hardening (DI validate, Npgsql, healthz) | ✅ Done | T1 | T1-18, T1-19, P1 | S | — |
+| **C4** | Migration data-correctness tests + expand/contract | ⏸ Deferred | T1 | T1-17, §7 gap | M | migration consolidation (see §C4) |
+| **C5** | Windows/Croatian script correctness (BOM + pwsh) | ⬜ Open | T1 | T1-20 | S | — |
+| **C6** | Agent self-upgrade atomicity + rollback | ⬜ Open | T1 | T1-21 | M | — |
+| **D1** | Finish server_tasks ENGINE merge | ⬜ Open | T2 | T2-1, T2-3 | XL | B1–B5 |
+| **D2** | Rename Deployment→Task wire/enum surface | ⬜ Open | T2 | T2-2 | L | D1 |
+| **D3** | Promote control-flow config keys to columns | ⬜ Open | T2 | T2-4 | M | — |
+| **D4** | Split Server.Data → Data + Application | ⬜ Open | T2 | T2-6 | L | — |
+| **D5** | Decouple ControlPlane/HA from MultiAccount flag | ⏸ Deferred | T2 | T2-7, strategic | L | — |
+| **D6** | DbContext factory mode-dependent pooling | ⬜ Open | T2 | T2-9 | S | D5 |
+| **D7** | Architecture-enforcement tests | ⬜ Open | T2 | T2-10 | S | D4, D5 |
 
 Sizes: XS ≈ <½ day, S ≈ ½–1 day, M ≈ 1–3 days, L ≈ 3–6 days, XL ≈ 1–2 wks.
+
+**Status legend / progress** (as of 2026-07-16 — reflects memory records + code evidence; all Done WPs are on `main` **local, not pushed**):
+
+- ✅ **Done (17):** A1, A2, A3, A5, A6, A7, A8, B1–B8, C2, C3. *(Plus the on-prem DataProtection-cert enablement, which is not a lettered WP.)*
+- ⬜ **Open (10):** A4, C1, C5, C6, D1, D2, D3, D4, D6, D7.
+- ⏸ **Deferred (2):** C4 (blocked on migration consolidation — see §C4), D5 (strategic multi-account defer per the audit).
+
+> Provenance note: A2/A3 completion is **inferred from code** (`KrakenDeploy.Contracts/Logging/SecretRedactor` + `RequestLogRedaction` wired into the deployment log/output path; `AgentHub` no longer assigns `Roles`), not from a dedicated WP record — confirm coverage if in doubt. A4 is marked **Open per the audit** (execution-surface RBAC "1/123 Guard sites scoped"); the hard *tenant*-boundary Space isolation is done, but the *sub-Space* execution RBAC (Test→Prod) was not — verify current state before scheduling.
 
 ---
 
@@ -660,8 +668,29 @@ Branch: fix/ops-production-hardening
 
 ### C4 — Migration data-correctness tests + expand/contract discipline (T1-17, test gap)
 
+> **Status: NOT DONE — deferred until AFTER migration consolidation.**
+>
+> **Do the migration consolidation first, then C4.** We have **no production databases
+> anywhere** — nothing to upgrade in place — so there is no reason to keep the long tail
+> of dev migrations. The plan is to **squash the entire migration history into a single
+> baseline generated from the current code state** (a fresh, clean initial migration),
+> then delete the old ones. This is still in **development**; the consolidation itself is
+> **not done yet** and will be scheduled separately.
+>
+> Once that baseline exists, C4's data-correctness tests make sense against it (seeding
+> "old-shape" rows against a soon-to-be-deleted migration graph would be wasted work), and
+> the expand/contract discipline (C4.2) applies to every migration authored **after** the
+> baseline. Writing these tests before consolidation would test throwaway migrations.
+>
+> **Already done** (do not redo): the DEK-rotation completeness reflection test from C4.1
+> exists — `tests/KrakenDeploy.Server.Data.Tests/DekRotationCompletenessTests.cs` (landed
+> with the db-schema-hardening / C2 work). C4's remaining scope is the per-migration
+> data-survival tests + the expand/contract lint, both post-consolidation.
+
 ```text
-TASK: Two coupled migration-safety gaps.
+TASK (POST-CONSOLIDATION — see the Status note above; do not start until the migration
+history has been squashed to a single baseline from the current code state):
+Two coupled migration-safety gaps.
 1. No data-correctness test (test gap): MigrationsTests proves migrations APPLY and match the snapshot,
    but nothing seeds pre-migration data and asserts it survives the destructive migrations (server_tasks
    unification, FK hardening, tag-set reset). A bad Up() silently corrupts history on first real upgrade.
