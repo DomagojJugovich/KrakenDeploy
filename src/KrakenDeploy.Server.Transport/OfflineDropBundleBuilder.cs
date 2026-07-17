@@ -1,6 +1,7 @@
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data;
@@ -166,9 +167,11 @@ public sealed class OfflineDropBundleBuilder(ILogger<OfflineDropBundleBuilder> l
     /// </para>
     /// </summary>
     public async Task<string> RegenerateForDeploymentAsync(
-        Guid deploymentId, IServiceProvider sp, CancellationToken ct = default)
+        Guid deploymentId, IServiceProvider sp, CallerAuthorization caller,
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(sp);
+        ArgumentNullException.ThrowIfNull(caller);
 
         var dbFactory = sp.GetRequiredService<IDbContextFactory<KrakenDbContext>>();
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -180,6 +183,21 @@ public sealed class OfflineDropBundleBuilder(ILogger<OfflineDropBundleBuilder> l
             .FirstOrDefaultAsync(d => d.Id == deploymentId, ct)
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Deployment {deploymentId} not found.");
+
+        // T1-8: regeneration re-materialises a secret-bearing deployable, so it is
+        // an execute-op gated exactly like DeploymentService.CreateAsync/CancelAsync
+        // — DeploymentCreate scoped to THIS deployment's project/environment/tenant.
+        // Strict; an Environment=Test grant must not regenerate a Prod bundle.
+        // System (worker/parent-step) callers skip it (authorized at origin).
+        if (!caller.IsSystem)
+        {
+            await sp.GetRequiredService<IPermissionEvaluator>().EnsureScopedAsync(
+                caller, Permission.DeploymentCreate,
+                new PermissionScope(
+                    SpaceId: deployment.SpaceId, ProjectId: deployment.ProjectId,
+                    EnvironmentId: deployment.EnvironmentId, TenantId: deployment.TenantId),
+                ct).ConfigureAwait(false);
+        }
 
         // Offline drops are single-target by design (the dispatch path
         // refuses multi-target sets), so the deployment's one assignment is

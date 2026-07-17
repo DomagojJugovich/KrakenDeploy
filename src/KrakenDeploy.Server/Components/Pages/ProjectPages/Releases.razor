@@ -254,7 +254,7 @@
         _updatingRelease = release.Id;
         try
         {
-            var updated = await ReleaseSvc.UpdateVariablesAsync(release.Id);
+            var updated = await ReleaseSvc.UpdateVariablesAsync(release.Id, await Guard.CurrentCallerAsync());
             await ReloadAsync();
             Notifications.Notify(NotificationSeverity.Success, "Variables updated",
                 $"Pinned {updated.VariableSnapshot.Count} variable(s) into {release.Version}.",

@@ -1678,12 +1678,13 @@ public static class Program
         // current variable set into an existing release. Gated by
         // Permission.ReleaseEdit (same level required to delete a release).
         app.MapPost("/api/releases/{releaseId:guid}/update-variables",
-            async (Guid releaseId, ReleaseService releaseSvc, CancellationToken ct) =>
+            async (Guid releaseId, ReleaseService releaseSvc, ClaimsPrincipal user, CancellationToken ct) =>
             {
                 try
                 {
                     var release = await releaseSvc
-                        .UpdateVariablesAsync(releaseId, ct).ConfigureAwait(false);
+                        .UpdateVariablesAsync(releaseId, CallerAuthorization.ForUser(user), ct)
+                        .ConfigureAwait(false);
                     return Results.Ok(new
                     {
                         release.Id,
@@ -1691,6 +1692,10 @@ public static class Program
                         release.VariableSnapshotUpdatedUtc,
                         VariableCount = release.VariableSnapshot.Count,
                     });
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -2323,11 +2328,12 @@ public static class Program
         // (Octopus models a deployment as a cancellable task).
         app.MapPost("/api/deployments/{id:guid}/cancel",
             async (Guid id, DeploymentService deploymentSvc, IAuditLog audit,
-                CancellationToken ct) =>
+                ClaimsPrincipal user, CancellationToken ct) =>
             {
                 try
                 {
-                    var deployment = await deploymentSvc.CancelAsync(id, ct).ConfigureAwait(false);
+                    var deployment = await deploymentSvc
+                        .CancelAsync(id, CallerAuthorization.ForUser(user), ct).ConfigureAwait(false);
                     if (deployment is null)
                     {
                         return Results.NotFound();
@@ -2341,6 +2347,10 @@ public static class Program
                         ct:          ct).ConfigureAwait(false);
 
                     return Results.Ok(new { deployment.Id, Status = deployment.Status.ToString() });
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -2407,14 +2417,18 @@ public static class Program
         // gate at DeploymentCreate rather than the read-only DeploymentView.
         app.MapPost("/api/deployments/{id:guid}/regenerate-drop-bundle",
             async (Guid id, OfflineDropBundleBuilder bundleBuilder, HttpContext http,
-                CancellationToken ct) =>
+                ClaimsPrincipal user, CancellationToken ct) =>
             {
                 try
                 {
                     await bundleBuilder
-                        .RegenerateForDeploymentAsync(id, http.RequestServices, ct)
+                        .RegenerateForDeploymentAsync(id, http.RequestServices, CallerAuthorization.ForUser(user), ct)
                         .ConfigureAwait(false);
                     return Results.Ok(new { id, regenerated = true });
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -2947,13 +2961,19 @@ public static class Program
             }).RequirePermission(Permission.RunbookView);
 
         app.MapPost("/api/projects/{projectId:guid}/runbooks",
-            async (Guid projectId, CreateRunbookRequest req, RunbookService runbookSvc, CancellationToken ct) =>
+            async (Guid projectId, CreateRunbookRequest req, RunbookService runbookSvc,
+                ClaimsPrincipal user, CancellationToken ct) =>
             {
                 try
                 {
-                    var rb = await runbookSvc.CreateAsync(projectId, req.Name, req.Description, ct)
+                    var rb = await runbookSvc
+                        .CreateAsync(projectId, req.Name, req.Description, CallerAuthorization.ForUser(user), ct)
                         .ConfigureAwait(false);
                     return Results.Created($"/api/runbooks/{rb.Id}", rb);
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
                 }
                 catch (InvalidOperationException ex)
                 {
@@ -2962,18 +2982,35 @@ public static class Program
             }).RequirePermission(Permission.RunbookEdit);
 
         app.MapPut("/api/runbooks/{id:guid}",
-            async (Guid id, CreateRunbookRequest req, RunbookService runbookSvc, CancellationToken ct) =>
+            async (Guid id, CreateRunbookRequest req, RunbookService runbookSvc,
+                ClaimsPrincipal user, CancellationToken ct) =>
             {
-                var rb = await runbookSvc.UpdateAsync(id, req.Name, req.Description, ct)
-                    .ConfigureAwait(false);
-                return rb is null ? Results.NotFound() : Results.Ok(rb);
+                try
+                {
+                    var rb = await runbookSvc
+                        .UpdateAsync(id, req.Name, req.Description, CallerAuthorization.ForUser(user), ct)
+                        .ConfigureAwait(false);
+                    return rb is null ? Results.NotFound() : Results.Ok(rb);
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+                }
             }).RequirePermission(Permission.RunbookEdit);
 
         app.MapDelete("/api/runbooks/{id:guid}",
-            async (Guid id, RunbookService runbookSvc, CancellationToken ct) =>
+            async (Guid id, RunbookService runbookSvc, ClaimsPrincipal user, CancellationToken ct) =>
             {
-                var deleted = await runbookSvc.DeleteAsync(id, ct).ConfigureAwait(false);
-                return deleted ? Results.NoContent() : Results.NotFound();
+                try
+                {
+                    var deleted = await runbookSvc
+                        .DeleteAsync(id, CallerAuthorization.ForUser(user), ct).ConfigureAwait(false);
+                    return deleted ? Results.NoContent() : Results.NotFound();
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+                }
             }).RequirePermission(Permission.RunbookEdit);
 
         // Runbook steps
@@ -3051,11 +3088,12 @@ public static class Program
         // permission as the deployment cancel.
         app.MapPost("/api/runbook-runs/{runId:guid}/cancel",
             async (Guid runId, RunbookService runbookSvc, IAuditLog audit,
-                CancellationToken ct) =>
+                ClaimsPrincipal user, CancellationToken ct) =>
             {
                 try
                 {
-                    var run = await runbookSvc.CancelRunAsync(runId, ct).ConfigureAwait(false);
+                    var run = await runbookSvc
+                        .CancelRunAsync(runId, CallerAuthorization.ForUser(user), ct).ConfigureAwait(false);
                     if (run is null)
                     {
                         return Results.NotFound();
@@ -3069,6 +3107,10 @@ public static class Program
                         ct:          ct).ConfigureAwait(false);
 
                     return Results.Ok(new { run.Id, Status = run.Status.ToString() });
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
                 }
                 catch (InvalidOperationException ex)
                 {

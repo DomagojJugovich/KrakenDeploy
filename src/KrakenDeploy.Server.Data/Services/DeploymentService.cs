@@ -215,9 +215,30 @@ public class DeploymentService(
     /// already in a terminal state.
     /// </para>
     /// </summary>
-    public async Task<Deployment?> CancelAsync(Guid id, CancellationToken ct = default)
+    public async Task<Deployment?> CancelAsync(
+        Guid id, CallerAuthorization caller, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // T1-8: cancelling THIS deployment (TaskCancel) is scoped to its
+        // project/environment/tenant — a TaskCancel grant restricted to Env=Test
+        // must not abort a running Prod deployment. Strict; resolve filter-free so
+        // a foreign deployment id fails closed. System (internal) callers skip.
+        if (!caller.IsSystem)
+        {
+            var s = await db.Deployments.IgnoreQueryFilters()
+                .Where(d => d.Id == id)
+                .Select(d => new { d.SpaceId, d.ProjectId, d.EnvironmentId, d.TenantId })
+                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            await permissions.EnsureScopedAsync(
+                caller, Permission.TaskCancel,
+                new PermissionScope(
+                    SpaceId: s?.SpaceId, ProjectId: s?.ProjectId,
+                    EnvironmentId: s?.EnvironmentId, TenantId: s?.TenantId), ct)
+                .ConfigureAwait(false);
+        }
+
         var deployment = await db.Deployments
             .FirstOrDefaultAsync(d => d.Id == id, ct)
             .ConfigureAwait(false);

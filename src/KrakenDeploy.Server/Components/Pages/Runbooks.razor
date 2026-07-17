@@ -127,7 +127,8 @@ else
         try
         {
             var rb = await RunbookSvc.CreateAsync(
-                _selectedProjectId.Value, _name.Trim(), _description?.Trim());
+                _selectedProjectId.Value, _name.Trim(), _description?.Trim(),
+                await Guard.CurrentCallerAsync());
             _runbooks    = [.. _runbooks.Append(rb).OrderBy(r => r.Name)];
             _createOpen  = false;
             Notify.Notify(new NotificationMessage
@@ -136,6 +137,16 @@ else
                 Summary  = "Runbook created",
                 Detail   = rb.Name,
                 Duration = 3000,
+            });
+        }
+        catch (AuthorizationException)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary  = "Not allowed",
+                Detail   = "You don't have permission to create a runbook in this project.",
+                Duration = 5000,
             });
         }
         catch (InvalidOperationException ex)
@@ -153,16 +164,29 @@ else
     private async Task DeleteAsync(Runbook rb)
     {
         if (!await Guard.AllowAsync(Permission.RunbookEdit)) return;
-        var deleted = await RunbookSvc.DeleteAsync(rb.Id);
-        if (deleted)
+        try
         {
-            _runbooks = _runbooks.Where(r => r.Id != rb.Id).ToList();
+            var deleted = await RunbookSvc.DeleteAsync(rb.Id, await Guard.CurrentCallerAsync());
+            if (deleted)
+            {
+                _runbooks = _runbooks.Where(r => r.Id != rb.Id).ToList();
+                Notify.Notify(new NotificationMessage
+                {
+                    Severity = NotificationSeverity.Info,
+                    Summary  = "Deleted",
+                    Detail   = rb.Name,
+                    Duration = 3000,
+                });
+            }
+        }
+        catch (AuthorizationException)
+        {
             Notify.Notify(new NotificationMessage
             {
-                Severity = NotificationSeverity.Info,
-                Summary  = "Deleted",
-                Detail   = rb.Name,
-                Duration = 3000,
+                Severity = NotificationSeverity.Error,
+                Summary  = "Not allowed",
+                Detail   = "You don't have permission to delete this runbook.",
+                Duration = 5000,
             });
         }
     }

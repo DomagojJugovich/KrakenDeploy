@@ -254,9 +254,27 @@ public class ReleaseService(
     /// Returns the updated release. Throws when the release doesn't exist.
     /// </para>
     /// </summary>
-    public async Task<Release> UpdateVariablesAsync(Guid releaseId, CancellationToken ct = default)
+    public async Task<Release> UpdateVariablesAsync(
+        Guid releaseId, CallerAuthorization caller, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // T1-8: authoritative sub-Space authorization — re-snapshotting variables
+        // is an edit of THIS release's project. Strict; resolve the release's
+        // Space/Project filter-free so a foreign-Space release id fails closed.
+        // Mirrors CreateAsync; System (internal) callers skip.
+        if (!caller.IsSystem)
+        {
+            var scope = await db.Releases.IgnoreQueryFilters()
+                .Where(r => r.Id == releaseId)
+                .Select(r => new { r.SpaceId, r.ProjectId })
+                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            await permissions.EnsureScopedAsync(
+                caller, Permission.ReleaseEdit,
+                new PermissionScope(SpaceId: scope?.SpaceId, ProjectId: scope?.ProjectId), ct)
+                .ConfigureAwait(false);
+        }
 
         var release = await db.Releases
             .FirstOrDefaultAsync(r => r.Id == releaseId, ct)

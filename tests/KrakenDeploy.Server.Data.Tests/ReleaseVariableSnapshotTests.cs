@@ -113,7 +113,7 @@ public sealed class ReleaseVariableSnapshotTests(PostgresFixture postgres)
 
         // "Update Variables" → snapshot re-pulls and the timestamp bumps.
         await Task.Delay(10); // ensure the new UpdatedUtc differs from firstStamp
-        var refreshed = await releaseSvc.UpdateVariablesAsync(release.Id);
+        var refreshed = await releaseSvc.UpdateVariablesAsync(release.Id, CallerAuthorization.System);
         refreshed.VariableSnapshot.Single(v => v.Name == "Db.Host").Value.Should().Be("new-db");
         refreshed.VariableSnapshotUpdatedUtc.Should().BeAfter(firstStamp!.Value);
     }
@@ -122,7 +122,7 @@ public sealed class ReleaseVariableSnapshotTests(PostgresFixture postgres)
     public async Task UpdateVariablesAsync_throws_when_release_does_not_exist()
     {
         var svc = new ReleaseService(postgres, new AllowAllPermissionEvaluator());
-        await svc.Invoking(s => s.UpdateVariablesAsync(Guid.NewGuid()))
+        await svc.Invoking(s => s.UpdateVariablesAsync(Guid.NewGuid(), CallerAuthorization.System))
             .Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*not found*");
     }

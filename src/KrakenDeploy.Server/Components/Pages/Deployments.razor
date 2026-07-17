@@ -172,7 +172,7 @@
 
         try
         {
-            var updated = await DeploymentSvc.CancelAsync(d.Id);
+            var updated = await DeploymentSvc.CancelAsync(d.Id, await Guard.CurrentCallerAsync());
             if (updated is not null)
             {
                 await Audit.RecordAsync(
@@ -199,6 +199,16 @@
                     Duration = 4000,
                 });
             }
+        }
+        catch (AuthorizationException)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary  = "Not allowed",
+                Detail   = "You don't have permission to cancel this deployment.",
+                Duration = 5000,
+            });
         }
         catch (InvalidOperationException ex)
         {

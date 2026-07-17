@@ -191,11 +191,28 @@ public class RunbookService(
     }
 
     public async Task<Runbook> CreateAsync(
-        Guid projectId, string name, string? description, CancellationToken ct = default)
+        Guid projectId, string name, string? description,
+        CallerAuthorization caller, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(caller);
 
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // T1-8: creating a runbook under THIS project (RunbookEdit). Strict;
+        // resolve the project's Space filter-free so a foreign-Space project id
+        // fails closed. Mirrors ReleaseService.CreateAsync; System callers skip.
+        if (!caller.IsSystem)
+        {
+            var spaceId = await db.Projects.IgnoreQueryFilters()
+                .Where(p => p.Id == projectId)
+                .Select(p => (Guid?)p.SpaceId)
+                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            await permissions.EnsureScopedAsync(
+                caller, Permission.RunbookEdit,
+                new PermissionScope(SpaceId: spaceId, ProjectId: projectId), ct)
+                .ConfigureAwait(false);
+        }
 
         var projectExists = await db.Projects.AnyAsync(p => p.Id == projectId, ct).ConfigureAwait(false);
         if (!projectExists)
@@ -216,9 +233,17 @@ public class RunbookService(
     }
 
     public async Task<Runbook?> UpdateAsync(
-        Guid id, string name, string? description, CancellationToken ct = default)
+        Guid id, string name, string? description,
+        CallerAuthorization caller, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // T1-8: renaming/editing THIS runbook is scoped to its owning project
+        // (RunbookEdit), strict + filter-free. Checked before any read so an
+        // unauthorized caller can't distinguish "not found" from "forbidden".
+        await EnsureRunbookScopeAsync(db, caller, id, ct).ConfigureAwait(false);
+
         var runbook = await db.Runbooks.FindAsync([id], ct).ConfigureAwait(false);
         if (runbook is null)
         {
@@ -231,9 +256,16 @@ public class RunbookService(
         return runbook;
     }
 
-    public async Task<bool> DeleteAsync(Guid id, CancellationToken ct = default)
+    public async Task<bool> DeleteAsync(Guid id, CallerAuthorization caller, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // T1-8: deleting THIS runbook (+ its process + steps) is scoped to its
+        // owning project (RunbookEdit), strict + filter-free — a destructive
+        // cross-project op must not pass on a Space-wide grant.
+        await EnsureRunbookScopeAsync(db, caller, id, ct).ConfigureAwait(false);
+
         var runbook = await db.Runbooks.FindAsync([id], ct).ConfigureAwait(false);
         if (runbook is null)
         {
@@ -588,9 +620,29 @@ public class RunbookService(
     /// Space); throws <see cref="InvalidOperationException"/> when it is
     /// already terminal.
     /// </summary>
-    public async Task<RunbookRun?> CancelRunAsync(Guid id, CancellationToken ct = default)
+    public async Task<RunbookRun?> CancelRunAsync(
+        Guid id, CallerAuthorization caller, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // T1-8: cancelling THIS run (TaskCancel) is scoped to its
+        // project/environment/tenant. Strict; resolve filter-free so a run in a
+        // Space the caller can't see fails closed. System (internal) callers skip.
+        if (!caller.IsSystem)
+        {
+            var s = await db.RunbookRuns.IgnoreQueryFilters()
+                .Where(r => r.Id == id)
+                .Select(r => new { r.SpaceId, r.ProjectId, r.EnvironmentId, r.TenantId })
+                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            await permissions.EnsureScopedAsync(
+                caller, Permission.TaskCancel,
+                new PermissionScope(
+                    SpaceId: s?.SpaceId, ProjectId: s?.ProjectId,
+                    EnvironmentId: s?.EnvironmentId, TenantId: s?.TenantId), ct)
+                .ConfigureAwait(false);
+        }
+
         var run = await db.RunbookRuns
             .FirstOrDefaultAsync(r => r.Id == id, ct)
             .ConfigureAwait(false);

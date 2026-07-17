@@ -5,6 +5,7 @@ using KrakenDeploy.Server.Core.Domain.Environments;
 using KrakenDeploy.Server.Core.Domain.Lifecycles;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
 
@@ -27,7 +28,7 @@ public sealed class RunbookRunCancelTests(PostgresFixture postgres)
         var pusher = new RecordingCancelPusher();
         var svc = NewService(pusher);
 
-        var updated = await svc.CancelRunAsync(runId);
+        var updated = await svc.CancelRunAsync(runId, CallerAuthorization.System);
 
         updated.Should().NotBeNull();
         updated!.Status.Should().Be(DeploymentStatus.Cancelled);
@@ -48,7 +49,7 @@ public sealed class RunbookRunCancelTests(PostgresFixture postgres)
         var pusher = new RecordingCancelPusher();
         var svc = NewService(pusher);
 
-        var act = () => svc.CancelRunAsync(runId);
+        var act = () => svc.CancelRunAsync(runId, CallerAuthorization.System);
         await act.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*already in a terminal state*");
 
@@ -61,7 +62,7 @@ public sealed class RunbookRunCancelTests(PostgresFixture postgres)
     [Fact]
     public async Task Cancelling_an_unknown_run_returns_null()
     {
-        (await NewService(new RecordingCancelPusher()).CancelRunAsync(Guid.NewGuid()))
+        (await NewService(new RecordingCancelPusher()).CancelRunAsync(Guid.NewGuid(), CallerAuthorization.System))
             .Should().BeNull();
     }
 

@@ -641,7 +641,7 @@ else
         _cancelling = true;
         try
         {
-            var updated = await DeploymentSvc.CancelAsync(Deployment.Id);
+            var updated = await DeploymentSvc.CancelAsync(Deployment.Id, await Guard.CurrentCallerAsync());
             if (updated is not null)
             {
                 await Audit.RecordAsync(
@@ -661,6 +661,16 @@ else
                     Duration = 4000,
                 });
             }
+        }
+        catch (AuthorizationException)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary  = "Not allowed",
+                Detail   = "You don't have permission to cancel this deployment.",
+                Duration = 5000,
+            });
         }
         catch (InvalidOperationException ex)
         {
@@ -721,7 +731,8 @@ else
         _regenerating = true;
         try
         {
-            await BundleBuilder.RegenerateForDeploymentAsync(Deployment.Id, Services);
+            await BundleBuilder.RegenerateForDeploymentAsync(
+                Deployment.Id, Services, await Guard.CurrentCallerAsync());
             Deployment = await DeploymentSvc.GetAsync(Id);
             Notify.Notify(new NotificationMessage
             {
@@ -729,6 +740,16 @@ else
                 Summary  = "Bundle re-generated",
                 Detail   = "A fresh drop bundle is ready to download.",
                 Duration = 4000,
+            });
+        }
+        catch (AuthorizationException)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary  = "Not allowed",
+                Detail   = "You don't have permission to regenerate this bundle.",
+                Duration = 6000,
             });
         }
         catch (InvalidOperationException ex)

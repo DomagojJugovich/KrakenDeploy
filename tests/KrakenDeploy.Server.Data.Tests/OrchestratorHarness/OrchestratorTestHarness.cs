@@ -8,6 +8,7 @@ using KrakenDeploy.Server.Core.Domain.Environments;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data.Encryption;
@@ -332,7 +333,7 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         await using var scope = _services
             .GetRequiredService<IServiceScopeFactory>().CreateAsyncScope();
         var svc = scope.ServiceProvider.GetRequiredService<DeploymentService>();
-        await svc.CancelAsync(id, ct);
+        await svc.CancelAsync(id, CallerAuthorization.System, ct);
     }
 
     /// <summary>
