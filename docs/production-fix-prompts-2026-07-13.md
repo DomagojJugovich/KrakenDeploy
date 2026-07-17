@@ -31,7 +31,7 @@ One WP per session/branch. Branch names suggested per WP. Build + affected tests
 | **A1** | Package-upload path sanitization | ✅ Done | T0 | T0-5 | XS | — |
 | **A2** | Secret masking in logs + sensitivity plumbing | ✅ Done | T0 | T0-6, T1-6(out-vars) | M | — |
 | **A3** | Remove agent role self-assignment | ✅ Done | T1 | T1-7 | S | — |
-| **A4** | Enforce sub-Space RBAC on the execution surface | 🟡 Partial | T1 | T1-8 | L | — |
+| **A4** | Enforce sub-Space RBAC on the execution surface | ✅ Done | T1 | T1-8 | L | — |
 | **A5** | MCP read-tool authorization | ✅ Done | T1 | T1-9 | S | — |
 | **A6** | SSRF hardening (redirects, RFC1918, catalog/OIDC/AI) | ✅ Done | T1 | T1-11 | M | — |
 | **A7** | Auth-session hardening (revocation, DP-ring, cookie) | ✅ Done | T1 | T1-13, T1-14, M2 | M | — |
@@ -62,12 +62,11 @@ Sizes: XS ≈ <½ day, S ≈ ½–1 day, M ≈ 1–3 days, L ≈ 3–6 days, XL 
 
 **Status legend / progress** (as of 2026-07-16 — reflects memory records + code evidence; all Done WPs are on `main` **local, not pushed**):
 
-- ✅ **Done (17):** A1, A2, A3, A5, A6, A7, A8, B1–B8, C2, C3. *(Plus the on-prem DataProtection-cert enablement, which is not a lettered WP.)*
-- 🟡 **Partial (1):** A4 — core mechanism + the create/edit/execute surfaces the audit named are enforced & tested; a residual set of mutating ops is still unscoped (see §A4, verified 2026-07-16).
+- ✅ **Done (18):** A1–A8, B1–B8, C2, C3. *(Plus the on-prem DataProtection-cert enablement, which is not a lettered WP.)*
 - ⬜ **Open (9):** C1, C5, C6, D1, D2, D3, D4, D6, D7.
 - ⏸ **Deferred (2):** C4 (blocked on migration consolidation — see §C4), D5 (strategic multi-account defer per the audit).
 
-> Provenance note: A2/A3 completion is **inferred from code** (`KrakenDeploy.Contracts/Logging/SecretRedactor` + `RequestLogRedaction` wired into the deployment log/output path; `AgentHub` no longer assigns `Roles`), not from a dedicated WP record — confirm coverage if in doubt. A4 was **verified in code 2026-07-16** (see the §A4 status block): the strict matcher + `EnsureScopedAsync` service authority are correct and cover deployment-create, process/variable edits, release-create, runbook step edits, runbook-run, and tenant ops (with `SubSpaceRbacExecuteTests` + `RoleAssignmentScopeMatcherTests`); a residual set of mutating ops (runbook create/rename/delete + run-cancel, deployment cancel, release update-variables) is still gated only by the Space-wide non-strict endpoint check and is cross-project-bypassable within a Space.
+> Provenance note: A2/A3 completion is **inferred from code** (`KrakenDeploy.Contracts/Logging/SecretRedactor` + `RequestLogRedaction` wired into the deployment log/output path; `AgentHub` no longer assigns `Roles`), not from a dedicated WP record — confirm coverage if in doubt. A4 was verified in code 2026-07-16 (originally found Partial) and **COMPLETED 2026-07-16** (see the §A4 status block): the strict matcher + `EnsureScopedAsync` service authority now cover the full mutating/execute surface — deployment create/cancel, process/variable edits, release create + update-variables, runbook create/rename/delete + step edits + run + run-cancel, drop-bundle regenerate, and tenant ops — with `SubSpaceRbacExecuteTests` + `RoleAssignmentScopeMatcherTests`, and the REST endpoints map `AuthorizationException` → 403.
 
 ---
 
@@ -197,23 +196,21 @@ Branch: fix/sec-agent-role-selfassign
 
 ### A4 — Enforce sub-Space RBAC on the execution surface (T1-8)
 
-> **Status: 🟡 PARTIAL — verified in code 2026-07-16.** The audit is mostly stale; the core is done and tested, but a residual set of mutating ops was missed.
+> **Status: ✅ DONE — verified + completed in code 2026-07-16.** (Originally found Partial; the residual gaps were then closed.)
 >
-> **Done & correct (the mechanism the audit asked for):**
+> **Mechanism:**
 > - `RoleAssignmentScopeMatcher` **strict mode** — a dimension the grant restricts but the caller left `null` fails closed for writes (`return !strict`); an empty grant list (Space-wide) still auto-passes.
 > - `PermissionEvaluatorExtensions.EnsureScopedAsync(caller, perm, scope)` — the authoritative service-layer check (`bypassCache:true, strictScope:true`, throws `AuthorizationException`); `CallerAuthorization` (`ForUser`/`System`, no fail-open default).
-> - Enforced with a **resolved** scope in: `DeploymentService.CreateAsync` (Test→Prod closed, checked before any info leak), `ProcessService` step add/update/move/remove/import, `VariableService` variable + set CRUD, `ReleaseService.CreateAsync`, `RunbookService` step edits + `TriggerAsync` (runbook run), `TenantService` tenant-keyed mutations. Wired across REST, MCP, and UI; system paths pass `CallerAuthorization.System`.
-> - **Tests:** `tests/KrakenDeploy.Server.Data.Tests/SubSpaceRbacExecuteTests.cs` (Test→Prod deploy reject, runbook-run scope, cross-project process/variable edit reject, release-create reject, system-bypass) + `tests/KrakenDeploy.Server.Core.Tests/RoleAssignmentScopeMatcherTests.cs`.
 >
-> **Residual gaps (still cross-project-bypassable within one Space — a user with a sub-Space grant can act on another project's resources; gated only by Space-wide non-strict `RequirePermission`, service takes only an id):**
-> - **High** — `RunbookService.DeleteAsync` (RunbookService.cs:234): deletes a runbook + its Process + all steps across projects.
-> - **High** — `DeploymentService.CancelAsync` (DeploymentService.cs:218): `TaskCancel`-scoped user cancels another project/env's running (incl. Prod) deployment → B6 kills another team's step tree.
-> - **High** — `RunbookService.CancelRunAsync` (RunbookService.cs:~591): same as above for runbook runs.
-> - **Medium** — `ReleaseService.UpdateVariablesAsync` (ReleaseService.cs:257): re-snapshots another project's release variables.
-> - **Medium** — `RunbookService.UpdateAsync` (rename, :218) and `RunbookService.CreateAsync` (:193): rename/create runbooks in another project.
-> - **Low/design** — `ProcessService.GetOrCreateAsync` / `VariableService.GetOrCreateSetAsync` (empty-container create, not strictly scoped); `TenantService.ConnectProjectAsync`/`DisconnectProjectAsync` authorize the Tenant dimension only, not Project (appears intentional — confirm).
+> **Enforced with a resolved scope across the full mutating/execute surface** (all thread `CallerAuthorization`; REST maps `AuthorizationException` → 403; Blazor handlers degrade gracefully; system paths pass `CallerAuthorization.System`):
+> - Deployments: `CreateAsync` (Test→Prod closed, before any info leak), `CancelAsync` (`TaskCancel` @ project/env/tenant), `OfflineDropBundleBuilder.RegenerateForDeploymentAsync` (`DeploymentCreate`).
+> - Releases: `CreateAsync`, `UpdateVariablesAsync` (`ReleaseEdit` @ project).
+> - Runbooks: `CreateAsync`/`UpdateAsync`/`DeleteAsync` + step edits (`RunbookEdit`), `TriggerAsync` (`RunbookRunCreate`), `CancelRunAsync` (`TaskCancel`).
+> - Process/Variable edits (`ProcessEdit`/`VariableEdit`), `TenantService` tenant-keyed mutations.
 >
-> **To finish A4:** thread `CallerAuthorization` into the 6 methods above and call `EnsureScopedAsync` with the resolved `Project`/`Environment`/`Tenant` scope (use the sibling scoped methods as the pattern), + tests mirroring `SubSpaceRbacExecuteTests`. Branch below.
+> **Tests:** `tests/KrakenDeploy.Server.Data.Tests/SubSpaceRbacExecuteTests.cs` (Test→Prod deploy + regenerate + cancel reject, runbook-run scope, cross-project process/variable/release/runbook edit reject + allow, system-bypass) + `tests/KrakenDeploy.Server.Core.Tests/RoleAssignmentScopeMatcherTests.cs`. Adversarial 2-lens review (bypass-hunt + scope-correctness) → the regenerate gap + the 403-vs-500 contract were the only findings and both fixed.
+>
+> **Deliberately out of scope (low/design, not exploitable):** `ProcessService.GetOrCreateAsync` / `VariableService.GetOrCreateSetAsync` create only an empty container (downstream mutators are scoped); `TenantService.ConnectProjectAsync`/`DisconnectProjectAsync` authorize the Tenant dimension only (deploys remain gated at project+env+tenant) — intentional.
 
 ```text
 TASK: Sub-Space (Project/Environment/Tenant) role scoping is not enforced at execution time.
