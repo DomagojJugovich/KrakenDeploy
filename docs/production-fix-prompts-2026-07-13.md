@@ -48,7 +48,7 @@ One WP per session/branch. Branch names suggested per WP. Build + affected tests
 | **C2** | On-prem compose: DEK init + DataPath unify | ✅ Done | T0 | T0-8, T0-9 | M | — |
 | **C3** | Production hardening (DI validate, Npgsql, healthz) | ✅ Done | T1 | T1-18, T1-19, P1 | S | — |
 | **C4** | Migration data-correctness tests + expand/contract | ⏸ Deferred | T1 | T1-17, §7 gap | M | migration consolidation (see §C4) |
-| **C5** | Windows/Croatian script correctness (BOM + pwsh) | ⬜ Open | T1 | T1-20 | S | — |
+| **C5** | Windows/Croatian script correctness (BOM + pwsh) | ✅ Done | T1 | T1-20 | S | — |
 | **C6** | Agent self-upgrade atomicity + rollback | ⬜ Open | T1 | T1-21 | M | — |
 | **D1** | Finish server_tasks ENGINE merge | ⬜ Open | T2 | T2-1, T2-3 | XL | B1–B5 |
 | **D2** | Rename Deployment→Task wire/enum surface | ⬜ Open | T2 | T2-2 | L | D1 |
@@ -62,8 +62,8 @@ Sizes: XS ≈ <½ day, S ≈ ½–1 day, M ≈ 1–3 days, L ≈ 3–6 days, XL 
 
 **Status legend / progress** (as of 2026-07-16 — reflects memory records + code evidence; all Done WPs are on `main` **local, not pushed**):
 
-- ✅ **Done (18):** A1–A8, B1–B8, C2, C3. *(Plus the on-prem DataProtection-cert enablement, which is not a lettered WP.)*
-- ⬜ **Open (9):** C1, C5, C6, D1, D2, D3, D4, D6, D7.
+- ✅ **Done (19):** A1–A8, B1–B8, C2, C3, C5. *(Plus the on-prem DataProtection-cert enablement, which is not a lettered WP.)*
+- ⬜ **Open (8):** C1, C6, D1, D2, D3, D4, D6, D7.
 - ⏸ **Deferred (2):** C4 (blocked on migration consolidation — see §C4), D5 (strategic multi-account defer per the audit).
 
 > Provenance note: A2/A3 completion is **inferred from code** (`KrakenDeploy.Contracts/Logging/SecretRedactor` + `RequestLogRedaction` wired into the deployment log/output path; `AgentHub` no longer assigns `Roles`), not from a dedicated WP record — confirm coverage if in doubt. A4 was verified in code 2026-07-16 (originally found Partial) and **COMPLETED 2026-07-16** (see the §A4 status block): the strict matcher + `EnsureScopedAsync` service authority now cover the full mutating/execute surface — deployment create/cancel, process/variable edits, release create + update-variables, runbook create/rename/delete + step edits + run + run-cancel, drop-bundle regenerate, and tenant ops — with `SubSpaceRbacExecuteTests` + `RoleAssignmentScopeMatcherTests`, and the REST endpoints map `AuthorizationException` → 403.
@@ -731,6 +731,16 @@ Branch: test/ops-migration-correctness
 ```
 
 ### C5 — Windows/Croatian script correctness (T1-20) — LAUS-critical
+
+> **Status: ✅ DONE — 2026-07-18.** Fixed in the two script runners
+> (`steps/KrakenDeploy.Steps.Common/ScriptRunner.cs` = online/ad-hoc/offline, and
+> `ServerScriptStepRunner` = server-orchestrated):
+> - **Input:** `.ps1` written UTF-8 **with BOM** (`EncodingForSyntax`); bash/python stay BOM-less.
+> - **Interpreter:** default → Windows PowerShell (Desktop) on Windows; explicit `Core` → pwsh; off Windows → pwsh. (Per-step Desktop/Core selector already in the UI schema.)
+> - **Output** (found by adversarial review, in the acceptance's "no mojibake in output"): `StandardOutputEncoding`/`StandardErrorEncoding` = UTF-8 on both runners + `[Console]::OutputEncoding` = UTF-8 in the PowerShell preambles and the ad-hoc invoker.
+> - **Artifacts:** the KrakenIis / WindowsService handlers persist their generated `.ps1` troubleshooting artifact with the same UTF-8-with-BOM.
+>
+> Tests: `ScriptRunnerCommandTests` + `ServerScriptStepRunnerCommandTests` (encoding + edition matrix), a Windows-only Croatian output round-trip, and a preamble assertion. Chosen fork (Domagoj): Desktop-default on Windows (Octopus parity).
 
 ```text
 TASK: Two cross-platform script defects that break on Croatian-language Windows targets (directly relevant
