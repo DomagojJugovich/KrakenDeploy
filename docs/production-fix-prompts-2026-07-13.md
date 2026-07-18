@@ -2,11 +2,13 @@
 
 | | |
 |---|---|
-| **Version** | 1.1 |
+| **Version** | 1.2 |
 | **Date** | 2026-07-13 (Status column + progress tracking added 2026-07-16) |
-| **Status** | Review |
+| **Status** | Archived |
 | **Source** | [production-readiness-audit-2026-07-13.md](production-readiness-audit-2026-07-13.md) (finding IDs T0-*/T1-*/T2-* below refer to it) |
 | **Assumes merged first** | `finish-plan-2026-07-05.md` WP1–WP15 **and** the `fix/db-schema-hardening` chain. Line numbers in the audit will have shifted — **re-locate every anchor by symbol name, not line.** |
+
+> **ARCHIVED 2026-07-18** — superseded by [master-plan-2026-07-18.md](master-plan-2026-07-18.md). Prompts for completed WPs remain here for reference; do not execute open-WP prompts from this file — they contain verified-stale claims.
 
 ---
 

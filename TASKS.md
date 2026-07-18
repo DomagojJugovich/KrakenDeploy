@@ -1906,3 +1906,7 @@ Sequenced AFTER M14. M15's flattener runs BEFORE M14.4's wave partitioner; layer
 
 
 - Multi-node clustering UI.
+
+## M16 — Finish line
+
+Progress for all remaining work is tracked in `docs/master-plan-2026-07-18.md` (Status column of its §4 dependency & sequence table); a checkbox list is deliberately not maintained here.

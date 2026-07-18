@@ -2,12 +2,14 @@
 
 | | |
 |---|---|
-| Version | 1.3 |
+| Version | 1.4 |
 | Date | 2026-07-10 |
 | Authors | Domagoj Jugović, Claude (5-agent audit) |
-| Status | Review |
+| Status | Archived |
 | Technologies | .NET 10, Blazor Server, Radzen, EF Core 10, PostgreSQL, SignalR, gRPC, Hangfire |
 | Scope | Whole repo @ HEAD `c6cb01c` |
+
+> **ARCHIVED 2026-07-18** — superseded by [master-plan-2026-07-18.md](master-plan-2026-07-18.md). Prompts for completed WPs remain here for reference; do not execute open-WP prompts from this file — they contain verified-stale claims.
 
 Audit method: five parallel review agents (render modes / CRUD coverage / TASKS.md-vs-code / Octopus parity / security & multi-account), findings cross-verified against source. Headline claims (no deploy button, stub tabs) were independently re-confirmed by grep/read before this document was written.
 
@@ -805,3 +807,4 @@ permission gates enforced.
 | 1.1 | 2026-07-06 | Grill session: all decisions resolved (§3), execution order + go-live line locked, WP3 approval model specced, WP10 + Seq, WP14 D8/D9 + M16, new WP15 certificates prompt |
 | 1.2 | 2026-07-10 | WP1+WP2 done; DB schema chain (db-schema-fix-prompts-2026-07-10.md) inserted before WP3, merged order locked; preamble rules 4/5 updated + new rule 11 (SettingsService); RIDERs added to WP3-5, WP7-9, WP11-14; WP14 db-erd.md item cancelled (file deleted) |
 | 1.3 | 2026-07-10 | Fleet-migration trigger pulled into WP12 scope; log-model revision (staging→blob in schema fix 3) reflected in WP9/WP11 riders + new WP10 rider (Seq = global log search) |
+| 1.4 | 2026-07-18 | Archived — superseded by master-plan-2026-07-18.md (open prompts re-verified against code and re-issued there) |
