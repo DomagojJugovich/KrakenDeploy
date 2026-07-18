@@ -72,7 +72,11 @@ public sealed class OctopusWindowsServiceStepHandler : IStepHandler
         {
             Directory.CreateDirectory(context.ArtifactsDir);
             var scriptPath = Path.Combine(context.ArtifactsDir, "octopus-windowsservice.ps1");
-            await File.WriteAllTextAsync(scriptPath, script, ct).ConfigureAwait(false);
+            // C5/T1-20: persist the downloadable .ps1 artifact with UTF-8-with-BOM
+            // (same as the executed copy) so Windows PowerShell 5.1 reads Croatian.
+            await File.WriteAllTextAsync(
+                scriptPath, script, ScriptRunner.EncodingForSyntax("PowerShell"), ct)
+                .ConfigureAwait(false);
         }
         catch (Exception ex)
         {

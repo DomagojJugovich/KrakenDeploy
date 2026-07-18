@@ -150,6 +150,12 @@ public sealed class ScriptStepHandler : IStepHandler
         Guid deploymentId)
     {
         var sb = new StringBuilder();
+        // C5/T1-20: force UTF-8 on the OUTPUT side so Croatian (č ć š ž đ) in
+        // Write-Host / native command output survives. Windows PowerShell 5.1
+        // (Desktop) otherwise emits the OEM console code page; pwsh already emits
+        // UTF-8. Paired with the runner's StandardOutputEncoding = UTF-8. Wrapped
+        // because [Console]::OutputEncoding throws when no console is attached.
+        sb.AppendLine("try { $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }");
         sb.AppendLine("# ── KrakenDeploy: variable injection ──────────────────────────────────");
 
         sb.AppendLine("$OctopusParameters = [ordered]@{");

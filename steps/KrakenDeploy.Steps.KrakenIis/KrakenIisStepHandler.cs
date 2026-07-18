@@ -201,7 +201,12 @@ public sealed class KrakenIisStepHandler : IStepHandler
         try
         {
             Directory.CreateDirectory(context.ArtifactsDir);
-            await File.WriteAllTextAsync(Path.Combine(context.ArtifactsDir, fileName), script, ct)
+            // C5/T1-20: persist the downloadable .ps1 troubleshooting artifact with
+            // the same UTF-8-with-BOM as the executed copy, so re-opening/re-running
+            // it under Windows PowerShell 5.1 doesn't corrupt Croatian.
+            await File.WriteAllTextAsync(
+                Path.Combine(context.ArtifactsDir, fileName), script,
+                ScriptRunner.EncodingForSyntax("PowerShell"), ct)
                 .ConfigureAwait(false);
         }
         catch (Exception ex)

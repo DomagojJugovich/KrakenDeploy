@@ -107,7 +107,9 @@ public sealed class ServerScriptStepRunner(
         var scriptFile = WriteScriptFile(fullScript, syntax);
         try
         {
-            var (exe, args) = BuildCommand(scriptFile, syntax, psEdition);
+            var (exe, args) = BuildCommand(
+                scriptFile, syntax, psEdition,
+                RuntimeInformation.IsOSPlatform(OSPlatform.Windows));
             logger.LogDebug(
                 "Running server-side script for deployment {Id} step '{Step}': {Exe} {Args}",
                 deploymentId, step.Name, exe, args);
@@ -121,6 +123,10 @@ public sealed class ServerScriptStepRunner(
                 RedirectStandardOutput = true,
                 RedirectStandardError  = true,
                 CreateNoWindow         = true,
+                // C5/T1-20: decode the child's output as UTF-8 (Croatian survives).
+                // The PowerShell preamble forces the child to EMIT UTF-8 too.
+                StandardOutputEncoding = Utf8NoBom,
+                StandardErrorEncoding  = Utf8NoBom,
             };
             foreach (var (k, v) in envVars)
             {
@@ -295,6 +301,17 @@ public sealed class ServerScriptStepRunner(
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
+    // C5/T1-20: PowerShell scripts are written UTF-8 WITH a BOM so Windows
+    // PowerShell 5.1 (Desktop) reads them as UTF-8 rather than the system ANSI
+    // code page (Croatian č ć š ž đ would otherwise be corrupted). Other syntaxes
+    // stay BOM-LESS (a BOM breaks a bash shebang). Mirrors Steps.Common.ScriptRunner.
+    private static readonly UTF8Encoding Utf8Bom   = new(encoderShouldEmitUTF8Identifier: true);
+    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
+
+    internal static Encoding EncodingForSyntax(string syntax) =>
+        syntax.ToLowerInvariant() is "bash" or "csharp" or "fsharp" or "python"
+            ? Utf8NoBom : Utf8Bom;
+
     private static string WriteScriptFile(string body, string syntax)
     {
         var ext = syntax.ToLowerInvariant() switch
@@ -306,12 +323,12 @@ public sealed class ServerScriptStepRunner(
             _        => ".ps1",
         };
         var path = Path.Combine(Path.GetTempPath(), $"kraken-server-{Guid.NewGuid():N}{ext}");
-        File.WriteAllText(path, body);
+        File.WriteAllText(path, body, EncodingForSyntax(syntax));
         return path;
     }
 
-    private static (string exe, string args) BuildCommand(
-        string scriptFile, string syntax, string? powerShellEdition)
+    internal static (string exe, string args) BuildCommand(
+        string scriptFile, string syntax, string? powerShellEdition, bool isWindows)
     {
         switch (syntax.ToLowerInvariant())
         {
@@ -320,9 +337,13 @@ public sealed class ServerScriptStepRunner(
             case "fsharp": return ("dotnet", $"fsi \"{scriptFile}\"");
             case "python": return ("python", $"\"{scriptFile}\"");
             default:
-                var wantDesktop = "Desktop".Equals(
-                    powerShellEdition, StringComparison.OrdinalIgnoreCase);
-                if (wantDesktop && RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                // C5/T1-20: default to Windows PowerShell (Desktop) on Windows
+                // (pwsh/Core is not on stock Windows Server); only an explicit
+                // "Core" edition selects pwsh. Off Windows, everything runs pwsh.
+                // Mirrors Steps.Common.ScriptRunner.BuildCommand.
+                var wantCore = "Core".Equals(
+                    powerShellEdition?.Trim(), StringComparison.OrdinalIgnoreCase);
+                if (isWindows && !wantCore)
                 {
                     return ("powershell.exe",
                         $"-NonInteractive -NoProfile -ExecutionPolicy Bypass -File \"{scriptFile}\"");
@@ -334,6 +355,11 @@ public sealed class ServerScriptStepRunner(
     private static string BuildPowerShellPreamble(IReadOnlyDictionary<string, string> variables)
     {
         var sb = new StringBuilder();
+        // C5/T1-20: emit UTF-8 so Croatian (č ć š ž đ) in output survives. Windows
+        // PowerShell 5.1 otherwise emits the OEM code page; pwsh already emits
+        // UTF-8. Wrapped: [Console]::OutputEncoding throws when no console is
+        // attached. Paired with the parent's StandardOutputEncoding = UTF-8.
+        sb.AppendLine("try { $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }");
         sb.AppendLine("# ── KrakenDeploy (server-side): variable injection ─────────────────────");
         sb.AppendLine("$OctopusParameters = [ordered]@{");
         foreach (var (name, value) in variables)

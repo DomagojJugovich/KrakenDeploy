@@ -256,7 +256,16 @@ public sealed class ScriptRunnerInvoker : IAdhocScriptInvoker
         IReadOnlyDictionary<string, string> envVars,
         Func<string, string, Task> onOutput,
         CancellationToken ct)
-        => new ScriptRunner().RunAndReturnExitCodeAsync(
-            script, syntax: "PowerShell",
+    {
+        // C5/T1-20: ad-hoc runs PowerShell directly (no step-handler preamble), so
+        // force UTF-8 output here too — otherwise Croatian (č ć š ž đ) in the
+        // captured output is mangled by Windows PowerShell 5.1's OEM code page
+        // (the runner already decodes stdout as UTF-8). Mirrors the step preamble.
+        var utf8Script =
+            "try { $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }\r\n"
+            + script;
+        return new ScriptRunner().RunAndReturnExitCodeAsync(
+            utf8Script, syntax: "PowerShell",
             workingDirectory, envVars, onOutput, ct, powerShellEdition: null);
+    }
 }

@@ -1,7 +1,11 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+
+[assembly: InternalsVisibleTo("KrakenDeploy.Agent.Tests")]
 
 namespace KrakenDeploy.Steps.Common;
 
@@ -78,6 +82,25 @@ public sealed class ScriptRunner
         }
     }
 
+    // C5/T1-20: PowerShell scripts are written UTF-8 WITH a BOM so Windows
+    // PowerShell 5.1 (Desktop) reads them as UTF-8 rather than the system ANSI
+    // code page — without the BOM, Croatian (č ć š ž đ) and any non-ASCII in the
+    // body, paths, or messages is corrupted. pwsh (Core) reads a BOM'd file fine
+    // too. Every other syntax stays BOM-LESS: a UTF-8 BOM breaks a bash shebang
+    // and is needless for python / csharp / fsharp.
+    private static readonly UTF8Encoding Utf8Bom   = new(encoderShouldEmitUTF8Identifier: true);
+    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
+
+    /// <summary>The encoding a script of the given <paramref name="syntax"/> is
+    /// written in: PowerShell → UTF-8 WITH BOM (Windows PowerShell 5.1 reads it as
+    /// UTF-8, not ANSI); everything else → BOM-less. Public so step handlers that
+    /// persist a generated .ps1 artifact use the same rule as the executed copy.</summary>
+    public static Encoding EncodingForSyntax(string syntax) =>
+        IsPowerShell(syntax) ? Utf8Bom : Utf8NoBom;
+
+    private static bool IsPowerShell(string syntax) =>
+        syntax.ToLowerInvariant() is not ("bash" or "csharp" or "fsharp" or "python");
+
     private static string WriteScriptFile(string body, string syntax)
     {
         var ext = syntax.ToLowerInvariant() switch
@@ -89,7 +112,7 @@ public sealed class ScriptRunner
             _        => ".ps1",
         };
         var path = Path.Combine(Path.GetTempPath(), $"kraken-{Guid.NewGuid():N}{ext}");
-        File.WriteAllText(path, body);
+        File.WriteAllText(path, body, EncodingForSyntax(syntax));
         return path;
     }
 
@@ -102,7 +125,9 @@ public sealed class ScriptRunner
         Func<string, string, Task> onOutput,
         CancellationToken ct)
     {
-        var (exe, args) = BuildCommand(scriptFile, syntax, powerShellEdition);
+        var (exe, args) = BuildCommand(
+            scriptFile, syntax, powerShellEdition,
+            RuntimeInformation.IsOSPlatform(OSPlatform.Windows));
 
         var psi = new ProcessStartInfo
         {
@@ -113,6 +138,12 @@ public sealed class ScriptRunner
             RedirectStandardOutput = true,
             RedirectStandardError  = true,
             CreateNoWindow         = true,
+            // C5/T1-20: decode the child's stdout/stderr as UTF-8 so Croatian
+            // (č ć š ž đ) in script output isn't mangled by the console OEM code
+            // page. The PowerShell preamble forces the child to EMIT UTF-8 too;
+            // pwsh / bash / python already emit UTF-8.
+            StandardOutputEncoding = Utf8NoBom,
+            StandardErrorEncoding  = Utf8NoBom,
         };
 
         foreach (var (k, v) in envVars)
@@ -194,8 +225,8 @@ public sealed class ScriptRunner
         return exitCode;
     }
 
-    private static (string exe, string args) BuildCommand(
-        string scriptFile, string syntax, string? powerShellEdition)
+    internal static (string exe, string args) BuildCommand(
+        string scriptFile, string syntax, string? powerShellEdition, bool isWindows)
     {
         switch (syntax.ToLowerInvariant())
         {
@@ -214,11 +245,17 @@ public sealed class ScriptRunner
                 return ("python", $"\"{scriptFile}\"");
 
             default:
-                // PowerShell — pick the executable by edition.
-                var wantDesktop = "Desktop".Equals(
-                    powerShellEdition, StringComparison.OrdinalIgnoreCase);
+                // PowerShell — pick the executable by edition (C5/T1-20).
+                // Default (unspecified edition) runs Windows PowerShell (Desktop)
+                // on Windows: it ships with every Windows Server, whereas pwsh
+                // (Core) does not, so an unspecified-edition step no longer fails
+                // with "pwsh not found" on a stock box (Octopus parity). Only an
+                // EXPLICIT "Core" edition selects pwsh on Windows. Off Windows,
+                // powershell.exe doesn't exist, so everything runs under pwsh.
+                var wantCore = "Core".Equals(
+                    powerShellEdition?.Trim(), StringComparison.OrdinalIgnoreCase);
 
-                if (wantDesktop && RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                if (isWindows && !wantCore)
                 {
                     return ("powershell.exe",
                         $"-NonInteractive -NoProfile -ExecutionPolicy Bypass -File \"{scriptFile}\"");
