@@ -53,6 +53,23 @@ public sealed class ScriptPackageTests
     }
 
     [Fact]
+    public void PowerShell_preamble_forces_utf8_output_before_anything_else()
+    {
+        // C5/T1-20: the FIRST statement switches the console to UTF-8 so Croatian
+        // (č ć š ž đ) in Write-Host / native output isn't emitted as the OEM code
+        // page under Windows PowerShell 5.1.
+        var ps = ScriptStepHandler.BuildPowerShellPreamble(
+            variables: new Dictionary<string, string>(),
+            arrayVariables: new Dictionary<string, string[]>(),
+            environmentName: "Prod",
+            deploymentId: Guid.Empty);
+
+        ps.Should().StartWith(
+            "try { $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false) } catch { }",
+            "UTF-8 output must be forced before any script output is written");
+    }
+
+    [Fact]
     public void PowerShell_preamble_escapes_embedded_quotes_in_variable_values()
     {
         // PowerShell single-quoted string literals escape ' by doubling it.
