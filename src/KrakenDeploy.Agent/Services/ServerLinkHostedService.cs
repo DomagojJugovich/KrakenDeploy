@@ -111,10 +111,25 @@ public sealed class ServerLinkHostedService(
             if (outcome == RegistrationOutcome.Refused)
             {
                 // B6: refusal after an automatic reconnect (e.g. the server was
-                // upgraded mid-connection). Stop the link — the Closed signal
-                // wakes the supervision loop, whose initial-connect path gets
-                // the same refusal and paces on the slow lane.
-                await serverLink.StopAsync(stoppingToken).ConfigureAwait(false);
+                // upgraded mid-connection). Stop the link so the supervision loop
+                // re-enters its connect/refusal cycle and paces on the slow lane.
+                try
+                {
+                    await serverLink.StopAsync(stoppingToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogDebug(ex,
+                        "Stopping the refused link after reconnect failed; continuing.");
+                }
+
+                // StopAsync sets the link's deliberate-stop flag, which SUPPRESSES
+                // the Closed event — so we MUST resolve the closed signal ourselves,
+                // otherwise the supervision loop parks on it forever (a zombie agent
+                // that reconnected, was refused, and never retries again). Resolving
+                // it wakes the loop, which reconnects, gets the same refusal, and
+                // slow-lane paces — the intended self-healing behaviour.
+                _closedSignal?.TrySetResult(null);
             }
         });
 

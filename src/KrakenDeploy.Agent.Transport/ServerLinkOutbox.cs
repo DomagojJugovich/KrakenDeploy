@@ -63,11 +63,19 @@ public sealed class ServerLinkOutbox(
     internal static readonly TimeSpan DisconnectedPollInterval = TimeSpan.FromSeconds(1);
 
     /// <summary>
-    /// Consecutive CONNECTED-send failures after which an item is dropped as
-    /// poison (a hub-side rejection would otherwise wedge the queue forever).
-    /// Failures while disconnected never count — those wait, not retry.
+    /// Consecutive CONNECTED-send failures after which a LOG line is dropped as
+    /// poison (a hub-side rejection would otherwise wedge the queue forever, and
+    /// the agent's local rolling file retains it anyway). E6: verdict-class items
+    /// (step/deployment completions, adhoc results) are NEVER dropped — they
+    /// retry forever with backoff past this cap. Failures while disconnected
+    /// never count — those wait, not retry.
     /// </summary>
     internal const int MaxSendAttemptsPerItem = 5;
+
+    /// <summary>Backoff ceiling a never-dropped verdict item uses once it passes
+    /// <see cref="MaxSendAttemptsPerItem"/> consecutive connected failures, so a
+    /// sustained hub-side fault is retried gently rather than hammered.</summary>
+    internal static readonly TimeSpan MaxConnectedRetryDelay = TimeSpan.FromSeconds(30);
 
     private readonly Channel<OutboxItem> _queue = Channel.CreateUnbounded<OutboxItem>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
@@ -169,28 +177,70 @@ public sealed class ServerLinkOutbox(
                 // invocation (the connection may already have flipped to
                 // reconnecting). Retry the SAME item — order is preserved, and
                 // the DispatchId key makes a might-have-arrived duplicate safe.
-                // Hub-side errors (HubException) take the same capped path: a
-                // transient server fault (e.g. DB blip inside the hub method)
-                // gets retried; a deterministic rejection drops after the cap.
+                // Hub-side errors (HubException) take the same path: a transient
+                // server fault (e.g. a DB blip inside the hub method) gets retried.
                 connectedAttempts++;
-                if (connectedAttempts >= MaxSendAttemptsPerItem)
+
+                // E6: only LOG lines are droppable as poison — a persistently
+                // rejected log line must not wedge the queue, and the agent's
+                // local rolling file retains it anyway. VERDICT-class items
+                // (step/deployment completions, adhoc results) are NEVER dropped:
+                // a lost completion turns a succeeded run into a reaper-Failed one,
+                // so they retry forever with backoff — a repeating hub-side fault
+                // (e.g. a ~30 s Postgres outage returning consecutive
+                // HubExceptions) must burn no verdict.
+                if (item is OutboxItem.Log && connectedAttempts >= MaxSendAttemptsPerItem)
                 {
                     logger.LogError(ex,
-                        "Outbox item {Item} failed {Attempts} consecutive sends while " +
+                        "Outbox log line failed {Attempts} consecutive sends while " +
                         "connected; dropped as poison to keep the queue moving.",
-                        item.GetType().Name, connectedAttempts);
+                        connectedAttempts);
                     return;
                 }
 
-                logger.LogDebug(ex,
-                    "Outbox send of {Item} failed (attempt {Attempt}); will retry.",
-                    item.GetType().Name, connectedAttempts);
+                // Surface a stuck verdict at warning once it passes the (former)
+                // cap; the normal transient retry stays at debug.
+                if (item is not OutboxItem.Log && connectedAttempts == MaxSendAttemptsPerItem)
+                {
+                    logger.LogWarning(ex,
+                        "Outbox verdict item {Item} failed {Attempts} consecutive sends " +
+                        "while connected; it is never dropped and will keep retrying with backoff.",
+                        item.GetType().Name, connectedAttempts);
+                }
+                else
+                {
+                    logger.LogDebug(ex,
+                        "Outbox send of {Item} failed (attempt {Attempt}); will retry.",
+                        item.GetType().Name, connectedAttempts);
+                }
 
-                // Brief pause so a flapping connection doesn't spin the loop.
-                await Task.Delay(DisconnectedPollInterval, ct).ConfigureAwait(false);
+                // Brief pause so a flapping connection doesn't spin the loop; a
+                // verdict item retrying past the cap backs off (capped) so a
+                // sustained hub-side fault is not hammered.
+                await Task.Delay(ConnectedRetryDelay(connectedAttempts), ct).ConfigureAwait(false);
             }
         }
 
         ct.ThrowIfCancellationRequested();
+    }
+
+    /// <summary>
+    /// Retry delay after a connected send failure: the fast
+    /// <see cref="DisconnectedPollInterval"/> up to the poison cap; beyond it
+    /// — reached only by never-dropped verdict items — exponential growth
+    /// capped at <see cref="MaxConnectedRetryDelay"/>.
+    /// </summary>
+    private static TimeSpan ConnectedRetryDelay(int connectedAttempts)
+    {
+        if (connectedAttempts < MaxSendAttemptsPerItem)
+        {
+            return DisconnectedPollInterval;
+        }
+
+        var overCap = Math.Min(connectedAttempts - MaxSendAttemptsPerItem, 6);
+        var seconds = Math.Min(
+            MaxConnectedRetryDelay.TotalSeconds,
+            DisconnectedPollInterval.TotalSeconds * Math.Pow(2, overCap));
+        return TimeSpan.FromSeconds(seconds);
     }
 }

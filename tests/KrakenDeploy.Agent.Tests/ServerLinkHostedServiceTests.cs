@@ -180,6 +180,37 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
         _link.StartAttempts.Should().Be(1, "a clean shutdown must not restart the cycle");
     }
 
+    [Fact]
+    public async Task Reconnect_refusal_wakes_the_supervisor_instead_of_parking()
+    {
+        var service = CreateService();
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await _link.WaitForRegistrationsAsync(1, TestTimeout);
+            _link.StartAttempts.Should().Be(1, "the initial connect was accepted");
+
+            // The server now refuses (e.g. a B6 contract-version gate after an
+            // upgrade). The refusal arrives on an automatic reconnect.
+            _link.RegistrationResult = new(Accepted: false, AgentContract.CurrentVersion);
+            await _link.FireReconnectedAsync();
+
+            // Pre-fix: the OnReconnected handler's StopAsync sets the link's
+            // deliberate-stop flag, which SUPPRESSES the Closed event, so the
+            // supervision loop parks on its closed signal forever — StartAttempts
+            // stays 1 (a zombie agent that reconnected, was refused, never retries).
+            // Post-fix: the handler resolves the closed signal itself, waking the
+            // loop, which reconnects (StartAttempts → 2), is refused again, and
+            // paces on the slow lane.
+            await _link.WaitForStartAttemptsAsync(2, TestTimeout);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
     // ── Fakes ──────────────────────────────────────────────────────────────
 
     private sealed class FakeServerLink : IServerLink
@@ -312,6 +343,21 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
                 if (DateTime.UtcNow > deadline)
                 {
                     throw new TimeoutException($"Expected ≥{atLeast} registration attempts.");
+                }
+                await Task.Delay(25);
+            }
+        }
+
+        public async Task WaitForStartAttemptsAsync(int atLeast, TimeSpan timeout)
+        {
+            var deadline = DateTime.UtcNow + timeout;
+            while (StartAttempts < atLeast)
+            {
+                if (DateTime.UtcNow > deadline)
+                {
+                    throw new TimeoutException(
+                        $"Expected ≥{atLeast} start attempts; saw {StartAttempts} " +
+                        "(the supervisor parked instead of retrying).");
                 }
                 await Task.Delay(25);
             }

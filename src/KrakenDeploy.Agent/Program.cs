@@ -173,7 +173,15 @@ static async Task<int> RunAsync(string[] args)
     // docs/architecture.md "Pre-production policy" and TASKS.md D-8.9.
 
     // ── Scoped/Transient services ────────────────────────────────────────
-    builder.Services.AddTransient<DeploymentExecutor>();
+    // E5: DeploymentExecutor is a process-wide SINGLETON — it owns the machine
+    // execution gate (one plan at a time on this agent) and the in-flight
+    // registry (_running) that AgentUpdateService.IsExecuting reads to refuse a
+    // binary swap mid-deployment. Registered Transient, ServerLinkHostedService
+    // (runs deployments) and AgentUpdateService (reads the guard) each got their
+    // OWN instance, so the updater's guard read a permanently-empty map and
+    // could swap binaries mid-deployment. All ctor deps are singletons, so a
+    // singleton lifetime is captive-dependency-safe.
+    builder.Services.AddSingleton<DeploymentExecutor>();
     // M11.E.7 — fail-closed verify-then-run handler for adhoc agent actions.
     builder.Services.AddSingleton<KrakenDeploy.Agent.Adhoc.IAdhocScriptInvoker,
         KrakenDeploy.Agent.Adhoc.ScriptRunnerInvoker>();

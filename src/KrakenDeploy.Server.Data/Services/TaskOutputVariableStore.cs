@@ -1,4 +1,3 @@
-using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using Microsoft.EntityFrameworkCore;
 
@@ -41,38 +40,39 @@ public static class TaskOutputVariableStore
         var sensitiveSet = new HashSet<string>(
             sensitiveNames ?? [], StringComparer.OrdinalIgnoreCase);
 
-        var existing = await db.TaskOutputVariables
-            .Where(o => o.TaskId == taskId && o.StepName == stepName)
-            .ToDictionaryAsync(o => o.Name, StringComparer.OrdinalIgnoreCase, ct)
-            .ConfigureAwait(false);
-
+        // Race-free upsert. The read-then-insert this replaced let two concurrent
+        // callers for the same (taskId, stepName, name) — an at-least-once
+        // duplicate step report racing the original, or two parallel-wave targets
+        // sharing a step name — both miss the read and both INSERT, violating
+        // ix_task_output_variables_task_id_step_name_name and throwing
+        // DbUpdateException out of AgentHub.ReportStepCompletedAsync. PostgreSQL
+        // INSERT ... ON CONFLICT DO UPDATE makes each write atomic. T0-6: a
+        // sensitive value is encrypted BEFORE binding, so plaintext never reaches
+        // the DB (nor the parameterised SQL log). space_id is not updated on
+        // conflict — a given (task, step, name) belongs to exactly one Space.
         foreach (var (name, value) in outputs)
         {
-            // T0-6: a sensitive output is stored encrypted (never plaintext);
-            // the read path masks it. Non-sensitive values are stored as-is.
             var isSensitive = sensitiveSet.Contains(name);
             var storedValue = isSensitive ? encryption.Encrypt(value) : value;
-            if (existing.TryGetValue(name, out var row))
-            {
-                row.Value = storedValue;
-                row.IsSensitive = isSensitive;
-                row.CapturedUtc = capturedUtc;
-            }
-            else
-            {
-                db.TaskOutputVariables.Add(new TaskOutputVariable
-                {
-                    SpaceId     = spaceId,
-                    TaskId      = taskId,
-                    StepName    = stepName,
-                    Name        = name,
-                    Value       = storedValue,
-                    IsSensitive = isSensitive,
-                    CapturedUtc = capturedUtc,
-                });
-            }
+
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO task_output_variables
+                    (id, space_id, task_id, step_name, name, value, is_sensitive, captured_utc)
+                VALUES
+                    ({Guid.CreateVersion7()}, {spaceId}, {taskId}, {stepName}, {name},
+                     {storedValue}, {isSensitive}, {capturedUtc})
+                ON CONFLICT (task_id, step_name, name) DO UPDATE SET
+                    value        = EXCLUDED.value,
+                    is_sensitive = EXCLUDED.is_sensitive,
+                    captured_utc = EXCLUDED.captured_utc
+                """, ct).ConfigureAwait(false);
         }
 
+        // The rows are already persisted by the statements above. This flush
+        // preserves the documented "caller SaveChanges-es via this method (single
+        // unit)" contract — it commits any co-pending tracked changes on the
+        // caller's context (a no-op when there are none), so callers' flush timing
+        // is unchanged by the switch to raw upserts.
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 }

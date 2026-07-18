@@ -53,10 +53,26 @@ public sealed class DeploymentExecutor(
     /// </summary>
     private readonly ConcurrentDictionary<Guid, RunningDeployment> _running = new();
 
+    /// <summary>Default for <see cref="SupersedeUnwindTimeout"/>: how long a
+    /// superseding dispatch waits for the cancelled old attempt to unwind before
+    /// force-detaching it (a kill normally unwinds in well under a second; this
+    /// only guards a pathologically stuck reap).</summary>
+    internal static readonly TimeSpan DefaultSupersedeUnwindTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>Default for <see cref="WedgedGateAcquireTimeout"/>: bounded wait
+    /// for the machine execution gate when a new attempt has force-detached a
+    /// stuck predecessor that may still hold it.</summary>
+    internal static readonly TimeSpan DefaultWedgedGateAcquireTimeout = TimeSpan.FromSeconds(30);
+
     /// <summary>How long a superseding dispatch waits for the cancelled old
-    /// attempt to unwind before force-detaching it (a kill normally unwinds in
-    /// well under a second; this only guards a pathologically stuck reap).</summary>
-    internal static readonly TimeSpan SupersedeUnwindTimeout = TimeSpan.FromSeconds(30);
+    /// attempt to unwind before force-detaching it. Overridable for tests.</summary>
+    internal TimeSpan SupersedeUnwindTimeout { get; init; } = DefaultSupersedeUnwindTimeout;
+
+    /// <summary>Bounded wait for the machine execution gate after force-detaching
+    /// a stuck superseded predecessor that may still hold it: on expiry the new
+    /// attempt escalates (logs + reports a failed completion) instead of wedging
+    /// the agent forever behind the stuck step. Overridable for tests.</summary>
+    internal TimeSpan WedgedGateAcquireTimeout { get; init; } = DefaultWedgedGateAcquireTimeout;
 
     /// <summary>
     /// B7 — the machine's execution slot: ONE plan (deployment or runbook run)
@@ -142,6 +158,10 @@ public sealed class DeploymentExecutor(
         // the same extract dirs / IIS handles concurrently. The old attempt's
         // late reports carry the old DispatchId and are swallowed server-side.
         var run = new RunningDeployment(plan.DispatchId);
+        // Set when a stuck old attempt is force-detached below: it may still hold
+        // the machine execution gate, so this attempt's gate acquisition must be
+        // BOUNDED rather than wait forever behind it (see the gate block below).
+        var forceDetachedStuck = false;
         while (true)
         {
             var existing = _running.GetOrAdd(plan.DeploymentId, run);
@@ -179,6 +199,7 @@ public sealed class DeploymentExecutor(
                     existing.DispatchId, plan.DeploymentId, SupersedeUnwindTimeout);
                 ((ICollection<KeyValuePair<Guid, RunningDeployment>>)_running)
                     .Remove(new(plan.DeploymentId, existing));
+                forceDetachedStuck = true;
             }
         }
 
@@ -225,7 +246,53 @@ public sealed class DeploymentExecutor(
                 await LogAsync(plan.DeploymentId, "info",
                     "--- Waiting for another task to finish on this machine ---", ct)
                     .ConfigureAwait(false);
-                await _executionGate.WaitAsync(ct).ConfigureAwait(false);
+
+                if (forceDetachedStuck)
+                {
+                    // A superseded old attempt was force-detached above but a
+                    // non-cooperative step may still hold the gate. Bound the wait
+                    // so this attempt cannot wedge the agent forever behind it; on
+                    // expiry escalate (log + task log + failed completion) and
+                    // abandon the attempt. The server re-dispatches, and the stuck
+                    // machine surfaces for operator intervention/restart instead of
+                    // heartbeating Online while silently never executing again.
+                    if (!await _executionGate
+                            .WaitAsync(WedgedGateAcquireTimeout, ct).ConfigureAwait(false))
+                    {
+                        logger.LogError(
+                            "Task {DeploymentId} attempt {DispatchId} could not acquire the " +
+                            "machine execution gate within {Timeout} after force-detaching a " +
+                            "stuck predecessor; the agent appears wedged. Abandoning this attempt.",
+                            plan.DeploymentId, plan.DispatchId, WedgedGateAcquireTimeout);
+                        await LogAsync(plan.DeploymentId, "error",
+                            "--- The agent is wedged: a previous task is not releasing the " +
+                            "machine execution slot. Abandoning this attempt; the machine " +
+                            "likely needs the agent restarted. ---", CancellationToken.None)
+                            .ConfigureAwait(false);
+                        try
+                        {
+                            await serverLink.CompleteDeploymentAsync(
+                                plan.DeploymentId, plan.DispatchId, success: false,
+                                errorMessage: "Agent wedged: a previous task did not release " +
+                                              "the machine execution slot.",
+                                CancellationToken.None).ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            logger.LogError(ex,
+                                "Failed to report the wedged-gate failure for {DeploymentId}.",
+                                plan.DeploymentId);
+                        }
+                        // The outer finally removes our registry entry and signals
+                        // completion; the gate was never acquired, so nothing to
+                        // release. Do NOT enter the execution try below.
+                        return;
+                    }
+                }
+                else
+                {
+                    await _executionGate.WaitAsync(ct).ConfigureAwait(false);
+                }
             }
             try
             {

@@ -7,6 +7,8 @@ using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Contracts.Adhoc;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -164,6 +166,100 @@ public sealed class DeploymentExecutorCancelTests
         link.Completions.Last().Success.Should().BeTrue();
     }
 
+    // ── E5: the self-update guard is only live if the executor is a singleton ──
+
+    [Fact]
+    public async Task DeploymentExecutor_registered_as_singleton_keeps_the_self_update_guard_live()
+    {
+        // E5: ServerLinkHostedService (runs deployments) and AgentUpdateService
+        // (reads IsExecuting to refuse a mid-deployment binary swap) both
+        // ctor-inject DeploymentExecutor. Registered Transient they got SEPARATE
+        // instances, so the updater's guard read a permanently-empty _running map.
+        // Registered Singleton (the fix in Program.cs) they share one instance, so
+        // a deployment in flight is visible to the updater. This mirrors the
+        // registration decision — Program.cs's top-level DI is not directly
+        // unit-testable, so we assert the lifetime CONTRACT the fix relies on.
+        var link = new GateLink();
+        var services = new ServiceCollection();
+        services.AddSingleton<IServerLink>(link);
+        services.AddSingleton<IPackageSource>(new NullPackageSource());
+        services.AddSingleton<IArtifactSink>(new NullArtifactSink());
+        services.AddSingleton(new StepPackageLoader(
+            new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance));
+        services.AddSingleton(Options.Create(new AgentConfig()));
+        services.AddSingleton<ILogger<DeploymentExecutor>>(NullLogger<DeploymentExecutor>.Instance);
+        services.AddSingleton<DeploymentExecutor>();   // ← the lifetime under test
+
+        await using var sp = services.BuildServiceProvider();
+
+        // Two independent resolutions == what the two consumers each receive.
+        var runnerView = sp.GetRequiredService<DeploymentExecutor>();
+        var updaterView = sp.GetRequiredService<DeploymentExecutor>();
+        updaterView.Should().BeSameAs(runnerView,
+            "a Transient registration would hand each consumer its own instance");
+
+        var taskId = Guid.NewGuid();
+        var run = Task.Run(() => runnerView.ExecuteAsync(Plan(taskId, Guid.NewGuid())));
+        await WaitUntilAsync(() => runnerView.IsExecuting, "the deployment must register in flight");
+
+        updaterView.IsExecuting.Should().BeTrue(
+            "the self-update guard reads the SAME executor, so it sees the in-flight deployment");
+
+        link.ReleaseFirstCompletion.Release();
+        await run.WaitAsync(TestTimeout);
+        updaterView.IsExecuting.Should().BeFalse();
+    }
+
+    // ── Bounded gate-wait after a supersede force-detaches a stuck predecessor ──
+
+    [Fact]
+    public async Task Wedged_gate_after_supersede_force_detach_escalates_instead_of_hanging()
+    {
+        // A superseded old attempt that ignores cancellation keeps holding the
+        // machine gate. After the (shortened) unwind timeout it is force-detached;
+        // the new attempt then cannot acquire the gate and must escalate within
+        // the (shortened) bounded wait rather than hang forever behind the stuck
+        // step (a zombie agent heartbeating Online but never executing again).
+        var link = new WedgeLink();
+        var executor = new DeploymentExecutor(
+            link,
+            new NullPackageSource(),
+            new NullArtifactSink(),
+            new StepPackageLoader(
+                new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance),
+            Options.Create(new AgentConfig()),
+            NullLogger<DeploymentExecutor>.Instance)
+        {
+            SupersedeUnwindTimeout = TimeSpan.FromMilliseconds(150),
+            WedgedGateAcquireTimeout = TimeSpan.FromMilliseconds(150),
+        };
+
+        var taskId = Guid.NewGuid();
+        var oldDispatch = Guid.NewGuid();
+        var newDispatch = Guid.NewGuid();
+
+        // Old attempt: acquires the gate then gets stuck in its completion holding
+        // the gate, IGNORING cancellation (models a non-cooperative step).
+        var oldRun = Task.Run(() => executor.ExecuteAsync(Plan(taskId, oldDispatch)));
+        await WaitUntilAsync(() => executor.IsExecuting, "the old attempt must hold the gate");
+
+        // New attempt supersedes: the cancel has no effect on the stuck old attempt,
+        // so it is force-detached, and the new attempt cannot take the still-held
+        // gate. It must NOT hang — WaitAsync(TestTimeout) proves it returns.
+        await executor.ExecuteAsync(Plan(taskId, newDispatch)).WaitAsync(TestTimeout);
+
+        var escalation = link.Completions.Should().ContainSingle(
+            "only the new attempt's wedged-gate escalation is recorded").Subject;
+        escalation.Dispatch.Should().Be(newDispatch);
+        escalation.Success.Should().BeFalse("a wedged attempt cannot report success");
+        escalation.Error.Should().Contain("wedged");
+        executor.IsExecuting.Should().BeFalse();
+
+        // Let the stuck old attempt unwind so the test does not leak it.
+        link.ReleaseStuck.Release();
+        await oldRun.WaitAsync(TestTimeout);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private static DeploymentExecutor BuildExecutor(GateLink link) => new(
@@ -212,6 +308,51 @@ public sealed class DeploymentExecutorCancelTests
             if (Interlocked.Increment(ref _completionCalls) == 1)
             {
                 await ReleaseFirstCompletion.WaitAsync(ct);
+            }
+            Completions.Enqueue((deploymentId, dispatchId, success, errorMessage));
+        }
+
+        public bool IsConnected => true;
+        public Task StartAsync(string serverUrl, Func<string?> agentJwtProvider, string? releaseId, CancellationToken ct) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken ct) => Task.CompletedTask;
+        public Task<AgentRegistrationResult> RegisterAsync(AgentRegistrationRequest request, CancellationToken ct)
+            => Task.FromResult(new AgentRegistrationResult(true, AgentContract.CurrentVersion));
+        public Task HeartbeatAsync(HeartbeatRequest request, CancellationToken ct) => Task.CompletedTask;
+        public Task ReportStatusAsync(string status, CancellationToken ct) => Task.CompletedTask;
+        public Task AppendLogAsync(Guid deploymentId, Guid dispatchId, int stepIndex, string level, string message, CancellationToken ct) => Task.CompletedTask;
+        public Task ReportStepCompletedAsync(Guid deploymentId, Guid dispatchId, int stepIndex, string stepName, bool success,
+            string? errorMessage, IReadOnlyDictionary<string, string> outputVariables,
+            IReadOnlyCollection<string> sensitiveOutputNames, CancellationToken ct) => Task.CompletedTask;
+        public Task ReportAdhocResultAsync(AdhocScriptResult result, CancellationToken ct) => Task.CompletedTask;
+        public void OnRunDeployment(Func<DeploymentPlan, Task> handler) { }
+        public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler) { }
+        public void OnCancelDeployment(Func<Guid, string?, Task> handler) { }
+        public void OnClosed(Func<Exception?, Task> handler) { }
+        public void OnReconnected(Func<Task> handler) { }
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    /// <summary>Models a non-cooperative step: the FIRST completion blocks
+    /// holding the machine gate and IGNORES cancellation (the supersede token has
+    /// no effect), forcing the old attempt to be force-detached; the test releases
+    /// it at teardown. Later completions (the new attempt's wedged-gate
+    /// escalation) are recorded.</summary>
+    private sealed class WedgeLink : IServerLink
+    {
+        public ConcurrentQueue<(Guid Dep, Guid Dispatch, bool Success, string? Error)> Completions { get; } = new();
+        public SemaphoreSlim ReleaseStuck { get; } = new(0);
+        private int _completionCalls;
+
+        public async Task CompleteDeploymentAsync(
+            Guid deploymentId, Guid dispatchId, bool success, string? errorMessage, CancellationToken ct)
+        {
+            if (Interlocked.Increment(ref _completionCalls) == 1)
+            {
+                // Hold the gate ignoring the run's cancellation token — released
+                // only by the test at teardown (CancellationToken.None, not ct).
+                // The old attempt's completion is intentionally never recorded.
+                await ReleaseStuck.WaitAsync(CancellationToken.None);
+                return;
             }
             Completions.Enqueue((deploymentId, dispatchId, success, errorMessage));
         }
