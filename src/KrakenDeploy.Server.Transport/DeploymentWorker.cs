@@ -69,6 +69,12 @@ public sealed class DeploymentWorker(
     // deployments wait FIFO inside their fire-and-forget task.
     private readonly NodeTaskGate _taskGate = new(engineOptions.Value.MaxConcurrentTasks);
 
+    // Test seam (E2): how often the in-flight dispatch lease is renewed.
+    // Production uses ServerTaskLease.RenewInterval (1 min); the orchestrator
+    // harness shortens it so a lease-loss teardown test runs in milliseconds
+    // rather than a minute. Null → production default.
+    internal TimeSpan? LeaseRenewIntervalOverride { get; init; }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await foreach (var item in queue.Reader.ReadAllAsync(stoppingToken))
@@ -84,12 +90,9 @@ public sealed class DeploymentWorker(
     {
         try
         {
-            // B7: the task-cap slot is taken BEFORE the in-flight gauge — a
-            // queued-but-unstarted deployment must not block blue-green drain
-            // (it is still Queued in the DB; the B1 claim + reconciler hand it
-            // to the surviving slot if this node retires first).
-            using var slot = await _taskGate.AcquireAsync(ct).ConfigureAwait(false);
-            using var tracking = inFlightGauge.Track();
+            // The gate slot + in-flight gauge are acquired inside DispatchAsync,
+            // AFTER the (multi-account) account context is established, so the
+            // E3 child-bypass parentage read hits the right tenant DB.
             await DispatchAsync(item, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -117,7 +120,7 @@ public sealed class DeploymentWorker(
     {
         if (item.AccountId == Guid.Empty)
         {
-            await DispatchCoreAsync(item.AccountId, item.Id, ct).ConfigureAwait(false);
+            await GateThenDispatchCoreAsync(item.AccountId, item.Id, ct).ConfigureAwait(false);
             return;
         }
 
@@ -136,8 +139,61 @@ public sealed class DeploymentWorker(
 
         using (accountScope.ServiceProvider.GetRequiredService<IAccountContext>().WithAccount(account))
         {
-            await DispatchCoreAsync(item.AccountId, item.Id, ct).ConfigureAwait(false);
+            await GateThenDispatchCoreAsync(item.AccountId, item.Id, ct).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// B7 + E3 — acquires the node task-cap slot for a TOP-LEVEL orchestration,
+    /// then runs the dispatch. A CHILD deployment (spawned by an
+    /// <c>Octopus.DeployRelease</c> step; <c>ParentTaskId != null</c>) BYPASSES
+    /// the gate: it is accounted for by its parent's slot, which the parent holds
+    /// for the whole <c>WaitForChildAsync</c>. Without the bypass,
+    /// capacity-many parents each waiting on a gate-starved child would deadlock
+    /// the node permanently (E3) — recovery today would be a restart.
+    /// <para>
+    /// Parentage is read HERE, inside the resolved account context (multi-account
+    /// tenant DB correct), and filter-free (the worker background scope has no
+    /// ambient Space). The read is reliable because <c>DeploymentService.CreateAsync</c>
+    /// stamps <c>ParentTaskId</c> before enqueuing the child's dispatch wake-up.
+    /// </para>
+    /// </summary>
+    private async Task GateThenDispatchCoreAsync(Guid accountId, Guid deploymentId, CancellationToken ct)
+    {
+        if (await IsChildTaskAsync(deploymentId, ct).ConfigureAwait(false))
+        {
+            // No gate slot — covered by the parent's. Still tracked for
+            // blue-green drain: a child is real in-flight orchestration work.
+            using var childTracking = inFlightGauge.Track();
+            await DispatchCoreAsync(accountId, deploymentId, ct).ConfigureAwait(false);
+            return;
+        }
+
+        // B7: the task-cap slot is taken BEFORE the in-flight gauge — a
+        // queued-but-unstarted deployment must not block blue-green drain (it is
+        // still Queued in the DB; the B1 claim + reconciler hand it to the
+        // surviving slot if this node retires first).
+        using var slot = await _taskGate.AcquireAsync(ct).ConfigureAwait(false);
+        using var tracking = inFlightGauge.Track();
+        await DispatchCoreAsync(accountId, deploymentId, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// E3 — cheap filter-free parentage probe used to decide gate bypass. A row
+    /// with a non-null <c>ParentTaskId</c> is a child of an
+    /// <c>Octopus.DeployRelease</c> step. Returns <c>false</c> for a missing row
+    /// (dispatch proceeds, loads, and no-ops on the missing deployment).
+    /// </summary>
+    private async Task<bool> IsChildTaskAsync(Guid deploymentId, CancellationToken ct)
+    {
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
+        return await db.ServerTasks
+            .IgnoreQueryFilters()
+            .Where(t => t.Id == deploymentId)
+            .Select(t => t.ParentTaskId != null)
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false);
     }
 
     private async Task DispatchCoreAsync(Guid accountId, Guid deploymentId, CancellationToken ct)
@@ -153,6 +209,12 @@ public sealed class DeploymentWorker(
             .GetRequiredService<KrakenDeploy.Server.Core.Domain.Variables.IEncryptionService>();
         var serverBaseUrl = scope.ServiceProvider
             .GetRequiredService<IConfiguration>()["Server:BaseUrl"];
+
+        // E2: assigned once the lease renewal is created (below). Declared out
+        // here so the lease-loss teardown catch on this try can read it — a
+        // captured token value is safe to inspect even after the renewal (and its
+        // source) has been disposed by the try body's unwinding.
+        CancellationToken leaseLostToken = CancellationToken.None;
 
         try
         {
@@ -523,7 +585,20 @@ public sealed class DeploymentWorker(
             // alive (even parked on a long step or a future approval gate) the
             // reconciler sees a live lease and leaves the run alone.
             await using var leaseRenewal = new ServerTaskLeaseRenewal(
-                scopeFactory, deployment.Id, timeProvider, logger);
+                scopeFactory, deployment.Id, timeProvider, logger, LeaseRenewIntervalOverride);
+
+            // E2: if the lease is lost mid-orchestration — the reconciler failed
+            // this run as orphaned (multi-minute stall), or it went terminal on
+            // another connection — tear the orchestration down instead of
+            // dispatching further waves LEASELESS. orchestrationCt links the
+            // stopping token with the lease-lost signal; the wave loop below runs
+            // on it, so an in-flight wave await is cancelled the moment the lease
+            // goes. Capture the token up front so the teardown catch's `when`
+            // filter never dereferences the renewal after it is disposed. Shutdown
+            // (the stopping token) still propagates exactly as before.
+            leaseLostToken = leaseRenewal.LeaseLost;
+            using var orchestrationCts = CancellationTokenSource.CreateLinkedTokenSource(ct, leaseLostToken);
+            var orchestrationCt = orchestrationCts.Token;
 
             var serverStepCount = waves
                 .Where(w => w.Kind == WavePartitioner.WaveKind.Server)
@@ -580,27 +655,29 @@ public sealed class DeploymentWorker(
 
             foreach (var wave in waves)
             {
-                // ── Cancellation: stop at the next wave boundary ────────────
-                // B6 added a cooperative in-flight abort (CancelDeploymentAsync
-                // push → the agent kills the running step's process tree), but
-                // this boundary check REMAINS the authoritative fallback: the
-                // push is best-effort (agent offline, push lost), and even a
-                // killed wave resolves its TCS through the normal failure path.
-                // Once a cancel has landed (DeploymentService.CancelAsync →
-                // Status=Cancelled) we start no further waves. CancelAsync
-                // already wrote the terminal Cancelled status + CompletedUtc; we
-                // log the boundary and return, leaving that terminal state to
-                // stand — the finalisation + FailAsync writes below are guarded
-                // to never overwrite Cancelled.
-                if (await IsCancellationRequestedAsync(db, deployment.Id, ct).ConfigureAwait(false))
+                // ── Ownership boundary: stop unless still Running in the DB ──
+                // E2 — ONE ownership predicate evaluated at every wave boundary:
+                // the task must still be Running. This catches an operator cancel
+                // (Status=Cancelled) AND a reconciler interrupt (Status=Failed,
+                // flipped when the lease expired) — the pre-E2 check tested only
+                // == Cancelled and let a reconciler-failed zombie keep dispatching.
+                // B6's cooperative in-flight abort push is still the fast path;
+                // this boundary check REMAINS the authoritative fallback (the push
+                // is best-effort — agent offline, push lost — and even a killed
+                // wave resolves its TCS through the normal failure path). Whatever
+                // terminal verdict was recorded stands; the finalisation + FailAsync
+                // writes below are guarded to never overwrite it. Runs on
+                // orchestrationCt so a lost lease throws OCE here and the teardown
+                // catch on this try stops the run cleanly.
+                if (!await IsTaskStillRunningAsync(db, deployment.Id, orchestrationCt).ConfigureAwait(false))
                 {
                     await logSeq.AppendAsync(-1, null, "warning",
-                        "--- Deployment cancelled — stopping at the wave boundary. Any step " +
-                        "already dispatched to an agent ran to completion; no further steps " +
-                        "were started. ---",
+                        "--- Deployment no longer Running (cancelled or interrupted) — stopping at " +
+                        "the wave boundary. Any step already dispatched to an agent ran to " +
+                        "completion; no further steps were started. ---",
                         ct).ConfigureAwait(false);
                     logger.LogInformation(
-                        "Deployment {Id} cancelled — halting before the remaining wave(s).",
+                        "Deployment {Id} no longer Running — halting before the remaining wave(s).",
                         deployment.Id);
                     return;
                 }
@@ -620,11 +697,14 @@ public sealed class DeploymentWorker(
                     // B4: server waves evaluate conditions against the
                     // accumulator's server bag (canonical clone + output keys)
                     // and receive an env view with prior outputs merged in.
+                    // orchestrationCt: a lost lease cancels an in-flight server
+                    // step (e.g. a DeployRelease child wait) so the run tears down
+                    // instead of dispatching leaseless.
                     var serverOutcomes = await RunServerWaveAsync(
                         wave, canonicalCtx.SnapshotByPlanIndex, hasFailed,
                         outputAccumulator.ServerConditionVarDict, deployment, db, auditLog, logSeq,
                         outputAccumulator.AugmentServerVariables(canonicalCtx.FlatVars),
-                        serverRedactor, ct).ConfigureAwait(false);
+                        serverRedactor, orchestrationCt).ConfigureAwait(false);
 
                     // B4 (T1-6): fold server-step captures so later waves (agent
                     // AND server) see them, and persist through the same store —
@@ -685,10 +765,13 @@ public sealed class DeploymentWorker(
                     // targets. Returns drop-outs (per-target Required failures
                     // + agent-offline at dispatch time); the caller removes
                     // them from aliveTargets and continues.
+                    // orchestrationCt: a lost lease cancels an in-flight target
+                    // wave await AND the between-batch ownership check, tearing the
+                    // run down instead of dispatching further batches leaseless.
                     var targetWaveResult = await DispatchTargetWaveAcrossTargetsAsync(
                         wave, aliveTargets, contexts, canonicalCtx.SnapshotByPlanIndex,
                         snapshotById, failureMode, hasFailed, softFailedTargets, deployment,
-                        db, auditLog, logSeq, outputAccumulator, ct).ConfigureAwait(false);
+                        db, auditLog, logSeq, outputAccumulator, orchestrationCt).ConfigureAwait(false);
 
                     foreach (var dropped in targetWaveResult.DroppedTargets)
                     {
@@ -848,6 +931,22 @@ public sealed class DeploymentWorker(
             logger.LogInformation(
                 "Deployment {Id} completed ({ServerSteps} server step(s), {TargetSteps} target step(s)).",
                 deployment.Id, serverStepCount, targetStepCount);
+        }
+        catch (OperationCanceledException)
+            when (leaseLostToken.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            // E2 lease-loss teardown: the in-flight lease was lost (reconciler
+            // orphan-fail or a terminal transition on another connection), which
+            // cancelled orchestrationCt and unwound the wave loop. Stop WITHOUT
+            // finalising — the reconciler owns the terminal verdict of a run whose
+            // lease it reclaimed; writing one here would race that verdict (and the
+            // status writer would refuse it anyway). Distinct from shutdown (the
+            // stopping token), which is excluded by the `when` filter and
+            // propagates to the host as before.
+            logger.LogWarning(
+                "Deployment {Id}: dispatch lease lost mid-orchestration; tearing down without " +
+                "finalising (the reconciler owns the terminal verdict).",
+                deploymentId);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -1162,17 +1261,26 @@ public sealed class DeploymentWorker(
     // can run per-ForEach-iteration with the right variable bag. The
     // orchestrator no longer pre-substitutes the snapshot's Config.
 
-    // A cancel written from another connection (DeploymentService.CancelAsync)
-    // is observed via a fresh scalar projection — the worker's shared db still
-    // tracks the deployment as Running/Queued, but a projection always executes
-    // SQL and returns the authoritative DB value.
-    private static async Task<bool> IsCancellationRequestedAsync(
-        KrakenDbContext db, Guid deploymentId, CancellationToken ct)
-        => await db.Deployments
-            .Where(d => d.Id == deploymentId)
-            .Select(d => d.Status)
+    // E2 — the single ownership predicate: is this task STILL Running in the DB?
+    // Evaluated at the wave, rolling-batch and dispatch boundaries; a false stops
+    // the orchestration cleanly. A cancel (Status=Cancelled) OR a reconciler
+    // interrupt (Status=Failed, flipped when the lease expired) both flip it to a
+    // non-Running status, so both are caught here — the pre-E2 predicate tested
+    // only == Cancelled and let a reconciler-failed zombie keep dispatching.
+    //
+    // Read via a fresh scalar projection, not the tracked entity: the worker's
+    // shared db still tracks the row as Running (the B1 MirrorClaim), but a
+    // projection always executes SQL and returns the authoritative DB value.
+    // Typed against db.ServerTasks (not db.Deployments) so it stays correct once
+    // D1 generalises the orchestrator to the unified task type — a Deployment is
+    // a ServerTask, so this reads the same row today.
+    private static async Task<bool> IsTaskStillRunningAsync(
+        KrakenDbContext db, Guid taskId, CancellationToken ct)
+        => await db.ServerTasks
+            .Where(t => t.Id == taskId)
+            .Select(t => t.Status)
             .FirstOrDefaultAsync(ct)
-            .ConfigureAwait(false) == DeploymentStatus.Cancelled;
+            .ConfigureAwait(false) == DeploymentStatus.Running;
 
     private async Task FailAsync(
         KrakenDbContext db, Deployment deployment, string reason, CancellationToken ct)
@@ -1245,7 +1353,7 @@ public sealed class DeploymentWorker(
     /// discarded naturally by the retry.
     /// </para>
     /// </summary>
-    private async Task<(bool Ok, bool TimedOut, int AttemptCount, DateTimeOffset StartedUtc, ServerScriptResult Result)>
+    private async Task<(bool Ok, bool TimedOut, int AttemptCount, DateTimeOffset StartedUtc, int EffectiveTimeoutSeconds, ServerScriptResult Result)>
         RunServerStepWithRetriesAsync(
             Guid deploymentId,
             DeploymentStepPlan step,
@@ -1261,11 +1369,31 @@ public sealed class DeploymentWorker(
         // carries an accurate StartedUtc the Steps tab can show duration from.
         var startedUtc = DateTimeOffset.UtcNow;
 
+        // E3 — the per-attempt timeout StepRetryRunner enforces. For a
+        // DeployRelease step this folds in the Engine ceiling (see
+        // EffectiveServerStepTimeoutSeconds); StepRetryRunner's own timeout then
+        // fires and classifies the step TimedOut, so no separate ceiling logic is
+        // needed inside WaitForChildAsync.
+        var effectiveTimeoutSeconds = EffectiveServerStepTimeoutSeconds(step, snapshot.TimeoutSeconds);
+
+        // E3 — a DeployRelease step runs at most ONCE (see
+        // EffectiveServerStepMaxRetries): a step-level retry would trigger a fresh
+        // child deployment while the prior (timed-out) child is still running,
+        // racing duplicate deploys of the same release to the same targets.
+        var effectiveMaxRetries = EffectiveServerStepMaxRetries(step, snapshot.MaxRetries);
+        if (effectiveMaxRetries != snapshot.MaxRetries)
+        {
+            logger.LogDebug(
+                "Server step '{Step}' ({Type}) is not step-retried (configured MaxRetries={Configured} " +
+                "ignored) — retrying it would re-trigger a child deployment.",
+                snapshot.Name, step.StepType, snapshot.MaxRetries);
+        }
+
         var outcome = await StepRetryRunner.RunAsync(
             snapshot.Name,
-            snapshot.MaxRetries,
+            effectiveMaxRetries,
             snapshot.RetryDelaySeconds,
-            snapshot.TimeoutSeconds,
+            effectiveTimeoutSeconds,
             runAttempt: (CancellationToken attemptCt) =>
                 ExecuteServerStepAsync(deploymentId, step, flatVars, deployment.SpaceId, redactor, attemptCt),
             isSuccess: r => r.Success,
@@ -1297,8 +1425,71 @@ public sealed class DeploymentWorker(
 
         return (Ok: outcome.Result.Success, TimedOut: outcome.TimedOut,
                 AttemptCount: outcome.AttemptCount, StartedUtc: startedUtc,
+                EffectiveTimeoutSeconds: effectiveTimeoutSeconds,
                 Result: outcome.Result);
     }
+
+    /// <summary>
+    /// E3 — the per-attempt timeout <see cref="StepRetryRunner"/> enforces for a
+    /// server-side step. An <c>Octopus.DeployRelease</c> step polls its child
+    /// deployment in <c>WaitForChildAsync</c>; left unbounded it would pin the
+    /// parent's <see cref="NodeTaskGate"/> slot forever if the child never
+    /// terminates. So a DeployRelease step with NO explicit timeout
+    /// (<c>TimeoutSeconds &lt;= 0</c>) is bounded by the Engine ceiling
+    /// (<see cref="EngineOptions.MaxDeployReleaseWaitDuration"/>). An explicit
+    /// per-step timeout is honoured as-is (even above the ceiling — operator
+    /// intent, same rule as <see cref="EngineOptions.MaxTargetWaveDuration"/>).
+    /// Every other server step keeps its raw <c>TimeoutSeconds</c> (0 = unlimited
+    /// — the documented no-server-ceiling residual for script steps). Whichever
+    /// bound fires is classified <c>TimedOut</c> by <see cref="StepRetryRunner"/>,
+    /// preserving the OCE-propagation contract.
+    /// </summary>
+    private int EffectiveServerStepTimeoutSeconds(DeploymentStepPlan step, int configuredTimeoutSeconds)
+    {
+        if (configuredTimeoutSeconds > 0
+            || !step.StepType.Equals(DeployReleaseStepRunner.StepType, StringComparison.OrdinalIgnoreCase))
+        {
+            return configuredTimeoutSeconds;
+        }
+        // Unconfigured DeployRelease wait → apply the ceiling. A non-positive
+        // (misconfigured) ceiling falls back to the shipped 1 h default rather
+        // than reintroducing an unbounded wait. Round up so a sub-second test
+        // ceiling still yields a positive whole second (StepRetryRunner treats
+        // <= 0 as unlimited). Clamp to a max safely within CancellationTokenSource
+        // .CancelAfter's bound: StepRetryRunner passes this to CancelAfter, which
+        // throws for a duration whose milliseconds exceed ~Int32.MaxValue — an
+        // absurd (>24 day) MaxDeployReleaseWaitDuration must degrade to a long
+        // ceiling, not an ArgumentOutOfRangeException that fails every DeployRelease
+        // step as a generic error.
+        var ceiling = engineOptions.Value.MaxDeployReleaseWaitDuration;
+        var seconds = ceiling > TimeSpan.Zero
+            ? ceiling.TotalSeconds
+            : TimeSpan.FromHours(1).TotalSeconds;
+        return Math.Clamp((int)Math.Ceiling(Math.Min(seconds, MaxServerStepTimeoutSeconds)), 1, MaxServerStepTimeoutSeconds);
+    }
+
+    // 24 days in seconds — 24d * 86_400 * 1000 ms stays under Int32.MaxValue ms,
+    // so TimeSpan.FromSeconds(this) is a valid CancelAfter argument on every
+    // framework (the pre-.NET-6 bound), leaving a wide safety margin.
+    private const int MaxServerStepTimeoutSeconds = 24 * 24 * 60 * 60;
+
+    /// <summary>
+    /// E3 — an <c>Octopus.DeployRelease</c> step runs at most ONCE. A step-level
+    /// retry re-invokes the runner, which TRIGGERS A NEW CHILD DEPLOYMENT (the
+    /// child is a fresh deployment of the release, not an idempotent re-run) while
+    /// a timed-out attempt leaves its previous child still running (children
+    /// bypass the gate). Retrying would therefore race up to
+    /// <c>(MaxRetries + 1)</c> concurrent deployments of the same release to the
+    /// same targets and stretch the parent's <see cref="NodeTaskGate"/> slot hold
+    /// to <c>(MaxRetries + 1)×</c> the ceiling — defeating it. The child
+    /// deployment carries its own retry/failure semantics; the parent step does
+    /// not re-drive it. Every other server step keeps its configured
+    /// <c>MaxRetries</c>.
+    /// </summary>
+    private static int EffectiveServerStepMaxRetries(DeploymentStepPlan step, int configuredMaxRetries)
+        => step.StepType.Equals(DeployReleaseStepRunner.StepType, StringComparison.OrdinalIgnoreCase)
+            ? 0
+            : configuredMaxRetries;
 
     private static async Task LogAndAuditStepSkippedAsync(
         KrakenDbContext db, IAuditLog audit, LogSequencer logSeq,
@@ -1326,21 +1517,25 @@ public sealed class DeploymentWorker(
     // log/audit helper with a CONCURRENT caller (RunServerWaveAsync's parallel
     // step tasks), so its log line goes through logSeq.AppendAsync rather
     // than the shared db. The sequential target-wave caller is unaffected.
+    // E3: takes the EFFECTIVE timeout (which, for a DeployRelease step with no
+    // explicit TimeoutSeconds, is the Engine ceiling) rather than reading
+    // snapshot.TimeoutSeconds — otherwise a ceiling-driven timeout would log the
+    // misleading "timed out after 0s".
     private static async Task LogAndAuditStepTimedOutAsync(
         IAuditLog audit, LogSequencer logSeq,
-        Deployment deployment, StepSnapshot snapshot,
+        Deployment deployment, StepSnapshot snapshot, int effectiveTimeoutSeconds,
         CancellationToken ct)
     {
         await logSeq.AppendAsync(-1, null, "error",
             $"--- Step '{snapshot.Name}' timed out after " +
-            $"{snapshot.TimeoutSeconds.ToString(CultureInfo.InvariantCulture)}s ---",
+            $"{effectiveTimeoutSeconds.ToString(CultureInfo.InvariantCulture)}s ---",
             ct).ConfigureAwait(false);
         await audit.RecordAsync(
             AuditEventType.DeploymentStepTimedOut,
             subjectType: "Deployment",
             subjectId:   deployment.Id.ToString(),
             details:     $"Step={snapshot.Name}, " +
-                         $"TimeoutSeconds={snapshot.TimeoutSeconds.ToString(CultureInfo.InvariantCulture)}",
+                         $"TimeoutSeconds={effectiveTimeoutSeconds.ToString(CultureInfo.InvariantCulture)}",
             ct: ct).ConfigureAwait(false);
     }
 
@@ -1635,7 +1830,12 @@ public sealed class DeploymentWorker(
         // (final attempt only) + their sensitive subset. Null when the step
         // was skipped or is a kind that captures nothing (DeployRelease).
         IReadOnlyDictionary<string, string>? CapturedOutputs = null,
-        IReadOnlyCollection<string>? SensitiveOutputNames = null);
+        IReadOnlyCollection<string>? SensitiveOutputNames = null,
+        // E3: the timeout StepRetryRunner actually enforced (the Engine ceiling
+        // for an unconfigured DeployRelease wait). Used for the timeout log +
+        // outcome message so a ceiling hit doesn't read "timed out after 0s". 0
+        // for skipped steps.
+        int EffectiveTimeoutSeconds = 0);
 
     /// <summary>
     /// Runs every step in a server-side wave concurrently. Each step retains
@@ -1734,14 +1934,14 @@ public sealed class DeploymentWorker(
         var stepTasks = toRun.Select(async s =>
         {
             var snap = snapshotSteps[s.Index];
-            var (ok, timedOut, attemptCount, startedUtc, result) =
+            var (ok, timedOut, attemptCount, startedUtc, effectiveTimeoutSeconds, result) =
                 await RunServerStepWithRetriesAsync(
                     deployment.Id, s, snap, deployment, auditLog,
                     logSeq, flatVars, redactor, ct).ConfigureAwait(false);
             if (timedOut)
             {
                 await LogAndAuditStepTimedOutAsync(
-                    auditLog, logSeq, deployment, snap, ct).ConfigureAwait(false);
+                    auditLog, logSeq, deployment, snap, effectiveTimeoutSeconds, ct).ConfigureAwait(false);
             }
             return new ServerStepOutcome(
                 Step:         s,
@@ -1751,7 +1951,8 @@ public sealed class DeploymentWorker(
                 AttemptCount: attemptCount,
                 StartedUtc:   startedUtc,
                 CapturedOutputs:      result.Outputs,
-                SensitiveOutputNames: result.SensitiveOutputNames);
+                SensitiveOutputNames: result.SensitiveOutputNames,
+                EffectiveTimeoutSeconds: effectiveTimeoutSeconds);
         }).ToArray();
 
         var outcomes = (await Task.WhenAll(stepTasks).ConfigureAwait(false)).ToList();
@@ -1776,7 +1977,7 @@ public sealed class DeploymentWorker(
                 kind, o.AttemptCount,
                 errorMessage: o.Ok ? null
                               : o.TimedOut
-                                  ? $"Step exceeded TimeoutSeconds={snap.TimeoutSeconds.ToString(CultureInfo.InvariantCulture)}."
+                                  ? $"Step exceeded TimeoutSeconds={o.EffectiveTimeoutSeconds.ToString(CultureInfo.InvariantCulture)}."
                                   : "Step handler returned failure.",
                 startedUtc:   o.StartedUtc,
                 completedUtc: completedUtc,
@@ -2675,6 +2876,25 @@ public sealed class DeploymentWorker(
 
         for (var batchIdx = 0; batchIdx < batches.Count; batchIdx++)
         {
+            // ── E2: ownership check BETWEEN rolling batches ──────────────────
+            // Rolling batches run sequentially. Pre-E2 the only status checks
+            // were at dequeue and wave boundaries, so a zombie orchestration kept
+            // dispatching batch after batch even after the operator cancelled or
+            // the reconciler interrupted the run. Re-check the same ownership
+            // predicate before every batch after the first (the wave boundary
+            // just cleared the first). A lost lease cancels `ct` (orchestrationCt)
+            // so the projection throws OCE → the worker's teardown catch stops the
+            // run; an operator cancel / reconciler interrupt flips the status so
+            // the predicate returns false and we stop dispatching further batches.
+            if (batchIdx > 0
+                && !await IsTaskStillRunningAsync(db, deployment.Id, ct).ConfigureAwait(false))
+            {
+                logger.LogInformation(
+                    "Deployment {Id}: no longer Running — stopping before rolling batch {Batch} of {Total}.",
+                    deployment.Id, batchIdx + 1, batches.Count);
+                break;
+            }
+
             var batch = batches[batchIdx];
 
             if (batchingActive)
@@ -2873,8 +3093,12 @@ public sealed class DeploymentWorker(
                     .FirstOrDefault(snap => snap.TimeoutSeconds > 0);
                 if (timeoutStep is not null)
                 {
+                    // Target waves are bounded by the wave deadline, not the E3
+                    // DeployRelease ceiling, so the effective timeout is the step's
+                    // own explicit TimeoutSeconds.
                     await LogAndAuditStepTimedOutAsync(
-                        auditLog, logSeq, deployment, timeoutStep, ct).ConfigureAwait(false);
+                        auditLog, logSeq, deployment, timeoutStep, timeoutStep.TimeoutSeconds, ct)
+                        .ConfigureAwait(false);
                 }
             }
 

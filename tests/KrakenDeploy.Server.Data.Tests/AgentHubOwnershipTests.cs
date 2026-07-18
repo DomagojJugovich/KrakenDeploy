@@ -1,7 +1,9 @@
 using System.Security.Claims;
 using System.Threading.Channels;
 using FluentAssertions;
+using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Core.Domain.Runbooks;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data.Tests.OrchestratorHarness;
 using KrakenDeploy.Server.Transport;
@@ -38,90 +40,93 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
 
     // ── CompleteDeploymentAsync ──────────────────────────────────────────────
 
+    // NOTE (E1): the hub's DB-fallback finalize is now restricted to RUNBOOK
+    // RUNS (the hand-off model) — a deployment completion reaching the fallback
+    // is dropped, because a deployment is finalized by its orchestrator, never by
+    // the hub. So these ownership/B5 tests exercise the finalize path via a
+    // runbook run (its legitimate user); the deployment-drop behaviour itself is
+    // covered by AgentHubFallbackFinalizeTests. The ownership PREDICATE is
+    // kind-agnostic (see AgentDeploymentOwnership_matches_only_assigned_targets +
+    // the AppendLog / ReportStepCompleted cases below, which use deployments).
+
     [Fact]
     public async Task CompleteDeploymentAsync_rejects_unassigned_target()
     {
         await using var harness = new OrchestratorTestHarness(postgres);
-        var g = await SeedAsync(harness);
+        var g = await SeedRunbookGraphAsync(harness);
 
-        // foreign target is NOT in the deployment's target set.
+        // foreign target is NOT in the run's target set.
         await BuildHub(postgres, g.Foreign.Id)
-            .CompleteDeploymentAsync(g.DeploymentId, Guid.Empty, success: true, errorMessage: null);
+            .CompleteDeploymentAsync(g.RunId, Guid.Empty, success: true, errorMessage: null);
 
-        await using var db = harness.CreateContext();
-        var dep = await db.Deployments.IgnoreQueryFilters()
-            .FirstAsync(d => d.Id == g.DeploymentId);
-        dep.Status.Should().Be(DeploymentStatus.Queued,
-            "an agent not assigned to the deployment must not be able to complete it");
-        dep.CompletedUtc.Should().BeNull();
+        var run = await GetTaskAsync(harness, g.RunId);
+        run.Status.Should().Be(DeploymentStatus.Running,
+            "an agent not assigned to the run must not be able to complete it");
+        run.CompletedUtc.Should().BeNull();
     }
 
     [Fact]
     public async Task CompleteDeploymentAsync_allows_primary_target()
     {
         await using var harness = new OrchestratorTestHarness(postgres);
-        var g = await SeedAsync(harness);
+        var g = await SeedRunbookGraphAsync(harness);
 
         await BuildHub(postgres, g.Primary.Id)
-            .CompleteDeploymentAsync(g.DeploymentId, Guid.Empty, success: false, errorMessage: "boom");
+            .CompleteDeploymentAsync(g.RunId, Guid.Empty, success: false, errorMessage: "boom");
 
-        await using var db = harness.CreateContext();
-        var dep = await db.Deployments.IgnoreQueryFilters()
-            .FirstAsync(d => d.Id == g.DeploymentId);
-        dep.Status.Should().Be(DeploymentStatus.Failed);
+        var run = await GetTaskAsync(harness, g.RunId);
+        run.Status.Should().Be(DeploymentStatus.Failed);
     }
 
     [Fact]
     public async Task CompleteDeploymentAsync_allows_secondary_wave_target()
     {
-        // secondary is in the join set but is NOT Deployment.TargetId — proves
-        // the ownership predicate uses the assignment join, not the legacy column.
+        // secondary is in the join set but is NOT the first-assigned target —
+        // proves the ownership predicate uses the assignment join, not a single
+        // primary column.
         await using var harness = new OrchestratorTestHarness(postgres);
-        var g = await SeedAsync(harness);
+        var g = await SeedRunbookGraphAsync(harness);
 
         await BuildHub(postgres, g.Secondary.Id)
-            .CompleteDeploymentAsync(g.DeploymentId, Guid.Empty, success: false, errorMessage: "boom");
+            .CompleteDeploymentAsync(g.RunId, Guid.Empty, success: false, errorMessage: "boom");
 
-        await using var db = harness.CreateContext();
-        var dep = await db.Deployments.IgnoreQueryFilters()
-            .FirstAsync(d => d.Id == g.DeploymentId);
-        dep.Status.Should().Be(DeploymentStatus.Failed,
+        var run = await GetTaskAsync(harness, g.RunId);
+        run.Status.Should().Be(DeploymentStatus.Failed,
             "a non-primary target in the wave legitimately completes its sub-plan");
     }
 
     [Fact]
     public async Task CompleteDeploymentAsync_never_overwrites_a_cancelled_task()
     {
-        // B5 (T1-1): the fallback write yields to a terminal verdict. A late
-        // agent completion — delivered by B2's at-least-once outbox after an
-        // operator cancel, or after the reconciler already failed the task —
-        // must not flip the recorded verdict back to Succeeded, and must not
-        // re-stamp CompletedUtc.
+        // B5 (T1-1): the guarded fallback write yields to a terminal verdict. A
+        // late agent completion — delivered by B2's at-least-once outbox after an
+        // operator cancel, or after the reconciler already failed the task — must
+        // not flip the recorded verdict back to Succeeded, nor re-stamp
+        // CompletedUtc. Exercised on a runbook run (the fallback finalizer that
+        // actually reaches the status writer post-E1).
         await using var harness = new OrchestratorTestHarness(postgres);
-        var g = await SeedAsync(harness);
+        var g = await SeedRunbookGraphAsync(harness);
 
         var cancelStamp = DateTimeOffset.UtcNow;
         await using (var db = harness.CreateContext())
         {
             await db.ServerTasks.IgnoreQueryFilters()
-                .Where(t => t.Id == g.DeploymentId)
+                .Where(t => t.Id == g.RunId)
                 .ExecuteUpdateAsync(s => s
                     .SetProperty(t => t.Status, DeploymentStatus.Cancelled)
                     .SetProperty(t => t.CompletedUtc, cancelStamp));
         }
 
-        // From an ASSIGNED target — passes the ownership gate, reaches the
-        // guarded fallback write.
+        // From an ASSIGNED target — passes the ownership gate, reaches the guarded
+        // fallback write, which the terminal-status guard must refuse.
         await BuildHub(postgres, g.Primary.Id)
-            .CompleteDeploymentAsync(g.DeploymentId, Guid.Empty, success: true, errorMessage: null);
+            .CompleteDeploymentAsync(g.RunId, Guid.Empty, success: true, errorMessage: null);
 
-        await using var verify = harness.CreateContext();
-        var dep = await verify.Deployments.IgnoreQueryFilters()
-            .FirstAsync(d => d.Id == g.DeploymentId);
-        dep.Status.Should().Be(DeploymentStatus.Cancelled,
+        var run = await GetTaskAsync(harness, g.RunId);
+        run.Status.Should().Be(DeploymentStatus.Cancelled,
             "the operator's cancel is the recorded verdict — a late agent success must not flip it");
-        dep.CompletedUtc.Should().NotBeNull();
-        dep.CompletedUtc!.Value.Should().BeCloseTo(cancelStamp, TimeSpan.FromMilliseconds(1));
+        run.CompletedUtc.Should().NotBeNull();
+        run.CompletedUtc!.Value.Should().BeCloseTo(cancelStamp, TimeSpan.FromMilliseconds(1));
     }
 
     // ── AppendLogAsync ───────────────────────────────────────────────────────
@@ -333,6 +338,59 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
         // DeploymentTargetAssignment row for every member.
         var deploymentId = await harness.CreateDeploymentAsync(release.Id, env.Id, members);
         return new Graph(deploymentId, members[0], members[1], foreign);
+    }
+
+    private sealed record RunbookGraph(
+        Guid RunId,
+        DeploymentTarget Primary,
+        DeploymentTarget Secondary,
+        DeploymentTarget Foreign);
+
+    // A Running runbook run assigned to two targets (primary + a join-only
+    // secondary) with a third unassigned (foreign). No lease → handed off, so the
+    // hub fallback legitimately finalizes it (E1). Mirrors <see cref="SeedAsync"/>
+    // for the runbook kind.
+    private static async Task<RunbookGraph> SeedRunbookGraphAsync(OrchestratorTestHarness harness)
+    {
+        var tag = Guid.NewGuid().ToString("N")[..8];
+        var project = await harness.SeedProjectAsync($"own-rb-proj-{tag}");
+        var env = await harness.SeedEnvironmentAsync($"own-rb-env-{tag}");
+        var members = await harness.SeedTargetsAsync($"rb-owner-{tag}", $"rb-secondary-{tag}");
+        var foreign = (await harness.SeedTargetsAsync($"rb-foreign-{tag}"))[0];
+
+        await using var db = harness.CreateContext();
+        var runbook = new Runbook
+        {
+            SpaceId = WellKnown.DefaultSpaceId, ProjectId = project.Id, Name = $"own-rb-{tag}",
+        };
+        db.Runbooks.Add(runbook);
+        await db.SaveChangesAsync();
+
+        var run = new RunbookRun
+        {
+            SpaceId = WellKnown.DefaultSpaceId, RunbookId = runbook.Id, ProjectId = project.Id,
+            EnvironmentId = env.Id, Status = DeploymentStatus.Running, ProcessSnapshot = [],
+        };
+        db.RunbookRuns.Add(run);
+        await db.SaveChangesAsync();
+
+        var now = DateTimeOffset.UtcNow;
+        db.TaskTargetAssignments.Add(new TaskTargetAssignment
+        {
+            TaskId = run.Id, TargetId = members[0].Id, AddedUtc = now,
+        });
+        db.TaskTargetAssignments.Add(new TaskTargetAssignment
+        {
+            TaskId = run.Id, TargetId = members[1].Id, AddedUtc = now.AddMicroseconds(1),
+        });
+        await db.SaveChangesAsync();
+        return new RunbookGraph(run.Id, members[0], members[1], foreign);
+    }
+
+    private static async Task<ServerTask> GetTaskAsync(OrchestratorTestHarness harness, Guid taskId)
+    {
+        await using var db = harness.CreateContext();
+        return await db.ServerTasks.IgnoreQueryFilters().FirstAsync(t => t.Id == taskId);
     }
 
     private static AgentHub BuildHub(

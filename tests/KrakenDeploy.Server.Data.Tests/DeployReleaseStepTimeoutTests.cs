@@ -57,6 +57,19 @@ public sealed class DeployReleaseStepTimeoutTests(PostgresFixture postgres)
             };
             db.Projects.Add(childProject);
 
+            // Distinct parent project — the parent must NOT be the child project,
+            // else the E3 self-recursion guard refuses the cascade before the wait
+            // (which is what this test exercises: the per-step timeout).
+            var parentProject = new Project
+            {
+                SpaceId        = WellKnown.DefaultSpaceId,
+                ProjectGroupId = await TestData.EnsureProjectGroupAsync(db, WellKnown.DefaultSpaceId),
+                Name           = $"parent-{Guid.NewGuid():N}",
+                Slug           = $"parent-{Guid.NewGuid():N}",
+                Description    = "deploy-release timeout test parent",
+            };
+            db.Projects.Add(parentProject);
+
             var env = new DeploymentEnvironment
             {
                 SpaceId = WellKnown.DefaultSpaceId,
@@ -89,13 +102,14 @@ public sealed class DeployReleaseStepTimeoutTests(PostgresFixture postgres)
             db.Releases.Add(childRelease);
             await db.SaveChangesAsync();
 
-            // Parent deployment: the runner only reads its SpaceId / EnvironmentId
-            // / Targets / TenantId, so reuse the child release for the FK and
-            // point it at the seeded environment + target (via the join).
+            // Parent deployment: the runner reads its SpaceId / EnvironmentId /
+            // Targets / TenantId / ProjectId (for the self-recursion ancestry), so
+            // reuse the child release only for the ReleaseId FK and point ProjectId
+            // at the DISTINCT parent project.
             var parent = new Deployment
             {
                 SpaceId       = WellKnown.DefaultSpaceId,
-                ProjectId     = childProject.Id,
+                ProjectId     = parentProject.Id,
                 ReleaseId     = childRelease.Id,
                 EnvironmentId = env.Id,
                 Targets       = [new TaskTargetAssignment

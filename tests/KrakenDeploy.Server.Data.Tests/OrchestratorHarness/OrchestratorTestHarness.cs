@@ -65,9 +65,20 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
     private readonly PendingSubPlanRegistry _subPlans = new();
     private readonly ConcurrentDictionary<Guid, FakeAgent> _agentsByTargetId = new();
     private readonly DeploymentWorker _worker;
+    // E3: the DI-registered dispatch channel. The worker reads it (once the
+    // background loop is started via StartWorkerAsync) and DeploymentService
+    // (incl. the Octopus.DeployRelease child-create path) writes to it — so a
+    // parent→child cascade runs end-to-end through the real gate-aware dispatch.
+    private readonly Channel<KrakenDeploy.Server.Data.TenantWorkItem> _queue;
+    private bool _workerStarted;
     private int _connectionCounter;
 
-    public OrchestratorTestHarness(PostgresFixture postgres, EngineOptions? engineOptions = null)
+    public OrchestratorTestHarness(
+        PostgresFixture postgres,
+        EngineOptions? engineOptions = null,
+        // E2: shorten the in-flight lease-renewal interval so a lease-loss
+        // teardown test fires in milliseconds instead of the production minute.
+        TimeSpan? leaseRenewInterval = null)
     {
         ArgumentNullException.ThrowIfNull(postgres);
         _postgres = postgres;
@@ -124,8 +135,13 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
 
         _services = services.BuildServiceProvider();
 
+        // Use the DI-registered channel so DeploymentService (and the
+        // DeployRelease child-create path) enqueue onto the SAME channel the
+        // worker's background loop drains.
+        _queue = _services.GetRequiredService<Channel<KrakenDeploy.Server.Data.TenantWorkItem>>();
+
         _worker = new DeploymentWorker(
-            queue:                 Channel.CreateUnbounded<KrakenDeploy.Server.Data.TenantWorkItem>(),
+            queue:                 _queue,
             registry:              _connectionRegistry,
             agentHub:              _services.GetRequiredService<IHubContext<AgentHub, IAgentHubClient>>(),
             serverRunner:          _services.GetRequiredService<ServerScriptStepRunner>(),
@@ -150,7 +166,10 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             // (wave deadline / disconnect grace scenarios).
             engineOptions:         Microsoft.Extensions.Options.Options.Create(
                                        engineOptions ?? new EngineOptions()),
-            logger:                NullLogger<DeploymentWorker>.Instance);
+            logger:                NullLogger<DeploymentWorker>.Instance)
+        {
+            LeaseRenewIntervalOverride = leaseRenewInterval,
+        };
     }
 
     /// <summary>The worker's in-flight gauge. NOTE: <see cref="RunDeploymentAsync"/>
@@ -263,7 +282,10 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         Guid releaseId,
         Guid environmentId,
         IReadOnlyList<DeploymentTarget> targets,
-        DeploymentFailureMode failureMode = DeploymentFailureMode.BestEffort)
+        DeploymentFailureMode failureMode = DeploymentFailureMode.BestEffort,
+        // E3 transitive self-recursion coverage: seed a child (ParentTaskId set)
+        // whose DeployRelease step targets an ancestor's project.
+        Guid? parentTaskId = null)
     {
         ArgumentNullException.ThrowIfNull(targets);
         if (targets.Count == 0)
@@ -281,6 +303,7 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             EnvironmentId = environmentId,
             Status        = DeploymentStatus.Queued,
             FailureMode   = failureMode,
+            ParentTaskId  = parentTaskId,
         };
         db.Deployments.Add(deployment);
         await db.SaveChangesAsync();
@@ -317,9 +340,78 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         return agent;
     }
 
-    /// <summary>Drives the orchestrator's dispatch path to terminal status.</summary>
+    /// <summary>Drives the orchestrator's dispatch path to terminal status.
+    /// Bypasses the NodeTaskGate + queue (calls DispatchCoreAsync directly) — use
+    /// <see cref="StartWorkerAsync"/> + <see cref="EnqueueAsync"/> when the gate /
+    /// child-bypass path must be exercised (E3 cascade).</summary>
     public Task RunDeploymentAsync(Guid deploymentId, CancellationToken ct = default)
         => _worker.DispatchForTestAsync(deploymentId, ct);
+
+    /// <summary>
+    /// E3 — starts the worker's real background dispatch loop over the DI
+    /// channel. Enqueued items (via <see cref="EnqueueAsync"/> and the
+    /// DeployRelease child-create path) then flow through the production
+    /// gate-aware dispatch (<c>NodeTaskGate</c> + child bypass). Idempotent.
+    /// </summary>
+    public async Task StartWorkerAsync()
+    {
+        if (_workerStarted)
+        {
+            return;
+        }
+        await _worker.StartAsync(CancellationToken.None);
+        _workerStarted = true;
+    }
+
+    /// <summary>E3 — enqueues a top-level deployment onto the dispatch channel
+    /// (single-instance account). The started worker loop picks it up.</summary>
+    public ValueTask EnqueueAsync(Guid deploymentId)
+        => _queue.Writer.WriteAsync(
+            new KrakenDeploy.Server.Data.TenantWorkItem(Guid.Empty, deploymentId));
+
+    /// <summary>
+    /// Polls until the deployment reaches a terminal status or
+    /// <paramref name="timeout"/> elapses (a deadlock detector for the E3
+    /// cascade test — a real deadlock never terminates). Throws
+    /// <see cref="TimeoutException"/> on timeout.
+    /// </summary>
+    public async Task<Deployment> WaitForTerminalAsync(Guid deploymentId, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            await using (var db = _postgres.CreateContext())
+            {
+                var d = await db.Deployments.IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(x => x.Id == deploymentId);
+                if (d is not null && d.Status.IsTerminal())
+                {
+                    return d;
+                }
+            }
+            if (DateTime.UtcNow >= deadline)
+            {
+                throw new TimeoutException(
+                    $"Deployment {deploymentId} did not reach a terminal status within {timeout}.");
+            }
+            await Task.Delay(50);
+        }
+    }
+
+    /// <summary>
+    /// Seeds a child project (no lifecycle → the DeployRelease child-create
+    /// lifecycle gate passes) plus one target-side release, returning the
+    /// project id so a parent release can reference it from an
+    /// <c>Octopus.DeployRelease</c> step.
+    /// </summary>
+    public async Task<Guid> SeedChildProjectWithReleaseAsync(string name, params StepBuilder[] steps)
+    {
+        var project = await SeedProjectAsync(name);
+        await SeedReleaseAsync(project.Id, "1.0", steps.Length == 0
+            ? [StepBuilder.Script("child-step")]
+            : steps);
+        return project.Id;
+    }
 
     /// <summary>
     /// Cancels a deployment through the real
@@ -369,7 +461,17 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             .ToListAsync();
     }
 
-    public ValueTask DisposeAsync() => _services.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        if (_workerStarted)
+        {
+            // Stop the background loop before tearing down the container so an
+            // in-flight fire-and-forget dispatch doesn't touch a disposed scope.
+            try { await _worker.StopAsync(CancellationToken.None); }
+            catch (OperationCanceledException) { }
+        }
+        await _services.DisposeAsync();
+    }
 }
 
 // ── Builders ────────────────────────────────────────────────────────────────
@@ -402,6 +504,28 @@ public sealed class StepBuilder
 
     public static StepBuilder Script(string name, bool required = true)
         => new() { Name = name, StepType = "Octopus.Script", Required = required };
+
+    /// <summary>
+    /// A server-side <c>Octopus.DeployRelease</c> step targeting
+    /// <paramref name="childProjectId"/> (by GUID). Used by the E3 cascade /
+    /// ceiling tests. <paramref name="timeoutSeconds"/> defaults to 0 so the
+    /// Engine <c>MaxDeployReleaseWaitDuration</c> ceiling governs the wait.
+    /// </summary>
+    public static StepBuilder DeployRelease(
+        string name, Guid childProjectId, bool required = true, int timeoutSeconds = 0, int maxRetries = 0)
+        => new()
+        {
+            Name           = name,
+            StepType       = KrakenDeploy.Server.Transport.DeployReleaseStepRunner.StepType,
+            Required       = required,
+            TimeoutSeconds = timeoutSeconds,
+            MaxRetries     = maxRetries,
+            Config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                [KrakenDeploy.Server.Transport.OctopusDeployReleaseConfigKeys.ProjectId]
+                    = childProjectId.ToString(),
+            },
+        };
 
     public static StepBuilder StepGroup(string name, int? maxParallelism = null)
     {

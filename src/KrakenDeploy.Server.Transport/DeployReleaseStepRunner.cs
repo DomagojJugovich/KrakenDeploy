@@ -180,6 +180,26 @@ public sealed class DeployReleaseStepRunner(
             $"(slug '{childProject.Slug}', id {childProject.Id}). Condition: {condition}.",
             ct).ConfigureAwait(false);
 
+        // ── E3: refuse a self-recursive cascade (at plan time) ──────────────
+        // A DeployRelease step whose child project is the parent's own project
+        // (A→A), or ANY project already in this deployment's parent chain
+        // (A→B→A…), would spawn child deployments without end. Walk the
+        // ParentTaskId ancestry, collect the project ids, and refuse before
+        // creating the child. This is a structural guard: the child is never
+        // created, so no gate slot, no lease, no runaway cascade.
+        var ancestorProjectIds = await CollectAncestorProjectIdsAsync(
+            db, parentDeploymentId, ct).ConfigureAwait(false);
+        if (ancestorProjectIds.Contains(childProject.Id))
+        {
+            await AppendLogAsync(parentDeploymentId, "error",
+                $"Octopus.DeployRelease: refusing self-recursive cascade — child project " +
+                $"'{childProject.Name}' ({childProject.Id}) is already in this deployment's " +
+                "parent chain. A project cannot deploy-release itself (directly or transitively); " +
+                "this would create an unbounded chain of child deployments.",
+                ct).ConfigureAwait(false);
+            return false;
+        }
+
         // ── Pick the latest release of the child project ────────────────────
         var latestRelease = await db.Releases
             .AsNoTracking()
@@ -231,6 +251,12 @@ public sealed class DeployReleaseStepRunner(
                 tenantId:            parent.TenantId,
                 scheduledFor:        null,
                 additionalTargetIds: parentAdditionalTargetIds,
+                // E3: stamp parentage AT CREATION so the child row carries
+                // ParentTaskId before the dispatch wake-up is enqueued — the
+                // worker's gate-bypass (children don't consume a NodeTaskGate
+                // slot) then reads it reliably, closing the old race where the
+                // child could dispatch before a post-create link committed.
+                parentTaskId:        parentDeploymentId,
                 ct:                  ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -246,19 +272,6 @@ public sealed class DeployReleaseStepRunner(
                 $"Octopus.DeployRelease: failed to create child deployment: {ex.Message}",
                 ct).ConfigureAwait(false);
             return false;
-        }
-
-        await using (var linkScope = scopeFactory.CreateAsyncScope())
-        {
-            using var _ = linkScope.ServiceProvider
-                .GetRequiredService<ISpaceContext>().WithSpace(spaceId);
-            var linkDb = linkScope.ServiceProvider.GetRequiredService<KrakenDbContext>();
-            var tracked = await linkDb.Deployments.FindAsync([child.Id], ct).ConfigureAwait(false);
-            if (tracked is not null)
-            {
-                tracked.ParentTaskId = parentDeploymentId;
-                await linkDb.SaveChangesAsync(ct).ConfigureAwait(false);
-            }
         }
 
         await AppendLogAsync(parentDeploymentId, "info",
@@ -348,6 +361,40 @@ public sealed class DeployReleaseStepRunner(
             // states (handled in the switch above) return false.
             await Task.Delay(PollInterval, ct).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// E3 — collects the set of project ids in a task's parent chain (the task
+    /// itself plus every ancestor reached by following <c>ParentTaskId</c>).
+    /// Used to refuse a self-recursive DeployRelease cascade. Filter-free by-id
+    /// reads (a cascade may span Spaces via imported data); a depth guard caps
+    /// the walk so malformed data can't loop forever.
+    /// </summary>
+    private static async Task<HashSet<Guid>> CollectAncestorProjectIdsAsync(
+        KrakenDbContext db, Guid startTaskId, CancellationToken ct)
+    {
+        var projectIds = new HashSet<Guid>();
+        var seenTasks = new HashSet<Guid>();
+        Guid? currentId = startTaskId;
+        // Depth guard: ParentTaskId is a DAG in practice; 64 hops is far beyond
+        // any real cascade and bounds a corrupt cycle.
+        for (var depth = 0; currentId is { } id && depth < 64 && seenTasks.Add(id); depth++)
+        {
+            var row = await db.ServerTasks
+                .AsNoTracking()
+                .IgnoreQueryFilters()
+                .Where(t => t.Id == id)
+                .Select(t => new { t.ProjectId, t.ParentTaskId })
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+            if (row is null)
+            {
+                break;
+            }
+            projectIds.Add(row.ProjectId);
+            currentId = row.ParentTaskId;
+        }
+        return projectIds;
     }
 
     private static async Task<KrakenDeploy.Server.Core.Domain.Projects.Project?> ResolveProjectAsync(

@@ -51,6 +51,13 @@ public class DeploymentService(
         DateTimeOffset? scheduledFor = null,
         IReadOnlyCollection<Guid>? additionalTargetIds = null,
         DeploymentFailureMode failureMode = DeploymentFailureMode.BestEffort,
+        // E3: set for a child deployment spawned by an Octopus.DeployRelease step.
+        // Stamped on the row BEFORE the dispatch wake-up is enqueued, so the
+        // worker's gate-bypass read (children don't take a NodeTaskGate slot)
+        // sees it reliably — the pre-fix "set ParentTaskId after CreateAsync in a
+        // second scope" left a window where the child could dispatch before the
+        // link committed.
+        Guid? parentTaskId = null,
         CancellationToken ct = default)
     {
         // Guard: reject a default/unset initiator before we do any work.
@@ -151,6 +158,9 @@ public class DeploymentService(
             Status = DeploymentStatus.Queued,
             FailureMode = failureMode,
             ScheduledFor = isScheduledForFuture ? scheduledFor : null,
+            // E3: stamp parentage at creation (see the parameter note) — a null
+            // value keeps this a top-level task.
+            ParentTaskId = parentTaskId,
         };
         initiator.StampOnto(deployment);   // provenance (fix 6)
 

@@ -406,6 +406,47 @@ public sealed class AgentHub(
             return;
         }
 
+        // E1: the DB-fallback finalize is legitimate ONLY for the runbook-run
+        // hand-off model — the runbook worker builds one plan, hands it to one
+        // agent, RELEASES the lease, and lets the hub finalize on this callback
+        // (execution-engine.md §8). A DEPLOYMENT is finalized by its orchestrator
+        // (DeploymentWorker), which resolves every wave through the sub-plan
+        // registry above and never falls through here on the happy path. So a
+        // deployment reaching this fallback means no open orchestrator slot knew
+        // this completion — either a completion the registry could not classify,
+        // or the dangerous interleaving: the server restarted mid-deployment
+        // faster than the 5-minute lease, the in-memory wave state died with the
+        // old process, and the agent's buffered WAVE completion flushed into the
+        // FRESH process. Finalizing here would mark the WHOLE deployment terminal
+        // although its remaining waves never ran. Drop it: the reconciler owns a
+        // genuinely-orphaned deployment (fails it once the lease expires), and a
+        // live orchestrator finalizes through the registry, not here.
+        if (task.Kind != ServerTaskKind.RunbookRun)
+        {
+            logger.LogWarning(
+                "CompleteDeployment for deployment {Id} (dispatch {Dispatch}, success={Success}) " +
+                "reached the hub fallback with no open orchestrator slot; dropping. A deployment " +
+                "is finalized by its orchestrator, never by the hub — a buffered wave completion " +
+                "arriving post-restart must not finalize the whole deployment.",
+                deploymentId, dispatchId, success);
+            return;
+        }
+
+        // Even for a runbook run, refuse the fallback while a lease is still live:
+        // a live lease means the dispatch is still worker-owned (pre-hand-off, or a
+        // draining blue-green slot still renewing), so a completion now is not the
+        // legitimate post-hand-off callback. The reconciler / owning worker keeps
+        // the verdict. A handed-off runbook run has its lease cleared, so the
+        // legitimate path passes straight through.
+        if (task.LeaseUntil is { } leaseUntil && leaseUntil > completedAt)
+        {
+            logger.LogWarning(
+                "CompleteDeployment for runbook run {Id} (dispatch {Dispatch}) refused: lease is " +
+                "still live until {Lease:o} — the dispatch is worker-owned, not handed off; dropping.",
+                deploymentId, dispatchId, leaseUntil);
+            return;
+        }
+
         // B1: never overwrite a terminal status. A late agent callback can race
         // an operator cancel, or arrive after the dispatch reconciler already
         // failed this task as interrupted (its sub-plan TCS died with the old

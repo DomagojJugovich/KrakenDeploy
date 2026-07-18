@@ -50,6 +50,28 @@ public sealed class EngineOptions
     /// Non-positive falls back to the default. Runbook-run dispatch is NOT
     /// counted: the server-side hand-off is milliseconds (the run executes on
     /// the agent, serialized there by the agent's execution queue).
+    /// <para>
+    /// E3 note: a CHILD deployment spawned by an <c>Octopus.DeployRelease</c>
+    /// step (<c>ParentTaskId != null</c>) does NOT take a slot — it is accounted
+    /// for by its parent's slot, which the parent holds for the whole
+    /// <c>WaitForChildAsync</c>. Without that bypass, capacity-many parents each
+    /// waiting on a gate-starved child would deadlock the node.
+    /// </para>
     /// </summary>
     public int MaxConcurrentTasks { get; set; } = 5;
+
+    /// <summary>
+    /// E3 — server-side ceiling for how long an <c>Octopus.DeployRelease</c> step
+    /// waits on its child deployment (<c>DeployReleaseStepRunner.WaitForChildAsync</c>).
+    /// The parent holds a <c>NodeTaskGate</c> slot for the whole wait; children
+    /// bypass the gate so N parents on N children no longer deadlock, but a child
+    /// that NEVER terminates would still pin the parent's slot forever — recovery
+    /// today is a restart. This ceiling bounds that wait. It only replaces
+    /// "unlimited": a step with an explicit <c>TimeoutSeconds</c> is honoured
+    /// as-is (even above this — operator intent), same rule as
+    /// <see cref="MaxTargetWaveDuration"/>. A ceiling hit classifies the step
+    /// <c>TimedOut</c> (not generic Failed). Non-positive falls back to the
+    /// shipped default.
+    /// </summary>
+    public TimeSpan MaxDeployReleaseWaitDuration { get; set; } = TimeSpan.FromHours(1);
 }

@@ -22,15 +22,37 @@ namespace KrakenDeploy.Server.Data;
 public sealed class ServerTaskLeaseRenewal : IAsyncDisposable
 {
     private readonly CancellationTokenSource _cts = new();
+    // E2 — cancelled when a renewal attempt finds no Running row to renew: the
+    // task went terminal or the reconciler failed it as orphaned. The owning
+    // orchestration links this into its own cancellation so it tears down
+    // cleanly instead of dispatching further waves LEASELESS (a run whose lease
+    // the reconciler already reclaimed must not keep pushing work).
+    private readonly CancellationTokenSource _leaseLostCts = new();
     private readonly Task _loop;
 
+    /// <summary>
+    /// Fires when the lease is definitively lost — a renewal attempt matched no
+    /// <c>Running</c> row (terminal transition or reconciler orphan-fail). Does
+    /// NOT fire on transient DB errors: those are retried and the lease survives
+    /// up to <c>(LeaseDuration / RenewInterval) - 1</c> consecutive misses. The
+    /// worker links this token into the orchestration's cancellation.
+    /// </summary>
+    public CancellationToken LeaseLost => _leaseLostCts.Token;
+
+    /// <param name="renewInterval">How often to renew; defaults to
+    /// <see cref="ServerTaskLease.RenewInterval"/>. A short interval is used by
+    /// tests so a lease-loss teardown runs in milliseconds, not a minute.</param>
     public ServerTaskLeaseRenewal(
         IServiceScopeFactory scopeFactory,
         Guid taskId,
         TimeProvider time,
-        ILogger logger)
+        ILogger logger,
+        TimeSpan? renewInterval = null)
     {
-        _loop = RenewLoopAsync(scopeFactory, taskId, time, logger, _cts.Token);
+        _loop = RenewLoopAsync(
+            scopeFactory, taskId, time, logger,
+            renewInterval is { } ri && ri > TimeSpan.Zero ? ri : ServerTaskLease.RenewInterval,
+            _leaseLostCts, _cts.Token);
     }
 
     private static async Task RenewLoopAsync(
@@ -38,11 +60,13 @@ public sealed class ServerTaskLeaseRenewal : IAsyncDisposable
         Guid taskId,
         TimeProvider time,
         ILogger logger,
+        TimeSpan renewInterval,
+        CancellationTokenSource leaseLostCts,
         CancellationToken ct)
     {
         try
         {
-            using var timer = new PeriodicTimer(ServerTaskLease.RenewInterval, time);
+            using var timer = new PeriodicTimer(renewInterval, time);
             while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
             {
                 try
@@ -53,8 +77,14 @@ public sealed class ServerTaskLeaseRenewal : IAsyncDisposable
                     {
                         logger.LogWarning(
                             "Lease renewal for task {TaskId} matched no Running row — it reached " +
-                            "a terminal state or was reconciled as orphaned; renewals stop.",
+                            "a terminal state or was reconciled as orphaned; signalling the " +
+                            "orchestration to tear down and stopping renewals.",
                             taskId);
+                        // E2: tell the owning orchestration the lease is gone so it
+                        // stops dispatching leaseless. Best-effort: if the source was
+                        // already disposed (racing DisposeAsync) the signal is moot.
+                        try { await leaseLostCts.CancelAsync().ConfigureAwait(false); }
+                        catch (ObjectDisposedException) { }
                         return;
                     }
                 }
@@ -85,5 +115,6 @@ public sealed class ServerTaskLeaseRenewal : IAsyncDisposable
             // Loop observed the cancel between ticks.
         }
         _cts.Dispose();
+        _leaseLostCts.Dispose();
     }
 }
