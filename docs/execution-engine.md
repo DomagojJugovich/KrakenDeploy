@@ -306,10 +306,13 @@ Two properties to be aware of:
   attempt still unwinding (which could upload the *old* attempt's artifacts as
   the new one's). Per-step cleanup runs in a `finally` so it fires on every
   exit path (early download/extract failures and per-step timeout/cancel
-  included, not just the normal tail); the task's whole staging subtree is
-  swept when its run ends; and the entire staging root is wiped at agent boot
-  (any tree there is an orphan from a crashed prior process). All sweeps are
-  best-effort (catch-and-log).
+  included, not just the normal tail); this *attempt's* dispatch subtree
+  (`staging/{deploymentId:N}/{dispatchId:N}`) is swept when its run ends — NOT
+  the shared task tree, which would race and delete a superseding sibling
+  attempt's live staging; and the entire staging root is wiped at agent boot
+  (any tree there is an orphan from a crashed prior process, reclaiming any
+  attempt dir a force-detach left behind). All sweeps are best-effort
+  (catch-and-log).
 
 ### Timer reference
 
