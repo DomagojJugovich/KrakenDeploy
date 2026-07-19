@@ -167,7 +167,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 1 | E-C | Hub/transport hygiene: registry wipe, cancel re-push, retired-dispatch guard | ⬜ | M | — |
 | 1 | E-D | Leftovers: staging paths, log-sequence counter, interim runbook reap (E9 — deleted by D1) | ✅ fix/exec-d-hygiene | M | — |
 | 2 — ops (parallel OK) | C1 | Backup/restore image + round-trip CI (+ caddy README rider) | ⬜ | S | — |
-| 2 | C6 | Agent self-upgrade atomicity + rollback (rewritten) | ⬜ | M | E-B |
+| 2 | C6 | Agent self-upgrade atomicity + rollback (rewritten) | ✅ fix/ops-agent-upgrade-atomic | M | E-B |
 | 3 — engine merge | D1 | server_tasks ENGINE merge (2026-07-16 design supersedes the old prompt) | ⬜ | XL | E-A, E-B, E-C, E-D |
 | 3 | D3 | Promote control-flow config keys to typed columns (+ rolling-warning rider) | ⬜ | M | — |
 | 4 — engine features | F1 | Same (project, environment, tenant) deployment serialization | ⬜ | M | D1 |
@@ -243,6 +243,7 @@ Also locked in the same session: WP3 approval model (step-defined responsible te
 | N15 | D2 sequencing | **Stays gated on D1** — the digest's "unblocked" claim conflated the schema merge with the still-open ENGINE merge; renaming before D1 renames a surface D1 rewrites |
 | N16 | C4 | ⏸ → folded into WP-BASELINE (see N10) |
 | N17 | C5 | ✅ done 2026-07-18 |
+| N18 | C6 | ✅ done 2026-07-19 (branch `fix/ops-agent-upgrade-atomic`). Whole-dir swap with backup + in-process rollback; SHA-256 verified on every apply (server computes it, never trusts the manifest field); refuses hashless / contract-skewed builds; post-restart health gate (registration-accepted) → commit-or-rollback; outcome reported to POST `/api/agents/update-status` as a Space-scoped target audit row. Absorbs WP11's agent-update item (multi-file payload). Residual: in-process updater cannot recover a hard-kill in the two-move window or a build whose apphost won't launch — marker persisted for a future external supervisor. |
 
 ---
 

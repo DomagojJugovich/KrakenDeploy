@@ -390,4 +390,22 @@ public static class AuditEventType
     /// spike here can indicate a stolen token being kept alive. Details: none
     /// beyond the subject (never token content).</summary>
     public const string AgentTokenRefreshed = "Agent.TokenRefreshed";
+
+    // ── Agent self-upgrade (C6) ────────────────────────────────────────────────
+
+    /// <summary>C6 — an agent self-upgrade booted healthy within the probation
+    /// window and was committed (previous version discarded). Reported by the
+    /// agent to POST /api/agents/update-status. Details: from/to versions.</summary>
+    public const string AgentUpdateApplied = "Agent.UpdateApplied";
+
+    /// <summary>C6 — an agent self-upgrade failed its post-restart health gate and
+    /// the agent automatically restored the previous version from backup. A row
+    /// here means a published build is bad on that target — investigate before
+    /// re-publishing. Details: from/to versions + reason.</summary>
+    public const string AgentUpdateRolledBack = "Agent.UpdateRolledBack";
+
+    /// <summary>C6 — an agent refused or aborted a self-upgrade BEFORE committing
+    /// it (missing/mismatched hash, contract skew, or an in-process swap failure
+    /// that left the previous binary running). Details: outcome + versions.</summary>
+    public const string AgentUpdateFailed = "Agent.UpdateFailed";
 }
