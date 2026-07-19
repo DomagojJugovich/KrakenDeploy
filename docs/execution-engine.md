@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 1.2 |
+| **Version** | 1.3 |
 | **Date** | 2026-07-18 |
 | **Authors** | Domagoj Jugovic, Claude (Fable 5), Claude (Opus 4.8) |
 | **Status** | Draft |
@@ -250,19 +250,28 @@ Two properties to be aware of:
   adhoc results go through one process-lifetime FIFO channel — strict
   global order, head retried until acked, at-least-once. Log lines cap at
   5 000 (newest dropped, counted; the local rolling file keeps
-  everything); completions are never dropped. An item failing 5
-  *consecutive connected* sends is dropped as poison (disconnected waits
-  do not count). The buffer is process-lifetime only — agent death
-  mid-deploy is the lease/reconciler's problem, not the outbox's.
+  everything). Only a **log line** failing 5 *consecutive connected* sends
+  is dropped as poison (disconnected waits do not count); **verdict-class
+  items — step/deployment completions and adhoc results — are never
+  dropped** (E6): they retry forever with capped backoff, since a lost
+  completion would turn a succeeded run into a reaper-`Failed` one. FIFO
+  ordering makes this a head-of-line hold, which is the intended cost of
+  the never-drop guarantee. The buffer is process-lifetime only — agent
+  death mid-deploy is the lease/reconciler's problem, not the outbox's.
 - **Disconnect never aborts a running step.** The per-run token fires only
   on an explicit server cancel push or supersede; a disconnected step runs
   to completion and its reports buffer.
 - **DispatchId idempotency**: re-delivery of the *same* `DispatchId` is
   dropped; a *different* `DispatchId` for the same task supersedes —
-  cancels the old attempt and waits up to 30 s for it to unwind. Every log
-  and report carries the `DispatchId`, so the server ignores output from
-  retired attempts. Ordering guarantee: a wave's step reports are acked
-  before its completion, so the server's cross-wave output fold is sound.
+  cancels the old attempt and waits up to 30 s
+  (`SupersedeUnwindTimeout`) for it to unwind. A non-cooperative attempt
+  that never unwinds is force-detached, and the new attempt's machine-gate
+  acquisition is then **bounded** (`WedgedGateAcquireTimeout`) — on expiry
+  it escalates (logs + reports a failed completion) rather than wedging the
+  agent forever behind the stuck step. Every log and report carries the
+  `DispatchId`, so the server ignores output from retired attempts.
+  Ordering guarantee: a wave's step reports are acked before its
+  completion, so the server's cross-wave output fold is sound.
 
 ### Timer reference
 
@@ -280,8 +289,9 @@ Two properties to be aware of:
 | Status-writer retries | 5 | `ServerTaskStatusWriter.MaxAttempts` |
 | Reconnect backoff | 1 s base / 30 s cap, unbounded | `AgentReconnectPolicy` |
 | Auth-failure reconnect lane | 5 min | `AgentReconnectPolicy.AuthFailureDelay` |
-| Outbox log cap / poison threshold | 5 000 lines / 5 sends | `ServerLinkOutbox` |
+| Outbox log cap / log-line poison threshold | 5 000 lines / 5 sends | `ServerLinkOutbox` (verdicts never dropped) |
 | Supersede unwind | 30 s | `DeploymentExecutor.SupersedeUnwindTimeout` |
+| Wedged-gate acquire (post force-detach) | 30 s | `DeploymentExecutor.WedgedGateAcquireTimeout` |
 | Cancel process-tree reap | 10 s | agent `ScriptRunner` |
 
 ## 7. Concurrency controls
@@ -437,6 +447,7 @@ pages sharing an unextracted status-header/log-viewer surface.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.3 | 2026-07-19 | E-B agent-runtime fixes (§6, timer table): outbox drops only log lines as poison — verdict-class items (completions, adhoc results) are never dropped and retry with capped backoff (E6); a superseded non-cooperative attempt that never unwinds is force-detached and the new attempt's machine-gate acquisition is bounded (`WedgedGateAcquireTimeout`) with escalation. Also fixed off-doc: `DeploymentExecutor` singleton lifetime (dead self-update guard, E5), supervisor park on reconnect-refusal, and the output-variable upsert race (`ON CONFLICT`). |
 | 1.2 | 2026-07-18 | E-series orchestrator fixes: E1 hub fallback finalize restricted to runbook runs + live-lease refusal (§1/§8/§9); E2 single `IsTaskStillRunningAsync` ownership predicate at wave + rolling-batch boundaries and lease-loss teardown (§6); E3 child deployments bypass the `NodeTaskGate` + `Engine:MaxDeployReleaseWaitDuration` child-wait ceiling + self-recursion refusal (§4/§9, timer table). |
 | 1.1 | 2026-07-16 | Corrected concurrency claim: B7 `NodeTaskGate` caps concurrent deployment orchestrations (`Engine:MaxConcurrentTasks`, default 5); `RunbookRunWorker` is ungated. |
 | 1.0 | 2026-07-16 | Initial version — full engine map from 3-agent code audit at current main. |

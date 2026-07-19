@@ -163,7 +163,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | Phase | WP | Title | Status | Size | Depends on |
 |---|---|---|---|---|---|
 | 1 — engine correctness | E-A | Server orchestrator: hub false-terminal, cancel/ownership, gate deadlock | ✅ 9c3cc29 | M | — |
-| 1 | E-B | Agent runtime: executor DI, supervisor park, gate wedge, outbox verdicts, output-var upsert | ⬜ | M | — |
+| 1 | E-B | Agent runtime: executor DI, supervisor park, gate wedge, outbox verdicts, output-var upsert | ✅ 76eab6b | M | — |
 | 1 | E-C | Hub/transport hygiene: registry wipe, cancel re-push, retired-dispatch guard | ⬜ | M | — |
 | 1 | E-D | Leftovers: staging paths, log-sequence counter, interim runbook reap (E9 — deleted by D1) | ⬜ | M | — |
 | 2 — ops (parallel OK) | C1 | Backup/restore image + round-trip CI (+ caddy README rider) | ⬜ | S | — |
