@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.3 |
-| **Date** | 2026-07-18 |
+| **Version** | 1.4 |
+| **Date** | 2026-07-19 |
 | **Authors** | Domagoj Jugovic, Claude (Fable 5), Claude (Opus 4.8) |
 | **Status** | Draft |
 | **Technologies** | .NET 10, EF Core 10, PostgreSQL, SignalR, Octostache, Hangfire |
@@ -200,7 +200,15 @@ Two properties to be aware of:
   cancelled; the wave resolves that target as a failure into the failure
   mode. The grace deliberately exceeds the hub's 30 s offline marking so a
   reconnecting agent can flush its outbox first; reconnect resets the
-  clock.
+  clock. Liveness is read from `IAgentConnectionRegistry`, which is
+  asymmetric-drop safe (E4): `TryRemove` compare-and-removes the
+  target→connection mapping (dropping it only when it still points at the
+  disconnecting connection), so a late, out-of-order `OnDisconnectedAsync`
+  of a *superseded* connection cannot wipe the mapping a reconnected agent
+  already re-registered. A heartbeat-driven `Reaffirm` backstop self-heals a
+  wiped mapping within one heartbeat. Before E4 the wipe made a healthy agent
+  falsely Offline — its waves killed after this grace, its cancel pushes and
+  token revocation silently no-op.
 - **Reconciler** (`ScheduledDeploymentDispatchJob`, boot + minutely):
   (1) enqueue due `ScheduledFor` rows; (2) re-signal stale `Queued` rows
   older than 2 min (recovers wake-ups lost to restarts) — both phases are
@@ -219,7 +227,16 @@ Two properties to be aware of:
 - **Cancellation / ownership** — `CancelAsync` performs one guarded
   transition to `Cancelled` (clears schedule + lease) and then best-effort
   pushes a cooperative cancel to the agent (kills the step's process tree,
-  10 s reap). The worker re-checks **one ownership predicate** —
+  10 s reap). If the agent is *offline* at cancel time the push is skipped —
+  but a disconnected step runs to completion, so on reconnect the agent would
+  otherwise keep executing the cancelled task. `AgentHub.RegisterAsync`
+  therefore reconciles on every (re)connect (E7): a pure server-side lookup
+  re-pushes a cooperative cancel for every task assigned to the reconnecting
+  target whose DB status is terminal (`Cancelled`/`Failed`) within the last
+  hour — the ones the agent may still be running because it was offline when
+  the verdict was recorded. Re-pushing to a task the agent is not running is a
+  harmless agent-side no-op. No wire change: the agent does not report its
+  in-flight ids. The worker re-checks **one ownership predicate** —
   "is this task still `Running` in the DB?" via a **fresh scalar status
   projection** (`IsTaskStillRunningAsync`; the tracked entity is stale) — at
   the dequeue, **every wave boundary, and between every rolling batch**. Any
@@ -269,7 +286,14 @@ Two properties to be aware of:
   acquisition is then **bounded** (`WedgedGateAcquireTimeout`) — on expiry
   it escalates (logs + reports a failed completion) rather than wedging the
   agent forever behind the stuck step. Every log and report carries the
-  `DispatchId`, so the server ignores output from retired attempts.
+  `DispatchId`, so the server ignores output from retired attempts: the hub
+  guards on `IPendingSubPlanRegistry.IsRetiredDispatch` in **both**
+  `AppendLogAsync` and (E-C) `ReportStepCompletedAsync` *before* the DB
+  persistence half — otherwise a retired attempt's late step report, flushed
+  from the outbox after the wave was superseded, would overwrite the current
+  attempt's output variables (the upsert key has no dispatch dimension) and
+  prematurely compact its staged step lines. `RecordStepResult` keeps its own
+  in-memory guard (a retired dispatch no longer matches the open slot).
   Ordering guarantee: a wave's step reports are acked before its
   completion, so the server's cross-wave output fold is sound.
 
@@ -447,6 +471,7 @@ pages sharing an unextracted status-header/log-viewer surface.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.4 | 2026-07-19 | E-C hub/transport hygiene (§6): E4 — `InMemoryAgentConnectionRegistry.TryRemove` compare-and-removes the target mapping (+ heartbeat `Reaffirm` backstop) so a late, out-of-order disconnect of a superseded connection cannot make a reconnected agent falsely Offline. E7 — `AgentHub.RegisterAsync` reconciles in-flight cancellations on (re)connect (server-side lookup of the target's terminal-but-recent tasks → re-push cooperative cancel), so an agent offline at cancel time no longer runs the cancelled task to completion. E-C — the `IsRetiredDispatch` guard is mirrored into `ReportStepCompletedAsync` before its DB persistence half (was only on `AppendLogAsync`), so a replayed retired-attempt step report no longer overwrites the current attempt's output variables or prematurely compacts its staged log lines. CONTRACT CHANGE: none. |
 | 1.3 | 2026-07-19 | E-B agent-runtime fixes (§6, timer table): outbox drops only log lines as poison — verdict-class items (completions, adhoc results) are never dropped and retry with capped backoff (E6); a superseded non-cooperative attempt that never unwinds is force-detached and the new attempt's machine-gate acquisition is bounded (`WedgedGateAcquireTimeout`) with escalation. Also fixed off-doc: `DeploymentExecutor` singleton lifetime (dead self-update guard, E5), supervisor park on reconnect-refusal, and the output-variable upsert race (`ON CONFLICT`). |
 | 1.2 | 2026-07-18 | E-series orchestrator fixes: E1 hub fallback finalize restricted to runbook runs + live-lease refusal (§1/§8/§9); E2 single `IsTaskStillRunningAsync` ownership predicate at wave + rolling-batch boundaries and lease-loss teardown (§6); E3 child deployments bypass the `NodeTaskGate` + `Engine:MaxDeployReleaseWaitDuration` child-wait ceiling + self-recursion refusal (§4/§9, timer table). |
 | 1.1 | 2026-07-16 | Corrected concurrency claim: B7 `NodeTaskGate` caps concurrent deployment orchestrations (`Engine:MaxConcurrentTasks`, default 5); `RunbookRunWorker` is ungated. |
