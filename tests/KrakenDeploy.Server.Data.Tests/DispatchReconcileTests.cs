@@ -1,9 +1,12 @@
 using System.Threading.Channels;
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Audit;
+using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data.Accounts;
 using KrakenDeploy.Server.Data.Jobs;
+using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Data.Tests.OrchestratorHarness;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -239,12 +242,94 @@ public sealed class DispatchReconcileTests(PostgresFixture postgres)
         audit.Entries.Should().NotContain(e => e.SubjectId == id.ToString());
     }
 
+    // ── E9 (INTERIM): disconnect-aware runbook reap ────────────────────────
+
+    [Fact]
+    public async Task Agent_owned_runbook_run_with_a_long_disconnected_target_is_failed()
+    {
+        // Agent-owned (lease released), well inside the 1 h ceiling, but its target
+        // has been silent past the disconnect grace and the registry sees no live
+        // tunnel — the agent died mid-run. Proves the disconnect arm fires, NOT the
+        // ceiling (started only 10 min ago).
+        var (runId, _) = await SeedRunbookRunWithTargetAsync(
+            targetLastSeen: DateTimeOffset.UtcNow.AddMinutes(-10));
+        await SetRunbookRunningAsync(runId,
+            leaseUntil: null, claimedBy: null, startedAgo: TimeSpan.FromMinutes(10));
+        var (job, _, _, audit) = NewJob(new EngineOptions
+        {
+            AgentDisconnectWaveGrace = TimeSpan.FromMinutes(2),
+            MaxRunbookRunDuration    = TimeSpan.FromHours(1),
+        }); // default probe: target not connected
+
+        await job.ExecuteAsync(CancellationToken.None);
+
+        await using var db = postgres.CreateContext();
+        (await db.ServerTasks.IgnoreQueryFilters().AsNoTracking()
+                .Where(t => t.Id == runId).Select(t => t.Status).FirstAsync())
+            .Should().Be(DeploymentStatus.Failed,
+                "the agent has been continuously disconnected past the grace");
+        audit.Entries.Should().ContainSingle(e =>
+            e.EventType == AuditEventType.RunbookRunInterrupted && e.SubjectId == runId.ToString());
+    }
+
+    [Fact]
+    public async Task Agent_owned_runbook_run_whose_target_is_still_connected_is_left_alone()
+    {
+        // Stale heartbeat, but the node-local registry still sees a live tunnel
+        // (a fresh reconnect whose heartbeat hasn't flushed) — fail-closed: leave it.
+        var (runId, targetId) = await SeedRunbookRunWithTargetAsync(
+            targetLastSeen: DateTimeOffset.UtcNow.AddMinutes(-10));
+        await SetRunbookRunningAsync(runId,
+            leaseUntil: null, claimedBy: null, startedAgo: TimeSpan.FromMinutes(10));
+        var probe = new StubAgentLivenessProbe();
+        probe.Connected.Add(targetId);
+        var (job, _, _, audit) = NewJob(new EngineOptions
+        {
+            AgentDisconnectWaveGrace = TimeSpan.FromMinutes(2),
+            MaxRunbookRunDuration    = TimeSpan.FromHours(1),
+        }, probe);
+
+        await job.ExecuteAsync(CancellationToken.None);
+
+        await using var db = postgres.CreateContext();
+        (await db.ServerTasks.IgnoreQueryFilters().AsNoTracking()
+                .Where(t => t.Id == runId).Select(t => t.Status).FirstAsync())
+            .Should().Be(DeploymentStatus.Running, "the registry still sees the agent connected");
+        audit.Entries.Should().NotContain(e => e.SubjectId == runId.ToString());
+    }
+
+    [Fact]
+    public async Task Agent_owned_runbook_run_with_a_recent_heartbeat_is_left_alone()
+    {
+        // Not connected on THIS node, but the shared-DB heartbeat is fresh (the
+        // multi-node case: the agent is connected to another node). The LastSeenUtc
+        // guard keeps the reap from firing.
+        var (runId, _) = await SeedRunbookRunWithTargetAsync(
+            targetLastSeen: DateTimeOffset.UtcNow.AddSeconds(-10));
+        await SetRunbookRunningAsync(runId,
+            leaseUntil: null, claimedBy: null, startedAgo: TimeSpan.FromMinutes(10));
+        var (job, _, _, audit) = NewJob(new EngineOptions
+        {
+            AgentDisconnectWaveGrace = TimeSpan.FromMinutes(2),
+            MaxRunbookRunDuration    = TimeSpan.FromHours(1),
+        }); // default probe: not connected on this node
+
+        await job.ExecuteAsync(CancellationToken.None);
+
+        await using var db = postgres.CreateContext();
+        (await db.ServerTasks.IgnoreQueryFilters().AsNoTracking()
+                .Where(t => t.Id == runId).Select(t => t.Status).FirstAsync())
+            .Should().Be(DeploymentStatus.Running, "a fresh heartbeat means the agent is alive somewhere");
+        audit.Entries.Should().NotContain(e => e.SubjectId == runId.ToString());
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private (ScheduledDeploymentDispatchJob Job,
              Channel<TenantWorkItem> Deployments,
              RunbookRunChannel Runbooks,
-             TestAuditLog Audit) NewJob(EngineOptions? engineOptions = null)
+             TestAuditLog Audit) NewJob(
+        EngineOptions? engineOptions = null, IAgentLivenessProbe? livenessProbe = null)
     {
         var deployments = Channel.CreateUnbounded<TenantWorkItem>();
         var runbooks = new RunbookRunChannel();
@@ -253,6 +338,7 @@ public sealed class DispatchReconcileTests(PostgresFixture postgres)
             postgres, deployments, runbooks, TimeProvider.System,
             new DisabledAccountContext(), audit,
             Microsoft.Extensions.Options.Options.Create(engineOptions ?? new EngineOptions()),
+            livenessProbe ?? new StubAgentLivenessProbe(),
             NullLogger<ScheduledDeploymentDispatchJob>.Instance);
         return (job, deployments, runbooks, audit);
     }
@@ -317,6 +403,58 @@ public sealed class DispatchReconcileTests(PostgresFixture postgres)
                 .SetProperty(t => t.LeaseUntil, leaseUntil)
                 .SetProperty(t => t.ClaimedBy, claimedBy)
                 .SetProperty(t => t.CreatedUtc, DateTimeOffset.UtcNow - startedAgo));
+    }
+
+    /// <summary>Seeds an agent-owned-shaped RunbookRun with ONE assigned target
+    /// carrying the given last-heartbeat time. Returns (runId, targetId).</summary>
+    private async Task<(Guid RunId, Guid TargetId)> SeedRunbookRunWithTargetAsync(
+        DateTimeOffset targetLastSeen)
+    {
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var project = await harness.SeedProjectAsync($"rbp-{Guid.NewGuid():N}"[..16]);
+        var env = await harness.SeedEnvironmentAsync($"rbe-{Guid.NewGuid():N}"[..16]);
+
+        await using var db = postgres.CreateContext();
+        var target = new DeploymentTarget
+        {
+            SpaceId       = WellKnown.DefaultSpaceId,
+            Name          = $"t-{Guid.NewGuid():N}"[..12],
+            Roles         = ["web"],
+            TransportMode = TransportMode.Reverse,
+            Status        = TargetStatus.Online,
+            LastSeenUtc   = targetLastSeen,
+        };
+        db.DeploymentTargets.Add(target);
+
+        var runbook = new KrakenDeploy.Server.Core.Domain.Runbooks.Runbook
+        {
+            SpaceId   = WellKnown.DefaultSpaceId,
+            ProjectId = project.Id,
+            Name      = $"rb-{Guid.NewGuid():N}"[..12],
+        };
+        db.Add(runbook);
+        await db.SaveChangesAsync();
+
+        var run = new KrakenDeploy.Server.Core.Domain.Runbooks.RunbookRun
+        {
+            SpaceId       = WellKnown.DefaultSpaceId,
+            ProjectId     = project.Id,
+            EnvironmentId = env.Id,
+            RunbookId     = runbook.Id,
+            Status        = DeploymentStatus.Queued,
+        };
+        db.Add(run);
+        await db.SaveChangesAsync();
+
+        db.TaskTargetAssignments.Add(new TaskTargetAssignment
+        {
+            SpaceId  = WellKnown.DefaultSpaceId,
+            TaskId   = run.Id,
+            TargetId = target.Id,
+            AddedUtc = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+        return (run.Id, target.Id);
     }
 
     private async Task SetRunningAsync(Guid id, DateTimeOffset? leaseUntil, string? claimedBy)

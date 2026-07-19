@@ -24,7 +24,9 @@ public sealed record TaskLogLine(
 /// <c>DeployReleaseStepRunner</c>, offline import) route their sequence allocation
 /// through <see cref="AllocateSequenceAsync"/> / <see cref="AppendLiveAsync"/> so
 /// parallel server-side steps and multi-target agents never collide on a sequence
-/// (the pre-unification bug: unguarded <c>NextLogSequence++</c>).
+/// (the pre-unification bug: unguarded <c>NextLogSequence++</c>). The counter now
+/// lives in its own <c>task_log_counters</c> row (E-D) so appends don't churn the
+/// task row's <c>xmin</c>.
 ///
 /// <para>
 /// Callers own the <see cref="KrakenDbContext"/> (account-routed) and any UI push;
@@ -45,7 +47,17 @@ public static class TaskLogService
 
     /// <summary>Atomically reserve <paramref name="count"/> sequences for a task
     /// and return the FIRST of the reserved range [base, base+count-1]. Used by the
-    /// offline importer to bulk-insert log lines without N round-trips.</summary>
+    /// offline importer to bulk-insert log lines without N round-trips.
+    /// <para>
+    /// E-D — the counter lives in its own one-row-per-task <c>task_log_counters</c>
+    /// table, NOT on <c>server_tasks</c>: allocating a sequence no longer bumps the
+    /// task row's <c>xmin</c> (the B5 concurrency token), so a log-heavy run no
+    /// longer forces <c>ServerTaskStatusWriter</c> retries. The row is created
+    /// lazily on first allocation via <c>INSERT … ON CONFLICT (task_id) DO UPDATE</c>;
+    /// the upsert takes a row-level lock, so concurrent allocators still get
+    /// distinct sequences (the DB-atomic guarantee <c>AgentHub</c>, <c>LogSequencer</c>
+    /// and the offline import rely on is preserved).
+    /// </para></summary>
     public static async Task<int> AllocateSequenceRangeAsync(
         KrakenDbContext db, Guid taskId, int count, CancellationToken ct = default)
     {
@@ -54,11 +66,13 @@ public static class TaskLogService
             return 0;
         }
 
-        // RETURNING sees the post-update value, so `next_log_sequence - count`
-        // is the pre-update base. EF scalar SqlQuery requires a "Value" column.
+        // First allocation for a task inserts (next_sequence = count → base 0);
+        // every later one conflicts and adds count under the row lock. RETURNING
+        // sees the post-write value, so `next_sequence - count` is the pre-write
+        // base in both branches. EF scalar SqlQuery requires a "Value" column.
         var rows = await db.Database
             .SqlQuery<int>(
-                $@"UPDATE server_tasks SET next_log_sequence = next_log_sequence + {count} WHERE id = {taskId} RETURNING next_log_sequence - {count} AS ""Value""")
+                $@"INSERT INTO task_log_counters (task_id, next_sequence) VALUES ({taskId}, {count}) ON CONFLICT (task_id) DO UPDATE SET next_sequence = task_log_counters.next_sequence + {count} RETURNING next_sequence - {count} AS ""Value""")
             .ToListAsync(ct)
             .ConfigureAwait(false);
         return rows.Count > 0 ? rows[0] : 0;

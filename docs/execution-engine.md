@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 1.4 |
+| **Version** | 1.5 |
 | **Date** | 2026-07-19 |
 | **Authors** | Domagoj Jugovic, Claude (Fable 5), Claude (Opus 4.8) |
 | **Status** | Draft |
@@ -217,6 +217,10 @@ Two properties to be aware of:
   UPDATE that re-checks the lease (a live lease is never touched — this is
   what keeps a draining blue-green slot's runs safe); (4) reap runbook
   runs: lease expired pre-hand-off → `Failed` + `RunbookRun.Interrupted`;
+  agent-owned whose single target has been continuously disconnected past
+  `Engine:AgentDisconnectWaveGrace` → `Failed` + `RunbookRun.Interrupted`
+  (E9, **INTERIM** — runbook runs bypass the wave machinery so the B3 monitor
+  never engages; deleted by the D1 merge, after which B3 covers them);
   agent-owned but silent past `Engine:MaxRunbookRunDuration` (default 1 h)
   → `Failed` + `RunbookRun.TimedOut`.
 - **After a server restart mid-deployment** the in-memory wave state
@@ -296,6 +300,16 @@ Two properties to be aware of:
   in-memory guard (a retired dispatch no longer matches the open slot).
   Ordering guarantee: a wave's step reports are acked before its
   completion, so the server's cross-wave output fold is sound.
+- **Staging isolation** (E8): a step stages under
+  `staging/{deploymentId:N}/{dispatchId:N}/{stepIndex}` — the DispatchId
+  segment stops a superseding re-dispatch from sharing a dir with the old
+  attempt still unwinding (which could upload the *old* attempt's artifacts as
+  the new one's). Per-step cleanup runs in a `finally` so it fires on every
+  exit path (early download/extract failures and per-step timeout/cancel
+  included, not just the normal tail); the task's whole staging subtree is
+  swept when its run ends; and the entire staging root is wiped at agent boot
+  (any tree there is an orphan from a crashed prior process). All sweeps are
+  best-effort (catch-and-log).
 
 ### Timer reference
 
@@ -305,7 +319,7 @@ Two properties to be aware of:
 | Lease renewal | 1 min | `ServerTaskLease.RenewInterval` |
 | Wave deadline ceiling | 1 h | `Engine:MaxTargetWaveDuration` |
 | DeployRelease child-wait ceiling | 1 h | `Engine:MaxDeployReleaseWaitDuration` |
-| Disconnect grace (wave) | 2 min | `Engine:AgentDisconnectWaveGrace` |
+| Disconnect grace (wave + E9 runbook reap) | 2 min | `Engine:AgentDisconnectWaveGrace` |
 | Hub offline marking | 30 s | `AgentHub` grace |
 | Stale-queued re-signal | 2 min | `ScheduledDeploymentDispatchJob.StaleQueuedGrace` |
 | Runbook silent-run ceiling | 1 h | `Engine:MaxRunbookRunDuration` |
@@ -365,7 +379,7 @@ finalize. Consequences:
 | Rolling windows | yes | no |
 | BestEffort/Atomic resolution | yes | no (column exists, unused) |
 | Lease renewal during run | yes | no (released at hand-off) |
-| Orphan reconcile by lease | yes | pre-hand-off only + silent-run ceiling |
+| Orphan reconcile by lease | yes | pre-hand-off + disconnect-reap (E9, interim) + silent-run ceiling |
 | Offline drop bundle | yes | no |
 | Scheduled runs (`ScheduledFor`) | yes | no |
 | Cross-wave output accumulator | yes | n/a (single dispatch spans plan) |
@@ -389,8 +403,10 @@ route runbook runs through `DeploymentWorker`, branching only on variable
 source (live vs `Release.VariableSnapshot`), process-snapshot source
 (`RunbookRun.ProcessSnapshot` vs `Release.ProcessSnapshot`), lifecycle
 gate, `ScheduledFor`, retention keep source, and audit event names. That
-deletes `RunbookRunWorker`, `RunbookRunChannel` and the pre-hand-off arm of
-`ReconcileOverdueRunbookRunsAsync`, and runbooks inherit waves,
+deletes `RunbookRunWorker`, `RunbookRunChannel`, the pre-hand-off arm of
+`ReconcileOverdueRunbookRunsAsync`, the interim E9 disconnect-reap arm
+(`ReapDisconnectedRunbookRunsAsync` + `IAgentLivenessProbe`) and the worker's
+hand-off liveness re-check, and runbooks inherit waves,
 multi-target, server steps, rolling, failure modes, lease renewal, orphan
 reconciliation and the output-variable/step-outcome UI — and the step
 knobs start being honored online. Secondary dedupe targets:
@@ -471,6 +487,7 @@ pages sharing an unextracted status-header/log-viewer surface.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.5 | 2026-07-19 | E-D engine hygiene: E8 — agent step staging keyed by `{deploymentId}/{dispatchId}/{stepIndex}`, per-step cleanup moved into a `finally` (fires on the early-failure and timeout/cancel paths too), plus a per-task staging sweep on run end and a whole-root sweep at agent boot (§6 Agent side). Log-sequence counter moved off `server_tasks` into a one-row-per-task `task_log_counters` table (atomic `INSERT … ON CONFLICT` allocator) so log appends no longer churn the row's `xmin` (the B5 token) and force `ServerTaskStatusWriter` retries. E9 (**INTERIM**, deleted by D1) — the dispatch reconciler reaps an agent-owned runbook run whose single target has been continuously disconnected past `Engine:AgentDisconnectWaveGrace` (via `IAgentLivenessProbe` + the target's `LastSeenUtc`), and `RunbookRunWorker` re-verifies the target connection at hand-off and fast-fails instead of dispatching into a dead connection id (§6/§8). CONTRACT CHANGE: none (new `task_log_counters` table — migration `AddTaskLogCounters`). |
 | 1.4 | 2026-07-19 | E-C hub/transport hygiene (§6): E4 — `InMemoryAgentConnectionRegistry.TryRemove` compare-and-removes the target mapping (+ heartbeat `Reaffirm` backstop) so a late, out-of-order disconnect of a superseded connection cannot make a reconnected agent falsely Offline. E7 — `AgentHub.RegisterAsync` reconciles in-flight cancellations on (re)connect (server-side lookup of the target's terminal-but-recent tasks → re-push cooperative cancel), so an agent offline at cancel time no longer runs the cancelled task to completion. E-C — the `IsRetiredDispatch` guard is mirrored into `ReportStepCompletedAsync` before its DB persistence half (was only on `AppendLogAsync`), so a replayed retired-attempt step report no longer overwrites the current attempt's output variables or prematurely compacts its staged log lines. CONTRACT CHANGE: none. |
 | 1.3 | 2026-07-19 | E-B agent-runtime fixes (§6, timer table): outbox drops only log lines as poison — verdict-class items (completions, adhoc results) are never dropped and retry with capped backoff (E6); a superseded non-cooperative attempt that never unwinds is force-detached and the new attempt's machine-gate acquisition is bounded (`WedgedGateAcquireTimeout`) with escalation. Also fixed off-doc: `DeploymentExecutor` singleton lifetime (dead self-update guard, E5), supervisor park on reconnect-refusal, and the output-variable upsert race (`ON CONFLICT`). |
 | 1.2 | 2026-07-18 | E-series orchestrator fixes: E1 hub fallback finalize restricted to runbook runs + live-lease refusal (§1/§8/§9); E2 single `IsTaskStillRunningAsync` ownership predicate at wave + rolling-batch boundaries and lease-loss teardown (§6); E3 child deployments bypass the `NodeTaskGate` + `Engine:MaxDeployReleaseWaitDuration` child-wait ceiling + self-recursion refusal (§4/§9, timer table). |

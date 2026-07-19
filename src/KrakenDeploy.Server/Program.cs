@@ -688,6 +688,9 @@ public static class Program
         // after recording the Cancelled verdict; the agent kills the running
         // step's process tree).
         builder.Services.AddSingleton<IAgentCancelPusher, AgentCancelPusher>();
+        // E9 (INTERIM — deleted by the D1 engine merge) — read-only agent-liveness
+        // probe the dispatch reconciler uses to reap runbook runs whose agent died.
+        builder.Services.AddSingleton<IAgentLivenessProbe, AgentLivenessProbe>();
         // M11.E.7 — per-target adhoc-script dispatch + result collation.
         builder.Services.AddSingleton<IPendingAdhocRegistry, PendingAdhocRegistry>();
         builder.Services.AddSingleton<IAdhocAgentPusher, HubContextAdhocAgentPusher>();

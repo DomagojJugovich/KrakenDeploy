@@ -438,6 +438,25 @@ public sealed class DeploymentExecutor(
         }
         finally
         {
+            // E8 — best-effort sweep of this task's whole staging subtree. Per-step
+            // cleanup already removes each step dir on every exit path; this catches
+            // anything a hard-killed step left behind (and any prior force-detached
+            // attempt's dispatch dir under the same task). Non-fatal.
+            try
+            {
+                var dir = StagingDeploymentDir(
+                    agentConfig.Value.ResolvedDataPath, plan.DeploymentId);
+                if (Directory.Exists(dir))
+                {
+                    Directory.Delete(dir, recursive: true);
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "Staging sweep for deployment {Id} failed (non-fatal).", plan.DeploymentId);
+            }
+
             // Remove exactly OUR entry — a superseding attempt may have already
             // force-detached it and registered its own. Signal completion so a
             // waiting superseder proceeds. The CTS is deliberately not disposed:
@@ -701,13 +720,22 @@ public sealed class DeploymentExecutor(
             return (false, capturedOutputs, sensitiveOutputs);
         }
 
-        var tempRoot = Path.Combine(
-            agentConfig.Value.ResolvedDataPath, "staging",
-            plan.DeploymentId.ToString("N"),
-            step.Index.ToString(CultureInfo.InvariantCulture));
+        // E8: the DispatchId is in the path so a superseding re-dispatch of the
+        // same task never shares a staging dir with the old attempt still
+        // unwinding (SupersedeUnwindTimeout window) — otherwise the new attempt
+        // could upload the OLD attempt's artifacts as its own.
+        var tempRoot = StagingStepDir(
+            agentConfig.Value.ResolvedDataPath, plan.DeploymentId, plan.DispatchId, step.Index);
 
         Directory.CreateDirectory(tempRoot);
 
+        // E8: everything that writes under tempRoot runs inside this try so the
+        // staging dir is removed on EVERY exit path — the early failure returns
+        // (download / extract / ref-package) and the per-step timeout / cancel
+        // OperationCanceledException, not just the normal tail (pre-E8 those all
+        // leaked). Cleanup is best-effort (a locked file must not fail the step).
+        try
+        {
         // Per-step artifacts directory — scripts write files here and they are
         // streamed back to the server after the step completes.
         var artifactsDir = Path.Combine(tempRoot, "artifacts");
@@ -915,11 +943,14 @@ public sealed class DeploymentExecutor(
         // ── Artifact collection ────────────────────────────────────────────────
         await CollectArtifactsAsync(plan, step, artifactsDir, ct).ConfigureAwait(false);
 
-        // ── Cleanup staging ────────────────────────────────────────────────────
-        try { Directory.Delete(tempRoot, recursive: true); }
-        catch { /* non-fatal */ }
-
         return (success, capturedOutputs, sensitiveOutputs);
+        }
+        finally
+        {
+            // ── Cleanup staging (E8: reached on every exit path) ────────────────
+            try { Directory.Delete(tempRoot, recursive: true); }
+            catch { /* non-fatal */ }
+        }
     }
 
     /// <summary>
@@ -1134,6 +1165,57 @@ public sealed class DeploymentExecutor(
         {
             logger.LogWarning(ex,
                 "Failed to send log line to server for deployment {Id}.", deploymentId);
+        }
+    }
+
+    // ── Staging paths + orphan sweep (E8) ────────────────────────────────────
+
+    /// <summary>Root of all per-step staging trees under the agent data dir.</summary>
+    internal static string StagingRoot(string dataPath) =>
+        Path.Combine(dataPath, "staging");
+
+    /// <summary>A task's staging subtree: <c>staging/{deploymentId:N}</c>. Holds
+    /// every dispatch attempt of the task; swept as a whole in ExecuteAsync's
+    /// finally.</summary>
+    internal static string StagingDeploymentDir(string dataPath, Guid deploymentId) =>
+        Path.Combine(StagingRoot(dataPath), deploymentId.ToString("N"));
+
+    /// <summary>One step's staging dir:
+    /// <c>staging/{deploymentId:N}/{dispatchId:N}/{stepIndex}</c>. The DispatchId
+    /// segment isolates concurrent attempts of the same task (E8).</summary>
+    internal static string StagingStepDir(
+        string dataPath, Guid deploymentId, Guid dispatchId, int stepIndex) =>
+        Path.Combine(
+            StagingDeploymentDir(dataPath, deploymentId),
+            dispatchId.ToString("N"),
+            stepIndex.ToString(CultureInfo.InvariantCulture));
+
+    /// <summary>
+    /// E8 — best-effort wipe of the ENTIRE staging root at agent boot. Nothing is
+    /// executing yet (the machine gate is empty and no plan handler is wired), so
+    /// every <c>staging/…</c> tree present is an orphan a previous process left when
+    /// it died mid-step. Non-fatal: a locked/held path is logged and skipped.
+    /// Called once from <c>ServerLinkHostedService</c> before the hub connection
+    /// opens. NOT called on the offline-runner path — an offline run may share the
+    /// box with a live agent, and per-step / per-deployment cleanup already covers
+    /// a single offline invocation.
+    /// </summary>
+    public void SweepOrphanedStagingOnBoot()
+    {
+        var root = StagingRoot(agentConfig.Value.ResolvedDataPath);
+        if (!Directory.Exists(root))
+        {
+            return;
+        }
+        try
+        {
+            Directory.Delete(root, recursive: true);
+            logger.LogInformation("Swept orphaned agent staging root {Root} on boot.", root);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Boot sweep of the staging root {Root} failed (non-fatal).", root);
         }
     }
 }

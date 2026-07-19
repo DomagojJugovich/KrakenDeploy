@@ -219,7 +219,6 @@ internal static class SeedDemoCommands
                 Status = status,
                 StartedUtc = status == DeploymentStatus.Queued ? null : started,
                 CompletedUtc = durationSec is { } d ? started.AddSeconds(d) : null,
-                NextLogSequence = 0,
                 // Provenance (fix 6): seed rows are created directly (not via the
                 // service), so stamp the columns inline. Demo data = CLI seed.
                 Cause = ServerTaskCause.Cli,
@@ -239,14 +238,12 @@ internal static class SeedDemoCommands
             Log(running, 4, "web-prod-02: agent on 1.4.0 (server is 1.4.2) — consider upgrading", "warning", now.AddMinutes(-2)),
             Log(running, 5, "═══ Step 2/3 · Run database migrations ═══", "info", now.AddMinutes(-2)),
             Log(running, 6, "Applying 2 pending migrations to DB-PROD-01", "info", now.AddMinutes(-1)));
-        running.NextLogSequence = 7;
 
         var failed = Make("Argosy API", prod, DeploymentStatus.Failed, 70, 90, tgt?.Id);
         demoLogs.AddRange(
             Log(failed, 0, "═══ Step 1/3 · Deploy package to IIS ═══", "info", failed.StartedUtc!.Value),
             Log(failed, 1, "api-prod-03: deploying ArgosyAPI 2026.6.4", "info", failed.StartedUtc!.Value),
             Log(failed, 2, "Smoke test — health endpoint timed out after 90s", "error", failed.StartedUtc!.Value.AddSeconds(90)));
-        failed.NextLogSequence = 3;
         var failedStart = failed.StartedUtc!.Value;
 
         var pendingOffline = Make("Identity Provider", prod, DeploymentStatus.PendingOfflineResult, 130, null, targets.FirstOrDefault(t => t.TransportMode == TransportMode.OfflineDrop)?.Id);
@@ -269,6 +266,13 @@ internal static class SeedDemoCommands
 
         // Seed log lines (staging rows; the detail page's stitching reader renders them).
         db.TaskLogLive.AddRange(demoLogs);
+
+        // E-D: the next-sequence counter lives in task_log_counters now. Seed a row
+        // for each task that carries pre-seeded log lines so a later append would
+        // continue past them (running has 7 lines → next 7; failed has 3 → next 3).
+        db.TaskLogCounters.AddRange(
+            new TaskLogCounter { TaskId = running.Id, NextSequence = 7 },
+            new TaskLogCounter { TaskId = failed.Id, NextSequence = 3 });
 
         // Step outcomes for the failed deployment (no nav collection on ServerTask).
         db.TaskStepOutcomes.AddRange(
@@ -381,7 +385,6 @@ internal static class SeedDemoCommands
                         Status = status,
                         StartedUtc = started,
                         CompletedUtc = started.AddMinutes(3),
-                        NextLogSequence = 0,
                         Cause = ServerTaskCause.Cli,
                         CreatedByDisplay = "System (seed-demo)",
                         CauseDetail = "seed-demo",

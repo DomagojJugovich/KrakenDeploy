@@ -17,8 +17,9 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// was silently overwritten (lost update). These tests pin the new semantics
 /// against real Postgres: the token is live, the writer yields to a terminal
 /// verdict no matter when it lands, retries through unrelated xmin churn
-/// (log-sequence bumps, lease renewals), and exactly one of two racing
-/// terminal writers wins.
+/// (lease renewals — log-sequence bumps no longer touch this row since E-D moved
+/// the counter to task_log_counters), and exactly one of two racing terminal
+/// writers wins.
 /// </summary>
 [Trait("Category", "Docker")]
 [Collection("Postgres")]
@@ -68,7 +69,7 @@ public sealed class ServerTaskStatusWriterTests(PostgresFixture postgres)
     {
         // Proves the xmin token is actually live — and why the reload-first
         // writer is mandatory: ANY update of the row (here the same raw
-        // log-sequence bump TaskLogService issues per staged batch) stales a
+        // lease-renewal bump ServerTaskLease issues out-of-band) stales a
         // tracked entity's token, even though no status changed at all.
         await using var harness = new OrchestratorTestHarness(postgres);
         var taskId = await SeedTaskAsync(harness);
@@ -79,7 +80,7 @@ public sealed class ServerTaskStatusWriterTests(PostgresFixture postgres)
         await using (var other = harness.CreateContext())
         {
             await other.Database.ExecuteSqlInterpolatedAsync(
-                $"UPDATE server_tasks SET next_log_sequence = next_log_sequence + 1 WHERE id = {taskId}");
+                $"UPDATE server_tasks SET lease_until = {DateTimeOffset.UtcNow} WHERE id = {taskId}");
         }
 
         task.Status = DeploymentStatus.Succeeded;
@@ -108,7 +109,7 @@ public sealed class ServerTaskStatusWriterTests(PostgresFixture postgres)
                 {
                     using var other = harness.CreateContext();
                     other.Database.ExecuteSqlInterpolated(
-                        $"UPDATE server_tasks SET next_log_sequence = next_log_sequence + 1 WHERE id = {taskId}");
+                        $"UPDATE server_tasks SET lease_until = {DateTimeOffset.UtcNow} WHERE id = {taskId}");
                 }
                 t.Status = DeploymentStatus.Succeeded;
                 t.CompletedUtc = DateTimeOffset.UtcNow;
@@ -232,7 +233,7 @@ public sealed class ServerTaskStatusWriterTests(PostgresFixture postgres)
                 {
                     using var other = harness.CreateContext();
                     other.Database.ExecuteSqlInterpolated(
-                        $"UPDATE server_tasks SET next_log_sequence = next_log_sequence + 1 WHERE id = {taskId}");
+                        $"UPDATE server_tasks SET lease_until = {DateTimeOffset.UtcNow} WHERE id = {taskId}");
                 }
                 t.Status = DeploymentStatus.Cancelled;
                 t.CompletedUtc = DateTimeOffset.UtcNow;

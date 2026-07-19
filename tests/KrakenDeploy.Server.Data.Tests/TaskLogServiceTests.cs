@@ -107,6 +107,52 @@ public sealed class TaskLogServiceTests(PostgresFixture postgres) : IClassFixtur
         }
     }
 
+    [Fact]
+    public async Task Log_appends_do_not_bump_the_task_row_xmin()
+    {
+        // E-D — the sequence counter lives in task_log_counters now, so allocating a
+        // sequence must NOT touch the server_tasks row. Its xmin is the B5 optimistic-
+        // concurrency token: were appends still bumping it, a log-heavy run would
+        // stale every tracked status entity and force ServerTaskStatusWriter retries.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var taskId = await SeedTaskAsync(harness, "xmin");
+        var ts = new DateTimeOffset(2026, 7, 19, 12, 0, 0, TimeSpan.Zero);
+
+        var before = await ReadTaskXminAsync(harness, taskId);
+
+        await using (var db = harness.CreateContext())
+        {
+            for (var i = 0; i < 5; i++)
+            {
+                await TaskLogService.AppendLiveAsync(
+                    db, taskId, stepIndex: 0, targetId: null, "info", $"line-{i}", ts.AddSeconds(i));
+            }
+        }
+
+        var after = await ReadTaskXminAsync(harness, taskId);
+        after.Should().Be(before,
+            "log appends must leave the server_tasks row untouched (xmin is the B5 token)");
+
+        await using (var db = harness.CreateContext())
+        {
+            // Sequences are still distinct + monotonic from 0 (the DB-atomic guarantee).
+            var lines = await TaskLogService.ReadAllAsync(db, taskId);
+            lines.Select(l => l.Sequence).Should().Equal(0, 1, 2, 3, 4);
+
+            // The counter row advanced to 5 (created lazily by the first append).
+            (await db.TaskLogCounters.Where(c => c.TaskId == taskId)
+                    .Select(c => c.NextSequence).FirstAsync())
+                .Should().Be(5);
+        }
+    }
+
+    private static async Task<uint> ReadTaskXminAsync(OrchestratorTestHarness harness, Guid taskId)
+    {
+        await using var db = harness.CreateContext();
+        var task = await db.ServerTasks.IgnoreQueryFilters().FirstAsync(t => t.Id == taskId);
+        return db.Entry(task).Property<uint>("xmin").CurrentValue;
+    }
+
     // Minimal FK chain: TaskLogLiveEntry.TaskId is an enforced FK to server_tasks.
     private static async Task<Guid> SeedTaskAsync(OrchestratorTestHarness harness, string suffix)
     {

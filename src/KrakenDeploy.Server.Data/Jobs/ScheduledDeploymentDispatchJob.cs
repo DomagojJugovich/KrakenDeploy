@@ -2,6 +2,7 @@ using System.Threading.Channels;
 using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -51,6 +52,7 @@ public sealed class ScheduledDeploymentDispatchJob(
     IAccountContext accountContext,
     IAuditLog auditLog,
     IOptions<EngineOptions> engineOptions,
+    IAgentLivenessProbe livenessProbe,
     ILogger<ScheduledDeploymentDispatchJob> logger)
 {
     /// <summary>How long a fresh Queued row is left alone before it is treated
@@ -73,6 +75,7 @@ public sealed class ScheduledDeploymentDispatchJob(
         await SignalStaleQueuedAsync(db, now, accountId, ct).ConfigureAwait(false);
         await ReconcileOrphanedRunningAsync(db, now, ct).ConfigureAwait(false);
         await ReconcileOverdueRunbookRunsAsync(db, now, ct).ConfigureAwait(false);
+        await ReapDisconnectedRunbookRunsAsync(db, now, ct).ConfigureAwait(false);
     }
 
     // ── 1. Due scheduled deployments ─────────────────────────────────────────
@@ -313,6 +316,102 @@ public sealed class ScheduledDeploymentDispatchJob(
                 details:     $"Agent never reported completion: started {run.StartedUtc:O}, " +
                              $"exceeded Engine:MaxRunbookRunDuration ({ceiling}). Marked Failed. " +
                              "A late agent completion will be ignored (terminal-status guard).",
+                ct:          ct).ConfigureAwait(false);
+        }
+    }
+
+    // ── 4c. Disconnect-aware runbook reap (E9 — INTERIM) ─────────────────────
+
+    /// <summary>
+    /// E9 (INTERIM — superseded by the D1 engine merge, after which B3's
+    /// wave-level disconnect monitor applies to runbook runs too; DELETE THIS
+    /// then). Runbook runs bypass the wave machinery (no sub-plan slot, lease
+    /// released at hand-off), so the B3 disconnect monitor never engages: a
+    /// killed agent leaves the run <c>Running</c> until the
+    /// <c>Engine:MaxRunbookRunDuration</c> ceiling (default 1 h). This fails an
+    /// agent-owned run whose single assigned target has been continuously
+    /// disconnected past <see cref="EngineOptions.AgentDisconnectWaveGrace"/>
+    /// instead — the same grace the deployment monitor uses.
+    /// <para>
+    /// "Continuously disconnected" combines two signals, fail-closed (both must
+    /// agree before reaping live-looking work): the target's
+    /// <c>LastSeenUtc</c> heartbeat is older than the grace (the scale-out-safe,
+    /// shared-DB signal — a live agent heartbeats every 30 s) AND the node-local
+    /// connection registry has no live tunnel for it right now
+    /// (<see cref="IAgentLivenessProbe"/>). A target the registry still sees as
+    /// connected (e.g. just reconnected, heartbeat not yet flushed) is left alone.
+    /// </para>
+    /// </summary>
+    private async Task ReapDisconnectedRunbookRunsAsync(
+        KrakenDbContext db, DateTimeOffset now, CancellationToken ct)
+    {
+        var grace = engineOptions.Value.AgentDisconnectWaveGrace;
+        if (grace <= TimeSpan.Zero)
+        {
+            return; // disconnect monitor disabled (mirrors the wave monitor)
+        }
+
+        var disconnectedBefore = now - grace;
+
+        // Agent-owned runbook runs (lease released at hand-off) still Running,
+        // joined to their single assigned target's last heartbeat. The target set
+        // is the authority (task_target_assignments); a runbook run has exactly one.
+        var candidates = await (
+            from r in db.RunbookRuns.IgnoreQueryFilters()
+            where r.Status == DeploymentStatus.Running
+               && r.LeaseUntil == null
+               && r.StartedUtc != null
+            join a in db.TaskTargetAssignments.IgnoreQueryFilters() on r.Id equals a.TaskId
+            join t in db.DeploymentTargets.IgnoreQueryFilters() on a.TargetId equals t.Id
+            select new { RunId = r.Id, a.TargetId, t.LastSeenUtc })
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        foreach (var c in candidates)
+        {
+            // Heartbeat still fresh → the agent is alive, not disconnected.
+            if (c.LastSeenUtc is { } seen && seen > disconnectedBefore)
+            {
+                continue;
+            }
+            // Registry still sees a live tunnel (reconnected on this node) → leave it.
+            if (livenessProbe.IsTargetConnected(c.TargetId))
+            {
+                continue;
+            }
+
+            // Conditional flip — fail-closed against a live owner that reclaimed a
+            // lease (hand-off retry) between the SELECT and this UPDATE.
+            var rows = await db.RunbookRuns
+                .IgnoreQueryFilters()
+                .Where(r => r.Id == c.RunId
+                         && r.Status == DeploymentStatus.Running
+                         && r.LeaseUntil == null)
+                .ExecuteUpdateAsync(s => s
+                        .SetProperty(r => r.Status, DeploymentStatus.Failed)
+                        .SetProperty(r => r.CompletedUtc, now),
+                    ct)
+                .ConfigureAwait(false);
+            if (rows == 0)
+            {
+                continue;
+            }
+
+            logger.LogWarning(
+                "Dispatch reconcile: runbook run {Id}'s target {Target} has been " +
+                "disconnected longer than {Grace} (last seen {LastSeen}); the agent died " +
+                "mid-run — marked Failed.",
+                c.RunId, c.TargetId, grace, c.LastSeenUtc);
+
+            await auditLog.RecordAsync(
+                AuditEventType.RunbookRunInterrupted,
+                subjectType: "RunbookRun",
+                subjectId:   c.RunId.ToString(),
+                details:     $"Agent disconnected mid-run: target {c.TargetId} was continuously " +
+                             $"disconnected past Engine:AgentDisconnectWaveGrace ({grace}), last seen " +
+                             $"{c.LastSeenUtc?.ToString("O") ?? "<never>"}. Runbook runs bypass the B3 " +
+                             "wave monitor, so the dispatch reconciler fails them. Marked Failed; a late " +
+                             "agent completion will be ignored (terminal-status guard).",
                 ct:          ct).ConfigureAwait(false);
         }
     }
