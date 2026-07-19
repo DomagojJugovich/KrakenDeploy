@@ -438,14 +438,19 @@ public sealed class DeploymentExecutor(
         }
         finally
         {
-            // E8 — best-effort sweep of this task's whole staging subtree. Per-step
-            // cleanup already removes each step dir on every exit path; this catches
-            // anything a hard-killed step left behind (and any prior force-detached
-            // attempt's dispatch dir under the same task). Non-fatal.
+            // E8 — best-effort sweep of THIS attempt's dispatch subtree only
+            // (staging/{deploymentId:N}/{dispatchId:N}). Per-step cleanup already
+            // removes each step dir on every exit path; this catches anything a
+            // hard-killed step left behind. It must NOT sweep the whole
+            // staging/{deploymentId:N} tree: a superseding attempt that
+            // force-detached this one may already be running under its own
+            // dispatch dir, and a recursive delete of the shared parent would race
+            // and destroy its live staging. A truly-orphaned prior attempt's
+            // dispatch dir is reclaimed by the boot sweep. Non-fatal.
             try
             {
-                var dir = StagingDeploymentDir(
-                    agentConfig.Value.ResolvedDataPath, plan.DeploymentId);
+                var dir = StagingDispatchDir(
+                    agentConfig.Value.ResolvedDataPath, plan.DeploymentId, plan.DispatchId);
                 if (Directory.Exists(dir))
                 {
                     Directory.Delete(dir, recursive: true);
@@ -454,7 +459,8 @@ public sealed class DeploymentExecutor(
             catch (Exception ex)
             {
                 logger.LogWarning(ex,
-                    "Staging sweep for deployment {Id} failed (non-fatal).", plan.DeploymentId);
+                    "Staging sweep for deployment {Id} dispatch {Dispatch} failed (non-fatal).",
+                    plan.DeploymentId, plan.DispatchId);
             }
 
             // Remove exactly OUR entry — a superseding attempt may have already
@@ -1175,19 +1181,29 @@ public sealed class DeploymentExecutor(
         Path.Combine(dataPath, "staging");
 
     /// <summary>A task's staging subtree: <c>staging/{deploymentId:N}</c>. Holds
-    /// every dispatch attempt of the task; swept as a whole in ExecuteAsync's
-    /// finally.</summary>
+    /// every dispatch attempt of the task. Only ever wholesale-deleted by the
+    /// boot sweep (nothing runs at boot) — a per-run finally must NOT delete this
+    /// level or it can race a concurrent sibling attempt (see
+    /// <see cref="StagingDispatchDir"/>).</summary>
     internal static string StagingDeploymentDir(string dataPath, Guid deploymentId) =>
         Path.Combine(StagingRoot(dataPath), deploymentId.ToString("N"));
 
+    /// <summary>One dispatch attempt's staging subtree:
+    /// <c>staging/{deploymentId:N}/{dispatchId:N}</c>. The DispatchId segment
+    /// isolates concurrent attempts of the same task (E8), so this is the coarsest
+    /// dir a per-run finally may safely sweep.</summary>
+    internal static string StagingDispatchDir(
+        string dataPath, Guid deploymentId, Guid dispatchId) =>
+        Path.Combine(
+            StagingDeploymentDir(dataPath, deploymentId),
+            dispatchId.ToString("N"));
+
     /// <summary>One step's staging dir:
-    /// <c>staging/{deploymentId:N}/{dispatchId:N}/{stepIndex}</c>. The DispatchId
-    /// segment isolates concurrent attempts of the same task (E8).</summary>
+    /// <c>staging/{deploymentId:N}/{dispatchId:N}/{stepIndex}</c>.</summary>
     internal static string StagingStepDir(
         string dataPath, Guid deploymentId, Guid dispatchId, int stepIndex) =>
         Path.Combine(
-            StagingDeploymentDir(dataPath, deploymentId),
-            dispatchId.ToString("N"),
+            StagingDispatchDir(dataPath, deploymentId, dispatchId),
             stepIndex.ToString(CultureInfo.InvariantCulture));
 
     /// <summary>

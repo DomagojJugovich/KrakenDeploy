@@ -340,6 +340,26 @@ public sealed class RunbookRunWorker(
                 return;
             }
 
+            // Re-assert the P3-8 Phase 5 cross-account guard on the RE-FETCHED
+            // connection: the pre-claim guard above validated the connection
+            // captured before variable resolution, but this is a different
+            // connection id (a reconnect during that window), so it must clear the
+            // same check before the plan is pushed. Structurally near-impossible
+            // (target ids are globally unique to one account) — fail closed anyway.
+            if (_dispatchAccountId.Value != Guid.Empty
+                && registry.GetAccountForTarget(target.Id) != _dispatchAccountId.Value)
+            {
+                logger.LogError(
+                    "Cross-account dispatch blocked at hand-off for runbook run {Run}: target " +
+                    "{Target}'s re-fetched connection belongs to account {ConnectionAccount}, not " +
+                    "the dispatch account {DispatchAccount}.",
+                    run.Id, target.Id,
+                    registry.GetAccountForTarget(target.Id), _dispatchAccountId.Value);
+                await FailAsync(db, run, "Cross-account connection blocked at dispatch.", ct)
+                    .ConfigureAwait(false);
+                return;
+            }
+
             logger.LogInformation(
                 "Dispatching runbook run {RunId} ({Runbook}) to connection {Conn}.",
                 runId, run.Runbook.Name, connectionId);

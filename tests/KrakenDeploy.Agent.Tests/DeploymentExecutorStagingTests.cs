@@ -79,26 +79,35 @@ public sealed class DeploymentExecutorStagingTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_finally_sweeps_the_tasks_staging_subtree()
+    public async Task ExecuteAsync_finally_sweeps_only_this_attempts_dispatch_subtree()
     {
         var dataDir = Directory.CreateTempSubdirectory("kraken-agent-staging-run-");
         try
         {
             var executor = BuildExecutor(new NoopLink(), dataDir.FullName);
             var taskId = Guid.NewGuid();
+            var thisDispatch = Guid.NewGuid();
+            var siblingDispatch = Guid.NewGuid();
 
-            // A stray tree under this task's staging subtree (e.g. a hard-killed
-            // step from a prior attempt that per-step cleanup couldn't remove).
-            var taskDir = DeploymentExecutor.StagingDeploymentDir(dataDir.FullName, taskId);
-            Directory.CreateDirectory(Path.Combine(taskDir, "leftover"));
-            Directory.Exists(taskDir).Should().BeTrue();
+            // A stray tree under THIS attempt's dispatch subtree (e.g. a hard-killed
+            // step per-step cleanup couldn't remove).
+            var thisDir = DeploymentExecutor.StagingDispatchDir(dataDir.FullName, taskId, thisDispatch);
+            Directory.CreateDirectory(Path.Combine(thisDir, "leftover"));
 
-            // A zero-step plan runs cleanly to completion; the ExecuteAsync finally
-            // must sweep staging/{taskId:N} regardless.
-            await executor.ExecuteAsync(Plan(taskId, Guid.NewGuid())).WaitAsync(TestTimeout);
+            // A concurrent superseding attempt's dispatch subtree under the SAME
+            // task — the finally must NOT touch it (deleting the shared parent would
+            // race and destroy a live sibling attempt's staging).
+            var siblingDir = DeploymentExecutor.StagingDispatchDir(dataDir.FullName, taskId, siblingDispatch);
+            Directory.CreateDirectory(Path.Combine(siblingDir, "in-flight"));
 
-            Directory.Exists(taskDir).Should().BeFalse(
-                "the deployment-level finally sweeps the task's whole staging subtree");
+            // A zero-step plan runs cleanly to completion; its finally sweeps its
+            // own dispatch subtree only.
+            await executor.ExecuteAsync(Plan(taskId, thisDispatch)).WaitAsync(TestTimeout);
+
+            Directory.Exists(thisDir).Should().BeFalse(
+                "the finally sweeps this attempt's own dispatch subtree");
+            Directory.Exists(siblingDir).Should().BeTrue(
+                "a sibling attempt's dispatch subtree under the same task must survive");
         }
         finally
         {
