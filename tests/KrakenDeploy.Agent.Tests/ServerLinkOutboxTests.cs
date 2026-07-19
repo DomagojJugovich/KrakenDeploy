@@ -195,6 +195,43 @@ public sealed class ServerLinkOutboxTests
     }
 
     [Fact]
+    public async Task Verdict_items_are_never_dropped_and_keep_retrying_past_the_poison_cap()
+    {
+        // E6: a completion is verdict-class — a dropped one turns a succeeded run
+        // into a reaper-Failed one. It must survive MORE than the poison cap of
+        // consecutive connected failures (the poison scenario: a repeating hub
+        // fault, e.g. a ~30 s DB outage returning consecutive HubExceptions). The
+        // pre-fix code dropped it at the cap, exactly like a log line.
+        var h = new Harness();
+        var attempts = 0;
+        var completion = new OutboxItem.DeploymentCompleted(Guid.NewGuid(), Guid.NewGuid(), true, null);
+        var failUntil = ServerLinkOutbox.MaxSendAttemptsPerItem + 1;   // one past the cap
+        h.FailWith = item =>
+        {
+            if (ReferenceEquals(item, completion))
+            {
+                return Interlocked.Increment(ref attempts) <= failUntil
+                    ? new HubException("hub rejected (repeating transient fault)")
+                    : null;
+            }
+            return null;
+        };
+
+        using var cts = new CancellationTokenSource();
+        var pump = h.Outbox.PumpAsync(cts.Token);
+
+        h.Outbox.Enqueue(completion);
+
+        await h.WaitForSentAsync(1);
+        attempts.Should().BeGreaterThan(ServerLinkOutbox.MaxSendAttemptsPerItem,
+            "a completion must NOT be dropped at the poison cap — it retries until acknowledged");
+        h.Sent.Single().Should().BeOfType<OutboxItem.DeploymentCompleted>();
+
+        cts.Cancel();
+        await pump;
+    }
+
+    [Fact]
     public void Log_lines_over_the_cap_are_dropped_and_counted_but_completions_always_queue()
     {
         // No pump running — everything stays queued, like a long outage.
