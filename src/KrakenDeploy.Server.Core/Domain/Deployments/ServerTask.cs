@@ -51,10 +51,9 @@ public abstract class ServerTask : AuditableEntity, ISpaceScoped
     public DateTimeOffset? StartedUtc { get; set; }
     public DateTimeOffset? CompletedUtc { get; set; }
 
-    /// <summary>Next log-sequence counter. Allocated DB-atomically by the task
-    /// log writer (<c>ITaskLogWriter</c>) — never a bare read-modify-write, so
-    /// parallel server-side steps and multi-target agents can't collide.</summary>
-    public int NextLogSequence { get; set; }
+    // E-D: the log-sequence counter moved off this row into task_log_counters —
+    // allocating a sequence no longer bumps this row's xmin (the B5 token). See
+    // TaskLogService.AllocateSequenceRangeAsync / TaskLogCounter.
 
     /// <summary>When set, the task is held <c>Queued</c> until this instant; the
     /// Hangfire scheduled-dispatch job enqueues it when due. <c>null</c> = now.</summary>

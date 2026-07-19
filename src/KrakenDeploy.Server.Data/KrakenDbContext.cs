@@ -70,6 +70,7 @@ public class KrakenDbContext(
 
     // Unified task children (FK task_id).
     public DbSet<TaskLogLiveEntry> TaskLogLive => Set<TaskLogLiveEntry>();
+    public DbSet<TaskLogCounter> TaskLogCounters => Set<TaskLogCounter>();
     public DbSet<TaskStepLog> TaskStepLogs => Set<TaskStepLog>();
     public DbSet<TaskArtifact> TaskArtifacts => Set<TaskArtifact>();
     public DbSet<TaskOutputVariable> TaskOutputVariables => Set<TaskOutputVariable>();

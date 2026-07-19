@@ -56,18 +56,16 @@ public sealed class ServerTaskConfiguration : IEntityTypeConfiguration<ServerTas
         // UPDATE of a ServerTask carries WHERE xmin = <original>, so two status
         // writers can't silently last-writer-win each other (cancel vs late
         // completion, finalize vs reconciler). No DDL — xmin exists on every
-        // row already. IMPORTANT: xmin changes on ANY update of the row,
-        // including the raw log-sequence allocation (TaskLogService) and the
-        // B1 lease renewal, both of which bypass the change tracker — so a
-        // long-lived tracked entity's token goes stale within seconds of
-        // dispatch. Status writers therefore MUST go through
-        // ServerTaskStatusWriter (reload → guard → write) instead of saving a
-        // stale tracked instance directly.
+        // row already. IMPORTANT: xmin changes on ANY update of the row. The
+        // B1 lease renewal bypasses the change tracker, so a long-lived tracked
+        // entity's token goes stale within seconds of dispatch. Status writers
+        // therefore MUST go through ServerTaskStatusWriter (reload → guard →
+        // write) instead of saving a stale tracked instance directly. (E-D
+        // moved the log-sequence counter off this row into task_log_counters so
+        // log appends no longer churn xmin.)
         builder.Property<uint>("xmin")
             .HasColumnName("xmin")
             .IsRowVersion();
-
-        builder.Property(x => x.NextLogSequence).IsRequired();
 
         // ── Denormalized ownership (decision 5) ──────────────────────────────
         builder.Property(x => x.ProjectId).IsRequired();

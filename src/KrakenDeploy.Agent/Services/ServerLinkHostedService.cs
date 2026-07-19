@@ -51,6 +51,11 @@ public sealed class ServerLinkHostedService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // E8 — clear any staging trees a previous process left behind before any
+        // work can arrive. Nothing is executing yet (the deployment handler is
+        // wired below, after this), so the whole staging root is orphan garbage.
+        deploymentExecutor.SweepOrphanedStagingOnBoot();
+
         // ── Wait for registration to complete ────────────────────────────
         try
         {

@@ -325,6 +325,21 @@ public sealed class RunbookRunWorker(
             // SaveChanges blindly re-assert Running).
             ServerTaskLease.MirrorClaim(db, run, timeProvider);
 
+            // E9 (INTERIM — superseded by the D1 engine merge, which brings runbook
+            // runs under B3's disconnect handling). The connection captured before
+            // the claim can go stale during variable resolution + flatten. Pushing
+            // a plan to a dead connection id is a silent SignalR no-op that zombies
+            // the run until the MaxRunbookRunDuration ceiling — so re-verify liveness
+            // at hand-off and fast-fail if the target went away (the operator re-runs;
+            // a late agent completion would be swallowed by the terminal guard).
+            connectionId = registry.GetConnectionId(target.Id);
+            if (connectionId is null)
+            {
+                await FailAsync(db, run, "Target went offline before the plan could be dispatched.", ct)
+                    .ConfigureAwait(false);
+                return;
+            }
+
             logger.LogInformation(
                 "Dispatching runbook run {RunId} ({Runbook}) to connection {Conn}.",
                 runId, run.Runbook.Name, connectionId);
