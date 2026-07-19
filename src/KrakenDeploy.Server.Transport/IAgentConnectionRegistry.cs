@@ -21,8 +21,27 @@ public interface IAgentConnectionRegistry
     /// <summary>
     /// Removes the connection and returns the associated target ID.
     /// Returns <c>false</c> if the connection was not tracked.
+    /// <para>
+    /// E4 — the target→connection mapping is removed compare-and-remove: only
+    /// when it still points at <paramref name="connectionId"/>. A late,
+    /// out-of-order disconnect of a superseded connection therefore cannot wipe
+    /// the mapping a reconnected agent already re-registered.
+    /// </para>
     /// </summary>
     bool TryRemove(string connectionId, out Guid targetId);
+
+    /// <summary>
+    /// E4 backstop — re-affirm the target→connection mapping for a connection
+    /// that is still registered (present in the connection index) but whose
+    /// target mapping was wiped by a late, out-of-order removal of a superseded
+    /// connection. Called from the heartbeat path so a wiped mapping self-heals
+    /// within one heartbeat. No-op (returns <c>false</c>) when the connection is
+    /// no longer registered — the backstop heals asymmetric drops, it never
+    /// resurrects a connection removed on purpose (contract refusal / token
+    /// revocation). Returns <c>true</c> when it actually restored a missing
+    /// mapping.
+    /// </summary>
+    bool Reaffirm(string connectionId, Guid targetId, Guid accountId = default, Action? abort = null);
 
     /// <summary>Returns true if <paramref name="targetId"/> has at least one active connection.</summary>
     bool HasConnectionFor(Guid targetId);

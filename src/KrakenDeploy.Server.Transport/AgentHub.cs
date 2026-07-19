@@ -36,6 +36,21 @@ public sealed class AgentHub(
     ILogger<AgentHub> logger)
     : Hub<IAgentHubClient>, IAgentHubServer
 {
+    // E7 — how far back the reconnect reconcile looks for terminal-but-recent
+    // tasks to re-cancel. A task the agent might still be executing went terminal
+    // (operator cancel / reconciler interrupt) while the agent was offline; one
+    // older than this is assumed no longer running on the agent (and its late
+    // completion is swallowed by the terminal-status guard regardless). Anchored
+    // to the wave-deadline ceiling; a hub-local constant like the 30 s
+    // offline-mark grace (not a tuned operator knob). Re-pushing to a task the
+    // agent is NOT running is a harmless agent-side no-op, so err generous.
+    private static readonly TimeSpan ReconnectCancelReconcileWindow = TimeSpan.FromHours(1);
+
+    // Defensive cap on the reconcile fan-out. Retention already bounds a single
+    // target's terminal-task set well below this; the cap only guards against a
+    // pathological history. Most-recent first, so a truncation drops the oldest.
+    private const int ReconnectCancelReconcileCap = 100;
+
     // ── Connection lifecycle ────────────────────────────────────────────────
 
     public override async Task OnConnectedAsync()
@@ -226,7 +241,119 @@ public sealed class AgentHub(
             request.AgentVersion,
             request.ContractVersion);
 
+        // E7 — reconcile in-flight cancellations on (re)connect. An agent offline
+        // when its task was cancelled/interrupted keeps executing that task to
+        // completion (a disconnect never aborts a running step); the original
+        // cancel push skipped it (no live connection) and nothing else reconciles
+        // on reconnect. Re-push a cooperative cancel — straight to THIS connection
+        // — for this target's terminal-but-recent tasks so the running step's
+        // process tree dies. Best-effort and self-contained — it must never fail
+        // registration. Awaited (a single lookup + direct sends, no fan-out) so
+        // the push is issued before we return and no detached task lingers, which
+        // is safe: the server→client cancel send does not block on the agent's
+        // pending RegisterAsync round-trip.
+        await ReconcileTerminalTasksForReconnectAsync(targetId.Value, Context.ConnectionId)
+            .ConfigureAwait(false);
+
         return new AgentRegistrationResult(Accepted: true, AgentContract.CurrentVersion);
+    }
+
+    /// <summary>
+    /// E7 — on (re)connect, re-push a cooperative cancel to THIS connection for
+    /// every task assigned to <paramref name="targetId"/> whose DB status is
+    /// terminal (<see cref="DeploymentStatus.Cancelled"/> /
+    /// <see cref="DeploymentStatus.Failed"/>) within
+    /// <see cref="ReconnectCancelReconcileWindow"/> — the ones the agent may still
+    /// be running because it was offline when the verdict was recorded and a
+    /// disconnected step runs to completion. The original cancel push skipped the
+    /// target then (no live connection); this closes the gap with a pure
+    /// SERVER-SIDE lookup (no wire change — the agent does not report its in-flight
+    /// ids). Best-effort by contract: never throws, so a failure here cannot fail
+    /// registration, and the agent's late completion is swallowed by the
+    /// terminal-status guard regardless.
+    /// <para>
+    /// The push goes straight to <paramref name="connectionId"/> (the reconnecting
+    /// connection), NOT through the fan-out <c>AgentCancelPusher</c> — that would
+    /// re-query each task's full target set and notify every assigned target, an
+    /// N+1 + cross-target cancel storm amplified across a whole fleet reconnecting
+    /// after a restart. Only this target may still be running these tasks after
+    /// ITS offline window; the other targets reconcile on their own reconnect.
+    /// </para>
+    /// <para>
+    /// <c>internal</c> so <c>KrakenDeploy.Server.Data.Tests</c> can drive it
+    /// deterministically (InternalsVisibleTo), like the worker's other test seams.
+    /// Self-contained (its own DbContext + DI scope) and rides the caller's ambient
+    /// account (AsyncLocal), so the target lookup and the push both hit the right
+    /// tenant.
+    /// </para>
+    /// </summary>
+    internal async Task ReconcileTerminalTasksForReconnectAsync(
+        Guid targetId, string connectionId, CancellationToken ct = default)
+    {
+        try
+        {
+            var cutoff = timeProvider.GetUtcNow() - ReconnectCancelReconcileWindow;
+
+            List<Guid> taskIds;
+            await using (var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false))
+            {
+                // Filter-free: the hub has no ambient Space; the assignment join is
+                // the authority for "which tasks hit this target" and target ids are
+                // globally unique, so this cannot cross accounts.
+                taskIds = await db.TaskTargetAssignments
+                    .IgnoreQueryFilters()
+                    .Where(a => a.TargetId == targetId)
+                    .Join(
+                        db.ServerTasks.IgnoreQueryFilters(),
+                        a => a.TaskId,
+                        t => t.Id,
+                        (a, t) => t)
+                    .Where(t =>
+                        (t.Status == DeploymentStatus.Cancelled
+                            || t.Status == DeploymentStatus.Failed)
+                        && t.CompletedUtc != null
+                        && t.CompletedUtc >= cutoff)
+                    .OrderByDescending(t => t.CompletedUtc)
+                    .Select(t => t.Id)
+                    .Take(ReconnectCancelReconcileCap)
+                    .ToListAsync(ct)
+                    .ConfigureAwait(false);
+            }
+
+            if (taskIds.Count == 0)
+            {
+                return;
+            }
+
+            // Push straight to the reconnecting connection. IHubContext is a
+            // singleton resolved from a fresh scope; the send routes by connection
+            // id and is a harmless no-op if the connection has since dropped. A
+            // cancel for a task the agent is not actually running is likewise a
+            // harmless agent-side no-op (TryCancel finds no in-flight run).
+            await using var scope = scopeFactory.CreateAsyncScope();
+            var hub = scope.ServiceProvider
+                .GetRequiredService<IHubContext<AgentHub, IAgentHubClient>>();
+            var client = hub.Clients.Client(connectionId);
+            foreach (var taskId in taskIds)
+            {
+                await client.CancelDeploymentAsync(
+                    taskId,
+                    "Task reached a terminal status while the agent was offline; " +
+                    "re-pushing cooperative cancel on reconnect.")
+                    .ConfigureAwait(false);
+            }
+
+            logger.LogInformation(
+                "Reconnect reconcile for target {TargetId}: re-pushed cancel for {Count} " +
+                "terminal-but-recent task(s).",
+                targetId, taskIds.Count);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(ex,
+                "Reconnect cancel-reconcile for target {TargetId} failed; the agent's late " +
+                "completion is swallowed by the terminal-status guard regardless.", targetId);
+        }
     }
 
     public async Task HeartbeatAsync(HeartbeatRequest request)
@@ -238,6 +365,15 @@ public sealed class AgentHub(
         {
             return;
         }
+
+        // E4 backstop: re-affirm the target→connection mapping so a mapping wiped
+        // by a late, out-of-order disconnect of a superseded connection self-heals
+        // within one heartbeat. Pure in-memory and idempotent; kept before the DB
+        // read so healing does not depend on the target row loading.
+        var heartbeatAccountId = accountContext.IsResolved
+            ? accountContext.CurrentAccountId
+            : Guid.Empty;
+        registry.Reaffirm(Context.ConnectionId, targetId.Value, heartbeatAccountId, Context.Abort);
 
         await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
         // The target id is the authenticated agent's own NameIdentifier; load it
@@ -566,6 +702,26 @@ public sealed class AgentHub(
                     // B4: sensitivity rides into the registry so the online
                     // output merge can mask these in later waves' plans.
                     SensitiveOutputNames: sensitiveOutputNames));
+        }
+
+        // E-C: mirror AppendLogAsync's retired-dispatch guard onto the DB half.
+        // RecordStepResult above already drops stale/retired attempts in memory
+        // (its _pending slot no longer matches), but the DB persistence below is
+        // dispatch-agnostic: TaskOutputVariableStore.UpsertAsync keys on
+        // (task, step, name) with no dispatch dimension, so a retired attempt's
+        // late report — flushed from the B2 outbox after the wave was
+        // superseded/re-dispatched — would OVERWRITE the CURRENT attempt's output
+        // variables, and TaskLogService.CompactStepAsync would prematurely fold
+        // the current attempt's staged step lines mid-step. Only POSITIVE
+        // retirement drops the report; Guid.Empty (legacy/offline) and unknown
+        // ids (runbook hand-offs never register a slot) fall through, exactly as
+        // on AppendLogAsync.
+        if (subPlans.IsRetiredDispatch(dispatchId))
+        {
+            logger.LogDebug(
+                "ReportStepCompleted for task {Id} dropped: dispatch {Dispatch} is retired.",
+                deploymentId, dispatchId);
+            return;
         }
 
         var capturedAt = timeProvider.GetUtcNow();

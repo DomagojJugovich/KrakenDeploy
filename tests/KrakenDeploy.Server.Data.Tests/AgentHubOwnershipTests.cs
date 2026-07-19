@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using System.Security.Claims;
 using System.Threading.Channels;
 using FluentAssertions;
+using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
@@ -194,6 +196,58 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task ReportStepCompletedAsync_persists_nothing_for_a_retired_dispatch()
+    {
+        // E-C: a retired attempt's late step report — flushed from the B2 outbox
+        // after the wave was superseded/re-dispatched — must not touch the DB
+        // half. RecordStepResult already self-guards in memory, but the DB
+        // persistence is dispatch-agnostic: without the mirrored guard the upsert
+        // (keyed (task, step, name), no dispatch dimension) OVERWRITES the CURRENT
+        // attempt's outputs and CompactStepAsync prematurely folds the current
+        // attempt's staged step lines. Register attempt B, retire attempt A,
+        // replay A: A's outputs stay absent and B's staged lines stay uncompacted.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var g = await SeedAsync(harness);
+
+        var registry = new PendingSubPlanRegistry();
+        var retiredDispatch = Guid.NewGuid();   // attempt A
+        var currentDispatch = Guid.NewGuid();   // attempt B
+        // Attempt A registered then cancelled → its dispatch id is positively retired.
+        registry.Register(g.DeploymentId, g.Primary.Id, retiredDispatch,
+            new TaskCompletionSource<SubPlanResult>());
+        registry.Cancel(g.DeploymentId, g.Primary.Id, "wave superseded");
+        // Attempt B is the CURRENT in-flight wave.
+        registry.Register(g.DeploymentId, g.Primary.Id, currentDispatch,
+            new TaskCompletionSource<SubPlanResult>());
+
+        var hub = BuildHub(postgres, g.Primary.Id, subPlans: registry);
+
+        // Attempt B stages a live log line for step 0 (not yet compacted).
+        await hub.AppendLogAsync(g.DeploymentId, currentDispatch, 0, "Information", "B step-0 line");
+
+        // Replay attempt A's step completion for the SAME step 0, carrying outputs.
+        await hub.ReportStepCompletedAsync(
+            g.DeploymentId, retiredDispatch, stepIndex: 0, stepName: "Deploy",
+            success: true, errorMessage: null,
+            outputVariables: new Dictionary<string, string> { ["Injected"] = "stale" },
+            sensitiveOutputNames: []);
+
+        await using var db = harness.CreateContext();
+
+        (await db.TaskOutputVariables.IgnoreQueryFilters()
+            .CountAsync(o => o.TaskId == g.DeploymentId))
+            .Should().Be(0, "a retired attempt's late report must persist no output variables");
+
+        (await db.TaskLogLive.IgnoreQueryFilters()
+            .CountAsync(e => e.TaskId == g.DeploymentId))
+            .Should().Be(1, "the current attempt's staged line must survive — not be folded by a retired report");
+
+        (await db.TaskStepLogs.IgnoreQueryFilters()
+            .CountAsync(b => b.TaskId == g.DeploymentId))
+            .Should().Be(0, "the retired report must not prematurely compact the current attempt's step");
+    }
+
+    [Fact]
     public async Task ReportStepCompletedAsync_rejects_a_negative_step_index()
     {
         // B6 trust boundary: the step index is agent-supplied and downstream
@@ -316,6 +370,141 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
             .Should().BeFalse("an unknown deployment id is owned by no one");
     }
 
+    // ── E7: reconnect cancel-reconcile ───────────────────────────────────────
+
+    [Fact]
+    public async Task Reconcile_repushes_cancel_for_a_recent_cancelled_task()
+    {
+        // The agent was offline when the operator cancelled, so the original push
+        // skipped it (no live connection). On reconnect the hub must re-push a
+        // cooperative cancel — straight to this connection — for the recently
+        // terminal task it may still be running.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var g = await SeedAsync(harness);
+        await SetTerminalAsync(harness, g.DeploymentId, DeploymentStatus.Cancelled, DateTimeOffset.UtcNow);
+
+        var (scope, agent) = PushViaFakeHub(g.Primary.Id, "conn-primary");
+        await BuildHub(postgres, g.Primary.Id, scopeFactory: scope)
+            .ReconcileTerminalTasksForReconnectAsync(g.Primary.Id, "conn-primary");
+
+        agent.CancelPushes.Select(p => p.TaskId).Should().ContainSingle()
+            .Which.Should().Be(g.DeploymentId);
+    }
+
+    [Fact]
+    public async Task Reconcile_repushes_cancel_for_a_recent_failed_task()
+    {
+        // A reconciler-interrupted (lease-expired → Failed) task the agent may
+        // still be running is reconciled the same way as an operator cancel.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var g = await SeedAsync(harness);
+        await SetTerminalAsync(harness, g.DeploymentId, DeploymentStatus.Failed, DateTimeOffset.UtcNow);
+
+        var (scope, agent) = PushViaFakeHub(g.Primary.Id, "conn-primary");
+        await BuildHub(postgres, g.Primary.Id, scopeFactory: scope)
+            .ReconcileTerminalTasksForReconnectAsync(g.Primary.Id, "conn-primary");
+
+        agent.CancelPushes.Select(p => p.TaskId).Should().Contain(g.DeploymentId);
+    }
+
+    [Fact]
+    public async Task Reconcile_skips_succeeded_tasks()
+    {
+        // A task that completed successfully means the agent already reported
+        // back — it is not still running, so nothing is pushed.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var g = await SeedAsync(harness);
+        await SetTerminalAsync(harness, g.DeploymentId, DeploymentStatus.Succeeded, DateTimeOffset.UtcNow);
+
+        var (scope, agent) = PushViaFakeHub(g.Primary.Id, "conn-primary");
+        await BuildHub(postgres, g.Primary.Id, scopeFactory: scope)
+            .ReconcileTerminalTasksForReconnectAsync(g.Primary.Id, "conn-primary");
+
+        agent.CancelPushes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Reconcile_skips_tasks_terminal_outside_the_window()
+    {
+        // A task that went terminal long ago is assumed no longer executing.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var g = await SeedAsync(harness);
+        await SetTerminalAsync(harness, g.DeploymentId, DeploymentStatus.Cancelled,
+            DateTimeOffset.UtcNow - TimeSpan.FromHours(6));
+
+        var (scope, agent) = PushViaFakeHub(g.Primary.Id, "conn-primary");
+        await BuildHub(postgres, g.Primary.Id, scopeFactory: scope)
+            .ReconcileTerminalTasksForReconnectAsync(g.Primary.Id, "conn-primary");
+
+        agent.CancelPushes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Reconcile_skips_tasks_not_assigned_to_the_target()
+    {
+        // foreign is not in the deployment's target set — its reconnect must not
+        // re-cancel another target's task.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var g = await SeedAsync(harness);
+        await SetTerminalAsync(harness, g.DeploymentId, DeploymentStatus.Cancelled, DateTimeOffset.UtcNow);
+
+        var (scope, agent) = PushViaFakeHub(g.Foreign.Id, "conn-foreign");
+        await BuildHub(postgres, g.Foreign.Id, scopeFactory: scope)
+            .ReconcileTerminalTasksForReconnectAsync(g.Foreign.Id, "conn-foreign");
+
+        agent.CancelPushes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_repushes_cancel_on_reconnect()
+    {
+        // Full path: registration (the agent's every-reconnect signal) drives the
+        // reconcile inline, so completion is deterministic. The hub's fake caller
+        // context connection id is "test-connection".
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var g = await SeedAsync(harness);
+        await SetTerminalAsync(harness, g.DeploymentId, DeploymentStatus.Cancelled, DateTimeOffset.UtcNow);
+
+        var (scope, agent) = PushViaFakeHub(g.Primary.Id, "test-connection");
+        var result = await BuildHub(postgres, g.Primary.Id, scopeFactory: scope)
+            .RegisterAsync(new AgentRegistrationRequest(
+                g.Primary.Id, "m", "o", "1.0.0", 0L, 0L, AgentContract.CurrentVersion));
+
+        result.Accepted.Should().BeTrue();
+        agent.CancelPushes.Select(p => p.TaskId).Should().Contain(g.DeploymentId,
+            "registration on reconnect must reconcile in-flight cancellations");
+    }
+
+    /// <summary>Builds a scope factory whose <c>IHubContext&lt;AgentHub&gt;</c> is a
+    /// <see cref="FakeAgentHubContext"/> routing <paramref name="connectionId"/> to a
+    /// fresh <see cref="FakeAgent"/> (which records the cancel pushes it receives).</summary>
+    private static (IServiceScopeFactory Scope, FakeAgent Agent) PushViaFakeHub(
+        Guid targetId, string connectionId)
+    {
+        var registry = new InMemoryAgentConnectionRegistry();
+        registry.Add(connectionId, targetId);
+        var agent = new FakeAgent { TargetId = targetId, ConnectionId = connectionId };
+        var agents = new ConcurrentDictionary<Guid, FakeAgent>();
+        agents[targetId] = agent;
+
+        var services = new ServiceCollection();
+        services.AddSingleton<IHubContext<AgentHub, IAgentHubClient>>(
+            new FakeAgentHubContext(new PendingSubPlanRegistry(), registry, agents));
+        return (services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>(), agent);
+    }
+
+    private static async Task SetTerminalAsync(
+        OrchestratorTestHarness harness, Guid taskId,
+        DeploymentStatus status, DateTimeOffset completedUtc)
+    {
+        await using var db = harness.CreateContext();
+        await db.ServerTasks.IgnoreQueryFilters()
+            .Where(t => t.Id == taskId)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(t => t.Status, status)
+                .SetProperty(t => t.CompletedUtc, completedUtc));
+    }
+
     // ── Seeding + hub construction ───────────────────────────────────────────
 
     private sealed record Graph(
@@ -394,7 +583,8 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
     }
 
     private static AgentHub BuildHub(
-        PostgresFixture postgres, Guid actingTargetId, IPendingSubPlanRegistry? subPlans = null)
+        PostgresFixture postgres, Guid actingTargetId, IPendingSubPlanRegistry? subPlans = null,
+        IServiceScopeFactory? scopeFactory = null)
     {
         var publisher = new TargetStatusPublisher(
             new InMemoryTargetStatusNotifier(),
@@ -404,7 +594,7 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
         var hub = new AgentHub(
             new InMemoryAgentConnectionRegistry(),
             postgres,
-            postgres.ScopeFactory,
+            scopeFactory ?? postgres.ScopeFactory,
             publisher,
             TimeProvider.System,
             new OwnershipNullUiHubContext(),
