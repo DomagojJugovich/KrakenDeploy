@@ -66,13 +66,72 @@ public sealed record HeartbeatRequest(
 /// <summary>
 /// Returned by GET /api/agents/update-info. Tells the agent whether a newer
 /// version is available and where to download it.
+/// <para>
+/// C6: <see cref="Sha256"/> is now MANDATORY whenever <see cref="UpdateAvailable"/>
+/// is true — the server computes it from the actual binary
+/// (<c>ServerAgentUpdateService.ComputeSha256</c>) rather than echoing the
+/// manifest's defaultable field, and an agent refuses an update that arrives
+/// without one. <see cref="ServerContractVersion"/> is the wire-contract version
+/// THIS server speaks (<see cref="AgentContract.CurrentVersion"/>);
+/// <see cref="TargetContractVersion"/> is the version the offered build speaks
+/// (from the manifest). The agent refuses to apply an update whose target
+/// contract version does not match the server's (self-inflicted-skew guard) and
+/// reports the refusal.
+/// </para>
 /// </summary>
 public sealed record AgentUpdateInfo(
     bool UpdateAvailable,
     string? LatestVersion,
     string? DownloadUrl,
     long? SizeBytes,
-    string? Sha256);
+    string? Sha256,
+    int ServerContractVersion = 0,
+    int? TargetContractVersion = null);
+
+/// <summary>
+/// C6 — body for POST /api/agents/update-status. The agent reports the outcome
+/// of a self-upgrade attempt so it is visible server-side (audit trail on the
+/// target). <see cref="Outcome"/> is one of the
+/// <see cref="AgentUpdateOutcome"/> string constants. Never carries binaries or
+/// secrets — only versions and a short human-readable <see cref="Detail"/>.
+/// </summary>
+public sealed record AgentUpdateStatusReport(
+    string Outcome,
+    string? FromVersion,
+    string? ToVersion,
+    string? Detail);
+
+/// <summary>
+/// C6 — the discrete outcomes an agent reports for a self-upgrade attempt.
+/// String constants (not an enum) so the wire form is unambiguous regardless of
+/// the server's JSON enum-serialisation settings.
+/// </summary>
+public static class AgentUpdateOutcome
+{
+    /// <summary>The new version booted healthy within the probation window; the
+    /// backup was discarded and the upgrade is committed.</summary>
+    public const string Succeeded = "succeeded";
+
+    /// <summary>The new version failed the post-restart health gate; the agent
+    /// restored the previous version from backup.</summary>
+    public const string RolledBack = "rolled-back";
+
+    /// <summary>An update was refused before any swap because the server did not
+    /// supply a mandatory SHA-256 hash.</summary>
+    public const string HashMissing = "hash-missing";
+
+    /// <summary>An update was refused before any swap because the archive's
+    /// SHA-256 did not match the server-supplied hash.</summary>
+    public const string HashMismatch = "hash-mismatch";
+
+    /// <summary>An update was refused before any swap because the offered build's
+    /// wire-contract version does not match the server's.</summary>
+    public const string ContractSkew = "contract-skew";
+
+    /// <summary>The swap itself failed and was rolled back in-process (the agent
+    /// keeps running the previous binary).</summary>
+    public const string SwapFailed = "swap-failed";
+}
 
 /// <summary>Body for POST /api/deployments/{id}/logs.</summary>
 public sealed record DeploymentLogLineRequest(string Level, string Message);

@@ -298,6 +298,11 @@ public sealed class ServerLinkHostedService(
                     AgentContract.CurrentVersion);
                 return RegistrationOutcome.Refused;
             }
+
+            // C6 — the server accepted us: this is the post-boot health signal the
+            // self-upgrade probation gate waits on. Fires once; harmless on
+            // re-registration after a reconnect.
+            context.SignalRegistrationAccepted();
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

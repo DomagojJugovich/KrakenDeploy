@@ -1212,22 +1212,80 @@ public static class Program
                     return Results.Json(new AgentUpdateInfo(false, null, null, null, null));
                 }
 
-                var manifest = updateSvc.GetManifest();
-                if (manifest?.Rids is null || !manifest.Rids.TryGetValue(rid, out var ridInfo))
+                // C6: the service is the single source of truth — it attaches a
+                // mandatory server-computed SHA-256 and both contract versions
+                // when an update is available.
+                return Results.Ok(updateSvc.GetUpdateInfo(rid, currentVersion));
+            }).RequireAuthorization(agentUpdateAuthPolicy);
+
+        // C6 — agent self-upgrade outcome report. The agent POSTs the result of
+        // an upgrade attempt (committed / rolled-back / refused) so it is visible
+        // server-side as a Space-scoped audit entry on the target. Authenticated
+        // as the agent (same policy as update-info); the target id comes from the
+        // JWT, never the body, so an agent can only report about itself.
+        app.MapPost("/api/agents/update-status",
+            async (
+                AgentUpdateStatusReport report,
+                HttpContext http,
+                ILoggerFactory loggerFactory,
+                CancellationToken ct) =>
+            {
+                var targetIdClaim = http.User.FindFirst(
+                    System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+                if (targetIdClaim is null || !Guid.TryParse(targetIdClaim, out var targetId))
                 {
-                    return Results.Json(new AgentUpdateInfo(false, null, null, null, null));
+                    return Results.Unauthorized();
                 }
 
-                var latest = manifest.LatestVersion;
-                var updateAvailable = !string.Equals(
-                    currentVersion, ridInfo.Version, StringComparison.OrdinalIgnoreCase);
+                var db = http.RequestServices.GetRequiredService<KrakenDbContext>();
+                var target = await db.DeploymentTargets
+                    .FindAsync(new object[] { targetId }, ct)
+                    .ConfigureAwait(false);
+                if (target is null)
+                {
+                    return Results.NotFound();
+                }
 
-                return Results.Ok(new AgentUpdateInfo(
-                    updateAvailable,
-                    ridInfo.Version,
-                    updateAvailable ? $"/api/agents/download/{rid}" : null,
-                    ridInfo.SizeBytes,
-                    updateAvailable ? ridInfo.Sha256 : null));
+                var eventType = report.Outcome switch
+                {
+                    AgentUpdateOutcome.Succeeded  => AuditEventType.AgentUpdateApplied,
+                    AgentUpdateOutcome.RolledBack => AuditEventType.AgentUpdateRolledBack,
+                    _                             => AuditEventType.AgentUpdateFailed,
+                };
+
+                var detail =
+                    $"outcome={report.Outcome}; " +
+                    $"from={report.FromVersion ?? "?"}; to={report.ToVersion ?? "?"}" +
+                    (string.IsNullOrWhiteSpace(report.Detail) ? "" : $"; {report.Detail}");
+
+                // Write the audit row directly (mirrors EncryptionCommands): the
+                // ambient ISpaceContext is empty on an agent-authenticated request,
+                // so stamp the target's own Space explicitly — that lands the row
+                // on the target's per-entity Events tab. The target id comes from
+                // the JWT, so an agent can only file reports about itself.
+                db.AuditEntries.Add(new AuditEntry
+                {
+                    OccurredUtc = DateTimeOffset.UtcNow,
+                    SpaceId     = target.SpaceId,
+                    EventType   = eventType,
+                    SubjectType = nameof(DeploymentTarget),
+                    SubjectId   = targetId.ToString(),
+                    SubjectName = target.Name,
+                    UserDisplay = "Agent",
+                    IpAddress   = http.Connection.RemoteIpAddress?.ToString(),
+                    Details     = detail,
+                });
+                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+                loggerFactory.CreateLogger("AgentUpdate").Log(
+                    report.Outcome is AgentUpdateOutcome.Succeeded
+                        ? LogLevel.Information : LogLevel.Warning,
+                    "Agent {TargetId} ({Name}) reported self-upgrade outcome {Outcome} " +
+                    "({From} -> {To}).",
+                    targetId, target.Name, report.Outcome,
+                    report.FromVersion, report.ToVersion);
+
+                return Results.NoContent();
             }).RequireAuthorization(agentUpdateAuthPolicy);
 
         // Agent binary download — serves the self-contained agent archive for the

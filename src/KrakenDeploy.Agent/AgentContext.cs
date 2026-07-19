@@ -13,12 +13,26 @@ public sealed class AgentContext
     private readonly TaskCompletionSource _identityReady =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    private readonly TaskCompletionSource _registrationAccepted =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     /// <summary>
     /// A <see cref="Task"/> that completes when the agent identity is available.
     /// Await with a <see cref="CancellationToken"/> to respect shutdown:
     /// <code>await context.IdentityReady.WaitAsync(stoppingToken);</code>
     /// </summary>
     public Task IdentityReady => _identityReady.Task;
+
+    /// <summary>
+    /// C6 — completes the first time the server ACCEPTS this agent's registration
+    /// (contract version matched; the target is in the dispatch registry). This
+    /// is the agent's post-boot health signal: <c>AgentUpdateService</c> awaits it
+    /// with a timeout after a self-upgrade restart to decide whether the new
+    /// binary is healthy (commit) or must be rolled back. It completes ONCE — a
+    /// later reconnect does not reset it, and a refused registration never
+    /// completes it (so a contract-skewed upgrade fails the health gate).
+    /// </summary>
+    public Task RegistrationAccepted => _registrationAccepted.Task;
 
     /// <summary>The agent identity. Non-null after <see cref="IdentityReady"/> completes.</summary>
     public AgentIdentity? Identity { get; private set; }
@@ -44,4 +58,11 @@ public sealed class AgentContext
         TransportMode = transportMode;
         _identityReady.TrySetResult();
     }
+
+    /// <summary>
+    /// C6 — called by <c>ServerLinkHostedService</c> the first time the server
+    /// accepts a registration. Idempotent: only the first call matters (the
+    /// health gate needs to know the agent reached a healthy state once).
+    /// </summary>
+    internal void SignalRegistrationAccepted() => _registrationAccepted.TrySetResult();
 }
