@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 1.5 |
+| **Version** | 1.6 |
 | **Date** | 2026-07-19 |
 | **Authors** | Domagoj Jugovic, Claude (Fable 5), Claude (Opus 4.8) |
 | **Status** | Draft |
@@ -94,8 +94,10 @@ live** at dispatch — there is no runbook variable snapshot.
 Dispatch is fire-and-forget per item (`_ = TrackedDispatchAsync(...)`
 inside an in-flight gauge used for blue-green drain), but execution is
 capped by the B7 `NodeTaskGate` (`Engine:MaxConcurrentTasks`, default 5,
-FIFO) acquired for the whole orchestration. `RunbookRunWorker` is ungated
-(the hand-off is milliseconds) — see §8 for what that asymmetry implies.
+FIFO) acquired for the whole orchestration. Since the D1 engine merge (§8)
+**both kinds** run through this single gated worker — a runbook run acquires a
+`NodeTaskGate` slot and holds the blue-green drain gauge for its whole
+orchestration, exactly like a deployment.
 
 ## 3. The wave model
 
@@ -209,25 +211,31 @@ Two properties to be aware of:
   wiped mapping within one heartbeat. Before E4 the wipe made a healthy agent
   falsely Offline — its waves killed after this grace, its cancel pushes and
   token revocation silently no-op.
-- **Reconciler** (`ScheduledDeploymentDispatchJob`, boot + minutely):
-  (1) enqueue due `ScheduledFor` rows; (2) re-signal stale `Queued` rows
-  older than 2 min (recovers wake-ups lost to restarts) — both phases are
-  read-only-then-enqueue, crash-safe; (3) flip lease-expired `Running`
-  *deployments* to `Failed` + `Deployment.Interrupted` via a conditional
-  UPDATE that re-checks the lease (a live lease is never touched — this is
-  what keeps a draining blue-green slot's runs safe); (4) reap runbook
-  runs: lease expired pre-hand-off → `Failed` + `RunbookRun.Interrupted`;
-  agent-owned whose single target has been continuously disconnected past
-  `Engine:AgentDisconnectWaveGrace` → `Failed` + `RunbookRun.Interrupted`
-  (E9, **INTERIM** — runbook runs bypass the wave machinery so the B3 monitor
-  never engages; deleted by the D1 merge, after which B3 covers them);
-  agent-owned but silent past `Engine:MaxRunbookRunDuration` (default 1 h)
-  → `Failed` + `RunbookRun.TimedOut`.
-- **After a server restart mid-deployment** the in-memory wave state
-  (sub-plan TCSs) is unrecoverable: the run is failed by the reconciler
-  once its lease expires — there is no resume. Runbook runs already handed
-  to an agent survive a restart (the hub writes their terminal status on
-  callback).
+- **Reconciler** (`ScheduledDeploymentDispatchJob`, boot + minutely). Since the
+  D1 merge the arms are **kind-agnostic** (both kinds share the orchestrator):
+  (1) enqueue due `ScheduledFor` rows (either kind) onto the one task channel;
+  (2) re-signal stale `Queued` rows older than 2 min (either kind) — both phases
+  are read-only-then-enqueue, crash-safe; (3) flip lease-expired `Running` tasks
+  (either kind) to `Failed` + a kind-branched `*.Interrupted` audit via a
+  conditional UPDATE that re-checks the lease (a live lease is never touched —
+  this keeps a draining blue-green slot's runs safe). The **null-lease** case is
+  kind-branched: a null-lease `Running` *deployment* is a pre-B1 orphan (failed),
+  but a null-lease `Running` *runbook run* is a legacy pre-D1 hand-off run
+  (agent-owned) that arm 4 drains — applying "null OR expired" to runbook runs
+  would kill legacy hand-off runs at boot. (4) **INTERIM (delete one release
+  after D1):** an agent-owned legacy runbook run (null lease) silent past
+  `Engine:MaxRunbookRunDuration` (default 1 h) → `Failed` + `RunbookRun.TimedOut`.
+  The pre-D1 E9 disconnect-reap (`ReapDisconnectedRunbookRunsAsync` +
+  `IAgentLivenessProbe`) and the pre-hand-off expired-lease arm are **gone** —
+  post-D1 runbook runs go through B3's wave-level disconnect monitor and arm 3's
+  lease reconcile like deployments.
+- **After a server restart mid-orchestration** the in-memory wave state
+  (sub-plan TCSs) is unrecoverable: the run is failed by the reconciler once
+  its lease expires — there is no resume. Applies to **both kinds** since D1
+  (a runbook run now holds a live lease for the whole orchestration). Only
+  *legacy* pre-D1 runbook runs already handed to an agent survive a restart
+  (the hub writes their terminal status on callback); the D1 hub-fallback
+  finalize exists solely to cover them for one release.
 - **Cancellation / ownership** — `CancelAsync` performs one guarded
   transition to `Cancelled` (clears schedule + lease) and then best-effort
   pushes a cooperative cancel to the agent (kills the step's process tree,
@@ -325,7 +333,7 @@ Two properties to be aware of:
 | Disconnect grace (wave + E9 runbook reap) | 2 min | `Engine:AgentDisconnectWaveGrace` |
 | Hub offline marking | 30 s | `AgentHub` grace |
 | Stale-queued re-signal | 2 min | `ScheduledDeploymentDispatchJob.StaleQueuedGrace` |
-| Runbook silent-run ceiling | 1 h | `Engine:MaxRunbookRunDuration` |
+| Runbook silent-run ceiling (legacy hand-off runs only; interim, §8) | 1 h | `Engine:MaxRunbookRunDuration` |
 | Reconciler cadence | boot + minutely | Hangfire `Cron.Minutely()` |
 | Status-writer retries | 5 | `ServerTaskStatusWriter.MaxAttempts` |
 | Reconnect backoff | 1 s base / 30 s cap, unbounded | `AgentReconnectPolicy` |
@@ -362,66 +370,70 @@ Two properties to be aware of:
   step is informational only. If Octopus-style "one task per project/env"
   serialization is ever assumed, it must first be built.
 
-## 8. Where the deployment/runbook unification stops
+## 8. The deployment/runbook unification (D1 — execution-deep)
 
-The unification is **data-spine deep, not execution-deep**. Shared: table,
-children, status machine, status writer, claim/lease primitives, hub, log
-pipeline, cancellation push, provenance, audit plumbing, plan format,
-`FailureMode` column. Not shared: the orchestrator.
+Since the **D1 engine merge** the unification is **execution-deep**, not just
+data-spine deep. `DeploymentWorker` is the *single* orchestrator for both kinds:
+`DispatchCoreAsync` probes `ServerTask.Kind`, loads the kind-correct subtype, and
+wraps it in an `ITaskDispatchSource` accessor the rest of the engine consumes.
+The degraded `RunbookRunWorker` + `RunbookRunChannel` are **deleted**; a runbook
+run enqueues onto the same `Channel<TenantWorkItem>` and gains everything B1–B7
+added (durable dispatch, disconnect reconciliation, wave deadline, cancel,
+idempotency, concurrency cap, status guards).
 
-`RunbookRunWorker` (~385 lines) is a single-target reimplementation of the
-deployment dispatch prologue. It builds **one whole plan**, hands it to
-**one agent**, releases the lease at hand-off, and lets `AgentHub`
-finalize. Consequences:
+**The accessor** (`ITaskDispatchSource`, locked decision N4 — no jsonb column
+moves) branches only the load-bearing forks; two impls
+(`DeploymentDispatchSource`, `RunbookRunDispatchSource`):
 
-| Capability | Deployment | Runbook run |
+- **Process snapshot** — `Release.ProcessSnapshot` vs `RunbookRun.ProcessSnapshot`.
+- **Variable source** — frozen `Release.VariableSnapshot` (channel-scoped) vs a
+  **live** resolve by `ProjectId` (not channel-scoped). Both flow through the
+  shared `BuildTargetDispatchContextAsync`, so a runbook run now also gets the
+  `PackageReferenceResolver` overlay and the shared `name[i]` array-key formatter
+  (the pre-merge drift targets).
+- **Freeze gate** — enforced for deployments, **skipped** for runbook runs
+  (Octopus parity — runbooks run during freeze windows).
+- **Variable-snapshot refusal** — deployment-only (a runbook run has no snapshot).
+- **Offline drop / AI diagnosis** — deployment-only.
+- **Audit vocabulary** (`TaskAuditVocabulary`) — a runbook run emits **additive
+  `RunbookRun.*`** orchestration events, never `Deployment.*` (the
+  `SubscriptionMatcher` matches on the event-type-string prefix, so reusing a
+  `Deployment.*` name would leak into `Deployment.*` subscriptions).
+- **Retention keep source** — the worker's post-success prune kind-branches:
+  lifecycle-phase keep (deployment) vs fixed keep per (runbook, environment)
+  (runbook). Both fire from the worker now (not the hub).
+
+| Capability | Deployment | Runbook run (post-D1) |
 |---|---|---|
-| Multi-target fan-out | yes | no (single target) |
-| Waves orchestrated server-side | yes | no (agent partitions locally) |
-| Server-side steps (`RunOnServer`, `DeployRelease`) | yes | no |
-| Rolling windows | yes | no |
-| BestEffort/Atomic resolution | yes | no (column exists, unused) |
-| Lease renewal during run | yes | no (released at hand-off) |
-| Orphan reconcile by lease | yes | pre-hand-off + disconnect-reap (E9, interim) + silent-run ceiling |
-| Offline drop bundle | yes | no |
-| Scheduled runs (`ScheduledFor`) | yes | no |
-| Cross-wave output accumulator | yes | n/a (single dispatch spans plan) |
-| Output variables / step outcomes UI | yes | written but not surfaced |
-| Variable source | frozen release snapshot | live resolve |
-| Retention | lifecycle-driven, pruned by worker | fixed keep (50), pruned by hub |
+| Multi-target fan-out | yes | **yes** (engine; the `TriggerAsync` API is still single-target — Phase 2) |
+| Waves orchestrated server-side | yes | **yes** |
+| Server-side steps (`RunOnServer`, `DeployRelease`) | yes | **yes** (RunOnServer now runs on the SERVER, not the target — security fix) |
+| Rolling windows | yes | **yes** |
+| BestEffort/Atomic resolution | yes | **yes** |
+| M14 step knobs (Condition/retries/timeout/Required) online | yes | **yes** (were dead for online runs pre-D1) |
+| Lease renewal during run | yes | **yes** |
+| Orphan reconcile by lease | yes | **yes** (arm 3, both kinds) |
+| Offline drop bundle | yes | no (deployment-only, by design) |
+| Scheduled runs (`ScheduledFor`) | yes | **engine yes** (reconciler arm 1 generalized); trigger surface Phase 2 |
+| Cross-wave output accumulator | yes | **yes** |
+| Variable source | frozen release snapshot | live resolve (accessor) |
+| Retention | lifecycle keep, worker-fired | fixed keep, **worker-fired** (was hub-fired) |
 
-**Known gap that follows directly:** the online agent runs with
-`orchestrateSteps:false` — no `StepConditionEvaluator`, no
-`StepRetryRunner`, legacy break semantics (any step failure stops;
-`Failure`/`Always` steps do not run). For deployments the server supplies
-that orchestration per wave; for online runbook runs **nobody does**. The
-M14 step knobs (`Condition`, `ConditionVariableExpression`, `MaxRetries`,
-`RetryDelaySeconds`, `TimeoutSeconds`, `Required` gating) are therefore
-honored for deployments and *offline* runs, but effectively dead for
-*online* runbook runs, even though the unified `process_steps` schema
-carries them for both kinds.
+**Transition (two-release, delete after one release of soak — Phase 3):** two
+seams stay alive solely to finalise *legacy* runbook runs that the pre-D1 worker
+handed off (lease released) and that were in flight **across the upgrade** — a
+new orchestrated runbook run never uses them (guarded by the live-lease refusal +
+terminal-status guard): (a) `AgentHub.CompleteDeploymentAsync`'s runbook fallback
+finalize; (b) reconciler **arm 4** (`Engine:MaxRunbookRunDuration` ceiling).
 
-**Path to full unification** (the deltas are small and data-driven):
-route runbook runs through `DeploymentWorker`, branching only on variable
-source (live vs `Release.VariableSnapshot`), process-snapshot source
-(`RunbookRun.ProcessSnapshot` vs `Release.ProcessSnapshot`), lifecycle
-gate, `ScheduledFor`, retention keep source, and audit event names. That
-deletes `RunbookRunWorker`, `RunbookRunChannel`, the pre-hand-off arm of
-`ReconcileOverdueRunbookRunsAsync`, the interim E9 disconnect-reap arm
-(`ReapDisconnectedRunbookRunsAsync` + `IAgentLivenessProbe`) and the worker's
-hand-off liveness re-check, and runbooks inherit waves,
-multi-target, server steps, rolling, failure modes, lease renewal, orphan
-reconciliation and the output-variable/step-outcome UI — and the step
-knobs start being honored online. Secondary dedupe targets:
+**Phase 2 (follow-up, not in the core merge):** multi-target + `ScheduledFor`
+*trigger surface* (`RunbookService.TriggerAsync` API + UI), shared detail tabs
+(the two ~800-line detail Razor pages still share an unextracted
+status-header/log-viewer surface), and runbook output-variable / step-outcome
+read endpoints (written but not yet surfaced). Remaining unextracted dedupe:
 `DeploymentService.CancelAsync` / `RunbookService.CancelRunAsync` (~40
-near-identical lines), the two `RetentionService.PruneAfter*` bodies
-(~65 lines each, differing only in keep source),
-`OctopusSystemVariablesBuilder.BuildForRunbookRun` (hand-duplicates ~25
-lines instead of calling the shared section helpers), the runbook worker's
-inline `name[i]` array-key construction (should use the shared
-`VariableDictionaryExtensions` — drift risk) and missing
-`PackageReferenceResolver` overlay, and the two ~800-line detail Razor
-pages sharing an unextracted status-header/log-viewer surface.
+near-identical lines) and `OctopusSystemVariablesBuilder.BuildForRunbookRun`
+(still hand-duplicates ~25 lines instead of calling the shared section helpers).
 
 ## 9. Known residuals & sharp edges
 
@@ -454,25 +466,26 @@ pages sharing an unextracted status-header/log-viewer surface.
 - Stale comment in `ServiceCollectionExtensions` claims restart-dropped
   `Queued` tasks are unhandled; `SignalStaleQueuedAsync` + boot reconcile
   now cover it.
-- `AgentHub.PruneRetentionAsync`'s deployment branch is dead code —
-  orchestrated deployments never reach the hub's fallback finalize;
-  deployment retention fires from `DeploymentWorker`, runbook retention
-  from the hub. **E1 makes this a hard invariant, not just an
-  accident of routing:** `AgentHub.CompleteDeploymentAsync`'s fallback
-  finalize is restricted to `ServerTaskKind.RunbookRun` and refuses while
-  the lease is live. A deployment completion arriving with no open sub-plan
-  slot (e.g. a buffered wave completion flushed into a *fresh* process after
-  a restart) is logged and dropped — never finalized — so it cannot mark a
-  whole deployment terminal while its remaining waves are unrun. A
-  genuinely-orphaned deployment is failed by the reconciler once its lease
-  expires; a live orchestrator finalizes through the sub-plan registry.
+- `AgentHub.PruneRetentionAsync`'s branch is dead code for **both** kinds
+  post-D1 — orchestrated tasks never reach the hub's fallback finalize;
+  retention fires from `DeploymentWorker` for both kinds. `AgentHub.Complete
+  DeploymentAsync`'s fallback finalize is restricted to `ServerTaskKind.
+  RunbookRun` and refuses while the lease is live; post-D1 it is **legacy-only**
+  (finalises pre-D1 hand-off runs across the upgrade — §8 transition) and is safe
+  for new orchestrated runbook runs (live-lease refusal + terminal guard). A
+  completion arriving with no open sub-plan slot (e.g. a buffered wave completion
+  flushed into a *fresh* process after a restart) is logged and dropped for a
+  deployment, and for a new runbook run is caught by the same guards — so it
+  cannot mark a whole task terminal while its remaining waves are unrun. A
+  genuinely-orphaned task is failed by the reconciler once its lease expires; a
+  live orchestrator finalizes through the sub-plan registry.
 
 ## References
 
 - Orchestrator: `src/KrakenDeploy.Server.Transport/DeploymentWorker.cs`,
+  `ITaskDispatchSource.cs` (kind accessor), `TaskAuditVocabulary.cs`,
   `WavePartitioner.cs`, `RollingWindowResolver.cs`,
-  `DeploymentTerminalStatusResolver.cs`, `DeploymentOutputAccumulator.cs`,
-  `RunbookRunWorker.cs`
+  `DeploymentTerminalStatusResolver.cs`, `DeploymentOutputAccumulator.cs`
 - Durability: `src/KrakenDeploy.Server.Data/ServerTaskLease.cs`,
   `ServerTaskLeaseRenewal.cs`, `ServerTaskStatusWriter.cs`,
   `Jobs/ScheduledDeploymentDispatchJob.cs`
@@ -490,6 +503,7 @@ pages sharing an unextracted status-header/log-viewer surface.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.6 | 2026-07-19 | **D1 engine merge (Phase 1)** — runbook runs now execute through the single `DeploymentWorker` orchestrator via a kind-branched `ITaskDispatchSource` accessor (§8); they gain waves, multi-target fan-out, server-side steps (RunOnServer now runs on the SERVER — security fix), rolling, failure modes, the M14 step knobs online, lease renewal and orphan reconciliation. `RunbookRunWorker` + `RunbookRunChannel` deleted; `RunbookService.TriggerAsync` enqueues onto the shared task channel. Reconciler arms generalised to both kinds (§6): arm 3 lease-orphan reconcile is kind-agnostic with a kind-branched null-lease predicate; the E9 disconnect-reap + pre-hand-off arms are removed (B3 covers runbook runs); arm 4 (MaxRunbookRunDuration) + the hub runbook fallback finalize are kept INTERIM for one release to drain legacy hand-off runs. Additive `RunbookRun.*` audit vocabulary (`TaskAuditVocabulary`); runbook retention now worker-fired + counts SucceededWithWarnings. CONTRACT CHANGE: runbook dispatch shape (runbook runs now dispatched as per-target sub-plans via the sub-plan registry, not one whole-plan hand-off). Branch `refactor/eng-server-tasks-engine-merge`. |
 | 1.5 | 2026-07-19 | E-D engine hygiene: E8 — agent step staging keyed by `{deploymentId}/{dispatchId}/{stepIndex}`, per-step cleanup moved into a `finally` (fires on the early-failure and timeout/cancel paths too), plus a per-task staging sweep on run end and a whole-root sweep at agent boot (§6 Agent side). Log-sequence counter moved off `server_tasks` into a one-row-per-task `task_log_counters` table (atomic `INSERT … ON CONFLICT` allocator) so log appends no longer churn the row's `xmin` (the B5 token) and force `ServerTaskStatusWriter` retries. E9 (**INTERIM**, deleted by D1) — the dispatch reconciler reaps an agent-owned runbook run whose single target has been continuously disconnected past `Engine:AgentDisconnectWaveGrace` (via `IAgentLivenessProbe` + the target's `LastSeenUtc`), and `RunbookRunWorker` re-verifies the target connection at hand-off and fast-fails instead of dispatching into a dead connection id (§6/§8). CONTRACT CHANGE: none (new `task_log_counters` table — migration `AddTaskLogCounters`). |
 | 1.4 | 2026-07-19 | E-C hub/transport hygiene (§6): E4 — `InMemoryAgentConnectionRegistry.TryRemove` compare-and-removes the target mapping (+ heartbeat `Reaffirm` backstop) so a late, out-of-order disconnect of a superseded connection cannot make a reconnected agent falsely Offline. E7 — `AgentHub.RegisterAsync` reconciles in-flight cancellations on (re)connect (server-side lookup of the target's terminal-but-recent tasks → re-push cooperative cancel), so an agent offline at cancel time no longer runs the cancelled task to completion. E-C — the `IsRetiredDispatch` guard is mirrored into `ReportStepCompletedAsync` before its DB persistence half (was only on `AppendLogAsync`), so a replayed retired-attempt step report no longer overwrites the current attempt's output variables or prematurely compacts its staged log lines. CONTRACT CHANGE: none. |
 | 1.3 | 2026-07-19 | E-B agent-runtime fixes (§6, timer table): outbox drops only log lines as poison — verdict-class items (completions, adhoc results) are never dropped and retry with capped backoff (E6); a superseded non-cooperative attempt that never unwinds is force-detached and the new attempt's machine-gate acquisition is bounded (`WedgedGateAcquireTimeout`) with escalation. Also fixed off-doc: `DeploymentExecutor` singleton lifetime (dead self-update guard, E5), supervisor park on reconnect-refusal, and the output-variable upsert race (`ON CONFLICT`). |

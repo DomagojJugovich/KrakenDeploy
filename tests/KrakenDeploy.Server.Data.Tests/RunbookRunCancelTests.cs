@@ -70,7 +70,7 @@ public sealed class RunbookRunCancelTests(PostgresFixture postgres)
 
     private RunbookService NewService(IAgentCancelPusher pusher) => new(
         postgres,
-        new RunbookRunChannel(),
+        System.Threading.Channels.Channel.CreateUnbounded<KrakenDeploy.Server.Data.TenantWorkItem>(),
         TimeProvider.System,
         new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
         new AllowAllPermissionEvaluator(),

@@ -96,9 +96,12 @@ public sealed class OfflineDropBundleBuilder(ILogger<OfflineDropBundleBuilder> l
         var snapshotSteps = deployment.Release.ProcessSnapshot
             .OrderBy(s => s.SortOrder)
             .ToArray();
+        // Offline drop is deployment-only — wrap the loaded Deployment in the
+        // deployment dispatch source so the shared context builder resolves
+        // variables from the frozen release snapshot (D1 engine merge).
         var ctx = await DeploymentWorker.BuildTargetDispatchContextAsync(
-            logger, deployment, target, snapshotSteps, variableService,
-            serverBaseUrl, dbFactory, ct).ConfigureAwait(false);
+            logger, deployment, new DeploymentDispatchSource(deployment), target, snapshotSteps,
+            variableService, serverBaseUrl, dbFactory, ct).ConfigureAwait(false);
 
         // Required ForEach that couldn't resolve its collection aborts here,
         // mirroring the online gate.

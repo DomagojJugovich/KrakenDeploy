@@ -236,7 +236,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<LifecycleService>();
         services.AddScoped<ChannelService>();
         services.AddScoped<RetentionService>();
-        services.AddSingleton<RunbookRunChannel>();
+        // D1 engine merge: RunbookService enqueues onto the shared
+        // Channel<TenantWorkItem> (registered above) the unified DeploymentWorker
+        // reads — the dedicated RunbookRunChannel is gone.
         services.AddScoped<RunbookService>();
         // IRunbookTrigger surface — narrow interface consumed by the
         // M13.B.2/3 RunbookTransport. RunbookService implements it; the

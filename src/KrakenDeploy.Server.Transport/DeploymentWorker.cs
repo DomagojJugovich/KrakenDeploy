@@ -9,6 +9,7 @@ using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.Runbooks;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data;
@@ -218,42 +219,69 @@ public sealed class DeploymentWorker(
 
         try
         {
-            // The worker scope has no active Space (no HttpContext → DefaultSpaceId),
-            // so the global query filter would hide a deployment created in a
-            // non-Default Space (the dispatch load below returns null → the
-            // deployment sits Queued forever). Resolve its Space filter-free, then
-            // run the entire unit of work under it so every space-scoped read +
-            // write (the Include load, variable resolution, freeze lookup, step
-            // outcomes, finalisation) resolves against the deployment's real Space.
-            // Note: server-side step runners open their own scopes and are scoped
-            // separately (see ExecuteServerStepAsync); LogSequencer.AppendAsync
-            // defends its own short-lived scope via IgnoreQueryFilters.
-            var deploymentSpaceId = await db.Deployments.IgnoreQueryFilters()
-                .Where(d => d.Id == deploymentId)
-                .Select(d => (Guid?)d.SpaceId)
+            // ── Kind-aware load (D1 engine merge) ───────────────────────────
+            // Both kinds live in server_tasks; a runbook run is invisible to
+            // db.Deployments. The worker scope has no active Space (no HttpContext
+            // → DefaultSpaceId), so the global filter would hide a task created in
+            // a non-Default Space (the load returns null → it sits Queued forever).
+            // Probe the row filter-free, scope the whole unit of work to its real
+            // Space, then load the kind-correct subtype with its owner navigation
+            // and wrap it in a kind-branched dispatch source. `deployment` is a
+            // ServerTask of EITHER kind from here on — the surface rename is D2.
+            // Server-side step runners open their own scopes (see
+            // ExecuteServerStepAsync); LogSequencer.AppendAsync defends its own
+            // short-lived scope via IgnoreQueryFilters.
+            var probe = await db.ServerTasks.IgnoreQueryFilters()
+                .Where(t => t.Id == deploymentId)
+                .Select(t => new { t.SpaceId, t.Kind })
                 .FirstOrDefaultAsync(ct)
                 .ConfigureAwait(false);
-            if (deploymentSpaceId is null)
+            if (probe is null)
             {
-                logger.LogWarning("DeploymentWorker: deployment {Id} not found.", deploymentId);
+                logger.LogWarning("DeploymentWorker: task {Id} not found.", deploymentId);
                 return;
             }
-            using var spaceScope = spaceContext.WithSpace(deploymentSpaceId.Value);
+            using var spaceScope = spaceContext.WithSpace(probe.SpaceId);
 
-            var deployment = await db.Deployments
-                .Include(d => d.Release)
-                    .ThenInclude(r => r.Project)
-                .Include(d => d.Environment)
-                .Include(d => d.Targets)
-                    .ThenInclude(a => a.Target!)
-                .Include(d => d.Tenant)
-                .FirstOrDefaultAsync(d => d.Id == deploymentId, ct)
-                .ConfigureAwait(false);
-
-            if (deployment is null)
+            ServerTask deployment;
+            ITaskDispatchSource source;
+            if (probe.Kind == ServerTaskKind.RunbookRun)
             {
-                logger.LogWarning("DeploymentWorker: deployment {Id} not found.", deploymentId);
-                return;
+                var run = await db.RunbookRuns
+                    .Include(r => r.Runbook)
+                        .ThenInclude(rb => rb.Project)
+                    .Include(r => r.Environment)
+                    .Include(r => r.Targets)
+                        .ThenInclude(a => a.Target!)
+                    .Include(r => r.Tenant)
+                    .FirstOrDefaultAsync(r => r.Id == deploymentId, ct)
+                    .ConfigureAwait(false);
+                if (run is null)
+                {
+                    logger.LogWarning("DeploymentWorker: runbook run {Id} not found.", deploymentId);
+                    return;
+                }
+                deployment = run;
+                source = new RunbookRunDispatchSource(run);
+            }
+            else
+            {
+                var dep = await db.Deployments
+                    .Include(d => d.Release)
+                        .ThenInclude(r => r.Project)
+                    .Include(d => d.Environment)
+                    .Include(d => d.Targets)
+                        .ThenInclude(a => a.Target!)
+                    .Include(d => d.Tenant)
+                    .FirstOrDefaultAsync(d => d.Id == deploymentId, ct)
+                    .ConfigureAwait(false);
+                if (dep is null)
+                {
+                    logger.LogWarning("DeploymentWorker: deployment {Id} not found.", deploymentId);
+                    return;
+                }
+                deployment = dep;
+                source = new DeploymentDispatchSource(dep);
             }
 
             // ── Cancellation: dequeue-skip ──────────────────────────────────
@@ -288,52 +316,58 @@ public sealed class DeploymentWorker(
 
             if (targets.Count == 0)
             {
-                await FailAsync(db, deployment, "No target assigned to deployment.", ct)
+                await FailAsync(db, deployment, "No target assigned to task.", ct)
                     .ConfigureAwait(false);
                 return;
             }
 
-            // ── Deployment-freeze gate (M13.F.2) ────────────────────────────
-            // Consulted before EVERY dispatch path (online + offline) so an
-            // operator can't sneak past the gate by configuring a target as
-            // OfflineDrop. The check is cheap (30 s cache; almost always a
-            // dictionary lookup; only the first call per Space per 30 s
-            // round-trips to the DB). Override is gated at the deployment-
-            // CREATE endpoint via DeploymentFreezeOverride permission — by
-            // the time we get here, the deployment has already been
-            // authorised to run, so we just block on raw freeze match.
-            var freezeService = scope.ServiceProvider.GetRequiredService<DeploymentFreezeService>();
-            var blockingFreeze = await freezeService.FindBlockingFreezeAsync(
-                spaceId:       deployment.Release.Project.SpaceId,
-                projectId:     deployment.Release.ProjectId,
-                environmentId: deployment.EnvironmentId,
-                ct:            ct).ConfigureAwait(false);
-            if (blockingFreeze is not null)
+            // ── Freeze gate (M13.F.2) ───────────────────────────────────────
+            // Deployment-only: runbook runs SKIP the freeze gate (Octopus parity
+            // — runbooks are operational tooling that must run during a freeze
+            // window; locked decision 5). Consulted before EVERY deployment
+            // dispatch path (online + offline) so an operator can't sneak past
+            // the gate by configuring a target as OfflineDrop. Cheap (30 s cache).
+            // Override is gated at the deployment-CREATE endpoint via
+            // DeploymentFreezeOverride permission — by the time we get here the
+            // deployment has already been authorised to run, so we block on raw
+            // freeze match. Uses the denormalized ServerTask.SpaceId/ProjectId
+            // (== Release.Project.SpaceId / Release.ProjectId) so no Release
+            // dereference is needed.
+            if (source.AppliesFreezeGate)
             {
-                var msg =
-                    $"Blocked by freeze '{blockingFreeze.Name}' until " +
-                    $"{blockingFreeze.EndUtc:O}. Either wait until the window " +
-                    $"ends or have an operator with DeploymentFreezeOverride " +
-                    $"re-issue the deployment.";
-                logger.LogWarning(
-                    "Deployment {DeploymentId} blocked by freeze {FreezeId} ({FreezeName}); " +
-                    "window ends {EndUtc}.",
-                    deployment.Id, blockingFreeze.Id, blockingFreeze.Name, blockingFreeze.EndUtc);
-                await logSeq.AppendAsync(-1, null, "error", msg, ct).ConfigureAwait(false);
-                // The IAuditLog event tags the deployment + freeze so a
-                // forensic review of "why did Friday's release not ship"
-                // points straight at the freeze + window.
-                var audit = scope.ServiceProvider.GetRequiredService<IAuditLog>();
-                await audit.RecordAsync(
-                    KrakenDeploy.Server.Core.Domain.Audit.AuditEventType.DeploymentBlockedByFreeze,
-                    subjectType: "Deployment",
-                    subjectId:   deployment.Id.ToString(),
-                    details:     $"FreezeId={blockingFreeze.Id}, " +
-                                 $"Freeze={blockingFreeze.Name}, " +
-                                 $"EndUtc={blockingFreeze.EndUtc:O}",
-                    ct: ct).ConfigureAwait(false);
-                await FailAsync(db, deployment, msg, ct).ConfigureAwait(false);
-                return;
+                var freezeService = scope.ServiceProvider.GetRequiredService<DeploymentFreezeService>();
+                var blockingFreeze = await freezeService.FindBlockingFreezeAsync(
+                    spaceId:       deployment.SpaceId,
+                    projectId:     deployment.ProjectId,
+                    environmentId: deployment.EnvironmentId,
+                    ct:            ct).ConfigureAwait(false);
+                if (blockingFreeze is not null)
+                {
+                    var msg =
+                        $"Blocked by freeze '{blockingFreeze.Name}' until " +
+                        $"{blockingFreeze.EndUtc:O}. Either wait until the window " +
+                        $"ends or have an operator with DeploymentFreezeOverride " +
+                        $"re-issue the deployment.";
+                    logger.LogWarning(
+                        "Deployment {DeploymentId} blocked by freeze {FreezeId} ({FreezeName}); " +
+                        "window ends {EndUtc}.",
+                        deployment.Id, blockingFreeze.Id, blockingFreeze.Name, blockingFreeze.EndUtc);
+                    await logSeq.AppendAsync(-1, null, "error", msg, ct).ConfigureAwait(false);
+                    // The IAuditLog event tags the deployment + freeze so a
+                    // forensic review of "why did Friday's release not ship"
+                    // points straight at the freeze + window.
+                    var audit = scope.ServiceProvider.GetRequiredService<IAuditLog>();
+                    await audit.RecordAsync(
+                        KrakenDeploy.Server.Core.Domain.Audit.AuditEventType.DeploymentBlockedByFreeze,
+                        subjectType: "Deployment",
+                        subjectId:   deployment.Id.ToString(),
+                        details:     $"FreezeId={blockingFreeze.Id}, " +
+                                     $"Freeze={blockingFreeze.Name}, " +
+                                     $"EndUtc={blockingFreeze.EndUtc:O}",
+                        ct: ct).ConfigureAwait(false);
+                    await FailAsync(db, deployment, msg, ct).ConfigureAwait(false);
+                    return;
+                }
             }
 
             // ── Offline drop path ───────────────────────────────────────────
@@ -346,8 +380,14 @@ public sealed class DeploymentWorker(
             // mixed set (online + offline-drop) can't dispatch sensibly
             // either way, so it fails with the same message instead of
             // silently treating the offline machine as an online agent.
-            if (targets.Any(t => t.TransportMode == TransportMode.OfflineDrop))
+            // Offline-drop is a DEPLOYMENT-only delivery mode (the bundle is a
+            // physical artifact for a specific machine). A runbook run targeting an
+            // offline-drop machine has no bundle path; it skips this branch and the
+            // online dispatch below drops the (connection-less) target as offline.
+            if (source.SupportsOfflineDrop
+                && targets.Any(t => t.TransportMode == TransportMode.OfflineDrop))
             {
+                var offlineDeployment = (Deployment)deployment;
                 if (targets.Count > 1)
                 {
                     // Static config refusal — deliberately BEFORE the claim so
@@ -381,39 +421,48 @@ public sealed class DeploymentWorker(
                 await using var offlineLease = new ServerTaskLeaseRenewal(
                     scopeFactory, deployment.Id, timeProvider, logger);
 
-                await DispatchOfflineDropAsync(scope.ServiceProvider, db, deployment, targets[0], ct)
+                await DispatchOfflineDropAsync(scope.ServiceProvider, db, offlineDeployment, targets[0], ct)
                     .ConfigureAwait(false);
                 return;
             }
 
-            // ── 1. Resolve project variables ─────────────────────────────────
-            // Releases freeze the project's variables at cut time (Octopus-
-            // style snapshot). The release's VariableSnapshotUpdatedUtc is
-            // the "I have a valid snapshot" marker — it's set by
-            // ReleaseService.CreateAsync and bumped by UpdateVariablesAsync.
-            //
-            // Pre-production policy (see docs/architecture.md): we don't
-            // ship a soft-fallback for the null case. A null timestamp means
-            // the row predates the feature and the deployment refuses to
-            // run until an operator clicks "Update Variables" on the release.
-            // No silent reads from live project variables — the whole point
-            // of the snapshot is reproducibility.
-            //
-            // (Agent-connection check is deferred until after we know whether
-            // any target-side steps need dispatching — fully-server-side
-            // deployments don't require an online agent.)
-            if (deployment.Release.VariableSnapshotUpdatedUtc is null)
+            // Offline drop is deployment-only. A runbook run assigned an
+            // offline-drop target has no bundle path; refuse explicitly BEFORE the
+            // claim (StartedUtc stays null) with a clear message rather than letting
+            // the online path drop the connection-less target as "agent offline",
+            // which would send the operator debugging agent connectivity.
+            if (!source.SupportsOfflineDrop
+                && targets.Any(t => t.TransportMode == TransportMode.OfflineDrop))
             {
-                var msg =
-                    $"Release '{deployment.Release.Version}' has no variable snapshot. " +
-                    "Open the release in the UI and click 'Update Variables' to freeze " +
-                    "the project's current variables into the release, then re-deploy.";
+                await FailAsync(db, deployment,
+                    "Runbook runs cannot target an offline-drop machine — offline drop is a " +
+                    "deployment-only delivery mode. Remove the offline-drop target from the run " +
+                    "(or switch its TransportMode away from OfflineDrop).", ct)
+                    .ConfigureAwait(false);
+                return;
+            }
+
+            // ── 1. Variable-source pre-flight ────────────────────────────────
+            // Deployments execute the release's FROZEN variable snapshot; a null
+            // VariableSnapshotUpdatedUtc means the row predates the feature and the
+            // deployment refuses (pre-production policy: no soft-fallback to live
+            // project variables — reproducibility is the whole point). Runbook runs
+            // resolve variables LIVE and have no snapshot to be missing, so the
+            // accessor returns null and this refusal is skipped for them.
+            //
+            // (Agent-connection check is deferred until after we know whether any
+            // target-side steps need dispatching — fully-server-side tasks don't
+            // require an online agent.)
+            var snapshotRefusal = source.VariableSnapshotRefusal();
+            if (snapshotRefusal is not null)
+            {
                 logger.LogError(
-                    "Deployment {DeploymentId}: refusing to dispatch — release {ReleaseId} " +
-                    "has no variable snapshot (pre-feature row).",
-                    deployment.Id, deployment.Release.Id);
-                await logSeq.AppendAsync(-1, null, "error", msg, ct).ConfigureAwait(false);
-                await FailAsync(db, deployment, msg, ct).ConfigureAwait(false);
+                    "Deployment {DeploymentId}: refusing to dispatch — no variable snapshot " +
+                    "(pre-feature row).",
+                    deployment.Id);
+                await logSeq.AppendAsync(-1, null, "error", snapshotRefusal, ct).ConfigureAwait(false);
+                await FailAsync(db, deployment, snapshotRefusal, ct)
+                    .ConfigureAwait(false);
                 return;
             }
 
@@ -434,7 +483,7 @@ public sealed class DeploymentWorker(
                 .GetRequiredService<IDbContextFactory<KrakenDbContext>>();
             var auditLog = scope.ServiceProvider.GetRequiredService<IAuditLog>();
 
-            var snapshotSteps = deployment.Release.ProcessSnapshot
+            var snapshotSteps = source.ProcessSnapshot
                 .OrderBy(s => s.SortOrder)
                 .ToArray();
 
@@ -451,7 +500,7 @@ public sealed class DeploymentWorker(
             foreach (var target in targets)
             {
                 var ctx = await BuildTargetDispatchContextAsync(
-                    logger, deployment, target, snapshotSteps, variableService,
+                    logger, deployment, source, target, snapshotSteps, variableService,
                     serverBaseUrl, dbFactory, ct).ConfigureAwait(false);
                 contexts[target.Id] = ctx;
                 canonical ??= ctx;
@@ -473,17 +522,17 @@ public sealed class DeploymentWorker(
                 var eventType = w.Kind switch
                 {
                     DeploymentPlanFlattener.WarningKind.ForEachEmpty
-                        => AuditEventType.DeploymentForEachEmpty,
+                        => source.Audit.ForEachEmpty,
                     DeploymentPlanFlattener.WarningKind.ForEachUnresolved
-                        => AuditEventType.DeploymentForEachUnresolved,
-                    _ => AuditEventType.DeploymentForEachEmpty,
+                        => source.Audit.ForEachUnresolved,
+                    _ => source.Audit.ForEachEmpty,
                 };
                 await logSeq.AppendAsync(-1, null,
                     w.Kind == DeploymentPlanFlattener.WarningKind.ForEachEmpty ? "info" : "error",
                     $"--- {w.Source.Name}: {w.Detail} ---", ct).ConfigureAwait(false);
                 await auditLog.RecordAsync(
                     eventType,
-                    subjectType: "Deployment",
+                    subjectType: source.Audit.SubjectType,
                     subjectId:   deployment.Id.ToString(),
                     details:     $"Step={w.Source.Name}, " +
                                  $"Collection={w.CollectionExpression}, " +
@@ -519,8 +568,8 @@ public sealed class DeploymentWorker(
             catch (WavePartitioner.InvalidWaveException ex)
             {
                 await auditLog.RecordAsync(
-                    AuditEventType.DeploymentMixedWaveRefused,
-                    subjectType: "Deployment",
+                    source.Audit.MixedWaveRefused,
+                    subjectType: source.Audit.SubjectType,
                     subjectId:   deployment.Id.ToString(),
                     details:     $"Wave=[{string.Join(", ", ex.WaveSteps.Select(s => s.Name))}], " +
                                  $"ServerSteps=[{string.Join(", ", ex.ServerStepNames)}], " +
@@ -549,7 +598,8 @@ public sealed class DeploymentWorker(
                         required:     snap.Required, ct).ConfigureAwait(false);
                 }
                 await db.SaveChangesAsync(ct).ConfigureAwait(false);
-                await FailAsync(db, deployment, ex.Message, ct).ConfigureAwait(false);
+                await FailAsync(db, deployment, ex.Message, ct)
+                    .ConfigureAwait(false);
                 return;
             }
 
@@ -702,7 +752,7 @@ public sealed class DeploymentWorker(
                     // instead of dispatching leaseless.
                     var serverOutcomes = await RunServerWaveAsync(
                         wave, canonicalCtx.SnapshotByPlanIndex, hasFailed,
-                        outputAccumulator.ServerConditionVarDict, deployment, db, auditLog, logSeq,
+                        outputAccumulator.ServerConditionVarDict, deployment, source.Audit, db, auditLog, logSeq,
                         outputAccumulator.AugmentServerVariables(canonicalCtx.FlatVars),
                         serverRedactor, orchestrationCt).ConfigureAwait(false);
 
@@ -729,8 +779,8 @@ public sealed class DeploymentWorker(
                     if (firstRequiredFailure is not null)
                     {
                         await auditLog.RecordAsync(
-                            AuditEventType.DeploymentRequiredStepFailed,
-                            subjectType: "Deployment",
+                            source.Audit.RequiredStepFailed,
+                            subjectType: source.Audit.SubjectType,
                             subjectId:   deployment.Id.ToString(),
                             details:     $"Step={firstRequiredFailure.Step.Name}",
                             ct: ct).ConfigureAwait(false);
@@ -744,7 +794,7 @@ public sealed class DeploymentWorker(
                         !o.Skipped && !o.Ok && !canonicalCtx.SnapshotByPlanIndex[o.Step.Index].Required))
                     {
                         await LogAndAuditStepFailedNonRequiredAsync(
-                            db, auditLog, logSeq, deployment,
+                            db, auditLog, logSeq, deployment, source.Audit,
                             canonicalCtx.SnapshotByPlanIndex[nonReq.Step.Index], ct).ConfigureAwait(false);
                         hasFailed = true;
                     }
@@ -770,13 +820,13 @@ public sealed class DeploymentWorker(
                     // run down instead of dispatching further batches leaseless.
                     var targetWaveResult = await DispatchTargetWaveAcrossTargetsAsync(
                         wave, aliveTargets, contexts, canonicalCtx.SnapshotByPlanIndex,
-                        snapshotById, failureMode, hasFailed, softFailedTargets, deployment,
+                        snapshotById, failureMode, hasFailed, softFailedTargets, deployment, source.Audit,
                         db, auditLog, logSeq, outputAccumulator, orchestrationCt).ConfigureAwait(false);
 
                     foreach (var dropped in targetWaveResult.DroppedTargets)
                     {
                         await EmitTargetDroppedAsync(
-                            db, auditLog, logSeq, deployment, dropped,
+                            db, auditLog, logSeq, deployment, source.Audit, dropped,
                             wave, ct).ConfigureAwait(false);
                         aliveTargets.Remove(dropped.Target);
                         droppedTargets.Add(dropped);
@@ -814,8 +864,8 @@ public sealed class DeploymentWorker(
                         // legacy signal stays compatible.
                         var lastDrop = droppedTargets.LastOrDefault();
                         await auditLog.RecordAsync(
-                            AuditEventType.DeploymentRequiredStepFailed,
-                            subjectType: "Deployment",
+                            source.Audit.RequiredStepFailed,
+                            subjectType: source.Audit.SubjectType,
                             subjectId:   deployment.Id.ToString(),
                             details:     $"AllTargetsDropped={droppedTargets.Count}, " +
                                          $"LastDrop=Target={lastDrop?.Target.Name}/" +
@@ -851,7 +901,7 @@ public sealed class DeploymentWorker(
                 .GetRequiredService<IDbContextFactory<KrakenDbContext>>()
                 .CreateDbContextAsync(ct).ConfigureAwait(false))
             {
-                var d = await finalDb.Deployments.FindAsync([deployment.Id], ct).ConfigureAwait(false);
+                var d = await finalDb.ServerTasks.FindAsync([deployment.Id], ct).ConfigureAwait(false);
                 finalCompletedUtc = DateTimeOffset.UtcNow;
                 // Never overwrite a TERMINAL status. A concurrent CancelAsync may
                 // have moved this deployment to Cancelled while the final wave
@@ -883,7 +933,7 @@ public sealed class DeploymentWorker(
             // a notification (webhook / email / runbook / AI inspection).
             // Threshold = 0 disables.
             await EmitSlowDeploymentAuditIfNeededAsync(
-                scope.ServiceProvider, deployment, finalCompletedUtc, ct).ConfigureAwait(false);
+                scope.ServiceProvider, deployment, source.Audit, finalCompletedUtc, ct).ConfigureAwait(false);
 
             // ── Phase 3 — per-target slow audit ──────────────────────────
             // Each target's effective duration (max CompletedUtc − min
@@ -893,7 +943,7 @@ public sealed class DeploymentWorker(
             // pinpoint which specific machine slowed a multi-target run,
             // even when the deployment as a whole stayed under threshold.
             await EmitTargetSlowAuditsIfNeededAsync(
-                scope.ServiceProvider, deployment, ct).ConfigureAwait(false);
+                scope.ServiceProvider, deployment, source.Audit, ct).ConfigureAwait(false);
 
             // ── Per-step slow audit (M13.F.3) ────────────────────────────
             // Each TaskStepOutcome's own duration is compared against
@@ -901,7 +951,7 @@ public sealed class DeploymentWorker(
             // step. Threshold = 0 disables. (Previously the knob was persisted
             // + editable but nothing ever emitted the event — now wired.)
             await EmitSlowStepAuditsIfNeededAsync(
-                scope.ServiceProvider, deployment, ct).ConfigureAwait(false);
+                scope.ServiceProvider, deployment, source.Audit, ct).ConfigureAwait(false);
 
             // Terminal: fold any remaining live staging log lines (server-side
             // banners/steps, unreported steps) into per-step blobs. Agent per-step
@@ -914,18 +964,21 @@ public sealed class DeploymentWorker(
                     compactDb, deployment.Id, finalCompletedUtc, ct).ConfigureAwait(false);
             }
 
-            // Retention pruning. The orchestrated deployment finalises HERE — it
-            // never reaches AgentHub's retention trigger, because each target's
+            // Retention pruning. The orchestrated task finalises HERE — it never
+            // reaches AgentHub's retention trigger, because each target's
             // completion resolves via the sub-plan registry and early-returns
             // before that trigger. Fire only on a successful terminal status.
             // Fire-and-forget with its own scope + internal try/catch so a
-            // retention error never fails the deployment (mirrors
-            // AgentHub.PruneRetentionAsync). Deployment-only here; runbook runs are
-            // pruned via AgentHub (their completion DOES reach it), so the two
-            // paths are mutually exclusive per task and cannot double-prune.
+            // retention error never fails the task (mirrors
+            // AgentHub.PruneRetentionAsync). D1: KIND-BRANCHED keep source — a
+            // deployment prunes by lifecycle phase, a runbook run by its fixed
+            // keep per (runbook, environment). Both kinds now finalise through
+            // this orchestrator (never the hub's legacy hand-off finalize), so
+            // the worker owns retention for both — passing the wrong kind here
+            // would silently kill runbook retention.
             if (didSucceed)
             {
-                _ = PruneRetentionAsync(deployment.Id);
+                _ = PruneRetentionAsync(source.Kind, deployment.Id);
             }
 
             logger.LogInformation(
@@ -951,41 +1004,52 @@ public sealed class DeploymentWorker(
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             logger.LogError(ex,
-                "Unhandled error dispatching deployment {DeploymentId}.", deploymentId);
+                "Unhandled error dispatching task {DeploymentId}.", deploymentId);
 
             await using var errorScope = scopeFactory.CreateAsyncScope();
             var errorDb = errorScope.ServiceProvider.GetRequiredService<KrakenDbContext>();
-            // Fresh scope → DefaultSpaceId; load filter-free so a non-Default-Space
-            // deployment is still found, then scope FailAsync to its Space.
-            var dep = await errorDb.Deployments.IgnoreQueryFilters()
-                .FirstOrDefaultAsync(d => d.Id == deploymentId, ct).ConfigureAwait(false);
-            if (dep is not null)
+            // Fresh scope → DefaultSpaceId; load filter-free via the base set (the
+            // TPH subtype materialises, so Kind is set) so a non-Default-Space task
+            // of EITHER kind is still found, then scope FailAsync to its Space. AI
+            // diagnosis is deployment-only.
+            var errTask = await errorDb.ServerTasks.IgnoreQueryFilters()
+                .FirstOrDefaultAsync(t => t.Id == deploymentId, ct).ConfigureAwait(false);
+            if (errTask is not null)
             {
                 using var _ = errorScope.ServiceProvider
-                    .GetRequiredService<ISpaceContext>().WithSpace(dep.SpaceId);
-                await FailAsync(errorDb, dep, ex.Message, ct).ConfigureAwait(false);
+                    .GetRequiredService<ISpaceContext>().WithSpace(errTask.SpaceId);
+                await FailAsync(errorDb, errTask, ex.Message, ct).ConfigureAwait(false);
             }
         }
     }
 
     /// <summary>
-    /// Lifecycle retention prune after a successful orchestrated deployment.
-    /// Opens its own DI scope (the caller's dispatch scope may be torn down before
-    /// this fire-and-forget completes) and swallows errors so retention never fails
-    /// the deployment. Mirrors <c>AgentHub.PruneRetentionAsync</c>.
+    /// Retention prune after a successful orchestrated task. D1: KIND-BRANCHED —
+    /// a deployment prunes by its lifecycle phase's keep window, a runbook run by
+    /// its fixed keep per (runbook, environment). Opens its own DI scope (the
+    /// caller's dispatch scope may be torn down before this fire-and-forget
+    /// completes) and swallows errors so retention never fails the task. Mirrors
+    /// <c>AgentHub.PruneRetentionAsync</c>.
     /// </summary>
-    private async Task PruneRetentionAsync(Guid deploymentId)
+    private async Task PruneRetentionAsync(ServerTaskKind kind, Guid taskId)
     {
         try
         {
             await using var scope = scopeFactory.CreateAsyncScope();
             var retention = scope.ServiceProvider.GetRequiredService<RetentionService>();
-            await retention.PruneAfterDeploymentAsync(deploymentId).ConfigureAwait(false);
+            if (kind == ServerTaskKind.RunbookRun)
+            {
+                await retention.PruneAfterRunbookRunAsync(taskId).ConfigureAwait(false);
+            }
+            else
+            {
+                await retention.PruneAfterDeploymentAsync(taskId).ConfigureAwait(false);
+            }
         }
         catch (Exception ex)
         {
             logger.LogError(ex,
-                "Error running retention pruning for orchestrated deployment {Id}.", deploymentId);
+                "Error running retention pruning for orchestrated task {Id}.", taskId);
         }
     }
 
@@ -1010,6 +1074,7 @@ public sealed class DeploymentWorker(
             // Pre-flight refusals (no snapshot, missing bundle key,
             // server-orchestrated steps, unresolved required ForEach) are
             // terminal for a dispatch — mark Failed, mirroring the online path.
+            // FailAsync derives AI diagnosis from the task kind (deployment here).
             await FailAsync(db, deployment, ex.Message, ct).ConfigureAwait(false);
             return;
         }
@@ -1246,7 +1311,7 @@ public sealed class DeploymentWorker(
     /// the set is enough). A server step without roles always applies (it's
     /// a pure "Run on Server" step). Requires the Targets join loaded.
     /// </summary>
-    private static bool StepAppliesToTarget(Deployment deployment, DeploymentStepPlan step)
+    private static bool StepAppliesToTarget(ServerTask deployment, DeploymentStepPlan step)
     {
         if (step.TargetRoles is null || step.TargetRoles.Count == 0)
         {
@@ -1282,8 +1347,13 @@ public sealed class DeploymentWorker(
             .FirstOrDefaultAsync(ct)
             .ConfigureAwait(false) == DeploymentStatus.Running;
 
+    // D1: operates on the ServerTask base so both kinds finalise through one path.
+    // AI diagnosis is deployment-only — derived HERE from task.Kind (the SINGLE
+    // source, correct in every calling context: main dispatch, the error catch,
+    // and the offline path) rather than a threaded flag. `reason` is recorded to
+    // the ops log for failure correlation.
     private async Task FailAsync(
-        KrakenDbContext db, Deployment deployment, string reason, CancellationToken ct)
+        KrakenDbContext db, ServerTask task, string reason, CancellationToken ct)
     {
         // Never overwrite a TERMINAL status with Failed. A CancelAsync landing
         // while a wave was in flight makes Cancelled the terminal state, and —
@@ -1294,28 +1364,36 @@ public sealed class DeploymentWorker(
         // log-sequence bumps churn the row constantly while a dispatch runs)
         // and closes the old check-then-save race window atomically.
         var failed = await ServerTaskStatusWriter.TryTransitionAsync(
-            db, deployment, static d =>
+            db, task, static t =>
             {
-                d.Status = DeploymentStatus.Failed;
-                d.CompletedUtc = DateTimeOffset.UtcNow;
+                t.Status = DeploymentStatus.Failed;
+                t.CompletedUtc = DateTimeOffset.UtcNow;
                 // B1: terminal — release the dispatch lease.
-                d.ClaimedBy = null;
-                d.LeaseUntil = null;
+                t.ClaimedBy = null;
+                t.LeaseUntil = null;
             }, ct: ct).ConfigureAwait(false);
         if (!failed)
         {
+            // The recorded verdict (cancel / reconciler interrupt) stands — this
+            // call didn't flip the status, so don't announce a failure it didn't
+            // cause.
             return;
         }
 
-        // M11.C — queue an AI diagnosis, but only for deployments that
-        // actually started executing. Pre-flight refusals (no target, no
-        // variable snapshot, blocked by freeze, agent offline at dispatch)
-        // set Failed before StartedUtc is stamped; diagnosing "it never ran"
-        // wastes AI budget + produces no useful analysis. Best-effort
-        // TryWrite on an unbounded channel — never blocks finalisation.
-        if (deployment.StartedUtc is not null)
+        // Ops-log correlation: record WHY the task failed (the task log gets the
+        // operator-facing detail from the callers that pre-append it).
+        logger.LogWarning("Task {Id} ({Kind}) failed: {Reason}", task.Id, task.Kind, reason);
+
+        // M11.C — queue an AI diagnosis, but only for DEPLOYMENTS that actually
+        // started executing. Pre-flight refusals (no target, no variable snapshot,
+        // blocked by freeze, agent offline at dispatch) set Failed before
+        // StartedUtc is stamped; diagnosing "it never ran" wastes AI budget +
+        // produces no useful analysis. Runbook runs have no diagnosis worker at
+        // all. Best-effort TryWrite on an unbounded channel — never blocks
+        // finalisation.
+        if (task.Kind == ServerTaskKind.Deployment && task.StartedUtc is not null)
         {
-            diagnosisChannel.Writer.TryWrite(new TenantWorkItem(_dispatchAccountId.Value, deployment.Id));
+            diagnosisChannel.Writer.TryWrite(new TenantWorkItem(_dispatchAccountId.Value, task.Id));
         }
     }
 
@@ -1358,7 +1436,8 @@ public sealed class DeploymentWorker(
             Guid deploymentId,
             DeploymentStepPlan step,
             StepSnapshot snapshot,
-            Deployment deployment,
+            ServerTask deployment,
+            TaskAuditVocabulary vocab,
             IAuditLog audit,
             LogSequencer logSeq,
             IReadOnlyDictionary<string, string> flatVars,
@@ -1409,8 +1488,8 @@ public sealed class DeploymentWorker(
             {
                 await logSeq.AppendAsync(-1, null, "warning", info.Marker, ct).ConfigureAwait(false);
                 await audit.RecordAsync(
-                    AuditEventType.DeploymentStepRetried,
-                    subjectType: "Deployment",
+                    vocab.StepRetried,
+                    subjectType: vocab.SubjectType,
                     subjectId:   deployment.Id.ToString(),
                     details:     $"Step={snapshot.Name}, " +
                                  $"Attempt={info.Attempt.ToString(CultureInfo.InvariantCulture)}, " +
@@ -1493,7 +1572,7 @@ public sealed class DeploymentWorker(
 
     private static async Task LogAndAuditStepSkippedAsync(
         KrakenDbContext db, IAuditLog audit, LogSequencer logSeq,
-        Deployment deployment, StepSnapshot snapshot,
+        ServerTask deployment, TaskAuditVocabulary vocab, StepSnapshot snapshot,
         StepConditionEvaluator.Decision decision,
         CancellationToken ct)
     {
@@ -1503,11 +1582,11 @@ public sealed class DeploymentWorker(
         // (replaced the pre-M14.3.1 substring-on-Reason heuristic which
         // would silently change behaviour when the reason wording changed).
         var eventType = decision.Kind == StepConditionEvaluator.Kind.Unresolved
-            ? AuditEventType.DeploymentVariableConditionUnresolved
-            : AuditEventType.DeploymentStepSkipped;
+            ? vocab.VariableConditionUnresolved
+            : vocab.StepSkipped;
         await audit.RecordAsync(
             eventType,
-            subjectType: "Deployment",
+            subjectType: vocab.SubjectType,
             subjectId:   deployment.Id.ToString(),
             details:     $"Step={snapshot.Name}, Reason={decision.Reason}",
             ct: ct).ConfigureAwait(false);
@@ -1523,7 +1602,7 @@ public sealed class DeploymentWorker(
     // misleading "timed out after 0s".
     private static async Task LogAndAuditStepTimedOutAsync(
         IAuditLog audit, LogSequencer logSeq,
-        Deployment deployment, StepSnapshot snapshot, int effectiveTimeoutSeconds,
+        ServerTask deployment, TaskAuditVocabulary vocab, StepSnapshot snapshot, int effectiveTimeoutSeconds,
         CancellationToken ct)
     {
         await logSeq.AppendAsync(-1, null, "error",
@@ -1531,8 +1610,8 @@ public sealed class DeploymentWorker(
             $"{effectiveTimeoutSeconds.ToString(CultureInfo.InvariantCulture)}s ---",
             ct).ConfigureAwait(false);
         await audit.RecordAsync(
-            AuditEventType.DeploymentStepTimedOut,
-            subjectType: "Deployment",
+            vocab.StepTimedOut,
+            subjectType: vocab.SubjectType,
             subjectId:   deployment.Id.ToString(),
             details:     $"Step={snapshot.Name}, " +
                          $"TimeoutSeconds={effectiveTimeoutSeconds.ToString(CultureInfo.InvariantCulture)}",
@@ -1541,15 +1620,15 @@ public sealed class DeploymentWorker(
 
     private static async Task LogAndAuditStepFailedNonRequiredAsync(
         KrakenDbContext db, IAuditLog audit, LogSequencer logSeq,
-        Deployment deployment, StepSnapshot snapshot,
+        ServerTask deployment, TaskAuditVocabulary vocab, StepSnapshot snapshot,
         CancellationToken ct)
     {
         await logSeq.AppendAsync(-1, null, "warning",
             $"--- Step '{snapshot.Name}' failed (not required) — " +
             "deployment continues ---", ct).ConfigureAwait(false);
         await audit.RecordAsync(
-            AuditEventType.DeploymentStepFailedNonRequired,
-            subjectType: "Deployment",
+            vocab.StepFailedNonRequired,
+            subjectType: vocab.SubjectType,
             subjectId:   deployment.Id.ToString(),
             details:     $"Step={snapshot.Name}",
             ct: ct).ConfigureAwait(false);
@@ -1564,7 +1643,8 @@ public sealed class DeploymentWorker(
     /// </summary>
     private static async Task EmitSlowDeploymentAuditIfNeededAsync(
         IServiceProvider sp,
-        Deployment deployment,
+        ServerTask deployment,
+        TaskAuditVocabulary vocab,
         DateTimeOffset completedUtc,
         CancellationToken ct)
     {
@@ -1592,13 +1672,13 @@ public sealed class DeploymentWorker(
 
             var audit = sp.GetRequiredService<IAuditLog>();
             await audit.RecordAsync(
-                AuditEventType.DeploymentSlow,
-                subjectType: "Deployment",
+                vocab.Slow,
+                subjectType: vocab.SubjectType,
                 subjectId:   deployment.Id.ToString(),
                 details:     string.Format(
                     System.Globalization.CultureInfo.InvariantCulture,
-                    "DurationMinutes={0:F1}, ThresholdMinutes={1}, ReleaseId={2}",
-                    elapsed.TotalMinutes, threshold, deployment.ReleaseId),
+                    "DurationMinutes={0:F1}, ThresholdMinutes={1}, ProjectId={2}",
+                    elapsed.TotalMinutes, threshold, deployment.ProjectId),
                 ct: ct).ConfigureAwait(false);
         }
         catch
@@ -1624,7 +1704,8 @@ public sealed class DeploymentWorker(
     /// </summary>
     private static async Task EmitTargetSlowAuditsIfNeededAsync(
         IServiceProvider sp,
-        Deployment deployment,
+        ServerTask deployment,
+        TaskAuditVocabulary vocab,
         CancellationToken ct)
     {
         try
@@ -1681,8 +1762,8 @@ public sealed class DeploymentWorker(
                 var duration = (t.End - t.Start).TotalMinutes;
                 var name = nameById.GetValueOrDefault(t.TargetId, t.TargetId.ToString());
                 await audit.RecordAsync(
-                    AuditEventType.DeploymentTargetSlow,
-                    subjectType: "Deployment",
+                    vocab.TargetSlow,
+                    subjectType: vocab.SubjectType,
                     subjectId:   deployment.Id.ToString(),
                     details:     string.Format(
                         CultureInfo.InvariantCulture,
@@ -1708,7 +1789,8 @@ public sealed class DeploymentWorker(
     /// </summary>
     private static async Task EmitSlowStepAuditsIfNeededAsync(
         IServiceProvider sp,
-        Deployment deployment,
+        ServerTask deployment,
+        TaskAuditVocabulary vocab,
         CancellationToken ct)
     {
         try
@@ -1740,8 +1822,8 @@ public sealed class DeploymentWorker(
                     continue;
                 }
                 await audit.RecordAsync(
-                    AuditEventType.DeploymentStepSlow,
-                    subjectType: "Deployment",
+                    vocab.StepSlow,
+                    subjectType: vocab.SubjectType,
                     subjectId:   deployment.Id.ToString(),
                     details:     string.Format(
                         CultureInfo.InvariantCulture,
@@ -1768,7 +1850,8 @@ public sealed class DeploymentWorker(
         KrakenDbContext db,
         IAuditLog auditLog,
         LogSequencer logSeq,
-        Deployment deployment,
+        ServerTask deployment,
+        TaskAuditVocabulary vocab,
         DroppedTargetInfo dropped,
         WavePartitioner.Wave wave,
         CancellationToken ct)
@@ -1787,8 +1870,8 @@ public sealed class DeploymentWorker(
             $"{reasonText}{(dropped.Error is null ? "" : $" — {dropped.Error}")} ---", ct).ConfigureAwait(false);
 
         await auditLog.RecordAsync(
-            AuditEventType.DeploymentTargetDropped,
-            subjectType: "Deployment",
+            vocab.TargetDropped,
+            subjectType: vocab.SubjectType,
             subjectId:   deployment.Id.ToString(),
             details:     $"TargetId={dropped.Target.Id}, " +
                          $"Target={dropped.Target.Name}, " +
@@ -1858,7 +1941,8 @@ public sealed class DeploymentWorker(
         StepSnapshot[] snapshotSteps,
         bool hasFailedAtWaveStart,
         VariableDictionary varDict,
-        Deployment deployment,
+        ServerTask deployment,
+        TaskAuditVocabulary vocab,
         KrakenDbContext db,
         IAuditLog auditLog,
         LogSequencer logSeq,
@@ -1881,7 +1965,7 @@ public sealed class DeploymentWorker(
             if (decision.Action == StepConditionEvaluator.Action.Skip)
             {
                 await LogAndAuditStepSkippedAsync(
-                    db, auditLog, logSeq, deployment, snapshot, decision, ct)
+                    db, auditLog, logSeq, deployment, vocab, snapshot, decision, ct)
                     .ConfigureAwait(false);
                 // M14.5 — record the Skipped outcome so the Steps tab shows
                 // "Skipped: <reason>" instead of leaving an empty row.
@@ -1936,12 +2020,12 @@ public sealed class DeploymentWorker(
             var snap = snapshotSteps[s.Index];
             var (ok, timedOut, attemptCount, startedUtc, effectiveTimeoutSeconds, result) =
                 await RunServerStepWithRetriesAsync(
-                    deployment.Id, s, snap, deployment, auditLog,
+                    deployment.Id, s, snap, deployment, vocab, auditLog,
                     logSeq, flatVars, redactor, ct).ConfigureAwait(false);
             if (timedOut)
             {
                 await LogAndAuditStepTimedOutAsync(
-                    auditLog, logSeq, deployment, snap, effectiveTimeoutSeconds, ct).ConfigureAwait(false);
+                    auditLog, logSeq, deployment, vocab, snap, effectiveTimeoutSeconds, ct).ConfigureAwait(false);
             }
             return new ServerStepOutcome(
                 Step:         s,
@@ -2015,7 +2099,8 @@ public sealed class DeploymentWorker(
             DeploymentPlan plan,
             IReadOnlyList<DeploymentStepPlan> stepsToRun,
             StepSnapshot[] snapshotSteps,
-            Deployment deployment,
+            ServerTask deployment,
+            TaskAuditVocabulary vocab,
             Guid targetId,
             string connectionId,
             IAuditLog auditLog,
@@ -2201,8 +2286,8 @@ public sealed class DeploymentWorker(
                     : " ---"),
                 ct).ConfigureAwait(false);
             await auditLog.RecordAsync(
-                AuditEventType.DeploymentStepRetried,
-                subjectType: "Deployment",
+                vocab.StepRetried,
+                subjectType: vocab.SubjectType,
                 subjectId:   deployment.Id.ToString(),
                 details:     $"TargetWave=[{waveNamesForAudit}], " +
                              $"Attempt={attempt.ToString(CultureInfo.InvariantCulture)}, " +
@@ -2297,7 +2382,8 @@ public sealed class DeploymentWorker(
     private static async Task EmitWaveCollisionsAsync(
         IReadOnlyList<SubPlanStepResult> perStepResults,
         IReadOnlyList<DeploymentStepPlan> waveSteps,
-        Deployment deployment,
+        ServerTask deployment,
+        TaskAuditVocabulary vocab,
         KrakenDbContext db,
         IAuditLog auditLog,
         LogSequencer logSeq,
@@ -2340,8 +2426,8 @@ public sealed class DeploymentWorker(
                 $"parallel siblings [{writersDesc}]; last-writer-wins " +
                 $"in SortOrder → {c.Winner.StepName}={Elide(c.Winner.Value)}.", ct).ConfigureAwait(false);
             await auditLog.RecordAsync(
-                AuditEventType.DeploymentParallelOutputCollision,
-                subjectType: "Deployment",
+                vocab.ParallelOutputCollision,
+                subjectType: vocab.SubjectType,
                 subjectId:   deployment.Id.ToString(),
                 details:     $"Variable={c.VariableName}, " +
                              $"Wave=[{string.Join(", ", waveSteps.Select(p => p.Name))}], " +
@@ -2491,7 +2577,8 @@ public sealed class DeploymentWorker(
     // duplicating this ~130-line body.
     internal static async Task<TargetDispatchContext> BuildTargetDispatchContextAsync(
         ILogger logger,
-        Deployment deployment,
+        ServerTask deployment,
+        ITaskDispatchSource source,
         DeploymentTarget target,
         IReadOnlyList<StepSnapshot> snapshotSteps,
         VariableService variableService,
@@ -2499,21 +2586,16 @@ public sealed class DeploymentWorker(
         IDbContextFactory<KrakenDbContext> dbFactory,
         CancellationToken ct)
     {
-        // Resolve deployment-wide variables + per-step deltas in one pass over
-        // the frozen snapshot. The per-step phase is skipped internally when no
-        // variable is step-scoped (the common case).
+        // D1: resolve deployment-wide variables + per-step deltas via the
+        // kind-correct source — a deployment reads the FROZEN
+        // Release.VariableSnapshot (channel-scoped), a runbook run resolves LIVE
+        // from the project's current variables. The per-step phase is skipped
+        // internally when no variable is step-scoped (the common case).
         var stepIdsAndNames = snapshotSteps
             .Select(s => (s.Id, s.Name))
             .ToList();
-        var stepResolution = await variableService.ResolveFromSnapshotWithStepsAsync(
-            deployment.Release.VariableSnapshot,
-            deployment.EnvironmentId,
-            target.Id,
-            target.Roles,
-            deployment.TenantId,
-            deployment.Release.ChannelId,
-            stepIdsAndNames,
-            ct).ConfigureAwait(false);
+        var stepResolution = await source.ResolveVariablesAsync(
+            variableService, target, stepIdsAndNames, ct).ConfigureAwait(false);
         var rawVars = stepResolution.DeploymentWide;
 
         var varDict = new VariableDictionary();
@@ -2530,16 +2612,7 @@ public sealed class DeploymentWorker(
                 .GetTenantTagCanonicalsAsync(tagDb, tenantIdForTags, ct).ConfigureAwait(false);
         }
 
-        var systemVars = OctopusSystemVariablesBuilder.BuildForDeployment(
-            deployment,
-            deployment.Release,
-            deployment.Release.Project,
-            deployment.Environment,
-            target,
-            deployment.Tenant,
-            deployment.Release.ProcessSnapshot,
-            serverBaseUrl,
-            tenantTagCanonicals);
+        var systemVars = source.BuildSystemVariables(target, serverBaseUrl, tenantTagCanonicals);
 
         var flatVars = new Dictionary<string, string>(systemVars, StringComparer.OrdinalIgnoreCase);
         foreach (var (k, val) in systemVars)
@@ -2718,7 +2791,8 @@ public sealed class DeploymentWorker(
         DeploymentFailureMode failureMode,
         bool deploymentHasFailed,
         HashSet<Guid> softFailedTargets,
-        Deployment deployment,
+        ServerTask deployment,
+        TaskAuditVocabulary vocab,
         KrakenDbContext db,
         IAuditLog auditLog,
         LogSequencer logSeq,
@@ -2761,7 +2835,7 @@ public sealed class DeploymentWorker(
                 if (decision.Action == StepConditionEvaluator.Action.Skip)
                 {
                     await LogAndAuditStepSkippedAsync(
-                        db, auditLog, logSeq, deployment, snapshot, decision, ct)
+                        db, auditLog, logSeq, deployment, vocab, snapshot, decision, ct)
                         .ConfigureAwait(false);
                     await UpsertStepOutcomeAsync(
                         db, deployment.Id, s.Index, snapshot.Name,
@@ -2902,8 +2976,8 @@ public sealed class DeploymentWorker(
                 var batchTargets = string.Join(", ", batch.Select(t => t.Ctx.Target.Name));
                 var waveNames = string.Join(", ", wave.Steps.Select(s => s.Name));
                 await auditLog.RecordAsync(
-                    AuditEventType.DeploymentRollingBatchStarted,
-                    subjectType: "Deployment",
+                    vocab.RollingBatchStarted,
+                    subjectType: vocab.SubjectType,
                     subjectId:   deployment.Id.ToString(),
                     details:     $"RollingGroup={rollingGroupName}, " +
                                  $"Batch={(batchIdx + 1).ToString(CultureInfo.InvariantCulture)}/" +
@@ -2922,7 +2996,7 @@ public sealed class DeploymentWorker(
             }
 
             var batchOutcome = await DispatchOneBatchAsync(
-                batch, deployment, db, auditLog, logSeq, outputAccumulator, ct).ConfigureAwait(false);
+                batch, deployment, vocab, db, auditLog, logSeq, outputAccumulator, ct).ConfigureAwait(false);
 
             // Phase 3 — accumulate drop-outs from this batch into the
             // wave's aggregate; subsequent batches still run (a failed
@@ -2937,8 +3011,8 @@ public sealed class DeploymentWorker(
             {
                 var failedTargetNames = string.Join(", ", batchOutcome.FailedTargets);
                 await auditLog.RecordAsync(
-                    AuditEventType.DeploymentRollingBatchCompleted,
-                    subjectType: "Deployment",
+                    vocab.RollingBatchCompleted,
+                    subjectType: vocab.SubjectType,
                     subjectId:   deployment.Id.ToString(),
                     details:     $"RollingGroup={rollingGroupName}, " +
                                  $"Batch={(batchIdx + 1).ToString(CultureInfo.InvariantCulture)}/" +
@@ -2974,7 +3048,8 @@ public sealed class DeploymentWorker(
 
     private async Task<BatchOutcome> DispatchOneBatchAsync(
         IReadOnlyList<(TargetDispatchContext Ctx, List<DeploymentStepPlan> Steps)> batch,
-        Deployment deployment,
+        ServerTask deployment,
+        TaskAuditVocabulary vocab,
         KrakenDbContext db,
         IAuditLog auditLog,
         LogSequencer logSeq,
@@ -2992,7 +3067,7 @@ public sealed class DeploymentWorker(
             // like the offline whole-plan path.
             var augmentedPlan = outputAccumulator.AugmentPlanForTarget(ctx.Target.Id, ctx.Plan);
             var (waveResult, waveTimedOut, perStepResults) = await DispatchTargetWaveAsync(
-                augmentedPlan, stepsToRun, ctx.SnapshotByPlanIndex, deployment,
+                augmentedPlan, stepsToRun, ctx.SnapshotByPlanIndex, deployment, vocab,
                 ctx.Target.Id, connectionId, auditLog, logSeq, ct)
                 .ConfigureAwait(false);
             return (ctx, stepsToRun, waveResult, waveTimedOut, perStepResults);
@@ -3083,7 +3158,7 @@ public sealed class DeploymentWorker(
             }
 
             await EmitWaveCollisionsAsync(
-                perStepResults, stepsToRun, deployment, db, auditLog, logSeq, ct)
+                perStepResults, stepsToRun, deployment, vocab, db, auditLog, logSeq, ct)
                 .ConfigureAwait(false);
 
             if (waveTimedOut)
@@ -3097,7 +3172,7 @@ public sealed class DeploymentWorker(
                     // DeployRelease ceiling, so the effective timeout is the step's
                     // own explicit TimeoutSeconds.
                     await LogAndAuditStepTimedOutAsync(
-                        auditLog, logSeq, deployment, timeoutStep, timeoutStep.TimeoutSeconds, ct)
+                        auditLog, logSeq, deployment, vocab, timeoutStep, timeoutStep.TimeoutSeconds, ct)
                         .ConfigureAwait(false);
                 }
             }
@@ -3148,7 +3223,7 @@ public sealed class DeploymentWorker(
                     foreach (var failed in failedSteps)
                     {
                         await LogAndAuditStepFailedNonRequiredAsync(
-                            db, auditLog, logSeq, deployment,
+                            db, auditLog, logSeq, deployment, vocab,
                             ctx.SnapshotByPlanIndex[failed.StepIndex], ct)
                             .ConfigureAwait(false);
                     }
@@ -3158,7 +3233,7 @@ public sealed class DeploymentWorker(
                     foreach (var p in stepsToRun)
                     {
                         await LogAndAuditStepFailedNonRequiredAsync(
-                            db, auditLog, logSeq, deployment,
+                            db, auditLog, logSeq, deployment, vocab,
                             ctx.SnapshotByPlanIndex[p.Index], ct).ConfigureAwait(false);
                     }
                 }

@@ -542,10 +542,21 @@ public sealed class AgentHub(
             return;
         }
 
-        // E1: the DB-fallback finalize is legitimate ONLY for the runbook-run
-        // hand-off model — the runbook worker builds one plan, hands it to one
-        // agent, RELEASES the lease, and lets the hub finalize on this callback
-        // (execution-engine.md §8). A DEPLOYMENT is finalized by its orchestrator
+        // D1 engine merge (INTERIM — remove this whole fallback one release after
+        // D1 ships): post-D1 runbook runs orchestrate server-side like deployments
+        // and finalise through the sub-plan registry above, so they no longer take
+        // this hand-off finalize. It stays alive ONLY to finalise LEGACY runbook
+        // runs that the pre-D1 worker handed off (lease released) and that were in
+        // flight ACROSS the upgrade. It is safe for new orchestrated runbook runs:
+        // while one is orchestrated its lease is live (the live-lease refusal below
+        // drops the completion), and once it is terminal the guarded write refuses
+        // a late buffered completion. Companion to reconciler arm 4 (the legacy
+        // ceiling) — delete both together.
+        //
+        // E1: the DB-fallback finalize is legitimate ONLY for the LEGACY runbook-run
+        // hand-off model — the pre-D1 runbook worker (now deleted) built one plan,
+        // handed it to one agent, released the lease, and let the hub finalize on
+        // this callback (execution-engine.md §8). A DEPLOYMENT is finalized by its orchestrator
         // (DeploymentWorker), which resolves every wave through the sub-plan
         // registry above and never falls through here on the happy path. So a
         // deployment reaching this fallback means no open orchestrator slot knew
@@ -568,18 +579,27 @@ public sealed class AgentHub(
             return;
         }
 
-        // Even for a runbook run, refuse the fallback while a lease is still live:
-        // a live lease means the dispatch is still worker-owned (pre-hand-off, or a
-        // draining blue-green slot still renewing), so a completion now is not the
-        // legitimate post-hand-off callback. The reconciler / owning worker keeps
-        // the verdict. A handed-off runbook run has its lease cleared, so the
-        // legitimate path passes straight through.
-        if (task.LeaseUntil is { } leaseUntil && leaseUntil > completedAt)
+        // The fallback is legitimate ONLY for the exact LEGACY pre-D1 hand-off
+        // signature: a RUNNING runbook run whose lease was RELEASED at hand-off
+        // (LeaseUntil == null). Refuse anything else:
+        //  - LeaseUntil != null (live OR expired) → a NEW post-D1 orchestrated run:
+        //    still worker-owned (live lease) or crashed pre-reconcile (expired,
+        //    non-null lease). It finalizes through the sub-plan registry; the
+        //    reconciler owns its orphan verdict. Finalizing here from ONE buffered
+        //    wave completion would mark a MULTI-wave run Succeeded though later
+        //    waves never ran (the runbook analogue of the deployment hole above).
+        //  - Status != Running → a QUEUED run never dispatched (an agent merely
+        //    assigned to it must not flip Queued → Succeeded), or already terminal.
+        // The pre-D1 live-lease-only check accepted both of those; tightening to the
+        // full hand-off signature costs legacy nothing (those runs are Running with a
+        // released lease) and closes the holes.
+        if (task.LeaseUntil is not null || task.Status != DeploymentStatus.Running)
         {
             logger.LogWarning(
-                "CompleteDeployment for runbook run {Id} (dispatch {Dispatch}) refused: lease is " +
-                "still live until {Lease:o} — the dispatch is worker-owned, not handed off; dropping.",
-                deploymentId, dispatchId, leaseUntil);
+                "CompleteDeployment for runbook run {Id} (dispatch {Dispatch}) refused: not a legacy " +
+                "hand-off completion (status {Status}, lease {Lease:o}). New orchestrated runs finalize " +
+                "through the sub-plan registry; the reconciler owns orphan verdicts.",
+                deploymentId, dispatchId, task.Status, task.LeaseUntil);
             return;
         }
 

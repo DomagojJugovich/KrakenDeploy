@@ -2,7 +2,9 @@ using System.Text.Json;
 using FluentAssertions;
 using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.Runbooks;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data.Tests.OrchestratorHarness;
 using KrakenDeploy.Server.Transport;
@@ -147,5 +149,99 @@ public sealed class AgentPackageEntitlementTests(PostgresFixture postgres)
         await harness.CreateDeploymentAsync(releaseId, env.Id, [target]);
 
         return new Graph(target, foreign, primaryPkg, refPkg, stepPkg, tmplPrefix);
+    }
+
+    // ── Runbook-run entitlement (D1 — review fix #2) ─────────────────────────
+
+    [Fact]
+    public async Task Runbook_run_package_and_step_package_downloads_are_entitled_for_its_target()
+    {
+        // Regression for the review's CONFIRMED bug: ReachableSnapshotsAsync scanned
+        // only `a.Task is Deployment` + Release.ProcessSnapshot, so a runbook step's
+        // package/step-package download was denied at the gRPC gate. The fix also
+        // scans RunbookRun assignments + RunbookRun.ProcessSnapshot.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var g = await SeedRunbookAsync(harness);
+        await using var db = harness.CreateContext();
+
+        (await AgentPackageEntitlement.TargetMayDownloadPackageAsync(db, g.Target.Id, g.PrimaryPkg))
+            .Should().BeTrue("the target's runbook run references the primary package");
+        (await AgentPackageEntitlement.TargetMayDownloadPackageAsync(db, g.Target.Id, g.RefPkg))
+            .Should().BeTrue("the target's runbook run references it via PackageReferences");
+        (await AgentPackageEntitlement.TargetMayDownloadStepPackageAsync(db, g.Target.Id, g.StepPkg))
+            .Should().BeTrue("the target's runbook run references this step package");
+        (await AgentPackageEntitlement.TargetMayDownloadPackageAsync(
+                db, g.Target.Id, $"unrelated-{Guid.NewGuid():N}"))
+            .Should().BeFalse("no runbook run of the target references an arbitrary package");
+        (await AgentPackageEntitlement.TargetMayDownloadPackageAsync(db, g.Foreign.Id, g.PrimaryPkg))
+            .Should().BeFalse("a target with no runbook run is entitled to nothing");
+    }
+
+    /// <summary>Seeds a Runbook + Queued RunbookRun whose frozen ProcessSnapshot
+    /// carries a primary package, a referenced package and a step package, assigned
+    /// to <c>Target</c>; <c>Foreign</c> gets nothing.</summary>
+    private static async Task<Graph> SeedRunbookAsync(OrchestratorTestHarness harness)
+    {
+        var tag = Guid.NewGuid().ToString("N")[..8];
+        var primaryPkg = $"rbpkg-primary-{tag}";
+        var refPkg = $"rbpkg-ref-{tag}";
+        var stepPkg = $"rbstep-{tag}";
+
+        var project = await harness.SeedProjectAsync($"rbent-proj-{tag}");
+        var env = await harness.SeedEnvironmentAsync($"rbent-env-{tag}");
+        var target = (await harness.SeedTargetsAsync($"rbent-target-{tag}"))[0];
+        var foreign = (await harness.SeedTargetsAsync($"rbent-foreign-{tag}"))[0];
+
+        var refsJson = JsonSerializer.Serialize(
+            new List<PackageReference> { new() { Name = $"ref-{tag}", PackageId = refPkg } },
+            WebJson);
+        var step = new StepSnapshot
+        {
+            Id = Guid.NewGuid(),
+            Name = "deploy",
+            StepType = "Kraken.Script",
+            PackageId = primaryPkg,
+            PackageVersion = "1.0.0",
+            StepPackageName = stepPkg,
+            StepPackageVersion = "2.0.0",
+            Config = new Dictionary<string, string>
+            {
+                [KrakenScriptConfigKeys.PackageReferences] = refsJson,
+            },
+            SortOrder = 0,
+        };
+
+        await using var db = harness.CreateContext();
+        var runbook = new Runbook
+        {
+            SpaceId = WellKnown.DefaultSpaceId,
+            ProjectId = project.Id,
+            Name = $"rb-{tag}",
+        };
+        db.Add(runbook);
+        await db.SaveChangesAsync();
+
+        var run = new RunbookRun
+        {
+            SpaceId = WellKnown.DefaultSpaceId,
+            ProjectId = project.Id,
+            EnvironmentId = env.Id,
+            RunbookId = runbook.Id,
+            Status = DeploymentStatus.Queued,
+            ProcessSnapshot = [step],
+        };
+        db.Add(run);
+        await db.SaveChangesAsync();
+
+        db.TaskTargetAssignments.Add(new TaskTargetAssignment
+        {
+            TaskId = run.Id,
+            TargetId = target.Id,
+            AddedUtc = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+
+        // Graph.TmplPrefix is unused for the runbook case; reuse the record shape.
+        return new Graph(target, foreign, primaryPkg, refPkg, stepPkg, TmplPrefix: "");
     }
 }

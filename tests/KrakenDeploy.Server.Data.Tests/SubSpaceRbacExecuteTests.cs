@@ -373,7 +373,7 @@ public sealed class SubSpaceRbacExecuteTests(PostgresFixture postgres) : IClassF
             new DisabledAccountContext(), new PermissionEvaluator(postgres, TimeProvider.System));
 
     private RunbookService NewRunbookService() =>
-        new(postgres, new RunbookRunChannel(), TimeProvider.System,
+        new(postgres, Channel.CreateUnbounded<TenantWorkItem>(), TimeProvider.System,
             new DisabledAccountContext(), new PermissionEvaluator(postgres, TimeProvider.System));
 
     // ── Seeding ──────────────────────────────────────────────────────────────

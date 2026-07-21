@@ -7,8 +7,7 @@ namespace KrakenDeploy.Server.Data;
 /// failed-deployment IDs awaiting AI diagnosis. Registered as a singleton so
 /// the orchestrator (<c>DeploymentWorker</c>, writer) and the
 /// <c>DeploymentDiagnosisWorker</c> (reader) share one instance without DI
-/// ambiguity against the deployment-dispatch <c>Channel&lt;Guid&gt;</c> or
-/// <see cref="RunbookRunChannel"/> (same typed-wrapper pattern as the latter).
+/// ambiguity against the shared task-dispatch <c>Channel&lt;TenantWorkItem&gt;</c>.
 /// <para>
 /// Decoupling diagnosis onto its own channel keeps it strictly best-effort:
 /// the orchestrator's <c>FailAsync</c> drops the id and moves on; a slow or

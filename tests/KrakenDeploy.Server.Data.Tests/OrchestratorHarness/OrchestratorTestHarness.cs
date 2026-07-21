@@ -8,6 +8,7 @@ using KrakenDeploy.Server.Core.Domain.Environments;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.Runbooks;
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Variables;
@@ -308,21 +309,106 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         db.Deployments.Add(deployment);
         await db.SaveChangesAsync();
 
-        // Mirror DeploymentService.CreateAsync: strictly increasing AddedUtc
-        // microseconds (timestamptz precision) preserve assignment order
-        // (targets[0] = canonical).
+        AddTargetAssignments(db, deployment.Id, targets);
+        await db.SaveChangesAsync();
+        return deployment.Id;
+    }
+
+    /// <summary>Seeds the target-assignment join for a task, preserving order via
+    /// strictly-increasing <c>AddedUtc</c> microseconds (timestamptz precision) so
+    /// <c>targets[0]</c> is canonical — mirrors <c>DeploymentService.CreateAsync</c>.
+    /// Shared by <see cref="CreateDeploymentAsync"/> and
+    /// <see cref="CreateRunbookRunAsync"/>; the caller saves.</summary>
+    private static void AddTargetAssignments(
+        KrakenDbContext db, Guid taskId, IReadOnlyList<DeploymentTarget> targets)
+    {
         var now = DateTimeOffset.UtcNow;
         for (var i = 0; i < targets.Count; i++)
         {
             db.TaskTargetAssignments.Add(new TaskTargetAssignment
             {
-                TaskId       = deployment.Id,
-                TargetId     = targets[i].Id,
-                AddedUtc     = now.AddMicroseconds(i),
+                TaskId   = taskId,
+                TargetId = targets[i].Id,
+                AddedUtc = now.AddMicroseconds(i),
             });
         }
+    }
+
+    /// <summary>
+    /// D1 parity: inserts a Runbook + RunbookRun row directly (bypassing
+    /// RunbookService.TriggerAsync), freezing <paramref name="steps"/> into the
+    /// run's <see cref="RunbookRun.ProcessSnapshot"/> and seeding the target
+    /// assignment join for multi-target fan-out — the runbook analogue of
+    /// <see cref="CreateDeploymentAsync"/>. Drives the SAME orchestrator via
+    /// <see cref="RunDeploymentAsync"/> (which kind-branches on the loaded task).
+    /// </summary>
+    public async Task<Guid> CreateRunbookRunAsync(
+        Guid projectId,
+        Guid environmentId,
+        IReadOnlyList<DeploymentTarget> targets,
+        IReadOnlyList<StepBuilder> steps,
+        DeploymentFailureMode failureMode = DeploymentFailureMode.BestEffort)
+    {
+        ArgumentNullException.ThrowIfNull(targets);
+        ArgumentNullException.ThrowIfNull(steps);
+        if (targets.Count == 0)
+        {
+            throw new ArgumentException("Need at least one target.", nameof(targets));
+        }
+
+        var runId = await SeedRunbookRunAsync(projectId, environmentId, steps, failureMode);
+
+        await using var db = _postgres.CreateContext();
+        AddTargetAssignments(db, runId, targets);
         await db.SaveChangesAsync();
-        return deployment.Id;
+        return runId;
+    }
+
+    /// <summary>
+    /// Seeds a Runbook + a Queued RunbookRun (optionally freezing <paramref
+    /// name="steps"/> into its <see cref="RunbookRun.ProcessSnapshot"/>) and returns
+    /// the run id — WITHOUT target assignments. The shared shell behind
+    /// <see cref="CreateRunbookRunAsync"/> (which adds targets on top) and the
+    /// bare-run seeding the dispatch-reconciler tests need (no targets, no steps).
+    /// </summary>
+    public async Task<Guid> SeedRunbookRunAsync(
+        Guid projectId,
+        Guid environmentId,
+        IReadOnlyList<StepBuilder>? steps = null,
+        DeploymentFailureMode failureMode = DeploymentFailureMode.BestEffort)
+    {
+        await using var db = _postgres.CreateContext();
+
+        var runbook = new Runbook
+        {
+            SpaceId   = WellKnown.DefaultSpaceId,
+            ProjectId = projectId,
+            Name      = $"rb-{Guid.NewGuid():N}"[..12],
+        };
+        db.Add(runbook);
+        await db.SaveChangesAsync();
+
+        var snapshot = new List<StepSnapshot>();
+        if (steps is not null)
+        {
+            for (var i = 0; i < steps.Count; i++)
+            {
+                snapshot.Add(steps[i].ToSnapshot(i));
+            }
+        }
+        var run = new RunbookRun
+        {
+            SpaceId         = WellKnown.DefaultSpaceId,
+            ProjectId       = projectId,
+            EnvironmentId   = environmentId,
+            RunbookId       = runbook.Id,
+            Status          = DeploymentStatus.Queued,
+            FailureMode     = failureMode,
+            ProcessSnapshot = snapshot,
+        };
+        db.Add(run);
+        await db.SaveChangesAsync();
+        return run.Id;
     }
 
     /// <summary>
@@ -398,6 +484,33 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         }
     }
 
+    /// <summary>Kind-agnostic terminal-status poll over the unified spine — works
+    /// for a RunbookRun id too (unlike <see cref="WaitForTerminalAsync"/>, which
+    /// queries the Deployment-only TPH set). Used by the D1 runbook DeployRelease
+    /// cascade test.</summary>
+    public async Task<ServerTask> WaitForServerTaskTerminalAsync(Guid taskId, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            await using (var db = _postgres.CreateContext())
+            {
+                var t = await db.ServerTasks.IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(x => x.Id == taskId);
+                if (t is not null && t.Status.IsTerminal())
+                {
+                    return t;
+                }
+            }
+            if (DateTime.UtcNow >= deadline)
+            {
+                throw new TimeoutException(
+                    $"Task {taskId} did not reach a terminal status within {timeout}.");
+            }
+            await Task.Delay(50);
+        }
+    }
+
     /// <summary>
     /// Seeds a child project (no lifecycle → the DeployRelease child-create
     /// lifecycle gate passes) plus one target-side release, returning the
@@ -452,6 +565,30 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         return d ?? throw new InvalidOperationException($"Deployment {id} not found.");
     }
 
+    /// <summary>Kind-agnostic getter over the unified spine — resolves EITHER a
+    /// deployment or a runbook run (the TPH subtype materialises). Used by the
+    /// D1 runbook-parity tests, which drive a RunbookRun id through the same
+    /// worker.</summary>
+    public async Task<ServerTask> GetServerTaskAsync(Guid id)
+    {
+        await using var db = _postgres.CreateContext();
+        var t = await db.ServerTasks.FirstOrDefaultAsync(t => t.Id == id);
+        return t ?? throw new InvalidOperationException($"Task {id} not found.");
+    }
+
+    /// <summary>The audit event-type strings recorded against a task id, in
+    /// occurrence order. Lets parity tests assert the kind-branched audit
+    /// vocabulary (RunbookRun.* vs Deployment.*).</summary>
+    public async Task<List<string>> GetAuditEventTypesAsync(Guid subjectId)
+    {
+        await using var db = _postgres.CreateContext();
+        return await db.AuditEntries.IgnoreQueryFilters()
+            .Where(e => e.SubjectId == subjectId.ToString())
+            .OrderBy(e => e.OccurredUtc)
+            .Select(e => e.EventType)
+            .ToListAsync();
+    }
+
     public async Task<List<TaskStepOutcome>> GetOutcomesAsync(Guid deploymentId)
     {
         await using var db = _postgres.CreateContext();
@@ -504,6 +641,23 @@ public sealed class StepBuilder
 
     public static StepBuilder Script(string name, bool required = true)
         => new() { Name = name, StepType = "Octopus.Script", Required = required };
+
+    /// <summary>A "Run on Server" script step (<c>Octopus.Action.RunOnServer =
+    /// "true"</c>). The wave partitioner classifies it server-side, so it runs
+    /// in-process on the orchestrator, NOT on the target agent — the D1 security
+    /// fix for runbook runs (which previously executed RunOnServer steps on the
+    /// target because the partitioner never ran).</summary>
+    public static StepBuilder ServerScript(string name, bool required = true)
+        => new()
+        {
+            Name     = name,
+            StepType = "Octopus.Script",
+            Required = required,
+            Config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Octopus.Action.RunOnServer"] = "true",
+            },
+        };
 
     /// <summary>
     /// A server-side <c>Octopus.DeployRelease</c> step targeting

@@ -122,10 +122,14 @@ public class RetentionService(
     /// Called after a runbook run succeeds. Deletes the oldest successful runs for the
     /// same runbook + environment beyond <see cref="DefaultRunbookRunKeep"/>, so their
     /// log children cascade away with the parent row. Mirrors
-    /// <see cref="PruneAfterDeploymentAsync"/>: only exactly-<see cref="DeploymentStatus.Succeeded"/>
-    /// runs are eligible, so a <c>Queued</c>/<c>Running</c> run and its live log tail
-    /// are never selected. Closes the gap where runbook runs accumulated unbounded
-    /// (deployments were pruned, runbook runs never were).
+    /// <see cref="PruneAfterDeploymentAsync"/>: terminal-success spans BOTH
+    /// <see cref="DeploymentStatus.Succeeded"/> AND
+    /// <see cref="DeploymentStatus.SucceededWithWarnings"/>. D1 makes the latter
+    /// reachable for runbook runs (they now honour failure modes + non-required
+    /// step failures through the unified orchestrator), so counting only
+    /// exactly-Succeeded would leave SucceededWithWarnings runs accumulating
+    /// unbounded — the same gap the deployment path already closes. A
+    /// <c>Queued</c>/<c>Running</c> run and its live log tail are never selected.
     /// </summary>
     public async Task PruneAfterRunbookRunAsync(
         Guid runId, int? keepOverride = null, CancellationToken ct = default)
@@ -166,10 +170,14 @@ public class RetentionService(
         var envId = run.EnvironmentId;
 
         // IDs of successful runs for this runbook+environment, newest first.
+        // Terminal-success = Succeeded OR SucceededWithWarnings (D1: runbook runs
+        // now reach the yellow-badge state via the unified orchestrator's failure
+        // modes). Both count toward the keep window AND are eligible to be pruned.
         var successIds = await db.RunbookRuns
             .Where(r => r.RunbookId == runbookId &&
                         r.EnvironmentId == envId &&
-                        r.Status == DeploymentStatus.Succeeded)
+                        (r.Status == DeploymentStatus.Succeeded ||
+                         r.Status == DeploymentStatus.SucceededWithWarnings))
             .OrderByDescending(r => r.CompletedUtc)
             .Select(r => r.Id)
             .ToListAsync(ct)

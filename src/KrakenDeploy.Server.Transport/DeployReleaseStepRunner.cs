@@ -129,13 +129,18 @@ public sealed class DeployReleaseStepRunner(
             .GetRequiredService<ISpaceContext>().WithSpace(spaceId);
         var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
 
-        // ── Resolve the parent deployment to find environment + target set ──
+        // ── Resolve the parent task to find environment + target set ────────
         // The child cascade inherits the parent's FULL target set from the
         // assignments join. Operator-facing semantic: if you cascade from a
         // multi-target parent, the child runs against the same set of
         // targets — preserving the "release X to environment Y" intent
         // across the cascade boundary.
-        var parent = await db.Deployments
+        // D1: load via db.ServerTasks (NOT db.Deployments) — post-merge a
+        // DeployRelease step can run inside a RUNBOOK RUN (a distinct TPH
+        // subtype db.Deployments excludes), and every member read below
+        // (Targets/SpaceId/EnvironmentId/TenantId/CreatedBy*) lives on the
+        // ServerTask base. The child created below is still a Deployment.
+        var parent = await db.ServerTasks
             .AsNoTracking()
             .Include(d => d.Targets)
             .FirstOrDefaultAsync(d => d.Id == parentDeploymentId, ct)
@@ -143,7 +148,7 @@ public sealed class DeployReleaseStepRunner(
         if (parent is null)
         {
             await AppendLogAsync(parentDeploymentId, "error",
-                "Parent deployment row vanished mid-step.", ct).ConfigureAwait(false);
+                "Parent task row vanished mid-step.", ct).ConfigureAwait(false);
             return false;
         }
 
