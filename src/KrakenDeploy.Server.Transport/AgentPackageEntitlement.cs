@@ -2,6 +2,7 @@ using System.Text.Json;
 using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Releases;
+using KrakenDeploy.Server.Core.Domain.Runbooks;
 using KrakenDeploy.Server.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -95,31 +96,55 @@ public static class AgentPackageEntitlement
     }
 
     /// <summary>
-    /// The release process-snapshots of every deployment dispatched to
-    /// <paramref name="targetId"/> (via the assignment join — the single
-    /// authority for the target set). Release ids are resolved in SQL; the
-    /// snapshots are then materialised (jsonb → CLR) for in-memory scanning.
+    /// The process-snapshots of every task dispatched to <paramref name="targetId"/>
+    /// (via the assignment join — the single authority for the target set), across
+    /// BOTH kinds: a deployment's snapshot lives on its frozen <c>Release</c>, a
+    /// runbook run's on the run row itself. Ids are resolved in SQL; the snapshots
+    /// are then materialised (jsonb → CLR) for in-memory scanning.
+    /// <para>
+    /// D1: runbook runs now dispatch package-carrying steps to agents through the
+    /// unified orchestrator, so their snapshots MUST be entitled too — scanning
+    /// only deployment releases would deny a runbook step's package download at
+    /// the gRPC gate.
+    /// </para>
     /// </summary>
     private static async Task<List<List<StepSnapshot>>> ReachableSnapshotsAsync(
         KrakenDbContext db, Guid targetId, CancellationToken ct)
     {
-        // Package entitlement is a deployment concern (releases pin packages);
-        // restrict the assignment scan to deployment-kind tasks and read the
-        // release id off the Deployment discriminated type.
+        var snapshots = new List<List<StepSnapshot>>();
+
+        // Deployments pin packages via their release snapshot: resolve release ids
+        // off the Deployment discriminated type, then materialise the snapshots.
         var releaseIds = await db.TaskTargetAssignments.IgnoreQueryFilters()
             .Where(a => a.TargetId == targetId && a.Task is Deployment)
             .Select(a => ((Deployment)a.Task).ReleaseId)
             .Distinct()
             .ToListAsync(ct).ConfigureAwait(false);
-        if (releaseIds.Count == 0)
+        if (releaseIds.Count > 0)
         {
-            return [];
+            snapshots.AddRange(await db.Releases.IgnoreQueryFilters()
+                .Where(r => releaseIds.Contains(r.Id))
+                .Select(r => r.ProcessSnapshot)
+                .ToListAsync(ct).ConfigureAwait(false));
         }
 
-        return await db.Releases.IgnoreQueryFilters()
-            .Where(r => releaseIds.Contains(r.Id))
-            .Select(r => r.ProcessSnapshot)
+        // Runbook runs carry their snapshot on the run row (no Release). Resolve
+        // the run ids from the assignment join, then materialise their snapshots —
+        // mirrors the deployment two-step to keep the jsonb projection translatable.
+        var runbookRunIds = await db.TaskTargetAssignments.IgnoreQueryFilters()
+            .Where(a => a.TargetId == targetId && a.Task is RunbookRun)
+            .Select(a => a.TaskId)
+            .Distinct()
             .ToListAsync(ct).ConfigureAwait(false);
+        if (runbookRunIds.Count > 0)
+        {
+            snapshots.AddRange(await db.RunbookRuns.IgnoreQueryFilters()
+                .Where(r => runbookRunIds.Contains(r.Id))
+                .Select(r => r.ProcessSnapshot)
+                .ToListAsync(ct).ConfigureAwait(false));
+        }
+
+        return snapshots;
     }
 
     private static List<string> ReferencedPackageIds(StepSnapshot step)

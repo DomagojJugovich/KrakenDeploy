@@ -90,6 +90,47 @@ public static class AuditEventType
     /// <see cref="DeploymentCancelled"/>; same TaskCancel permission).</summary>
     public const string RunbookRunCancelled = "RunbookRun.Cancelled";
 
+    // ── Runbook orchestration (D1 engine merge) ──────────────────────────────
+    // Additive RunbookRun.* counterparts of the Deployment.* orchestration
+    // events below, emitted when a runbook run executes through the unified
+    // orchestrator (DeploymentWorker). Kept under the RunbookRun.* category so a
+    // "RunbookRun.*" wildcard subscription catches every runbook orchestration
+    // event and a "Deployment.*" subscription never leaks runbook events (the
+    // SubscriptionMatcher matches on the event-type string prefix). NEVER rename
+    // an existing Deployment.* constant — that would break wildcard filters.
+    /// <summary>Runbook analogue of <see cref="DeploymentSlow"/>.</summary>
+    public const string RunbookRunSlow                    = "RunbookRun.Slow";
+    /// <summary>Runbook analogue of <see cref="DeploymentStepSlow"/>.</summary>
+    public const string RunbookRunStepSlow                = "RunbookRun.StepSlow";
+    /// <summary>Runbook analogue of <see cref="DeploymentStepSkipped"/>.</summary>
+    public const string RunbookRunStepSkipped             = "RunbookRun.StepSkipped";
+    /// <summary>Runbook analogue of <see cref="DeploymentStepTimedOut"/>.</summary>
+    public const string RunbookRunStepTimedOut            = "RunbookRun.StepTimedOut";
+    /// <summary>Runbook analogue of <see cref="DeploymentStepRetried"/>.</summary>
+    public const string RunbookRunStepRetried             = "RunbookRun.StepRetried";
+    /// <summary>Runbook analogue of <see cref="DeploymentRequiredStepFailed"/>.</summary>
+    public const string RunbookRunRequiredStepFailed      = "RunbookRun.RequiredStepFailed";
+    /// <summary>Runbook analogue of <see cref="DeploymentStepFailedNonRequired"/>.</summary>
+    public const string RunbookRunStepFailedNonRequired   = "RunbookRun.StepFailedNonRequired";
+    /// <summary>Runbook analogue of <see cref="DeploymentVariableConditionUnresolved"/>.</summary>
+    public const string RunbookRunVariableConditionUnresolved = "RunbookRun.VariableConditionUnresolved";
+    /// <summary>Runbook analogue of <see cref="DeploymentParallelOutputCollision"/>.</summary>
+    public const string RunbookRunParallelOutputCollision = "RunbookRun.ParallelOutputCollision";
+    /// <summary>Runbook analogue of <see cref="DeploymentMixedWaveRefused"/>.</summary>
+    public const string RunbookRunMixedWaveRefused        = "RunbookRun.MixedWaveRefused";
+    /// <summary>Runbook analogue of <see cref="DeploymentForEachEmpty"/>.</summary>
+    public const string RunbookRunForEachEmpty            = "RunbookRun.ForEachEmpty";
+    /// <summary>Runbook analogue of <see cref="DeploymentForEachUnresolved"/>.</summary>
+    public const string RunbookRunForEachUnresolved       = "RunbookRun.ForEachUnresolved";
+    /// <summary>Runbook analogue of <see cref="DeploymentRollingBatchStarted"/>.</summary>
+    public const string RunbookRunRollingBatchStarted     = "RunbookRun.RollingBatchStarted";
+    /// <summary>Runbook analogue of <see cref="DeploymentRollingBatchCompleted"/>.</summary>
+    public const string RunbookRunRollingBatchCompleted   = "RunbookRun.RollingBatchCompleted";
+    /// <summary>Runbook analogue of <see cref="DeploymentTargetDropped"/>.</summary>
+    public const string RunbookRunTargetDropped           = "RunbookRun.TargetDropped";
+    /// <summary>Runbook analogue of <see cref="DeploymentTargetSlow"/>.</summary>
+    public const string RunbookRunTargetSlow              = "RunbookRun.TargetSlow";
+
     /// <summary>B6 — an agent registered with a wire-contract version this
     /// server does not speak. The registration was refused, the connection
     /// removed from the dispatch registry and the target marked Offline; the

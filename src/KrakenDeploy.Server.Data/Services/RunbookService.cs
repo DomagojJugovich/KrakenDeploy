@@ -34,7 +34,11 @@ public interface IRunbookTrigger
 /// </summary>
 public class RunbookService(
     IDbContextFactory<KrakenDbContext> dbFactory,
-    RunbookRunChannel runbookQueue,
+    // D1 engine merge: runbook runs enqueue onto the SHARED task channel the
+    // unified orchestrator (DeploymentWorker) reads — the degraded
+    // RunbookRunWorker + RunbookRunChannel are gone. The worker branches on
+    // ServerTask.Kind when it dequeues.
+    Channel<TenantWorkItem> taskQueue,
     TimeProvider time,
     IAccountContext accountContext,
     IPermissionEvaluator permissions,
@@ -577,7 +581,7 @@ public class RunbookService(
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         var accountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;
-        await runbookQueue.Writer
+        await taskQueue.Writer
             .WriteAsync(new TenantWorkItem(accountId, run.Id), ct)
             .ConfigureAwait(false);
 

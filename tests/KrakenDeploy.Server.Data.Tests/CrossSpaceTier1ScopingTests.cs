@@ -131,7 +131,8 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
     public async Task DeleteStepAsync_cannot_delete_other_space_runbook_step()
     {
         var g = await SeedOtherSpaceGraphAsync();
-        var svc = new RunbookService(postgres, new RunbookRunChannel(),
+        var svc = new RunbookService(postgres,
+            System.Threading.Channels.Channel.CreateUnbounded<KrakenDeploy.Server.Data.TenantWorkItem>(),
             TimeProvider.System,
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             new AllowAllPermissionEvaluator());
@@ -170,7 +171,8 @@ public sealed class CrossSpaceTier1ScopingTests(PostgresFixture postgres)
     public async Task RunbookAddStepAsync_throws_for_other_space_runbook_and_creates_no_process()
     {
         var runbookId = await SeedOtherSpaceRunbookAsync();
-        var svc = new RunbookService(postgres, new RunbookRunChannel(),
+        var svc = new RunbookService(postgres,
+            System.Threading.Channels.Channel.CreateUnbounded<KrakenDeploy.Server.Data.TenantWorkItem>(),
             TimeProvider.System,
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             new AllowAllPermissionEvaluator());

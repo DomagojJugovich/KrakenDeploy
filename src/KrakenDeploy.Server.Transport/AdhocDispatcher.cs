@@ -139,8 +139,8 @@ public sealed class AdhocDispatcher(
                 AgentError: "Agent offline at dispatch."));
         }
 
-        // P3-8 Phase 5 — cross-account dispatch guard (parity with DeploymentWorker /
-        // RunbookRunWorker). A live connection whose recorded account differs from the
+        // P3-8 Phase 5 — cross-account dispatch guard (parity with DeploymentWorker).
+        // A live connection whose recorded account differs from the
         // dispatching account must never receive the script. Defense-in-depth — target
         // ids are globally unique and validated at agent connect — so return a per-target
         // AgentError (not throw) to match the offline short-circuit and keep Task.WhenAll

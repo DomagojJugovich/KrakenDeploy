@@ -1,8 +1,8 @@
+using System.Linq.Expressions;
 using System.Threading.Channels;
 using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
-using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -12,32 +12,36 @@ namespace KrakenDeploy.Server.Data.Jobs;
 /// <summary>
 /// Hangfire recurring job (minutely) AND boot-time reconciler for dispatch —
 /// B1 durable dispatch. The DB row is the source of truth; the in-process
-/// channels are wake-up signals; the worker's atomic claim
+/// channel is a wake-up signal; the worker's atomic claim
 /// (<see cref="ServerTaskLease.TryClaimAsync"/>) makes execution exactly-once.
-/// This job is the at-least-once signaller + orphan recovery, in three steps:
+/// This job is the at-least-once signaller + orphan recovery. Since the D1
+/// engine merge BOTH kinds share the unified orchestrator, so the arms are
+/// (mostly) kind-agnostic:
 /// <list type="number">
-///   <item><b>Due scheduled deployments</b> — <c>Queued</c> with an arrived
-///   <c>ScheduledFor</c> → wake-up. Pure enqueue, no state change (the claim
-///   clears <c>ScheduledFor</c>); a crash mid-job strands nothing.</item>
+///   <item><b>Due scheduled tasks</b> (both kinds) — <c>Queued</c> with an
+///   arrived <c>ScheduledFor</c> → wake-up. Pure enqueue, no state change (the
+///   claim clears <c>ScheduledFor</c>); a crash mid-job strands nothing.</item>
 ///   <item><b>Stale Queued tasks</b> (both kinds) — <c>Queued</c>,
 ///   <c>ScheduledFor == null</c>, older than a short grace: their create-time
 ///   wake-up died with the channel (restart) or was never consumed → re-signal
-///   to the right channel per <see cref="ServerTaskKind"/>.</item>
-///   <item><b>Orphaned Running deployments</b> — lease expired (or never
-///   stamped, e.g. rows from before this feature): the owning process is dead
-///   and its in-memory orchestration state (waves, sub-plan TCS) is
-///   unresumable → conditional flip to <c>Failed</c> + a
-///   <c>Deployment.Interrupted</c> audit row. A LIVE lease is never touched —
-///   that is what keeps a draining blue-green slot's runs safe — and runbook
-///   runs are excluded entirely (after dispatch they are agent-owned; the hub
-///   writes their terminal status even across a server restart).</item>
-///   <item><b>Overdue runbook runs (B3)</b> — the runbook analogue step 3
-///   deliberately skips: a <c>Running</c> run with an EXPIRED lease died
-///   between claim and agent hand-off (the plan never reached the agent);
-///   a <c>Running</c> run with a RELEASED lease is agent-owned, and one whose
-///   <c>StartedUtc</c> exceeds <c>Engine:MaxRunbookRunDuration</c> never got
-///   its completion callback — nothing else can ever finalize either, so both
-///   flip to <c>Failed</c> with their own audit events.</item>
+///   to the shared task channel.</item>
+///   <item><b>Orphaned Running tasks</b> — a Running task whose orchestrating
+///   process died. An EXPIRED lease (either kind) → conditional flip to
+///   <c>Failed</c> + a kind-appropriate <c>*.Interrupted</c> audit row; a LIVE
+///   lease is never touched (keeps a draining blue-green slot's runs safe). The
+///   NULL-lease case is KIND-BRANCHED: a null-lease Running DEPLOYMENT is a
+///   genuine pre-B1 orphan (failed), but a null-lease Running RUNBOOK RUN is a
+///   LEGACY hand-off run (agent-owned, hub-finalised) that arm 4 drains by the
+///   ceiling for one release — applying "null OR expired" to runbook runs would
+///   kill legacy hand-off runs at boot.</item>
+///   <item><b>Legacy runbook-run ceiling (INTERIM — DELETE after one release)</b>
+///   — a pre-D1 runbook run handed off with a RELEASED lease (<c>LeaseUntil
+///   == null</c>) is finalised by the hub on the agent's completion callback. If
+///   that agent died nothing else finalises it, so a run older than
+///   <c>Engine:MaxRunbookRunDuration</c> is failed. Post-D1 runbook runs hold a
+///   live lease for the whole run and are covered by arm 3 + B3, so this arm only
+///   exists to drain runs that were in flight ACROSS the D1 upgrade. Remove it
+///   (and <c>Engine:MaxRunbookRunDuration</c>) one release after D1 ships.</item>
 /// </list>
 /// The same <see cref="ExecuteAsync"/> body runs once at startup (before the
 /// workers begin consuming) and every minute thereafter, so recovery does not
@@ -46,13 +50,11 @@ namespace KrakenDeploy.Server.Data.Jobs;
 /// </summary>
 public sealed class ScheduledDeploymentDispatchJob(
     IDbContextFactory<KrakenDbContext> dbFactory,
-    Channel<TenantWorkItem> deploymentQueue,
-    RunbookRunChannel runbookQueue,
+    Channel<TenantWorkItem> taskQueue,
     TimeProvider time,
     IAccountContext accountContext,
     IAuditLog auditLog,
     IOptions<EngineOptions> engineOptions,
-    IAgentLivenessProbe livenessProbe,
     ILogger<ScheduledDeploymentDispatchJob> logger)
 {
     /// <summary>How long a fresh Queued row is left alone before it is treated
@@ -74,29 +76,31 @@ public sealed class ScheduledDeploymentDispatchJob(
         await SignalDueScheduledAsync(db, now, accountId, ct).ConfigureAwait(false);
         await SignalStaleQueuedAsync(db, now, accountId, ct).ConfigureAwait(false);
         await ReconcileOrphanedRunningAsync(db, now, ct).ConfigureAwait(false);
-        await ReconcileOverdueRunbookRunsAsync(db, now, ct).ConfigureAwait(false);
-        await ReapDisconnectedRunbookRunsAsync(db, now, ct).ConfigureAwait(false);
+        await ReconcileLegacyRunbookCeilingAsync(db, now, ct).ConfigureAwait(false);
     }
 
-    // ── 1. Due scheduled deployments ─────────────────────────────────────────
+    // ── 1. Due scheduled tasks (both kinds) ──────────────────────────────────
 
     private async Task SignalDueScheduledAsync(
         KrakenDbContext db, DateTimeOffset now, Guid accountId, CancellationToken ct)
     {
-        // Deployment-kind only — runbook triggers never set ScheduledFor.
-        // IgnoreQueryFilters: dispatch is space-agnostic.
-        var dueIds = await db.Deployments
+        // D1: both kinds may carry a future ScheduledFor (deployments today;
+        // runbook runs once the Phase-2 trigger surface sets it). The unified
+        // worker branches on Kind when it dequeues, so a single wake-up onto the
+        // shared channel dispatches either kind. IgnoreQueryFilters: dispatch is
+        // space-agnostic.
+        var dueIds = await db.ServerTasks
             .IgnoreQueryFilters()
-            .Where(d => d.Status == DeploymentStatus.Queued
-                     && d.ScheduledFor != null
-                     && d.ScheduledFor <= now)
-            .Select(d => d.Id)
+            .Where(t => t.Status == DeploymentStatus.Queued
+                     && t.ScheduledFor != null
+                     && t.ScheduledFor <= now)
+            .Select(t => t.Id)
             .ToListAsync(ct)
             .ConfigureAwait(false);
 
         foreach (var id in dueIds)
         {
-            await deploymentQueue.Writer
+            await taskQueue.Writer
                 .WriteAsync(new TenantWorkItem(accountId, id), ct)
                 .ConfigureAwait(false);
         }
@@ -104,7 +108,7 @@ public sealed class ScheduledDeploymentDispatchJob(
         if (dueIds.Count > 0)
         {
             logger.LogInformation(
-                "ScheduledDeploymentDispatch: signalled {Count} due scheduled deployment(s).",
+                "ScheduledDeploymentDispatch: signalled {Count} due scheduled task(s).",
                 dueIds.Count);
         }
     }
@@ -115,69 +119,71 @@ public sealed class ScheduledDeploymentDispatchJob(
         KrakenDbContext db, DateTimeOffset now, Guid accountId, CancellationToken ct)
     {
         var staleBefore = now - StaleQueuedGrace;
-        var stale = await db.ServerTasks
+        var staleIds = await db.ServerTasks
             .IgnoreQueryFilters()
             .Where(t => t.Status == DeploymentStatus.Queued
                      && t.ScheduledFor == null
                      && t.CreatedUtc < staleBefore)
-            .Select(t => new { t.Id, t.Kind })
+            .Select(t => t.Id)
             .ToListAsync(ct)
             .ConfigureAwait(false);
 
-        foreach (var task in stale)
+        // D1: one shared channel for both kinds — no per-kind channel branch.
+        foreach (var id in staleIds)
         {
-            var item = new TenantWorkItem(accountId, task.Id);
-            if (task.Kind == ServerTaskKind.RunbookRun)
-            {
-                await runbookQueue.Writer.WriteAsync(item, ct).ConfigureAwait(false);
-            }
-            else
-            {
-                await deploymentQueue.Writer.WriteAsync(item, ct).ConfigureAwait(false);
-            }
+            await taskQueue.Writer
+                .WriteAsync(new TenantWorkItem(accountId, id), ct)
+                .ConfigureAwait(false);
         }
 
-        if (stale.Count > 0)
+        if (staleIds.Count > 0)
         {
             logger.LogWarning(
                 "Dispatch reconcile: re-signalled {Count} stale Queued task(s) whose original " +
                 "wake-up was lost (server restart or dropped channel write).",
-                stale.Count);
+                staleIds.Count);
         }
     }
 
-    // ── 3. Orphaned Running deployments ──────────────────────────────────────
+    // ── 3. Orphaned Running tasks (both kinds) ───────────────────────────────
 
     private async Task ReconcileOrphanedRunningAsync(
         KrakenDbContext db, DateTimeOffset now, CancellationToken ct)
     {
-        // Candidates: Running DEPLOYMENTS whose lease expired or was never
-        // stamped. Runbook runs are structurally excluded (db.Deployments is the
-        // TPH subtype set): once dispatched they are agent-owned and the hub
-        // finalises them across restarts.
-        var orphans = await db.Deployments
+        // Candidates: Running tasks whose orchestrating process died. D1: both
+        // kinds now hold (and renew) a live lease for the whole orchestration, so
+        // an EXPIRED lease (LeaseUntil < now — SQL excludes nulls) means the owner
+        // died and the in-memory wave/sub-plan state is unresumable → fail it,
+        // regardless of kind.
+        //
+        // The NULL-lease case is KIND-BRANCHED (the two-release trap): a null-lease
+        // Running DEPLOYMENT is a genuine pre-B1 orphan (fail it), but a null-lease
+        // Running RUNBOOK RUN is a LEGACY run handed off by the pre-D1 worker
+        // (agent-owned, hub-finalised) — arm 4 drains those by the ceiling for one
+        // release. Applying the deployment's "null OR expired" to runbook runs
+        // would kill legacy hand-off runs at boot.
+        var orphans = await db.ServerTasks
             .IgnoreQueryFilters()
-            .Where(d => d.Status == DeploymentStatus.Running
-                     && (d.LeaseUntil == null || d.LeaseUntil < now))
-            .Select(d => new { d.Id, d.ClaimedBy, d.LeaseUntil })
+            .Where(OrphanedRunningPredicate(now))
+            .Select(t => new { t.Id, t.Kind, t.ClaimedBy, t.LeaseUntil })
             .ToListAsync(ct)
             .ConfigureAwait(false);
 
         foreach (var orphan in orphans)
         {
-            // Conditional flip — the WHERE re-checks status AND lease so a run
-            // whose owner renewed (or finished) between the SELECT and this
+            // Conditional flip — re-apply the SAME predicate (shared factory, so the
+            // re-check can never drift from the candidate SELECT) plus the id, so a
+            // task whose owner renewed (or finished) between the SELECT and this
             // UPDATE is left alone. Fail-closed against killing live work.
-            var rows = await db.Deployments
+            var rows = await db.ServerTasks
                 .IgnoreQueryFilters()
-                .Where(d => d.Id == orphan.Id
-                         && d.Status == DeploymentStatus.Running
-                         && (d.LeaseUntil == null || d.LeaseUntil < now))
+                .Where(OrphanedRunningPredicate(now))
+                .Where(t => t.Id == orphan.Id)
                 .ExecuteUpdateAsync(s => s
-                        .SetProperty(d => d.Status, DeploymentStatus.Failed)
-                        .SetProperty(d => d.CompletedUtc, now)
-                        .SetProperty(d => d.ClaimedBy, (string?)null)
-                        .SetProperty(d => d.LeaseUntil, (DateTimeOffset?)null),
+                        .SetProperty(t => t.Status, DeploymentStatus.Failed)
+                        .SetProperty(t => t.CompletedUtc, now)
+                        .SetProperty(t => t.ClaimedBy, (string?)null)
+                        .SetProperty(t => t.LeaseUntil, (DateTimeOffset?)null),
                     ct)
                 .ConfigureAwait(false);
             if (rows == 0)
@@ -185,15 +191,23 @@ public sealed class ScheduledDeploymentDispatchJob(
                 continue;
             }
 
+            // Additive audit vocabulary: never rename Deployment.Interrupted.
+            var (eventType, subjectType) = orphan.Kind == ServerTaskKind.RunbookRun
+                ? (AuditEventType.RunbookRunInterrupted, "RunbookRun")
+                : (AuditEventType.DeploymentInterrupted, "Deployment");
+
+            // "expired/absent lease" — the predicate reaps an EXPIRED (non-null)
+            // lease for either kind AND a null (never-stamped) lease for a
+            // pre-B1 deployment, so {Lease} may render empty for the latter.
             logger.LogWarning(
-                "Dispatch reconcile: deployment {Id} was Running with an expired/absent lease " +
+                "Dispatch reconcile: {Kind} {Id} was Running with an expired/absent lease " +
                 "(owner {Owner}, lease {Lease}) — its orchestrating process died; marked Failed.",
-                orphan.Id, orphan.ClaimedBy ?? "<none>", orphan.LeaseUntil);
+                orphan.Kind, orphan.Id, orphan.ClaimedBy ?? "<none>", orphan.LeaseUntil);
 
             // ExecuteUpdate bypasses the audit interceptor — record explicitly.
             await auditLog.RecordAsync(
-                AuditEventType.DeploymentInterrupted,
-                subjectType: "Deployment",
+                eventType,
+                subjectType: subjectType,
                 subjectId:   orphan.Id.ToString(),
                 details:     $"Interrupted by server crash/restart: the dispatch lease " +
                              $"(owner {orphan.ClaimedBy ?? "<none>"}, expiry " +
@@ -203,72 +217,39 @@ public sealed class ScheduledDeploymentDispatchJob(
         }
     }
 
-    // ── 4. Overdue runbook runs (B3) ─────────────────────────────────────────
+    /// <summary>
+    /// Single source for the orphaned-Running predicate so the candidate SELECT and
+    /// the conditional-flip UPDATE re-check can never drift (they MUST match for the
+    /// optimistic re-check to be sound). An EXPIRED (non-null) lease is orphaned for
+    /// EITHER kind; a NULL (never-stamped) lease is a pre-B1 orphan ONLY for a
+    /// deployment — a null-lease runbook run is a legacy hand-off drained by arm 4.
+    /// </summary>
+    private static Expression<Func<ServerTask, bool>> OrphanedRunningPredicate(DateTimeOffset now)
+        => t => t.Status == DeploymentStatus.Running
+             && (t.LeaseUntil < now
+                 || (t.LeaseUntil == null && t.Kind == ServerTaskKind.Deployment));
 
-    private async Task ReconcileOverdueRunbookRunsAsync(
+    // ── 4. Legacy runbook-run ceiling (INTERIM — DELETE after one release) ────
+
+    /// <summary>
+    /// D1 transition arm: a runbook run handed off by the PRE-D1 worker released
+    /// its lease at hand-off (<c>LeaseUntil == null</c>) and was finalised by the
+    /// hub on the agent's completion callback. If that agent died nothing else can
+    /// finalise the row, so a run older than <c>Engine:MaxRunbookRunDuration</c>
+    /// is failed. Post-D1 runbook runs hold a live lease for the whole run (arm 3
+    /// covers a dead orchestrator; B3 covers a dead agent), so this arm ONLY
+    /// drains runs that were in flight ACROSS the D1 upgrade. DELETE this arm and
+    /// <c>Engine:MaxRunbookRunDuration</c> one release after D1 ships.
+    /// <para>
+    /// The pre-D1 <c>ReapDisconnectedRunbookRunsAsync</c> (E9 interim disconnect
+    /// reap via <c>IAgentLivenessProbe</c>) and the pre-hand-off expired-lease arm
+    /// are GONE: post-D1 runbook runs go through B3's wave-level disconnect monitor
+    /// and arm 3's lease reconcile like deployments.
+    /// </para>
+    /// </summary>
+    private async Task ReconcileLegacyRunbookCeilingAsync(
         KrakenDbContext db, DateTimeOffset now, CancellationToken ct)
     {
-        // 4a — dispatch died PRE-hand-off: Running with an EXPIRED lease. The
-        // worker holds (and renews) the lease only between the atomic claim and
-        // the RunDeploymentAsync push; an expired lease means that process died
-        // and the plan never reached the agent. Step 3 deliberately excludes
-        // runbook runs because a RELEASED lease is their normal agent-owned
-        // state — this is their equivalent for the pre-hand-off window.
-        var preHandoffOrphans = await db.RunbookRuns
-            .IgnoreQueryFilters()
-            .Where(r => r.Status == DeploymentStatus.Running
-                     && r.LeaseUntil != null && r.LeaseUntil < now)
-            .Select(r => new { r.Id, r.ClaimedBy, r.LeaseUntil })
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
-
-        foreach (var orphan in preHandoffOrphans)
-        {
-            // Conditional flip — fail-closed against racing a live owner that
-            // renewed or handed off between the SELECT and this UPDATE.
-            var rows = await db.RunbookRuns
-                .IgnoreQueryFilters()
-                .Where(r => r.Id == orphan.Id
-                         && r.Status == DeploymentStatus.Running
-                         && r.LeaseUntil != null && r.LeaseUntil < now)
-                .ExecuteUpdateAsync(s => s
-                        .SetProperty(r => r.Status, DeploymentStatus.Failed)
-                        .SetProperty(r => r.CompletedUtc, now)
-                        .SetProperty(r => r.ClaimedBy, (string?)null)
-                        .SetProperty(r => r.LeaseUntil, (DateTimeOffset?)null),
-                    ct)
-                .ConfigureAwait(false);
-            if (rows == 0)
-            {
-                continue;
-            }
-
-            logger.LogWarning(
-                "Dispatch reconcile: runbook run {Id} was Running with an expired lease " +
-                "(owner {Owner}, lease {Lease}) — the dispatching process died before the " +
-                "agent hand-off; marked Failed.",
-                orphan.Id, orphan.ClaimedBy ?? "<none>", orphan.LeaseUntil);
-
-            await auditLog.RecordAsync(
-                AuditEventType.RunbookRunInterrupted,
-                subjectType: "RunbookRun",
-                subjectId:   orphan.Id.ToString(),
-                details:     $"Interrupted by server crash/restart: the dispatch lease " +
-                             $"(owner {orphan.ClaimedBy ?? "<none>"}, expiry " +
-                             $"{orphan.LeaseUntil?.ToString("O") ?? "<never stamped>"}) expired " +
-                             "before the agent hand-off; the plan never reached the agent. " +
-                             "Marked Failed.",
-                ct:          ct).ConfigureAwait(false);
-        }
-
-        // 4b — agent-owned run never finished: the lease is RELEASED at
-        // hand-off and the hub finalizes on the agent's completion callback.
-        // If the agent died (or lost the run) nothing else can ever finalize
-        // the row, so a run older than Engine:MaxRunbookRunDuration is failed.
-        // The B2 agent buffers and re-sends completions across reconnects, so
-        // a run still genuinely in flight is finalized by the flush long before
-        // a sane ceiling; a late completion AFTER this reap is swallowed by the
-        // hub's IsTerminal guard.
         var ceiling = engineOptions.Value.MaxRunbookRunDuration;
         if (ceiling <= TimeSpan.Zero)
         {
@@ -305,8 +286,8 @@ public sealed class ScheduledDeploymentDispatchJob(
             }
 
             logger.LogWarning(
-                "Dispatch reconcile: runbook run {Id} started {Started} and never reported " +
-                "completion within {Ceiling} — marked Failed.",
+                "Dispatch reconcile: legacy runbook run {Id} started {Started} and never reported " +
+                "completion within {Ceiling} — marked Failed (pre-D1 hand-off run).",
                 run.Id, run.StartedUtc, ceiling);
 
             await auditLog.RecordAsync(
@@ -315,103 +296,8 @@ public sealed class ScheduledDeploymentDispatchJob(
                 subjectId:   run.Id.ToString(),
                 details:     $"Agent never reported completion: started {run.StartedUtc:O}, " +
                              $"exceeded Engine:MaxRunbookRunDuration ({ceiling}). Marked Failed. " +
-                             "A late agent completion will be ignored (terminal-status guard).",
-                ct:          ct).ConfigureAwait(false);
-        }
-    }
-
-    // ── 4c. Disconnect-aware runbook reap (E9 — INTERIM) ─────────────────────
-
-    /// <summary>
-    /// E9 (INTERIM — superseded by the D1 engine merge, after which B3's
-    /// wave-level disconnect monitor applies to runbook runs too; DELETE THIS
-    /// then). Runbook runs bypass the wave machinery (no sub-plan slot, lease
-    /// released at hand-off), so the B3 disconnect monitor never engages: a
-    /// killed agent leaves the run <c>Running</c> until the
-    /// <c>Engine:MaxRunbookRunDuration</c> ceiling (default 1 h). This fails an
-    /// agent-owned run whose single assigned target has been continuously
-    /// disconnected past <see cref="EngineOptions.AgentDisconnectWaveGrace"/>
-    /// instead — the same grace the deployment monitor uses.
-    /// <para>
-    /// "Continuously disconnected" combines two signals, fail-closed (both must
-    /// agree before reaping live-looking work): the target's
-    /// <c>LastSeenUtc</c> heartbeat is older than the grace (the scale-out-safe,
-    /// shared-DB signal — a live agent heartbeats every 30 s) AND the node-local
-    /// connection registry has no live tunnel for it right now
-    /// (<see cref="IAgentLivenessProbe"/>). A target the registry still sees as
-    /// connected (e.g. just reconnected, heartbeat not yet flushed) is left alone.
-    /// </para>
-    /// </summary>
-    private async Task ReapDisconnectedRunbookRunsAsync(
-        KrakenDbContext db, DateTimeOffset now, CancellationToken ct)
-    {
-        var grace = engineOptions.Value.AgentDisconnectWaveGrace;
-        if (grace <= TimeSpan.Zero)
-        {
-            return; // disconnect monitor disabled (mirrors the wave monitor)
-        }
-
-        var disconnectedBefore = now - grace;
-
-        // Agent-owned runbook runs (lease released at hand-off) still Running,
-        // joined to their single assigned target's last heartbeat. The target set
-        // is the authority (task_target_assignments); a runbook run has exactly one.
-        var candidates = await (
-            from r in db.RunbookRuns.IgnoreQueryFilters()
-            where r.Status == DeploymentStatus.Running
-               && r.LeaseUntil == null
-               && r.StartedUtc != null
-            join a in db.TaskTargetAssignments.IgnoreQueryFilters() on r.Id equals a.TaskId
-            join t in db.DeploymentTargets.IgnoreQueryFilters() on a.TargetId equals t.Id
-            select new { RunId = r.Id, a.TargetId, t.LastSeenUtc })
-            .ToListAsync(ct)
-            .ConfigureAwait(false);
-
-        foreach (var c in candidates)
-        {
-            // Heartbeat still fresh → the agent is alive, not disconnected.
-            if (c.LastSeenUtc is { } seen && seen > disconnectedBefore)
-            {
-                continue;
-            }
-            // Registry still sees a live tunnel (reconnected on this node) → leave it.
-            if (livenessProbe.IsTargetConnected(c.TargetId))
-            {
-                continue;
-            }
-
-            // Conditional flip — fail-closed against a live owner that reclaimed a
-            // lease (hand-off retry) between the SELECT and this UPDATE.
-            var rows = await db.RunbookRuns
-                .IgnoreQueryFilters()
-                .Where(r => r.Id == c.RunId
-                         && r.Status == DeploymentStatus.Running
-                         && r.LeaseUntil == null)
-                .ExecuteUpdateAsync(s => s
-                        .SetProperty(r => r.Status, DeploymentStatus.Failed)
-                        .SetProperty(r => r.CompletedUtc, now),
-                    ct)
-                .ConfigureAwait(false);
-            if (rows == 0)
-            {
-                continue;
-            }
-
-            logger.LogWarning(
-                "Dispatch reconcile: runbook run {Id}'s target {Target} has been " +
-                "disconnected longer than {Grace} (last seen {LastSeen}); the agent died " +
-                "mid-run — marked Failed.",
-                c.RunId, c.TargetId, grace, c.LastSeenUtc);
-
-            await auditLog.RecordAsync(
-                AuditEventType.RunbookRunInterrupted,
-                subjectType: "RunbookRun",
-                subjectId:   c.RunId.ToString(),
-                details:     $"Agent disconnected mid-run: target {c.TargetId} was continuously " +
-                             $"disconnected past Engine:AgentDisconnectWaveGrace ({grace}), last seen " +
-                             $"{c.LastSeenUtc?.ToString("O") ?? "<never>"}. Runbook runs bypass the B3 " +
-                             "wave monitor, so the dispatch reconciler fails them. Marked Failed; a late " +
-                             "agent completion will be ignored (terminal-status guard).",
+                             "A late agent completion will be ignored (terminal-status guard). " +
+                             "Legacy pre-D1 hand-off run — this arm is removed one release after D1.",
                 ct:          ct).ConfigureAwait(false);
         }
     }

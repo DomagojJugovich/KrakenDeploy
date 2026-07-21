@@ -8,9 +8,10 @@ namespace KrakenDeploy.Server.Data.Services;
 /// <summary>
 /// Parses a step's <c>Octopus.Action.Package.PackageReferences</c> JSON-encoded
 /// array and resolves any missing <c>Version</c> fields to the latest uploaded
-/// version of each <c>PackageId</c>. Used by <c>DeploymentWorker</c> and
-/// <c>RunbookRunWorker</c> when building <c>DeploymentStepPlan</c>s for the
-/// agent so the agent doesn't have to talk to the package store catalog itself.
+/// version of each <c>PackageId</c>. Used by <c>DeploymentWorker</c> (the unified
+/// orchestrator for both deployments and runbook runs) when building
+/// <c>DeploymentStepPlan</c>s for the agent so the agent doesn't have to talk to
+/// the package store catalog itself.
 /// <para>
 /// Resolution model is "latest at dispatch time" for unpinned references — the
 /// release-snapshot pin for primary packages already covers reproducibility;

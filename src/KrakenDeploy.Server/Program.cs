@@ -665,8 +665,10 @@ public static class Program
         // (Space-scoped DB) with Hangfire system jobs (instance-wide). Scoped
         // to compose the scoped Deployment/Runbook services directly.
         builder.Services.AddScoped<ServerTasksService>();
+        // D1 engine merge: DeploymentWorker is the SINGLE orchestrator for both
+        // kinds (it branches on ServerTask.Kind at dequeue). The degraded
+        // RunbookRunWorker is gone; runbook runs enqueue onto the same channel.
         builder.Services.AddHostedService<DeploymentWorker>();
-        builder.Services.AddHostedService<RunbookRunWorker>();
         // Blue-green slot telemetry (docs/blue-green-slot-deployment.md §5): the
         // in-flight dispatch gauge + live circuit counter this instance reports on
         // /slot-metrics so a Draining release can be retired at zero. The counter is
@@ -688,9 +690,6 @@ public static class Program
         // after recording the Cancelled verdict; the agent kills the running
         // step's process tree).
         builder.Services.AddSingleton<IAgentCancelPusher, AgentCancelPusher>();
-        // E9 (INTERIM — deleted by the D1 engine merge) — read-only agent-liveness
-        // probe the dispatch reconciler uses to reap runbook runs whose agent died.
-        builder.Services.AddSingleton<IAgentLivenessProbe, AgentLivenessProbe>();
         // M11.E.7 — per-target adhoc-script dispatch + result collation.
         builder.Services.AddSingleton<IPendingAdhocRegistry, PendingAdhocRegistry>();
         builder.Services.AddSingleton<IAdhocAgentPusher, HubContextAdhocAgentPusher>();
