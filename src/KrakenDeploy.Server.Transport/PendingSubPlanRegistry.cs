@@ -146,8 +146,8 @@ public interface IPendingSubPlanRegistry
     /// retired attempt so a superseded/timed-out attempt's outbox flush cannot
     /// interleave noise into the current attempt's log.
     /// <see cref="Guid.Empty"/> (legacy/offline plans) is never retired, and an
-    /// unknown id (runbook hand-offs never register slots; post-restart the set
-    /// is empty) is NOT retired — only positive knowledge drops a line.
+    /// unknown id (post-restart the set is empty) is NOT retired — only
+    /// positive knowledge drops a line.
     /// </summary>
     bool IsRetiredDispatch(Guid dispatchId);
 }

@@ -91,7 +91,6 @@ public sealed class DeploymentSchedulingTests(PostgresFixture postgres)
         var job = new ScheduledDeploymentDispatchJob(
             postgres, queue, TimeProvider.System,
             new DisabledAccountContext(), new NullAuditLog(),
-            Microsoft.Extensions.Options.Options.Create(new EngineOptions()),
             NullLogger<ScheduledDeploymentDispatchJob>.Instance);
 
         // Two overlapping/retried job runs → two wake-ups (at-least-once is fine;

@@ -42,14 +42,15 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
 
     // ── CompleteDeploymentAsync ──────────────────────────────────────────────
 
-    // NOTE (E1): the hub's DB-fallback finalize is now restricted to RUNBOOK
-    // RUNS (the hand-off model) — a deployment completion reaching the fallback
-    // is dropped, because a deployment is finalized by its orchestrator, never by
-    // the hub. So these ownership/B5 tests exercise the finalize path via a
-    // runbook run (its legitimate user); the deployment-drop behaviour itself is
-    // covered by AgentHubFallbackFinalizeTests. The ownership PREDICATE is
-    // kind-agnostic (see AgentDeploymentOwnership_matches_only_assigned_targets +
-    // the AppendLog / ReportStepCompleted cases below, which use deployments).
+    // NOTE (E1 → D1 Phase 3): the hub NEVER finalizes a task — a completion
+    // with no open orchestrator slot is dropped for either kind (the legacy
+    // runbook hand-off finalize was deleted with reconciler arm 4; the drop
+    // behaviour is covered by AgentHubFallbackFinalizeTests). The two tests
+    // below stay as tripwires: whatever the ownership verdict, no DB write may
+    // happen on this path. The ownership PREDICATE itself is kind-agnostic and
+    // covered with observable effects by
+    // AgentDeploymentOwnership_matches_only_assigned_targets + the AppendLog /
+    // ReportStepCompleted cases below, which use deployments.
 
     [Fact]
     public async Task CompleteDeploymentAsync_rejects_unassigned_target()
@@ -68,44 +69,14 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task CompleteDeploymentAsync_allows_primary_target()
-    {
-        await using var harness = new OrchestratorTestHarness(postgres);
-        var g = await SeedRunbookGraphAsync(harness);
-
-        await BuildHub(postgres, g.Primary.Id)
-            .CompleteDeploymentAsync(g.RunId, Guid.Empty, success: false, errorMessage: "boom");
-
-        var run = await GetTaskAsync(harness, g.RunId);
-        run.Status.Should().Be(DeploymentStatus.Failed);
-    }
-
-    [Fact]
-    public async Task CompleteDeploymentAsync_allows_secondary_wave_target()
-    {
-        // secondary is in the join set but is NOT the first-assigned target —
-        // proves the ownership predicate uses the assignment join, not a single
-        // primary column.
-        await using var harness = new OrchestratorTestHarness(postgres);
-        var g = await SeedRunbookGraphAsync(harness);
-
-        await BuildHub(postgres, g.Secondary.Id)
-            .CompleteDeploymentAsync(g.RunId, Guid.Empty, success: false, errorMessage: "boom");
-
-        var run = await GetTaskAsync(harness, g.RunId);
-        run.Status.Should().Be(DeploymentStatus.Failed,
-            "a non-primary target in the wave legitimately completes its sub-plan");
-    }
-
-    [Fact]
     public async Task CompleteDeploymentAsync_never_overwrites_a_cancelled_task()
     {
-        // B5 (T1-1): the guarded fallback write yields to a terminal verdict. A
-        // late agent completion — delivered by B2's at-least-once outbox after an
-        // operator cancel, or after the reconciler already failed the task — must
-        // not flip the recorded verdict back to Succeeded, nor re-stamp
-        // CompletedUtc. Exercised on a runbook run (the fallback finalizer that
-        // actually reaches the status writer post-E1).
+        // B5 (T1-1) tripwire: a late agent completion — delivered by B2's
+        // at-least-once outbox after an operator cancel, or after the reconciler
+        // already failed the task — must not flip the recorded verdict back to
+        // Succeeded, nor re-stamp CompletedUtc. Post-Phase-3 the hub has no
+        // finalize write at all, so this holds by construction; the test stays
+        // so any reintroduced hub write trips it immediately.
         await using var harness = new OrchestratorTestHarness(postgres);
         var g = await SeedRunbookGraphAsync(harness);
 
@@ -119,8 +90,8 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
                     .SetProperty(t => t.CompletedUtc, cancelStamp));
         }
 
-        // From an ASSIGNED target — passes the ownership gate, reaches the guarded
-        // fallback write, which the terminal-status guard must refuse.
+        // From an ASSIGNED target — passes the ownership gate; the hub must
+        // still write nothing.
         await BuildHub(postgres, g.Primary.Id)
             .CompleteDeploymentAsync(g.RunId, Guid.Empty, success: true, errorMessage: null);
 
@@ -536,9 +507,10 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
         DeploymentTarget Foreign);
 
     // A Running runbook run assigned to two targets (primary + a join-only
-    // secondary) with a third unassigned (foreign). No lease → handed off, so the
-    // hub fallback legitimately finalizes it (E1). Mirrors <see cref="SeedAsync"/>
-    // for the runbook kind.
+    // secondary) with a third unassigned (foreign). No lease, no registered
+    // sub-plan slot → a completion reaches the hub's post-registry drop path,
+    // where the ownership gate (and nothing else) runs. Mirrors
+    // <see cref="SeedAsync"/> for the runbook kind.
     private static async Task<RunbookGraph> SeedRunbookGraphAsync(OrchestratorTestHarness harness)
     {
         var tag = Guid.NewGuid().ToString("N")[..8];

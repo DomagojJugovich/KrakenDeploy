@@ -39,7 +39,7 @@ public interface IAgentHubServer
     /// timed-out wave attempt still flushing its outbox), so an abandoned
     /// attempt can no longer interleave noise into the current attempt's log.
     /// <see cref="Guid.Empty"/> = legacy/offline plan without a key — always
-    /// accepted (runbook hand-offs and offline imports have no re-dispatch).
+    /// accepted (offline imports have no re-dispatch).
     /// </para>
     /// </summary>
     Task AppendLogAsync(Guid deploymentId, Guid dispatchId, int stepIndex, string level, string message);

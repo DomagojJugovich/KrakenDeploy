@@ -1,0 +1,115 @@
+@* D1 Phase 2 — the per-step outcomes grid both detail pages share (the
+   deployment page's Steps tab, extracted verbatim; the runbook-run page gets
+   the identical surface — retries, Server/Target side, per-target attribution,
+   Required badge, duration, error detail). *@
+
+@if (Outcomes.Count == 0)
+{
+    <RadzenText class="rz-color-secondary rz-mt-4">
+        No step outcomes recorded yet. The Steps tab populates as the
+        orchestrator finishes each step's terminal attempt.
+    </RadzenText>
+}
+else
+{
+    <KrakenGrid SettingsKey="@SettingsKey" Data="@Outcomes" TItem="TaskStepOutcome"
+                    AllowSorting="false" AllowColumnResize="true"
+                    class="rz-mt-3">
+        <Columns>
+            <RadzenDataGridColumn TItem="TaskStepOutcome"
+                                  Property="StepIndex" Title="#" Width="60px">
+                <Template Context="o">@(o.StepIndex + 1)</Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="TaskStepOutcome"
+                                  Property="StepName" Title="Step" Width="240px">
+                <Template Context="o">
+                    <strong>@o.StepName</strong>
+                    @if (o.AttemptCount > 1)
+                    {
+                        <span class="rz-color-secondary rz-text-body2 rz-ml-2">
+                            (retried @(o.AttemptCount - 1)×)
+                        </span>
+                    }
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="TaskStepOutcome"
+                                  Property="Outcome" Title="Outcome" Width="140px">
+                <Template Context="o">
+                    <StatusPill Step="o.Outcome" />
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="TaskStepOutcome"
+                                  UniqueID="side" Title="Side" Width="80px">
+                <Template Context="o">
+                    @(o.IsServerSide ? "Server" : "Target")
+                </Template>
+            </RadzenDataGridColumn>
+            @* Per-(step, target) attribution from the widened TaskStepOutcome
+               key. Server-side steps + pre-Phase-1a outcomes have a null
+               TargetId and render "—". *@
+            <RadzenDataGridColumn TItem="TaskStepOutcome"
+                                  UniqueID="target" Title="Target" Width="140px">
+                <Template Context="o">
+                    @if (o.TargetId is { } tid)
+                    {
+                        <span class="rz-text-body2">@(TargetName?.Invoke(tid) ?? tid.ToString()[..8])</span>
+                    }
+                    else
+                    {
+                        <span class="rz-color-secondary">—</span>
+                    }
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="TaskStepOutcome"
+                                  Property="Required" Title="Required" Width="100px">
+                <Template Context="o">
+                    @if (o.Required)
+                    {
+                        <RadzenBadge Text="Required" BadgeStyle="BadgeStyle.Light" />
+                    }
+                    else
+                    {
+                        <span class="rz-color-secondary">optional</span>
+                    }
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="TaskStepOutcome"
+                                  UniqueID="duration" Title="Duration" Width="100px">
+                <Template Context="o">@FormatStepDuration(o)</Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="TaskStepOutcome"
+                                  Property="ErrorMessage" Title="Detail">
+                <Template Context="o">
+                    <span class="rz-color-secondary">
+                        @(o.ErrorMessage ?? "—")
+                    </span>
+                </Template>
+            </RadzenDataGridColumn>
+        </Columns>
+    </KrakenGrid>
+}
+
+@code {
+    /// <summary>Terminal per-step outcomes, ordered by step index.</summary>
+    [Parameter, EditorRequired] public List<TaskStepOutcome> Outcomes { get; set; } = [];
+
+    /// <summary>Resolves a target id to its display name for the Target column;
+    /// unresolved ids render as the id's first 8 chars.</summary>
+    [Parameter] public Func<Guid, string>? TargetName { get; set; }
+
+    /// <summary>KrakenGrid persisted-settings key — per page, so existing saved
+    /// layouts survive the extraction.</summary>
+    [Parameter, EditorRequired] public string SettingsKey { get; set; } = "";
+
+    private static string FormatStepDuration(TaskStepOutcome o)
+    {
+        if (o.StartedUtc is null) { return "—"; }
+        var dur = o.CompletedUtc - o.StartedUtc.Value;
+        if (dur.TotalSeconds < 1) { return "<1s"; }
+        return dur.TotalHours >= 1
+            ? $"{(int)dur.TotalHours}h {dur.Minutes}m {dur.Seconds}s"
+            : dur.TotalMinutes >= 1
+                ? $"{dur.Minutes}m {dur.Seconds}s"
+                : $"{dur.Seconds}s";
+    }
+}

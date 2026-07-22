@@ -17,25 +17,27 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace KrakenDeploy.Server.Data.Tests;
 
 /// <summary>
-/// E1 (execution-engine audit 2026-07-16) — the hub's DB-fallback finalize in
-/// <see cref="AgentHub.CompleteDeploymentAsync"/> must be reachable ONLY by the
-/// runbook-run hand-off model, and never while the dispatch lease is live.
+/// E1 (execution-engine audit 2026-07-16) → D1 Phase 3 — the hub NEVER
+/// finalizes a task. A completion <see cref="AgentHub.CompleteDeploymentAsync"/>
+/// cannot route to an open sub-plan slot is DROPPED for either kind, whatever
+/// the lease state.
 /// <para>
-/// The audited defect: a server restarts mid-deployment faster than the 5-minute
-/// lease. The worker's in-memory wave state dies with the old process; the boot
-/// reconciler defers to the still-live lease; the agent's buffered WAVE
-/// completion flushes from its outbox into the FRESH process, where
-/// <c>subPlans.RouteCompletion</c> finds no open slot (<c>NoPendingSubPlan</c>);
-/// the fallback then wrote the WHOLE deployment <c>Succeeded</c> although its
-/// remaining waves never ran (the <c>!IsTerminal</c> guard passes for a
-/// <c>Running</c> row). A single assigned agent could flip a farm-wide verdict.
+/// The audited defect this guards against: a server restarts mid-task faster
+/// than the 5-minute lease. The worker's in-memory wave state dies with the old
+/// process; the boot reconciler defers to the still-live lease; the agent's
+/// buffered WAVE completion flushes from its outbox into the FRESH process,
+/// where <c>subPlans.RouteCompletion</c> finds no open slot
+/// (<c>NoPendingSubPlan</c>); the pre-E1 fallback then wrote the WHOLE task
+/// <c>Succeeded</c> although its remaining waves never ran. A single assigned
+/// agent could flip a farm-wide verdict.
 /// </para>
 /// <para>
-/// The fix restricts the fallback finalize to
-/// <see cref="ServerTaskKind.RunbookRun"/> AND refuses it while
-/// <c>ClaimedBy</c>/lease is live. These tests drive the hub through the fallback
-/// path (a fresh, empty <see cref="PendingSubPlanRegistry"/> routes every
-/// completion to <c>NoPendingSubPlan</c>) and assert the outcome per kind + lease.
+/// D1 Phase 3 deleted the last legitimate fallback user — the finalize for
+/// LEGACY pre-D1 hand-off runbook runs (Running with a released lease) —
+/// together with reconciler arm 4, so the post-registry path is now a pure
+/// warn-and-drop. These tests drive the hub through it (a fresh, empty
+/// <see cref="PendingSubPlanRegistry"/> routes every completion to
+/// <c>NoPendingSubPlan</c>) and assert nothing is ever finalized.
 /// </para>
 /// </summary>
 [Trait("Category", "Docker")]
@@ -80,10 +82,12 @@ public sealed class AgentHubFallbackFinalizeTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task RunbookRun_fallback_finalizes_a_handed_off_run()
+    public async Task RunbookRun_completion_with_no_open_slot_is_dropped_even_without_a_lease()
     {
-        // The one LEGITIMATE fallback user: a runbook run releases its lease at
-        // hand-off and the hub finalizes on the agent's completion callback.
+        // D1 Phase 3: the legacy hand-off finalize is deleted — a Running run
+        // with a released lease is no longer a hand-off signature (that model is
+        // gone); it is an ownerless orphan the RECONCILER fails. The hub must
+        // not finalize it from one buffered wave completion.
         await using var harness = new OrchestratorTestHarness(postgres);
         var (runId, targetId) = await SeedRunningRunbookRunAsync(harness, leaseMinutes: null);
 
@@ -91,16 +95,17 @@ public sealed class AgentHubFallbackFinalizeTests(PostgresFixture postgres)
             .CompleteDeploymentAsync(runId, Guid.NewGuid(), success: true, errorMessage: null);
 
         var run = await GetTaskAsync(harness, runId);
-        run.Status.Should().Be(DeploymentStatus.Succeeded,
-            "a handed-off runbook run (lease released) is legitimately finalized by the hub fallback");
-        run.CompletedUtc.Should().NotBeNull();
+        run.Status.Should().Be(DeploymentStatus.Running,
+            "the hub never finalizes a task post-Phase-3 — the null-lease orphan " +
+            "verdict belongs to the dispatch reconciler");
+        run.CompletedUtc.Should().BeNull();
     }
 
     [Fact]
-    public async Task RunbookRun_fallback_refuses_a_run_with_a_live_lease()
+    public async Task RunbookRun_completion_with_a_live_lease_is_dropped()
     {
-        // A live lease means the run is still worker-owned (pre-hand-off) — a
-        // completion now is not the legitimate post-hand-off callback.
+        // A live lease means the run is worker-owned mid-orchestration — a lone
+        // wave completion must not flip the whole run terminal.
         await using var harness = new OrchestratorTestHarness(postgres);
         var (runId, targetId) = await SeedRunningRunbookRunAsync(harness, leaseMinutes: 5);
 
@@ -109,7 +114,7 @@ public sealed class AgentHubFallbackFinalizeTests(PostgresFixture postgres)
 
         var run = await GetTaskAsync(harness, runId);
         run.Status.Should().Be(DeploymentStatus.Running,
-            "a live lease means the runbook run is still worker-owned; the fallback must refuse it");
+            "a live lease means the runbook run is worker-owned; the hub drops the completion");
     }
 
     // ── Seeding ───────────────────────────────────────────────────────────────

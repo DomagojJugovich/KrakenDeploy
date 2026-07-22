@@ -15,7 +15,7 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// Cross-Space regression for <see cref="RetentionService.PruneAfterDeploymentAsync"/>.
 /// <para>
 /// The method runs in a background DI scope (fire-and-forget from
-/// <c>AgentHub.CompleteDeploymentAsync</c>) which has no active Space, so
+/// <c>DeploymentWorker</c>'s post-success prune) which has no active Space, so
 /// <c>ISpaceContext.CurrentSpaceId</c> falls back to <c>WellKnown.DefaultSpaceId</c>.
 /// Before the fix its by-id deployment load was space-filtered, so for a
 /// deployment created in a non-Default Space the load returned null and the

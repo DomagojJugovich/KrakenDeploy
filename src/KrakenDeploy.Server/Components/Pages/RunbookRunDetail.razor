@@ -1,0 +1,275 @@
+@page "/s/{SpaceSlug}/runbook-runs/{Id:guid}"
+@inherits SpaceScopedComponentBase
+@rendermode InteractiveServer
+@attribute [Authorize]
+@using KrakenDeploy.Server.Core.Domain.Runbooks
+@inject RunbookService RunbookSvc
+@inject ArtifactService ArtifactSvc
+@inject NavigationManager Nav
+@inject NotificationService Notify
+@inject DialogService DialogService
+@inject UiActionGuard Guard
+@inject IAuditLog Audit
+
+@* D1 Phase 2 — the runbook-run detail page: the run analogue of
+   DeploymentDetail, built from the shared task components (status banner, log
+   viewer, step outcomes, output variables, artifacts) so both kinds render the
+   same execution surface. Deployment-only surfaces (release info, offline
+   drop, AI diagnosis, redeploy) intentionally have no counterpart here. *@
+
+<PageTitle>Run @(Run?.Id.ToString()[..8]) - KrakenDeploy</PageTitle>
+
+@if (Run is null)
+{
+    <RadzenText>Loading…</RadzenText>
+}
+else
+{
+    <div class="breadcrumb">
+        <a href="@Sp("/runbooks")">Runbooks</a>
+        <RadzenIcon Icon="chevron_right" />
+        <a href="@Sp($"/runbooks/{Run.RunbookId}")">@(Run.Runbook?.Name ?? "Runbook")</a>
+        <RadzenIcon Icon="chevron_right" />
+        <span>@Run.Id.ToString()[..8]</span>
+    </div>
+
+    <div class="page-head">
+        <div>
+            <h1 class="page-title">
+                @(Run.Runbook?.Name ?? "Runbook run")
+                @if (Run.Runbook?.Project?.Name is { Length: > 0 } projectName)
+                {
+                    <span class="mono" style="font-weight:600; color:var(--text-2); font-size:18px; margin-left:8px;">@projectName</span>
+                }
+            </h1>
+            <p class="page-sub">@(Run.Environment?.Name ?? "—") · @TargetSummary</p>
+        </div>
+        <div class="page-head-actions">
+            @if (CanCancel)
+            {
+                <RequirePermission Permission="Permission.TaskCancel">
+                    <RadzenButton Text="Cancel" Icon="cancel"
+                                  ButtonStyle="ButtonStyle.Danger" Variant="Variant.Flat"
+                                  Click="@CancelRunAsync" Disabled="@_cancelling"
+                                  title="@CancelTooltip" />
+                </RequirePermission>
+            }
+        </div>
+    </div>
+
+    <TaskStatusBanner Status="Run.Status"
+                      RunningMessage="@RunningStepLabel()"
+                      FailedMessage="@LastErrorLine()"
+                      DefaultFailedMessage="Runbook run failed."
+                      FinishedDuration="@FormatDuration()" />
+
+    @* ── Summary grid ── *@
+    <div class="kr-card kr-card-pad rz-mb-4">
+        <dl class="kv">
+            <dt>Runbook</dt><dd>@(Run.Runbook?.Name ?? "—")</dd>
+            <dt>Project</dt><dd>@(Run.Runbook?.Project?.Name ?? "—")</dd>
+            <dt>Environment</dt><dd>@(Run.Environment?.Name ?? "—")</dd>
+            <dt>Target@(MultiTargetCount > 1 ? "s" : "")</dt><dd>@TargetSummary</dd>
+            @if (Run.ScheduledFor is { } scheduled)
+            {
+                <dt>Scheduled for</dt><dd class="mono">@scheduled.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</dd>
+            }
+            <dt>Started</dt><dd class="mono">@(Run.StartedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")</dd>
+            <dt>Completed</dt><dd class="mono">@(Run.CompletedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")</dd>
+            <dt>Duration</dt><dd class="mono">@FormatDuration()</dd>
+            <dt>Initiated by</dt><dd>@Run.CreatedByDisplay</dd>
+            <dt>Cause</dt>
+            <dd>
+                @Run.Cause
+                @if (!string.IsNullOrEmpty(Run.CauseDetail))
+                {
+                    <span class="cell-muted mono">(@Run.CauseDetail)</span>
+                }
+            </dd>
+            <dt>Run</dt><dd class="mono">@Run.Id.ToString()[..8]</dd>
+        </dl>
+    </div>
+
+    <RadzenTabs>
+        <Tabs>
+            <RadzenTabsItem Text=@($"Steps ({_stepOutcomes.Count})") Icon="checklist">
+                <TaskStepOutcomesGrid Outcomes="_stepOutcomes"
+                                      TargetName="TargetNameOf"
+                                      SettingsKey="runbook-run-steps" />
+            </RadzenTabsItem>
+
+            <RadzenTabsItem Text="Log" Icon="terminal">
+                <TaskLogView Lines="_log" IsRunning="@(Run.Status == DeploymentStatus.Running)" />
+            </RadzenTabsItem>
+
+            <RadzenTabsItem Text=@($"Artifacts ({_artifacts.Count})") Icon="attach_file">
+                <TaskArtifactsGrid Artifacts="_artifacts"
+                                   DownloadUrl="@(artifactId => $"/api/runbook-runs/{Id}/artifacts/{artifactId}/download")"
+                                   EmptyText="No artifacts collected for this run."
+                                   SettingsKey="runbook-run-artifacts" />
+            </RadzenTabsItem>
+
+            <RadzenTabsItem Text=@($"Output variables ({_outputVariables.Count})") Icon="data_object">
+                <TaskOutputVariablesView Variables="_outputVariables"
+                                         SettingsKey="runbook-run-output-vars" />
+            </RadzenTabsItem>
+        </Tabs>
+    </RadzenTabs>
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private RunbookRun? Run { get; set; }
+    private List<TaskArtifact> _artifacts = [];
+    private List<TaskOutputVariable> _outputVariables = [];
+    private List<TaskStepOutcome> _stepOutcomes = [];
+    private List<TaskLogLine> _log = [];
+
+    private bool _cancelling;
+
+    // Cancel is meaningful only before the run reaches a terminal state.
+    private bool CanCancel =>
+        Run?.Status is DeploymentStatus.Queued or DeploymentStatus.Running;
+
+    private string CancelTooltip => Run?.Status == DeploymentStatus.Running
+        ? "Cancel this run. The abort is pushed to the agent (the running " +
+          "step's process is stopped); no further steps start."
+        : "Cancel this run before it starts.";
+
+    protected override async Task OnInitializedAsync()
+    {
+        Run = await RunbookSvc.GetRunAsync(Id);
+        if (Run is not null)
+        {
+            _artifacts = await ArtifactSvc.GetByTaskAsync(Id);
+            _outputVariables = await RunbookSvc.GetRunOutputVariablesAsync(Id);
+            _stepOutcomes = await RunbookSvc.GetRunStepOutcomesAsync(Id);
+            _log = await RunbookSvc.GetRunLogAsync(Id);
+        }
+    }
+
+    // ── Cancel (B6) — mirrors DeploymentDetail.CancelDeploymentAsync ─────────
+    private async Task CancelRunAsync()
+    {
+        if (Run is null)
+        {
+            return;
+        }
+
+        // Server-authoritative re-check (the button's visibility is cosmetic).
+        if (!await Guard.AllowAsync(Permission.TaskCancel)) return;
+
+        var running = Run.Status == DeploymentStatus.Running;
+        var confirmed = await DialogService.Confirm(
+            running
+                ? "Cancel this running runbook run? The abort is pushed to the agent, " +
+                  "which stops the running step; no further steps will start."
+                : "Cancel this queued run before it starts?",
+            "Cancel runbook run",
+            new ConfirmOptions { OkButtonText = "Cancel run", CancelButtonText = "Keep running" });
+        if (confirmed != true)
+        {
+            return;
+        }
+
+        _cancelling = true;
+        try
+        {
+            var updated = await RunbookSvc.CancelRunAsync(Run.Id, await Guard.CurrentCallerAsync());
+            if (updated is not null)
+            {
+                await Audit.RecordAsync(
+                    AuditEventType.RunbookRunCancelled,
+                    subjectType: "RunbookRun",
+                    subjectId:   Run.Id.ToString(),
+                    details:     "Runbook run cancelled from the run detail page.");
+
+                Run = await RunbookSvc.GetRunAsync(Id);
+                Notify.Notify(new NotificationMessage
+                {
+                    Severity = NotificationSeverity.Success,
+                    Summary  = "Cancelled",
+                    Detail   = running
+                        ? "The abort was pushed to the agent."
+                        : "The queued run was cancelled.",
+                    Duration = 4000,
+                });
+            }
+        }
+        catch (AuthorizationException)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary  = "Not allowed",
+                Detail   = "You don't have permission to cancel this runbook run.",
+                Duration = 5000,
+            });
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Warning,
+                Summary  = "Could not cancel",
+                Detail   = ex.Message,
+                Duration = 5000,
+            });
+        }
+        finally
+        {
+            _cancelling = false;
+        }
+    }
+
+    private string FormatDuration()
+    {
+        if (Run?.StartedUtc is null)    { return "—"; }
+        var end = Run.CompletedUtc ?? DateTimeOffset.UtcNow;
+        var dur = end - Run.StartedUtc.Value;
+        return dur.TotalHours >= 1
+            ? $"{(int)dur.TotalHours}h {dur.Minutes}m {dur.Seconds}s"
+            : $"{dur.Minutes}m {dur.Seconds}s";
+    }
+
+    // ── Multi-target rendering helpers (assignments join = the authority) ────
+
+    private int MultiTargetCount => Run?.Targets?.Count ?? 0;
+
+    private string TargetSummary
+    {
+        get
+        {
+            if (Run is null) { return "—"; }
+            var names = Run.TargetNames();
+            if (names.Count <= 1)
+            {
+                return names.Count == 0 ? "—" : names[0];
+            }
+            return $"{names.Count} targets: {string.Join(", ", names)}";
+        }
+    }
+
+    private string TargetNameOf(Guid targetId)
+    {
+        var name = Run?.Targets
+            .FirstOrDefault(a => a.TargetId == targetId)
+            ?.Target?.Name;
+        return string.IsNullOrEmpty(name) ? targetId.ToString()[..8] : name;
+    }
+
+    // Best-effort "current step" label for a running run, derived from the
+    // outcomes recorded so far.
+    private string? RunningStepLabel()
+    {
+        var last = _stepOutcomes.LastOrDefault();
+        return last is not null ? $"Step {_stepOutcomes.Count} · {last.StepName}" : null;
+    }
+
+    private string? LastErrorLine()
+        => _log
+            .Where(l => l.Level == "error")
+            .OrderByDescending(l => l.Sequence)
+            .FirstOrDefault()?.Message;
+}

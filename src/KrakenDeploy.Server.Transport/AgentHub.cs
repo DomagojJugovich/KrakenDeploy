@@ -425,7 +425,7 @@ public sealed class AgentHub(
         // retired (superseded / timed-out wave attempt still flushing its
         // outbox) — an abandoned attempt must not interleave noise into the
         // current attempt's log. Guid.Empty (legacy/offline) and unknown ids
-        // (runbook hand-offs never register slots) are always accepted.
+        // (post-restart the retired set is empty) are always accepted.
         if (subPlans.IsRetiredDispatch(dispatchId))
         {
             logger.LogDebug(
@@ -515,13 +515,12 @@ public sealed class AgentHub(
             }
         }
 
-        var completedAt = timeProvider.GetUtcNow();
-
         await using var db = await dbFactory.CreateDbContextAsync().ConfigureAwait(false);
 
-        // ONE lookup on the unified spine. Reached only for a non-orchestrated
-        // completion (the orchestrator resolves its waves via the sub-plan registry
-        // above and finalises + compacts itself); kept robust as a fallback.
+        // ONE lookup on the unified spine — reached only for a completion no open
+        // orchestrator slot claimed. The lookup + ownership check below exist for
+        // the log signal (unknown task vs foreign agent vs orphaned completion);
+        // nothing state-changing happens on this path any more.
         var task = await db.ServerTasks
             .IgnoreQueryFilters()
             .FirstOrDefaultAsync(t => t.Id == deploymentId)
@@ -542,113 +541,27 @@ public sealed class AgentHub(
             return;
         }
 
-        // D1 engine merge (INTERIM — remove this whole fallback one release after
-        // D1 ships): post-D1 runbook runs orchestrate server-side like deployments
-        // and finalise through the sub-plan registry above, so they no longer take
-        // this hand-off finalize. It stays alive ONLY to finalise LEGACY runbook
-        // runs that the pre-D1 worker handed off (lease released) and that were in
-        // flight ACROSS the upgrade. It is safe for new orchestrated runbook runs:
-        // while one is orchestrated its lease is live (the live-lease refusal below
-        // drops the completion), and once it is terminal the guarded write refuses
-        // a late buffered completion. Companion to reconciler arm 4 (the legacy
-        // ceiling) — delete both together.
-        //
-        // E1: the DB-fallback finalize is legitimate ONLY for the LEGACY runbook-run
-        // hand-off model — the pre-D1 runbook worker (now deleted) built one plan,
-        // handed it to one agent, released the lease, and let the hub finalize on
-        // this callback (execution-engine.md §8). A DEPLOYMENT is finalized by its orchestrator
-        // (DeploymentWorker), which resolves every wave through the sub-plan
-        // registry above and never falls through here on the happy path. So a
-        // deployment reaching this fallback means no open orchestrator slot knew
-        // this completion — either a completion the registry could not classify,
-        // or the dangerous interleaving: the server restarted mid-deployment
-        // faster than the 5-minute lease, the in-memory wave state died with the
-        // old process, and the agent's buffered WAVE completion flushed into the
-        // FRESH process. Finalizing here would mark the WHOLE deployment terminal
-        // although its remaining waves never ran. Drop it: the reconciler owns a
-        // genuinely-orphaned deployment (fails it once the lease expires), and a
-        // live orchestrator finalizes through the registry, not here.
-        if (task.Kind != ServerTaskKind.RunbookRun)
-        {
-            logger.LogWarning(
-                "CompleteDeployment for deployment {Id} (dispatch {Dispatch}, success={Success}) " +
-                "reached the hub fallback with no open orchestrator slot; dropping. A deployment " +
-                "is finalized by its orchestrator, never by the hub — a buffered wave completion " +
-                "arriving post-restart must not finalize the whole deployment.",
-                deploymentId, dispatchId, success);
-            return;
-        }
-
-        // The fallback is legitimate ONLY for the exact LEGACY pre-D1 hand-off
-        // signature: a RUNNING runbook run whose lease was RELEASED at hand-off
-        // (LeaseUntil == null). Refuse anything else:
-        //  - LeaseUntil != null (live OR expired) → a NEW post-D1 orchestrated run:
-        //    still worker-owned (live lease) or crashed pre-reconcile (expired,
-        //    non-null lease). It finalizes through the sub-plan registry; the
-        //    reconciler owns its orphan verdict. Finalizing here from ONE buffered
-        //    wave completion would mark a MULTI-wave run Succeeded though later
-        //    waves never ran (the runbook analogue of the deployment hole above).
-        //  - Status != Running → a QUEUED run never dispatched (an agent merely
-        //    assigned to it must not flip Queued → Succeeded), or already terminal.
-        // The pre-D1 live-lease-only check accepted both of those; tightening to the
-        // full hand-off signature costs legacy nothing (those runs are Running with a
-        // released lease) and closes the holes.
-        if (task.LeaseUntil is not null || task.Status != DeploymentStatus.Running)
-        {
-            logger.LogWarning(
-                "CompleteDeployment for runbook run {Id} (dispatch {Dispatch}) refused: not a legacy " +
-                "hand-off completion (status {Status}, lease {Lease:o}). New orchestrated runs finalize " +
-                "through the sub-plan registry; the reconciler owns orphan verdicts.",
-                deploymentId, dispatchId, task.Status, task.LeaseUntil);
-            return;
-        }
-
-        // B1: never overwrite a terminal status. A late agent callback can race
-        // an operator cancel, or arrive after the dispatch reconciler already
-        // failed this task as interrupted (its sub-plan TCS died with the old
-        // process, so the completion routing above missed) — the recorded
-        // verdict wins over a stale "success" that reflects only one target's
-        // sub-plan. B5: the guarded writer makes the check atomic — a cancel
-        // landing between the old status read and the save can no longer be
-        // flipped back, and retention/compaction below never run for a write
-        // this callback didn't win.
-        var wrote = await ServerTaskStatusWriter.TryTransitionAsync(
-            db, task, t =>
-            {
-                t.Status = success ? DeploymentStatus.Succeeded : DeploymentStatus.Failed;
-                t.CompletedUtc = completedAt;
-                // B1: terminal — release the dispatch lease (runbook hand-off hygiene).
-                t.ClaimedBy = null;
-                t.LeaseUntil = null;
-            }).ConfigureAwait(false);
-        if (!wrote)
-        {
-            logger.LogWarning(
-                "CompleteDeployment for task {Id} ignored: already terminal or pruned " +
-                "(last read status: {Status}).",
-                deploymentId, task.Status);
-            return;
-        }
-
-        // Terminal: sweep any remaining staging lines into per-step blobs.
-        await TaskLogService.CompactRemainingAsync(db, deploymentId, completedAt).ConfigureAwait(false);
-
-        var statusStr = task.Status.ToString();
-        await uiHub.Clients.Group($"deployment:{deploymentId}")
-            .DeploymentStatusChangedAsync(deploymentId, statusStr)
-            .ConfigureAwait(false);
-
-        logger.LogInformation(
-            "Task {Id} completed: {Status}{Error}.",
-            deploymentId, statusStr, errorMessage is null ? "" : $" — {errorMessage}");
-
-        // Retention pruning for both kinds: deployments prune per the lifecycle
-        // phase policy, runbook runs per a fixed keep (RetentionService). Both
-        // cascade-delete their log/step/output children with the parent row.
-        if (success)
-        {
-            _ = PruneRetentionAsync(deploymentId, task.Kind, scopeFactory, logger);
-        }
+        // E1 / D1 Phase 3: the hub NEVER finalizes a task — either kind is
+        // finalized by its orchestrator through the sub-plan registry above. A
+        // completion reaching this point has no open orchestrator slot: either a
+        // late/buffered attempt the registry already retired, or the dangerous
+        // interleaving — the server restarted mid-task faster than the lease, the
+        // in-memory wave state died with the old process, and the agent's
+        // buffered WAVE completion flushed into the FRESH process. Finalizing
+        // here would mark the WHOLE task terminal although its remaining waves
+        // never ran. Drop it: the reconciler owns a genuinely-orphaned task
+        // (fails it once its lease expires), and a live orchestrator finalizes
+        // through the registry, not here. (The transition-era fallback that
+        // finalized LEGACY pre-D1 hand-off runbook runs — Running with a
+        // released lease — was deleted in D1 Phase 3 together with reconciler
+        // arm 4.)
+        logger.LogWarning(
+            "CompleteDeployment for {Kind} {Id} (dispatch {Dispatch}, success={Success}{Error}) " +
+            "reached the hub with no open orchestrator slot; dropping. Tasks are finalized " +
+            "by their orchestrator, never by the hub — a buffered wave completion arriving " +
+            "post-restart must not finalize the whole task.",
+            task.Kind, deploymentId, dispatchId, success,
+            errorMessage is null ? "" : $", error: {errorMessage}");
     }
 
     /// <summary>
@@ -734,7 +647,7 @@ public sealed class AgentHub(
         // variables, and TaskLogService.CompactStepAsync would prematurely fold
         // the current attempt's staged step lines mid-step. Only POSITIVE
         // retirement drops the report; Guid.Empty (legacy/offline) and unknown
-        // ids (runbook hand-offs never register a slot) fall through, exactly as
+        // ids (post-restart the retired set is empty) fall through, exactly as
         // on AppendLogAsync.
         if (subPlans.IsRetiredDispatch(dispatchId))
         {
@@ -826,31 +739,8 @@ public sealed class AgentHub(
         return Task.CompletedTask;
     }
 
-    private static async Task PruneRetentionAsync(
-        Guid taskId,
-        ServerTaskKind kind,
-        IServiceScopeFactory scopeFactory,
-        ILogger logger)
-    {
-        try
-        {
-            await using var scope = scopeFactory.CreateAsyncScope();
-            var retention = scope.ServiceProvider
-                .GetRequiredService<KrakenDeploy.Server.Data.Services.RetentionService>();
-            if (kind == ServerTaskKind.RunbookRun)
-            {
-                await retention.PruneAfterRunbookRunAsync(taskId).ConfigureAwait(false);
-            }
-            else
-            {
-                await retention.PruneAfterDeploymentAsync(taskId).ConfigureAwait(false);
-            }
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Error running retention pruning for task {Id} (kind {Kind}).", taskId, kind);
-        }
-    }
+    // D1 Phase 3: the hub's PruneRetentionAsync is gone with the fallback
+    // finalize — retention fires from DeploymentWorker for both kinds.
 
     // ── Helpers ────────────────────────────────────────────────────────────
 

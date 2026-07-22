@@ -33,13 +33,10 @@ public sealed class EngineOptions
     /// </summary>
     public TimeSpan AgentDisconnectWaveGrace { get; set; } = TimeSpan.FromMinutes(2);
 
-    /// <summary>
-    /// Ceiling for an agent-owned runbook run (dispatched, lease released,
-    /// hub finalizes on the agent's completion callback). A run still Running
-    /// with its <c>StartedUtc</c> older than this never got its completion —
-    /// the dispatch reconciler fails it. Raise for long maintenance runbooks.
-    /// </summary>
-    public TimeSpan MaxRunbookRunDuration { get; set; } = TimeSpan.FromHours(1);
+    // D1 Phase 3: MaxRunbookRunDuration is gone — it was the drain ceiling for
+    // legacy pre-D1 hand-off runbook runs (reconciler arm 4). Runbook runs hold
+    // a live lease for the whole orchestration and are covered by the ordinary
+    // lease-orphan reconcile + the B3 disconnect monitor, like deployments.
 
     /// <summary>
     /// B7 — how many deployment orchestrations this node runs concurrently

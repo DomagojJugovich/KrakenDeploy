@@ -16,10 +16,10 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// in-process channel) and leave mid-run tasks stuck at Running with no owner.
 /// D1: BOTH kinds share the unified orchestrator, so the reconciler re-signals
 /// stale Queued tasks (both kinds, to the ONE task channel) and fails Running
-/// tasks (both kinds) whose lease expired — while a LIVE lease (a draining
-/// blue-green slot, a long step) is never touched, and a null-lease Running
-/// RUNBOOK run (a legacy pre-D1 hand-off) is left to the arm-4 ceiling rather
-/// than being killed at boot.
+/// tasks (both kinds) whose lease expired OR was never stamped — while a LIVE
+/// lease (a draining blue-green slot, a long step) is never touched. (D1
+/// Phase 3 removed the transition-era arm-4 ceiling and its null-lease
+/// runbook-run exemption: every live orchestration holds a lease.)
 /// </summary>
 [Trait("Category", "Docker")]
 [Collection("Postgres")]
@@ -176,69 +176,40 @@ public sealed class DispatchReconcileTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task Legacy_null_lease_runbook_run_past_the_ceiling_is_failed_with_timeout_audit()
+    public async Task Null_lease_running_runbook_run_is_failed_too()
     {
-        // INTERIM arm 4: a LEGACY runbook run handed off by the pre-D1 worker
-        // (lease released, agent-owned) whose agent never called back is failed once
-        // it exceeds Engine:MaxRunbookRunDuration. Deleted one release after D1.
+        // D1 Phase 3: the transition-era exemption is gone — a null-lease Running
+        // runbook run can no longer be a legacy hand-off (that model, and arm 4
+        // that drained it, are deleted). Nothing owns such a row, so the SAME
+        // "null OR expired" orphan reconcile that covers deployments fails it.
         var id = await SeedRunbookRunAsync();
         await SetRunbookRunningAsync(id,
             leaseUntil: null, claimedBy: null, startedAgo: TimeSpan.FromMinutes(10));
-        var (job, _, audit) = NewJob(new EngineOptions
-        {
-            MaxRunbookRunDuration = TimeSpan.FromMinutes(5),
-        });
+        var (job, _, audit) = NewJob();
 
         await job.ExecuteAsync(CancellationToken.None);
 
         await using var db = postgres.CreateContext();
         (await db.ServerTasks.IgnoreQueryFilters().AsNoTracking()
                 .Where(t => t.Id == id).Select(t => t.Status).FirstAsync())
-            .Should().Be(DeploymentStatus.Failed);
+            .Should().Be(DeploymentStatus.Failed,
+                "post-Phase-3 every live orchestration holds a lease — a null-lease " +
+                "Running run is ownerless and unresumable");
         audit.Entries.Should().ContainSingle(e =>
-            e.EventType == AuditEventType.RunbookRunTimedOut && e.SubjectId == id.ToString());
-    }
-
-    [Fact]
-    public async Task Legacy_null_lease_runbook_run_inside_the_ceiling_is_left_alone()
-    {
-        // The two-release trap: a null-lease Running runbook run must NOT be killed
-        // by the arm-3 orphan reconcile (that would kill legacy hand-off runs at
-        // boot). Inside the ceiling, arm 4 leaves it alone too.
-        var id = await SeedRunbookRunAsync();
-        await SetRunbookRunningAsync(id,
-            leaseUntil: null, claimedBy: null, startedAgo: TimeSpan.FromMinutes(10));
-        var (job, _, audit) = NewJob(new EngineOptions
-        {
-            MaxRunbookRunDuration = TimeSpan.FromHours(1),
-        });
-
-        await job.ExecuteAsync(CancellationToken.None);
-
-        await using var db = postgres.CreateContext();
-        (await db.ServerTasks.IgnoreQueryFilters().AsNoTracking()
-                .Where(t => t.Id == id).Select(t => t.Status).FirstAsync())
-            .Should().Be(DeploymentStatus.Running,
-                "a null-lease runbook run inside the ceiling is a legacy hand-off — neither the " +
-                "arm-3 orphan reconcile (kind-branched to skip null-lease runbook runs) nor the " +
-                "arm-4 ceiling touches it");
-        audit.Entries.Should().NotContain(e => e.SubjectId == id.ToString());
+            e.EventType == AuditEventType.RunbookRunInterrupted && e.SubjectId == id.ToString());
     }
 
     [Fact]
     public async Task Live_lease_runbook_run_is_never_touched()
     {
-        // Mid-dispatch (claim taken) with a healthy renewing lease — hands off,
+        // Mid-orchestration with a healthy renewing lease — hands off,
         // exactly like deployments.
         var id = await SeedRunbookRunAsync();
         await SetRunbookRunningAsync(id,
             leaseUntil: DateTimeOffset.UtcNow.AddMinutes(4),
             claimedBy: "kraken:live-node",
             startedAgo: TimeSpan.FromHours(3)); // old StartedUtc must NOT matter while leased
-        var (job, _, audit) = NewJob(new EngineOptions
-        {
-            MaxRunbookRunDuration = TimeSpan.FromMinutes(5),
-        });
+        var (job, _, audit) = NewJob();
 
         await job.ExecuteAsync(CancellationToken.None);
 
@@ -253,7 +224,7 @@ public sealed class DispatchReconcileTests(PostgresFixture postgres)
 
     private (ScheduledDeploymentDispatchJob Job,
              Channel<TenantWorkItem> Tasks,
-             TestAuditLog Audit) NewJob(EngineOptions? engineOptions = null)
+             TestAuditLog Audit) NewJob()
     {
         // D1: one shared task channel carries both kinds.
         var tasks = Channel.CreateUnbounded<TenantWorkItem>();
@@ -261,7 +232,6 @@ public sealed class DispatchReconcileTests(PostgresFixture postgres)
         var job = new ScheduledDeploymentDispatchJob(
             postgres, tasks, TimeProvider.System,
             new DisabledAccountContext(), audit,
-            Microsoft.Extensions.Options.Options.Create(engineOptions ?? new EngineOptions()),
             NullLogger<ScheduledDeploymentDispatchJob>.Instance);
         return (job, tasks, audit);
     }

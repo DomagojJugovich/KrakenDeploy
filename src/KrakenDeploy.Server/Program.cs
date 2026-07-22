@@ -3182,6 +3182,16 @@ public static class Program
             async (Guid runbookId, TriggerRunbookRunRequest req, RunbookService runbookSvc,
                 ClaimsPrincipal user, HttpContext http, CancellationToken ct) =>
             {
+                // A body that omits TargetId (or sends null) binds as Guid.Empty —
+                // fail with a clear message (parity with POST /api/deployments).
+                if (req.TargetId == Guid.Empty)
+                {
+                    return Results.BadRequest(new
+                    {
+                        error = "TargetId is required — a runbook run needs at least one target.",
+                    });
+                }
+
                 try
                 {
                     var isCli = string.Equals(
@@ -3193,7 +3203,9 @@ public static class Program
                     var run = await runbookSvc.TriggerAsync(
                         runbookId, req.EnvironmentId, req.TargetId,
                         initiator: initiator, caller: CallerAuthorization.ForUser(user),
-                        tenantId: req.TenantId, ct: ct)
+                        tenantId: req.TenantId,
+                        scheduledFor: req.ScheduledFor,
+                        additionalTargetIds: req.AdditionalTargetIds, ct: ct)
                         .ConfigureAwait(false);
                     return Results.Created($"/api/runbook-runs/{run.Id}", run);
                 }
@@ -3206,6 +3218,49 @@ public static class Program
                     return Results.BadRequest(new { error = ex.Message });
                 }
             }).RequirePermission(Permission.RunbookRunCreate);
+
+        // ── Runbook-run read surface (D1 Phase 2) ──────────────────────────
+        // Read parity with the deployment endpoints: the run's log, per-step
+        // outcomes, captured output variables (sensitive values masked in the
+        // service) and collected artifacts. All resolve the run first
+        // (Space-filtered) — a deployment id or foreign run returns empty/404.
+
+        app.MapGet("/api/runbook-runs/{runId:guid}/logs",
+            async (Guid runId, RunbookService runbookSvc, CancellationToken ct) =>
+                Results.Ok(await runbookSvc.GetRunLogAsync(runId, ct).ConfigureAwait(false)))
+            .RequirePermission(Permission.RunbookRunView);
+
+        app.MapGet("/api/runbook-runs/{runId:guid}/step-outcomes",
+            async (Guid runId, RunbookService runbookSvc, CancellationToken ct) =>
+                Results.Ok(await runbookSvc.GetRunStepOutcomesAsync(runId, ct).ConfigureAwait(false)))
+            .RequirePermission(Permission.RunbookRunView);
+
+        app.MapGet("/api/runbook-runs/{runId:guid}/output-variables",
+            async (Guid runId, RunbookService runbookSvc, CancellationToken ct) =>
+                Results.Ok(await runbookSvc.GetRunOutputVariablesAsync(runId, ct).ConfigureAwait(false)))
+            .RequirePermission(Permission.RunbookRunView);
+
+        app.MapGet("/api/runbook-runs/{runId:guid}/artifacts",
+            async (Guid runId, ArtifactService artifactSvc, CancellationToken ct) =>
+                Results.Ok(await artifactSvc.GetByTaskAsync(runId, ct).ConfigureAwait(false)))
+            .RequirePermission(Permission.ArtifactView);
+
+        app.MapGet("/api/runbook-runs/{runId:guid}/artifacts/{artifactId:guid}/download",
+            async (Guid runId, Guid artifactId,
+                ArtifactService artifactSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var (stream, artifact) = await artifactSvc
+                        .OpenReadAsync(artifactId, ct).ConfigureAwait(false);
+                    return Results.Stream(stream, artifact.ContentType,
+                        fileDownloadName: artifact.FileName, enableRangeProcessing: true);
+                }
+                catch (InvalidOperationException)
+                {
+                    return Results.NotFound();
+                }
+            }).RequirePermission(Permission.ArtifactDownload);
 
         // Dev-only: creates a smoke-test target and returns its registration token.
         // Guards behind IsDevelopment so it is never registered in production.

@@ -168,7 +168,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 1 | E-D | Leftovers: staging paths, log-sequence counter, interim runbook reap (E9 — deleted by D1) | ✅ fix/exec-d-hygiene | M | — |
 | 2 — ops (parallel OK) | C1 | Backup/restore image + round-trip CI (+ caddy README rider) | ⬜ | S | — |
 | 2 | C6 | Agent self-upgrade atomicity + rollback (rewritten) | ✅ fix/ops-agent-upgrade-atomic | M | E-B |
-| 3 — engine merge | D1 | server_tasks ENGINE merge (2026-07-16 design supersedes the old prompt) | ✅ P1 `0a8d1a5` (P2/P3 open) | XL | E-A, E-B, E-C, E-D |
+| 3 — engine merge | D1 | server_tasks ENGINE merge (2026-07-16 design supersedes the old prompt) | ✅ P1 `0a8d1a5` · P2+P3 refactor/eng-d1-phase2-3 | XL | E-A, E-B, E-C, E-D |
 | 3 | D3 | Promote control-flow config keys to typed columns (+ rolling-warning rider) | ⬜ | M | — |
 | 4 — engine features | F1 | Same (project, environment, tenant) deployment serialization | ⬜ | M | D1 |
 | 4 | F2 | Per-target "Allow parallel task execution" + execution-started deadline arming | ⬜ | M | E-B, D1 |

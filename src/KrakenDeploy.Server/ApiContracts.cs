@@ -130,7 +130,12 @@ public sealed record CreateRunbookRequest(string Name, string? Description);
 public sealed record TriggerRunbookRunRequest(
     Guid EnvironmentId,
     Guid TargetId,
-    Guid? TenantId = null);
+    Guid? TenantId = null,
+    // D1 Phase 2 — parity with TriggerDeploymentRequest: a future ScheduledFor
+    // holds the run Queued for the scheduled-dispatch job; AdditionalTargetIds
+    // extends the target set (TargetId stays the canonical primary).
+    DateTimeOffset? ScheduledFor = null,
+    List<Guid>? AdditionalTargetIds = null);
 
 // ── Tenant API ─────────────────────────────────────────────────────────────────
 
