@@ -1,3 +1,5 @@
+using System.Globalization;
+using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Data.Services.Ai.Curators;
@@ -61,6 +63,10 @@ public sealed class ProcessContextBuilder(
                 startTrigger: s.StartTrigger,
                 parentStepId: s.ParentStepId,
                 config:       s.Config,
+                runOnServer:       s.RunOnServer,
+                maxParallelism:    s.MaxParallelism,
+                forEachCollection: s.ForEachCollection,
+                forEachParallel:   s.ForEachParallel,
                 nameById:     nameById,
                 fullConfigUri: $"kraken://projects/{projectSlug}/process/steps/{index}/config"))
             .ToList();
@@ -109,6 +115,10 @@ public sealed class ProcessContextBuilder(
                 startTrigger: s.StartTrigger,
                 parentStepId: s.ParentStepId,
                 config:       s.Config,
+                runOnServer:       s.RunOnServer,
+                maxParallelism:    s.MaxParallelism,
+                forEachCollection: s.ForEachCollection,
+                forEachParallel:   s.ForEachParallel,
                 nameById:     nameById,
                 fullConfigUri: $"kraken://releases/{projectSlug}/{version}/steps/{index}/config"))
             .ToList();
@@ -129,6 +139,10 @@ public sealed class ProcessContextBuilder(
         StepStartTrigger startTrigger,
         Guid? parentStepId,
         IReadOnlyDictionary<string, string> config,
+        bool runOnServer,
+        int? maxParallelism,
+        string? forEachCollection,
+        bool forEachParallel,
         Dictionary<Guid, string> nameById,
         string fullConfigUri)
     {
@@ -138,31 +152,68 @@ public sealed class ProcessContextBuilder(
             nameById.TryGetValue(pid, out parentName);
         }
 
+        // D3 — the four control-flow flags are typed columns now, no longer in
+        // Config. The curators still consume a string dictionary, so re-inject
+        // the set flags as their Octopus-compatible keys (emit-when-set) into a
+        // config VIEW the curators summarise from — keeping the AI ConfigSummary
+        // stable without leaking the keys back into stored Config.
+        var curatorConfig = BuildCuratorConfig(
+            config, runOnServer, maxParallelism, forEachCollection, forEachParallel);
+
         return new ProcessStepContextDto(
             Index:         index,
             Name:          name,
             StepType:      stepType,
             TargetRoles:   roles.ToArray(),
             Required:      required,
-            IsServerSide:  IsServerSide(stepType, config),
+            IsServerSide:  IsServerSide(stepType, runOnServer),
             StartTrigger:  startTrigger.ToString(),
             ParentName:    parentName,
-            ConfigSummary: curators.Curate(stepType, config),
+            ConfigSummary: curators.Curate(stepType, curatorConfig),
             FullConfigUri: fullConfigUri);
+    }
+
+    /// <summary>
+    /// D3 — reconstructs the curator's expected string view: the stored Config
+    /// (which no longer carries the four control-flow keys) plus the set typed
+    /// flags rendered as their Octopus-compatible keys. Emit-when-set so a
+    /// default flag doesn't pollute the summary.
+    /// </summary>
+    private static Dictionary<string, string> BuildCuratorConfig(
+        IReadOnlyDictionary<string, string> config,
+        bool runOnServer,
+        int? maxParallelism,
+        string? forEachCollection,
+        bool forEachParallel)
+    {
+        var view = new Dictionary<string, string>(config);
+        if (runOnServer)
+        {
+            view[KrakenScriptConfigKeys.RunOnServer] = "true";
+        }
+        if (maxParallelism is > 0)
+        {
+            view[KrakenStepGroupConfigKeys.MaxParallelism] =
+                maxParallelism.Value.ToString(CultureInfo.InvariantCulture);
+        }
+        if (!string.IsNullOrWhiteSpace(forEachCollection))
+        {
+            view[KrakenStepGroupConfigKeys.ForEachCollection] = forEachCollection;
+        }
+        if (forEachParallel)
+        {
+            view[KrakenStepGroupConfigKeys.ForEachParallel] = "true";
+        }
+        return view;
     }
 
     // Mirrors WavePartitioner.IsServerStep (Server.Transport) — duplicated
     // here because Server.Data must not reference Server.Transport. The
-    // rule is small + stable: a step runs server-side when it carries
-    // Octopus.Action.RunOnServer="true" OR its type is an intrinsically
-    // server-only orchestrator type (currently just DeployRelease).
-    private static bool IsServerSide(string stepType, IReadOnlyDictionary<string, string> config)
-    {
-        if (config.TryGetValue("Octopus.Action.RunOnServer", out var v)
-            && string.Equals(v, "true", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-        return string.Equals(stepType, "Octopus.DeployRelease", StringComparison.OrdinalIgnoreCase);
-    }
+    // rule is small + stable: a step runs server-side when its typed
+    // RunOnServer flag is set (D3 — promoted from the Octopus.Action.RunOnServer
+    // Config key) OR its type is an intrinsically server-only orchestrator type
+    // (currently just DeployRelease).
+    private static bool IsServerSide(string stepType, bool runOnServer)
+        => runOnServer
+            || string.Equals(stepType, "Octopus.DeployRelease", StringComparison.OrdinalIgnoreCase);
 }
