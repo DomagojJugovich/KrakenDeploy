@@ -52,7 +52,7 @@
         }
     </RadzenStack>
 
-    @if (_mode == VarMode.Edit)
+    @if (_loaded && _project is not null && _mode == VarMode.Edit)
     {
     @* ── Filter bar ─────────────────────────────────────────────────────── *@
     <div class="kraken-var-filter-bar rz-mb-3">
@@ -66,7 +66,8 @@
                         AllowClear="true" AllowFiltering="true"
                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                         Placeholder="All tenants" Style="width: 160px;" />
-        <RadzenDropDown TValue="string" @bind-Value="_filterRole"
+        <RadzenDropDown TValue="string" Value="@_filterRole"
+                        ValueChanged="@OnFilterRoleChanged"
                         Data="@_availableRoles"
                         AllowClear="true" AllowFiltering="true"
                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
@@ -77,7 +78,7 @@
                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                         Placeholder="All steps" Style="width: 170px;" />
         @if (_filterEnvId.HasValue || _filterTenantId.HasValue
-             || _filterRole?.Length > 0 || _filterStepId.HasValue)
+             || _filterRole.Length > 0 || _filterStepId.HasValue)
         {
             <RadzenButton Icon="filter_alt_off" Text="Clear"
                           ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
@@ -673,7 +674,7 @@
                     && v.Scope.EnvironmentId != _filterEnvId) continue;
                 if (_filterTenantId.HasValue && v.Scope.TenantId.HasValue
                     && v.Scope.TenantId != _filterTenantId) continue;
-                if (_filterRole?.Length > 0)
+                if (_filterRole.Length > 0)
                 {
                     var roles = v.Scope.Roles;
                     if (roles is { Count: > 0 }
@@ -694,6 +695,8 @@
         _filterRole = "";
         _filterStepId = null;
     }
+
+    private void OnFilterRoleChanged(string value) => _filterRole = value ?? "";
 
     private bool IsLocked(Variable v) => _lockedIds.Contains(v.Id);
     private string SourceLabel(Variable v) =>
@@ -829,10 +832,10 @@
             if (!_loaded)
             {
                 var uri = Nav.ToAbsoluteUri(Nav.Uri);
-                var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
-                if (Guid.TryParse(query["env"], out var envId)) _filterEnvId = envId;
-                if (Guid.TryParse(query["tenant"], out var tenantId)) _filterTenantId = tenantId;
-                if (!string.IsNullOrEmpty(query["role"])) _filterRole = query["role"]!;
+                var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
+                if (query.TryGetValue("env", out var envVal) && Guid.TryParse(envVal, out var envId)) _filterEnvId = envId;
+                if (query.TryGetValue("tenant", out var tenantVal) && Guid.TryParse(tenantVal, out var tenantId)) _filterTenantId = tenantId;
+                if (query.TryGetValue("role", out var roleVal) && roleVal.ToString() is { Length: > 0 } r) _filterRole = r;
             }
 
             await ReloadAsync();
