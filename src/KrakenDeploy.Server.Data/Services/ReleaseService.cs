@@ -362,6 +362,7 @@ public class ReleaseService(
             EnvironmentId  = v.Scope.EnvironmentId,
             TargetId       = v.Scope.TargetId,
             TenantId       = v.Scope.TenantId,
+            TenantTagIds   = v.Scope.TenantTagIds is null ? null : [.. v.Scope.TenantTagIds],
             ChannelId      = v.Scope.ChannelId,
             ProcessStepId  = v.Scope.ProcessStepId,
             Roles          = v.Scope.Roles is null ? null : [.. v.Scope.Roles],

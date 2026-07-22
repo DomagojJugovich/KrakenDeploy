@@ -100,7 +100,8 @@ internal sealed class DeploymentDispatchSource(Deployment deployment) : ITaskDis
             deployment.TenantId,
             deployment.Release.ChannelId,
             steps,
-            ct);
+            tenantTagIds: null,
+            ct: ct);
 
     public IReadOnlyDictionary<string, string> BuildSystemVariables(
         DeploymentTarget target,
@@ -146,7 +147,8 @@ internal sealed class RunbookRunDispatchSource(RunbookRun run) : ITaskDispatchSo
             run.TenantId,
             channelId: null,   // runbook runs are not channel-scoped
             steps,
-            ct);
+            tenantTagIds: null,
+            ct: ct);
 
     public IReadOnlyDictionary<string, string> BuildSystemVariables(
         DeploymentTarget target,
