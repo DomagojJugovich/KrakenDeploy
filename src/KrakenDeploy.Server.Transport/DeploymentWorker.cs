@@ -2617,6 +2617,17 @@ public sealed class DeploymentWorker(
                 {
                     rawVars[k] = v;
                 }
+
+                foreach (var (_, delta) in stepResolution.PerStepDelta)
+                {
+                    foreach (var (k, v) in prompted)
+                    {
+                        if (delta.ContainsKey(k))
+                        {
+                            delta[k] = v;
+                        }
+                    }
+                }
             }
         }
 

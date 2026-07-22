@@ -8,6 +8,9 @@
 @using KrakenDeploy.Server.Core.Domain.Tenants
 @using KrakenDeploy.Server.Core.Domain.Targets
 @using KrakenDeploy.Server.Core.Domain.Channels
+@using KrakenDeploy.Server.Data
+@using KrakenDeploy.Server.Data.Services
+@using Microsoft.EntityFrameworkCore
 @inject ProjectService ProjectSvc
 @inject VariableService VariableSvc
 @inject EnvironmentService EnvironmentSvc
@@ -20,6 +23,7 @@
 @inject NotificationService Notifications
 @inject UiActionGuard Guard
 @inject NavigationManager Nav
+@inject IDbContextFactory<KrakenDbContext> DbFactory
 
 <ProjectShell Slug="@Slug">
     <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
@@ -77,7 +81,7 @@
                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                         Placeholder="All steps" Style="width: 170px;" />
         @if (_filterEnvId.HasValue || _filterTenantId.HasValue
-             || _filterRole.Length > 0 || _filterStepId.HasValue)
+             || _filterRole?.Length > 0 || _filterStepId.HasValue)
         {
             <RadzenButton Icon="filter_alt_off" Text="Clear"
                           ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
@@ -673,7 +677,7 @@
                     && v.Scope.EnvironmentId != _filterEnvId) continue;
                 if (_filterTenantId.HasValue && v.Scope.TenantId.HasValue
                     && v.Scope.TenantId != _filterTenantId) continue;
-                if (_filterRole.Length > 0)
+                if (_filterRole?.Length > 0)
                 {
                     var roles = v.Scope.Roles;
                     if (roles is { Count: > 0 }
@@ -723,12 +727,20 @@
                 ? _targets.FirstOrDefault(t => t.Id == _previewTargetId)?.Roles ?? []
                 : [];
 
+            IReadOnlyList<Guid>? tenantTagIds = null;
+            if (_previewTenantId.HasValue)
+            {
+                await using var db = await DbFactory.CreateDbContextAsync();
+                tenantTagIds = await TagService.GetTenantTagIdsAsync(db, _previewTenantId.Value);
+            }
+
             var resolved = await VariableSvc.ResolveAsync(
                 _project.Id,
                 _previewEnvId.Value,
                 _previewTargetId,
                 targetRoles,
-                tenantId: _previewTenantId);
+                tenantId: _previewTenantId,
+                tenantTagIds: tenantTagIds);
 
             var sensitive = await VariableSvc.GetSensitiveNamesAsync(_project.Id);
 

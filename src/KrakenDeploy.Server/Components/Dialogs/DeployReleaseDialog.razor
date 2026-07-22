@@ -494,9 +494,14 @@
 
             _promptedVars = _release.VariableSnapshot
                 .Where(v => v.PromptText is not null)
-                .Select(v => new PromptedVar(v.Name, v.PromptText, v.PromptRequired))
+                .GroupBy(v => v.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(g =>
+                {
+                    var first = g.First();
+                    return new PromptedVar(first.Name, first.PromptText, g.Any(v => v.PromptRequired));
+                })
                 .ToList();
-            _promptedValues = _promptedVars.ToDictionary(pv => pv.Name, _ => "");
+            _promptedValues = _promptedVars.ToDictionary(pv => pv.Name, _ => "", StringComparer.OrdinalIgnoreCase);
 
             _environments = await EnvironmentSvc.GetAllOrderedAsync();
             _allTargets = await TargetSvc.GetAllWithEnvironmentsAsync();
