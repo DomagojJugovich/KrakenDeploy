@@ -396,6 +396,13 @@ public class VariableService(
         return names;
     }
 
+    /// <summary>Returns the Tag IDs applied to a tenant (for preview scope matching).</summary>
+    public async Task<List<Guid>> GetTenantTagIdsAsync(Guid tenantId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await TagService.GetTenantTagIdsAsync(db, tenantId, ct).ConfigureAwait(false);
+    }
+
     /// <summary>Creates a variable directly in a given set (project or library).</summary>
     public async Task<Variable> CreateVariableInSetAsync(
         Guid setId,

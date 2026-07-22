@@ -8,9 +8,6 @@
 @using KrakenDeploy.Server.Core.Domain.Tenants
 @using KrakenDeploy.Server.Core.Domain.Targets
 @using KrakenDeploy.Server.Core.Domain.Channels
-@using KrakenDeploy.Server.Data
-@using KrakenDeploy.Server.Data.Services
-@using Microsoft.EntityFrameworkCore
 @inject ProjectService ProjectSvc
 @inject VariableService VariableSvc
 @inject EnvironmentService EnvironmentSvc
@@ -23,7 +20,6 @@
 @inject NotificationService Notifications
 @inject UiActionGuard Guard
 @inject NavigationManager Nav
-@inject IDbContextFactory<KrakenDbContext> DbFactory
 
 <ProjectShell Slug="@Slug">
     <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
@@ -730,8 +726,7 @@
             IReadOnlyList<Guid>? tenantTagIds = null;
             if (_previewTenantId.HasValue)
             {
-                await using var db = await DbFactory.CreateDbContextAsync();
-                tenantTagIds = await TagService.GetTenantTagIdsAsync(db, _previewTenantId.Value);
+                tenantTagIds = await VariableSvc.GetTenantTagIdsAsync(_previewTenantId.Value);
             }
 
             var resolved = await VariableSvc.ResolveAsync(
