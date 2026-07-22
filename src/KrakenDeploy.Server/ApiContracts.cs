@@ -17,6 +17,16 @@ public sealed record UpdateSpaceRequest(string Name, string? Description);
 /// the server auto-resolves to the highest installed package that claims
 /// <paramref name="StepType"/>. Older clients that don't send either continue
 /// to work via the auto-resolve path.
+/// <para>
+/// D3 — the four control-flow flags are typed fields (no longer <c>Config</c>
+/// keys): <c>RunOnServer</c> on leaf/script steps; <c>MaxParallelism</c> /
+/// <c>ForEachCollection</c> / <c>ForEachParallel</c> on <c>Kraken.StepGroup</c>
+/// steps. The server rejects a leaf carrying a group flag (and vice-versa) at
+/// save time. They are part of the request body, so on the runbook-step PUT
+/// they follow replace semantics (the request is authoritative — omitting one
+/// resets it to its default); the M14 execution knobs, which this contract does
+/// NOT model, are preserved across the update.
+/// </para>
 /// </remarks>
 public sealed record AddStepRequest(
     string Name,
@@ -25,7 +35,11 @@ public sealed record AddStepRequest(
     List<string> TargetRoles,
     Dictionary<string, string> Config,
     string? StepPackageName = null,
-    string? StepPackageVersion = null);
+    string? StepPackageVersion = null,
+    bool RunOnServer = false,
+    int? MaxParallelism = null,
+    string? ForEachCollection = null,
+    bool ForEachParallel = false);
 
 // ── Step-package bulk upgrade (Phase D-10) ──────────────────────────────────
 

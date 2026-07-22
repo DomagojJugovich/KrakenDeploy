@@ -294,6 +294,27 @@ public class RunbookService(
 
     // ── Step management ────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// D3 — reads a single runbook step (Space/permission-scoped via
+    /// <see cref="EnsureStepScopeAsync"/>) so the REST update endpoint can merge
+    /// the typed control-flow flags onto the step's existing execution knobs
+    /// without resetting the M14 knobs the REST contract does not carry. Returns
+    /// <c>null</c> when the step does not exist; throws on an unauthorized caller.
+    /// </summary>
+    public async Task<ProcessStep?> GetStepAsync(
+        Guid stepId, CallerAuthorization caller, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(caller);
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var step = await db.ProcessSteps.FindAsync([stepId], ct).ConfigureAwait(false);
+        if (step is null)
+        {
+            return null;
+        }
+        await EnsureStepScopeAsync(db, caller, step, ct).ConfigureAwait(false);
+        return step;
+    }
+
     public async Task<ProcessStep> AddStepAsync(
         Guid runbookId,
         string name,

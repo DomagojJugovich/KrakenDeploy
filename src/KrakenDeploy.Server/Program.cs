@@ -1649,11 +1649,19 @@ public static class Program
             {
                 try
                 {
+                    // D3 — the four control-flow flags arrive as typed request
+                    // fields; carry them in via the knobs bundle (M14 knobs stay
+                    // at their defaults for a new step, as before).
+                    var knobs = new KrakenDeploy.Server.Core.Domain.Processes.StepExecutionKnobs(
+                        RunOnServer:       req.RunOnServer,
+                        MaxParallelism:    req.MaxParallelism,
+                        ForEachCollection: req.ForEachCollection,
+                        ForEachParallel:   req.ForEachParallel);
                     var step = await processSvc.AddStepAsync(
                         projectId, req.Name, req.StepType, req.PackageId,
                         req.TargetRoles, req.Config, CallerAuthorization.ForUser(user),
                         req.StepPackageName, req.StepPackageVersion,
-                        knobs: null, ct: ct).ConfigureAwait(false);
+                        knobs: knobs, ct: ct).ConfigureAwait(false);
                     return Results.Created($"/api/projects/{projectId}/process/steps/{step.Id}", step);
                 }
                 catch (AuthorizationException ex)
@@ -3080,10 +3088,16 @@ public static class Program
             {
                 try
                 {
+                    // D3 — carry the typed control-flow flags in via the knobs bundle.
+                    var knobs = new KrakenDeploy.Server.Core.Domain.Processes.StepExecutionKnobs(
+                        RunOnServer:       req.RunOnServer,
+                        MaxParallelism:    req.MaxParallelism,
+                        ForEachCollection: req.ForEachCollection,
+                        ForEachParallel:   req.ForEachParallel);
                     var step = await runbookSvc.AddStepAsync(
                         runbookId, req.Name, req.StepType, req.PackageId, req.TargetRoles, req.Config,
                         CallerAuthorization.ForUser(user),
-                        req.StepPackageName, req.StepPackageVersion, ct: ct)
+                        req.StepPackageName, req.StepPackageVersion, knobs: knobs, ct: ct)
                         .ConfigureAwait(false);
                     return Results.Created($"/api/runbooks/{runbookId}/steps/{step.Id}", step);
                 }
@@ -3099,10 +3113,23 @@ public static class Program
             {
                 try
                 {
+                    var caller = CallerAuthorization.ForUser(user);
+                    // D3 — merge the typed control-flow flags (authoritative, from
+                    // the request) onto the step's EXISTING execution knobs so the
+                    // M14 knobs this REST contract does not model are preserved.
+                    var existing = await runbookSvc.GetStepAsync(stepId, caller, ct).ConfigureAwait(false);
+                    if (existing is null) { return Results.NotFound(); }
+                    var knobs = KrakenDeploy.Server.Core.Domain.Processes.StepExecutionKnobs.From(existing) with
+                    {
+                        RunOnServer       = req.RunOnServer,
+                        MaxParallelism    = req.MaxParallelism,
+                        ForEachCollection = req.ForEachCollection,
+                        ForEachParallel   = req.ForEachParallel,
+                    };
                     var step = await runbookSvc.UpdateStepAsync(
                         stepId, req.Name, req.PackageId, req.TargetRoles, req.Config,
-                        CallerAuthorization.ForUser(user),
-                        req.StepPackageName, req.StepPackageVersion, ct: ct)
+                        caller,
+                        req.StepPackageName, req.StepPackageVersion, knobs: knobs, ct: ct)
                         .ConfigureAwait(false);
                     return step is null ? Results.NotFound() : Results.Ok(step);
                 }
