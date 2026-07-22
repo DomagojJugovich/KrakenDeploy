@@ -356,6 +356,46 @@ public class VariableService(
         v.Type.ToString(),
         v.Scope);
 
+    /// <summary>Returns the names of all sensitive variables across the project
+    /// and its included library sets (for preview masking).</summary>
+    public async Task<HashSet<string>> GetSensitiveNamesAsync(Guid projectId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var projectSet = await db.VariableSets
+            .Include(vs => vs.Variables)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(vs => vs.ProjectId == projectId, ct)
+            .ConfigureAwait(false);
+        if (projectSet is not null)
+        {
+            foreach (var v in projectSet.Variables.Where(v => v.Type == VariableType.Sensitive))
+            {
+                names.Add(v.Name);
+            }
+        }
+
+        var linkIds = await db.ProjectVariableSetLinks
+            .Where(l => l.ProjectId == projectId)
+            .Select(l => l.VariableSetId)
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (linkIds.Count > 0)
+        {
+            var libVars = await db.Variables
+                .AsNoTracking()
+                .Where(v => linkIds.Contains(v.SetId) && v.Type == VariableType.Sensitive)
+                .Select(v => v.Name)
+                .ToListAsync(ct).ConfigureAwait(false);
+            foreach (var n in libVars)
+            {
+                names.Add(n);
+            }
+        }
+
+        return names;
+    }
+
     /// <summary>Creates a variable directly in a given set (project or library).</summary>
     public async Task<Variable> CreateVariableInSetAsync(
         Guid setId,
@@ -543,11 +583,12 @@ public class VariableService(
         Guid? tenantId = null,
         Guid? channelId = null,
         Guid? stepId = null,
+        IReadOnlyList<Guid>? tenantTagIds = null,
         CancellationToken ct = default)
     {
         var candidates = await BuildLiveCandidatesAsync(projectId, tenantId, ct).ConfigureAwait(false);
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        ResolveCandidates(candidates, result, environmentId, targetId, targetRoles, tenantId, channelId, stepId);
+        ResolveCandidates(candidates, result, environmentId, targetId, targetRoles, tenantId, channelId, stepId, tenantTagIds: tenantTagIds);
         return result;
     }
 
@@ -566,11 +607,12 @@ public class VariableService(
         Guid? tenantId,
         Guid? channelId,
         IReadOnlyList<(Guid StepId, string StepName)> steps,
+        IReadOnlyList<Guid>? tenantTagIds = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(steps);
         var candidates = await BuildLiveCandidatesAsync(projectId, tenantId, ct).ConfigureAwait(false);
-        return ResolveWithStepsCore(candidates, environmentId, targetId, targetRoles, tenantId, channelId, steps);
+        return ResolveWithStepsCore(candidates, environmentId, targetId, targetRoles, tenantId, channelId, steps, tenantTagIds);
     }
 
     /// <summary>
@@ -662,7 +704,8 @@ public class VariableService(
         IReadOnlyList<string> targetRoles,
         Guid? tenantId,
         Guid? channelId,
-        IReadOnlyList<(Guid StepId, string StepName)> steps)
+        IReadOnlyList<(Guid StepId, string StepName)> steps,
+        IReadOnlyList<Guid>? tenantTagIds = null)
     {
         var deploymentWide = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         // Collect sensitive names across the deployment-wide pass AND every
@@ -670,7 +713,7 @@ public class VariableService(
         // appears in a PerStepDelta, not DeploymentWide, but its value still
         // reaches the agent and must be redacted.
         var sensitiveNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        ResolveCandidates(candidates, deploymentWide, environmentId, targetId, targetRoles, tenantId, channelId, stepId: null, sensitiveNames);
+        ResolveCandidates(candidates, deploymentWide, environmentId, targetId, targetRoles, tenantId, channelId, stepId: null, sensitiveNames, tenantTagIds);
 
         var perStep = new Dictionary<Guid, Dictionary<string, string>>();
 
@@ -679,7 +722,7 @@ public class VariableService(
             foreach (var (stepId, stepNameValue) in steps)
             {
                 var full = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                ResolveCandidates(candidates, full, environmentId, targetId, targetRoles, tenantId, channelId, stepId, sensitiveNames);
+                ResolveCandidates(candidates, full, environmentId, targetId, targetRoles, tenantId, channelId, stepId, sensitiveNames, tenantTagIds);
 
                 var delta = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var (name, value) in full)
@@ -737,12 +780,13 @@ public class VariableService(
         Guid? tenantId,
         Guid? channelId,
         Guid? stepId,
-        ICollection<string>? sensitiveNames = null)
+        ICollection<string>? sensitiveNames = null,
+        IReadOnlyList<Guid>? tenantTagIds = null)
     {
         foreach (var group in candidates.GroupBy(c => c.Name, StringComparer.OrdinalIgnoreCase))
         {
             var winner = group
-                .Where(c => c.Scope.Matches(environmentId, targetId, targetRoles, tenantId, channelId, stepId))
+                .Where(c => c.Scope.Matches(environmentId, targetId, targetRoles, tenantId, channelId, stepId, tenantTagIds))
                 .OrderByDescending(c => c.Scope.SpecificityScore())
                 .ThenByDescending(c => c.OriginRank)
                 .FirstOrDefault();
@@ -789,13 +833,14 @@ public class VariableService(
         Guid? tenantId = null,
         Guid? channelId = null,
         Guid? stepId = null,
+        IReadOnlyList<Guid>? tenantTagIds = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(projectSnapshot);
 
         var candidates = await BuildSnapshotCandidatesAsync(projectSnapshot, tenantId, ct).ConfigureAwait(false);
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        ResolveCandidates(candidates, result, environmentId, targetId, targetRoles, tenantId, channelId, stepId);
+        ResolveCandidates(candidates, result, environmentId, targetId, targetRoles, tenantId, channelId, stepId, tenantTagIds: tenantTagIds);
         return result;
     }
 
@@ -815,13 +860,14 @@ public class VariableService(
         Guid? tenantId,
         Guid? channelId,
         IReadOnlyList<(Guid StepId, string StepName)> steps,
+        IReadOnlyList<Guid>? tenantTagIds = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(projectSnapshot);
         ArgumentNullException.ThrowIfNull(steps);
 
         var candidates = await BuildSnapshotCandidatesAsync(projectSnapshot, tenantId, ct).ConfigureAwait(false);
-        return ResolveWithStepsCore(candidates, environmentId, targetId, targetRoles, tenantId, channelId, steps);
+        return ResolveWithStepsCore(candidates, environmentId, targetId, targetRoles, tenantId, channelId, steps, tenantTagIds);
     }
 
     private async Task<List<ScopedCandidate>> BuildSnapshotCandidatesAsync(

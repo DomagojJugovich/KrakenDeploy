@@ -84,6 +84,27 @@ public sealed class StepSnapshot
     /// <summary>M14.4 Start trigger — see <see cref="ProcessStep.StartTrigger"/>.</summary>
     public StepStartTrigger StartTrigger { get; init; } = StepStartTrigger.StartAfterPrevious;
 
+    // ── D3 control-flow flags (mirror ProcessStep) ────────────────────────────
+    // Frozen at cut time so historical reproducibility survives process edits.
+    // Old jsonb snapshots (pre-D3) deserialize these with their type defaults
+    // (false / null / null / false), matching the runtime they were cut under —
+    // i.e. agent-side execution, no rolling cap, no ForEach loop.
+
+    /// <summary>Leaf/script flag — see <see cref="ProcessStep.RunOnServer"/>.</summary>
+    public bool RunOnServer { get; init; }
+
+    /// <summary>Step-group rolling-window cap — see
+    /// <see cref="ProcessStep.MaxParallelism"/>.</summary>
+    public int? MaxParallelism { get; init; }
+
+    /// <summary>Step-group ForEach collection (unresolved template) — see
+    /// <see cref="ProcessStep.ForEachCollection"/>.</summary>
+    public string? ForEachCollection { get; init; }
+
+    /// <summary>Step-group ForEach parallel flag — see
+    /// <see cref="ProcessStep.ForEachParallel"/>.</summary>
+    public bool ForEachParallel { get; init; }
+
     /// <summary>
     /// M15 — parent step ID in the snapshot tree. Frozen at release-cut
     /// time so subsequent process edits don't reshape the release. Null

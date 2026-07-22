@@ -81,6 +81,36 @@ public class ProcessStep : Entity, IComposableStep, ISpaceScoped
     /// <see cref="StepStartTrigger.StartAfterPrevious"/>.</summary>
     public StepStartTrigger StartTrigger { get; set; } = StepStartTrigger.StartAfterPrevious;
 
+    // ── D3 control-flow flags (promoted from jsonb Config) ───────────────────
+    // The orchestrator branches on these typed columns, never the raw Config
+    // dict. The Octopus-compatible string keys survive only at the import/export
+    // boundary (see KrakenStepGroupConfigKeys / KrakenScriptConfigKeys.RunOnServer).
+
+    /// <summary>Leaf/script flag: when <c>true</c>, the step runs in the server
+    /// process instead of being dispatched to an agent. Read by
+    /// <c>WavePartitioner.IsServerStep</c>. Meaningful only on leaf steps —
+    /// a <see cref="KrakenStepTypes.StepGroup"/> must not set it (validator-enforced).</summary>
+    public bool RunOnServer { get; set; }
+
+    /// <summary>Step-group flag: rolling-window fan-out cap. When set to a
+    /// positive integer, the orchestrator batches the group's target-side waves
+    /// to at most this many targets at a time. <c>null</c> = no cap. Only valid
+    /// on a <see cref="KrakenStepTypes.StepGroup"/> and must be positive
+    /// (validator-enforced at save time).</summary>
+    public int? MaxParallelism { get; set; }
+
+    /// <summary>Step-group flag: name (or Octostache expression) of the array
+    /// variable this Step Group iterates as a ForEach loop. <c>null</c>/blank =
+    /// plain container. Stored as the UNRESOLVED template; the flattener
+    /// substitutes it at deploy time. Only valid on a
+    /// <see cref="KrakenStepTypes.StepGroup"/>.</summary>
+    public string? ForEachCollection { get; set; }
+
+    /// <summary>Step-group flag: when <c>true</c>, ForEach iterations dispatch
+    /// together as one parallel wave. Only valid on a
+    /// <see cref="KrakenStepTypes.StepGroup"/>.</summary>
+    public bool ForEachParallel { get; set; }
+
     // ── M15 step composition (child steps + ForEach) ─────────────────────────
 
     /// <summary>When set, marks this step as a child of another step in the same

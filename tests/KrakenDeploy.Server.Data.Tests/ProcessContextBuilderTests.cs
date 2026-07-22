@@ -55,16 +55,14 @@ public sealed class ProcessContextBuilderTests(PostgresFixture postgres)
                 {
                     new ProcessStep
                     {
-                        Id        = groupId,
-                        Name      = "Rolling group",
-                        StepType  = KrakenStepTypes.StepGroup,
-                        SortOrder = 0,
-                        PackageId = "",
-                        Required  = false,
-                        Config    = new Dictionary<string, string>
-                        {
-                            ["Octopus.Action.MaxParallelism"] = "2",
-                        },
+                        Id             = groupId,
+                        Name           = "Rolling group",
+                        StepType       = KrakenStepTypes.StepGroup,
+                        SortOrder      = 0,
+                        PackageId      = "",
+                        Required       = false,
+                        // D3 — typed column, not a Config key.
+                        MaxParallelism = 2,
                     },
                     new ProcessStep
                     {
@@ -82,14 +80,15 @@ public sealed class ProcessContextBuilderTests(PostgresFixture postgres)
                     },
                     new ProcessStep
                     {
-                        Id        = Guid.NewGuid(),
-                        Name      = "Notify",
-                        StepType  = "Octopus.Script",
-                        SortOrder = 2,
-                        PackageId = "",
-                        Config    = new Dictionary<string, string>
+                        Id          = Guid.NewGuid(),
+                        Name        = "Notify",
+                        StepType    = "Octopus.Script",
+                        SortOrder   = 2,
+                        PackageId   = "",
+                        // D3 — RunOnServer is a typed column; only ScriptBody stays in Config.
+                        RunOnServer = true,
+                        Config      = new Dictionary<string, string>
                         {
-                            ["Octopus.Action.RunOnServer"]       = "true",
                             ["Octopus.Action.Script.ScriptBody"] = "Write-Host done",
                         },
                     },

@@ -246,11 +246,9 @@ public sealed class DeploymentPlanFlattenerTests
     [Fact]
     public void Parallel_ForEach_emits_iterations_with_StartWithPrevious()
     {
-        // Octopus.Action.ForEach.Parallel = "true" makes iterations
-        // siblings in a wave — iteration 0 opens the wave; iterations 1..N
-        // join via StartWithPrevious.
-        var group = NewForEach("Deploy", "envs", sortOrder: 0);
-        group.Config["Octopus.Action.ForEach.Parallel"] = "true";
+        // ForEachParallel makes iterations siblings in a wave — iteration 0
+        // opens the wave; iterations 1..N join via StartWithPrevious.
+        var group = NewForEach("Deploy", "envs", sortOrder: 0, parallel: true);
         var leaf = NewLeaf("App", sortOrder: 0, parent: group);
 
         var result = DeploymentPlanFlattener.Flatten(
@@ -343,14 +341,28 @@ public sealed class DeploymentPlanFlattenerTests
         string collection,
         int sortOrder,
         string? iterationVariable = null,
-        StepSnapshot? parent = null)
+        StepSnapshot? parent = null,
+        bool parallel = false)
     {
-        var snap = NewGroup(name, sortOrder, parent);
-        snap.Config["Octopus.Action.ForEach.Collection"] = collection;
+        // D3 — ForEach Collection + Parallel are typed StepSnapshot columns now
+        // (init-only, so set them at construction); only the Iteration/Index
+        // variable NAMES remain Config strings.
+        var config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (iterationVariable is not null)
         {
-            snap.Config["Octopus.Action.ForEach.IterationVariable"] = iterationVariable;
+            config["Octopus.Action.ForEach.IterationVariable"] = iterationVariable;
         }
-        return snap;
+        return new StepSnapshot
+        {
+            Id                = Guid.CreateVersion7(),
+            ParentStepId      = parent?.Id,
+            Name              = name,
+            StepType          = KrakenStepTypes.StepGroup,
+            PackageId         = "",
+            SortOrder         = sortOrder,
+            Config            = config,
+            ForEachCollection = collection,
+            ForEachParallel   = parallel,
+        };
     }
 }

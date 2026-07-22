@@ -222,15 +222,15 @@ public sealed class WavePartitionerTests
     // ── helpers ────────────────────────────────────────────────────────
 
     private static DeploymentStepPlan ServerStep(int index, string name) =>
+        // D3 — RunOnServer is a typed wire field now; IsServerStep reads it, not
+        // the Config key.
         new(Index:          index,
             Name:           name,
             StepType:       "Kraken.Script",
             PackageId:      "",
             PackageVersion: "",
-            Config:         new Dictionary<string, string>
-            {
-                ["Octopus.Action.RunOnServer"] = "true",
-            });
+            Config:         new Dictionary<string, string>(),
+            RunOnServer:    true);
 
     private static DeploymentStepPlan TargetStep(int index, string name) =>
         new(Index:          index,

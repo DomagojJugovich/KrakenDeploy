@@ -5,6 +5,7 @@
 
 @using KrakenDeploy.Server.Core.Domain.Deployments
 @using KrakenDeploy.Server.Core.Domain.Releases
+@using KrakenDeploy.Server.Core.Domain.Variables
 @inject ProjectService ProjectSvc
 @inject ReleaseService ReleaseSvc
 @inject EnvironmentService EnvironmentSvc
@@ -161,6 +162,78 @@
                 </tbody>
             </table>
         </div>
+
+        <div class="section-title" style="margin-top: var(--section-gap); display:flex; align-items:center; gap:12px;">
+            Variable snapshot
+            @if (_release.VariableSnapshotUpdatedUtc is { } vsTs)
+            {
+                <span style="font-weight:400; font-size:12px; color:var(--text-3);">
+                    pinned @vsTs.ToLocalTime().ToString("g")
+                </span>
+            }
+            <RequirePermission Permission="Permission.ReleaseEdit">
+                <RadzenButton Text="Update Variables" Icon="refresh" Size="ButtonSize.Small"
+                              ButtonStyle="ButtonStyle.Light" Variant="Variant.Outlined"
+                              Click="@UpdateVariablesAsync" style="margin-left:auto;" />
+            </RequirePermission>
+        </div>
+        @if (_release.VariableSnapshotUpdatedUtc is null)
+        {
+            <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
+                No variable snapshot — variables resolve live at deploy time.
+                Click "Update Variables" to freeze the project's current variables into this release.
+            </RadzenAlert>
+        }
+        else if (_release.VariableSnapshot.Count == 0)
+        {
+            <div class="kr-card kr-card-pad kr-empty">No variables in this release's snapshot.</div>
+        }
+        else
+        {
+            <div class="kr-card">
+                <table class="kraken-matrix">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th style="width:280px;">Value</th>
+                            <th style="width:100px;">Type</th>
+                            <th style="width:320px;">Scope</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var v in _release.VariableSnapshot.OrderBy(v => v.Name, StringComparer.OrdinalIgnoreCase))
+                        {
+                            <tr>
+                                <td class="kraken-matrix-cell mono">
+                                    @v.Name
+                                    @if (v.PromptText is not null)
+                                    {
+                                        <RadzenIcon Icon="help_outline" Style="font-size:14px; color:var(--text-3);"
+                                                    title="@($"Prompted: {v.PromptText}")" />
+                                    }
+                                </td>
+                                <td class="kraken-matrix-cell mono cell-muted">
+                                    @if (v.Type == VariableType.Sensitive)
+                                    {
+                                        <span title="Sensitive — value encrypted">••••••••</span>
+                                    }
+                                    else if (v.Value.Length > 60)
+                                    {
+                                        <span title="@v.Value">@v.Value[..60]…</span>
+                                    }
+                                    else
+                                    {
+                                        @v.Value
+                                    }
+                                </td>
+                                <td class="kraken-matrix-cell cell-muted">@v.Type</td>
+                                <td class="kraken-matrix-cell cell-muted">@ScopeLabel(v.Scope)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
     }
 </ProjectShell>
 
@@ -263,4 +336,34 @@
         d.CompletedUtc is { } end && d.StartedUtc is { } start
             ? $"{(end - start).TotalSeconds:N0}s"
             : d.Status == DeploymentStatus.Running ? "running…" : "—";
+
+    private async Task UpdateVariablesAsync()
+    {
+        if (_release is null) return;
+        if (!await Guard.AllowAsync(Permission.ReleaseEdit)) return;
+        try
+        {
+            await ReleaseSvc.UpdateVariablesAsync(_release.Id, await Guard.CurrentCallerAsync());
+            _release = await ReleaseSvc.GetAsync(ReleaseId);
+            Notifications.Notify(NotificationSeverity.Success, "Updated", "Variable snapshot refreshed.", 3000);
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Failed", ex.Message, 6000);
+        }
+    }
+
+    private static string ScopeLabel(VariableScope s)
+    {
+        if (s.IsUnscoped) return "—";
+        var parts = new List<string>();
+        if (s.EnvironmentId.HasValue) parts.Add("env");
+        if (s.TenantId.HasValue) parts.Add("tenant");
+        if (s.TenantTagIds is { Count: > 0 }) parts.Add($"tenant-tag×{s.TenantTagIds.Count}");
+        if (s.TargetId.HasValue) parts.Add("target");
+        if (s.Roles is { Count: > 0 }) parts.Add($"roles: {string.Join(",", s.Roles)}");
+        if (s.ChannelId.HasValue) parts.Add("channel");
+        if (s.ProcessStepId.HasValue) parts.Add("step");
+        return string.Join(" · ", parts);
+    }
 }

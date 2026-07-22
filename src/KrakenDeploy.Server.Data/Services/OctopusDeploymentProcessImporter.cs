@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Execution;
 using KrakenDeploy.Server.Core.Domain.Processes;
 
@@ -125,10 +126,11 @@ public static class OctopusDeploymentProcessImporter
                 continue;
             }
 
-            // Parent's Config carries every step-level property verbatim
-            // — including Octopus.Action.MaxParallelism (reserved for
-            // M-RollingDeployments) and any future step-level keys. The
-            // step-level TargetRoles already resolved separately below.
+            // Parent's Config carries step-level properties verbatim, EXCEPT
+            // the D3 control-flow flags (MaxParallelism / ForEach.Collection /
+            // ForEach.Parallel), which are lifted into typed fields just below,
+            // and TargetRoles (resolved separately). ForEach.IterationVariable /
+            // .IndexVariable and any future step-level keys stay in Config.
             // s.Properties is already-normalised Dictionary<string, string>
             // (only the action's bag is JsonElement-typed).
             var parentConfig = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -146,6 +148,31 @@ public static class OctopusDeploymentProcessImporter
                     parentConfig[key] = value;
                 }
             }
+
+            // D3 — lift the three Step-Group control-flow flags out of the
+            // verbatim parentConfig bag into typed fields. IterationVariable /
+            // IndexVariable stay in Config (not promoted). Import is lenient: a
+            // non-positive MaxParallelism is carried through and surfaced at
+            // runtime, not rejected here.
+            int? maxParallelism = null;
+            if (parentConfig.TryGetValue(KrakenStepGroupConfigKeys.MaxParallelism, out var mpRaw)
+                && int.TryParse(mpRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var mp))
+            {
+                maxParallelism = mp;
+            }
+            parentConfig.Remove(KrakenStepGroupConfigKeys.MaxParallelism);
+
+            var forEachCollection =
+                parentConfig.TryGetValue(KrakenStepGroupConfigKeys.ForEachCollection, out var fc)
+                && !string.IsNullOrWhiteSpace(fc)
+                    ? fc
+                    : null;
+            parentConfig.Remove(KrakenStepGroupConfigKeys.ForEachCollection);
+
+            var forEachParallel =
+                parentConfig.TryGetValue(KrakenStepGroupConfigKeys.ForEachParallel, out var fp)
+                && string.Equals(fp?.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+            parentConfig.Remove(KrakenStepGroupConfigKeys.ForEachParallel);
 
             var parentRoles = ResolveTargetRoles(s.Properties);
             // Step-level Run Condition + Start Trigger from the top-level
@@ -168,6 +195,9 @@ public static class OctopusDeploymentProcessImporter
                 // it's per-action. Keep the Kraken default.
                 Required:                    true,
                 StartTrigger:                parentStartTrigger,
+                MaxParallelism:              maxParallelism,
+                ForEachCollection:           forEachCollection,
+                ForEachParallel:             forEachParallel,
                 Children:                    children));
 
             warnings.Add(new(label,
@@ -271,6 +301,12 @@ public static class OctopusDeploymentProcessImporter
         // verbatim so a round-trip stays semantically identical.
         var required = a.IsRequired;
 
+        // D3 — RunOnServer is a typed column now; lift it out of the verbatim
+        // Config bag so the boundary is the only place the Octopus key lives.
+        var runOnServer = config.TryGetValue(KrakenScriptConfigKeys.RunOnServer, out var ros)
+            && string.Equals(ros?.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+        config.Remove(KrakenScriptConfigKeys.RunOnServer);
+
         // Prefer the action's name for child step (multi-action) so each
         // child gets its own identifiable name; fall back to step name +
         // label for the single-action case where step name dominates.
@@ -288,7 +324,8 @@ public static class OctopusDeploymentProcessImporter
             ConditionVariableExpression: conditionVariableExpression,
             Required:                    required,
             MaxRetries:                  maxRetries,
-            StartTrigger:                startTrigger);
+            StartTrigger:                startTrigger,
+            RunOnServer:                 runOnServer);
     }
 
     // ── helpers ────────────────────────────────────────────────────────────
@@ -482,7 +519,16 @@ public sealed record ParsedStep(
     int RetryDelaySeconds = 0,
     int TimeoutSeconds = 0,
     StepStartTrigger StartTrigger = StepStartTrigger.StartAfterPrevious,
-    IReadOnlyList<ParsedStep>? Children = null);
+    IReadOnlyList<ParsedStep>? Children = null,
+    // D3 control-flow flags extracted from the Octopus property bag into typed
+    // fields (and stripped from Config): RunOnServer on leaf steps; the three
+    // group flags on Kraken.StepGroup parents. Import is lenient — a
+    // non-positive MaxParallelism is carried through and surfaced at runtime,
+    // not rejected here (save-time validation is the strict path).
+    bool RunOnServer = false,
+    int? MaxParallelism = null,
+    string? ForEachCollection = null,
+    bool ForEachParallel = false);
 
 /// <summary>Per-step warning surfaced during a deploymentprocess import.</summary>
 public sealed record ImportDeploymentProcessWarning(string StepName, string Message);

@@ -120,10 +120,9 @@ public sealed class OctopusImporterM15MultiActionTests
     [Fact]
     public void Parent_carries_step_level_MaxParallelism_for_M_RollingDeployments()
     {
-        // Reserved for the future rolling-deployments milestone. The
-        // importer reads + preserves Octopus.Action.MaxParallelism on the
-        // parent's Config; nothing in M15 acts on it but the value
-        // round-trips intact.
+        // D3 — the importer lifts Octopus.Action.MaxParallelism out of the
+        // parent's Config into the typed ParsedStep.MaxParallelism column and
+        // strips the string key, so the engine branches on the typed value.
         const string json = """
         {
           "Steps": [
@@ -145,10 +144,93 @@ public sealed class OctopusImporterM15MultiActionTests
         var result = OctopusDeploymentProcessImporter.Parse(json);
 
         var parent = result.Steps[0];
-        parent.Config.Should().ContainKey("Octopus.Action.MaxParallelism");
-        parent.Config["Octopus.Action.MaxParallelism"].Should().Be("5");
+        parent.MaxParallelism.Should().Be(5);
+        parent.Config.Should().NotContainKey("Octopus.Action.MaxParallelism",
+            because: "D3 promotes it to a typed column, stripped from the verbatim Config bag");
         // TargetRoles is surfaced on the ParsedStep, NOT duplicated in Config.
         parent.Config.Should().NotContainKey("Octopus.Action.TargetRoles");
+    }
+
+    [Fact]
+    public void Control_flow_flags_round_trip_through_export_and_reimport()
+    {
+        // D3 acceptance — the four flags live in typed columns; the export
+        // boundary re-emits them as Octopus keys and a re-import lifts them back
+        // into typed fields. A two-child group is used so it survives as a Step
+        // Group (a single-child group would re-import as a flat leaf — a
+        // pre-existing round-trip limitation, unrelated to D3).
+        var groupId = Guid.NewGuid();
+        var steps = new List<ProcessStep>
+        {
+            new()
+            {
+                Id                = groupId,
+                Name              = "Rolling",
+                StepType          = KrakenStepTypes.StepGroup,
+                SortOrder         = 0,
+                PackageId         = "",
+                TargetRoles       = ["web"],
+                MaxParallelism    = 3,
+                ForEachCollection = "#{envs}",
+                ForEachParallel   = true,
+                Config            = new Dictionary<string, string>
+                {
+                    // Out-of-scope ForEach key that must ride through Config verbatim.
+                    ["Octopus.Action.ForEach.IterationVariable"] = "env",
+                },
+            },
+            new()
+            {
+                Id           = Guid.NewGuid(),
+                Name         = "Run on server",
+                StepType     = "Octopus.Script",
+                SortOrder    = 0,
+                PackageId    = "",
+                ParentStepId = groupId,
+                RunOnServer  = true,
+                Config       = new Dictionary<string, string>
+                {
+                    ["Octopus.Action.Script.ScriptBody"] = "echo hi",
+                },
+            },
+            new()
+            {
+                Id           = Guid.NewGuid(),
+                Name         = "Run on target",
+                StepType     = "Octopus.Script",
+                SortOrder    = 1,
+                PackageId    = "",
+                ParentStepId = groupId,
+                Config       = new Dictionary<string, string>
+                {
+                    ["Octopus.Action.Script.ScriptBody"] = "echo bye",
+                },
+            },
+        };
+
+        var (json, _) = OctopusDeploymentProcessExporter.Export(steps);
+        var reimported = OctopusDeploymentProcessImporter.Parse(json.ToJsonString());
+
+        var parent = reimported.Steps.Should().ContainSingle().Subject;
+        parent.StepType.Should().Be(KrakenStepTypes.StepGroup);
+        parent.TargetRoles.Should().Contain("web");
+        parent.MaxParallelism.Should().Be(3);
+        parent.ForEachCollection.Should().Be("#{envs}");
+        parent.ForEachParallel.Should().BeTrue();
+        // Promoted keys must NOT linger in Config; the out-of-scope iteration
+        // variable name must survive there.
+        parent.Config.Should().NotContainKey("Octopus.Action.MaxParallelism");
+        parent.Config.Should().NotContainKey("Octopus.Action.ForEach.Collection");
+        parent.Config.Should().NotContainKey("Octopus.Action.ForEach.Parallel");
+        parent.Config.Should().ContainKey("Octopus.Action.ForEach.IterationVariable");
+
+        parent.Children.Should().NotBeNull();
+        var serverChild = parent.Children!.Should()
+            .Contain(c => c.RunOnServer).Which;
+        serverChild.Config.Should().NotContainKey("Octopus.Action.RunOnServer");
+        serverChild.Config.Should().ContainKey("Octopus.Action.Script.ScriptBody");
+        parent.Children!.Should().Contain(c => !c.RunOnServer,
+            because: "the target-side child round-trips with RunOnServer=false");
     }
 
     [Fact]

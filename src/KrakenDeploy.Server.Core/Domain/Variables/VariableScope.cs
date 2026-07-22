@@ -14,9 +14,9 @@ namespace KrakenDeploy.Server.Core.Domain.Variables;
 /// more-specific dimension always beats any combination of less-specific ones),
 /// following Octopus's ordered scope list. For the dimensions KrakenDeploy
 /// models today the order, most specific first, is: <b>step &gt; target (machine) &gt;
-/// roles (target tags) &gt; tenant &gt; environment &gt; channel</b>. When two definitions
-/// are scoped <i>equally</i>, the source breaks the tie (project &gt; library
-/// &gt; tenant) — handled by the resolver, not this scope object.
+/// roles (target tags) &gt; tenant &gt; tenant-tag &gt; environment &gt; channel</b>.
+/// When two definitions are scoped <i>equally</i>, the source breaks the tie
+/// (project &gt; library &gt; tenant) — handled by the resolver, not this scope object.
 /// </para>
 /// </summary>
 public class VariableScope
@@ -35,6 +35,14 @@ public class VariableScope
     /// overlap with at least one entry in this list.
     /// </summary>
     public List<string>? Roles { get; set; }
+
+    /// <summary>
+    /// If non-empty, the variable applies only when the deployment's tenant
+    /// carries at least one of these tags (matched against the tenant's
+    /// <c>TagApplication</c> rows). Octopus <c>Scope.TenantTag</c> parity.
+    /// Less specific than a concrete <see cref="TenantId"/> scope.
+    /// </summary>
+    public List<Guid>? TenantTagIds { get; set; }
 
     /// <summary>
     /// If set, the variable applies only when the deployment's release belongs
@@ -65,7 +73,8 @@ public class VariableScope
         TargetId is null &&
         ChannelId is null &&
         ProcessStepId is null &&
-        (Roles is null || Roles.Count == 0);
+        (Roles is null || Roles.Count == 0) &&
+        (TenantTagIds is null || TenantTagIds.Count == 0);
 
     /// <summary>
     /// Scope-specificity rank — higher wins. A PLACE-VALUE rank (bitmask), not a
@@ -73,18 +82,17 @@ public class VariableScope
     /// less-specific ones, matching Octopus's ordered scope-specificity list
     /// (most specific first): step/action, machine (target), target-tags-by-step,
     /// target-tags (roles), tenant, tenant-tag, environment, channel, process.
-    /// KrakenDeploy currently models target, roles, tenant and environment; the
-    /// other slots are reserved so the order stays correct once they're added.
     /// </summary>
     public int SpecificityScore()
     {
         var rank = 0;
-        if (ProcessStepId.HasValue) { rank |= 1 << 9; } // step / action (most specific)
-        if (TargetId.HasValue)       { rank |= 1 << 8; } // machine / deployment target
-        if (Roles is { Count: > 0 }) { rank |= 1 << 6; } // target tags / roles
-        if (TenantId.HasValue)       { rank |= 1 << 5; } // target tenant
-        if (EnvironmentId.HasValue)  { rank |= 1 << 3; } // environment
-        if (ChannelId.HasValue)      { rank |= 1 << 2; } // channel (less specific than environment)
+        if (ProcessStepId.HasValue)          { rank |= 1 << 9; } // step / action (most specific)
+        if (TargetId.HasValue)               { rank |= 1 << 8; } // machine / deployment target
+        if (Roles is { Count: > 0 })         { rank |= 1 << 6; } // target tags / roles
+        if (TenantId.HasValue)               { rank |= 1 << 5; } // specific tenant
+        if (TenantTagIds is { Count: > 0 })  { rank |= 1 << 4; } // tenant tag (less specific than tenant)
+        if (EnvironmentId.HasValue)          { rank |= 1 << 3; } // environment
+        if (ChannelId.HasValue)              { rank |= 1 << 2; } // channel (less specific than environment)
         return rank;
     }
 
@@ -98,9 +106,16 @@ public class VariableScope
         IReadOnlyList<string> targetRoles,
         Guid? tenantId = null,
         Guid? channelId = null,
-        Guid? stepId = null)
+        Guid? stepId = null,
+        IReadOnlyList<Guid>? tenantTagIds = null)
     {
         if (TenantId.HasValue && TenantId.Value != tenantId)
+        {
+            return false;
+        }
+
+        if (TenantTagIds is { Count: > 0 } &&
+            !TenantTagIds.Intersect(tenantTagIds ?? []).Any())
         {
             return false;
         }

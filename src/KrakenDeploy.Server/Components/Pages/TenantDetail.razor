@@ -3,8 +3,10 @@
 @rendermode InteractiveServer
 @attribute [Authorize]
 @using KrakenDeploy.Server.Core.Domain.Tenants
+@using KrakenDeploy.Server.Core.Domain.Variables
 @using KrakenDeploy.Server.Data.Services
 @inject TenantService TenantSvc
+@inject VariableService VariableSvc
 @inject NavigationManager Nav
 
 <PageTitle>@(_tenant?.Name ?? "Tenant") - KrakenDeploy</PageTitle>
@@ -36,11 +38,82 @@
                      EditPermission="Permission.TenantEdit" />
 </RadzenCard>
 
+@* ── Tenant common variables (read-only) ─────────────────────────────────── *@
+<RadzenCard style="max-width: 900px;">
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" class="rz-mb-2">
+        <RadzenText TextStyle="TextStyle.H6">Variables</RadzenText>
+        @if (_tenant.VariableSetId is { } vsId)
+        {
+            <RadzenLink Path="@Sp($"/variable-sets/{vsId}")" Text="Edit in Library"
+                        style="margin-left:auto; font-size:13px;" />
+        }
+    </RadzenStack>
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-3">
+        Common variables applied to every deployment of this tenant. Project variables
+        scoped to this tenant are visible in each project's Variables page.
+    </RadzenText>
+    @if (_tenantVars.Count == 0)
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            No tenant common variables defined.
+        </RadzenText>
+    }
+    else
+    {
+        <KrakenGrid SettingsKey="tenant-vars" Data="@_tenantVars" TItem="VariableDto"
+                    AllowPaging="false" AllowSorting="true" AllowColumnResize="true"
+                    GridLines="DataGridGridLines.Horizontal">
+            <Columns>
+                <RadzenDataGridColumn TItem="VariableDto" Property="Name" Title="Name" />
+                <RadzenDataGridColumn TItem="VariableDto" Title="Value" Width="280px">
+                    <Template Context="v">
+                        @if (v.Type == "Sensitive")
+                        {
+                            <span class="rz-color-secondary">••••••••</span>
+                        }
+                        else if (v.Value.Length > 60)
+                        {
+                            <span title="@v.Value">@v.Value[..60]…</span>
+                        }
+                        else
+                        {
+                            @v.Value
+                        }
+                    </Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="VariableDto" Title="Type" Width="110px">
+                    <Template Context="v">@v.Type</Template>
+                </RadzenDataGridColumn>
+                <RadzenDataGridColumn TItem="VariableDto" Title="Scope" Width="200px">
+                    <Template Context="v">
+                        @if (v.Scope.IsUnscoped)
+                        {
+                            <span class="rz-color-secondary">all deployments</span>
+                        }
+                        else
+                        {
+                            @(v.Scope.EnvironmentId.HasValue ? "env-scoped" : "")
+                            @(v.Scope.Roles is { Count: > 0 } ? $"roles: {string.Join(",", v.Scope.Roles)}" : "")
+                        }
+                    </Template>
+                </RadzenDataGridColumn>
+            </Columns>
+        </KrakenGrid>
+    }
+</RadzenCard>
+
 @code {
     [Parameter] public Guid Id { get; set; }
 
     private Tenant? _tenant;
+    private List<VariableDto> _tenantVars = [];
 
     protected override async Task OnInitializedAsync()
-        => _tenant = await TenantSvc.GetAsync(Id);
+    {
+        _tenant = await TenantSvc.GetAsync(Id);
+        if (_tenant?.VariableSetId is { } setId)
+        {
+            _tenantVars = await VariableSvc.GetVariablesInSetAsync(setId);
+        }
+    }
 }

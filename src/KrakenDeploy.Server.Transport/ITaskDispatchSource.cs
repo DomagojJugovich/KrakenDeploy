@@ -59,6 +59,7 @@ internal interface ITaskDispatchSource
         VariableService variableService,
         DeploymentTarget target,
         IReadOnlyList<(Guid StepId, string StepName)> steps,
+        IReadOnlyList<Guid>? tenantTagIds,
         CancellationToken ct);
 
     /// <summary>Builds the <c>Octopus.*</c> system-variable dictionary for one
@@ -91,6 +92,7 @@ internal sealed class DeploymentDispatchSource(Deployment deployment) : ITaskDis
         VariableService variableService,
         DeploymentTarget target,
         IReadOnlyList<(Guid StepId, string StepName)> steps,
+        IReadOnlyList<Guid>? tenantTagIds,
         CancellationToken ct)
         => variableService.ResolveFromSnapshotWithStepsAsync(
             deployment.Release.VariableSnapshot,
@@ -100,7 +102,8 @@ internal sealed class DeploymentDispatchSource(Deployment deployment) : ITaskDis
             deployment.TenantId,
             deployment.Release.ChannelId,
             steps,
-            ct);
+            tenantTagIds: tenantTagIds,
+            ct: ct);
 
     public IReadOnlyDictionary<string, string> BuildSystemVariables(
         DeploymentTarget target,
@@ -137,6 +140,7 @@ internal sealed class RunbookRunDispatchSource(RunbookRun run) : ITaskDispatchSo
         VariableService variableService,
         DeploymentTarget target,
         IReadOnlyList<(Guid StepId, string StepName)> steps,
+        IReadOnlyList<Guid>? tenantTagIds,
         CancellationToken ct)
         => variableService.ResolveWithStepsAsync(
             run.ProjectId,
@@ -146,7 +150,8 @@ internal sealed class RunbookRunDispatchSource(RunbookRun run) : ITaskDispatchSo
             run.TenantId,
             channelId: null,   // runbook runs are not channel-scoped
             steps,
-            ct);
+            tenantTagIds: tenantTagIds,
+            ct: ct);
 
     public IReadOnlyDictionary<string, string> BuildSystemVariables(
         DeploymentTarget target,

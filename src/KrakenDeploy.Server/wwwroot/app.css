@@ -1784,6 +1784,26 @@ a.kraken-back-link .rzi { font-size: 16px; }
 
 /* Variable grid auxiliary styles (RadzenDataGrid handles the table chrome). */
 
+/* Filter bar above the variable grid */
+.kraken-var-filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    padding: 0.6rem 0.75rem;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+/* Included library set rows */
+.kraken-included-set-row {
+    padding: 0.5rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--surface);
+}
+
 /* Always-visible "new variable" bar above the grid */
 .kraken-newvar-bar {
     display: grid;

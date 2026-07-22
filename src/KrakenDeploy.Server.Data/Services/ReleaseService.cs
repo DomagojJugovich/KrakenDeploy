@@ -209,6 +209,11 @@ public class ReleaseService(
                 RetryDelaySeconds           = step.RetryDelaySeconds,
                 TimeoutSeconds              = step.TimeoutSeconds,
                 StartTrigger                = step.StartTrigger,
+                // D3 — freeze the control-flow flags too.
+                RunOnServer                 = step.RunOnServer,
+                MaxParallelism              = step.MaxParallelism,
+                ForEachCollection           = step.ForEachCollection,
+                ForEachParallel             = step.ForEachParallel,
             });
         }
 
@@ -357,6 +362,7 @@ public class ReleaseService(
             EnvironmentId  = v.Scope.EnvironmentId,
             TargetId       = v.Scope.TargetId,
             TenantId       = v.Scope.TenantId,
+            TenantTagIds   = v.Scope.TenantTagIds is null ? null : [.. v.Scope.TenantTagIds],
             ChannelId      = v.Scope.ChannelId,
             ProcessStepId  = v.Scope.ProcessStepId,
             Roles          = v.Scope.Roles is null ? null : [.. v.Scope.Roles],

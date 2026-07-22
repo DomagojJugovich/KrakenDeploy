@@ -67,6 +67,20 @@ public static class ProcessValidator
         /// Step Groups must not carry leaf semantics — script body,
         /// package selectors, etc.</summary>
         GroupHasLeafConfig,
+
+        /// <summary>D3 — a leaf (non-<see cref="KrakenStepTypes.StepGroup"/>)
+        /// step carries a Step-Group-only control-flow flag (MaxParallelism /
+        /// ForEachCollection / ForEachParallel). Those belong on a Step Group.</summary>
+        LeafHasGroupFlag,
+
+        /// <summary>D3 — a <see cref="KrakenStepTypes.StepGroup"/> step has
+        /// <c>RunOnServer</c> set. Server-side execution is a leaf/script
+        /// property; a Step Group has no script.</summary>
+        GroupHasRunOnServer,
+
+        /// <summary>D3 — a step's <c>MaxParallelism</c> is set to a non-positive
+        /// value. A rolling window must be a positive integer (or blank = no cap).</summary>
+        InvalidMaxParallelism,
     }
 
     /// <summary>
@@ -129,6 +143,47 @@ public static class ProcessValidator
                     $"[{string.Join(", ", offending)}]. Step Groups have no " +
                     $"script body or package — move these properties onto a " +
                     $"child step."));
+            }
+
+            // ── D3 control-flow flag placement ──────────────────────────
+            var isGroup = string.Equals(step.StepType, KrakenStepTypes.StepGroup,
+                StringComparison.OrdinalIgnoreCase);
+            if (isGroup)
+            {
+                // RunOnServer is a leaf/script property — a Step Group has no script.
+                if (step.RunOnServer)
+                {
+                    errors.Add(new ValidationError(
+                        step.Id, ValidationErrorCode.GroupHasRunOnServer,
+                        $"Step Group '{step.Name}' has RunOnServer set. Server-side " +
+                        $"execution is a leaf/script property — set it on the child " +
+                        $"step, not the group."));
+                }
+                // A declared rolling window must be a positive integer.
+                if (step.MaxParallelism is <= 0)
+                {
+                    errors.Add(new ValidationError(
+                        step.Id, ValidationErrorCode.InvalidMaxParallelism,
+                        $"Step Group '{step.Name}' has Max parallelism " +
+                        $"{step.MaxParallelism} — it must be a positive integer " +
+                        $"(leave blank for no cap)."));
+                }
+            }
+            else
+            {
+                // Group-only flags must not appear on a leaf step.
+                var groupFlags = new List<string>();
+                if (step.MaxParallelism is not null) { groupFlags.Add("Max parallelism"); }
+                if (!string.IsNullOrWhiteSpace(step.ForEachCollection)) { groupFlags.Add("ForEach collection"); }
+                if (step.ForEachParallel) { groupFlags.Add("ForEach parallel"); }
+                if (groupFlags.Count > 0)
+                {
+                    errors.Add(new ValidationError(
+                        step.Id, ValidationErrorCode.LeafHasGroupFlag,
+                        $"Step '{step.Name}' (type '{step.StepType}') carries " +
+                        $"Step-Group-only flag(s): [{string.Join(", ", groupFlags)}]. " +
+                        $"These belong on a '{KrakenStepTypes.StepGroup}' step."));
+                }
             }
 
             // ── Parent locality ─────────────────────────────────────────

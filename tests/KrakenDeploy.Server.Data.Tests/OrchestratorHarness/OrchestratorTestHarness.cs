@@ -639,24 +639,30 @@ public sealed class StepBuilder
     public string? StepPackageName { get; init; }
     public string? StepPackageVersion { get; init; }
 
+    // D3 — control-flow flags are typed columns now (promoted from jsonb Config).
+    // RunOnServer routes a leaf step server-side; MaxParallelism/ForEach* live on
+    // a Kraken.StepGroup. ToSnapshot maps them onto the typed StepSnapshot columns.
+    public bool RunOnServer { get; init; }
+    public int? MaxParallelism { get; init; }
+    public string? ForEachCollection { get; init; }
+    public bool ForEachParallel { get; init; }
+
     public static StepBuilder Script(string name, bool required = true)
         => new() { Name = name, StepType = "Octopus.Script", Required = required };
 
-    /// <summary>A "Run on Server" script step (<c>Octopus.Action.RunOnServer =
-    /// "true"</c>). The wave partitioner classifies it server-side, so it runs
-    /// in-process on the orchestrator, NOT on the target agent — the D1 security
-    /// fix for runbook runs (which previously executed RunOnServer steps on the
-    /// target because the partitioner never ran).</summary>
+    /// <summary>A "Run on Server" script step (typed <c>RunOnServer = true</c>,
+    /// D3 — promoted from the <c>Octopus.Action.RunOnServer</c> Config key). The
+    /// wave partitioner classifies it server-side, so it runs in-process on the
+    /// orchestrator, NOT on the target agent — the D1 security fix for runbook
+    /// runs (which previously executed RunOnServer steps on the target because
+    /// the partitioner never ran).</summary>
     public static StepBuilder ServerScript(string name, bool required = true)
         => new()
         {
-            Name     = name,
-            StepType = "Octopus.Script",
-            Required = required,
-            Config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["Octopus.Action.RunOnServer"] = "true",
-            },
+            Name        = name,
+            StepType    = "Octopus.Script",
+            Required    = required,
+            RunOnServer = true,
         };
 
     /// <summary>
@@ -681,32 +687,32 @@ public sealed class StepBuilder
             },
         };
 
+    /// <summary>A Step Group. <paramref name="maxParallelism"/> flows to the
+    /// typed column verbatim — pass a non-positive value to exercise the D3
+    /// "malformed rolling window → batching disabled" runtime warning path.</summary>
     public static StepBuilder StepGroup(string name, int? maxParallelism = null)
-    {
-        var config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (maxParallelism is > 0)
+        => new()
         {
-            config["Octopus.Action.MaxParallelism"] =
-                maxParallelism.Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        }
-        return new StepBuilder
-        {
-            Name     = name,
-            StepType = KrakenStepTypes.StepGroup,
-            Required = false,
-            Config   = config,
+            Name           = name,
+            StepType       = KrakenStepTypes.StepGroup,
+            Required       = false,
+            MaxParallelism = maxParallelism,
         };
-    }
 
     public StepBuilder InGroup(Guid parentId)
         => new()
         {
-            Id           = Id,
-            Name         = Name,
-            StepType     = StepType,
-            Required     = Required,
-            Config       = Config,
-            ParentStepId = parentId,
+            Id                = Id,
+            Name              = Name,
+            StepType          = StepType,
+            Required          = Required,
+            Config            = Config,
+            ParentStepId      = parentId,
+            // D3 — preserve the typed control-flow flags when re-parenting.
+            RunOnServer       = RunOnServer,
+            MaxParallelism    = MaxParallelism,
+            ForEachCollection = ForEachCollection,
+            ForEachParallel   = ForEachParallel,
         };
 
     internal StepSnapshot ToSnapshot(int sortOrder) => new()
@@ -725,6 +731,13 @@ public sealed class StepBuilder
         Condition          = Condition,
         StepPackageName    = StepPackageName,
         StepPackageVersion = StepPackageVersion,
+        // D3 — map the typed control-flow flags onto the snapshot columns the
+        // engine reads (WavePartitioner.RunOnServer, RollingWindowResolver.
+        // MaxParallelism, DeploymentPlanFlattener.ForEach*).
+        RunOnServer        = RunOnServer,
+        MaxParallelism     = MaxParallelism,
+        ForEachCollection  = ForEachCollection,
+        ForEachParallel    = ForEachParallel,
     };
 }
 

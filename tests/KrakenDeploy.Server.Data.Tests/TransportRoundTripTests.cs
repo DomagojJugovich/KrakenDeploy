@@ -97,7 +97,6 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
             : ("Bash", ServerProduceBodyBash, (string?)null);
         var serverConfig = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["Octopus.Action.RunOnServer"]       = "true",
             ["Octopus.Action.Script.ScriptBody"] = body,
             ["Octopus.Action.Script.Syntax"]     = syntax,
         };
@@ -108,7 +107,8 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
 
         var (deploymentId, target) = await SeedTwoStepDeploymentAsync(
             seeder,
-            new StepBuilder { Name = "srv", StepType = "Octopus.Script", Config = serverConfig },
+            // D3 — RunOnServer is a typed flag now, not a Config key.
+            new StepBuilder { Name = "srv", StepType = "Octopus.Script", RunOnServer = true, Config = serverConfig },
             RoundTripSteps.Consume("consume", "Octopus.Action[srv].Output.Url"));
         await host.ConnectRealAgentAsync(target);
 

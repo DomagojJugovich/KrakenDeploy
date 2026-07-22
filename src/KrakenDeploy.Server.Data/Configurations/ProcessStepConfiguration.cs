@@ -47,6 +47,13 @@ public class ProcessStepConfiguration : IEntityTypeConfiguration<ProcessStep>
         builder.Property(x => x.TimeoutSeconds).HasDefaultValue(0);
         builder.Property(x => x.StartTrigger).HasDefaultValue(StepStartTrigger.StartAfterPrevious);
 
+        // D3 control-flow flags promoted from jsonb Config. Defaults preserve
+        // pre-D3 behaviour (agent-side execution, no rolling cap, no ForEach).
+        builder.Property(x => x.RunOnServer).HasDefaultValue(false);
+        builder.Property(x => x.MaxParallelism); // nullable int, no default
+        builder.Property(x => x.ForEachCollection).HasMaxLength(512);
+        builder.Property(x => x.ForEachParallel).HasDefaultValue(false);
+
         // Composite Space FK: a step can only belong to a process in its own Space.
         builder.HasOne(x => x.Process)
             .WithMany(p => p.Steps)

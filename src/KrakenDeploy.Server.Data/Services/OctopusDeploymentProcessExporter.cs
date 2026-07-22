@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Execution;
 using KrakenDeploy.Server.Core.Domain.Processes;
 
@@ -44,13 +45,32 @@ public static class OctopusDeploymentProcessExporter
                 }
 
                 var stepObj = StepShell(root, omitConditionWhenDefault: true);
-                // Parent Config carries step-level properties verbatim
-                // (Octopus.Action.MaxParallelism etc.) — merge them into the
-                // step's Properties bag, where the importer reads them back.
+                // Parent Config carries the remaining step-level properties
+                // verbatim (e.g. ForEach.IterationVariable/.IndexVariable) — merge
+                // them into the step's Properties bag, where the importer reads
+                // them back.
                 var props = (JsonObject)stepObj["Properties"]!;
                 foreach (var (key, value) in root.Config)
                 {
                     props[key] ??= value;
+                }
+                // D3 — re-emit the promoted Step-Group flags from their typed
+                // columns as the Octopus-compatible keys (emit-only-when-set,
+                // mirroring the M14 knob emits in ActionObj). This is the ONLY
+                // place these keys reappear in the Octopus dialect.
+                if (root.MaxParallelism is > 0)
+                {
+                    props[KrakenStepGroupConfigKeys.MaxParallelism] ??=
+                        root.MaxParallelism.Value.ToString(
+                            System.Globalization.CultureInfo.InvariantCulture);
+                }
+                if (!string.IsNullOrWhiteSpace(root.ForEachCollection))
+                {
+                    props[KrakenStepGroupConfigKeys.ForEachCollection] ??= root.ForEachCollection;
+                }
+                if (root.ForEachParallel)
+                {
+                    props[KrakenStepGroupConfigKeys.ForEachParallel] ??= "true";
                 }
                 stepObj["Actions"] = actions;
                 stepsArr.Add(stepObj);
@@ -148,6 +168,13 @@ public static class OctopusDeploymentProcessExporter
         {
             props["Octopus.Action.AutoRetry.MaximumCount"] =
                 step.MaxRetries.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        // D3 — re-emit RunOnServer from its typed column (leaf/script flag),
+        // emit-only-when-true so a round-trip stays minimal.
+        if (step.RunOnServer && !step.Config.ContainsKey(KrakenScriptConfigKeys.RunOnServer))
+        {
+            props[KrakenScriptConfigKeys.RunOnServer] = "true";
         }
 
         // Knobs with no Octopus equivalent → Kraken extension keys. They

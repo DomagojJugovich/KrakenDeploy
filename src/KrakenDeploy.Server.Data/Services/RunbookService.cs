@@ -294,6 +294,27 @@ public class RunbookService(
 
     // ── Step management ────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// D3 — reads a single runbook step (Space/permission-scoped via
+    /// <see cref="EnsureStepScopeAsync"/>) so the REST update endpoint can merge
+    /// the typed control-flow flags onto the step's existing execution knobs
+    /// without resetting the M14 knobs the REST contract does not carry. Returns
+    /// <c>null</c> when the step does not exist; throws on an unauthorized caller.
+    /// </summary>
+    public async Task<ProcessStep?> GetStepAsync(
+        Guid stepId, CallerAuthorization caller, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(caller);
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var step = await db.ProcessSteps.FindAsync([stepId], ct).ConfigureAwait(false);
+        if (step is null)
+        {
+            return null;
+        }
+        await EnsureStepScopeAsync(db, caller, step, ct).ConfigureAwait(false);
+        return step;
+    }
+
     public async Task<ProcessStep> AddStepAsync(
         Guid runbookId,
         string name,
@@ -339,6 +360,10 @@ public class RunbookService(
             RetryDelaySeconds           = k.RetryDelaySeconds,
             TimeoutSeconds              = k.TimeoutSeconds,
             StartTrigger                = k.StartTrigger,
+            RunOnServer                 = k.RunOnServer,
+            MaxParallelism              = k.MaxParallelism,
+            ForEachCollection           = k.ForEachCollection,
+            ForEachParallel             = k.ForEachParallel,
             ParentStepId                = parentStepId,
         };
 
@@ -393,6 +418,10 @@ public class RunbookService(
             step.RetryDelaySeconds           = knobs.RetryDelaySeconds;
             step.TimeoutSeconds              = knobs.TimeoutSeconds;
             step.StartTrigger                = knobs.StartTrigger;
+            step.RunOnServer                 = knobs.RunOnServer;
+            step.MaxParallelism              = knobs.MaxParallelism;
+            step.ForEachCollection           = knobs.ForEachCollection;
+            step.ForEachParallel             = knobs.ForEachParallel;
         }
 
         if (updateParent is not null
@@ -552,6 +581,11 @@ public class RunbookService(
                 RetryDelaySeconds           = s.RetryDelaySeconds,
                 TimeoutSeconds              = s.TimeoutSeconds,
                 StartTrigger                = s.StartTrigger,
+                // D3 — freeze the control-flow flags too (parity with ReleaseService).
+                RunOnServer                 = s.RunOnServer,
+                MaxParallelism              = s.MaxParallelism,
+                ForEachCollection           = s.ForEachCollection,
+                ForEachParallel             = s.ForEachParallel,
             })
             .ToList();
 
