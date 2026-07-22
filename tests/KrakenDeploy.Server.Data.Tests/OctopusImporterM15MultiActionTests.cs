@@ -120,10 +120,9 @@ public sealed class OctopusImporterM15MultiActionTests
     [Fact]
     public void Parent_carries_step_level_MaxParallelism_for_M_RollingDeployments()
     {
-        // Reserved for the future rolling-deployments milestone. The
-        // importer reads + preserves Octopus.Action.MaxParallelism on the
-        // parent's Config; nothing in M15 acts on it but the value
-        // round-trips intact.
+        // D3 — the importer lifts Octopus.Action.MaxParallelism out of the
+        // parent's Config into the typed ParsedStep.MaxParallelism column and
+        // strips the string key, so the engine branches on the typed value.
         const string json = """
         {
           "Steps": [
@@ -145,8 +144,9 @@ public sealed class OctopusImporterM15MultiActionTests
         var result = OctopusDeploymentProcessImporter.Parse(json);
 
         var parent = result.Steps[0];
-        parent.Config.Should().ContainKey("Octopus.Action.MaxParallelism");
-        parent.Config["Octopus.Action.MaxParallelism"].Should().Be("5");
+        parent.MaxParallelism.Should().Be(5);
+        parent.Config.Should().NotContainKey("Octopus.Action.MaxParallelism",
+            because: "D3 promotes it to a typed column, stripped from the verbatim Config bag");
         // TargetRoles is surfaced on the ParsedStep, NOT duplicated in Config.
         parent.Config.Should().NotContainKey("Octopus.Action.TargetRoles");
     }

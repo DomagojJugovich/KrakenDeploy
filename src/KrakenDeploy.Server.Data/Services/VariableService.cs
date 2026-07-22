@@ -356,6 +356,46 @@ public class VariableService(
         v.Type.ToString(),
         v.Scope);
 
+    /// <summary>Returns the names of all sensitive variables across the project
+    /// and its included library sets (for preview masking).</summary>
+    public async Task<HashSet<string>> GetSensitiveNamesAsync(Guid projectId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var projectSet = await db.VariableSets
+            .Include(vs => vs.Variables)
+            .AsNoTracking()
+            .FirstOrDefaultAsync(vs => vs.ProjectId == projectId, ct)
+            .ConfigureAwait(false);
+        if (projectSet is not null)
+        {
+            foreach (var v in projectSet.Variables.Where(v => v.Type == VariableType.Sensitive))
+            {
+                names.Add(v.Name);
+            }
+        }
+
+        var linkIds = await db.ProjectVariableSetLinks
+            .Where(l => l.ProjectId == projectId)
+            .Select(l => l.VariableSetId)
+            .ToListAsync(ct).ConfigureAwait(false);
+        if (linkIds.Count > 0)
+        {
+            var libVars = await db.Variables
+                .AsNoTracking()
+                .Where(v => linkIds.Contains(v.SetId) && v.Type == VariableType.Sensitive)
+                .Select(v => v.Name)
+                .ToListAsync(ct).ConfigureAwait(false);
+            foreach (var n in libVars)
+            {
+                names.Add(n);
+            }
+        }
+
+        return names;
+    }
+
     /// <summary>Creates a variable directly in a given set (project or library).</summary>
     public async Task<Variable> CreateVariableInSetAsync(
         Guid setId,

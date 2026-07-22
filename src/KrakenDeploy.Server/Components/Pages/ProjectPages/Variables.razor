@@ -24,21 +24,36 @@
 <ProjectShell Slug="@Slug">
     <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
                  JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-3">
-        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
-            Project Variables
-        </RadzenText>
-        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
-            <RequirePermission Permission="Permission.VariableEdit">
-                <RadzenButton Icon="unfold_less" Text="Collapse all"
-                              ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
-                              Click="@(() => SetAllExpanded(false))" />
-                <RadzenButton Icon="unfold_more" Text="Expand all"
-                              ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
-                              Click="@(() => SetAllExpanded(true))" />
-            </RequirePermission>
+        <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="1rem">
+            <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
+                Project Variables
+            </RadzenText>
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0">
+                <RadzenButton Text="Edit" Size="ButtonSize.Small"
+                              ButtonStyle="@(_mode == VarMode.Edit ? ButtonStyle.Primary : ButtonStyle.Light)"
+                              Click="@(() => _mode = VarMode.Edit)" />
+                <RadzenButton Text="Preview" Size="ButtonSize.Small"
+                              ButtonStyle="@(_mode == VarMode.Preview ? ButtonStyle.Primary : ButtonStyle.Light)"
+                              Click="@(() => _mode = VarMode.Preview)" />
+            </RadzenStack>
         </RadzenStack>
+        @if (_mode == VarMode.Edit)
+        {
+            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+                <RequirePermission Permission="Permission.VariableEdit">
+                    <RadzenButton Icon="unfold_less" Text="Collapse all"
+                                  ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                                  Click="@(() => SetAllExpanded(false))" />
+                    <RadzenButton Icon="unfold_more" Text="Expand all"
+                                  ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                                  Click="@(() => SetAllExpanded(true))" />
+                </RequirePermission>
+            </RadzenStack>
+        }
     </RadzenStack>
 
+    @if (_mode == VarMode.Edit)
+    {
     @* ── Filter bar ─────────────────────────────────────────────────────── *@
     <div class="kraken-var-filter-bar rz-mb-3">
         <RadzenDropDown TValue="Guid?" @bind-Value="_filterEnvId"
@@ -69,6 +84,7 @@
                           Click="ClearFilters" />
         }
     </div>
+    }
 
     @if (!_loaded)
     {
@@ -90,6 +106,8 @@
     }
     else
     {
+        @if (_mode == VarMode.Edit)
+        {
         @* ── Always-visible "new variable" row above the grid ─────────────── *@
         <RequirePermission Permission="Permission.VariableEdit">
             <div class="kraken-newvar-bar">
@@ -403,6 +421,91 @@
                 </RadzenStack>
             }
         </RadzenCard>
+        }
+        else
+        {
+            @* ── Preview mode ─────────────────────────────────────────────── *@
+            <RadzenCard class="rz-mb-3">
+                <RadzenText TextStyle="TextStyle.H6" class="rz-mb-2">
+                    Resolve variables for a deployment context
+                </RadzenText>
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem"
+                             AlignItems="AlignItems.End" Wrap="FlexWrap.Wrap">
+                    <div>
+                        <RadzenLabel Text="Environment" />
+                        <RadzenDropDown TValue="Guid?" @bind-Value="_previewEnvId"
+                                        Data="@_environments" TextProperty="Name" ValueProperty="Id"
+                                        AllowClear="true" AllowFiltering="true"
+                                        FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                        Placeholder="Select…" Style="width: 180px;" />
+                    </div>
+                    <div>
+                        <RadzenLabel Text="Target" />
+                        <RadzenDropDown TValue="Guid?" @bind-Value="_previewTargetId"
+                                        Data="@_targets" TextProperty="Name" ValueProperty="Id"
+                                        AllowClear="true" AllowFiltering="true"
+                                        FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                        Placeholder="(any)" Style="width: 180px;" />
+                    </div>
+                    <div>
+                        <RadzenLabel Text="Tenant" />
+                        <RadzenDropDown TValue="Guid?" @bind-Value="_previewTenantId"
+                                        Data="@_tenants" TextProperty="Name" ValueProperty="Id"
+                                        AllowClear="true" AllowFiltering="true"
+                                        FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                        Placeholder="(any)" Style="width: 160px;" />
+                    </div>
+                    <RadzenButton Text="Resolve" Icon="play_arrow"
+                                  ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                                  Disabled="@(!_previewEnvId.HasValue)"
+                                  Click="RunPreviewAsync" />
+                </RadzenStack>
+            </RadzenCard>
+
+            @if (_previewLoading)
+            {
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Resolving…</RadzenText>
+            }
+            else if (_previewResult is not null)
+            {
+                <RadzenCard>
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-2">
+                        Resolved variables (@_previewResult.Count)
+                    </RadzenText>
+                    @if (_previewResult.Count == 0)
+                    {
+                        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                            No variables match the selected context.
+                        </RadzenText>
+                    }
+                    else
+                    {
+                        <KrakenGrid SettingsKey="var-preview" Data="@_previewRows" TItem="PreviewRow"
+                                    AllowSorting="true" AllowPaging="true" PageSize="50"
+                                    AllowColumnResize="true" AllowFiltering="true"
+                                    FilterMode="FilterMode.Simple"
+                                    GridLines="DataGridGridLines.Horizontal">
+                            <Columns>
+                                <RadzenDataGridColumn TItem="PreviewRow" Property="Name" Title="Name" Width="280px" />
+                                <RadzenDataGridColumn TItem="PreviewRow" Property="Value" Title="Value">
+                                    <Template Context="r">
+                                        @if (r.Sensitive)
+                                        {
+                                            <RadzenBadge Text="*** sensitive ***"
+                                                         BadgeStyle="BadgeStyle.Warning" IsPill="true" />
+                                        }
+                                        else
+                                        {
+                                            <code class="kraken-var-value">@r.Value</code>
+                                        }
+                                    </Template>
+                                </RadzenDataGridColumn>
+                            </Columns>
+                        </KrakenGrid>
+                    }
+                </RadzenCard>
+            }
+        }
     }
 </ProjectShell>
 
@@ -532,6 +635,9 @@
 @code {
     [Parameter] public string Slug { get; set; } = "";
 
+    private enum VarMode { Edit, Preview }
+    private VarMode _mode = VarMode.Edit;
+
     private RadzenDataGrid<Variable> _grid = default!;
     private Project? _project;
     private List<Variable> _variables = [];
@@ -592,6 +698,55 @@
     private bool IsLocked(Variable v) => _lockedIds.Contains(v.Id);
     private string SourceLabel(Variable v) =>
         _sourceNames.TryGetValue(v.Id, out var s) ? s : "Project";
+
+    // ── Preview mode state ────────────────────────────────────────────────
+    private Guid? _previewEnvId;
+    private Guid? _previewTargetId;
+    private Guid? _previewTenantId;
+    private bool _previewLoading;
+    private Dictionary<string, string>? _previewResult;
+    private List<PreviewRow> _previewRows = [];
+
+    private sealed record PreviewRow(string Name, string Value, bool Sensitive);
+
+    private async Task RunPreviewAsync()
+    {
+        if (_project is null || !_previewEnvId.HasValue) return;
+        _previewLoading = true;
+        _previewResult = null;
+        _previewRows = [];
+        StateHasChanged();
+
+        try
+        {
+            var targetRoles = _previewTargetId.HasValue
+                ? _targets.FirstOrDefault(t => t.Id == _previewTargetId)?.Roles ?? []
+                : [];
+
+            var resolved = await VariableSvc.ResolveAsync(
+                _project.Id,
+                _previewEnvId.Value,
+                _previewTargetId,
+                targetRoles,
+                tenantId: _previewTenantId);
+
+            var sensitive = await VariableSvc.GetSensitiveNamesAsync(_project.Id);
+
+            _previewResult = resolved;
+            _previewRows = resolved
+                .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(kv => new PreviewRow(kv.Key, kv.Value, sensitive.Contains(kv.Key)))
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Preview failed", ex.Message, 5000);
+        }
+        finally
+        {
+            _previewLoading = false;
+        }
+    }
 
     // Always group by Name. Single-value groups still render a header — the
     // count next to the name makes that obvious.

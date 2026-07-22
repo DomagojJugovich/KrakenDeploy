@@ -140,9 +140,8 @@ public sealed class ProcessValidatorTests
         // invalid — the editor can build one then add children later.
         // The validator MUST NOT reject it.
         var group = NewLeaf("Empty group", stepType: KrakenStepTypes.StepGroup);
-        // ForEach properties are not in the leaf-only list — they're
-        // valid on a Step Group.
-        group.Config["Octopus.Action.ForEach.Collection"] = "envs";
+        // D3 — ForEach properties are typed columns and are valid on a Step Group.
+        group.ForEachCollection = "envs";
 
         var result = ProcessValidator.Validate([group]);
 

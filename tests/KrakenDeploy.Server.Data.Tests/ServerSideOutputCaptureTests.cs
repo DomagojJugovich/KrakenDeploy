@@ -116,7 +116,6 @@ public sealed class ServerSideOutputCaptureTests(PostgresFixture postgres)
             EchoLine($"##octopus[setVariable name='{B64("ServerStamp")}' value='{B64("stamped-by-server")}']"));
         var serverConfig = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["Octopus.Action.RunOnServer"]       = "true",
             ["Octopus.Action.Script.ScriptBody"] = serverBody,
             ["Octopus.Action.Script.Syntax"]     = syntax,
         };
@@ -127,7 +126,8 @@ public sealed class ServerSideOutputCaptureTests(PostgresFixture postgres)
 
         var release = await harness.SeedReleaseAsync(project.Id, "1.0",
             StepBuilder.Script("s1"),
-            new StepBuilder { Name = "server-mid", Config = serverConfig },
+            // D3 — RunOnServer is a typed flag now, not a Config key.
+            new StepBuilder { Name = "server-mid", RunOnServer = true, Config = serverConfig },
             StepBuilder.Script("s3"));
         var deploymentId = await harness.CreateDeploymentAsync(release.Id, env.Id, targets);
 
