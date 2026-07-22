@@ -1788,7 +1788,7 @@ public static class Program
                     TargetId = req.ScopeTargetId,
                     Roles = req.ScopeRoles,
                     ChannelId = req.ScopeChannelId,
-                    StepName = req.ScopeStepName,
+                    ProcessStepId = req.ScopeProcessStepId,
                 };
 
                 try
@@ -1831,7 +1831,7 @@ public static class Program
                     TargetId = req.ScopeTargetId,
                     Roles = req.ScopeRoles,
                     ChannelId = req.ScopeChannelId,
-                    StepName = req.ScopeStepName,
+                    ProcessStepId = req.ScopeProcessStepId,
                 };
 
                 try

@@ -311,7 +311,7 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
                     Layer = VariableSnapshot.ProjectLayer, Scope = new VariableScope() },
             new() { Name = "Conn", Value = "for-sql", Type = VariableType.Text,
                     Layer = VariableSnapshot.ProjectLayer,
-                    Scope = new VariableScope { StepName = "Run SQL" } },
+                    Scope = new VariableScope { ProcessStepId = stepRunSql } },
         };
 
         var res = await svc.ResolveFromSnapshotWithStepsAsync(
@@ -353,7 +353,7 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
         var set = await svc.CreateLibrarySetAsync("Lib", null);
 
         var stepScoped = () => svc.CreateVariableInSetAsync(
-            set.Id, "X", "v", VariableType.Text, new VariableScope { StepName = "Run SQL" }, CallerAuthorization.System);
+            set.Id, "X", "v", VariableType.Text, new VariableScope { ProcessStepId = Guid.NewGuid() }, CallerAuthorization.System);
         await stepScoped.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*steps or channels*");
 
@@ -374,7 +374,7 @@ public sealed class LibraryVariableSetTests(PostgresFixture postgres) : IClassFi
 
         await svc.CreateVariableAsync(project.Id, "Conn", "default", VariableType.Text, null, CallerAuthorization.System);
         await svc.CreateVariableAsync(project.Id, "Conn", "for-x", VariableType.Text,
-            new VariableScope { StepName = "Step X" }, CallerAuthorization.System);
+            new VariableScope { ProcessStepId = stepX }, CallerAuthorization.System);
 
         var res = await svc.ResolveWithStepsAsync(
             project.Id, env.Id, target.Id, target.Roles, tenantId: null, channelId: null,

@@ -346,18 +346,20 @@ public class ReleaseService(
 
     private static VariableSnapshot ToSnapshot(Variable v, int layer) => new()
     {
-        Name  = v.Name,
-        Value = v.Value,
-        Type  = v.Type,
-        Layer = layer,
+        Name           = v.Name,
+        Value          = v.Value,
+        Type           = v.Type,
+        Layer          = layer,
+        PromptText     = v.PromptText,
+        PromptRequired = v.PromptRequired,
         Scope = new VariableScope
         {
-            EnvironmentId = v.Scope.EnvironmentId,
-            TargetId      = v.Scope.TargetId,
-            TenantId      = v.Scope.TenantId,
-            ChannelId     = v.Scope.ChannelId,
-            StepName      = v.Scope.StepName,
-            Roles         = v.Scope.Roles is null ? null : [.. v.Scope.Roles],
+            EnvironmentId  = v.Scope.EnvironmentId,
+            TargetId       = v.Scope.TargetId,
+            TenantId       = v.Scope.TenantId,
+            ChannelId      = v.Scope.ChannelId,
+            ProcessStepId  = v.Scope.ProcessStepId,
+            Roles          = v.Scope.Roles is null ? null : [.. v.Scope.Roles],
         },
     };
 

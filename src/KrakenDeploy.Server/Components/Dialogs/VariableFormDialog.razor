@@ -121,8 +121,9 @@
                     {
                         <div>
                             <RadzenLabel Text="Step" />
-                            <RadzenDropDown TValue="string" @bind-Value="_model.StepName"
-                                            Data="@_steps" AllowClear="true"
+                            <RadzenDropDown TValue="Guid?" @bind-Value="_model.ProcessStepId"
+                                            Data="@_steps" TextProperty="Name" ValueProperty="Id"
+                                            AllowClear="true"
                                             Placeholder="(any step)" Style="width:100%" />
                         </div>
                     }
@@ -169,7 +170,7 @@
     private List<DeploymentEnvironment> _environments = [];
     private List<Tenant> _tenants = [];
     private List<Channel> _channels = [];
-    private List<string> _steps = [];
+    private List<(Guid Id, string Name)> _steps = [];
     private List<string> _availableRoles = [];
 
     private record TypeOption(VariableType Value, string Label);
@@ -199,7 +200,7 @@
         {
             _channels = await ChannelSvc.GetForProjectAsync(pid);
             var process = await ProcessSvc.GetAsync(pid);
-            _steps = process?.Steps.Select(s => s.Name).ToList() ?? [];
+            _steps = process?.Steps.Select(s => (s.Id, s.Name)).ToList() ?? [];
             foreach (var role in process?.Steps.SelectMany(s => s.TargetRoles) ?? [])
             {
                 roles.Add(role);
@@ -240,7 +241,7 @@
             // Carried even when the picker is hidden, so a non-project edit
             // preserves any existing channel/step scope instead of wiping it.
             _model.ChannelId = Variable.Scope.ChannelId;
-            _model.StepName = Variable.Scope.StepName;
+            _model.ProcessStepId = Variable.Scope.ProcessStepId;
             _model.Roles = Variable.Scope.Roles?.ToList() ?? [];
         }
     }
@@ -277,7 +278,7 @@
             EnvironmentId = _model.EnvironmentId,
             TenantId = _model.TenantId,
             ChannelId = _model.ChannelId,
-            StepName = _model.StepName,
+            ProcessStepId = _model.ProcessStepId,
             Roles = roles.Count > 0 ? roles : null,
         };
 
@@ -331,7 +332,7 @@
         public Guid? EnvironmentId { get; set; }
         public Guid? TenantId { get; set; }
         public Guid? ChannelId { get; set; }
-        public string? StepName { get; set; }
+        public Guid? ProcessStepId { get; set; }
         public IEnumerable<string> Roles { get; set; } = [];
     }
 }

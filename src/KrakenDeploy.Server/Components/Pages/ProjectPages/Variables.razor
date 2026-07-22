@@ -254,9 +254,9 @@
                                                      BadgeStyle="BadgeStyle.Warning"
                                                      IsPill="true" />
                                     }
-                                    @if (!string.IsNullOrEmpty(v.Scope.StepName))
+                                    @if (v.Scope.ProcessStepId is { } stepId)
                                     {
-                                        <RadzenBadge Text="@($"step: {v.Scope.StepName}")"
+                                        <RadzenBadge Text="@($"step: {StepName(stepId)}")"
                                                      BadgeStyle="BadgeStyle.Primary"
                                                      IsPill="true" />
                                     }
@@ -387,8 +387,9 @@
             </div>
             <div>
                 <RadzenLabel Text="Step" />
-                <RadzenDropDown TValue="string" @bind-Value="_popStepName"
-                                Data="@_projectStepNames" AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                <RadzenDropDown TValue="Guid?" @bind-Value="_popProcessStepId"
+                                Data="@_projectStepNames" TextProperty="Name" ValueProperty="Id"
+                                AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                                 Placeholder="(any step)"
                                 Style="width: 100%;" />
             </div>
@@ -438,7 +439,7 @@
     private List<DeploymentTarget> _targets = [];
     private Dictionary<Guid, HashSet<Guid>> _targetTenantMap = [];
     private List<Channel> _channels = [];
-    private List<string> _projectStepNames = [];
+    private List<(Guid Id, string Name)> _projectStepNames = [];
     private Dictionary<Guid, string> _envNames = [];
     private Dictionary<Guid, string> _tenantNames = [];
     private Dictionary<Guid, string> _targetNames = [];
@@ -476,7 +477,7 @@
     private IEnumerable<Guid> _popTenantIds = Array.Empty<Guid>();
     private IEnumerable<Guid> _popTargetIds = Array.Empty<Guid>();
     private Guid? _popChannelId;
-    private string? _popStepName;
+    private Guid? _popProcessStepId;
     private IEnumerable<string> _popRoles = [];
     private List<string> _availableRoles = [];
 
@@ -509,7 +510,7 @@
             _channels = await ChannelSvc.GetForProjectAsync(_project.Id);
 
             var process = await ProcessSvc.GetAsync(_project.Id);
-            _projectStepNames = process?.Steps.Select(s => s.Name).ToList() ?? [];
+            _projectStepNames = process?.Steps.Select(s => (s.Id, s.Name)).ToList() ?? [];
 
             // Roles offered for scoping: every role on a deployment target
             // plus roles referenced by the project's steps.
@@ -582,6 +583,8 @@
         _targetNames.TryGetValue(id, out var n) ? n : "?";
     private string ChannelName(Guid id) =>
         _channels.FirstOrDefault(c => c.Id == id)?.Name ?? "?";
+    private string StepName(Guid id) =>
+        _projectStepNames.FirstOrDefault(s => s.Id == id).Name is { } n ? n : "?";
     private static int CountOf(IEnumerable<Guid>? e) => e?.Count() ?? 0;
 
     // ── Grid edit lifecycle ────────────────────────────────────────────────
@@ -681,7 +684,7 @@
         if (_newScope.TenantId is { } t) parts.Add($"tenant: {TenantName(t)}");
         if (_newScope.TargetId is { } tg) parts.Add($"target: {TargetName(tg)}");
         if (_newScope.ChannelId is { } c) parts.Add($"channel: {ChannelName(c)}");
-        if (!string.IsNullOrEmpty(_newScope.StepName)) parts.Add($"step: {_newScope.StepName}");
+        if (_newScope.ProcessStepId is { } st) parts.Add($"step: {StepName(st)}");
         if (_newScope.Roles is { Count: > 0 } r) parts.Add($"roles: {string.Join(",", r)}");
         return string.Join(" • ", parts);
     }
@@ -796,7 +799,7 @@
             _availableRoles.Add(role);
         }
         _popChannelId = s.ChannelId;
-        _popStepName = s.StepName;
+        _popProcessStepId = s.ProcessStepId;
     }
 
     private async Task SaveScopeAsync()
@@ -826,7 +829,7 @@
                     TenantId      = tenantIds.Count > 0 ? tenantIds[0] : null,
                     TargetId      = targetIds.Count > 0 ? targetIds[0] : null,
                     ChannelId     = _popChannelId,
-                    StepName      = _popStepName,
+                    ProcessStepId  = _popProcessStepId,
                     Roles         = roles.Count > 0 ? roles : null,
                 };
                 ClosePopup();
@@ -858,7 +861,7 @@
                             TenantId      = t,
                             TargetId      = tg,
                             ChannelId     = _popChannelId,
-                            StepName      = _popStepName,
+                            ProcessStepId  = _popProcessStepId,
                             Roles         = roles.Count > 0 ? [..roles] : null,
                         };
                         await VariableSvc.CreateVariableAsync(
@@ -888,7 +891,7 @@
                 TenantId      = tenantIds.Count > 0 ? tenantIds[0] : null,
                 TargetId      = targetIds.Count > 0 ? targetIds[0] : null,
                 ChannelId     = _popChannelId,
-                StepName      = _popStepName,
+                ProcessStepId  = _popProcessStepId,
                 Roles         = roles.Count > 0 ? roles : null,
             };
             await VariableSvc.UpdateVariableAsync(
@@ -917,7 +920,7 @@
                             TenantId      = t,
                             TargetId      = tg,
                             ChannelId     = _popChannelId,
-                            StepName      = _popStepName,
+                            ProcessStepId  = _popProcessStepId,
                             Roles         = roles.Count > 0 ? [..roles] : null,
                         };
                         await VariableSvc.CreateVariableAsync(

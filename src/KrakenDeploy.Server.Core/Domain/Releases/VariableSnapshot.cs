@@ -39,6 +39,17 @@ public sealed class VariableSnapshot
     public VariableScope Scope { get; init; } = new();
 
     /// <summary>
+    /// Non-null when the operator must be prompted for this variable's value
+    /// at deployment time. Carried into the snapshot so the deploy dialog
+    /// knows which variables to prompt for, even if the live variable is
+    /// later edited to remove the prompt.
+    /// </summary>
+    public string? PromptText { get; init; }
+
+    /// <summary>Whether the prompt must be answered before deployment proceeds.</summary>
+    public bool PromptRequired { get; init; }
+
+    /// <summary>
     /// Origin rank of this snapshot entry — the resolver's tie-breaker used
     /// ONLY when two same-named entries are scoped with <i>equal</i> specificity
     /// (project beats library). Scope specificity is always the primary key.

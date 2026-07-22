@@ -189,4 +189,4 @@ public sealed record UpsertVariableRequest(
     List<string>? ScopeRoles,
     Guid? ScopeTenantId = null,
     Guid? ScopeChannelId = null,
-    string? ScopeStepName = null);
+    Guid? ScopeProcessStepId = null);

@@ -45,12 +45,13 @@ public class VariableScope
     public Guid? ChannelId { get; set; }
 
     /// <summary>
-    /// If set, the variable applies only to the deployment step with this name
-    /// (matched against the snapshot step's <c>Name</c> at deploy time). The
+    /// If set, the variable applies only to the deployment step with this ID
+    /// (matched against the snapshot step's <c>Id</c> at deploy time). The
     /// MOST specific scope dimension. Steps are project-specific, so this only
     /// makes sense on project variables — never library / tenant sets.
+    /// Stable across step renames; orphaned on step deletion.
     /// </summary>
-    public string? StepName { get; set; }
+    public Guid? ProcessStepId { get; set; }
 
     // ── Helpers (not persisted) ──────────────────────────────────────────────
 
@@ -63,7 +64,7 @@ public class VariableScope
         EnvironmentId is null &&
         TargetId is null &&
         ChannelId is null &&
-        string.IsNullOrEmpty(StepName) &&
+        ProcessStepId is null &&
         (Roles is null || Roles.Count == 0);
 
     /// <summary>
@@ -78,7 +79,7 @@ public class VariableScope
     public int SpecificityScore()
     {
         var rank = 0;
-        if (!string.IsNullOrEmpty(StepName)) { rank |= 1 << 9; } // step / action (most specific)
+        if (ProcessStepId.HasValue) { rank |= 1 << 9; } // step / action (most specific)
         if (TargetId.HasValue)       { rank |= 1 << 8; } // machine / deployment target
         if (Roles is { Count: > 0 }) { rank |= 1 << 6; } // target tags / roles
         if (TenantId.HasValue)       { rank |= 1 << 5; } // target tenant
@@ -97,7 +98,7 @@ public class VariableScope
         IReadOnlyList<string> targetRoles,
         Guid? tenantId = null,
         Guid? channelId = null,
-        string? stepName = null)
+        Guid? stepId = null)
     {
         if (TenantId.HasValue && TenantId.Value != tenantId)
         {
@@ -114,8 +115,7 @@ public class VariableScope
             return false;
         }
 
-        if (!string.IsNullOrEmpty(StepName) &&
-            !string.Equals(StepName, stepName, StringComparison.OrdinalIgnoreCase))
+        if (ProcessStepId.HasValue && ProcessStepId.Value != stepId)
         {
             return false;
         }

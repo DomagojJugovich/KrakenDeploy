@@ -192,7 +192,7 @@ public class VariableService(
 
         await EnsureSetEditScopeAsync(db, caller, variable.SetId, ct).ConfigureAwait(false);
 
-        if (scope is not null && (!string.IsNullOrEmpty(scope.StepName) || scope.ChannelId.HasValue))
+        if (scope is not null && (scope.ProcessStepId.HasValue || scope.ChannelId.HasValue))
         {
             var kind = await db.VariableSets
                 .Where(vs => vs.Id == variable.SetId)
@@ -542,12 +542,12 @@ public class VariableService(
         IReadOnlyList<string> targetRoles,
         Guid? tenantId = null,
         Guid? channelId = null,
-        string? stepName = null,
+        Guid? stepId = null,
         CancellationToken ct = default)
     {
         var candidates = await BuildLiveCandidatesAsync(projectId, tenantId, ct).ConfigureAwait(false);
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        ResolveCandidates(candidates, result, environmentId, targetId, targetRoles, tenantId, channelId, stepName);
+        ResolveCandidates(candidates, result, environmentId, targetId, targetRoles, tenantId, channelId, stepId);
         return result;
     }
 
@@ -670,16 +670,16 @@ public class VariableService(
         // appears in a PerStepDelta, not DeploymentWide, but its value still
         // reaches the agent and must be redacted.
         var sensitiveNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        ResolveCandidates(candidates, deploymentWide, environmentId, targetId, targetRoles, tenantId, channelId, stepName: null, sensitiveNames);
+        ResolveCandidates(candidates, deploymentWide, environmentId, targetId, targetRoles, tenantId, channelId, stepId: null, sensitiveNames);
 
         var perStep = new Dictionary<Guid, Dictionary<string, string>>();
 
-        if (candidates.Any(c => !string.IsNullOrEmpty(c.Scope.StepName)))
+        if (candidates.Any(c => c.Scope.ProcessStepId.HasValue))
         {
             foreach (var (stepId, stepNameValue) in steps)
             {
                 var full = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                ResolveCandidates(candidates, full, environmentId, targetId, targetRoles, tenantId, channelId, stepNameValue, sensitiveNames);
+                ResolveCandidates(candidates, full, environmentId, targetId, targetRoles, tenantId, channelId, stepId, sensitiveNames);
 
                 var delta = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var (name, value) in full)
@@ -714,7 +714,7 @@ public class VariableService(
     private static void GuardLibrarySetScope(VariableSetKind kind, VariableScope? scope)
     {
         if (kind == VariableSetKind.Library && scope is not null
-            && (!string.IsNullOrEmpty(scope.StepName) || scope.ChannelId.HasValue))
+            && (scope.ProcessStepId.HasValue || scope.ChannelId.HasValue))
         {
             throw new InvalidOperationException(
                 "Library variable sets cannot be scoped to steps or channels.");
@@ -736,13 +736,13 @@ public class VariableService(
         IReadOnlyList<string> targetRoles,
         Guid? tenantId,
         Guid? channelId,
-        string? stepName,
+        Guid? stepId,
         ICollection<string>? sensitiveNames = null)
     {
         foreach (var group in candidates.GroupBy(c => c.Name, StringComparer.OrdinalIgnoreCase))
         {
             var winner = group
-                .Where(c => c.Scope.Matches(environmentId, targetId, targetRoles, tenantId, channelId, stepName))
+                .Where(c => c.Scope.Matches(environmentId, targetId, targetRoles, tenantId, channelId, stepId))
                 .OrderByDescending(c => c.Scope.SpecificityScore())
                 .ThenByDescending(c => c.OriginRank)
                 .FirstOrDefault();
@@ -788,14 +788,14 @@ public class VariableService(
         IReadOnlyList<string> targetRoles,
         Guid? tenantId = null,
         Guid? channelId = null,
-        string? stepName = null,
+        Guid? stepId = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(projectSnapshot);
 
         var candidates = await BuildSnapshotCandidatesAsync(projectSnapshot, tenantId, ct).ConfigureAwait(false);
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        ResolveCandidates(candidates, result, environmentId, targetId, targetRoles, tenantId, channelId, stepName);
+        ResolveCandidates(candidates, result, environmentId, targetId, targetRoles, tenantId, channelId, stepId);
         return result;
     }
 
