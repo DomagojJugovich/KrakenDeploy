@@ -2594,8 +2594,18 @@ public sealed class DeploymentWorker(
         var stepIdsAndNames = snapshotSteps
             .Select(s => (s.Id, s.Name))
             .ToList();
+
+        // Load tenant tag IDs for variable scope matching (bit 4 specificity).
+        IReadOnlyList<Guid>? tenantTagIds = null;
+        if (deployment.TenantId is { } tenantIdForScope)
+        {
+            await using var scopeDb = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+            tenantTagIds = await TagService
+                .GetTenantTagIdsAsync(scopeDb, tenantIdForScope, ct).ConfigureAwait(false);
+        }
+
         var stepResolution = await source.ResolveVariablesAsync(
-            variableService, target, stepIdsAndNames, ct).ConfigureAwait(false);
+            variableService, target, stepIdsAndNames, tenantTagIds, ct).ConfigureAwait(false);
         var rawVars = stepResolution.DeploymentWide;
 
         var varDict = new VariableDictionary();

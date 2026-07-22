@@ -147,15 +147,14 @@
                                 </RadzenText>
                                 @if (isGroup)
                                 {
-                                    @* Step Group body — show ForEach properties if set. *@
-                                    @if (step.Config.TryGetValue("Octopus.Action.ForEach.Collection", out var foreachVar)
-                                         && !string.IsNullOrWhiteSpace(foreachVar))
+                                    @* Step Group body — show ForEach properties if set.
+                                       D3: read the typed columns, not Config keys. *@
+                                    @if (!string.IsNullOrWhiteSpace(step.ForEachCollection))
                                     {
                                         <RadzenText TextStyle="TextStyle.Body2"
                                                     class="rz-color-secondary rz-mb-2">
-                                            ForEach over <code>#{@foreachVar}</code>
-                                            @if (step.Config.TryGetValue("Octopus.Action.ForEach.Parallel", out var parallel)
-                                                 && string.Equals(parallel, "true", StringComparison.OrdinalIgnoreCase))
+                                            ForEach over <code>#{@step.ForEachCollection}</code>
+                                            @if (step.ForEachParallel)
                                             {
                                                 <text> — iterations run in parallel</text>
                                             }

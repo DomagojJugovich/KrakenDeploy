@@ -853,6 +853,19 @@
                         ? v
                         : (field.Default ?? string.Empty);
                 }
+
+                // D3 — RunOnServer is a typed column now, not a Config key, but it
+                // is still authored via the schema checkbox. Seed the checkbox
+                // value from the typed column so an edit round-trips it (the Config
+                // no longer carries the key, so the loop above would have used the
+                // schema default). On Save it is lifted back out of _values into
+                // the execution knobs.
+                if (_schema.Properties.ContainsKey(KrakenScriptConfigKeys.RunOnServer)
+                    && Step is ProcessStep rosStep)
+                {
+                    _values[KrakenScriptConfigKeys.RunOnServer] =
+                        rosStep.RunOnServer ? "true" : "false";
+                }
             }
 
             // Preserve any pre-existing Config keys the schema doesn't know
@@ -925,12 +938,16 @@
 
         if (_isStepGroup)
         {
-            // Hydrate ForEach fields from Config (Edit path) or leave at
-            // defaults (Add path).
+            // D3 — the loop collection, parallel flag, and rolling-window cap are
+            // typed columns now; hydrate them from the entity (Edit path) or leave
+            // at defaults (Add path). ForEach.IterationVariable / .IndexVariable
+            // stay in Config (out of D3 scope).
             var sourceConfig = Step?.Config ?? new Dictionary<string, string>();
-            if (sourceConfig.TryGetValue("Octopus.Action.ForEach.Collection", out var coll))
+            if (Step is ProcessStep groupStep)
             {
-                _foreachCollection = coll;
+                _foreachCollection = groupStep.ForEachCollection ?? "";
+                _foreachParallel   = groupStep.ForEachParallel;
+                _maxParallelism    = groupStep.MaxParallelism is > 0 ? groupStep.MaxParallelism : null;
             }
             if (sourceConfig.TryGetValue("Octopus.Action.ForEach.IterationVariable", out var iter))
             {
@@ -939,23 +956,6 @@
             if (sourceConfig.TryGetValue("Octopus.Action.ForEach.IndexVariable", out var idx))
             {
                 _foreachIndexVariable = idx;
-            }
-            _foreachParallel = sourceConfig.TryGetValue("Octopus.Action.ForEach.Parallel", out var par)
-                && string.Equals(par?.Trim(), "true", StringComparison.OrdinalIgnoreCase);
-
-            // M-RollingDeployments Phase 2 — hydrate Octopus.Action.MaxParallelism.
-            // Blank / missing / non-numeric / <=0 all surface as null in the
-            // UI (matches the resolver's "no cap" interpretation — input
-            // and runtime agree on what null means).
-            if (sourceConfig.TryGetValue("Octopus.Action.MaxParallelism", out var rawMax)
-                && int.TryParse(rawMax, NumberStyles.Integer, CultureInfo.InvariantCulture, out var max)
-                && max > 0)
-            {
-                _maxParallelism = max;
-            }
-            else
-            {
-                _maxParallelism = null;
             }
         }
 
@@ -1400,15 +1400,22 @@
         var config = new Dictionary<string, string>(_extraConfigKeys, StringComparer.Ordinal);
         foreach (var (k, v) in _values) { config[k] = v; }
 
-        // M15 — Step Group save path: write the ForEach properties into
-        // Config (or strip them if the loop was disabled). Leaf-only
-        // Config keys must not leak into a Step Group; the validator
-        // catches it server-side but we filter here defensively too.
+        // D3 — RunOnServer is authored via the schema checkbox (so it rides in
+        // _values) but persists to a typed column, not Config. Lift it out here
+        // and pass it through the execution knobs below.
+        var runOnServer = config.TryGetValue(KrakenScriptConfigKeys.RunOnServer, out var rosVal)
+            && string.Equals(rosVal?.Trim(), "true", StringComparison.OrdinalIgnoreCase);
+        config.Remove(KrakenScriptConfigKeys.RunOnServer);
+
+        // M15 / D3 — Step Group save path. The loop Collection, Parallel flag
+        // and rolling MaxParallelism persist to TYPED COLUMNS (via the execution
+        // knobs below), NOT Config. Only the ForEach Iteration/Index variable
+        // NAMES remain Config strings (out of D3 scope), and only while the loop
+        // is enabled.
         if (_isStepGroup)
         {
             if (!string.IsNullOrWhiteSpace(_foreachCollection))
             {
-                config["Octopus.Action.ForEach.Collection"] = _foreachCollection.Trim();
                 config["Octopus.Action.ForEach.IterationVariable"] =
                     string.IsNullOrWhiteSpace(_foreachIterationVariable)
                         ? "item"
@@ -1417,39 +1424,18 @@
                     string.IsNullOrWhiteSpace(_foreachIndexVariable)
                         ? "index"
                         : _foreachIndexVariable.Trim();
-                if (_foreachParallel)
-                {
-                    config["Octopus.Action.ForEach.Parallel"] = "true";
-                }
-                else
-                {
-                    config.Remove("Octopus.Action.ForEach.Parallel");
-                }
             }
             else
             {
-                // Disabling the loop — strip every ForEach key so the
-                // group reverts to a plain container.
-                config.Remove("Octopus.Action.ForEach.Collection");
                 config.Remove("Octopus.Action.ForEach.IterationVariable");
                 config.Remove("Octopus.Action.ForEach.IndexVariable");
-                config.Remove("Octopus.Action.ForEach.Parallel");
             }
 
-            // M-RollingDeployments Phase 2 — write/strip Max parallelism.
-            // Blank input (null) or non-positive value → strip the key so
-            // the snapshot doesn't carry a no-op cap; positive value →
-            // write with InvariantCulture so the importer / resolver both
-            // read it back consistently across cultures.
-            if (_maxParallelism is > 0)
-            {
-                config["Octopus.Action.MaxParallelism"] =
-                    _maxParallelism.Value.ToString(CultureInfo.InvariantCulture);
-            }
-            else
-            {
-                config.Remove("Octopus.Action.MaxParallelism");
-            }
+            // Defensive: never let the promoted keys linger in Config (e.g. a
+            // pre-D3 hand-edit captured in _extraConfigKeys) — the columns own them.
+            config.Remove("Octopus.Action.ForEach.Collection");
+            config.Remove("Octopus.Action.ForEach.Parallel");
+            config.Remove("Octopus.Action.MaxParallelism");
         }
 
         if (IsScriptStepType(_stepType))
@@ -1493,7 +1479,18 @@
                 MaxRetries:                  _maxRetries,
                 RetryDelaySeconds:           _retryDelaySeconds,
                 TimeoutSeconds:              _timeoutSeconds,
-                StartTrigger:                _startTrigger);
+                StartTrigger:                _startTrigger,
+                // D3 — RunOnServer on leaf steps; the three group flags only on a
+                // Step Group (and ForEach.Parallel only when a collection is set).
+                RunOnServer:                 runOnServer,
+                MaxParallelism:              _isStepGroup && _maxParallelism is > 0
+                                                ? _maxParallelism
+                                                : null,
+                ForEachCollection:           _isStepGroup && !string.IsNullOrWhiteSpace(_foreachCollection)
+                                                ? _foreachCollection.Trim()
+                                                : null,
+                ForEachParallel:             _isStepGroup && _foreachParallel
+                                                && !string.IsNullOrWhiteSpace(_foreachCollection));
 
             if (Host is null)
             {

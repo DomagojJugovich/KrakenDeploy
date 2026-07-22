@@ -522,6 +522,18 @@ public class TagService(IDbContextFactory<KrakenDbContext> dbFactory)
             .ToList();
     }
 
+    /// <summary>Returns the Tag IDs applied to a tenant (for variable scope
+    /// matching). Only select-type applications have a TagId; free-text rows
+    /// are excluded (they carry no TagId).</summary>
+    public static async Task<List<Guid>> GetTenantTagIdsAsync(
+        KrakenDbContext db, Guid tenantId, CancellationToken ct = default)
+        => await db.TagApplications
+            .Where(a => a.EntityKind == TaggableEntityKind.Tenant
+                        && a.EntityId == tenantId
+                        && a.TagId != null)
+            .Select(a => a.TagId!.Value)
+            .ToListAsync(ct).ConfigureAwait(false);
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private static void ValidateScopes(IReadOnlyCollection<TaggableEntityKind> scopes)
