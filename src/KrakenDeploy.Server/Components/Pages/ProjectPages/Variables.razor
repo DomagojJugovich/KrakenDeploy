@@ -650,7 +650,8 @@
     private List<DeploymentTarget> _targets = [];
     private Dictionary<Guid, HashSet<Guid>> _targetTenantMap = [];
     private List<Channel> _channels = [];
-    private List<(Guid Id, string Name)> _projectStepNames = [];
+    private sealed record StepOption(Guid Id, string Name);
+    private List<StepOption> _projectStepNames = [];
     private Dictionary<Guid, string> _envNames = [];
     private Dictionary<Guid, string> _tenantNames = [];
     private Dictionary<Guid, string> _targetNames = [];
@@ -820,7 +821,7 @@
             _channels = await ChannelSvc.GetForProjectAsync(_project.Id);
 
             var process = await ProcessSvc.GetAsync(_project.Id);
-            _projectStepNames = process?.Steps.Select(s => (s.Id, s.Name)).ToList() ?? [];
+            _projectStepNames = process?.Steps.Select(s => new StepOption(s.Id, s.Name)).ToList() ?? [];
 
             _availableRoles = _targets.SelectMany(t => t.Roles)
                 .Concat(process?.Steps.SelectMany(s => s.TargetRoles) ?? [])
@@ -920,7 +921,7 @@
     private string ChannelName(Guid id) =>
         _channels.FirstOrDefault(c => c.Id == id)?.Name ?? "?";
     private string StepName(Guid id) =>
-        _projectStepNames.FirstOrDefault(s => s.Id == id).Name is { } n ? n : "?";
+        _projectStepNames.FirstOrDefault(s => s.Id == id)?.Name ?? "?";
     private static int CountOf(IEnumerable<Guid>? e) => e?.Count() ?? 0;
 
     // ── Grid edit lifecycle ────────────────────────────────────────────────
