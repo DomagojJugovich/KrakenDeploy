@@ -98,6 +98,22 @@
             <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-2">
                 Rolling run across @SelectedTargetCount targets.
             </RadzenText>
+            @* Failure mode matters only when there is more than one target
+               (DeployReleaseDialog's AnyRolling gate). *@
+            <RadzenRow Gap="1rem" class="rz-mb-3">
+                <RadzenColumn Size="4">
+                    <RadzenFormField Text="On target failure" style="width:100%">
+                        <RadzenDropDown TValue="DeploymentFailureMode" @bind-Value="_triggerFailureMode"
+                                        Data="@_failureModes" TextProperty="Label" ValueProperty="Mode"
+                                        style="width:100%" />
+                    </RadzenFormField>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                        @(_triggerFailureMode == DeploymentFailureMode.Atomic
+                            ? "Any target failing fails the whole run; survivors run cleanup steps."
+                            : "A failing target is dropped; the remaining targets continue.")
+                    </RadzenText>
+                </RadzenColumn>
+            </RadzenRow>
         }
         <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
             <RequirePermission Permission="Permission.RunbookRunCreate">
@@ -334,13 +350,24 @@
     // tabs
     private int _tabIndex;
 
-    // trigger panel (D1 Phase 2 — multi-target + scheduled start)
+    // trigger panel (D1 Phase 2 — multi-target + scheduled start + failure mode)
     private bool _triggerOpen;
     private Guid? _triggerEnvId;
     private IEnumerable<Guid>? _triggerTargetIds;
     private DateTime? _triggerScheduledFor;
+    private DeploymentFailureMode _triggerFailureMode = DeploymentFailureMode.BestEffort;
 
     private int SelectedTargetCount => _triggerTargetIds?.Count() ?? 0;
+
+    // Concrete record (not a tuple) so TextProperty/ValueProperty resolve real
+    // members — DeployReleaseDialog pattern.
+    private sealed record FailureModeOption(DeploymentFailureMode Mode, string Label);
+
+    private readonly FailureModeOption[] _failureModes =
+    [
+        new(DeploymentFailureMode.BestEffort, "Best effort — drop failed target, continue"),
+        new(DeploymentFailureMode.Atomic, "Atomic — fail all on any target failure"),
+    ];
 
     // M15 follow-up — step editing migrated to the shared StepFormDialog
     // flow. The inline form / _stepName / _stepType / _stepPackageId /
@@ -560,13 +587,15 @@
                 initiator: TaskInitiator.Manual(actingUser.GetUserId(), actingUser.GetDisplayName()),
                 caller: CallerAuthorization.ForUser(actingUser),
                 scheduledFor: scheduled,
-                additionalTargetIds: targetIds.Count > 1 ? targetIds.Skip(1).ToList() : null);
+                additionalTargetIds: targetIds.Count > 1 ? targetIds.Skip(1).ToList() : null,
+                failureMode: _triggerFailureMode);
 
             _runs = [run, .. _runs];
             _triggerOpen     = false;
             _triggerEnvId    = null;
             _triggerTargetIds = null;
             _triggerScheduledFor = null;
+            _triggerFailureMode = DeploymentFailureMode.BestEffort;
 
             // Switch to Runs tab
             _tabIndex = 1;

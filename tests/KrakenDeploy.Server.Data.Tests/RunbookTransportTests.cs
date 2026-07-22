@@ -171,6 +171,7 @@ public sealed class RunbookTransportTests
             TaskInitiator initiator, CallerAuthorization caller,
             Guid? tenantId = null, DateTimeOffset? scheduledFor = null,
             IReadOnlyCollection<Guid>? additionalTargetIds = null,
+            DeploymentFailureMode failureMode = DeploymentFailureMode.BestEffort,
             CancellationToken ct = default)
         {
             RunbookId     = runbookId;
@@ -197,6 +198,7 @@ public sealed class RunbookTransportTests
             TaskInitiator initiator, CallerAuthorization caller,
             Guid? tenantId = null, DateTimeOffset? scheduledFor = null,
             IReadOnlyCollection<Guid>? additionalTargetIds = null,
+            DeploymentFailureMode failureMode = DeploymentFailureMode.BestEffort,
             CancellationToken ct = default)
             => Task.FromException<RunbookRun>(toThrow);
     }

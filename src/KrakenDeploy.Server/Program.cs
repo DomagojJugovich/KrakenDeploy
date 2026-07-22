@@ -3205,7 +3205,8 @@ public static class Program
                         initiator: initiator, caller: CallerAuthorization.ForUser(user),
                         tenantId: req.TenantId,
                         scheduledFor: req.ScheduledFor,
-                        additionalTargetIds: req.AdditionalTargetIds, ct: ct)
+                        additionalTargetIds: req.AdditionalTargetIds,
+                        failureMode: req.FailureMode, ct: ct)
                         .ConfigureAwait(false);
                     return Results.Created($"/api/runbook-runs/{run.Id}", run);
                 }

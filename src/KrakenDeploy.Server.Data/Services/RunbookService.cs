@@ -24,6 +24,7 @@ public interface IRunbookTrigger
         Guid? tenantId = null,
         DateTimeOffset? scheduledFor = null,
         IReadOnlyCollection<Guid>? additionalTargetIds = null,
+        DeploymentFailureMode failureMode = DeploymentFailureMode.BestEffort,
         CancellationToken ct = default);
 }
 
@@ -478,7 +479,10 @@ public class RunbookService(
     /// <paramref name="additionalTargetIds"/>, persisted exclusively as assignment
     /// rows; a FUTURE <paramref name="scheduledFor"/> holds the run <c>Queued</c>
     /// for the scheduled-dispatch job (a due/past value is normalized to null and
-    /// dispatched immediately — exactly one dispatch path per run).
+    /// dispatched immediately — exactly one dispatch path per run); and
+    /// <paramref name="failureMode"/> picks how the rolling orchestrator reacts
+    /// when a target fails a Required step (BestEffort drops the target,
+    /// Atomic fails the whole run).
     /// </para>
     /// </summary>
     public async Task<RunbookRun> TriggerAsync(
@@ -490,6 +494,7 @@ public class RunbookService(
         Guid? tenantId = null,
         DateTimeOffset? scheduledFor = null,
         IReadOnlyCollection<Guid>? additionalTargetIds = null,
+        DeploymentFailureMode failureMode = DeploymentFailureMode.BestEffort,
         CancellationToken ct = default)
     {
         // Guard: reject a default/unset initiator before we do any work.
@@ -604,6 +609,7 @@ public class RunbookService(
             EnvironmentId = environmentId,
             TenantId = tenantId,
             Status = DeploymentStatus.Queued,
+            FailureMode = failureMode,
             ScheduledFor = isScheduledForFuture ? scheduledFor : null,
             ProcessSnapshot = snapshot,
         };

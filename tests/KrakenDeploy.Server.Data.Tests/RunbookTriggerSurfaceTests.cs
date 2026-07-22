@@ -108,6 +108,35 @@ public sealed class RunbookTriggerSurfaceTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task Trigger_persists_the_failure_mode_and_defaults_to_BestEffort()
+    {
+        var g = await SeedRunbookGraphAsync(targetCount: 2);
+        var (svc, _) = NewService();
+
+        var atomic = await svc.TriggerAsync(
+            g.RunbookId, g.EnvironmentId, g.Targets[0],
+            initiator: TaskInitiator.Scheduled("trigger-surface-test"),
+            caller: CallerAuthorization.System,
+            additionalTargetIds: [g.Targets[1]],
+            failureMode: DeploymentFailureMode.Atomic);
+
+        var defaulted = await svc.TriggerAsync(
+            g.RunbookId, g.EnvironmentId, g.Targets[0],
+            initiator: TaskInitiator.Scheduled("trigger-surface-test"),
+            caller: CallerAuthorization.System);
+
+        await using var db = postgres.CreateContext();
+        (await db.RunbookRuns.Where(r => r.Id == atomic.Id)
+                .Select(r => r.FailureMode).FirstAsync())
+            .Should().Be(DeploymentFailureMode.Atomic,
+                "the knob rides the trigger onto the persisted run — the rolling " +
+                "orchestrator reads it from the row");
+        (await db.RunbookRuns.Where(r => r.Id == defaulted.Id)
+                .Select(r => r.FailureMode).FirstAsync())
+            .Should().Be(DeploymentFailureMode.BestEffort);
+    }
+
+    [Fact]
     public async Task Trigger_with_unknown_additional_target_fails_fast_and_persists_nothing()
     {
         var g = await SeedRunbookGraphAsync(targetCount: 1);
