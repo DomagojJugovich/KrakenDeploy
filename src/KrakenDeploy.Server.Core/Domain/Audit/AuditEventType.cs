@@ -73,17 +73,17 @@ public static class AuditEventType
     public const string RunbookRunSucceeded = "RunbookRun.Succeeded";
     public const string RunbookRunFailed    = "RunbookRun.Failed";
 
-    /// <summary>B3 — the dispatch reconciler failed a <c>Running</c> runbook run
-    /// whose lease had EXPIRED: the dispatching process died between the atomic
-    /// claim and the agent hand-off, so the plan never reached the agent.
-    /// Runbook analogue of <see cref="DeploymentInterrupted"/>.</summary>
+    /// <summary>The dispatch reconciler failed a <c>Running</c> runbook run whose
+    /// lease had EXPIRED or was never stamped: the orchestrating process died and
+    /// the in-memory wave state is unresumable. Runbook analogue of
+    /// <see cref="DeploymentInterrupted"/>.</summary>
     public const string RunbookRunInterrupted = "RunbookRun.Interrupted";
 
-    /// <summary>B3 — the dispatch reconciler failed an agent-owned <c>Running</c>
-    /// runbook run (lease released at hand-off) whose <c>StartedUtc</c> exceeded
-    /// <c>Engine:MaxRunbookRunDuration</c>: the agent never reported completion
-    /// and nothing else can ever finalize the run. A late completion after this
-    /// reap is swallowed by the hub's terminal-status guard.</summary>
+    /// <summary>HISTORICAL (no current emitter) — the transition-era reconciler
+    /// arm 4 failed a legacy pre-D1 hand-off runbook run that exceeded
+    /// <c>Engine:MaxRunbookRunDuration</c>. Both were deleted in D1 Phase 3; the
+    /// constant stays because the audit vocabulary is additive-only and recorded
+    /// rows reference it.</summary>
     public const string RunbookRunTimedOut = "RunbookRun.TimedOut";
 
     /// <summary>B6 — an operator cancelled a runbook run (runbook analogue of

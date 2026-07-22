@@ -64,32 +64,12 @@ else
         </div>
     </div>
 
-    @* ── Bold status banner ── *@
-    <div class="kr-card st--@BannerClass(Deployment.Status) rz-mb-4">
-        <div class="kr-card-pad status-banner">
-            <StatusPill Deployment="Deployment.Status" Variant="StatusPill.PillVariant.Bold" />
-            @if (Deployment.Status == DeploymentStatus.Running)
-            {
-                <span class="banner-msg">@RunningStepLabel()</span>
-                <span class="grow">
-                    <RadzenProgressBar Value="100" Mode="ProgressBarMode.Indeterminate"
-                                       ShowValue="false" Style="height:6px;" />
-                </span>
-            }
-            else if (Deployment.Status == DeploymentStatus.Failed)
-            {
-                <span class="banner-msg">@(_diagnosis?.ProbableCause ?? LastErrorLine() ?? "Deployment failed.")</span>
-            }
-            else if (Deployment.Status == DeploymentStatus.PendingOfflineResult)
-            {
-                <span class="banner-msg">Awaiting offline result from an air-gapped target.</span>
-            }
-            else
-            {
-                <span class="banner-msg muted">Finished in @FormatDuration()</span>
-            }
-        </div>
-    </div>
+    @* ── Bold status banner (shared task component — D1 Phase 2) ── *@
+    <TaskStatusBanner Status="Deployment.Status"
+                      RunningMessage="@RunningStepLabel()"
+                      FailedMessage="@(_diagnosis?.ProbableCause ?? LastErrorLine())"
+                      DefaultFailedMessage="Deployment failed."
+                      FinishedDuration="@FormatDuration()" />
 
     @* ── Summary grid ── *@
     <div class="kr-card kr-card-pad rz-mb-4">
@@ -234,247 +214,25 @@ else
     <RadzenTabs>
         <Tabs>
             <RadzenTabsItem Text=@($"Steps ({_stepOutcomes.Count})") Icon="checklist">
-                @if (_stepOutcomes.Count == 0)
-                {
-                    <RadzenText class="rz-color-secondary rz-mt-4">
-                        No step outcomes recorded yet. The Steps tab populates as the
-                        orchestrator finishes each step's terminal attempt.
-                    </RadzenText>
-                }
-                else
-                {
-                    <KrakenGrid SettingsKey="deployment-steps" Data="@_stepOutcomes" TItem="TaskStepOutcome"
-                                    AllowSorting="false" AllowColumnResize="true"
-                                    class="rz-mt-3">
-                        <Columns>
-                            <RadzenDataGridColumn TItem="TaskStepOutcome"
-                                                  Property="StepIndex" Title="#" Width="60px">
-                                <Template Context="o">@(o.StepIndex + 1)</Template>
-                            </RadzenDataGridColumn>
-                            <RadzenDataGridColumn TItem="TaskStepOutcome"
-                                                  Property="StepName" Title="Step" Width="240px">
-                                <Template Context="o">
-                                    <strong>@o.StepName</strong>
-                                    @if (o.AttemptCount > 1)
-                                    {
-                                        <span class="rz-color-secondary rz-text-body2 rz-ml-2">
-                                            (retried @(o.AttemptCount - 1)×)
-                                        </span>
-                                    }
-                                </Template>
-                            </RadzenDataGridColumn>
-                            <RadzenDataGridColumn TItem="TaskStepOutcome"
-                                                  Property="Outcome" Title="Outcome" Width="140px">
-                                <Template Context="o">
-                                    <StatusPill Step="o.Outcome" />
-                                </Template>
-                            </RadzenDataGridColumn>
-                            <RadzenDataGridColumn TItem="TaskStepOutcome"
-                                                  UniqueID="side" Title="Side" Width="80px">
-                                <Template Context="o">
-                                    @(o.IsServerSide ? "Server" : "Target")
-                                </Template>
-                            </RadzenDataGridColumn>
-                            @* M-RollingDeployments Phase 3 — Target column.
-                               Shows the per-(step, target) attribution from
-                               the widened TaskStepOutcome key. Server-
-                               side steps + pre-Phase-1a outcomes have a null
-                               TargetId and render "—". *@
-                            <RadzenDataGridColumn TItem="TaskStepOutcome"
-                                                  UniqueID="target" Title="Target" Width="140px">
-                                <Template Context="o">
-                                    @if (o.TargetId is { } tid)
-                                    {
-                                        <span class="rz-text-body2">@(TargetNameOf(tid))</span>
-                                    }
-                                    else
-                                    {
-                                        <span class="rz-color-secondary">—</span>
-                                    }
-                                </Template>
-                            </RadzenDataGridColumn>
-                            <RadzenDataGridColumn TItem="TaskStepOutcome"
-                                                  Property="Required" Title="Required" Width="100px">
-                                <Template Context="o">
-                                    @if (o.Required)
-                                    {
-                                        <RadzenBadge Text="Required" BadgeStyle="BadgeStyle.Light" />
-                                    }
-                                    else
-                                    {
-                                        <span class="rz-color-secondary">optional</span>
-                                    }
-                                </Template>
-                            </RadzenDataGridColumn>
-                            <RadzenDataGridColumn TItem="TaskStepOutcome"
-                                                  UniqueID="duration" Title="Duration" Width="100px">
-                                <Template Context="o">@FormatStepDuration(o)</Template>
-                            </RadzenDataGridColumn>
-                            <RadzenDataGridColumn TItem="TaskStepOutcome"
-                                                  Property="ErrorMessage" Title="Detail">
-                                <Template Context="o">
-                                    <span class="rz-color-secondary">
-                                        @(o.ErrorMessage ?? "—")
-                                    </span>
-                                </Template>
-                            </RadzenDataGridColumn>
-                        </Columns>
-                    </KrakenGrid>
-                }
+                <TaskStepOutcomesGrid Outcomes="_stepOutcomes"
+                                      TargetName="TargetNameOf"
+                                      SettingsKey="deployment-steps" />
             </RadzenTabsItem>
 
             <RadzenTabsItem Text="Log" Icon="terminal">
-                <div class="kraken-log rz-mt-3">
-                    @foreach (var entry in _log)
-                    {
-                        <div class="ln @LevelClass(entry.Level)">
-                            <span class="lt">@entry.Timestamp.ToString("HH:mm:ss")</span>
-                            <span class="lm">@entry.Message</span>
-                        </div>
-                    }
-                    @if (_log.Count > 0 && Deployment.Status == DeploymentStatus.Running)
-                    {
-                        <div class="ln"><span class="lt"></span><span class="lm"><span class="kraken-caret"></span></span></div>
-                    }
-                    @if (_log.Count == 0)
-                    {
-                        <span class="kraken-log-empty">No log entries yet.</span>
-                    }
-                </div>
+                <TaskLogView Lines="_log" IsRunning="@(Deployment.Status == DeploymentStatus.Running)" />
             </RadzenTabsItem>
 
             <RadzenTabsItem Text=@($"Artifacts ({_artifacts.Count})") Icon="attach_file">
-                @if (_artifacts.Count == 0)
-                {
-                    <RadzenText class="rz-color-secondary rz-mt-4">
-                        No artifacts collected for this deployment.
-                    </RadzenText>
-                }
-                else
-                {
-                    <KrakenGrid SettingsKey="deployment-artifacts" Data="@_artifacts" TItem="TaskArtifact"
-                                    AllowSorting="true" AllowColumnResize="true"
-                                    class="rz-mt-3">
-                        <Columns>
-                            <RadzenDataGridColumn TItem="TaskArtifact"
-                                                  Property="StepName" Title="Step" Width="200px" />
-                            <RadzenDataGridColumn TItem="TaskArtifact"
-                                                  Property="FileName" Title="File">
-                                <Template Context="a">
-                                    @if (IsImage(a.ContentType))
-                                    {
-                                        <img src="@DownloadUrl(a.Id)" alt="@a.FileName"
-                                             style="max-height:48px; max-width:80px; object-fit:contain;
-                                                    vertical-align:middle; margin-right:8px;" />
-                                    }
-                                    <a href="@DownloadUrl(a.Id)" target="_blank"
-                                       rel="noopener noreferrer">@a.FileName</a>
-                                </Template>
-                            </RadzenDataGridColumn>
-                            <RadzenDataGridColumn TItem="TaskArtifact"
-                                                  Property="ContentType" Title="Type" Width="180px" />
-                            <RadzenDataGridColumn TItem="TaskArtifact"
-                                                  Property="SizeBytes" Title="Size" Width="100px">
-                                <Template Context="a">@FormatBytes(a.SizeBytes)</Template>
-                            </RadzenDataGridColumn>
-                            <RadzenDataGridColumn TItem="TaskArtifact"
-                                                  Property="CollectedUtc" Title="Collected"
-                                                  Width="160px">
-                                <Template Context="a">
-                                    @a.CollectedUtc.ToString("yyyy-MM-dd HH:mm")
-                                </Template>
-                            </RadzenDataGridColumn>
-                            <RadzenDataGridColumn TItem="TaskArtifact" UniqueID="download" Title="Download"
-                                                  Width="100px" Sortable="false">
-                                <Template Context="a">
-                                    <RadzenButton Icon="download" ButtonStyle="ButtonStyle.Light"
-                                                  Size="ButtonSize.Small"
-                                                  Click="@(() => Nav.NavigateTo(DownloadUrl(a.Id)))"
-                                                  title="@($"Download {a.FileName}")" />
-                                </Template>
-                            </RadzenDataGridColumn>
-                        </Columns>
-                    </KrakenGrid>
-                }
+                <TaskArtifactsGrid Artifacts="_artifacts"
+                                   DownloadUrl="DownloadUrl"
+                                   EmptyText="No artifacts collected for this deployment."
+                                   SettingsKey="deployment-artifacts" />
             </RadzenTabsItem>
 
             <RadzenTabsItem Text=@($"Output variables ({_outputVariables.Count})") Icon="data_object">
-                @if (_outputVariables.Count == 0)
-                {
-                    <RadzenText class="rz-color-secondary rz-mt-4">
-                        No output variables captured.
-                        Steps emit them with <code>Set-OctopusVariable -name X -value Y</code> in
-                        PowerShell or <code>##octopus[setVariable name='base64' value='base64']</code>
-                        on stdout from any language. They're then available to later steps as
-                        <code>#{Octopus.Action[StepName].Output.X}</code> or
-                        <code>$OctopusParameters["Octopus.Action[StepName].Output.X"]</code>.
-                    </RadzenText>
-                }
-                else
-                {
-                    @foreach (var group in _outputVariables.GroupBy(o => o.StepName)
-                                                            .OrderBy(g => g.Min(o => o.CapturedUtc)))
-                    {
-                        <RadzenCard class="rz-mt-3">
-                            <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-2">
-                                <RadzenIcon Icon="play_arrow" Style="vertical-align:middle;margin-right:4px;" />
-                                @group.Key
-                                <span class="rz-color-secondary rz-text-body2 rz-ml-2">
-                                    (@group.Count() variable@(group.Count() == 1 ? "" : "s"))
-                                </span>
-                            </RadzenText>
-                            <KrakenGrid SettingsKey="deployment-output-vars" Data="@group.OrderBy(o => o.Name)"
-                                            TItem="TaskOutputVariable"
-                                            AllowSorting="false" AllowColumnResize="true">
-                                <Columns>
-                                    <RadzenDataGridColumn TItem="TaskOutputVariable"
-                                                          Property="Name" Title="Name" Width="280px">
-                                        <Template Context="o">
-                                            <code>@o.Name</code>
-                                        </Template>
-                                    </RadzenDataGridColumn>
-                                    <RadzenDataGridColumn TItem="TaskOutputVariable"
-                                                          Property="Value" Title="Value">
-                                        <Template Context="o">
-                                            @if (o.IsSensitive)
-                                            {
-                                                @* T0-6: value is masked server-side; only the badge renders here. *@
-                                                <RadzenBadge BadgeStyle="BadgeStyle.Warning" Shade="Shade.Light"
-                                                             Icon="lock" Text="Sensitive" />
-                                            }
-                                            else if (o.Value.Contains('\n'))
-                                            {
-                                                <pre style="margin:0; white-space: pre-wrap; word-break: break-word;
-                                                            font-family: var(--rz-mono-font, monospace);
-                                                            font-size: 0.85rem;">@o.Value</pre>
-                                            }
-                                            else
-                                            {
-                                                <span style="font-family: var(--rz-mono-font, monospace);
-                                                             font-size: 0.85rem;
-                                                             word-break: break-word;">@o.Value</span>
-                                            }
-                                        </Template>
-                                    </RadzenDataGridColumn>
-                                    <RadzenDataGridColumn TItem="TaskOutputVariable"
-                                                          Title="Reference"
-                                                          Width="320px" Sortable="false">
-                                        <Template Context="o">
-                                            <code>#{Octopus.Action[@(group.Key)].Output.@(o.Name)}</code>
-                                        </Template>
-                                    </RadzenDataGridColumn>
-                                    <RadzenDataGridColumn TItem="TaskOutputVariable"
-                                                          Property="CapturedUtc" Title="Captured"
-                                                          Width="160px">
-                                        <Template Context="o">
-                                            @o.CapturedUtc.ToString("yyyy-MM-dd HH:mm:ss")
-                                        </Template>
-                                    </RadzenDataGridColumn>
-                                </Columns>
-                            </KrakenGrid>
-                        </RadzenCard>
-                    }
-                }
+                <TaskOutputVariablesView Variables="_outputVariables"
+                                         SettingsKey="deployment-output-vars" />
             </RadzenTabsItem>
         </Tabs>
     </RadzenTabs>
@@ -778,15 +536,6 @@ else
             : $"{dur.Minutes}m {dur.Seconds}s";
     }
 
-    private static string LevelClass(string level) => level switch
-    {
-        "error"             => "lv-error",
-        "warn" or "warning" => "lv-warn",
-        "ok" or "success"   => "lv-ok",
-        "cmd" or "command"  => "lv-cmd",
-        _                   => "lv-info",
-    };
-
     private string DownloadUrl(Guid artifactId)
         => $"/api/deployments/{Id}/artifacts/{artifactId}/download";
 
@@ -824,20 +573,6 @@ else
         return string.IsNullOrEmpty(name) ? targetId.ToString()[..8] : name;
     }
 
-    // Maps a deployment status to the StatusPill colour family (.st--*) for the
-    // bold header banner's left border + soft tint.
-    private static string BannerClass(DeploymentStatus s) => s switch
-    {
-        DeploymentStatus.Succeeded             => "ok",
-        DeploymentStatus.SucceededWithWarnings => "warn",
-        DeploymentStatus.Failed                => "fail",
-        DeploymentStatus.Running               => "run",
-        DeploymentStatus.Queued                => "queue",
-        DeploymentStatus.PendingOfflineResult  => "offline",
-        DeploymentStatus.Cancelled             => "idle",
-        _                                      => "idle",
-    };
-
     // Best-effort "current step" label for a running deployment, derived from the
     // outcomes recorded so far (no fabricated total — the process step count isn't
     // loaded here).
@@ -852,30 +587,4 @@ else
             .Where(l => l.Level == "error")
             .OrderByDescending(l => l.Sequence)
             .FirstOrDefault()?.Message;
-
-    private static string FormatStepDuration(TaskStepOutcome o)
-    {
-        if (o.StartedUtc is null) { return "—"; }
-        var dur = o.CompletedUtc - o.StartedUtc.Value;
-        if (dur.TotalSeconds < 1) { return "<1s"; }
-        return dur.TotalHours >= 1
-            ? $"{(int)dur.TotalHours}h {dur.Minutes}m {dur.Seconds}s"
-            : dur.TotalMinutes >= 1
-                ? $"{dur.Minutes}m {dur.Seconds}s"
-                : $"{dur.Seconds}s";
-    }
-
-    private static bool IsImage(string contentType) =>
-        contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase);
-
-    private static string FormatBytes(long bytes)
-    {
-        const long KB = 1024;
-        const long MB = 1024 * 1024;
-        const long GB = 1024 * 1024 * 1024;
-        if (bytes < KB) { return $"{bytes} B"; }
-        if (bytes < MB) { return $"{bytes / (double)KB:F1} KB"; }
-        if (bytes < GB) { return $"{bytes / (double)MB:F1} MB"; }
-        return $"{bytes / (double)GB:F2} GB";
-    }
 }

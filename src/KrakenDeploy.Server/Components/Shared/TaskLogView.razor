@@ -1,0 +1,38 @@
+@* D1 Phase 2 — the task log viewer both detail pages share. Extracted verbatim
+   from DeploymentDetail's Log tab (.kraken-log styling, level classes, running
+   caret); RunbookRunDetail reuses it in place of the old inline monospace card. *@
+
+<div class="kraken-log rz-mt-3">
+    @foreach (var entry in Lines)
+    {
+        <div class="ln @LevelClass(entry.Level)">
+            <span class="lt">@entry.Timestamp.ToString("HH:mm:ss")</span>
+            <span class="lm">@entry.Message</span>
+        </div>
+    }
+    @if (Lines.Count > 0 && IsRunning)
+    {
+        <div class="ln"><span class="lt"></span><span class="lm"><span class="kraken-caret"></span></span></div>
+    }
+    @if (Lines.Count == 0)
+    {
+        <span class="kraken-log-empty">No log entries yet.</span>
+    }
+</div>
+
+@code {
+    /// <summary>Stitched log lines (compacted blobs + live staging), in sequence order.</summary>
+    [Parameter, EditorRequired] public List<TaskLogLine> Lines { get; set; } = [];
+
+    /// <summary>Renders the blinking caret after the last line while the task runs.</summary>
+    [Parameter] public bool IsRunning { get; set; }
+
+    private static string LevelClass(string level) => level switch
+    {
+        "error"             => "lv-error",
+        "warn" or "warning" => "lv-warn",
+        "ok" or "success"   => "lv-ok",
+        "cmd" or "command"  => "lv-cmd",
+        _                   => "lv-info",
+    };
+}

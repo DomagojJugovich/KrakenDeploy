@@ -2,12 +2,17 @@
 
 | | |
 |---|---|
-| **Version** | 1.0 |
-| **Date** | 2026-07-16 |
+| **Version** | 1.1 |
+| **Date** | 2026-07-22 |
 | **Authors** | Domagoj Jugovic, Claude (Opus 4.8) |
 | **Status** | Approved |
 | **Technologies** | .NET 10, SignalR, EF Core 10, PostgreSQL |
 | **Projects** | KrakenDeploy.Server.Transport, KrakenDeploy.Server.Data, KrakenDeploy.Server |
+
+> v1.1 (2026-07-22): §4 rewritten and `Engine:MaxRunbookRunDuration` removed —
+> the D1 engine merge routed runbook runs through the unified orchestrator
+> (they hold a lease for the whole orchestration), and D1 Phase 3 deleted the
+> transition-era hand-off reap (reconciler arm 4 + the hub fallback finalize).
 
 ## Purpose
 
@@ -76,27 +81,27 @@ is used. The refresh applies the same P3-8 cross-account guard as the initial
 dispatch (a cross-account hit is treated as offline). B7 still owns the rest
 of retry re-resolution (variable re-snapshot, node concurrency).
 
-## 4. Runbook-run reap (dispatch reconciler step 4)
+## 4. Runbook-run reap (superseded by the D1 engine merge)
 
-Two distinct stranding modes, both DB-based so they survive restarts:
+Post-D1 a runbook run is orchestrated by `DeploymentWorker` exactly like a
+deployment: it holds (and renews) the dispatch lease for the **whole**
+orchestration, so the ordinary lease-orphan reconcile covers it — a `Running`
+run whose lease expired *or was never stamped* is flipped to `Failed` +
+`RunbookRun.Interrupted`, and a live lease is never touched. Mid-wave agent
+loss goes through §2's disconnect monitor and §1's wave deadline, not a
+run-level ceiling.
 
-- **Pre-hand-off (`RunbookRun.Interrupted`)** — `Running` with an *expired*
-  lease: the dispatching process died between the atomic claim and the
-  `RunDeploymentAsync` push, so the plan never reached the agent. The
-  reconciler's deployments-only orphan step deliberately skips runbook runs
-  (a *released* lease is their normal agent-owned state); this is their
-  equivalent for the claim-to-hand-off window. A live lease is never touched.
-- **Agent-owned (`RunbookRun.TimedOut`)** — `Running`, lease released,
-  `StartedUtc` older than `Engine:MaxRunbookRunDuration` (default 1 h): the
-  completion callback never came and nothing else can ever finalize the row.
-  Raise the knob for long maintenance runbooks. The B2 outbox delivers
-  genuinely-in-flight completions across disconnects well inside a sane
-  ceiling; a late completion after the reap is swallowed by the hub's
-  `IsTerminal` guard.
+The two B3-era reap modes this section used to define are gone with the
+hand-off model itself: the *pre-hand-off* expired-lease reap folded into the
+kind-agnostic orphan arm, and the *agent-owned* `RunbookRun.TimedOut` ceiling
+(`Engine:MaxRunbookRunDuration`, reconciler arm 4) was a transition-era drain
+for legacy pre-D1 hand-off runs, deleted in D1 Phase 3 together with the hub's
+fallback finalize. `RunbookRun.TimedOut` remains in the audit vocabulary for
+historical rows only.
 
-Both flips are conditional updates (re-check status + lease in the `WHERE`) —
-fail-closed against racing a live owner — and emit explicit audit rows
-(`ExecuteUpdate` bypasses the audit interceptor).
+The orphan flip is a conditional update (re-checks the predicate in the
+`WHERE`) — fail-closed against racing a live owner — and emits an explicit
+audit row (`ExecuteUpdate` bypasses the audit interceptor).
 
 ## 5. Blue-green drain (verified, no code change)
 
@@ -110,8 +115,7 @@ gauge returns to 0.
 ```json
 "Engine": {
   "MaxTargetWaveDuration":    "01:00:00",
-  "AgentDisconnectWaveGrace": "00:02:00",
-  "MaxRunbookRunDuration":    "01:00:00"
+  "AgentDisconnectWaveGrace": "00:02:00"
 }
 ```
 

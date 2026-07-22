@@ -122,20 +122,8 @@ public static class ServerTaskLease
         }
     }
 
-    /// <summary>
-    /// Clears the lease without touching status — the hand-off points where the
-    /// dispatch stops being worker-owned but is not terminal: a runbook run
-    /// handed to the agent, an offline drop parked at
-    /// <c>PendingOfflineResult</c>. Terminal writes clear the lease inline on
-    /// the tracked entity instead.
-    /// </summary>
-    public static Task ReleaseAsync(
-        KrakenDbContext db, Guid taskId, CancellationToken ct = default)
-        => db.ServerTasks
-            .IgnoreQueryFilters()
-            .Where(t => t.Id == taskId)
-            .ExecuteUpdateAsync(s => s
-                    .SetProperty(t => t.ClaimedBy, (string?)null)
-                    .SetProperty(t => t.LeaseUntil, (DateTimeOffset?)null),
-                ct);
+    // D1 Phase 3: ReleaseAsync (the mid-flight lease release) is gone with the
+    // runbook hand-off model — every orchestration now holds its lease until a
+    // terminal (or PendingOfflineResult) write clears it inline on the tracked
+    // entity through the guarded status writer.
 }

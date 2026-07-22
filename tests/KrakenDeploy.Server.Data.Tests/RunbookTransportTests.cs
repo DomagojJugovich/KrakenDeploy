@@ -169,7 +169,10 @@ public sealed class RunbookTransportTests
         public Task<RunbookRun> TriggerAsync(
             Guid runbookId, Guid environmentId, Guid targetId,
             TaskInitiator initiator, CallerAuthorization caller,
-            Guid? tenantId = null, CancellationToken ct = default)
+            Guid? tenantId = null, DateTimeOffset? scheduledFor = null,
+            IReadOnlyCollection<Guid>? additionalTargetIds = null,
+            DeploymentFailureMode failureMode = DeploymentFailureMode.BestEffort,
+            CancellationToken ct = default)
         {
             RunbookId     = runbookId;
             EnvironmentId = environmentId;
@@ -193,7 +196,10 @@ public sealed class RunbookTransportTests
         public Task<RunbookRun> TriggerAsync(
             Guid runbookId, Guid environmentId, Guid targetId,
             TaskInitiator initiator, CallerAuthorization caller,
-            Guid? tenantId = null, CancellationToken ct = default)
+            Guid? tenantId = null, DateTimeOffset? scheduledFor = null,
+            IReadOnlyCollection<Guid>? additionalTargetIds = null,
+            DeploymentFailureMode failureMode = DeploymentFailureMode.BestEffort,
+            CancellationToken ct = default)
             => Task.FromException<RunbookRun>(toThrow);
     }
 }

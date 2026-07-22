@@ -1,0 +1,88 @@
+@* D1 Phase 2 — the collected-artifacts grid both detail pages share (extracted
+   verbatim from the deployment page's Artifacts tab): inline image preview,
+   download link + button. The download URL is kind-routed by the parent page. *@
+
+@if (Artifacts.Count == 0)
+{
+    <RadzenText class="rz-color-secondary rz-mt-4">
+        @EmptyText
+    </RadzenText>
+}
+else
+{
+    <KrakenGrid SettingsKey="@SettingsKey" Data="@Artifacts" TItem="TaskArtifact"
+                    AllowSorting="true" AllowColumnResize="true"
+                    class="rz-mt-3">
+        <Columns>
+            <RadzenDataGridColumn TItem="TaskArtifact"
+                                  Property="StepName" Title="Step" Width="200px" />
+            <RadzenDataGridColumn TItem="TaskArtifact"
+                                  Property="FileName" Title="File">
+                <Template Context="a">
+                    @if (IsImage(a.ContentType))
+                    {
+                        <img src="@DownloadUrl(a.Id)" alt="@a.FileName"
+                             style="max-height:48px; max-width:80px; object-fit:contain;
+                                    vertical-align:middle; margin-right:8px;" />
+                    }
+                    <a href="@DownloadUrl(a.Id)" target="_blank"
+                       rel="noopener noreferrer">@a.FileName</a>
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="TaskArtifact"
+                                  Property="ContentType" Title="Type" Width="180px" />
+            <RadzenDataGridColumn TItem="TaskArtifact"
+                                  Property="SizeBytes" Title="Size" Width="100px">
+                <Template Context="a">@FormatBytes(a.SizeBytes)</Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="TaskArtifact"
+                                  Property="CollectedUtc" Title="Collected"
+                                  Width="160px">
+                <Template Context="a">
+                    @a.CollectedUtc.ToString("yyyy-MM-dd HH:mm")
+                </Template>
+            </RadzenDataGridColumn>
+            <RadzenDataGridColumn TItem="TaskArtifact" UniqueID="download" Title="Download"
+                                  Width="100px" Sortable="false">
+                <Template Context="a">
+                    <RadzenButton Icon="download" ButtonStyle="ButtonStyle.Light"
+                                  Size="ButtonSize.Small"
+                                  Click="@(() => Nav.NavigateTo(DownloadUrl(a.Id)))"
+                                  title="@($"Download {a.FileName}")" />
+                </Template>
+            </RadzenDataGridColumn>
+        </Columns>
+    </KrakenGrid>
+}
+
+@code {
+    [Inject] private NavigationManager Nav { get; set; } = null!;
+
+    /// <summary>Artifacts collected from the agent at the end of each step.</summary>
+    [Parameter, EditorRequired] public List<TaskArtifact> Artifacts { get; set; } = [];
+
+    /// <summary>Builds the kind-routed download URL for an artifact id
+    /// (<c>/api/deployments/{id}/artifacts/…</c> vs
+    /// <c>/api/runbook-runs/{id}/artifacts/…</c>).</summary>
+    [Parameter, EditorRequired] public Func<Guid, string> DownloadUrl { get; set; } = null!;
+
+    /// <summary>Empty-state text (kind-flavored by the parent page).</summary>
+    [Parameter] public string EmptyText { get; set; } = "No artifacts collected for this task.";
+
+    /// <summary>KrakenGrid persisted-settings key — per page.</summary>
+    [Parameter, EditorRequired] public string SettingsKey { get; set; } = "";
+
+    private static bool IsImage(string contentType) =>
+        contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase);
+
+    private static string FormatBytes(long bytes)
+    {
+        const long KB = 1024;
+        const long MB = 1024 * 1024;
+        const long GB = 1024 * 1024 * 1024;
+        if (bytes < KB) { return $"{bytes} B"; }
+        if (bytes < MB) { return $"{bytes / (double)KB:F1} KB"; }
+        if (bytes < GB) { return $"{bytes / (double)MB:F1} MB"; }
+        return $"{bytes / (double)GB:F2} GB";
+    }
+}

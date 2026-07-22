@@ -22,6 +22,9 @@ public interface IRunbookTrigger
         TaskInitiator initiator,
         CallerAuthorization caller,
         Guid? tenantId = null,
+        DateTimeOffset? scheduledFor = null,
+        IReadOnlyCollection<Guid>? additionalTargetIds = null,
+        DeploymentFailureMode failureMode = DeploymentFailureMode.BestEffort,
         CancellationToken ct = default);
 }
 
@@ -496,8 +499,20 @@ public class RunbookService(
 
     /// <summary>
     /// Creates a <see cref="RunbookRun"/> by snapping the current runbook process,
-    /// records its target assignment, then enqueues it on the shared task queue for
+    /// records its target assignments, then enqueues it on the shared task queue for
     /// dispatch by the unified orchestrator.
+    /// <para>
+    /// D1 Phase 2 — the trigger surface mirrors
+    /// <see cref="DeploymentService.CreateAsync"/>: the target set is the union of
+    /// <paramref name="targetId"/> (the primary — always first) and
+    /// <paramref name="additionalTargetIds"/>, persisted exclusively as assignment
+    /// rows; a FUTURE <paramref name="scheduledFor"/> holds the run <c>Queued</c>
+    /// for the scheduled-dispatch job (a due/past value is normalized to null and
+    /// dispatched immediately — exactly one dispatch path per run); and
+    /// <paramref name="failureMode"/> picks how the rolling orchestrator reacts
+    /// when a target fails a Required step (BestEffort drops the target,
+    /// Atomic fails the whole run).
+    /// </para>
     /// </summary>
     public async Task<RunbookRun> TriggerAsync(
         Guid runbookId,
@@ -506,6 +521,9 @@ public class RunbookService(
         TaskInitiator initiator,
         CallerAuthorization caller,
         Guid? tenantId = null,
+        DateTimeOffset? scheduledFor = null,
+        IReadOnlyCollection<Guid>? additionalTargetIds = null,
+        DeploymentFailureMode failureMode = DeploymentFailureMode.BestEffort,
         CancellationToken ct = default)
     {
         // Guard: reject a default/unset initiator before we do any work.
@@ -549,11 +567,33 @@ public class RunbookService(
             throw new InvalidOperationException($"Environment {environmentId} not found.");
         }
 
-        var targetExists = await db.DeploymentTargets.AnyAsync(t => t.Id == targetId, ct)
-            .ConfigureAwait(false);
-        if (!targetExists)
+        // ── Build the target id set (mirrors DeploymentService.CreateAsync) ──
+        // Primary targetId is always part of the set (the first assignment row —
+        // server waves resolve machine variables against it). Additional ids
+        // extend it; duplicates are de-duplicated.
+        var targetIds = new List<Guid> { targetId };
+        if (additionalTargetIds is not null)
         {
-            throw new InvalidOperationException($"Target {targetId} not found.");
+            foreach (var id in additionalTargetIds)
+            {
+                if (id != targetId && !targetIds.Contains(id))
+                {
+                    targetIds.Add(id);
+                }
+            }
+        }
+        // Validate every target id exists BEFORE inserting the run, so a bogus or
+        // cross-Space id fails fast here with a clear message instead of opaquely
+        // at dispatch.
+        var existing = await db.DeploymentTargets
+            .Where(t => targetIds.Contains(t.Id))
+            .Select(t => t.Id)
+            .ToListAsync(ct).ConfigureAwait(false);
+        var missing = targetIds.Where(id => !existing.Contains(id)).ToList();
+        if (missing.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"Target(s) not found: {string.Join(", ", missing)}.");
         }
 
         // Snapshot the process (mirrors ReleaseService for releases), including the
@@ -589,6 +629,12 @@ public class RunbookService(
             })
             .ToList();
 
+        // B1/T1-2 (parity with CreateAsync): exactly ONE dispatch path per run.
+        // Only a genuinely FUTURE instant is persisted (the scheduled job is then
+        // the sole dispatcher); a due/past value dispatches immediately below.
+        var isScheduledForFuture = scheduledFor.HasValue &&
+            scheduledFor.Value > time.GetUtcNow();
+
         var run = new RunbookRun
         {
             SpaceId = runbook.SpaceId,
@@ -597,6 +643,8 @@ public class RunbookService(
             EnvironmentId = environmentId,
             TenantId = tenantId,
             Status = DeploymentStatus.Queued,
+            FailureMode = failureMode,
+            ScheduledFor = isScheduledForFuture ? scheduledFor : null,
             ProcessSnapshot = snapshot,
         };
         initiator.StampOnto(run);   // provenance (fix 6)
@@ -605,19 +653,30 @@ public class RunbookService(
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         // Target set via the assignment join — the single authority, shared with
-        // deployments (parity). Single-target today; the join supports fan-out.
-        db.TaskTargetAssignments.Add(new TaskTargetAssignment
+        // deployments (parity). AddedUtc gets a strictly increasing MICROSECOND
+        // per row so assignment ORDER survives the DB round-trip and the
+        // first-assigned target stays canonical (machine-variable resolution
+        // for server waves).
+        var now = time.GetUtcNow();
+        for (var i = 0; i < targetIds.Count; i++)
         {
-            TaskId   = run.Id,
-            TargetId = targetId,
-            AddedUtc = time.GetUtcNow(),
-        });
+            db.TaskTargetAssignments.Add(new TaskTargetAssignment
+            {
+                TaskId   = run.Id,
+                TargetId = targetIds[i],
+                AddedUtc = now.AddMicroseconds(i),
+            });
+        }
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
-        var accountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;
-        await taskQueue.Writer
-            .WriteAsync(new TenantWorkItem(accountId, run.Id), ct)
-            .ConfigureAwait(false);
+        // Dispatch immediately unless the caller requested a future start time.
+        if (!isScheduledForFuture)
+        {
+            var accountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;
+            await taskQueue.Writer
+                .WriteAsync(new TenantWorkItem(accountId, run.Id), ct)
+                .ConfigureAwait(false);
+        }
 
         return run;
     }
@@ -641,7 +700,7 @@ public class RunbookService(
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         return await db.RunbookRuns
-            .Include(r => r.Runbook)
+            .Include(r => r.Runbook).ThenInclude(rb => rb.Project)
             .Include(r => r.Environment)
             .Include(r => r.Targets).ThenInclude(a => a.Target)
             .FirstOrDefaultAsync(r => r.Id == runId, ct);
@@ -649,70 +708,25 @@ public class RunbookService(
 
     /// <summary>
     /// B6 — transitions a non-terminal runbook run to <c>Cancelled</c> (B5
-    /// guarded write) and best-effort pushes the abort to the executing agent.
-    /// A <c>Queued</c> run is never claimed afterwards (the B1 conditional
-    /// claim skips non-Queued rows); a <c>Running</c> run is agent-owned after
-    /// the hand-off, so the push is what actually stops it — the killed
+    /// guarded write) and best-effort pushes the abort to the executing
+    /// agent(s). A <c>Queued</c> run is never claimed afterwards (the B1
+    /// conditional claim skips non-Queued rows); for a <c>Running</c> run the
+    /// orchestrator observes the flip at the next wave boundary while the push
+    /// kills the in-flight step's process tree within seconds — a killed
     /// attempt's late completion is swallowed by the terminal guard. Returns
     /// <c>null</c> when the run does not exist (or is outside the active
     /// Space); throws <see cref="InvalidOperationException"/> when it is
     /// already terminal.
     /// </summary>
-    public async Task<RunbookRun?> CancelRunAsync(
+    public Task<RunbookRun?> CancelRunAsync(
         Guid id, CallerAuthorization caller, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(caller);
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-
-        // T1-8: cancelling THIS run (TaskCancel) is scoped to its
-        // project/environment/tenant. Strict; resolve filter-free so a run in a
-        // Space the caller can't see fails closed. System (internal) callers skip.
-        if (!caller.IsSystem)
-        {
-            var s = await db.RunbookRuns.IgnoreQueryFilters()
-                .Where(r => r.Id == id)
-                .Select(r => new { r.SpaceId, r.ProjectId, r.EnvironmentId, r.TenantId })
-                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-            await permissions.EnsureScopedAsync(
-                caller, Permission.TaskCancel,
-                new PermissionScope(
-                    SpaceId: s?.SpaceId, ProjectId: s?.ProjectId,
-                    EnvironmentId: s?.EnvironmentId, TenantId: s?.TenantId), ct)
-                .ConfigureAwait(false);
-        }
-
-        var run = await db.RunbookRuns
-            .FirstOrDefaultAsync(r => r.Id == id, ct)
-            .ConfigureAwait(false);
-        if (run is null)
-        {
-            return null;
-        }
-
-        var cancelled = await ServerTaskStatusWriter.TryTransitionAsync(
-            db, run, r =>
-            {
-                r.Status       = DeploymentStatus.Cancelled;
-                r.CompletedUtc = time.GetUtcNow();
-                r.ScheduledFor = null;
-                r.ClaimedBy    = null;
-                r.LeaseUntil   = null;
-            }, ct: ct).ConfigureAwait(false);
-        if (!cancelled)
-        {
-            throw new InvalidOperationException(
-                $"Runbook run {id} is already in a terminal state " +
-                $"({run.Status}) and cannot be cancelled.");
-        }
-
-        if (cancelPusher is not null)
-        {
-            await cancelPusher
-                .PushCancelAsync(id, "Runbook run cancelled by operator.", ct)
-                .ConfigureAwait(false);
-        }
-        return run;
-    }
+        // D1 Phase 2 — shared cancel core (T1-8 scope probe → B5 guarded flip →
+        // B6 abort push), see ServerTaskCanceller.
+        => ServerTaskCanceller.CancelAsync<RunbookRun>(
+            dbFactory, permissions, time, cancelPusher, id, caller,
+            taskNoun: "Runbook run",
+            pushReason: "Runbook run cancelled by operator.",
+            ct);
 
     /// <summary>A runbook run's full log, stitched from compacted step blobs + live
     /// staging in sequence order. Resolves the run first (Space-filtered).</summary>
@@ -725,6 +739,60 @@ public class RunbookService(
             return [];
         }
         return await TaskLogService.ReadAllAsync(db, runId, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// D1 Phase 2 — the terminal per-step outcomes of a runbook run, ordered by
+    /// step index (the run analogue of
+    /// <see cref="DeploymentService.GetStepOutcomesAsync"/>). Resolves the run
+    /// first (Space-filtered) so a deployment id or a foreign run returns empty.
+    /// </summary>
+    public async Task<List<TaskStepOutcome>> GetRunStepOutcomesAsync(
+        Guid runId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var exists = await db.RunbookRuns.AnyAsync(r => r.Id == runId, ct).ConfigureAwait(false);
+        if (!exists)
+        {
+            return [];
+        }
+        return await db.TaskStepOutcomes
+            .Where(o => o.TaskId == runId)
+            .OrderBy(o => o.StepIndex)
+            .ToListAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// D1 Phase 2 — output variables captured during a runbook run via
+    /// <c>Set-OctopusVariable</c> / <c>##octopus[setVariable]</c> markers (the run
+    /// analogue of <see cref="DeploymentService.GetOutputVariablesAsync"/>).
+    /// T0-6: sensitive rows are masked to <c>***</c> at this boundary — the
+    /// ciphertext is never returned. Resolves the run first (Space-filtered).
+    /// </summary>
+    public async Task<List<TaskOutputVariable>> GetRunOutputVariablesAsync(
+        Guid runId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        var exists = await db.RunbookRuns.AnyAsync(r => r.Id == runId, ct).ConfigureAwait(false);
+        if (!exists)
+        {
+            return [];
+        }
+        var rows = await db.TaskOutputVariables
+            .Where(o => o.TaskId == runId)
+            .OrderBy(o => o.CapturedUtc)
+            .ThenBy(o => o.Name)
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        // Mask at the boundary (rows are detached — mutation is not persisted).
+        foreach (var row in rows)
+        {
+            if (row.IsSensitive)
+            {
+                row.Value = "***";
+            }
+        }
+        return rows;
     }
 
     /// <summary>All runbook runs across every runbook in the active Space, newest first.</summary>

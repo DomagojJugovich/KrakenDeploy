@@ -67,22 +67,60 @@
                 </RadzenFormField>
             </RadzenColumn>
             <RadzenColumn Size="4">
-                <RadzenFormField Text="Target" style="width:100%">
-                    <RadzenDropDown TValue="Guid?"
+                @* D1 Phase 2 — multi-target trigger (parity with the deploy
+                   dialog): first selected target is the canonical primary. *@
+                <RadzenFormField Text="Target(s)" style="width:100%">
+                    <RadzenDropDown TValue="IEnumerable<Guid>"
                                     Data="@_targets"
                                     TextProperty="Name"
                                     ValueProperty="Id"
-                                    @bind-Value="_triggerTargetId"
-                                    Placeholder="Select target…"
+                                    @bind-Value="_triggerTargetIds"
+                                    Multiple="true" Chips="true" AllowClear="true" AllowFiltering="true"
+                                    FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                    Placeholder="Select target(s)…"
                                     style="width:100%" />
                 </RadzenFormField>
             </RadzenColumn>
+            <RadzenColumn Size="4">
+                @* D1 Phase 2 — scheduled start (parity with the deploy dialog);
+                   empty = run now, a future time queues the run for the
+                   scheduled-dispatch job. *@
+                <RadzenFormField Text="Scheduled start" style="width:100%">
+                    <RadzenDatePicker TValue="DateTime?" @bind-Value="_triggerScheduledFor"
+                                      ShowTime="true" MinutesStep="5"
+                                      DateFormat="yyyy-MM-dd HH:mm" AllowClear="true"
+                                      Placeholder="(run now)" style="width:100%" />
+                </RadzenFormField>
+            </RadzenColumn>
         </RadzenRow>
+        @if (SelectedTargetCount > 1)
+        {
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-2">
+                Rolling run across @SelectedTargetCount targets.
+            </RadzenText>
+            @* Failure mode matters only when there is more than one target
+               (DeployReleaseDialog's AnyRolling gate). *@
+            <RadzenRow Gap="1rem" class="rz-mb-3">
+                <RadzenColumn Size="4">
+                    <RadzenFormField Text="On target failure" style="width:100%">
+                        <RadzenDropDown TValue="DeploymentFailureMode" @bind-Value="_triggerFailureMode"
+                                        Data="@_failureModes" TextProperty="Label" ValueProperty="Mode"
+                                        style="width:100%" />
+                    </RadzenFormField>
+                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                        @(_triggerFailureMode == DeploymentFailureMode.Atomic
+                            ? "Any target failing fails the whole run; survivors run cleanup steps."
+                            : "A failing target is dropped; the remaining targets continue.")
+                    </RadzenText>
+                </RadzenColumn>
+            </RadzenRow>
+        }
         <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
             <RequirePermission Permission="Permission.RunbookRunCreate">
-                <RadzenButton Text="Trigger" Icon="play_arrow" ButtonStyle="ButtonStyle.Success"
+                <RadzenButton Text="@(_triggerScheduledFor is null ? "Trigger" : "Schedule")"
+                              Icon="play_arrow" ButtonStyle="ButtonStyle.Success"
                               Click="@TriggerRunAsync"
-                              Disabled="@(!_triggerEnvId.HasValue || !_triggerTargetId.HasValue)" />
+                              Disabled="@(!_triggerEnvId.HasValue || SelectedTargetCount == 0)" />
             </RequirePermission>
             <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
                           Click="@(() => _triggerOpen = false)" />
@@ -218,7 +256,7 @@
             <KrakenGrid SettingsKey="runbook-detail" AllowColumnResize="true" Data="@_runs" TItem="RunbookRun"
                             AllowPaging="true" PageSize="10"
                             AllowSorting="true"
-                            RowClick="@(async args => { if (args.Data is { } r) await ToggleRunLog(r); })"
+                            RowClick="@(args => { if (args.Data is { } r) Nav.NavigateTo(Sp($"/runbook-runs/{r.Id}")); })"
                             EmptyText="No runs yet — click 'Run Now' to trigger the runbook.">
                 <Columns>
                     <RadzenDataGridColumn TItem="RunbookRun" Property="Status" Title="Status" Width="120px">
@@ -234,7 +272,12 @@
                     </RadzenDataGridColumn>
                     <RadzenDataGridColumn TItem="RunbookRun" Title="Started" Width="160px">
                         <Template Context="r">
-                            @(r.StartedUtc?.ToString("yyyy-MM-dd HH:mm") ?? "—")
+                            @* A future-scheduled run has no StartedUtc yet — show
+                               its scheduled instant instead of a bare dash. *@
+                            @(r.StartedUtc?.ToString("yyyy-MM-dd HH:mm")
+                                ?? (r.ScheduledFor is { } sched
+                                    ? $"scheduled {sched.ToLocalTime():yyyy-MM-dd HH:mm}"
+                                    : "—"))
                         </Template>
                     </RadzenDataGridColumn>
                     <RadzenDataGridColumn TItem="RunbookRun" Title="Duration" Width="110px">
@@ -265,34 +308,9 @@
                 </Columns>
             </KrakenGrid>
 
-            @* Inline log viewer for the selected run *@
-            @if (_selectedRun is not null)
-            {
-                <RadzenCard class="rz-mt-3">
-                    <RadzenText TextStyle="TextStyle.Subtitle1" class="rz-mb-2">
-                        Log — @_selectedRun.Environment?.Name / @(_selectedRun.TargetLabel())
-                    </RadzenText>
-                    <div style="font-family:monospace;font-size:0.82rem;background:var(--surface-2);color:var(--text);border:1px solid var(--surface-3);
-                                 padding:1rem;border-radius:4px;max-height:400px;overflow-y:auto">
-                        @if (_selectedRunLogs.Count == 0)
-                        {
-                            <span style="color:#888">No log entries.</span>
-                        }
-                        else
-                        {
-                            @foreach (var entry in _selectedRunLogs)
-                            {
-                                <div class="@LevelClass(entry.Level)">
-                                    <span style="color:#888;user-select:none">
-                                        @entry.Timestamp.ToString("HH:mm:ss")
-                                    </span>
-                                    <span> @entry.Message</span>
-                                </div>
-                            }
-                        }
-                    </div>
-                </RadzenCard>
-            }
+            @* D1 Phase 2 — the inline log card is gone; a run row navigates to
+               the full run detail page (steps / log / artifacts / output
+               variables via the shared task components). *@
         </RadzenTabsItem>
 
         @* ── Tags tab (extended tag sets, runbook-scoped) ─────────────────── *@
@@ -332,10 +350,24 @@
     // tabs
     private int _tabIndex;
 
-    // trigger panel
+    // trigger panel (D1 Phase 2 — multi-target + scheduled start + failure mode)
     private bool _triggerOpen;
     private Guid? _triggerEnvId;
-    private Guid? _triggerTargetId;
+    private IEnumerable<Guid>? _triggerTargetIds;
+    private DateTime? _triggerScheduledFor;
+    private DeploymentFailureMode _triggerFailureMode = DeploymentFailureMode.BestEffort;
+
+    private int SelectedTargetCount => _triggerTargetIds?.Count() ?? 0;
+
+    // Concrete record (not a tuple) so TextProperty/ValueProperty resolve real
+    // members — DeployReleaseDialog pattern.
+    private sealed record FailureModeOption(DeploymentFailureMode Mode, string Label);
+
+    private readonly FailureModeOption[] _failureModes =
+    [
+        new(DeploymentFailureMode.BestEffort, "Best effort — drop failed target, continue"),
+        new(DeploymentFailureMode.Atomic, "Atomic — fail all on any target failure"),
+    ];
 
     // M15 follow-up — step editing migrated to the shared StepFormDialog
     // flow. The inline form / _stepName / _stepType / _stepPackageId /
@@ -343,10 +375,6 @@
     // step authoring through the same code path the process editor uses
     // (schema-driven body, Step Group editor with ForEach panel, parent
     // dropdown, step-package version pin, validator catch).
-
-    // run log viewer
-    private RunbookRun? _selectedRun;
-    private List<TaskLogLine> _selectedRunLogs = [];
 
     protected override async Task OnInitializedAsync()
     {
@@ -520,12 +548,34 @@
 
     private async Task TriggerRunAsync()
     {
-        if (!_triggerEnvId.HasValue || !_triggerTargetId.HasValue)
+        var targetIds = _triggerTargetIds?.ToList() ?? [];
+        if (!_triggerEnvId.HasValue || targetIds.Count == 0)
         {
             return;
         }
 
         if (!await Guard.AllowAsync(Permission.RunbookRunCreate)) return;
+
+        // D1 Phase 2 — local wall time → offset instant + future check
+        // (DeployReleaseDialog pattern). A past instant is refused here rather
+        // than silently normalized to "run now".
+        DateTimeOffset? scheduled = null;
+        if (_triggerScheduledFor is { } dt)
+        {
+            var unspecified = DateTime.SpecifyKind(dt, DateTimeKind.Unspecified);
+            scheduled = new DateTimeOffset(unspecified, TimeZoneInfo.Local.GetUtcOffset(unspecified));
+            if (scheduled <= DateTimeOffset.UtcNow)
+            {
+                Notify.Notify(new NotificationMessage
+                {
+                    Severity = NotificationSeverity.Warning,
+                    Summary  = "Scheduled start is in the past",
+                    Detail   = "Pick a future time, or clear it to run now.",
+                    Duration = 5000,
+                });
+                return;
+            }
+        }
 
         try
         {
@@ -533,14 +583,19 @@
             var run = await RunbookSvc.TriggerAsync(
                 Id,
                 _triggerEnvId.Value,
-                _triggerTargetId.Value,
+                targetIds[0],
                 initiator: TaskInitiator.Manual(actingUser.GetUserId(), actingUser.GetDisplayName()),
-                caller: CallerAuthorization.ForUser(actingUser));
+                caller: CallerAuthorization.ForUser(actingUser),
+                scheduledFor: scheduled,
+                additionalTargetIds: targetIds.Count > 1 ? targetIds.Skip(1).ToList() : null,
+                failureMode: _triggerFailureMode);
 
             _runs = [run, .. _runs];
-            _triggerOpen   = false;
-            _triggerEnvId  = null;
-            _triggerTargetId = null;
+            _triggerOpen     = false;
+            _triggerEnvId    = null;
+            _triggerTargetIds = null;
+            _triggerScheduledFor = null;
+            _triggerFailureMode = DeploymentFailureMode.BestEffort;
 
             // Switch to Runs tab
             _tabIndex = 1;
@@ -548,8 +603,10 @@
             Notify.Notify(new NotificationMessage
             {
                 Severity = NotificationSeverity.Success,
-                Summary  = "Run triggered",
-                Detail   = $"Run {run.Id.ToString()[..8]} queued",
+                Summary  = scheduled is null ? "Run triggered" : "Run scheduled",
+                Detail   = scheduled is null
+                    ? $"Run {run.Id.ToString()[..8]} queued"
+                    : $"Run {run.Id.ToString()[..8]} scheduled for {scheduled.Value.ToLocalTime():yyyy-MM-dd HH:mm}",
                 Duration = 4000,
             });
         }
@@ -570,8 +627,6 @@
     private async Task RefreshRunsAsync()
     {
         _runs = await RunbookSvc.GetRunsAsync(Id);
-        _selectedRun = null;
-        _selectedRunLogs = [];
     }
 
     // B6 — cancel a queued/running run: guarded server-side re-check, confirm,
@@ -641,23 +696,6 @@
         }
     }
 
-    private async Task ToggleRunLog(RunbookRun run)
-    {
-        if (_selectedRun?.Id == run.Id)
-        {
-            _selectedRun     = null;
-            _selectedRunLogs = [];
-            return;
-        }
-
-        var full = await RunbookSvc.GetRunAsync(run.Id);
-        if (full is not null)
-        {
-            _selectedRun     = full;
-            _selectedRunLogs = await RunbookSvc.GetRunLogAsync(run.Id);
-        }
-    }
-
     // ── Helpers ────────────────────────────────────────────────────────────────
 
     private static BadgeStyle RunStatusStyle(DeploymentStatus status) => status switch
@@ -668,13 +706,6 @@
         DeploymentStatus.Running               => BadgeStyle.Info,
         DeploymentStatus.Queued                => BadgeStyle.Warning,
         _                                      => BadgeStyle.Light,
-    };
-
-    private static string LevelClass(string level) => level switch
-    {
-        "error"   => "rz-color-danger",
-        "warning" => "rz-color-warning",
-        _         => "",
     };
 
     private static string FormatDuration(RunbookRun r)

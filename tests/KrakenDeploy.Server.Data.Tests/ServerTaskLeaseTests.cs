@@ -79,22 +79,9 @@ public sealed class ServerTaskLeaseTests(PostgresFixture postgres)
             .Should().BeFalse("a non-Running row must not be re-leased");
     }
 
-    [Fact]
-    public async Task Release_clears_the_lease_fields()
-    {
-        var id = await SeedQueuedDeploymentAsync();
-
-        await using var db = postgres.CreateContext();
-        (await ServerTaskLease.TryClaimAsync(db, id, TimeProvider.System)).Should().BeTrue();
-
-        await ServerTaskLease.ReleaseAsync(db, id);
-
-        var task = await db.ServerTasks.IgnoreQueryFilters().AsNoTracking()
-            .FirstAsync(t => t.Id == id);
-        task.ClaimedBy.Should().BeNull();
-        task.LeaseUntil.Should().BeNull();
-        task.Status.Should().Be(DeploymentStatus.Running, "release never touches status");
-    }
+    // D1 Phase 3: the Release_clears_the_lease_fields test went with
+    // ServerTaskLease.ReleaseAsync — the mid-flight release belonged to the
+    // deleted runbook hand-off model; terminal writes clear the lease inline.
 
     // ── Helpers ────────────────────────────────────────────────────────────
 

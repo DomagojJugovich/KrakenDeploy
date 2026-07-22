@@ -64,15 +64,14 @@ public abstract class ServerTask : AuditableEntity, ISpaceScoped
     /// <summary>Which process instance claimed this task (informational, for
     /// forensics — liveness is decided by <see cref="LeaseUntil"/>, never by
     /// matching this value). Stamped by the atomic <c>Queued→Running</c> claim;
-    /// cleared on terminal states and on the offline/agent hand-off.</summary>
+    /// cleared on terminal states and when an offline-drop task parks at
+    /// <c>PendingOfflineResult</c>.</summary>
     public string? ClaimedBy { get; set; }
 
-    /// <summary>Lease expiry for the claim. The owning worker renews it while the
-    /// dispatch is in flight; the reconciler treats a <c>Running</c> DEPLOYMENT
-    /// whose lease has expired (or was never stamped) as orphaned by a dead
-    /// process and fails it. Runbook runs hand off to the agent after dispatch
-    /// (the lease is cleared then) and are never reconciled this way — their
-    /// terminal status arrives via the agent callback even across a restart.</summary>
+    /// <summary>Lease expiry for the claim. The owning worker renews it for the
+    /// WHOLE orchestration — both kinds since the D1 engine merge; the
+    /// reconciler treats a <c>Running</c> task whose lease has expired (or was
+    /// never stamped) as orphaned by a dead process and fails it.</summary>
     public DateTimeOffset? LeaseUntil { get; set; }
 
     /// <summary>Relative path to the offline drop-bundle zip for offline-drop

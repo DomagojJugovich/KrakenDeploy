@@ -79,32 +79,19 @@ public static class OctopusSystemVariablesBuilder
         var v = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         // ── Deployment-shaped keys (Octopus reuses Octopus.Deployment.* for runbooks) ──
-        v["Octopus.Deployment.Id"] = run.Id.ToString();
-        v["Octopus.Deployment.Name"] = $"Run {runbook.Name} in {environment.Name}";
-        v["Octopus.Deployment.CreatedUtc"] = run.CreatedUtc.ToString("O", CultureInfo.InvariantCulture);
-        v["Octopus.Deployment.QueueTime"] = run.CreatedUtc.ToString("O", CultureInfo.InvariantCulture);
-        v["Octopus.Deployment.SortableQueueTime"] = run.CreatedUtc.ToString("o", CultureInfo.InvariantCulture);
-        v["Octopus.Deployment.CreatedBy.DisplayName"]  = run.CreatedByDisplay;   // provenance (fix 6)
-        v["Octopus.Deployment.CreatedBy.Username"]     = "";    // only display is denormalized on the task
-        v["Octopus.Deployment.CreatedBy.EmailAddress"] = "";    // only display is denormalized on the task
-        v["Octopus.Deployment.ForcePackageDownload"]   = "False";
-        v["Octopus.Deployment.PreviousSuccessful.Id"]  = "";    // TODO(kraken-equivalent)
-        v["Octopus.Deployment.SpecificMachines"]       = target?.Id.ToString() ?? "";
+        // D1 Phase 2 dedupe: the shared task-scoped section — the run's display
+        // name is the only per-kind value.
+        var runName = $"Run {runbook.Name} in {environment.Name}";
+        AddTaskScoped(v, run, runName, target);
 
         // ── Runbook-specific ───────────────────────────────────────────────
         v["Octopus.Runbook.Id"]   = runbook.Id.ToString();
         v["Octopus.Runbook.Name"] = runbook.Name;
         v["Octopus.RunbookRun.Id"]   = run.Id.ToString();
-        v["Octopus.RunbookRun.Name"] = $"Run {runbook.Name} in {environment.Name}";
+        v["Octopus.RunbookRun.Name"] = runName;
 
         // Release variables are emitted empty for runbook runs (no Release context).
-        v["Octopus.Release.Id"]              = "";
-        v["Octopus.Release.Number"]          = "";
-        v["Octopus.Release.Notes"]           = "";
-        v["Octopus.Release.Channel.Id"]      = "";
-        v["Octopus.Release.Channel.Name"]    = "";
-        v["Octopus.Release.PreviousVersion"] = "";
-        v["Octopus.Release.CreatedUtc"]      = "";
+        AddReleaseScoped(v, release: null);
 
         AddProjectScoped(v, project);
         AddEnvironmentScoped(v, environment);
@@ -130,22 +117,40 @@ public static class OctopusSystemVariablesBuilder
         DeploymentEnvironment environment,
         DeploymentTarget? target)
     {
-        v["Octopus.Deployment.Id"]                     = deployment.Id.ToString();
-        v["Octopus.Deployment.Name"]                   = $"Deploy {release.Version} to {environment.Name}";
+        AddTaskScoped(v, deployment, $"Deploy {release.Version} to {environment.Name}", target);
+
+        // Deployment-only keys (a runbook run has no release number, no
+        // StartedUtc contract with Octopus, and no error surface today).
         v["Octopus.Deployment.Number"]                 = release.Version;
-        v["Octopus.Deployment.CreatedUtc"]             = deployment.CreatedUtc.ToString("O", CultureInfo.InvariantCulture);
-        v["Octopus.Deployment.QueueTime"]              = deployment.CreatedUtc.ToString("O", CultureInfo.InvariantCulture);
-        v["Octopus.Deployment.SortableQueueTime"]      = deployment.CreatedUtc.ToString("o", CultureInfo.InvariantCulture);
         v["Octopus.Deployment.StartedUtc"]             = deployment.StartedUtc?.ToString("O", CultureInfo.InvariantCulture) ?? "";
-        v["Octopus.Deployment.CreatedBy.DisplayName"]  = deployment.CreatedByDisplay;   // provenance (fix 6)
+        v["Octopus.Deployment.PreviousSuccessful.ReleaseId"] = ""; // TODO(kraken-equivalent)
+        v["Octopus.Deployment.Error"]                  = ""; // populated by the agent on failure
+        v["Octopus.Deployment.ErrorDetail"]            = ""; // populated by the agent on failure
+    }
+
+    /// <summary>
+    /// D1 Phase 2 dedupe — the <c>Octopus.Deployment.*</c> keys BOTH kinds emit
+    /// identically off the <see cref="ServerTask"/> spine (Octopus reuses the
+    /// <c>Octopus.Deployment.*</c> namespace for runbook runs). The display name
+    /// is the only per-kind value ("Deploy X to Y" / "Run X in Y").
+    /// </summary>
+    private static void AddTaskScoped(
+        Dictionary<string, string> v,
+        ServerTask task,
+        string taskDisplayName,
+        DeploymentTarget? target)
+    {
+        v["Octopus.Deployment.Id"]                     = task.Id.ToString();
+        v["Octopus.Deployment.Name"]                   = taskDisplayName;
+        v["Octopus.Deployment.CreatedUtc"]             = task.CreatedUtc.ToString("O", CultureInfo.InvariantCulture);
+        v["Octopus.Deployment.QueueTime"]              = task.CreatedUtc.ToString("O", CultureInfo.InvariantCulture);
+        v["Octopus.Deployment.SortableQueueTime"]      = task.CreatedUtc.ToString("o", CultureInfo.InvariantCulture);
+        v["Octopus.Deployment.CreatedBy.DisplayName"]  = task.CreatedByDisplay;   // provenance (fix 6)
         v["Octopus.Deployment.CreatedBy.Username"]     = "";    // only display is denormalized on the task
         v["Octopus.Deployment.CreatedBy.EmailAddress"] = "";    // only display is denormalized on the task
         v["Octopus.Deployment.ForcePackageDownload"]   = "False";
-        v["Octopus.Deployment.PreviousSuccessful.Id"]  = "";    // TODO(kraken-equivalent): query previous successful deployment for (project, env, [tenant])
-        v["Octopus.Deployment.PreviousSuccessful.ReleaseId"] = ""; // TODO(kraken-equivalent)
+        v["Octopus.Deployment.PreviousSuccessful.Id"]  = "";    // TODO(kraken-equivalent): query previous successful task for (project, env, [tenant])
         v["Octopus.Deployment.SpecificMachines"]       = target?.Id.ToString() ?? "";
-        v["Octopus.Deployment.Error"]                  = ""; // populated by the agent on failure
-        v["Octopus.Deployment.ErrorDetail"]            = ""; // populated by the agent on failure
     }
 
     private static void AddProjectScoped(Dictionary<string, string> v, Project project)
@@ -156,15 +161,19 @@ public static class OctopusSystemVariablesBuilder
         v["Octopus.Project.Description"] = project.Description ?? "";
     }
 
-    private static void AddReleaseScoped(Dictionary<string, string> v, Release release)
+    /// <summary>Release-scoped keys. <paramref name="release"/> is <c>null</c> for
+    /// a runbook run (no Release context) — every key is then emitted empty, so
+    /// <c>$OctopusParameters[X]</c> returns "" rather than $null (same contract as
+    /// the deferred placeholders).</summary>
+    private static void AddReleaseScoped(Dictionary<string, string> v, Release? release)
     {
-        v["Octopus.Release.Id"]              = release.Id.ToString();
-        v["Octopus.Release.Number"]          = release.Version;
-        v["Octopus.Release.Notes"]           = release.ReleaseNotes ?? "";
-        v["Octopus.Release.Channel.Id"]      = release.ChannelId?.ToString() ?? "";
+        v["Octopus.Release.Id"]              = release?.Id.ToString() ?? "";
+        v["Octopus.Release.Number"]          = release?.Version ?? "";
+        v["Octopus.Release.Notes"]           = release?.ReleaseNotes ?? "";
+        v["Octopus.Release.Channel.Id"]      = release?.ChannelId?.ToString() ?? "";
         v["Octopus.Release.Channel.Name"]    = "";    // TODO(kraken-equivalent): include channel navigation when loading release
         v["Octopus.Release.PreviousVersion"] = "";    // TODO(kraken-equivalent): previous release on same channel
-        v["Octopus.Release.CreatedUtc"]      = release.CreatedUtc.ToString("O", CultureInfo.InvariantCulture);
+        v["Octopus.Release.CreatedUtc"]      = release?.CreatedUtc.ToString("O", CultureInfo.InvariantCulture) ?? "";
     }
 
     private static void AddEnvironmentScoped(Dictionary<string, string> v, DeploymentEnvironment env)

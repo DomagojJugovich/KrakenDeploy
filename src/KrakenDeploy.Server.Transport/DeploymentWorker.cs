@@ -965,15 +965,14 @@ public sealed class DeploymentWorker(
             }
 
             // Retention pruning. The orchestrated task finalises HERE — it never
-            // reaches AgentHub's retention trigger, because each target's
+            // reaches any hub-side retention trigger, because each target's
             // completion resolves via the sub-plan registry and early-returns
-            // before that trigger. Fire only on a successful terminal status.
+            // in the hub. Fire only on a successful terminal status.
             // Fire-and-forget with its own scope + internal try/catch so a
-            // retention error never fails the task (mirrors
-            // AgentHub.PruneRetentionAsync). D1: KIND-BRANCHED keep source — a
-            // deployment prunes by lifecycle phase, a runbook run by its fixed
-            // keep per (runbook, environment). Both kinds now finalise through
-            // this orchestrator (never the hub's legacy hand-off finalize), so
+            // retention error never fails the task. D1: KIND-BRANCHED keep
+            // source — a deployment prunes by lifecycle phase, a runbook run by
+            // its fixed keep per (runbook, environment). Both kinds finalise
+            // through this orchestrator (the hub never finalizes — Phase 3), so
             // the worker owns retention for both — passing the wrong kind here
             // would silently kill runbook retention.
             if (didSucceed)

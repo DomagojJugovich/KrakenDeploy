@@ -227,81 +227,17 @@ public class DeploymentService(
     /// already in a terminal state.
     /// </para>
     /// </summary>
-    public async Task<Deployment?> CancelAsync(
+    public Task<Deployment?> CancelAsync(
         Guid id, CallerAuthorization caller, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(caller);
-        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-
-        // T1-8: cancelling THIS deployment (TaskCancel) is scoped to its
-        // project/environment/tenant — a TaskCancel grant restricted to Env=Test
-        // must not abort a running Prod deployment. Strict; resolve filter-free so
-        // a foreign deployment id fails closed. System (internal) callers skip.
-        if (!caller.IsSystem)
-        {
-            var s = await db.Deployments.IgnoreQueryFilters()
-                .Where(d => d.Id == id)
-                .Select(d => new { d.SpaceId, d.ProjectId, d.EnvironmentId, d.TenantId })
-                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-            await permissions.EnsureScopedAsync(
-                caller, Permission.TaskCancel,
-                new PermissionScope(
-                    SpaceId: s?.SpaceId, ProjectId: s?.ProjectId,
-                    EnvironmentId: s?.EnvironmentId, TenantId: s?.TenantId), ct)
-                .ConfigureAwait(false);
-        }
-
-        var deployment = await db.Deployments
-            .FirstOrDefaultAsync(d => d.Id == id, ct)
-            .ConfigureAwait(false);
-        if (deployment is null)
-        {
-            return null;
-        }
-
-        // B5: one guarded, atomic transition — the old read-check-write let a
-        // finalize/complete landing in the window be overwritten by Cancelled
-        // (or vice versa). The writer's retry also absorbs the xmin churn a
-        // busy Running row sees from log-sequence bumps and lease renewals,
-        // which would otherwise surface as a spurious concurrency error on a
-        // perfectly valid cancel. Saving a modified AuditableEntity auto-emits
-        // a "Deployment.Updated" audit row via AuditLogInterceptor; callers
-        // additionally record the semantic AuditEventType.DeploymentCancelled
-        // event.
-        var cancelled = await ServerTaskStatusWriter.TryTransitionAsync(
-            db, deployment, d =>
-            {
-                d.Status       = DeploymentStatus.Cancelled;
-                d.CompletedUtc = time.GetUtcNow();
-                // Belt-and-braces: a future-dated deployment sits Queued with a
-                // ScheduledFor; the dispatch job only re-queues Status==Queued
-                // rows, so the flip to Cancelled already excludes it — clear the
-                // schedule too so it can never be resurrected.
-                d.ScheduledFor = null;
-                // B1: terminal — release the dispatch lease (hygiene; the
-                // reconciler only ever looks at Running rows).
-                d.ClaimedBy    = null;
-                d.LeaseUntil   = null;
-            }, ct: ct).ConfigureAwait(false);
-        if (!cancelled)
-        {
-            throw new InvalidOperationException(
-                $"Deployment {id} is already in a terminal state " +
-                $"({deployment.Status}) and cannot be cancelled.");
-        }
-
-        // B6: best-effort push to the connected agent(s) so an in-flight step's
-        // process tree dies within seconds instead of running to completion.
-        // Fired AFTER the Cancelled verdict is durably recorded — the push
-        // failing (or the agent being offline) degrades to the wave-boundary
-        // semantics, never to a lost cancel.
-        if (cancelPusher is not null)
-        {
-            await cancelPusher.PushCancelAsync(id, "Cancelled by operator.", ct)
-                .ConfigureAwait(false);
-        }
-        return deployment;
-    }
+        // D1 Phase 2 — shared cancel core (T1-8 scope probe → B5 guarded flip →
+        // B6 abort push). Saving a modified AuditableEntity auto-emits a
+        // "Deployment.Updated" audit row via AuditLogInterceptor; callers
+        // additionally record the semantic AuditEventType.DeploymentCancelled.
+        => ServerTaskCanceller.CancelAsync<Deployment>(
+            dbFactory, permissions, time, cancelPusher, id, caller,
+            taskNoun: "Deployment",
+            pushReason: "Cancelled by operator.",
+            ct);
 
     // ── Query ──────────────────────────────────────────────────────────────
 

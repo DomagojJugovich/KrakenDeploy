@@ -1,0 +1,65 @@
+@* D1 Phase 2 — the bold status banner both task detail pages share
+   (deployment + runbook run). Extracted verbatim from DeploymentDetail so the
+   deployment page keeps its exact rendering; the run page reuses it with
+   run-flavored messages. Kind-specific text comes in via parameters — the
+   banner itself only branches on DeploymentStatus. *@
+
+<div class="kr-card st--@BannerClass(Status) rz-mb-4">
+    <div class="kr-card-pad status-banner">
+        <StatusPill Deployment="Status" Variant="StatusPill.PillVariant.Bold" />
+        @if (Status == DeploymentStatus.Running)
+        {
+            <span class="banner-msg">@(RunningMessage ?? "In progress…")</span>
+            <span class="grow">
+                <RadzenProgressBar Value="100" Mode="ProgressBarMode.Indeterminate"
+                                   ShowValue="false" Style="height:6px;" />
+            </span>
+        }
+        else if (Status == DeploymentStatus.Failed)
+        {
+            <span class="banner-msg">@(FailedMessage ?? DefaultFailedMessage)</span>
+        }
+        else if (Status == DeploymentStatus.PendingOfflineResult)
+        {
+            <span class="banner-msg">Awaiting offline result from an air-gapped target.</span>
+        }
+        else
+        {
+            <span class="banner-msg muted">Finished in @FinishedDuration</span>
+        }
+    </div>
+</div>
+
+@code {
+    /// <summary>The task's current status — drives the pill + banner branch.</summary>
+    [Parameter, EditorRequired] public DeploymentStatus Status { get; set; }
+
+    /// <summary>Shown while Running (e.g. "Step 2 · Deploy web"). Falls back to
+    /// "In progress…".</summary>
+    [Parameter] public string? RunningMessage { get; set; }
+
+    /// <summary>Shown when Failed (AI probable cause, last error line, …).
+    /// Falls back to <see cref="DefaultFailedMessage"/>.</summary>
+    [Parameter] public string? FailedMessage { get; set; }
+
+    /// <summary>Fallback failure text when no cause is known (kind-flavored:
+    /// "Deployment failed." / "Runbook run failed.").</summary>
+    [Parameter] public string DefaultFailedMessage { get; set; } = "Task failed.";
+
+    /// <summary>Pre-formatted duration for the finished branch.</summary>
+    [Parameter] public string FinishedDuration { get; set; } = "—";
+
+    // Maps a status to the StatusPill colour family (.st--*) for the bold
+    // banner's left border + soft tint.
+    private static string BannerClass(DeploymentStatus s) => s switch
+    {
+        DeploymentStatus.Succeeded             => "ok",
+        DeploymentStatus.SucceededWithWarnings => "warn",
+        DeploymentStatus.Failed                => "fail",
+        DeploymentStatus.Running               => "run",
+        DeploymentStatus.Queued                => "queue",
+        DeploymentStatus.PendingOfflineResult  => "offline",
+        DeploymentStatus.Cancelled             => "idle",
+        _                                      => "idle",
+    };
+}
