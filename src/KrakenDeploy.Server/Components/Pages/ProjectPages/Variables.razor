@@ -58,23 +58,23 @@
     <div class="kraken-var-filter-bar rz-mb-3">
         <RadzenDropDown TValue="Guid?" @bind-Value="_filterEnvId"
                         Data="@_environments" TextProperty="Name" ValueProperty="Id"
-                        AllowClear="true" AllowFiltering="true"
+                        AllowFiltering="true"
                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                         Placeholder="All environments" Style="width: 180px;" />
         <RadzenDropDown TValue="Guid?" @bind-Value="_filterTenantId"
                         Data="@_tenants" TextProperty="Name" ValueProperty="Id"
-                        AllowClear="true" AllowFiltering="true"
+                        AllowFiltering="true"
                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                         Placeholder="All tenants" Style="width: 160px;" />
         <RadzenDropDown TValue="string" Value="@_filterRole"
                         ValueChanged="@OnFilterRoleChanged"
                         Data="@_availableRoles"
-                        AllowClear="true" AllowFiltering="true"
+                        AllowFiltering="true"
                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                         Placeholder="All roles" Style="width: 150px;" />
         <RadzenDropDown TValue="Guid?" @bind-Value="_filterStepId"
                         Data="@_projectStepNames" TextProperty="Name" ValueProperty="Id"
-                        AllowClear="true" AllowFiltering="true"
+                        AllowFiltering="true"
                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                         Placeholder="All steps" Style="width: 170px;" />
         @if (_filterEnvId.HasValue || _filterTenantId.HasValue
