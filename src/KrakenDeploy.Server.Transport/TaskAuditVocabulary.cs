@@ -34,7 +34,8 @@ internal sealed record TaskAuditVocabulary(
     string TargetDropped,
     string ParallelOutputCollision,
     string RollingBatchStarted,
-    string RollingBatchCompleted)
+    string RollingBatchCompleted,
+    string RollingBatchingDisabled)
 {
     /// <summary>Vocabulary for <see cref="Core.Domain.Deployments.Deployment"/> tasks.</summary>
     public static readonly TaskAuditVocabulary Deployment = new(
@@ -54,7 +55,8 @@ internal sealed record TaskAuditVocabulary(
         TargetDropped:               AuditEventType.DeploymentTargetDropped,
         ParallelOutputCollision:     AuditEventType.DeploymentParallelOutputCollision,
         RollingBatchStarted:         AuditEventType.DeploymentRollingBatchStarted,
-        RollingBatchCompleted:       AuditEventType.DeploymentRollingBatchCompleted);
+        RollingBatchCompleted:       AuditEventType.DeploymentRollingBatchCompleted,
+        RollingBatchingDisabled:     AuditEventType.DeploymentRollingBatchingDisabled);
 
     /// <summary>Vocabulary for <see cref="Core.Domain.Runbooks.RunbookRun"/> tasks.</summary>
     public static readonly TaskAuditVocabulary RunbookRun = new(
@@ -74,5 +76,6 @@ internal sealed record TaskAuditVocabulary(
         TargetDropped:               AuditEventType.RunbookRunTargetDropped,
         ParallelOutputCollision:     AuditEventType.RunbookRunParallelOutputCollision,
         RollingBatchStarted:         AuditEventType.RunbookRunRollingBatchStarted,
-        RollingBatchCompleted:       AuditEventType.RunbookRunRollingBatchCompleted);
+        RollingBatchCompleted:       AuditEventType.RunbookRunRollingBatchCompleted,
+        RollingBatchingDisabled:     AuditEventType.RunbookRunRollingBatchingDisabled);
 }

@@ -339,6 +339,10 @@ public class RunbookService(
             RetryDelaySeconds           = k.RetryDelaySeconds,
             TimeoutSeconds              = k.TimeoutSeconds,
             StartTrigger                = k.StartTrigger,
+            RunOnServer                 = k.RunOnServer,
+            MaxParallelism              = k.MaxParallelism,
+            ForEachCollection           = k.ForEachCollection,
+            ForEachParallel             = k.ForEachParallel,
             ParentStepId                = parentStepId,
         };
 
@@ -393,6 +397,10 @@ public class RunbookService(
             step.RetryDelaySeconds           = knobs.RetryDelaySeconds;
             step.TimeoutSeconds              = knobs.TimeoutSeconds;
             step.StartTrigger                = knobs.StartTrigger;
+            step.RunOnServer                 = knobs.RunOnServer;
+            step.MaxParallelism              = knobs.MaxParallelism;
+            step.ForEachCollection           = knobs.ForEachCollection;
+            step.ForEachParallel             = knobs.ForEachParallel;
         }
 
         if (updateParent is not null
@@ -552,6 +560,11 @@ public class RunbookService(
                 RetryDelaySeconds           = s.RetryDelaySeconds,
                 TimeoutSeconds              = s.TimeoutSeconds,
                 StartTrigger                = s.StartTrigger,
+                // D3 — freeze the control-flow flags too (parity with ReleaseService).
+                RunOnServer                 = s.RunOnServer,
+                MaxParallelism              = s.MaxParallelism,
+                ForEachCollection           = s.ForEachCollection,
+                ForEachParallel             = s.ForEachParallel,
             })
             .ToList();
 

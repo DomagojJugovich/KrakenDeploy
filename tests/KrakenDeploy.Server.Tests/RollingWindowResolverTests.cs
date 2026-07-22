@@ -17,39 +17,34 @@ public sealed class RollingWindowResolverTests
     [Fact]
     public void Returns_null_when_no_ancestor_has_MaxParallelism()
     {
-        // A plain top-level step: no parent, no cap.
         var leafSnap = MakeLeaf("Deploy");
         var snapById = new Dictionary<Guid, StepSnapshot> { [leafSnap.Id] = leafSnap };
         var wave = new[] { MakePlan(0, "Deploy") };
         var snapByIdx = new[] { leafSnap };
 
         RollingWindowResolver
-            .ResolveWaveMaxParallelism(wave, snapByIdx, snapById)
-            .Should().BeNull();
+            .ResolveWaveRollingWindow(wave, snapByIdx, snapById)
+            .Cap.Should().BeNull();
     }
 
     [Fact]
     public void Resolves_cap_from_direct_parent_step_group()
     {
-        var group = MakeGroup("RollingGroup", maxParallelism: "2");
+        var group = MakeGroup("RollingGroup", maxParallelism: 2);
         var child = MakeLeaf("Deploy", parentId: group.Id);
         var snapById = ToDict(group, child);
         var wave = new[] { MakePlan(0, "Deploy") };
         var snapByIdx = new[] { child };
 
-        RollingWindowResolver
-            .ResolveWaveMaxParallelism(wave, snapByIdx, snapById)
-            .Should().Be(2);
-
-        RollingWindowResolver
-            .ResolveWaveRollingGroupName(wave, snapByIdx, snapById)
-            .Should().Be("RollingGroup");
+        var result = RollingWindowResolver.ResolveWaveRollingWindow(wave, snapByIdx, snapById);
+        result.Cap.Should().Be(2);
+        result.RollingGroupName.Should().Be("RollingGroup");
     }
 
     [Fact]
     public void Walks_through_nested_non_rolling_groups()
     {
-        var outerRolling = MakeGroup("Outer", maxParallelism: "3");
+        var outerRolling = MakeGroup("Outer", maxParallelism: 3);
         var innerPlain   = MakeGroup("Inner", maxParallelism: null,
                                      parentId: outerRolling.Id);
         var child        = MakeLeaf("Deploy", parentId: innerPlain.Id);
@@ -58,18 +53,16 @@ public sealed class RollingWindowResolverTests
         var snapByIdx = new[] { child };
 
         RollingWindowResolver
-            .ResolveWaveMaxParallelism(wave, snapByIdx, snapById)
-            .Should().Be(3,
+            .ResolveWaveRollingWindow(wave, snapByIdx, snapById)
+            .Cap.Should().Be(3,
                 because: "the nearest non-rolling group is skipped; the next ancestor with a cap wins");
     }
 
     [Fact]
     public void Nearest_rolling_ancestor_wins_for_nested_rolling_groups()
     {
-        // Defensive case — operators shouldn't author this, but if they do,
-        // the inner (more-restrictive scope) wins.
-        var outerRolling = MakeGroup("Outer", maxParallelism: "10");
-        var innerRolling = MakeGroup("Inner", maxParallelism: "2",
+        var outerRolling = MakeGroup("Outer", maxParallelism: 10);
+        var innerRolling = MakeGroup("Inner", maxParallelism: 2,
                                      parentId: outerRolling.Id);
         var child        = MakeLeaf("Deploy", parentId: innerRolling.Id);
         var snapById = ToDict(outerRolling, innerRolling, child);
@@ -77,49 +70,29 @@ public sealed class RollingWindowResolverTests
         var snapByIdx = new[] { child };
 
         RollingWindowResolver
-            .ResolveWaveMaxParallelism(wave, snapByIdx, snapById)
-            .Should().Be(2);
+            .ResolveWaveRollingWindow(wave, snapByIdx, snapById)
+            .Cap.Should().Be(2);
     }
 
     [Fact]
-    public void Returns_null_when_cap_is_unparseable()
+    public void Returns_malformed_when_cap_is_zero_or_negative()
     {
-        // Garbage in the cap value falls back to "no cap" rather than
-        // accidentally serialising the deployment to one-target-at-a-time.
-        var group = MakeGroup("RollingGroup", maxParallelism: "many");
+        var group = MakeGroup("RollingGroup", maxParallelism: 0);
         var child = MakeLeaf("Deploy", parentId: group.Id);
         var snapById = ToDict(group, child);
         var wave = new[] { MakePlan(0, "Deploy") };
         var snapByIdx = new[] { child };
 
-        RollingWindowResolver
-            .ResolveWaveMaxParallelism(wave, snapByIdx, snapById)
-            .Should().BeNull();
+        var result = RollingWindowResolver.ResolveWaveRollingWindow(wave, snapByIdx, snapById);
+        result.Cap.Should().BeNull();
+        result.Reason.Should().Be(RollingCapReason.Malformed);
     }
 
     [Fact]
-    public void Returns_null_when_cap_is_zero_or_negative()
+    public void Returns_mixed_when_wave_steps_share_no_common_rolling_ancestor()
     {
-        // 0 / -1 are nonsensical; same defensive fallback.
-        var group = MakeGroup("RollingGroup", maxParallelism: "0");
-        var child = MakeLeaf("Deploy", parentId: group.Id);
-        var snapById = ToDict(group, child);
-        var wave = new[] { MakePlan(0, "Deploy") };
-        var snapByIdx = new[] { child };
-
-        RollingWindowResolver
-            .ResolveWaveMaxParallelism(wave, snapByIdx, snapById)
-            .Should().BeNull();
-    }
-
-    [Fact]
-    public void Returns_null_when_wave_steps_share_no_common_rolling_ancestor()
-    {
-        // Two steps in one wave, each under a different rolling group.
-        // No batching applies — the resolver bails to avoid surprising the
-        // operator with a partial cap.
-        var groupA = MakeGroup("RegionA", maxParallelism: "2");
-        var groupB = MakeGroup("RegionB", maxParallelism: "3");
+        var groupA = MakeGroup("RegionA", maxParallelism: 2);
+        var groupB = MakeGroup("RegionB", maxParallelism: 3);
         var leafA  = MakeLeaf("DeployA", parentId: groupA.Id);
         var leafB  = MakeLeaf("DeployB", parentId: groupB.Id);
         var snapById = ToDict(groupA, groupB, leafA, leafB);
@@ -130,16 +103,15 @@ public sealed class RollingWindowResolverTests
         };
         var snapByIdx = new[] { leafA, leafB };
 
-        RollingWindowResolver
-            .ResolveWaveMaxParallelism(wave, snapByIdx, snapById)
-            .Should().BeNull();
+        var result = RollingWindowResolver.ResolveWaveRollingWindow(wave, snapByIdx, snapById);
+        result.Cap.Should().BeNull();
+        result.Reason.Should().Be(RollingCapReason.MixedAncestors);
     }
 
     [Fact]
-    public void Returns_null_when_only_some_wave_steps_have_a_rolling_ancestor()
+    public void Returns_mixed_when_only_some_wave_steps_have_a_rolling_ancestor()
     {
-        // One step in a rolling group, one top-level. Same conservative fallback.
-        var group = MakeGroup("RollingGroup", maxParallelism: "2");
+        var group = MakeGroup("RollingGroup", maxParallelism: 2);
         var child = MakeLeaf("DeployA", parentId: group.Id);
         var loose = MakeLeaf("DeployB");
         var snapById = ToDict(group, child, loose);
@@ -150,17 +122,15 @@ public sealed class RollingWindowResolverTests
         };
         var snapByIdx = new[] { child, loose };
 
-        RollingWindowResolver
-            .ResolveWaveMaxParallelism(wave, snapByIdx, snapById)
-            .Should().BeNull();
+        var result = RollingWindowResolver.ResolveWaveRollingWindow(wave, snapByIdx, snapById);
+        result.Cap.Should().BeNull();
+        result.Reason.Should().Be(RollingCapReason.MixedAncestors);
     }
 
     [Fact]
     public void Resolves_cap_when_all_wave_steps_share_one_rolling_ancestor()
     {
-        // Three children of the same rolling group emitted as one wave
-        // (StartWithPrevious). Cap applies.
-        var group = MakeGroup("RollingGroup", maxParallelism: "2");
+        var group = MakeGroup("RollingGroup", maxParallelism: 2);
         var c1 = MakeLeaf("A", parentId: group.Id);
         var c2 = MakeLeaf("B", parentId: group.Id);
         var c3 = MakeLeaf("C", parentId: group.Id);
@@ -174,8 +144,8 @@ public sealed class RollingWindowResolverTests
         var snapByIdx = new[] { c1, c2, c3 };
 
         RollingWindowResolver
-            .ResolveWaveMaxParallelism(wave, snapByIdx, snapById)
-            .Should().Be(2);
+            .ResolveWaveRollingWindow(wave, snapByIdx, snapById)
+            .Cap.Should().Be(2);
     }
 
     [Fact]
@@ -220,22 +190,16 @@ public sealed class RollingWindowResolverTests
     // ── Fixtures ────────────────────────────────────────────────────────
 
     private static StepSnapshot MakeGroup(
-        string name, string? maxParallelism, Guid? parentId = null)
-    {
-        var config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (maxParallelism is not null)
+        string name, int? maxParallelism, Guid? parentId = null)
+        => new()
         {
-            config[RollingWindowResolver.MaxParallelismKey] = maxParallelism;
-        }
-        return new StepSnapshot
-        {
-            Id            = Guid.NewGuid(),
-            Name          = name,
-            StepType      = KrakenStepTypes.StepGroup,
-            Config        = config,
-            ParentStepId  = parentId,
+            Id             = Guid.NewGuid(),
+            Name           = name,
+            StepType       = KrakenStepTypes.StepGroup,
+            Config         = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+            ParentStepId   = parentId,
+            MaxParallelism = maxParallelism,
         };
-    }
 
     private static StepSnapshot MakeLeaf(string name, Guid? parentId = null)
         => new()

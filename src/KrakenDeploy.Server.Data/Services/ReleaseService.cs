@@ -209,6 +209,11 @@ public class ReleaseService(
                 RetryDelaySeconds           = step.RetryDelaySeconds,
                 TimeoutSeconds              = step.TimeoutSeconds,
                 StartTrigger                = step.StartTrigger,
+                // D3 — freeze the control-flow flags too.
+                RunOnServer                 = step.RunOnServer,
+                MaxParallelism              = step.MaxParallelism,
+                ForEachCollection           = step.ForEachCollection,
+                ForEachParallel             = step.ForEachParallel,
             });
         }
 

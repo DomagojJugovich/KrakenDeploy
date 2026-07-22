@@ -123,7 +123,18 @@ public sealed record DeploymentStepPlan(
     /// means the agent uses the deployment-wide variables unchanged. Appended
     /// for back-compat: older agents ignore it and behave as before.
     /// </summary>
-    IReadOnlyDictionary<string, string>? StepVariables = null);
+    IReadOnlyDictionary<string, string>? StepVariables = null,
+    /// <summary>
+    /// D3 — server-vs-agent routing flag, promoted from the
+    /// <c>Octopus.Action.RunOnServer</c> Config key to a typed field. The server
+    /// resolves it BEFORE dispatch (<c>WavePartitioner.IsServerStep</c> splits
+    /// server-side waves off), so the agent never reads it — it is carried on the
+    /// wire purely so the flattened plan the partitioner classifies is
+    /// self-describing (mirroring the typed <see cref="StartTrigger"/>). Appended
+    /// + defaulted: an older agent ignores it, and the persisted/wire Config no
+    /// longer carries the string key.
+    /// </summary>
+    bool RunOnServer = false);
 
 /// <summary>
 /// Sent by the agent to the server when a deployment is triggered.

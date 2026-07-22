@@ -35,8 +35,9 @@ public static class WavePartitioner
     /// </summary>
     public enum WaveKind
     {
-        /// <summary>Every step in the wave runs server-side (Octopus.Action.RunOnServer
-        /// or an intrinsically server-only StepType like Octopus.DeployRelease).</summary>
+        /// <summary>Every step in the wave runs server-side (the typed
+        /// <c>RunOnServer</c> flag, or an intrinsically server-only StepType like
+        /// Octopus.DeployRelease).</summary>
         Server,
 
         /// <summary>Every step in the wave runs target-side (dispatched to the agent).</summary>
@@ -163,10 +164,10 @@ public static class WavePartitioner
 
     /// <summary>
     /// Whether a step runs server-side. A step is server-side when EITHER
-    /// the config carries <c>Octopus.Action.RunOnServer = "true"</c> (the
-    /// explicit Octopus marker), OR the <see cref="DeploymentStepPlan.StepType"/>
-    /// is one of the intrinsically server-side orchestrator types in
-    /// <see cref="ServerOnlyStepTypes"/>.
+    /// the typed <see cref="DeploymentStepPlan.RunOnServer"/> flag is set (D3 —
+    /// promoted from the <c>Octopus.Action.RunOnServer</c> Config key), OR the
+    /// <see cref="DeploymentStepPlan.StepType"/> is one of the intrinsically
+    /// server-side orchestrator types in <see cref="ServerOnlyStepTypes"/>.
     ///
     /// <para>
     /// Moved here from <c>DeploymentWorker</c> (M14.0..3) so the partitioner
@@ -178,17 +179,15 @@ public static class WavePartitioner
     internal static bool IsServerStep(DeploymentStepPlan step)
     {
         ArgumentNullException.ThrowIfNull(step);
-        if (step.Config.TryGetValue("Octopus.Action.RunOnServer", out var v)
-            && string.Equals(v, "true", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-        return ServerOnlyStepTypes.Contains(step.StepType);
+        // D3 — RunOnServer is a typed field on the plan now (promoted from the
+        // Config key "Octopus.Action.RunOnServer"). The flattener stamps it from
+        // StepSnapshot.RunOnServer; the raw key no longer travels in Config.
+        return step.RunOnServer || ServerOnlyStepTypes.Contains(step.StepType);
     }
 
     /// <summary>
     /// Step types that always run on the server regardless of the
-    /// <c>Octopus.Action.RunOnServer</c> flag — they coordinate other
+    /// <see cref="DeploymentStepPlan.RunOnServer"/> flag — they coordinate other
     /// deployments or otherwise have no agent-side meaning. Mirrors the
     /// set previously defined inline in <c>DeploymentWorker</c>.
     /// </summary>

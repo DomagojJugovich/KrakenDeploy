@@ -19,14 +19,14 @@ namespace KrakenDeploy.Server.Transport;
 /// <see cref="KrakenStepTypes.StepGroup"/>-typed step's Config decides:
 /// </para>
 /// <list type="bullet">
-///   <item><c>Octopus.Action.ForEach.Collection</c> set → iterate the named
+///   <item>typed <c>ForEachCollection</c> column set → iterate the named
 ///         array variable; emit one block of children per iteration with
 ///         <c>IterationVariable</c> + <c>IndexVariable</c> injected into
-///         each child plan's Config.</item>
-///   <item><c>Octopus.Action.MaxParallelism</c> set → reserved for
-///         M-RollingDeployments. M15 treats the group as a plain container
-///         (children emitted in declared order) but preserves the property
-///         in the snapshot for the future milestone to consume.</item>
+///         each child plan's Config. (D3: the loop key is a typed column now,
+///         not <c>Config["Octopus.Action.ForEach.Collection"]</c>.)</item>
+///   <item>typed <c>MaxParallelism</c> column set → rolling-window cap consumed
+///         by <c>RollingWindowResolver</c>. The flattener treats the group as a
+///         plain container (children emitted in declared order).</item>
 ///   <item>Neither → plain container; children run sequentially with
 ///         per-child <see cref="DeploymentStepPlan.StartTrigger"/> driving
 ///         any parallel-with-previous behaviour through M14.4's wave
@@ -66,9 +66,9 @@ namespace KrakenDeploy.Server.Transport;
 /// </para>
 ///
 /// <para>
-/// <strong>Parallel ForEach</strong>: <c>Octopus.Action.ForEach.Parallel
-/// = "true"</c> emits iterations as siblings in the same wave — the first
-/// child of iterations 1..N gets <see cref="StepStartTrigger.StartWithPrevious"/>
+/// <strong>Parallel ForEach</strong>: the typed <c>ForEachParallel</c> column
+/// emits iterations as siblings in the same wave — the first child of
+/// iterations 1..N gets <see cref="StepStartTrigger.StartWithPrevious"/>
 /// so M14.4's wave partitioner groups all iterations together.
 /// </para>
 /// </summary>
@@ -218,7 +218,11 @@ public static class DeploymentPlanFlattener
             return;
         }
 
-        var collectionExpr = ResolveConfigKey(snap.Config, "Octopus.Action.ForEach.Collection");
+        // D3 — ForEach collection is a typed column now, not a Config key. The
+        // engine branches on the column; blank/null means "plain container".
+        var collectionExpr = string.IsNullOrWhiteSpace(snap.ForEachCollection)
+            ? null
+            : snap.ForEachCollection;
         if (string.IsNullOrWhiteSpace(collectionExpr))
         {
             EmitPlainContainer(snap, children, iterationVars,
@@ -322,9 +326,8 @@ public static class DeploymentPlanFlattener
 
         // Parallel mode: iterations 1..N's first child gets StartWithPrevious
         // so M14.4's wave partitioner groups all iterations together.
-        var parallel = string.Equals(
-            ResolveConfigKey(group.Config, "Octopus.Action.ForEach.Parallel"),
-            "true", StringComparison.OrdinalIgnoreCase);
+        // D3 — read the typed column, not the Config key.
+        var parallel = group.ForEachParallel;
 
         var groupStartTrigger = inheritStartTrigger ?? group.StartTrigger;
 
@@ -420,7 +423,10 @@ public static class DeploymentPlanFlattener
             RetryDelaySeconds:           snap.RetryDelaySeconds,
             TimeoutSeconds:              snap.TimeoutSeconds,
             StartTrigger:                (int)startTrigger,
-            AccumulatorKey:              accumulatorKey);
+            AccumulatorKey:              accumulatorKey,
+            // D3 — carry the typed routing flag so WavePartitioner.IsServerStep
+            // classifies this leaf without reading a Config string key.
+            RunOnServer:                 snap.RunOnServer);
     }
 
     /// <summary>

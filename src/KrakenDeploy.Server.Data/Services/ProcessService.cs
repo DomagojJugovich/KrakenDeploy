@@ -207,6 +207,10 @@ public class ProcessService(
             RetryDelaySeconds           = k.RetryDelaySeconds,
             TimeoutSeconds              = k.TimeoutSeconds,
             StartTrigger                = k.StartTrigger,
+            RunOnServer                 = k.RunOnServer,
+            MaxParallelism              = k.MaxParallelism,
+            ForEachCollection           = k.ForEachCollection,
+            ForEachParallel             = k.ForEachParallel,
             ParentStepId                = parentStepId,
         };
 
@@ -263,7 +267,7 @@ public class ProcessService(
             step.StepPackageVersion = stepPackageVersion;
         }
 
-        // M14 knobs — null means "leave existing values alone".
+        // M14 knobs + D3 control-flow flags — null means "leave existing values alone".
         if (knobs is not null)
         {
             step.Condition                   = knobs.Condition;
@@ -273,6 +277,10 @@ public class ProcessService(
             step.RetryDelaySeconds           = knobs.RetryDelaySeconds;
             step.TimeoutSeconds              = knobs.TimeoutSeconds;
             step.StartTrigger                = knobs.StartTrigger;
+            step.RunOnServer                 = knobs.RunOnServer;
+            step.MaxParallelism              = knobs.MaxParallelism;
+            step.ForEachCollection           = knobs.ForEachCollection;
+            step.ForEachParallel             = knobs.ForEachParallel;
         }
 
         // M15 — parent reassignment; when the parent changes, append to the end of
@@ -497,6 +505,10 @@ public class ProcessService(
             RetryDelaySeconds           = p.RetryDelaySeconds,
             TimeoutSeconds              = p.TimeoutSeconds,
             StartTrigger                = p.StartTrigger,
+            RunOnServer                 = p.RunOnServer,
+            MaxParallelism              = p.MaxParallelism,
+            ForEachCollection           = p.ForEachCollection,
+            ForEachParallel             = p.ForEachParallel,
             ParentStepId                = parentStepId,
         };
         db.ProcessSteps.Add(step);

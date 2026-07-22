@@ -1,4 +1,3 @@
-using System.Globalization;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Releases;
@@ -6,11 +5,11 @@ using KrakenDeploy.Server.Core.Domain.Releases;
 namespace KrakenDeploy.Server.Transport;
 
 /// <summary>
-/// M-RollingDeployments Phase 2 — resolves the effective rolling-window
-/// (<c>Octopus.Action.MaxParallelism</c>) cap for a wave by walking each
-/// step's <see cref="StepSnapshot.ParentStepId"/> chain up to the nearest
-/// ancestor <see cref="KrakenStepTypes.StepGroup"/> with a parseable
-/// positive integer in <c>Config["Octopus.Action.MaxParallelism"]</c>.
+/// M-RollingDeployments Phase 2 — resolves the effective rolling-window cap for
+/// a wave by walking each step's <see cref="StepSnapshot.ParentStepId"/> chain
+/// up to the nearest ancestor <see cref="KrakenStepTypes.StepGroup"/> that
+/// declares a rolling window (D3: the typed <see cref="StepSnapshot.MaxParallelism"/>
+/// column, no longer the <c>Octopus.Action.MaxParallelism</c> Config key).
 ///
 /// <para>
 /// <strong>Semantic:</strong> batches a wave's target fan-out into windows
@@ -27,48 +26,44 @@ namespace KrakenDeploy.Server.Transport;
 /// </para>
 ///
 /// <para>
-/// <strong>Canary:</strong> to stop a rollout when an early target fails,
-/// model the validating step as a SEPARATE EARLIER wave (its own barrier)
-/// before the rolling group — its failure drops the target (or, in the
-/// Atomic <c>DeploymentFailureMode</c>, flips the deployment-global failing
-/// state) before the rolling wave starts. Full group-region canary (every
-/// wave of a rolling group completes on window K before window K+1 starts)
-/// could layer on later without changing this resolver. Imported Octopus
-/// rolling steps land in this same shape; the cap value carries over verbatim.
+/// <strong>Visibility (D3 RIDER):</strong> the resolver returns a
+/// <see cref="RollingCapReason"/> alongside the cap so <c>DeploymentWorker</c>
+/// can surface WHY batching was disabled when a rolling group is present:
+/// <see cref="RollingCapReason.Malformed"/> (a non-positive cap that slipped in
+/// via import / legacy data — the typed column kills this at save time going
+/// forward) or <see cref="RollingCapReason.MixedAncestors"/> (the wave's steps
+/// don't all belong to one rolling group). The no-cap fallback is deliberate —
+/// serialising to one-target-at-a-time would be worse — but it is now audible.
+/// </para>
+///
+/// <para>
+/// <paramref name="snapshotById"/> indexes the FULL process snapshot (not just
+/// emitted plans) because rolling parents are container
+/// <see cref="KrakenStepTypes.StepGroup"/> rows that don't appear in the flat
+/// plan list — the flattener emits children only.
 /// </para>
 /// </summary>
 public static class RollingWindowResolver
 {
     /// <summary>
-    /// The Config key Octopus uses on a step / step group to cap target-
-    /// fan-out concurrency. Kraken reads it from a <see cref="KrakenStepTypes.StepGroup"/>'s
-    /// snapshot Config (preserved verbatim by the importer + UI).
-    /// </summary>
-    public const string MaxParallelismKey = "Octopus.Action.MaxParallelism";
-
-    /// <summary>
-    /// Returns the effective per-wave fan-out cap when EVERY step in the
-    /// wave shares the same rolling ancestor (nearest <see cref="KrakenStepTypes.StepGroup"/>
-    /// with <see cref="MaxParallelismKey"/> set to a positive integer).
-    /// Returns <c>null</c> when:
+    /// Resolves the effective rolling window for a wave: the cap plus a reason
+    /// describing why the cap is / isn't set. See the type docs for the
+    /// batching semantic.
     /// <list type="bullet">
-    ///   <item>no step in the wave has a rolling ancestor</item>
-    ///   <item>different steps in the wave have different rolling ancestors
-    ///         (treated as "no batching" to avoid surprising operators with
-    ///         a partial cap)</item>
-    ///   <item>the resolved value isn't a positive integer (malformed
-    ///         config falls back to "no cap" so a typo can't accidentally
-    ///         serialise the deployment to one-target-at-a-time)</item>
+    ///   <item><see cref="RollingCapReason.None"/> — no step in the wave has a
+    ///         rolling ancestor (the common, non-rolling wave). Silent.</item>
+    ///   <item><see cref="RollingCapReason.Resolved"/> — every step shares one
+    ///         rolling ancestor with a positive cap; <see cref="RollingWindow.Cap"/>
+    ///         is that value.</item>
+    ///   <item><see cref="RollingCapReason.Malformed"/> — the shared rolling
+    ///         ancestor's cap is non-positive (imported / legacy). Cap is null
+    ///         (no batching) and the caller warns.</item>
+    ///   <item><see cref="RollingCapReason.MixedAncestors"/> — the wave's steps
+    ///         reference different rolling ancestors, or mix rolling and
+    ///         non-rolling steps. Cap is null (no batching) and the caller warns.</item>
     /// </list>
-    ///
-    /// <para>
-    /// <paramref name="snapshotById"/> indexes the FULL process snapshot
-    /// (not just emitted plans) because rolling parents are usually
-    /// container <see cref="KrakenStepTypes.StepGroup"/> rows that don't
-    /// appear in the flat plan list — the flattener emits children only.
-    /// </para>
     /// </summary>
-    public static int? ResolveWaveMaxParallelism(
+    public static RollingWindow ResolveWaveRollingWindow(
         IReadOnlyList<DeploymentStepPlan> waveSteps,
         IReadOnlyList<StepSnapshot> snapshotByPlanIndex,
         IReadOnlyDictionary<Guid, StepSnapshot> snapshotById)
@@ -79,80 +74,64 @@ public static class RollingWindowResolver
 
         if (waveSteps.Count == 0)
         {
-            return null;
+            return RollingWindow.NoCap;
         }
 
         Guid? sharedAncestor = null;
         int? sharedCap = null;
+        var sharedMalformed = false;
+        var anyWithoutAncestor = false;
+
         foreach (var plan in waveSteps)
         {
             if (plan.Index < 0 || plan.Index >= snapshotByPlanIndex.Count)
             {
-                return null;
+                return RollingWindow.NoCap; // defensive — index out of range
             }
             var snap = snapshotByPlanIndex[plan.Index];
-            var (ancestorId, cap) = ResolveRollingAncestor(snap, snapshotById);
-            if (ancestorId is null || cap is null)
+            var (ancestorId, cap, malformed) = ResolveRollingAncestor(snap, snapshotById);
+            if (ancestorId is null)
             {
-                return null; // at least one step has no rolling cap — give up
+                anyWithoutAncestor = true;
+                continue;
             }
             if (sharedAncestor is null)
             {
                 sharedAncestor = ancestorId;
                 sharedCap = cap;
+                sharedMalformed = malformed;
             }
             else if (sharedAncestor != ancestorId)
             {
-                return null; // mixed rolling groups within one wave — no batching
+                // Different rolling groups within one wave — no batching.
+                return new RollingWindow(null, RollingCapReason.MixedAncestors, null);
             }
         }
-        return sharedCap;
-    }
 
-    /// <summary>
-    /// Resolves the rolling ancestor's name (for audit detail). Mirrors
-    /// <see cref="ResolveWaveMaxParallelism"/>'s walk; returns null when
-    /// no shared rolling ancestor applies.
-    /// </summary>
-    public static string? ResolveWaveRollingGroupName(
-        IReadOnlyList<DeploymentStepPlan> waveSteps,
-        IReadOnlyList<StepSnapshot> snapshotByPlanIndex,
-        IReadOnlyDictionary<Guid, StepSnapshot> snapshotById)
-    {
-        ArgumentNullException.ThrowIfNull(waveSteps);
-        ArgumentNullException.ThrowIfNull(snapshotByPlanIndex);
-        ArgumentNullException.ThrowIfNull(snapshotById);
+        if (sharedAncestor is null)
+        {
+            // No step in the wave has a rolling ancestor — nothing to cap.
+            return RollingWindow.NoCap;
+        }
 
-        if (waveSteps.Count == 0)
-        {
-            return null;
-        }
-        Guid? sharedAncestor = null;
-        foreach (var plan in waveSteps)
-        {
-            if (plan.Index < 0 || plan.Index >= snapshotByPlanIndex.Count)
-            {
-                return null;
-            }
-            var snap = snapshotByPlanIndex[plan.Index];
-            var (ancestorId, cap) = ResolveRollingAncestor(snap, snapshotById);
-            if (ancestorId is null || cap is null)
-            {
-                return null;
-            }
-            if (sharedAncestor is null)
-            {
-                sharedAncestor = ancestorId;
-            }
-            else if (sharedAncestor != ancestorId)
-            {
-                return null;
-            }
-        }
-        return sharedAncestor is not null
-                && snapshotById.TryGetValue(sharedAncestor.Value, out var groupSnap)
+        var groupName = snapshotById.TryGetValue(sharedAncestor.Value, out var groupSnap)
             ? groupSnap.Name
             : null;
+
+        if (anyWithoutAncestor)
+        {
+            // Some steps belong to the rolling group, others to none — the wave
+            // isn't a uniform rolling group, so batching is disabled (as before)
+            // but now surfaced.
+            return new RollingWindow(null, RollingCapReason.MixedAncestors, groupName);
+        }
+
+        if (sharedMalformed)
+        {
+            return new RollingWindow(null, RollingCapReason.Malformed, groupName);
+        }
+
+        return new RollingWindow(sharedCap, RollingCapReason.Resolved, groupName);
     }
 
     /// <summary>
@@ -189,51 +168,71 @@ public static class RollingWindowResolver
 
     // ── Private helpers ──────────────────────────────────────────────────
 
-    private static (Guid? AncestorId, int? Cap) ResolveRollingAncestor(
+    /// <summary>
+    /// Walks up the <see cref="StepSnapshot.ParentStepId"/> chain and returns
+    /// the nearest <see cref="KrakenStepTypes.StepGroup"/> that DECLARES a
+    /// rolling window (a non-null <see cref="StepSnapshot.MaxParallelism"/>).
+    /// That group is the rolling boundary regardless of whether its value is
+    /// valid: a positive value yields the cap; a non-positive value yields
+    /// <c>Malformed = true</c> (no cap, but the group is still the identified
+    /// ancestor so the caller can name it in the warning). Returns
+    /// <c>(null, null, false)</c> when no ancestor declares a window.
+    /// </summary>
+    private static (Guid? AncestorId, int? Cap, bool Malformed) ResolveRollingAncestor(
         StepSnapshot start,
         IReadOnlyDictionary<Guid, StepSnapshot> snapshotById)
     {
-        // Walk up the ParentStepId chain. A step might itself be a
-        // StepGroup with MaxParallelism — in which case its OWN row is
-        // the rolling ancestor (operators can author a leaf-shaped
-        // composite step at the top level — rare, but valid).
         var current = start;
         var visited = new HashSet<Guid>();
         while (true)
         {
-            if (IsRollingStepGroup(current, out var cap))
+            if (string.Equals(current.StepType, KrakenStepTypes.StepGroup,
+                    StringComparison.OrdinalIgnoreCase)
+                && current.MaxParallelism.HasValue)
             {
-                return (current.Id, cap);
+                var n = current.MaxParallelism.Value;
+                return n > 0
+                    ? (current.Id, n, false)
+                    : (current.Id, null, true); // non-positive → malformed, no cap
             }
             if (current.ParentStepId is null
                 || current.ParentStepId.Value == Guid.Empty
                 || !snapshotById.TryGetValue(current.ParentStepId.Value, out var parent)
                 || !visited.Add(current.Id))
             {
-                return (null, null);
+                return (null, null, false);
             }
             current = parent;
         }
     }
+}
 
-    private static bool IsRollingStepGroup(StepSnapshot snap, out int? cap)
-    {
-        cap = null;
-        if (!string.Equals(snap.StepType, KrakenStepTypes.StepGroup,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-        if (!snap.Config.TryGetValue(MaxParallelismKey, out var raw))
-        {
-            return false;
-        }
-        if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n)
-            || n <= 0)
-        {
-            return false; // malformed value falls back to "no cap" rather than 1-at-a-time
-        }
-        cap = n;
-        return true;
-    }
+/// <summary>Why a wave did / didn't get a rolling-window cap. See
+/// <see cref="RollingWindowResolver.ResolveWaveRollingWindow"/>.</summary>
+public enum RollingCapReason
+{
+    /// <summary>No step in the wave has a rolling ancestor. Silent.</summary>
+    None,
+
+    /// <summary>A shared rolling ancestor resolved to a positive cap.</summary>
+    Resolved,
+
+    /// <summary>A shared rolling ancestor exists but its <c>MaxParallelism</c>
+    /// is non-positive (imported / legacy data). Batching disabled; warned.</summary>
+    Malformed,
+
+    /// <summary>The wave's steps reference different rolling ancestors, or mix
+    /// rolling and non-rolling steps. Batching disabled; warned.</summary>
+    MixedAncestors,
+}
+
+/// <summary>The resolved rolling window for one wave: the effective per-wave
+/// fan-out <see cref="Cap"/> (null when batching is disabled), the
+/// <see cref="Reason"/>, and the rolling group's <see cref="RollingGroupName"/>
+/// for audit/log detail (null for <see cref="RollingCapReason.None"/> and for
+/// pure <see cref="RollingCapReason.MixedAncestors"/> with no single group).</summary>
+public sealed record RollingWindow(int? Cap, RollingCapReason Reason, string? RollingGroupName)
+{
+    /// <summary>The no-cap / no-rolling-group result.</summary>
+    public static readonly RollingWindow NoCap = new(null, RollingCapReason.None, null);
 }

@@ -11,6 +11,10 @@ namespace KrakenDeploy.Server.Core.Domain.Processes;
 /// interface deliberately does NOT carry execution knobs (Condition / Required /
 /// Retries / Timeout / StartTrigger) — those live on the entity surface, are
 /// validated per-entity by the existing services, and don't affect tree integrity.
+/// It DOES carry the four D3 control-flow flags (<see cref="RunOnServer"/>,
+/// <see cref="MaxParallelism"/>, <see cref="ForEachCollection"/>,
+/// <see cref="ForEachParallel"/>): unlike the execution knobs these are
+/// leaf-vs-group structural flags whose placement the validator enforces.
 /// </para>
 ///
 /// <para>
@@ -70,4 +74,20 @@ public interface IComposableStep
     /// (top-level steps share one numbering; children of each group
     /// share their own).</summary>
     int SortOrder { get; }
+
+    /// <summary>D3 leaf/script flag — server-side execution. Validator rejects
+    /// it on a <see cref="KrakenStepTypes.StepGroup"/>.</summary>
+    bool RunOnServer { get; }
+
+    /// <summary>D3 step-group flag — rolling-window cap. Validator rejects a
+    /// value on a leaf and a non-positive value on a group.</summary>
+    int? MaxParallelism { get; }
+
+    /// <summary>D3 step-group flag — ForEach collection template. Validator
+    /// rejects a value on a leaf.</summary>
+    string? ForEachCollection { get; }
+
+    /// <summary>D3 step-group flag — parallel ForEach iterations. Validator
+    /// rejects <c>true</c> on a leaf.</summary>
+    bool ForEachParallel { get; }
 }

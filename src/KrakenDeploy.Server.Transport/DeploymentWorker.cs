@@ -2924,26 +2924,63 @@ public sealed class DeploymentWorker(
                 SoftFailedTargetIds: []);
         }
 
-        // ── M-RollingDeployments Phase 2 — resolve effective MaxParallelism ──
-        // The cap comes from a Kraken.StepGroup ancestor's
-        // `Octopus.Action.MaxParallelism`. When every step in the wave shares
-        // a single rolling ancestor with a parseable positive cap, the
-        // resolver returns it; otherwise null (no batching). See
-        // RollingWindowResolver for the precise semantic + edge cases.
-        var maxParallelism = RollingWindowResolver.ResolveWaveMaxParallelism(
+        // ── M-RollingDeployments Phase 2 — resolve effective rolling window ──
+        // The cap comes from a Kraken.StepGroup ancestor's typed MaxParallelism
+        // column (D3). When every step in the wave shares a single rolling
+        // ancestor with a positive cap, the resolver returns it (Resolved);
+        // otherwise no batching, WITH a reason. See RollingWindowResolver for the
+        // precise semantic + edge cases.
+        var rolling = RollingWindowResolver.ResolveWaveRollingWindow(
             wave.Steps, canonicalSnapshotByPlanIndex, snapshotById);
-        var rollingGroupName = maxParallelism is null ? null
-            : RollingWindowResolver.ResolveWaveRollingGroupName(
-                wave.Steps, canonicalSnapshotByPlanIndex, snapshotById);
+        var maxParallelism = rolling.Cap;
+        var rollingGroupName = rolling.RollingGroupName;
+
+        // D3 RIDER — rolling visibility. A rolling group is present but the
+        // fan-out was NOT batched (malformed cap from imported/legacy data, or
+        // the wave spans multiple rolling groups): warn into the task log +
+        // audit so the operator can fix the source data, rather than silently
+        // fanning out to every target. The no-cap fallback itself is deliberate
+        // (1-at-a-time would be worse); this just makes it audible.
+        if (rolling.Reason is RollingCapReason.Malformed or RollingCapReason.MixedAncestors)
+        {
+            var reasonDetail = rolling.Reason == RollingCapReason.Malformed
+                ? $"the rolling window on group '{rollingGroupName}' is not a positive integer"
+                : "the wave's steps do not all belong to the same rolling group";
+            await logSeq.AppendAsync(-1, null, "warning",
+                $"--- Rolling batching disabled: {reasonDetail}; all " +
+                $"{dispatchPlan.Count.ToString(CultureInfo.InvariantCulture)} target(s) run in " +
+                "one batch (no concurrency cap). ---", ct).ConfigureAwait(false);
+            await auditLog.RecordAsync(
+                vocab.RollingBatchingDisabled,
+                subjectType: vocab.SubjectType,
+                subjectId:   deployment.Id.ToString(),
+                details:     $"RollingGroup={rollingGroupName}, " +
+                             $"Reason={rolling.Reason}, " +
+                             $"Targets={dispatchPlan.Count.ToString(CultureInfo.InvariantCulture)}",
+                ct: ct).ConfigureAwait(false);
+        }
 
         var batches = maxParallelism is null
             ? [dispatchPlan]
             : RollingWindowResolver.Chunk(dispatchPlan, maxParallelism.Value);
 
+        // D3 RIDER — informational nudge: a Resolved cap that meets or exceeds
+        // the wave's target count never fires (Chunk returns a single batch).
+        // Surface it so an operator who set a too-large window understands why
+        // there's no batching — distinct from the silent no-rolling-group case.
+        if (rolling.Reason == RollingCapReason.Resolved
+            && maxParallelism is not null
+            && batches.Count == 1)
+        {
+            await logSeq.AppendAsync(-1, null, "info",
+                $"--- Rolling window {maxParallelism.Value.ToString(CultureInfo.InvariantCulture)} on " +
+                $"'{rollingGroupName}' is >= the {dispatchPlan.Count.ToString(CultureInfo.InvariantCulture)} " +
+                "target(s) in this wave; the cap has no effect (all targets run at once). ---",
+                ct).ConfigureAwait(false);
+        }
+
         // Batching is only operator-visible when we ACTUALLY split — a cap
-        // that meets or exceeds the dispatch count silently degrades to a
-        // single batch + no audit (operators don't get noise for a cap that
-        // didn't fire).
+        // that meets or exceeds the dispatch count degrades to a single batch.
         var batchingActive = batches.Count > 1 && rollingGroupName is not null;
 
         var softFailedTargetIds = new List<Guid>();

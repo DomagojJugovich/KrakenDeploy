@@ -126,6 +126,8 @@ public static class AuditEventType
     public const string RunbookRunRollingBatchStarted     = "RunbookRun.RollingBatchStarted";
     /// <summary>Runbook analogue of <see cref="DeploymentRollingBatchCompleted"/>.</summary>
     public const string RunbookRunRollingBatchCompleted   = "RunbookRun.RollingBatchCompleted";
+    /// <summary>Runbook analogue of <see cref="DeploymentRollingBatchingDisabled"/>.</summary>
+    public const string RunbookRunRollingBatchingDisabled = "RunbookRun.RollingBatchingDisabled";
     /// <summary>Runbook analogue of <see cref="DeploymentTargetDropped"/>.</summary>
     public const string RunbookRunTargetDropped           = "RunbookRun.TargetDropped";
     /// <summary>Runbook analogue of <see cref="DeploymentTargetSlow"/>.</summary>
@@ -278,6 +280,17 @@ public static class AuditEventType
     /// Details: deployment id, rolling group name, batch index, success
     /// flag, failed target names (if any).</summary>
     public const string DeploymentRollingBatchCompleted = "Deployment.RollingBatchCompleted";
+
+    /// <summary>D3 — emitted when a rolling group IS present on a target wave
+    /// but the fan-out was NOT batched: the group's <c>MaxParallelism</c> is
+    /// non-positive (<c>Malformed</c> — imported / legacy data) or the wave's
+    /// steps don't all belong to one rolling group (<c>MixedAncestors</c>). The
+    /// wave still runs all targets at once (the no-cap fallback beats
+    /// serialising to one-at-a-time), but the disabled cap is now audible so an
+    /// operator can fix the source data. The typed column prevents the malformed
+    /// case for steps saved after D3.
+    /// Details: deployment id, rolling group name, reason, target count.</summary>
+    public const string DeploymentRollingBatchingDisabled = "Deployment.RollingBatchingDisabled";
 
     /// <summary>M-RollingDeployments Phase 3 — a target drops out of
     /// subsequent waves because its current wave hit a Required step
