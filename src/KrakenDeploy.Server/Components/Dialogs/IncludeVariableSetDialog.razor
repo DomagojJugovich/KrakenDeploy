@@ -1,0 +1,26 @@
+@using KrakenDeploy.Server.Core.Domain.Variables
+@inject DialogService DialogService
+
+<RadzenStack Gap="0.75rem">
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+        Select a library variable set to include in this project.
+    </RadzenText>
+    <RadzenDropDown TValue="Guid" @bind-Value="_selectedId"
+                    Data="@Sets" TextProperty="Name" ValueProperty="Id"
+                    AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                    Placeholder="Choose a set…" Style="width: 100%;" />
+    <RadzenStack Orientation="Orientation.Horizontal"
+                 JustifyContent="JustifyContent.End" Gap="0.5rem">
+        <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => DialogService.Close(null))" />
+        <RadzenButton Text="Include" ButtonStyle="ButtonStyle.Primary"
+                      Disabled="@(_selectedId == Guid.Empty)"
+                      Click="@(() => DialogService.Close(_selectedId))" />
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    [Parameter] public List<VariableSet> Sets { get; set; } = [];
+
+    private Guid _selectedId;
+}
