@@ -1053,6 +1053,15 @@ internal Hangfire system job. Do NOT rebuild event-driven runbook triggering —
 via the subscription Runbook transport (RunbookTransport + SubscriptionEditDialog's "Runbook
 trigger" option); WP7 adds the cron/scheduled and package-push kinds only.
 
+BREADCRUMB (D1 P2 rider, 2026-07-22): the subscription Runbook transport is deliberately
+single-target and always triggers with failureMode=BestEffort (indistinguishable from Atomic for
+one target, so a config knob would be dead). IF anyone extends RunbookConfig to multi-target,
+the SAME change MUST add failureMode to the config schema + EventSubscriptionService.
+ValidateTransportConfig + SubscriptionEditDialog — three places, easy to half-do; missing it
+means event-driven rolling runs silently BestEffort with no way to pick Atomic. Also remember
+FailureMode is per-TRIGGER (no Runbook.DefaultFailureMode exists), so every trigger surface
+plumbs it or its runs quietly default.
+
 Step 1 — short design doc (docs/design-triggers.md, Draft): entity shape, evaluation cadence,
 idempotence, multi-account. Then implement.
 
@@ -1060,11 +1069,11 @@ Scope:
 1. Entity ProjectTrigger (ISpaceScoped, composite-FK per house rule 4), kinds:
    a. ScheduledDeployment: cron + IANA timezone; source = latest deployable release in a chosen
       channel; destination environment (lifecycle-legal, re-validated at fire time).
-   b. ScheduledRunbookRun: cron + timezone; runbook + environment. NOTE the existing seam:
-      IRunbookTrigger.TriggerAsync takes runbookId/environmentId/targetId and has NO scheduledFor
-      parameter — the evaluator calls it at fire time, or the interface grows a target-set
-      overload (post-D1, runbook runs support ScheduledFor via the unified spine — prefer
-      persisting ScheduledFor and letting the unified dispatch job fire it).
+   b. ScheduledRunbookRun: cron + timezone; runbook + environment. Seam RESOLVED by D1 P2
+      (2026-07-22): IRunbookTrigger.TriggerAsync now takes scheduledFor + additionalTargetIds +
+      failureMode — the evaluator can persist ScheduledFor and let the unified dispatch job fire
+      it (preferred), or call at fire time. If the trigger entity stores a target set /
+      failure mode, plumb BOTH through (see the failure-mode BREADCRUMB in the preamble).
    c. AutoReleaseOnPackagePush: package-id filter (exact or prefix); channel; creates a release
       via ReleaseService on matching upload. VERIFIED GAP: POST /api/packages/upload calls
       PackageService.UploadAsync and returns — no hook, no event; PackageService writes NO audit
