@@ -152,6 +152,88 @@ public sealed class OctopusImporterM15MultiActionTests
     }
 
     [Fact]
+    public void Control_flow_flags_round_trip_through_export_and_reimport()
+    {
+        // D3 acceptance — the four flags live in typed columns; the export
+        // boundary re-emits them as Octopus keys and a re-import lifts them back
+        // into typed fields. A two-child group is used so it survives as a Step
+        // Group (a single-child group would re-import as a flat leaf — a
+        // pre-existing round-trip limitation, unrelated to D3).
+        var groupId = Guid.NewGuid();
+        var steps = new List<ProcessStep>
+        {
+            new()
+            {
+                Id                = groupId,
+                Name              = "Rolling",
+                StepType          = KrakenStepTypes.StepGroup,
+                SortOrder         = 0,
+                PackageId         = "",
+                TargetRoles       = ["web"],
+                MaxParallelism    = 3,
+                ForEachCollection = "#{envs}",
+                ForEachParallel   = true,
+                Config            = new Dictionary<string, string>
+                {
+                    // Out-of-scope ForEach key that must ride through Config verbatim.
+                    ["Octopus.Action.ForEach.IterationVariable"] = "env",
+                },
+            },
+            new()
+            {
+                Id           = Guid.NewGuid(),
+                Name         = "Run on server",
+                StepType     = "Octopus.Script",
+                SortOrder    = 0,
+                PackageId    = "",
+                ParentStepId = groupId,
+                RunOnServer  = true,
+                Config       = new Dictionary<string, string>
+                {
+                    ["Octopus.Action.Script.ScriptBody"] = "echo hi",
+                },
+            },
+            new()
+            {
+                Id           = Guid.NewGuid(),
+                Name         = "Run on target",
+                StepType     = "Octopus.Script",
+                SortOrder    = 1,
+                PackageId    = "",
+                ParentStepId = groupId,
+                Config       = new Dictionary<string, string>
+                {
+                    ["Octopus.Action.Script.ScriptBody"] = "echo bye",
+                },
+            },
+        };
+
+        var (json, _) = OctopusDeploymentProcessExporter.Export(steps);
+        var reimported = OctopusDeploymentProcessImporter.Parse(json.ToJsonString());
+
+        var parent = reimported.Steps.Should().ContainSingle().Subject;
+        parent.StepType.Should().Be(KrakenStepTypes.StepGroup);
+        parent.TargetRoles.Should().Contain("web");
+        parent.MaxParallelism.Should().Be(3);
+        parent.ForEachCollection.Should().Be("#{envs}");
+        parent.ForEachParallel.Should().BeTrue();
+        // Promoted keys must NOT linger in Config; the out-of-scope iteration
+        // variable name must survive there.
+        parent.Config.Should().NotContainKey("Octopus.Action.MaxParallelism");
+        parent.Config.Should().NotContainKey("Octopus.Action.ForEach.Collection");
+        parent.Config.Should().NotContainKey("Octopus.Action.ForEach.Parallel");
+        parent.Config.Should().ContainKey("Octopus.Action.ForEach.IterationVariable");
+
+        parent.Children.Should().NotBeNull();
+        var serverChild = parent.Children!.Should()
+            .Contain(c => c.RunOnServer).Which;
+        serverChild.Config.Should().NotContainKey("Octopus.Action.RunOnServer");
+        serverChild.Config.Should().ContainKey("Octopus.Action.Script.ScriptBody");
+        parent.Children!.Should().Contain(c => !c.RunOnServer,
+            because: "the target-side child round-trips with RunOnServer=false");
+    }
+
+    [Fact]
     public void Multi_action_emits_import_time_warning_explaining_StartTrigger()
     {
         const string json = """

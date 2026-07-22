@@ -58,6 +58,7 @@ public class DeploymentService(
         // second scope" left a window where the child could dispatch before the
         // link committed.
         Guid? parentTaskId = null,
+        IReadOnlyDictionary<string, string>? promptedValues = null,
         CancellationToken ct = default)
     {
         // Guard: reject a default/unset initiator before we do any work.
@@ -158,9 +159,10 @@ public class DeploymentService(
             Status = DeploymentStatus.Queued,
             FailureMode = failureMode,
             ScheduledFor = isScheduledForFuture ? scheduledFor : null,
-            // E3: stamp parentage at creation (see the parameter note) — a null
-            // value keeps this a top-level task.
             ParentTaskId = parentTaskId,
+            FormValues = promptedValues is { Count: > 0 }
+                ? System.Text.Json.JsonSerializer.Serialize(promptedValues)
+                : null,
         };
         initiator.StampOnto(deployment);   // provenance (fix 6)
 

@@ -2608,6 +2608,19 @@ public sealed class DeploymentWorker(
             variableService, target, stepIdsAndNames, tenantTagIds, ct).ConfigureAwait(false);
         var rawVars = stepResolution.DeploymentWide;
 
+        if (!string.IsNullOrEmpty(deployment.FormValues))
+        {
+            var prompted = System.Text.Json.JsonSerializer
+                .Deserialize<Dictionary<string, string>>(deployment.FormValues);
+            if (prompted is { Count: > 0 })
+            {
+                foreach (var (k, v) in prompted)
+                {
+                    rawVars[k] = v;
+                }
+            }
+        }
+
         var varDict = new VariableDictionary();
 
         // Octopus.Deployment.Tenant.Tags — canonical strings of the tenant's

@@ -319,6 +319,29 @@
                 </RadzenText>
             </div>
 
+            @if (_promptedVars.Count > 0)
+            {
+                <div>
+                    <RadzenLabel Text="Prompted variables" />
+                    <RadzenStack Gap="0.6rem" class="rz-mt-1">
+                        @foreach (var pv in _promptedVars)
+                        {
+                            <div>
+                                <RadzenLabel Text="@(pv.PromptText ?? pv.Name)" />
+                                @if (pv.Required)
+                                {
+                                    <RadzenBadge Text="required" BadgeStyle="BadgeStyle.Danger"
+                                                 IsPill="true" Style="margin-left: 6px; font-size: 10px;" />
+                                }
+                                <RadzenTextBox @bind-Value="_promptedValues[pv.Name]"
+                                               Placeholder="@($"Enter value for {pv.Name}")"
+                                               Style="width: 100%;" />
+                            </div>
+                        }
+                    </RadzenStack>
+                </div>
+            }
+
             @if (AnyRolling)
             {
                 <div>
@@ -398,6 +421,10 @@
     private string? _loadError;   // OnInitialized failure — shown as a full alert
     private string? _error;       // submit failure — pinned under the header
 
+    private sealed record PromptedVar(string Name, string? PromptText, bool Required);
+    private List<PromptedVar> _promptedVars = [];
+    private Dictionary<string, string> _promptedValues = [];
+
     // Records (not ValueTuples) so Radzen's reflection-based TextProperty/
     // ValueProperty resolve real members — tuples expose only Item1/Item2 at
     // runtime, which garbles the labels and throws on selection.
@@ -464,6 +491,12 @@
                 _loadError = "The release no longer exists.";
                 return;
             }
+
+            _promptedVars = _release.VariableSnapshot
+                .Where(v => v.PromptText is not null)
+                .Select(v => new PromptedVar(v.Name, v.PromptText, v.PromptRequired))
+                .ToList();
+            _promptedValues = _promptedVars.ToDictionary(pv => pv.Name, _ => "");
 
             _environments = await EnvironmentSvc.GetAllOrderedAsync();
             _allTargets = await TargetSvc.GetAllWithEnvironmentsAsync();
@@ -657,6 +690,16 @@
                 return;
             }
 
+            var missingPrompts = _promptedVars
+                .Where(pv => pv.Required && string.IsNullOrWhiteSpace(_promptedValues.GetValueOrDefault(pv.Name)))
+                .Select(pv => pv.PromptText ?? pv.Name)
+                .ToList();
+            if (missingPrompts.Count > 0)
+            {
+                _error = "Required prompted variables not filled: " + string.Join(", ", missingPrompts);
+                return;
+            }
+
             // One deployment plan per selected tenant; a single untenanted
             // plan when no tenant is selected.
             var tenants = SelectedTenants;
@@ -744,6 +787,11 @@
                 try
                 {
                     var additional = targetIds.Skip(1).ToList();
+                    var formVals = _promptedVars.Count > 0
+                        ? _promptedValues
+                            .Where(kv => !string.IsNullOrEmpty(kv.Value))
+                            .ToDictionary(kv => kv.Key, kv => kv.Value)
+                        : null;
                     created.Add(await DeploymentSvc.CreateAsync(
                         releaseId:           ReleaseId,
                         environmentId:       envId,
@@ -753,7 +801,8 @@
                         tenantId:            tenantId,
                         scheduledFor:        scheduled,
                         additionalTargetIds: additional.Count > 0 ? additional : null,
-                        failureMode:         _failureMode));
+                        failureMode:         _failureMode,
+                        promptedValues:      formVals is { Count: > 0 } ? formVals : null));
                 }
                 catch (InvalidOperationException ex)
                 {

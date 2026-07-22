@@ -184,6 +184,62 @@ public sealed class ProcessValidatorTests
             && e.StepId == parent.Id);
     }
 
+    // ── D3 control-flow flag placement ──────────────────────────────────
+
+    [Fact]
+    public void Validator_rejects_leaf_carrying_a_group_only_flag()
+    {
+        // MaxParallelism / ForEach* belong on a Step Group; a leaf carrying one
+        // is a placement error.
+        var leaf = NewLeaf("Deploy", stepType: "Kraken.Script");
+        leaf.MaxParallelism = 3;
+
+        var result = ProcessValidator.Validate([leaf]);
+
+        result.Errors.Should().ContainSingle(e =>
+            e.Code == ProcessValidator.ValidationErrorCode.LeafHasGroupFlag
+            && e.StepId == leaf.Id);
+    }
+
+    [Fact]
+    public void Validator_rejects_StepGroup_with_RunOnServer()
+    {
+        // RunOnServer is a leaf/script property; a Step Group has no script.
+        var group = NewLeaf("Group", stepType: KrakenStepTypes.StepGroup);
+        group.RunOnServer = true;
+
+        var result = ProcessValidator.Validate([group]);
+
+        result.Errors.Should().ContainSingle(e =>
+            e.Code == ProcessValidator.ValidationErrorCode.GroupHasRunOnServer
+            && e.StepId == group.Id);
+    }
+
+    [Fact]
+    public void Validator_rejects_nonpositive_MaxParallelism_on_group()
+    {
+        // A rolling window must be a positive integer (or blank for no cap).
+        var group = NewLeaf("Group", stepType: KrakenStepTypes.StepGroup);
+        group.MaxParallelism = 0;
+
+        var result = ProcessValidator.Validate([group]);
+
+        result.Errors.Should().ContainSingle(e =>
+            e.Code == ProcessValidator.ValidationErrorCode.InvalidMaxParallelism
+            && e.StepId == group.Id);
+    }
+
+    [Fact]
+    public void Validator_accepts_group_with_positive_rolling_window_and_foreach()
+    {
+        var group = NewLeaf("Group", stepType: KrakenStepTypes.StepGroup);
+        group.MaxParallelism = 4;
+        group.ForEachCollection = "envs";
+        group.ForEachParallel = true;
+
+        ProcessValidator.Validate([group]).IsValid.Should().BeTrue();
+    }
+
     private static ProcessStep NewRunbookLeaf(
         string name,
         string stepType = "Kraken.Script",
