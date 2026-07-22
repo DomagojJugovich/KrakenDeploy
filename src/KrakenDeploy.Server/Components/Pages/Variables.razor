@@ -113,6 +113,13 @@
             Failed to load variables: @_loadError
         </RadzenAlert>
     }
+    else if (!_selectedProjectId.HasValue)
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            Select a project above to view and edit its variables, or use Preview mode
+            to resolve variables for a deployment context.
+        </RadzenText>
+    }
     else if (_project is null)
     {
         <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
@@ -450,15 +457,15 @@
                         <RadzenLabel Text="Environment" />
                         <RadzenDropDown TValue="Guid?" @bind-Value="_previewEnvId"
                                         Data="@_environments" TextProperty="Name" ValueProperty="Id"
-                                        AllowClear="true" AllowFiltering="true"
+                                        AllowFiltering="true"
                                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                                        Placeholder="SelectÔÇŽ" Style="width: 180px;" />
+                                        Placeholder="Select..." Style="width: 180px;" />
                     </div>
                     <div>
                         <RadzenLabel Text="Target" />
                         <RadzenDropDown TValue="Guid?" @bind-Value="_previewTargetId"
                                         Data="@_targets" TextProperty="Name" ValueProperty="Id"
-                                        AllowClear="true" AllowFiltering="true"
+                                        AllowFiltering="true"
                                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                                         Placeholder="(any)" Style="width: 180px;" />
                     </div>
@@ -466,13 +473,13 @@
                         <RadzenLabel Text="Tenant" />
                         <RadzenDropDown TValue="Guid?" @bind-Value="_previewTenantId"
                                         Data="@_tenants" TextProperty="Name" ValueProperty="Id"
-                                        AllowClear="true" AllowFiltering="true"
+                                        AllowFiltering="true"
                                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                                         Placeholder="(any)" Style="width: 160px;" />
                     </div>
                     <RadzenButton Text="Resolve" Icon="play_arrow"
                                   ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
-                                  Disabled="@(!_previewEnvId.HasValue)"
+                                  Disabled="@(!_previewEnvId.HasValue || !_selectedProjectId.HasValue)"
                                   Click="RunPreviewAsync" />
                 </RadzenStack>
             </RadzenCard>
