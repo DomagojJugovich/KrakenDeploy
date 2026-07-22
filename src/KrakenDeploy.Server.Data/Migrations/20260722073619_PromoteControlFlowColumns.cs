@@ -53,7 +53,9 @@ namespace KrakenDeploy.Server.Data.Migrations
                     for_each_parallel = COALESCE((config->>'Octopus.Action.ForEach.Parallel') ILIKE 'true', false),
                     for_each_collection = NULLIF(config->>'Octopus.Action.ForEach.Collection', ''),
                     max_parallelism = CASE
-                        WHEN (config->>'Octopus.Action.MaxParallelism') ~ '^-?[0-9]+$'
+                        -- Bound to <=9 digits so a pathological value can't overflow
+                        -- int4 and abort the migration; garbage degrades to no cap.
+                        WHEN (config->>'Octopus.Action.MaxParallelism') ~ '^-?[0-9]{1,9}$'
                         THEN (config->>'Octopus.Action.MaxParallelism')::int
                         ELSE NULL END;");
             migrationBuilder.Sql(@"
