@@ -343,11 +343,14 @@ public class DeploymentService(
     }
 
     /// <summary>
-    /// The deployment's full log, stitched from compacted step blobs + live
-    /// staging in sequence order. Resolves the deployment first (Space-filtered)
-    /// so the not-ISpaceScoped log tables are only reached via an authorized id.
+    /// The deployment's log in sequence order, stitched from compacted step blobs +
+    /// live staging. Resolves the deployment first (Space-filtered) so the
+    /// not-ISpaceScoped log tables are only reached via an authorized id. Pass
+    /// <paramref name="afterSequence"/> to tail incrementally (only lines with a
+    /// higher sequence); the default (-1) returns the full log.
     /// </summary>
-    public async Task<List<TaskLogLine>> GetLogAsync(Guid deploymentId, CancellationToken ct = default)
+    public async Task<List<TaskLogLine>> GetLogAsync(
+        Guid deploymentId, int afterSequence = -1, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var exists = await db.Deployments.AnyAsync(d => d.Id == deploymentId, ct).ConfigureAwait(false);
@@ -355,7 +358,7 @@ public class DeploymentService(
         {
             return [];
         }
-        return await TaskLogService.ReadAllAsync(db, deploymentId, ct).ConfigureAwait(false);
+        return await TaskLogService.ReadSinceAsync(db, deploymentId, afterSequence, ct).ConfigureAwait(false);
     }
 
     /// <summary>Whether a deployment with this id exists in the active Space.

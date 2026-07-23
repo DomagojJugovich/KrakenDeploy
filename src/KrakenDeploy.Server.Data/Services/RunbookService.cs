@@ -778,9 +778,12 @@ public class RunbookService(
         return await db.RunbookRuns.AnyAsync(r => r.Id == runId, ct).ConfigureAwait(false);
     }
 
-    /// <summary>A runbook run's full log, stitched from compacted step blobs + live
-    /// staging in sequence order. Resolves the run first (Space-filtered).</summary>
-    public async Task<List<TaskLogLine>> GetRunLogAsync(Guid runId, CancellationToken ct = default)
+    /// <summary>A runbook run's log in sequence order, stitched from compacted step
+    /// blobs + live staging. Resolves the run first (Space-filtered). Pass
+    /// <paramref name="afterSequence"/> to tail incrementally (only lines with a
+    /// higher sequence); the default (-1) returns the full log.</summary>
+    public async Task<List<TaskLogLine>> GetRunLogAsync(
+        Guid runId, int afterSequence = -1, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var exists = await db.RunbookRuns.AnyAsync(r => r.Id == runId, ct).ConfigureAwait(false);
@@ -788,7 +791,7 @@ public class RunbookService(
         {
             return [];
         }
-        return await TaskLogService.ReadAllAsync(db, runId, ct).ConfigureAwait(false);
+        return await TaskLogService.ReadSinceAsync(db, runId, afterSequence, ct).ConfigureAwait(false);
     }
 
     /// <summary>
