@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Linq;
 using System.Linq.Expressions;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using Microsoft.EntityFrameworkCore;
@@ -123,7 +124,7 @@ public static class ServerTaskLease
             var blocked = await db.ServerTasks
                 .IgnoreQueryFilters()
                 .AnyAsync(
-                    RunningDeploymentPeerPredicate(
+                    InFlightDeploymentPeerPredicate(
                         taskId, meta.ProjectId, meta.EnvironmentId, meta.TenantId),
                     ct)
                 .ConfigureAwait(false);
@@ -165,19 +166,25 @@ public static class ServerTaskLease
     /// <summary>
     /// The F1 serialization predicate: another <c>Deployment</c> (kind-scoped —
     /// a runbook run never blocks a deployment) of the same
-    /// <c>(ProjectId, EnvironmentId, TenantId)</c> that is currently
-    /// <c>Running</c>, excluding <paramref name="excludingTaskId"/> (a task never
-    /// blocks itself). <c>t.TenantId == tenantId</c> uses EF's null-safe
+    /// <c>(ProjectId, EnvironmentId, TenantId)</c> that is currently IN-FLIGHT —
+    /// claimed but not yet terminal
+    /// (<see cref="DeploymentStatusExtensions.InFlightAfterClaim"/>: <c>Running</c>
+    /// or <c>PendingOfflineResult</c>) — excluding <paramref name="excludingTaskId"/>
+    /// (a task never blocks itself). A parked offline-drop deployment
+    /// (<c>PendingOfflineResult</c>) still holds the key: it is a non-terminal
+    /// deployment of that (project,env,tenant), so a new one must wait until it
+    /// resolves or is cancelled (Octopus parity — "starts only after the first
+    /// goes terminal"). <c>t.TenantId == tenantId</c> uses EF's null-safe
     /// comparison, so a NULL tenant matches only other NULL-tenant rows —
     /// untenanted deployments serialize among themselves. Shared by the claim's
     /// in-lock check, the worker's pre-gate skip and the UI queue-reason read so
-    /// the three can never drift.
+    /// they can never drift.
     /// </summary>
-    public static Expression<Func<ServerTask, bool>> RunningDeploymentPeerPredicate(
+    public static Expression<Func<ServerTask, bool>> InFlightDeploymentPeerPredicate(
         Guid excludingTaskId, Guid projectId, Guid environmentId, Guid? tenantId)
         => t => t.Id != excludingTaskId
              && t.Kind == ServerTaskKind.Deployment
-             && t.Status == DeploymentStatus.Running
+             && DeploymentStatusExtensions.InFlightAfterClaim.Contains(t.Status)
              && t.ProjectId == projectId
              && t.EnvironmentId == environmentId
              && t.TenantId == tenantId;

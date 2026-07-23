@@ -14,4 +14,21 @@ public static class DeploymentStatusExtensions
         DeploymentStatus.SucceededWithWarnings or
         DeploymentStatus.Failed or
         DeploymentStatus.Cancelled;
+
+    /// <summary>
+    /// The non-terminal states a task occupies AFTER it has been claimed — it is
+    /// actively holding its (project, environment, tenant) slot: executing
+    /// (<c>Running</c>) or handed off to the offline-drop workflow awaiting its
+    /// result (<c>PendingOfflineResult</c>). <c>Queued</c> is pre-claim; the four
+    /// terminal states are done. Kept in sync with <see cref="IsTerminal"/> by
+    /// definition: in-flight == not <c>Queued</c> and not terminal. Single source
+    /// for the F1 (project,env,tenant) serialization predicate, so the claim, the
+    /// worker's pre-gate skip and the UI queue-reason all agree on which peers
+    /// block — and a parked offline-drop deployment still counts as in-flight.
+    /// </summary>
+    public static readonly DeploymentStatus[] InFlightAfterClaim =
+    [
+        DeploymentStatus.Running,
+        DeploymentStatus.PendingOfflineResult,
+    ];
 }

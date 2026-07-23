@@ -75,17 +75,19 @@ public sealed class ServerTaskConfiguration : IEntityTypeConfiguration<ServerTas
         builder.Property(x => x.ChannelId);
 
         // F1 — (project, environment, tenant) serialization. The claim's peer
-        // check (ServerTaskLease.RunningDeploymentPeerPredicate), the worker's
+        // check (ServerTaskLease.InFlightDeploymentPeerPredicate), the worker's
         // pre-gate skip and the UI queue-reason read all probe for ANOTHER
-        // RUNNING deployment of the same key, and the claim path runs on every
-        // dispatch. Partial index on the RUNNING-DEPLOYMENT set only (status 1 =
-        // Running, kind 0 = Deployment — same literal-enum filter idiom as the
-        // scheduled_for index above) keeps it tiny: that set is bounded by the
-        // node concurrency cap × node count, so the index stays a handful of
-        // rows however long the deployment history grows.
+        // IN-FLIGHT deployment of the same key, and the claim path runs on every
+        // dispatch. Partial index on the IN-FLIGHT-DEPLOYMENT set only (status IN
+        // (1 Running, 5 PendingOfflineResult) AND kind 0 = Deployment — the same
+        // literal-enum filter idiom as the scheduled_for index above, and it MUST
+        // match DeploymentStatusExtensions.InFlightAfterClaim or Postgres won't
+        // use it for the IN (...) predicate) keeps it tiny: that set is bounded by
+        // the node concurrency cap × node count plus any parked offline drops, so
+        // the index stays a handful of rows however long the history grows.
         builder.HasIndex(x => new { x.ProjectId, x.EnvironmentId, x.TenantId })
             .HasDatabaseName("ix_server_tasks_running_deployment_peer")
-            .HasFilter("status = 1 AND kind = 0");
+            .HasFilter("status IN (1, 5) AND kind = 0");
 
         // Inert future prompted-variable values.
         builder.Property(x => x.FormValues).HasColumnType("jsonb");

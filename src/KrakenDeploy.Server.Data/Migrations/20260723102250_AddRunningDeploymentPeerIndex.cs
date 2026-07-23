@@ -14,7 +14,7 @@ namespace KrakenDeploy.Server.Data.Migrations
                 name: "ix_server_tasks_running_deployment_peer",
                 table: "server_tasks",
                 columns: new[] { "project_id", "environment_id", "tenant_id" },
-                filter: "status = 1 AND kind = 0");
+                filter: "status IN (1, 5) AND kind = 0");
         }
 
         /// <inheritdoc />

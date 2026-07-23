@@ -238,7 +238,7 @@ public sealed class DeploymentWorker(
             && await db.ServerTasks
                 .IgnoreQueryFilters()
                 .AnyAsync(
-                    ServerTaskLease.RunningDeploymentPeerPredicate(
+                    ServerTaskLease.InFlightDeploymentPeerPredicate(
                         deploymentId, row.ProjectId, row.EnvironmentId, row.TenantId),
                     ct)
                 .ConfigureAwait(false);

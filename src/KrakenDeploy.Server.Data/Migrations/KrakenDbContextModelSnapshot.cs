@@ -804,7 +804,7 @@ namespace KrakenDeploy.Server.Data.Migrations
 
                     b.HasIndex("ProjectId", "EnvironmentId", "TenantId")
                         .HasDatabaseName("ix_server_tasks_running_deployment_peer")
-                        .HasFilter("status = 1 AND kind = 0");
+                        .HasFilter("status IN (1, 5) AND kind = 0");
 
                     b.ToTable("server_tasks", null, t =>
                         {

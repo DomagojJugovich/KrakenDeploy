@@ -116,6 +116,38 @@ public sealed class ServerTaskLeaseTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task PendingOfflineResult_peer_blocks_a_same_key_claim_until_terminal()
+    {
+        // A same-key offline-drop deployment parked at PendingOfflineResult is
+        // claimed-but-NOT-terminal — it still holds the (project,env,tenant) slot,
+        // so a new deployment of the key must wait (not just for Running peers).
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var key = await SeedSharedKeyAsync(harness);
+        var parked = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets);
+        var next   = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets);
+
+        await using var db = postgres.CreateContext();
+        (await ServerTaskLease.TryClaimAsync(db, parked, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed);
+        // Move the claimed deployment to the parked offline state (non-terminal).
+        await db.ServerTasks.IgnoreQueryFilters().Where(t => t.Id == parked)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(t => t.Status, DeploymentStatus.PendingOfflineResult));
+
+        (await ServerTaskLease.TryClaimAsync(db, next, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.SerializationBlocked,
+                "a parked offline-drop deployment (PendingOfflineResult) is non-terminal and " +
+                "still holds the key");
+        (await StatusOf(db, next)).Should().Be(DeploymentStatus.Queued);
+
+        // Only once the parked deployment reaches a TERMINAL state does the key free.
+        await db.ServerTasks.IgnoreQueryFilters().Where(t => t.Id == parked)
+            .ExecuteUpdateAsync(s => s.SetProperty(t => t.Status, DeploymentStatus.Succeeded));
+        (await ServerTaskLease.TryClaimAsync(db, next, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed);
+    }
+
+    [Fact]
     public async Task Different_tenants_of_same_project_env_claim_in_parallel()
     {
         await using var harness = new OrchestratorTestHarness(postgres);

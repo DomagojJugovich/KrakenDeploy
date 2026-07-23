@@ -357,14 +357,17 @@ Two properties to be aware of:
   other's liveness.
 - **Deployment serialization by (project, environment, tenant) — F1.** A
   deployment is claimed only when no OTHER `Deployment` of the same
-  `(ProjectId, EnvironmentId, TenantId)` is `Running` (Octopus-parity "one
-  deployment per project/environment/tenant"). A NULL tenant is its **own** key:
-  untenanted deployments serialize among themselves, while different tenants of
-  the same project+environment proceed in parallel. Enforced at **claim** time in
-  `ServerTaskLease.TryClaimAsync`: for a deployment the claim runs inside
-  `pg_advisory_xact_lock(hash64(project, env, tenant))` — a blocking,
-  transaction-scoped lock — and re-checks the "no running peer" predicate
-  (`RunningDeploymentPeerPredicate`) as a **separate statement**, so two
+  `(ProjectId, EnvironmentId, TenantId)` is **in-flight** — claimed but not yet
+  terminal, i.e. `Running` OR a parked offline-drop `PendingOfflineResult`
+  (`DeploymentStatusExtensions.InFlightAfterClaim`; Octopus-parity "one deployment
+  per project/environment/tenant"). A parked offline-drop deployment still holds
+  the key until its result is imported or it is cancelled. A NULL tenant is its
+  **own** key: untenanted deployments serialize among themselves, while different
+  tenants of the same project+environment proceed in parallel. Enforced at
+  **claim** time in `ServerTaskLease.TryClaimAsync`: for a deployment the claim
+  runs inside `pg_advisory_xact_lock(hash64(project, env, tenant))` — a blocking,
+  transaction-scoped lock — and re-checks the "no in-flight peer" predicate
+  (`InFlightDeploymentPeerPredicate`) as a **separate statement**, so two
   concurrent claimants of one key cannot both see "no peer" and both win: the
   lock-loser blocks until the winner commits, then its fresh READ COMMITTED
   snapshot sees the winner's `Running` row and is refused

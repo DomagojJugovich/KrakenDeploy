@@ -375,20 +375,21 @@ public class DeploymentService(
     /// <summary>
     /// F1 read-side helper — is a <c>Queued</c> deployment blocked by the
     /// (project, environment, tenant) serialization rule, i.e. is another
-    /// deployment of the same key currently <c>Running</c>? Powers the
-    /// DeploymentDetail queue-reason banner. Uses the SAME predicate the claim
-    /// enforces (<see cref="ServerTaskLease.RunningDeploymentPeerPredicate"/>) so
-    /// the shown reason can never drift from the actual gate. Space-scoped by the
-    /// global query filter (same-key deployments share one Space); no new state.
+    /// deployment of the same key currently in-flight (claimed but not terminal —
+    /// <c>Running</c> or a parked offline-drop <c>PendingOfflineResult</c>)?
+    /// Powers the DeploymentDetail queue-reason banner. Uses the SAME predicate
+    /// the claim enforces (<see cref="ServerTaskLease.InFlightDeploymentPeerPredicate"/>)
+    /// so the shown reason can never drift from the actual gate. Space-scoped by
+    /// the global query filter (same-key deployments share one Space); no new state.
     /// </summary>
-    public async Task<bool> HasRunningPeerAsync(
+    public async Task<bool> HasInFlightPeerAsync(
         Guid queuedDeploymentId, Guid projectId, Guid environmentId, Guid? tenantId,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         return await db.ServerTasks
             .AnyAsync(
-                ServerTaskLease.RunningDeploymentPeerPredicate(
+                ServerTaskLease.InFlightDeploymentPeerPredicate(
                     queuedDeploymentId, projectId, environmentId, tenantId),
                 ct)
             .ConfigureAwait(false);

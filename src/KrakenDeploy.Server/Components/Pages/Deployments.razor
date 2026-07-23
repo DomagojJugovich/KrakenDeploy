@@ -256,12 +256,15 @@
     // F1 — the queue-wait reason for a Queued deployment blocked by the
     // (project, environment, tenant) serialization rule. Computed in-memory over
     // the already-loaded _all set (which holds every deployment in the Space,
-    // including the Running peers), so there is no per-row DB round-trip. Mirrors
-    // ServerTaskLease.RunningDeploymentPeerPredicate (null tenant is its own key
+    // including the in-flight peers), so there is no per-row DB round-trip. Shares
+    // the exact status set the claim enforces
+    // (DeploymentStatusExtensions.InFlightAfterClaim) — so if that set changes the
+    // list can't drift — and mirrors the key comparison of
+    // ServerTaskLease.InFlightDeploymentPeerPredicate (null tenant is its own key
     // via the == comparison).
     private string? QueueWaitReason(Deployment d)
     {
-        if (d.Status != DeploymentStatus.Queued || !IsBlockedByRunningPeer(d))
+        if (d.Status != DeploymentStatus.Queued || !IsBlockedByInFlightPeer(d))
         {
             return null;
         }
@@ -270,9 +273,9 @@
         return $"Waiting: another deployment of {project} to {env} is running.";
     }
 
-    private bool IsBlockedByRunningPeer(Deployment d)
+    private bool IsBlockedByInFlightPeer(Deployment d)
         => _all.Any(o => o.Id != d.Id
-            && o.Status == DeploymentStatus.Running
+            && DeploymentStatusExtensions.InFlightAfterClaim.Contains(o.Status)
             && o.ProjectId == d.ProjectId
             && o.EnvironmentId == d.EnvironmentId
             && o.TenantId == d.TenantId);
