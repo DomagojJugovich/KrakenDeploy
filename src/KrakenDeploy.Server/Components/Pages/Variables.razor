@@ -9,6 +9,7 @@
 @using KrakenDeploy.Server.Core.Domain.Targets
 @using KrakenDeploy.Server.Core.Domain.Channels
 @using KrakenDeploy.Server.Core.Domain.Projects
+@using KrakenDeploy.Server.Core.Domain.Tags
 @inject ProjectService ProjectSvc
 @inject VariableService VariableSvc
 @inject EnvironmentService EnvironmentSvc
@@ -16,6 +17,7 @@
 @inject TargetService TargetSvc
 @inject ChannelService ChannelSvc
 @inject ProcessService ProcessSvc
+@inject TagService TagSvc
 @inject DialogService Dialog
 @inject ContextMenuService ContextMenu
 @inject NotificationService Notifications
@@ -25,184 +27,280 @@
 <PageTitle>Variables - KrakenDeploy</PageTitle>
 
 <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
-                 JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-3">
-        <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="1rem">
-            <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
-                Project Variables
-            </RadzenText>
-            <RadzenStack Orientation="Orientation.Horizontal" Gap="0">
-                <RadzenButton Text="Edit" Size="ButtonSize.Small"
-                              ButtonStyle="@(_mode == VarMode.Edit ? ButtonStyle.Primary : ButtonStyle.Light)"
-                              Click="@(() => _mode = VarMode.Edit)" />
-                <RadzenButton Text="Preview" Size="ButtonSize.Small"
-                              ButtonStyle="@(_mode == VarMode.Preview ? ButtonStyle.Primary : ButtonStyle.Light)"
-                              Click="@(() => _mode = VarMode.Preview)" />
-            </RadzenStack>
+             JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-3">
+    <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="1rem">
+        <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H2" class="rz-mb-0">
+            Variables
+        </RadzenText>
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0">
+            <RadzenButton Text="Edit" Size="ButtonSize.Small"
+                          ButtonStyle="@(_mode == VarMode.Edit ? ButtonStyle.Primary : ButtonStyle.Light)"
+                          Click="@(() => _mode = VarMode.Edit)" />
+            <RadzenButton Text="Preview" Size="ButtonSize.Small"
+                          ButtonStyle="@(_mode == VarMode.Preview ? ButtonStyle.Primary : ButtonStyle.Light)"
+                          Click="@(() => _mode = VarMode.Preview)" />
         </RadzenStack>
-        @if (_mode == VarMode.Edit)
+        @if (_hasFetched)
         {
-            <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
-                <RequirePermission Permission="Permission.VariableEdit">
-                    <RadzenButton Icon="unfold_less" Text="Collapse all"
-                                  ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
-                                  Click="@(() => SetAllExpanded(false))" />
-                    <RadzenButton Icon="unfold_more" Text="Expand all"
-                                  ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
-                                  Click="@(() => SetAllExpanded(true))" />
-                </RequirePermission>
-            </RadzenStack>
+            <RadzenBadge Text="@($"{_variables.Count} variables")" BadgeStyle="BadgeStyle.Light" IsPill="true" />
         }
     </RadzenStack>
-
-    @if (_loaded)
+    @if (_mode == VarMode.Edit && _hasFetched)
     {
-        <div class="kraken-var-filter-bar rz-mb-3">
-            <RadzenDropDown TValue="Guid?" Value="@_selectedProjectId"
-                            ValueChanged="@(async (Guid? v) => await OnProjectChangedAsync(v))"
-                            Data="@_projects" TextProperty="Name" ValueProperty="Id"
-                            AllowFiltering="true"
-                            FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                            Placeholder="Select project…" Style="width: 220px;" />
-        </div>
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+            <RadzenButton Icon="unfold_less" Text="Collapse all"
+                          ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                          Click="@(() => SetAllExpanded(false))" />
+            <RadzenButton Icon="unfold_more" Text="Expand all"
+                          ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                          Click="@(() => SetAllExpanded(true))" />
+        </RadzenStack>
     }
+</RadzenStack>
 
-    @if (_loaded && _selectedProjectId.HasValue && _mode == VarMode.Edit)
-    {
-    @* ÔöÇÔöÇ Filter bar ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ *@
-    <div class="kraken-var-filter-bar rz-mb-3">
-        <RadzenDropDown TValue="Guid?" @bind-Value="_filterEnvId"
+@if (!_loaded)
+{
+    <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading...</RadzenText>
+    return;
+}
+
+@if (_loadError is not null)
+{
+    <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false">
+        Failed to load: @_loadError
+    </RadzenAlert>
+    return;
+}
+
+@if (_mode == VarMode.Edit)
+{
+    @* ── Main filter row ─────────────────────────────────────────────── *@
+    <div class="kraken-var-filter-bar rz-mb-2">
+        <RadzenDropDown TValue="Guid?" Value="@_filterProjectId"
+                        ValueChanged="@(async (Guid? v) => await OnFilterChangedAsync(() => _filterProjectId = v))"
+                        Data="@_projects" TextProperty="Name" ValueProperty="Id"
+                        AllowFiltering="true"
+                        FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                        Placeholder="Project" Style="width: 180px;" />
+        <RadzenDropDown TValue="Guid?" Value="@_filterEnvId"
+                        ValueChanged="@(async (Guid? v) => await OnFilterChangedAsync(() => _filterEnvId = v))"
                         Data="@_environments" TextProperty="Name" ValueProperty="Id"
                         AllowFiltering="true"
                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                        Placeholder="All environments" Style="width: 180px;" />
-        <RadzenDropDown TValue="Guid?" @bind-Value="_filterTenantId"
+                        Placeholder="Environment" Style="width: 160px;" />
+        <RadzenDropDown TValue="Guid?" Value="@_filterTenantId"
+                        ValueChanged="@(async (Guid? v) => await OnFilterChangedAsync(() => _filterTenantId = v))"
                         Data="@_tenants" TextProperty="Name" ValueProperty="Id"
                         AllowFiltering="true"
                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                        Placeholder="All tenants" Style="width: 160px;" />
+                        Placeholder="Tenant" Style="width: 150px;" />
         <RadzenDropDown TValue="string" Value="@_filterRole"
-                        ValueChanged="@OnFilterRoleChanged"
+                        ValueChanged="@(async (string v) => await OnFilterChangedAsync(() => _filterRole = v ?? ""))"
                         Data="@_availableRoles"
                         AllowFiltering="true"
                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                        Placeholder="All roles" Style="width: 150px;" />
-        <RadzenDropDown TValue="Guid?" @bind-Value="_filterStepId"
+                        Placeholder="Role" Style="width: 130px;" />
+        <RadzenDropDown TValue="Guid?" Value="@_filterStepId"
+                        ValueChanged="@(async (Guid? v) => await OnFilterChangedAsync(() => _filterStepId = v))"
                         Data="@_projectStepNames" TextProperty="Name" ValueProperty="Id"
                         AllowFiltering="true"
                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                        Placeholder="All steps" Style="width: 170px;" />
-        @if (_filterEnvId.HasValue || _filterTenantId.HasValue
-             || _filterRole.Length > 0 || _filterStepId.HasValue)
+                        Placeholder="Step" Style="width: 150px;"
+                        Disabled="@(!_filterProjectId.HasValue)" />
+        <RadzenTextBox @bind-Value="_filterName" Placeholder="Name search..."
+                       Style="width: 160px;"
+                       @onkeyup="OnNameKeyUp" />
+        <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.5rem">
+            <RadzenCheckBox TValue="bool" @bind-Value="_autoApply" Name="autoApply" />
+            <RadzenLabel Text="Auto" Component="autoApply" Style="cursor:pointer; font-size:13px;" />
+        </RadzenStack>
+        @if (!_autoApply)
         {
-            <RadzenButton Icon="filter_alt_off" Text="Clear"
-                          ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
-                          Click="ClearFilters" />
+            <RadzenButton Text="Apply" Icon="search" ButtonStyle="ButtonStyle.Primary"
+                          Size="ButtonSize.Small" Click="FetchAsync"
+                          Disabled="@(!HasAnyFilter)" />
         }
+        <button type="button" class="kraken-vargrid-link" style="font-size:12px;"
+                @onclick="@(() => _showMoreFilters = !_showMoreFilters)">
+            @(_showMoreFilters ? "Less filters" : "More filters")
+        </button>
     </div>
+
+    @* ── Optional filters row (collapsible) ──────────────────────────── *@
+    @if (_showMoreFilters)
+    {
+        <div class="kraken-var-filter-bar rz-mb-2" style="border-style: dashed;">
+            <RadzenDropDown TValue="Guid?" Value="@_filterTargetId"
+                            ValueChanged="@(async (Guid? v) => await OnFilterChangedAsync(() => _filterTargetId = v))"
+                            Data="@_targets" TextProperty="Name" ValueProperty="Id"
+                            AllowFiltering="true"
+                            FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                            Placeholder="Target" Style="width: 160px;" />
+            <RadzenDropDown TValue="Guid?" Value="@_filterProjectTagId"
+                            ValueChanged="@(async (Guid? v) => await OnFilterChangedAsync(() => _filterProjectTagId = v))"
+                            Data="@_projectTagOptions" TextProperty="Label" ValueProperty="Id"
+                            AllowFiltering="true"
+                            FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                            Placeholder="Project Tag" Style="width: 160px;" />
+            <RadzenDropDown TValue="Guid?" Value="@_filterEnvTagId"
+                            ValueChanged="@(async (Guid? v) => await OnFilterChangedAsync(() => _filterEnvTagId = v))"
+                            Data="@_envTagOptions" TextProperty="Label" ValueProperty="Id"
+                            AllowFiltering="true"
+                            FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                            Placeholder="Environment Tag" Style="width: 170px;" />
+            <RadzenDropDown TValue="Guid?" Value="@_filterTenantTagSetId"
+                            ValueChanged="@(async (Guid? v) => await OnFilterChangedAsync(() => _filterTenantTagSetId = v))"
+                            Data="@_tenantTagSetOptions" TextProperty="Label" ValueProperty="Id"
+                            AllowFiltering="true"
+                            FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                            Placeholder="Tenant Tag Set" Style="width: 170px;" />
+        </div>
     }
 
-    @if (!_loaded)
+    @* ── Active filter chips ─────────────────────────────────────────── *@
+    @if (HasAnyFilter)
+    {
+        <div class="rz-mb-2" style="display:flex; flex-wrap:wrap; gap:4px; align-items:center;">
+            @if (_filterProjectId.HasValue)
+            {
+                <FilterChip Label="@($"Project: {ProjectName(_filterProjectId.Value)}")"
+                            OnRemove="@(() => ClearFilterAsync(() => _filterProjectId = null))" />
+            }
+            @if (_filterEnvId.HasValue)
+            {
+                <FilterChip Label="@($"Env: {EnvName(_filterEnvId.Value)}")"
+                            OnRemove="@(() => ClearFilterAsync(() => _filterEnvId = null))" />
+            }
+            @if (_filterTenantId.HasValue)
+            {
+                <FilterChip Label="@($"Tenant: {TenantName(_filterTenantId.Value)}")"
+                            OnRemove="@(() => ClearFilterAsync(() => _filterTenantId = null))" />
+            }
+            @if (_filterRole.Length > 0)
+            {
+                <FilterChip Label="@($"Role: {_filterRole}")"
+                            OnRemove="@(() => ClearFilterAsync(() => _filterRole = ""))" />
+            }
+            @if (_filterStepId.HasValue)
+            {
+                <FilterChip Label="@($"Step: {StepName(_filterStepId.Value)}")"
+                            OnRemove="@(() => ClearFilterAsync(() => _filterStepId = null))" />
+            }
+            @if (_filterName.Length > 0)
+            {
+                <FilterChip Label="@($"Name: {_filterName}")"
+                            OnRemove="@(() => ClearFilterAsync(() => _filterName = ""))" />
+            }
+            @if (_filterTargetId.HasValue)
+            {
+                <FilterChip Label="@($"Target: {TargetName(_filterTargetId.Value)}")"
+                            OnRemove="@(() => ClearFilterAsync(() => _filterTargetId = null))" />
+            }
+            @if (_filterProjectTagId.HasValue)
+            {
+                <FilterChip Label="@($"ProjTag: {TagLabel(_projectTagOptions, _filterProjectTagId.Value)}")"
+                            OnRemove="@(() => ClearFilterAsync(() => _filterProjectTagId = null))" />
+            }
+            @if (_filterEnvTagId.HasValue)
+            {
+                <FilterChip Label="@($"EnvTag: {TagLabel(_envTagOptions, _filterEnvTagId.Value)}")"
+                            OnRemove="@(() => ClearFilterAsync(() => _filterEnvTagId = null))" />
+            }
+            @if (_filterTenantTagSetId.HasValue)
+            {
+                <FilterChip Label="@($"TenantTag: {TagLabel(_tenantTagSetOptions, _filterTenantTagSetId.Value)}")"
+                            OnRemove="@(() => ClearFilterAsync(() => _filterTenantTagSetId = null))" />
+            }
+            <button type="button" class="kraken-vargrid-link" style="font-size:12px;"
+                    @onclick="ClearAllFiltersAsync">Clear all</button>
+        </div>
+    }
+
+    @* ── Content area ────────────────────────────────────────────────── *@
+    @if (_fetching)
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Fetching variables...</RadzenText>
+    }
+    else if (!_hasFetched && !HasAnyFilter)
     {
         <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-            Loading variables...
+            Set at least one filter above, then @( _autoApply ? "results will appear automatically." : "click Apply.")
         </RadzenText>
     }
-    else if (_loadError is not null)
-    {
-        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false">
-            Failed to load variables: @_loadError
-        </RadzenAlert>
-    }
-    else if (!_selectedProjectId.HasValue)
+    else if (!_hasFetched && HasAnyFilter && !_autoApply)
     {
         <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-            Select a project above to view and edit its variables, or use Preview mode
-            to resolve variables for a deployment context.
+            Filters changed. Click Apply to fetch.
         </RadzenText>
     }
-    else if (_project is null)
+    else if (_variables.Count == 0 && _hasFetched)
     {
-        <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
-            Project was not found.
-        </RadzenAlert>
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            No variables match the current filters.
+        </RadzenText>
     }
-    else
+    else if (_hasFetched)
     {
-        @if (_mode == VarMode.Edit)
+        @* ── New variable row (only when a project is selected) ──────── *@
+        @if (_filterProjectId.HasValue)
         {
-        @* ÔöÇÔöÇ Always-visible "new variable" row above the grid ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ *@
-        <RequirePermission Permission="Permission.VariableEdit">
-            <div class="kraken-newvar-bar">
-                <div class="kraken-newvar-name">
-                    <RadzenLabel Text="Name" />
-                    <RadzenTextBox @bind-Value="_newName"
-                                   Placeholder="Enter new variable"
-                                   Style="width: 100%;" />
+            <RequirePermission Permission="Permission.VariableEdit">
+                <div class="kraken-newvar-bar">
+                    <div class="kraken-newvar-name">
+                        <RadzenLabel Text="Name" />
+                        <RadzenTextBox @bind-Value="_newName" Placeholder="Enter new variable" Style="width: 100%;" />
+                    </div>
+                    <div class="kraken-newvar-value">
+                        <RadzenLabel Text="Value" />
+                        @if (_newType == VariableType.Sensitive)
+                        {
+                            <RadzenPassword @bind-Value="_newValue" Placeholder="Enter value" Style="width: 100%;" />
+                        }
+                        else if (_newType == VariableType.StringArray)
+                        {
+                            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.4rem">
+                                <RadzenTextBox @bind-Value="_newValue" Placeholder='["a","b"] or a, b' Style="flex: 1;" />
+                                <RadzenButton Icon="format_list_bulleted" ButtonStyle="ButtonStyle.Light"
+                                              Size="ButtonSize.Small" Click="@(args => OpenArrayEditorForNew(args))" title="Edit as list" />
+                            </RadzenStack>
+                        }
+                        else
+                        {
+                            <RadzenTextBox @bind-Value="_newValue" Placeholder="Enter value" Style="width: 100%;" />
+                        }
+                    </div>
+                    <div class="kraken-newvar-type">
+                        <RadzenLabel Text="Type" />
+                        <RadzenDropDown TValue="VariableType" @bind-Value="_newType"
+                                        Data="@_typeOptions" TextProperty="Label" ValueProperty="Value" Style="width: 100%;" />
+                    </div>
+                    <div class="kraken-newvar-scope">
+                        <RadzenLabel Text="Scope" />
+                        <button type="button" class="kraken-newvar-scope-btn" @onclick="@(args => OpenNewScopePopup(args))">
+                            @ScopeLabelForNew()
+                        </button>
+                    </div>
+                    <div class="kraken-newvar-actions">
+                        <RadzenButton Text="Add" Icon="add_circle_outline" ButtonStyle="ButtonStyle.Primary"
+                                      Size="ButtonSize.Small" Disabled="@(string.IsNullOrWhiteSpace(_newName))"
+                                      Click="AddNewVariableAsync" />
+                    </div>
                 </div>
-                <div class="kraken-newvar-value">
-                    <RadzenLabel Text="Value" />
-                    @if (_newType == VariableType.Sensitive)
-                    {
-                        <RadzenPassword @bind-Value="_newValue"
-                                        Placeholder="Enter value"
-                                        Style="width: 100%;" />
-                    }
-                    else if (_newType == VariableType.StringArray)
-                    {
-                        <RadzenStack Orientation="Orientation.Horizontal"
-                                     AlignItems="AlignItems.Center" Gap="0.4rem">
-                            <RadzenTextBox @bind-Value="_newValue"
-                                           Placeholder='["a","b"] or a, b'
-                                           Style="flex: 1;" />
-                            <RadzenButton Icon="format_list_bulleted"
-                                          ButtonStyle="ButtonStyle.Light"
-                                          Size="ButtonSize.Small"
-                                          Click="@(args => OpenArrayEditorForNew(args))"
-                                          title="Edit as list" />
-                        </RadzenStack>
-                    }
-                    else
-                    {
-                        <RadzenTextBox @bind-Value="_newValue"
-                                       Placeholder="Enter value"
-                                       Style="width: 100%;" />
-                    }
-                </div>
-                <div class="kraken-newvar-type">
-                    <RadzenLabel Text="Type" />
-                    <RadzenDropDown TValue="VariableType" @bind-Value="_newType"
-                                    Data="@_typeOptions" TextProperty="Label"
-                                    ValueProperty="Value" Style="width: 100%;" />
-                </div>
-                <div class="kraken-newvar-scope">
-                    <RadzenLabel Text="Scope" />
-                    <button type="button" class="kraken-newvar-scope-btn"
-                            @onclick="@(args => OpenNewScopePopup(args))">
-                        @ScopeLabelForNew()
-                    </button>
-                </div>
-                <div class="kraken-newvar-actions">
-                    <RadzenButton Text="Add" Icon="add_circle_outline"
-                                  ButtonStyle="ButtonStyle.Primary"
-                                  Size="ButtonSize.Small"
-                                  Disabled="@(string.IsNullOrWhiteSpace(_newName))"
-                                  Click="AddNewVariableAsync" />
-                </div>
-            </div>
-        </RequirePermission>
+            </RequirePermission>
+        }
 
-        <KrakenGrid SettingsKey="project-variables" @ref="_grid" Data="@_filteredVariables" TItem="Variable"
-                        AllowFiltering="true" FilterMode="FilterMode.Simple"
-                        AllowSorting="true" AllowPaging="true" PageSize="50"
-                        AllowGrouping="true" Groups="@_groups"
-                        AllGroupsExpanded="@_allExpanded"
-                        AllGroupsExpandedChanged="@(v => _allExpanded = v)"
-                        AllowColumnResize="true"
-                        EditMode="DataGridEditMode.Single"
-                        CellRender="@OnCellRender"
-                        CellClick="@OnCellClickAsync"
-                        RowUpdate="@OnRowUpdateAsync"
-                        EmptyText="No variables yet ÔÇö use the row above to add one.">
+        <KrakenGrid SettingsKey="all-variables" @ref="_grid" Data="@_variables" TItem="Variable"
+                    AllowFiltering="true" FilterMode="FilterMode.Simple"
+                    AllowSorting="true" AllowPaging="true" PageSize="50"
+                    AllowGrouping="true" Groups="@_groups"
+                    AllGroupsExpanded="@_allExpanded"
+                    AllGroupsExpandedChanged="@(v => _allExpanded = v)"
+                    AllowColumnResize="true"
+                    EditMode="DataGridEditMode.Single"
+                    CellRender="@OnCellRender"
+                    CellClick="@OnCellClickAsync"
+                    RowUpdate="@OnRowUpdateAsync"
+                    EmptyText="No variables match.">
             <GroupHeaderTemplate Context="group">
                 <strong>@group.Data.Key</strong>
                 <span class="rz-color-secondary rz-ml-2">
@@ -210,8 +308,7 @@
                 </span>
             </GroupHeaderTemplate>
             <Columns>
-                <RadzenDataGridColumn TItem="Variable" Property="Name" Title="Name"
-                                      Width="220px">
+                <RadzenDataGridColumn TItem="Variable" Property="Name" Title="Name" Width="220px">
                     <Template Context="v">
                         @if (IsLocked(v))
                         {
@@ -220,30 +317,23 @@
                         @v.Name
                     </Template>
                     <EditTemplate Context="v">
-                        <RadzenTextBox @bind-Value="v.Name" Style="width: 100%;"
-                                       Placeholder="Enter new variable" />
+                        <RadzenTextBox @bind-Value="v.Name" Style="width: 100%;" Placeholder="Variable name" />
                     </EditTemplate>
                 </RadzenDataGridColumn>
 
-                <RadzenDataGridColumn TItem="Variable" Property="Value" Title="Value"
-                                      Sortable="false">
+                <RadzenDataGridColumn TItem="Variable" Property="Value" Title="Value" Sortable="false">
                     <Template Context="v">
                         @if (v.Type == VariableType.Sensitive)
                         {
-                            <RadzenBadge Text="*** sensitive ***"
-                                         BadgeStyle="BadgeStyle.Warning" IsPill="true" />
+                            <RadzenBadge Text="*** sensitive ***" BadgeStyle="BadgeStyle.Warning" IsPill="true" />
                         }
                         else if (v.Type == VariableType.StringArray)
                         {
-                            <RadzenStack Orientation="Orientation.Horizontal"
-                                         AlignItems="AlignItems.Center" Gap="0.4rem">
+                            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.4rem">
                                 <code class="kraken-var-value">@FormatArrayPreview(v.Value)</code>
-                                <RadzenButton Icon="format_list_bulleted"
-                                              ButtonStyle="ButtonStyle.Light"
-                                              Size="ButtonSize.ExtraSmall"
-                                              Click="@(args => OpenArrayEditor(args, v))"
-                                              @onclick:stopPropagation="true"
-                                              title="Edit as list" />
+                                <RadzenButton Icon="format_list_bulleted" ButtonStyle="ButtonStyle.Light"
+                                              Size="ButtonSize.ExtraSmall" Click="@(args => OpenArrayEditor(args, v))"
+                                              @onclick:stopPropagation="true" title="Edit as list" />
                             </RadzenStack>
                         }
                         else
@@ -254,58 +344,42 @@
                     <EditTemplate Context="v">
                         @if (v.Type == VariableType.Sensitive)
                         {
-                            <RadzenPassword @bind-Value="v.Value" Style="width: 100%;"
-                                            Placeholder="(retype to change)" />
+                            <RadzenPassword @bind-Value="v.Value" Style="width: 100%;" Placeholder="(retype to change)" />
                         }
                         else if (v.Type == VariableType.StringArray)
                         {
-                            <RadzenStack Orientation="Orientation.Horizontal"
-                                         AlignItems="AlignItems.Center" Gap="0.4rem">
-                                <RadzenTextBox @bind-Value="v.Value" Style="flex: 1;"
-                                               Placeholder='["a","b"] or a, b' />
-                                <RadzenButton Icon="format_list_bulleted"
-                                              ButtonStyle="ButtonStyle.Light"
-                                              Size="ButtonSize.ExtraSmall"
-                                              Click="@(args => OpenArrayEditor(args, v))"
-                                              @onclick:stopPropagation="true"
-                                              title="Edit as list" />
+                            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.4rem">
+                                <RadzenTextBox @bind-Value="v.Value" Style="flex: 1;" Placeholder='["a","b"] or a, b' />
+                                <RadzenButton Icon="format_list_bulleted" ButtonStyle="ButtonStyle.Light"
+                                              Size="ButtonSize.ExtraSmall" Click="@(args => OpenArrayEditor(args, v))"
+                                              @onclick:stopPropagation="true" title="Edit as list" />
                             </RadzenStack>
                         }
                         else
                         {
-                            <RadzenTextBox @bind-Value="v.Value" Style="width: 100%;"
-                                           Placeholder="Enter value" />
+                            <RadzenTextBox @bind-Value="v.Value" Style="width: 100%;" Placeholder="Enter value" />
                         }
                     </EditTemplate>
                 </RadzenDataGridColumn>
 
-                <RadzenDataGridColumn TItem="Variable" Property="Type" Title="Type"
-                                      Width="120px">
+                <RadzenDataGridColumn TItem="Variable" Property="Type" Title="Type" Width="110px">
                     <Template Context="v">@v.Type</Template>
                     <EditTemplate Context="v">
                         <RadzenDropDown TValue="VariableType" @bind-Value="v.Type"
-                                        Data="@_typeOptions" TextProperty="Label"
-                                        ValueProperty="Value" Style="width: 100%;" />
+                                        Data="@_typeOptions" TextProperty="Label" ValueProperty="Value" Style="width: 100%;" />
                     </EditTemplate>
                 </RadzenDataGridColumn>
 
-                <RadzenDataGridColumn TItem="Variable" Title="Source" Width="140px"
-                                      Sortable="false" Filterable="false">
+                <RadzenDataGridColumn TItem="Variable" Title="Source" Width="140px" Sortable="false" Filterable="false">
                     <Template Context="v">
-                        <span class="@(IsLocked(v) ? "rz-color-secondary" : "")">
-                            @SourceLabel(v)
-                        </span>
+                        <span class="@(IsLocked(v) ? "rz-color-secondary" : "")">@SourceLabel(v)</span>
                     </Template>
                 </RadzenDataGridColumn>
 
-                <RadzenDataGridColumn TItem="Variable" Title="Scope" Sortable="false"
-                                      Filterable="false">
-                    @* No EditTemplate ÔÇö scope is edited via the popup, never inline. *@
+                <RadzenDataGridColumn TItem="Variable" Title="Scope" Sortable="false" Filterable="false">
                     <Template Context="v">
                         <button type="button"
-                                class="@(v.Scope.IsUnscoped
-                                         ? "kraken-vargrid-link kraken-scope-unbound-btn"
-                                         : "kraken-scope-chip-btn")"
+                                class="@(v.Scope.IsUnscoped ? "kraken-vargrid-link kraken-scope-unbound-btn" : "kraken-scope-chip-btn")"
                                 @onclick="@(args => OpenScopePopup(args, v))"
                                 @onclick:stopPropagation="true">
                             @if (v.Scope.IsUnscoped)
@@ -314,339 +388,264 @@
                             }
                             else
                             {
-                                <RadzenStack Orientation="Orientation.Horizontal"
-                                             Wrap="FlexWrap.Wrap" Gap="0.3rem"
-                                             AlignItems="AlignItems.Center">
+                                <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" Gap="0.3rem" AlignItems="AlignItems.Center">
                                     @if (v.Scope.EnvironmentId is { } envId)
                                     {
-                                        <RadzenBadge Text="@($"env: {EnvName(envId)}")"
-                                                     BadgeStyle="BadgeStyle.Info"
-                                                     IsPill="true" />
+                                        <RadzenBadge Text="@($"env: {EnvName(envId)}")" BadgeStyle="BadgeStyle.Info" IsPill="true" />
                                     }
                                     @if (v.Scope.TenantId is { } tenantId)
                                     {
-                                        <RadzenBadge Text="@($"tenant: {TenantName(tenantId)}")"
-                                                     BadgeStyle="BadgeStyle.Success"
-                                                     IsPill="true" />
+                                        <RadzenBadge Text="@($"tenant: {TenantName(tenantId)}")" BadgeStyle="BadgeStyle.Success" IsPill="true" />
                                     }
                                     @if (v.Scope.TargetId is { } targetId)
                                     {
-                                        <RadzenBadge Text="@($"target: {TargetName(targetId)}")"
-                                                     BadgeStyle="BadgeStyle.Secondary"
-                                                     IsPill="true" />
+                                        <RadzenBadge Text="@($"target: {TargetName(targetId)}")" BadgeStyle="BadgeStyle.Secondary" IsPill="true" />
                                     }
                                     @if (v.Scope.ChannelId is { } channelId)
                                     {
-                                        <RadzenBadge Text="@($"channel: {ChannelName(channelId)}")"
-                                                     BadgeStyle="BadgeStyle.Warning"
-                                                     IsPill="true" />
+                                        <RadzenBadge Text="@($"channel: {ChannelName(channelId)}")" BadgeStyle="BadgeStyle.Warning" IsPill="true" />
                                     }
                                     @if (v.Scope.ProcessStepId is { } stepId)
                                     {
-                                        <RadzenBadge Text="@($"step: {StepName(stepId)}")"
-                                                     BadgeStyle="BadgeStyle.Primary"
-                                                     IsPill="true" />
+                                        <RadzenBadge Text="@($"step: {StepName(stepId)}")" BadgeStyle="BadgeStyle.Primary" IsPill="true" />
                                     }
                                     @if (v.Scope.Roles is { Count: > 0 })
                                     {
                                         @foreach (var r in v.Scope.Roles)
                                         {
-                                            <RadzenBadge Text="@($"role: {r}")"
-                                                         BadgeStyle="BadgeStyle.Light"
-                                                         IsPill="true" />
+                                            <RadzenBadge Text="@($"role: {r}")" BadgeStyle="BadgeStyle.Light" IsPill="true" />
                                         }
                                     }
-                                    <RadzenIcon Icon="edit"
-                                                Style="font-size: 0.95rem; opacity: 0.55;" />
+                                    <RadzenIcon Icon="edit" Style="font-size: 0.95rem; opacity: 0.55;" />
                                 </RadzenStack>
                             }
                         </button>
                     </Template>
                 </RadzenDataGridColumn>
 
-                <RadzenDataGridColumn TItem="Variable" Title="" Width="140px"
-                                      Sortable="false" Filterable="false"
-                                      TextAlign="TextAlign.Right">
+                <RadzenDataGridColumn TItem="Variable" Title="" Width="140px" Sortable="false" Filterable="false" TextAlign="TextAlign.Right">
                     <Template Context="v">
                         @if (!IsLocked(v))
                         {
                             <RequirePermission Permission="Permission.VariableEdit">
-                                <RadzenButton Icon="more_vert"
-                                              ButtonStyle="ButtonStyle.Light"
-                                              Size="ButtonSize.ExtraSmall"
-                                              Click="@(args => ShowRowMenu(args, v))"
-                                              @onclick:stopPropagation="true" />
+                                <RadzenButton Icon="more_vert" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.ExtraSmall"
+                                              Click="@(args => ShowRowMenu(args, v))" @onclick:stopPropagation="true" />
                             </RequirePermission>
                         }
                     </Template>
                     <EditTemplate Context="v">
-                        <RadzenButton Icon="check" ButtonStyle="ButtonStyle.Success"
-                                      Size="ButtonSize.ExtraSmall"
-                                      Click="@(() => _grid.UpdateRow(v))"
-                                      @onclick:stopPropagation="true" />
-                        <RadzenButton Icon="close" ButtonStyle="ButtonStyle.Light"
-                                      Size="ButtonSize.ExtraSmall" class="rz-ml-1"
-                                      Click="@(() => CancelEditAsync(v))"
-                                      @onclick:stopPropagation="true" />
+                        <RadzenButton Icon="check" ButtonStyle="ButtonStyle.Success" Size="ButtonSize.ExtraSmall"
+                                      Click="@(() => _grid.UpdateRow(v))" @onclick:stopPropagation="true" />
+                        <RadzenButton Icon="close" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.ExtraSmall" class="rz-ml-1"
+                                      Click="@(() => CancelEditAsync(v))" @onclick:stopPropagation="true" />
                     </EditTemplate>
                 </RadzenDataGridColumn>
             </Columns>
         </KrakenGrid>
 
-        @* ÔöÇÔöÇ Included library sets ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ *@
-        <RadzenCard class="rz-mt-4">
-            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
-                         JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-2">
-                <RadzenText TextStyle="TextStyle.H6" class="rz-mb-0">
-                    Included Library Variable Sets
-                </RadzenText>
-                <RequirePermission Permission="Permission.VariableEdit">
-                    <RadzenButton Icon="add" Text="Include set"
-                                  ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
-                                  Click="OpenIncludeSetDialog" />
-                </RequirePermission>
-            </RadzenStack>
-            @if (_includedSets.Count == 0)
-            {
-                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-                    No library variable sets included. Variables from included sets
-                    appear above (read-only) and participate in deployment resolution.
-                </RadzenText>
-            }
-            else
-            {
+        @* ── Included library sets (only when project selected) ──────── *@
+        @if (_filterProjectId.HasValue && _includedSets.Count > 0)
+        {
+            <RadzenCard class="rz-mt-4">
+                <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                             JustifyContent="JustifyContent.SpaceBetween" class="rz-mb-2">
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-0">Included Library Variable Sets</RadzenText>
+                    <RequirePermission Permission="Permission.VariableEdit">
+                        <RadzenButton Icon="add" Text="Include set" ButtonStyle="ButtonStyle.Light"
+                                      Size="ButtonSize.Small" Click="OpenIncludeSetDialog" />
+                    </RequirePermission>
+                </RadzenStack>
                 <RadzenStack Gap="0.5rem">
                     @foreach (var set in _includedSets)
                     {
-                        <RadzenStack Orientation="Orientation.Horizontal"
-                                     AlignItems="AlignItems.Center"
-                                     JustifyContent="JustifyContent.SpaceBetween"
-                                     class="kraken-included-set-row">
-                            <RadzenStack Orientation="Orientation.Horizontal"
-                                         AlignItems="AlignItems.Center" Gap="0.5rem">
-                                <RadzenIcon Icon="library_books"
-                                            Style="font-size:1.1rem; opacity:0.6;" />
-                                <RadzenText TextStyle="TextStyle.Body2" class="rz-mb-0">
-                                    @set.Name
-                                </RadzenText>
-                                <RadzenBadge Text="@($"{set.Variables.Count} vars")"
-                                             BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                        <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center"
+                                     JustifyContent="JustifyContent.SpaceBetween" class="kraken-included-set-row">
+                            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.5rem">
+                                <RadzenIcon Icon="library_books" Style="font-size:1.1rem; opacity:0.6;" />
+                                <RadzenText TextStyle="TextStyle.Body2" class="rz-mb-0">@set.Name</RadzenText>
+                                <RadzenBadge Text="@($"{set.Variables.Count} vars")" BadgeStyle="BadgeStyle.Light" IsPill="true" />
                             </RadzenStack>
                             <RequirePermission Permission="Permission.VariableEdit">
-                                <RadzenButton Icon="link_off" Text="Remove"
-                                              ButtonStyle="ButtonStyle.Light"
-                                              Size="ButtonSize.Small"
-                                              Click="@(() => RemoveIncludedSetAsync(set.Id))" />
+                                <RadzenButton Icon="link_off" Text="Remove" ButtonStyle="ButtonStyle.Light"
+                                              Size="ButtonSize.Small" Click="@(() => RemoveIncludedSetAsync(set.Id))" />
                             </RequirePermission>
                         </RadzenStack>
                     }
                 </RadzenStack>
-            }
-        </RadzenCard>
-        }
-        else
-        {
-            @* ÔöÇÔöÇ Preview mode ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ *@
-            <RadzenCard class="rz-mb-3">
-                <RadzenText TextStyle="TextStyle.H6" class="rz-mb-2">
-                    Resolve variables for a deployment context
-                </RadzenText>
-                <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem"
-                             AlignItems="AlignItems.End" Wrap="FlexWrap.Wrap">
-                    <div>
-                        <RadzenLabel Text="Environment" />
-                        <RadzenDropDown TValue="Guid?" @bind-Value="_previewEnvId"
-                                        Data="@_environments" TextProperty="Name" ValueProperty="Id"
-                                        AllowFiltering="true"
-                                        FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                                        Placeholder="Select..." Style="width: 180px;" />
-                    </div>
-                    <div>
-                        <RadzenLabel Text="Target" />
-                        <RadzenDropDown TValue="Guid?" @bind-Value="_previewTargetId"
-                                        Data="@_targets" TextProperty="Name" ValueProperty="Id"
-                                        AllowFiltering="true"
-                                        FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                                        Placeholder="(any)" Style="width: 180px;" />
-                    </div>
-                    <div>
-                        <RadzenLabel Text="Tenant" />
-                        <RadzenDropDown TValue="Guid?" @bind-Value="_previewTenantId"
-                                        Data="@_tenants" TextProperty="Name" ValueProperty="Id"
-                                        AllowFiltering="true"
-                                        FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                                        Placeholder="(any)" Style="width: 160px;" />
-                    </div>
-                    <RadzenButton Text="Resolve" Icon="play_arrow"
-                                  ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
-                                  Disabled="@(!_previewEnvId.HasValue || !_selectedProjectId.HasValue)"
-                                  Click="RunPreviewAsync" />
-                </RadzenStack>
             </RadzenCard>
-
-            @if (_previewLoading)
-            {
-                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">ResolvingÔÇŽ</RadzenText>
-            }
-            else if (_previewResult is not null)
-            {
-                <RadzenCard>
-                    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-2">
-                        Resolved variables (@_previewResult.Count)
-                    </RadzenText>
-                    @if (_previewResult.Count == 0)
-                    {
-                        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-                            No variables match the selected context.
-                        </RadzenText>
-                    }
-                    else
-                    {
-                        <KrakenGrid SettingsKey="var-preview" Data="@_previewRows" TItem="PreviewRow"
-                                    AllowSorting="true" AllowPaging="true" PageSize="50"
-                                    AllowColumnResize="true" AllowFiltering="true"
-                                    FilterMode="FilterMode.Simple"
-                                    GridLines="DataGridGridLines.Horizontal">
-                            <Columns>
-                                <RadzenDataGridColumn TItem="PreviewRow" Property="Name" Title="Name" Width="280px" />
-                                <RadzenDataGridColumn TItem="PreviewRow" Property="Value" Title="Value">
-                                    <Template Context="r">
-                                        @if (r.Sensitive)
-                                        {
-                                            <RadzenBadge Text="*** sensitive ***"
-                                                         BadgeStyle="BadgeStyle.Warning" IsPill="true" />
-                                        }
-                                        else
-                                        {
-                                            <code class="kraken-var-value">@r.Value</code>
-                                        }
-                                    </Template>
-                                </RadzenDataGridColumn>
-                            </Columns>
-                        </KrakenGrid>
-                    }
-                </RadzenCard>
-            }
         }
     }
+}
+else
+{
+    @* ── Preview mode ────────────────────────────────────────────────── *@
+    <RadzenCard class="rz-mb-3">
+        <RadzenText TextStyle="TextStyle.H6" class="rz-mb-2">Resolve variables for a deployment context</RadzenText>
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem" AlignItems="AlignItems.End" Wrap="FlexWrap.Wrap">
+            <div>
+                <RadzenLabel Text="Project" />
+                <RadzenDropDown TValue="Guid?" @bind-Value="_previewProjectId"
+                                Data="@_projects" TextProperty="Name" ValueProperty="Id"
+                                AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                Placeholder="Select..." Style="width: 180px;" />
+            </div>
+            <div>
+                <RadzenLabel Text="Environment" />
+                <RadzenDropDown TValue="Guid?" @bind-Value="_previewEnvId"
+                                Data="@_environments" TextProperty="Name" ValueProperty="Id"
+                                AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                Placeholder="Select..." Style="width: 180px;" />
+            </div>
+            <div>
+                <RadzenLabel Text="Target" />
+                <RadzenDropDown TValue="Guid?" @bind-Value="_previewTargetId"
+                                Data="@_targets" TextProperty="Name" ValueProperty="Id"
+                                AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                Placeholder="(any)" Style="width: 180px;" />
+            </div>
+            <div>
+                <RadzenLabel Text="Tenant" />
+                <RadzenDropDown TValue="Guid?" @bind-Value="_previewTenantId"
+                                Data="@_tenants" TextProperty="Name" ValueProperty="Id"
+                                AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                Placeholder="(any)" Style="width: 160px;" />
+            </div>
+            <RadzenButton Text="Resolve" Icon="play_arrow" ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small"
+                          Disabled="@(!_previewEnvId.HasValue || !_previewProjectId.HasValue)"
+                          Click="RunPreviewAsync" />
+        </RadzenStack>
+    </RadzenCard>
 
-@* ÔöÇÔöÇ Array-as-list editor popup ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ *@
+    @if (_previewLoading)
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Resolving...</RadzenText>
+    }
+    else if (_previewResult is not null)
+    {
+        <RadzenCard>
+            <RadzenText TextStyle="TextStyle.H6" class="rz-mb-2">Resolved variables (@_previewResult.Count)</RadzenText>
+            @if (_previewResult.Count == 0)
+            {
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">No variables match the selected context.</RadzenText>
+            }
+            else
+            {
+                <KrakenGrid SettingsKey="var-preview" Data="@_previewRows" TItem="PreviewRow"
+                            AllowSorting="true" AllowPaging="true" PageSize="50"
+                            AllowColumnResize="true" AllowFiltering="true" FilterMode="FilterMode.Simple"
+                            GridLines="DataGridGridLines.Horizontal">
+                    <Columns>
+                        <RadzenDataGridColumn TItem="PreviewRow" Property="Name" Title="Name" Width="280px" />
+                        <RadzenDataGridColumn TItem="PreviewRow" Property="Value" Title="Value">
+                            <Template Context="r">
+                                @if (r.Sensitive)
+                                {
+                                    <RadzenBadge Text="*** sensitive ***" BadgeStyle="BadgeStyle.Warning" IsPill="true" />
+                                }
+                                else
+                                {
+                                    <code class="kraken-var-value">@r.Value</code>
+                                }
+                            </Template>
+                        </RadzenDataGridColumn>
+                    </Columns>
+                </KrakenGrid>
+            }
+        </RadzenCard>
+    }
+}
+
+@* ── Array-as-list editor popup ──────────────────────────────────────────── *@
 @if (_arrayPopupOpen)
 {
     <div class="kraken-scope-popup-backdrop" @onclick="CloseArrayEditor"></div>
     <div class="kraken-scope-popup kraken-array-popup"
-         style="@($"top: {_arrayPopupTop}px; left: {_arrayPopupLeft}px;")"
-         @onclick:stopPropagation="true">
+         style="@($"top: {_arrayPopupTop}px; left: {_arrayPopupLeft}px;")" @onclick:stopPropagation="true">
         <RadzenStack Gap="0.75rem">
-            <RadzenText TextStyle="TextStyle.H6" class="rz-mb-0">
-                Edit array ÔÇö one value per line
-            </RadzenText>
-            <RadzenTextArea @bind-Value="_arrayLines" Rows="14"
-                            class="kraken-array-textarea"
+            <RadzenText TextStyle="TextStyle.H6" class="rz-mb-0">Edit array - one value per line</RadzenText>
+            <RadzenTextArea @bind-Value="_arrayLines" Rows="14" class="kraken-array-textarea"
                             Placeholder="line1&#10;line2&#10;line3" />
             <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
                 Stored as a JSON array. Empty lines are kept as empty entries.
-                Drag the bottom-right corner to resize.
             </RadzenText>
-            <RadzenStack Orientation="Orientation.Horizontal"
-                         JustifyContent="JustifyContent.End" Gap="0.5rem">
-                <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
-                              Size="ButtonSize.Small" Click="CloseArrayEditor" />
-                <RadzenButton Text="Save" ButtonStyle="ButtonStyle.Primary"
-                              Size="ButtonSize.Small" Click="SaveArrayAsync" />
+            <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End" Gap="0.5rem">
+                <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small" Click="CloseArrayEditor" />
+                <RadzenButton Text="Save" ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small" Click="SaveArrayAsync" />
             </RadzenStack>
         </RadzenStack>
     </div>
 }
 
-@* ÔöÇÔöÇ Scope popup (custom div, positioned at click site) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ *@
+@* ── Scope popup ─────────────────────────────────────────────────────────── *@
 @if (_popupOpen)
 {
     <div class="kraken-scope-popup-backdrop" @onclick="ClosePopup"></div>
-    <div class="kraken-scope-popup"
-         style="@($"top: {_popupTop}px; left: {_popupLeft}px;")"
-         @onclick:stopPropagation="true">
+    <div class="kraken-scope-popup" style="@($"top: {_popupTop}px; left: {_popupLeft}px;")" @onclick:stopPropagation="true">
         <RadzenStack Gap="0.75rem">
             <RadzenText TextStyle="TextStyle.H6" class="rz-mb-0">
                 @(_popupEditingVar is null ? "Define scope" : "Edit scope")
             </RadzenText>
-
             <div>
                 <RadzenLabel Text="Environments" />
                 <RadzenDropDown TValue="IEnumerable<Guid>" @bind-Value="_popEnvIds"
                                 Data="@_environments" TextProperty="Name" ValueProperty="Id"
-                                Multiple="true" AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                                Chips="true" Placeholder="(any environment)"
-                                Style="width: 100%;" />
+                                Multiple="true" AllowClear="true" AllowFiltering="true"
+                                FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                Chips="true" Placeholder="(any environment)" Style="width: 100%;" />
             </div>
             <div>
                 <RadzenLabel Text="Tenants" />
                 <RadzenDropDown TValue="IEnumerable<Guid>" Value="@_popTenantIds"
                                 ValueChanged="@OnPopTenantsChanged"
                                 Data="@_tenants" TextProperty="Name" ValueProperty="Id"
-                                Multiple="true" AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                                Chips="true" Placeholder="(any tenant)"
-                                Style="width: 100%;" />
+                                Multiple="true" AllowClear="true" AllowFiltering="true"
+                                FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                Chips="true" Placeholder="(any tenant)" Style="width: 100%;" />
             </div>
             <div>
                 <RadzenLabel Text="Targets" />
                 <RadzenDropDown TValue="IEnumerable<Guid>" @bind-Value="_popTargetIds"
                                 Data="@PopTargetOptions" TextProperty="Name" ValueProperty="Id"
-                                Multiple="true" AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                                Chips="true" Placeholder="(any target)"
-                                Style="width: 100%;" />
-                @if (CountOf(_popTenantIds) > 0)
-                {
-                    <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
-                        Showing only targets tagged for the selected tenant(s).
-                    </RadzenText>
-                }
+                                Multiple="true" AllowClear="true" AllowFiltering="true"
+                                FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                Chips="true" Placeholder="(any target)" Style="width: 100%;" />
             </div>
             <div>
                 <RadzenLabel Text="Channel" />
                 <RadzenDropDown TValue="Guid?" @bind-Value="_popChannelId"
                                 Data="@_channels" TextProperty="Name" ValueProperty="Id"
-                                AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                                Placeholder="(any channel)"
-                                Style="width: 100%;" />
+                                AllowClear="true" AllowFiltering="true"
+                                FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                Placeholder="(any channel)" Style="width: 100%;" />
             </div>
             <div>
                 <RadzenLabel Text="Step" />
                 <RadzenDropDown TValue="Guid?" @bind-Value="_popProcessStepId"
                                 Data="@_projectStepNames" TextProperty="Name" ValueProperty="Id"
-                                AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                                Placeholder="(any step)"
-                                Style="width: 100%;" />
+                                AllowClear="true" AllowFiltering="true"
+                                FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                Placeholder="(any step)" Style="width: 100%;" />
             </div>
             <div>
                 <RadzenLabel Text="Target Roles" />
                 <RadzenDropDown TValue="IEnumerable<string>" @bind-Value="_popRoles"
-                                Data="@_availableRoles"
-                                Multiple="true" AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                                Chips="true" Placeholder="(any role)"
-                                Style="width: 100%;" />
+                                Data="@_availableRoles" Multiple="true" AllowClear="true" AllowFiltering="true"
+                                FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                Chips="true" Placeholder="(any role)" Style="width: 100%;" />
             </div>
-
             @if (_popupEditingVar?.Type == VariableType.Sensitive
-                 && (CountOf(_popEnvIds) > 1 || CountOf(_popTenantIds) > 1
-                     || CountOf(_popTargetIds) > 1))
+                 && (CountOf(_popEnvIds) > 1 || CountOf(_popTenantIds) > 1 || CountOf(_popTargetIds) > 1))
             {
                 <div class="kraken-scope-popup-warning">
-                    Multi-scope expansion is disabled for sensitive variables ÔÇö
+                    Multi-scope expansion is disabled for sensitive variables -
                     only the first selection of each dimension will be applied.
                 </div>
             }
-
-            <RadzenStack Orientation="Orientation.Horizontal"
-                         JustifyContent="JustifyContent.SpaceBetween"
-                         AlignItems="AlignItems.Center">
-                <button type="button" class="kraken-vargrid-link"
-                        @onclick="OpenAdvancedEditorAsync">Open editor</button>
+            <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.SpaceBetween" AlignItems="AlignItems.Center">
+                <button type="button" class="kraken-vargrid-link" @onclick="OpenAdvancedEditorAsync">Open editor</button>
                 <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
-                    <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
-                                  Size="ButtonSize.Small" Click="ClosePopup" />
-                    <RadzenButton Text="Done" ButtonStyle="ButtonStyle.Primary"
-                                  Size="ButtonSize.Small" Click="SaveScopeAsync" />
+                    <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small" Click="ClosePopup" />
+                    <RadzenButton Text="Done" ButtonStyle="ButtonStyle.Primary" Size="ButtonSize.Small" Click="SaveScopeAsync" />
                 </RadzenStack>
             </RadzenStack>
         </RadzenStack>
@@ -658,150 +657,84 @@
     private VarMode _mode = VarMode.Edit;
 
     private RadzenDataGrid<Variable> _grid = default!;
+    private bool _loaded;
+    private string? _loadError;
+
     private List<Project> _projects = [];
-    private Guid? _selectedProjectId;
-    private Project? _project;
-    private List<Variable> _variables = [];
-    private List<VariableSet> _includedSets = [];
-    private Dictionary<Guid, string> _sourceNames = [];
-    private HashSet<Guid> _lockedIds = [];
     private List<DeploymentEnvironment> _environments = [];
     private List<Tenant> _tenants = [];
     private List<DeploymentTarget> _targets = [];
     private Dictionary<Guid, HashSet<Guid>> _targetTenantMap = [];
     private List<Channel> _channels = [];
+    private List<string> _availableRoles = [];
     private sealed record StepOption(Guid Id, string Name);
     private List<StepOption> _projectStepNames = [];
     private Dictionary<Guid, string> _envNames = [];
     private Dictionary<Guid, string> _tenantNames = [];
     private Dictionary<Guid, string> _targetNames = [];
-    private bool _loaded;
-    private string? _loadError;
 
-    // ÔöÇÔöÇ Filter state ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    private sealed record TagOption(Guid Id, string Label);
+    private List<TagOption> _projectTagOptions = [];
+    private List<TagOption> _envTagOptions = [];
+    private List<TagOption> _tenantTagSetOptions = [];
+
+    // ── Filter state ────────────────────────────────────────────────────
+    private Guid? _filterProjectId;
     private Guid? _filterEnvId;
     private Guid? _filterTenantId;
     private string _filterRole = "";
     private Guid? _filterStepId;
+    private string _filterName = "";
+    private Guid? _filterTargetId;
+    private Guid? _filterProjectTagId;
+    private Guid? _filterEnvTagId;
+    private Guid? _filterTenantTagSetId;
+    private bool _showMoreFilters;
+    private bool _autoApply = true;
+    private bool _hasFetched;
+    private bool _fetching;
+    private System.Threading.CancellationTokenSource? _debounceCts;
 
-    private List<Variable> _filteredVariables
-    {
-        get
-        {
-            var result = new List<Variable>(_variables.Count);
-            foreach (var v in _variables)
-            {
-                if (_filterEnvId.HasValue && v.Scope.EnvironmentId.HasValue
-                    && v.Scope.EnvironmentId != _filterEnvId) continue;
-                if (_filterTenantId.HasValue && v.Scope.TenantId.HasValue
-                    && v.Scope.TenantId != _filterTenantId) continue;
-                if (_filterRole.Length > 0)
-                {
-                    var roles = v.Scope.Roles;
-                    if (roles is { Count: > 0 }
-                        && !roles.Contains(_filterRole, StringComparer.OrdinalIgnoreCase)) continue;
-                }
-                if (_filterStepId.HasValue && v.Scope.ProcessStepId.HasValue
-                    && v.Scope.ProcessStepId != _filterStepId) continue;
-                result.Add(v);
-            }
-            return result;
-        }
-    }
+    private bool HasAnyFilter =>
+        _filterProjectId.HasValue || _filterEnvId.HasValue || _filterTenantId.HasValue
+        || _filterRole.Length > 0 || _filterStepId.HasValue || _filterName.Length > 0
+        || _filterTargetId.HasValue || _filterProjectTagId.HasValue
+        || _filterEnvTagId.HasValue || _filterTenantTagSetId.HasValue;
 
-    private void ClearFilters()
-    {
-        _filterEnvId = null;
-        _filterTenantId = null;
-        _filterRole = "";
-        _filterStepId = null;
-    }
+    // ── Data ────────────────────────────────────────────────────────────
+    private List<Variable> _variables = [];
+    private List<VariableSet> _includedSets = [];
+    private Dictionary<Guid, string> _sourceNames = [];
+    private HashSet<Guid> _lockedIds = [];
 
-    private void OnFilterRoleChanged(string value) => _filterRole = value ?? "";
+    private readonly List<GroupDescriptor> _groups = [new() { Property = nameof(Variable.Name) }];
+    private bool? _allExpanded = true;
+    private void SetAllExpanded(bool v) => _allExpanded = v;
 
-    private bool IsLocked(Variable v) => _lockedIds.Contains(v.Id);
-    private string SourceLabel(Variable v) =>
-        _sourceNames.TryGetValue(v.Id, out var s) ? s : "Project";
-
-    // ÔöÇÔöÇ Preview mode state ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    // ── Preview mode ────────────────────────────────────────────────────
+    private Guid? _previewProjectId;
     private Guid? _previewEnvId;
     private Guid? _previewTargetId;
     private Guid? _previewTenantId;
     private bool _previewLoading;
     private Dictionary<string, string>? _previewResult;
     private List<PreviewRow> _previewRows = [];
-
     private sealed record PreviewRow(string Name, string Value, bool Sensitive);
 
-    private async Task RunPreviewAsync()
-    {
-        if (_project is null || !_previewEnvId.HasValue) return;
-        _previewLoading = true;
-        _previewResult = null;
-        _previewRows = [];
-        StateHasChanged();
-
-        try
-        {
-            var targetRoles = _previewTargetId.HasValue
-                ? _targets.FirstOrDefault(t => t.Id == _previewTargetId)?.Roles ?? []
-                : [];
-
-            IReadOnlyList<Guid>? tenantTagIds = null;
-            if (_previewTenantId.HasValue)
-            {
-                tenantTagIds = await VariableSvc.GetTenantTagIdsAsync(_previewTenantId.Value);
-            }
-
-            var resolved = await VariableSvc.ResolveAsync(
-                _project.Id,
-                _previewEnvId.Value,
-                _previewTargetId,
-                targetRoles,
-                tenantId: _previewTenantId,
-                tenantTagIds: tenantTagIds);
-
-            var sensitive = await VariableSvc.GetSensitiveNamesAsync(_project.Id);
-
-            _previewResult = resolved;
-            _previewRows = resolved
-                .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
-                .Select(kv => new PreviewRow(kv.Key, kv.Value, sensitive.Contains(kv.Key)))
-                .ToList();
-        }
-        catch (Exception ex)
-        {
-            Notifications.Notify(NotificationSeverity.Error, "Preview failed", ex.Message, 5000);
-        }
-        finally
-        {
-            _previewLoading = false;
-        }
-    }
-
-    // Always group by Name. Single-value groups still render a header ÔÇö the
-    // count next to the name makes that obvious.
-    private readonly List<GroupDescriptor> _groups =
-    [
-        new() { Property = nameof(Variable.Name) }
-    ];
-    private bool? _allExpanded = true;
-
-    // ÔöÇÔöÇ Always-visible new-variable row state ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    // ── New variable row ────────────────────────────────────────────────
     private string _newName = "";
     private string _newValue = "";
     private VariableType _newType = VariableType.Text;
     private VariableScope _newScope = new();
-
     private record TypeOption(VariableType Value, string Label);
     private readonly TypeOption[] _typeOptions =
     [
-        new(VariableType.Text,        "Text"),
-        new(VariableType.Sensitive,   "Sensitive"),
+        new(VariableType.Text, "Text"),
+        new(VariableType.Sensitive, "Sensitive"),
         new(VariableType.StringArray, "Array"),
     ];
 
-    // ÔöÇÔöÇ Scope popup state ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    // ── Scope popup ─────────────────────────────────────────────────────
     private bool _popupOpen;
     private double _popupTop;
     private double _popupLeft;
@@ -812,20 +745,35 @@
     private Guid? _popChannelId;
     private Guid? _popProcessStepId;
     private IEnumerable<string> _popRoles = [];
-    private List<string> _availableRoles = [];
 
-    // ÔöÇÔöÇ Array-as-list editor state ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    // ── Array editor ────────────────────────────────────────────────────
     private bool _arrayPopupOpen;
     private double _arrayPopupTop;
     private double _arrayPopupLeft;
-    private Variable? _arrayEditingVar;     // null = staged new-row value
+    private Variable? _arrayEditingVar;
     private string _arrayLines = "";
+
+    // ── Lifecycle ───────────────────────────────────────────────────────
 
     protected override async Task OnParametersSetAsync()
     {
         try
         {
             _projects = await ProjectSvc.GetAllAsync();
+            _environments = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true);
+            _envNames = _environments.ToDictionary(e => e.Id, e => e.Name);
+            _tenants = await TenantSvc.GetAllAsync();
+            _tenantNames = _tenants.ToDictionary(t => t.Id, t => t.Name);
+            _targets = await TargetSvc.GetAllAsync();
+            _targetNames = _targets.ToDictionary(t => t.Id, t => t.Name);
+            _targetTenantMap = await TargetSvc.GetTenantAssociationMapAsync();
+            _availableRoles = _targets.SelectMany(t => t.Roles)
+                .Where(r => !string.IsNullOrWhiteSpace(r))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(r => r, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            await LoadTagOptionsAsync();
 
             if (!_loaded)
             {
@@ -833,33 +781,18 @@
                 var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
                 if (query.TryGetValue("project", out var projSlug))
                 {
-                    _selectedProjectId = _projects
+                    _filterProjectId = _projects
                         .FirstOrDefault(p => string.Equals(p.Slug, projSlug.ToString(), StringComparison.OrdinalIgnoreCase))?.Id;
                 }
                 if (query.TryGetValue("env", out var envVal) && Guid.TryParse(envVal, out var envId)) _filterEnvId = envId;
                 if (query.TryGetValue("tenant", out var tenantVal) && Guid.TryParse(tenantVal, out var tenantId)) _filterTenantId = tenantId;
                 if (query.TryGetValue("role", out var roleVal) && roleVal.ToString() is { Length: > 0 } r) _filterRole = r;
-            }
+                if (query.TryGetValue("name", out var nameVal) && nameVal.ToString() is { Length: > 0 } n) _filterName = n;
 
-            _environments = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true);
-            _envNames = _environments.ToDictionary(e => e.Id, e => e.Name);
-
-            _tenants = await TenantSvc.GetAllAsync();
-            _tenantNames = _tenants.ToDictionary(t => t.Id, t => t.Name);
-
-            _targets = await TargetSvc.GetAllAsync();
-            _targetNames = _targets.ToDictionary(t => t.Id, t => t.Name);
-            _targetTenantMap = await TargetSvc.GetTenantAssociationMapAsync();
-
-            _availableRoles = _targets.SelectMany(t => t.Roles)
-                .Where(r => !string.IsNullOrWhiteSpace(r))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(r => r, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            if (_selectedProjectId.HasValue)
-            {
-                await LoadProjectContextAsync(_selectedProjectId.Value);
+                if (HasAnyFilter)
+                {
+                    await FetchAsync();
+                }
             }
         }
         catch (Exception ex)
@@ -872,14 +805,158 @@
         }
     }
 
+    private async Task LoadTagOptionsAsync()
+    {
+        var projSets = await TagSvc.GetSetsForKindAsync(TaggableEntityKind.Project);
+        _projectTagOptions = projSets
+            .Where(s => s.Type != TagSetType.FreeText)
+            .SelectMany(s => s.Tags.Select(t => new TagOption(t.Id, $"{s.Name}/{t.Name}")))
+            .ToList();
+
+        var envSets = await TagSvc.GetSetsForKindAsync(TaggableEntityKind.Environment);
+        _envTagOptions = envSets
+            .Where(s => s.Type != TagSetType.FreeText)
+            .SelectMany(s => s.Tags.Select(t => new TagOption(t.Id, $"{s.Name}/{t.Name}")))
+            .ToList();
+
+        var tenantSets = await TagSvc.GetSetsForKindAsync(TaggableEntityKind.Tenant);
+        _tenantTagSetOptions = tenantSets
+            .Select(s => new TagOption(s.Id, s.Name))
+            .ToList();
+    }
+
+    // ── Filter change + debounce ────────────────────────────────────────
+
+    private async Task OnFilterChangedAsync(Action setter)
+    {
+        setter();
+        await MaybeAutoFetchAsync();
+    }
+
+    private void OnNameKeyUp(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !_autoApply && HasAnyFilter)
+        {
+            _ = FetchAsync();
+        }
+        else if (_autoApply)
+        {
+            _ = MaybeAutoFetchAsync();
+        }
+    }
+
+    private async Task MaybeAutoFetchAsync()
+    {
+        if (!_autoApply || !HasAnyFilter) return;
+        _debounceCts?.Cancel();
+        _debounceCts = new System.Threading.CancellationTokenSource();
+        var token = _debounceCts.Token;
+        try
+        {
+            await Task.Delay(400, token);
+            if (!token.IsCancellationRequested)
+            {
+                await FetchAsync();
+            }
+        }
+        catch (TaskCanceledException) { }
+    }
+
+    private async Task ClearFilterAsync(Action setter)
+    {
+        setter();
+        if (_autoApply && HasAnyFilter)
+        {
+            await FetchAsync();
+        }
+        else if (!HasAnyFilter)
+        {
+            _variables = [];
+            _hasFetched = false;
+        }
+    }
+
+    private async Task ClearAllFiltersAsync()
+    {
+        _filterProjectId = null;
+        _filterEnvId = null;
+        _filterTenantId = null;
+        _filterRole = "";
+        _filterStepId = null;
+        _filterName = "";
+        _filterTargetId = null;
+        _filterProjectTagId = null;
+        _filterEnvTagId = null;
+        _filterTenantTagSetId = null;
+        _variables = [];
+        _includedSets = [];
+        _sourceNames.Clear();
+        _lockedIds.Clear();
+        _hasFetched = false;
+        await Task.CompletedTask;
+    }
+
+    // ── Fetch ───────────────────────────────────────────────────────────
+
+    private async Task FetchAsync()
+    {
+        if (!HasAnyFilter) return;
+        _fetching = true;
+        StateHasChanged();
+
+        try
+        {
+            IReadOnlyCollection<Guid>? projectIds = null;
+            IReadOnlyCollection<Guid>? environmentIds = null;
+
+            if (_filterProjectTagId.HasValue)
+            {
+                projectIds = await TagSvc.GetEntityIdsWithAnyTagAsync(TaggableEntityKind.Project, [_filterProjectTagId.Value]);
+            }
+            if (_filterEnvTagId.HasValue)
+            {
+                environmentIds = await TagSvc.GetEntityIdsWithAnyTagAsync(TaggableEntityKind.Environment, [_filterEnvTagId.Value]);
+            }
+
+            _variables = await VariableSvc.SearchVariablesAsync(
+                projectId: _filterProjectId,
+                environmentId: _filterEnvId,
+                tenantId: _filterTenantId,
+                role: _filterRole.Length > 0 ? _filterRole : null,
+                stepId: _filterStepId,
+                targetId: _filterTargetId,
+                nameContains: _filterName.Length > 0 ? _filterName : null,
+                projectIds: projectIds,
+                environmentIds: environmentIds);
+
+            _sourceNames.Clear();
+            _lockedIds.Clear();
+            _includedSets = [];
+
+            if (_filterProjectId.HasValue)
+            {
+                await LoadProjectContextAsync(_filterProjectId.Value);
+            }
+
+            _hasFetched = true;
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Fetch failed", ex.Message, 5000);
+        }
+        finally
+        {
+            _fetching = false;
+        }
+    }
+
     private async Task LoadProjectContextAsync(Guid projectId)
     {
-        _project = _projects.FirstOrDefault(p => p.Id == projectId);
-        if (_project is null) return;
+        var project = _projects.FirstOrDefault(p => p.Id == projectId);
+        if (project is null) return;
 
-        _channels = await ChannelSvc.GetForProjectAsync(_project.Id);
-
-        var process = await ProcessSvc.GetAsync(_project.Id);
+        _channels = await ChannelSvc.GetForProjectAsync(project.Id);
+        var process = await ProcessSvc.GetAsync(project.Id);
         _projectStepNames = process?.Steps.Select(s => new StepOption(s.Id, s.Name)).ToList() ?? [];
 
         var stepRoles = process?.Steps.SelectMany(s => s.TargetRoles) ?? [];
@@ -890,32 +967,7 @@
             .OrderBy(r => r, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        await ReloadAsync();
-    }
-
-    private async Task OnProjectChangedAsync(Guid? projectId)
-    {
-        _selectedProjectId = projectId;
-        _variables = [];
-        _includedSets = [];
-        _sourceNames.Clear();
-        _lockedIds.Clear();
-        _projectStepNames = [];
-        _channels = [];
-        if (projectId.HasValue)
-        {
-            await LoadProjectContextAsync(projectId.Value);
-        }
-    }
-
-    private async Task ReloadAsync()
-    {
-        if (_project is null) return;
-
-        _sourceNames.Clear();
-        _lockedIds.Clear();
-
-        _includedSets = await VariableSvc.GetIncludedSetsAsync(_project.Id);
+        _includedSets = await VariableSvc.GetIncludedSetsAsync(project.Id);
         foreach (var set in _includedSets)
         {
             foreach (var v in set.Variables)
@@ -925,43 +977,40 @@
             }
         }
 
-        var dtos = await VariableSvc.GetVariablesAsync(_project.Id);
-        var entities = new List<Variable>(dtos.Count);
-        foreach (var d in dtos)
+        var libVars = _includedSets.SelectMany(s => s.Variables).ToList();
+        var existing = _variables.Select(v => v.Id).ToHashSet();
+        foreach (var lv in libVars)
         {
-            var entity = await VariableSvc.GetVariableAsync(d.Id);
-            if (entity is not null) entities.Add(entity);
+            if (!existing.Contains(lv.Id))
+            {
+                _variables.Add(lv);
+            }
         }
-
-        var all = new List<Variable>(entities.Count + _lockedIds.Count);
-        foreach (var set in _includedSets)
-            all.AddRange(set.Variables);
-        all.AddRange(entities);
-        _variables = all;
     }
 
-    /// <summary>
-    /// Targets offered in the scope popup. With tenants selected, only
-    /// targets directly ASSOCIATED with one of those tenants are shown
-    /// (a target with no tenant association drops out too).
-    /// </summary>
+    // ── Helpers ─────────────────────────────────────────────────────────
+
+    private bool IsLocked(Variable v) => _lockedIds.Contains(v.Id);
+    private string SourceLabel(Variable v) => _sourceNames.TryGetValue(v.Id, out var s) ? s : "Project";
+    private string ProjectName(Guid id) => _projects.FirstOrDefault(p => p.Id == id)?.Name ?? "?";
+    private string EnvName(Guid id) => _envNames.TryGetValue(id, out var n) ? n : "?";
+    private string TenantName(Guid id) => _tenantNames.TryGetValue(id, out var n) ? n : "?";
+    private string TargetName(Guid id) => _targetNames.TryGetValue(id, out var n) ? n : "?";
+    private string ChannelName(Guid id) => _channels.FirstOrDefault(c => c.Id == id)?.Name ?? "?";
+    private string StepName(Guid id) => _projectStepNames.FirstOrDefault(s => s.Id == id)?.Name ?? "?";
+    private string TagLabel(List<TagOption> options, Guid id) => options.FirstOrDefault(t => t.Id == id)?.Label ?? "?";
+    private static int CountOf(IEnumerable<Guid>? e) => e?.Count() ?? 0;
+
     private IEnumerable<DeploymentTarget> PopTargetOptions
     {
         get
         {
             var tenantIds = _popTenantIds.ToHashSet();
-            if (tenantIds.Count == 0)
-            {
-                return _targets;
-            }
-            return _targets.Where(t =>
-                _targetTenantMap.TryGetValue(t.Id, out var serves)
-                && serves.Overlaps(tenantIds));
+            if (tenantIds.Count == 0) return _targets;
+            return _targets.Where(t => _targetTenantMap.TryGetValue(t.Id, out var serves) && serves.Overlaps(tenantIds));
         }
     }
 
-    /// <summary>Tenant selection changed Ôćĺ drop selected targets that no
-    /// longer serve the selection, so a hidden option can't stay selected.</summary>
     private void OnPopTenantsChanged(IEnumerable<Guid> tenantIds)
     {
         _popTenantIds = tenantIds;
@@ -969,29 +1018,13 @@
         _popTargetIds = _popTargetIds.Where(allowed.Contains).ToList();
     }
 
-    private string EnvName(Guid id) =>
-        _envNames.TryGetValue(id, out var n) ? n : "?";
-    private string TenantName(Guid id) =>
-        _tenantNames.TryGetValue(id, out var n) ? n : "?";
-    private string TargetName(Guid id) =>
-        _targetNames.TryGetValue(id, out var n) ? n : "?";
-    private string ChannelName(Guid id) =>
-        _channels.FirstOrDefault(c => c.Id == id)?.Name ?? "?";
-    private string StepName(Guid id) =>
-        _projectStepNames.FirstOrDefault(s => s.Id == id)?.Name ?? "?";
-    private static int CountOf(IEnumerable<Guid>? e) => e?.Count() ?? 0;
-
-    // ÔöÇÔöÇ Grid edit lifecycle ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    // ── Grid edit ───────────────────────────────────────────────────────
 
     private static bool IsEditableProperty(string? prop) =>
-        prop is nameof(Variable.Name)
-             or nameof(Variable.Value)
-             or nameof(Variable.Type);
+        prop is nameof(Variable.Name) or nameof(Variable.Value) or nameof(Variable.Type);
 
     private void OnCellRender(DataGridCellRenderEventArgs<Variable> args)
     {
-        // Make non-action cells visually clickable to hint that the row will
-        // enter edit mode on click.
         if (args.Column is { } col && IsEditableProperty(col.Property))
         {
             args.Attributes.Add("style", "cursor: pointer;");
@@ -1009,16 +1042,11 @@
 
     private async Task OnRowUpdateAsync(Variable v)
     {
-        // RowUpdate fires after the user clicks the Save (Ôťô) button or
-        // _grid.UpdateRow(v) is called.
-        if (_project is null) return;
         if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
-
         try
         {
-            await VariableSvc.UpdateVariableAsync(
-                v.Id, v.Name, v.Value, v.Type, v.Scope, await Guard.CurrentCallerAsync());
-            await ReloadAsync();
+            await VariableSvc.UpdateVariableAsync(v.Id, v.Name, v.Value, v.Type, v.Scope, await Guard.CurrentCallerAsync());
+            await FetchAsync();
         }
         catch (Exception ex)
         {
@@ -1029,37 +1057,23 @@
     private async Task CancelEditAsync(Variable v)
     {
         _grid.CancelEditRow(v);
-        // The local entity may have been mutated by the form binding;
-        // re-pull from DB so the grid shows the persisted state.
-        await ReloadAsync();
+        await FetchAsync();
     }
 
-    /// <summary>
-    /// Adds the staged new-row variable. Cartesian-expands the scope across
-    /// any multi-selected env / tenant / target dimensions; an empty scope
-    /// dimension collapses to a single null entry ("any").
-    /// </summary>
     private async Task AddNewVariableAsync()
     {
-        if (_project is null || string.IsNullOrWhiteSpace(_newName)) return;
+        if (!_filterProjectId.HasValue || string.IsNullOrWhiteSpace(_newName)) return;
         if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
-
         try
         {
-            // Use the staged scope as-is. If the user opened the popup and
-            // saved multi-select, those choices live in _newScope (single
-            // dimension) and were applied for cartesian ÔÇö see SaveScopeAsync.
-            // For the simple inline-new case we just save one variable.
             await VariableSvc.CreateVariableAsync(
-                _project.Id, _newName, _newValue ?? "", _newType, _newScope, await Guard.CurrentCallerAsync());
-
+                _filterProjectId.Value, _newName, _newValue ?? "", _newType, _newScope, await Guard.CurrentCallerAsync());
             _newName = "";
             _newValue = "";
             _newType = VariableType.Text;
             _newScope = new VariableScope();
-            await ReloadAsync();
-            Notifications.Notify(NotificationSeverity.Success, "Added",
-                "Variable was added.", 3000);
+            await FetchAsync();
+            Notifications.Notify(NotificationSeverity.Success, "Added", "Variable was added.", 3000);
         }
         catch (Exception ex)
         {
@@ -1077,125 +1091,112 @@
         if (_newScope.ChannelId is { } c) parts.Add($"channel: {ChannelName(c)}");
         if (_newScope.ProcessStepId is { } st) parts.Add($"step: {StepName(st)}");
         if (_newScope.Roles is { Count: > 0 } r) parts.Add($"roles: {string.Join(",", r)}");
-        return string.Join(" ÔÇó ", parts);
+        return string.Join(" | ", parts);
     }
 
-    private void SetAllExpanded(bool expanded) => _allExpanded = expanded;
-
-    // ÔöÇÔöÇ Three-dots menu ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    // ── Context menu ────────────────────────────────────────────────────
 
     private void ShowRowMenu(MouseEventArgs args, Variable v)
     {
         ContextMenu.Open(args, new List<ContextMenuItem>
         {
-            new() { Text = "Add Value",          Value = "add",       Icon = "add" },
+            new() { Text = "Add Value", Value = "add", Icon = "add" },
             new() { Text = "Duplicate Variable", Value = "duplicate", Icon = "content_copy" },
-            new() { Text = "Delete Variable",    Value = "delete",    Icon = "delete" },
+            new() { Text = "Delete Variable", Value = "delete", Icon = "delete" },
         }, async e =>
         {
             ContextMenu.Close();
             switch (e.Value)
             {
-                case "add":       await AddValueAsync(v);   break;
-                case "duplicate": await DuplicateAsync(v);  break;
-                case "delete":    await DeleteAsync(v);     break;
+                case "add": await AddValueAsync(v); break;
+                case "duplicate": await DuplicateAsync(v); break;
+                case "delete": await DeleteAsync(v); break;
             }
         });
     }
 
     private async Task AddValueAsync(Variable v)
     {
-        if (_project is null) return;
+        if (!_filterProjectId.HasValue) return;
         if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
         await VariableSvc.CreateVariableAsync(
-            _project.Id, v.Name, "", VariableType.Text, new VariableScope(), await Guard.CurrentCallerAsync());
-        await ReloadAsync();
+            _filterProjectId.Value, v.Name, "", VariableType.Text, new VariableScope(), await Guard.CurrentCallerAsync());
+        await FetchAsync();
     }
 
     private async Task DuplicateAsync(Variable v)
     {
-        if (_project is null) return;
+        if (!_filterProjectId.HasValue) return;
         if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
         var rawValue = v.Type == VariableType.Sensitive ? "" : v.Value;
         await VariableSvc.CreateVariableAsync(
-            _project.Id, v.Name + " (copy)", rawValue, v.Type,
+            _filterProjectId.Value, v.Name + " (copy)", rawValue, v.Type,
             new VariableScope
             {
                 EnvironmentId = v.Scope.EnvironmentId,
-                TenantId      = v.Scope.TenantId,
-                TargetId      = v.Scope.TargetId,
-                Roles         = v.Scope.Roles is { Count: > 0 } r ? [..r] : null,
+                TenantId = v.Scope.TenantId,
+                TargetId = v.Scope.TargetId,
+                Roles = v.Scope.Roles is { Count: > 0 } r ? [..r] : null,
             }, await Guard.CurrentCallerAsync());
-        await ReloadAsync();
+        await FetchAsync();
     }
 
     private async Task DeleteAsync(Variable v)
     {
         if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
-
         var confirmed = await Dialog.Confirm(
             $"Delete variable '{v.Name}'? This cannot be undone.",
             "Confirm Delete",
             new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
-
         if (confirmed == true)
         {
             await VariableSvc.DeleteVariableAsync(v.Id, await Guard.CurrentCallerAsync());
-            await ReloadAsync();
-            Notifications.Notify(NotificationSeverity.Success, "Deleted",
-                $"Variable '{v.Name}' was removed.", 3000);
+            await FetchAsync();
+            Notifications.Notify(NotificationSeverity.Success, "Deleted", $"Variable '{v.Name}' was removed.", 3000);
         }
     }
 
-    // ÔöÇÔöÇ Included library sets ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    // ── Included sets ───────────────────────────────────────────────────
 
     private async Task OpenIncludeSetDialog()
     {
-        if (_project is null) return;
+        if (!_filterProjectId.HasValue) return;
         if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
-
-        var available = await VariableSvc.GetAvailableLibrarySetsAsync(_project.Id);
+        var available = await VariableSvc.GetAvailableLibrarySetsAsync(_filterProjectId.Value);
         if (available.Count == 0)
         {
-            Notifications.Notify(NotificationSeverity.Info, "No sets available",
-                "All library variable sets are already included.", 3000);
+            Notifications.Notify(NotificationSeverity.Info, "No sets available", "All library variable sets are already included.", 3000);
             return;
         }
-
         var result = await Dialog.OpenAsync<IncludeVariableSetDialog>(
             "Include Library Variable Set",
             new Dictionary<string, object?> { [nameof(IncludeVariableSetDialog.Sets)] = available },
             new DialogOptions { Width = "420px" });
-
         if (result is Guid setId)
         {
-            await VariableSvc.IncludeSetAsync(_project.Id, setId, await Guard.CurrentCallerAsync());
-            await ReloadAsync();
-            Notifications.Notify(NotificationSeverity.Success, "Included",
-                "Library variable set was added.", 3000);
+            await VariableSvc.IncludeSetAsync(_filterProjectId.Value, setId, await Guard.CurrentCallerAsync());
+            await FetchAsync();
+            Notifications.Notify(NotificationSeverity.Success, "Included", "Library variable set was added.", 3000);
         }
     }
 
     private async Task RemoveIncludedSetAsync(Guid setId)
     {
-        if (_project is null) return;
+        if (!_filterProjectId.HasValue) return;
         if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
-
         var confirmed = await Dialog.Confirm(
-            "Remove this library variable set from the project? Its variables will no longer appear or resolve.",
+            "Remove this library variable set from the project?",
             "Confirm Remove",
             new ConfirmOptions { OkButtonText = "Remove", CancelButtonText = "Cancel" });
-
         if (confirmed == true)
         {
-            await VariableSvc.ExcludeSetAsync(_project.Id, setId, await Guard.CurrentCallerAsync());
-            await ReloadAsync();
-            Notifications.Notify(NotificationSeverity.Success, "Removed",
-                "Library variable set was excluded.", 3000);
+            await VariableSvc.ExcludeSetAsync(_filterProjectId.Value, setId, await Guard.CurrentCallerAsync());
+            await FetchAsync();
+            Notifications.Notify(NotificationSeverity.Success, "Removed", "Library variable set was excluded.", 3000);
         }
     }
 
-    // ÔöÇÔöÇ Scope popup ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    // ── Scope popup ─────────────────────────────────────────────────────
 
     private void OpenScopePopup(MouseEventArgs args, Variable v)
     {
@@ -1207,7 +1208,6 @@
 
     private void OpenNewScopePopup(MouseEventArgs args)
     {
-        // null _popupEditingVar signals "scope edit for the staged new-row"
         _popupEditingVar = null;
         SeedPopupFromScope(_newScope);
         SetPopupPosition(args);
@@ -1218,7 +1218,7 @@
     {
         const double popupWidth = 420;
         const double margin = 8;
-        _popupTop  = args.ClientY + margin;
+        _popupTop = args.ClientY + margin;
         _popupLeft = args.ClientX - popupWidth / 2;
         if (_popupLeft < margin) _popupLeft = margin;
     }
@@ -1227,13 +1227,11 @@
 
     private void SeedPopupFromScope(VariableScope s)
     {
-        _popEnvIds    = s.EnvironmentId.HasValue ? new[] { s.EnvironmentId.Value } : [];
-        _popTenantIds = s.TenantId.HasValue      ? new[] { s.TenantId.Value }      : [];
-        _popTargetIds = s.TargetId.HasValue      ? new[] { s.TargetId.Value }      : [];
+        _popEnvIds = s.EnvironmentId.HasValue ? new[] { s.EnvironmentId.Value } : [];
+        _popTenantIds = s.TenantId.HasValue ? new[] { s.TenantId.Value } : [];
+        _popTargetIds = s.TargetId.HasValue ? new[] { s.TargetId.Value } : [];
         _popRoles = s.Roles is { Count: > 0 } r ? r.ToList() : [];
-        // A stale role (no longer on any target/step) must stay selectable.
-        foreach (var role in _popRoles.Where(r =>
-                     !_availableRoles.Contains(r, StringComparer.OrdinalIgnoreCase)))
+        foreach (var role in _popRoles.Where(r => !_availableRoles.Contains(r, StringComparer.OrdinalIgnoreCase)))
         {
             _availableRoles.Add(role);
         }
@@ -1243,50 +1241,39 @@
 
     private async Task SaveScopeAsync()
     {
-        if (_project is null) return;
+        if (!_filterProjectId.HasValue) return;
         if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
 
-        var roles = _popRoles
-            .Where(r => !string.IsNullOrWhiteSpace(r))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        var envIds    = _popEnvIds.ToList();
+        var roles = _popRoles.Where(r => !string.IsNullOrWhiteSpace(r)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var envIds = _popEnvIds.ToList();
         var tenantIds = _popTenantIds.ToList();
         var targetIds = _popTargetIds.ToList();
 
-        // ÔöÇÔöÇ Branch: new-row scope edit (no DB writes yet) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
         if (_popupEditingVar is null)
         {
-            // For the always-visible new row we just stage the scope locally;
-            // multi-select cartesian only triggers if the user wants it AND
-            // already typed a name. If they did, we expand right here.
             if (envIds.Count <= 1 && tenantIds.Count <= 1 && targetIds.Count <= 1)
             {
                 _newScope = new VariableScope
                 {
                     EnvironmentId = envIds.Count > 0 ? envIds[0] : null,
-                    TenantId      = tenantIds.Count > 0 ? tenantIds[0] : null,
-                    TargetId      = targetIds.Count > 0 ? targetIds[0] : null,
-                    ChannelId     = _popChannelId,
-                    ProcessStepId  = _popProcessStepId,
-                    Roles         = roles.Count > 0 ? roles : null,
+                    TenantId = tenantIds.Count > 0 ? tenantIds[0] : null,
+                    TargetId = targetIds.Count > 0 ? targetIds[0] : null,
+                    ChannelId = _popChannelId,
+                    ProcessStepId = _popProcessStepId,
+                    Roles = roles.Count > 0 ? roles : null,
                 };
                 ClosePopup();
                 return;
             }
 
-            // Multi-select: requires a name; if missing, warn and keep popup
-            // open so the user can fix it.
             if (string.IsNullOrWhiteSpace(_newName))
             {
                 Notifications.Notify(NotificationSeverity.Warning, "Missing name",
-                    "Type a variable name in the new-row inputs before saving "
-                    + "a multi-scope (it expands into one variable per "
-                    + "(env ├Ś tenant ├Ś target) combination).", 5000);
+                    "Type a variable name before saving a multi-scope.", 5000);
                 return;
             }
 
-            var envSetN    = envIds.Count    > 0 ? envIds   .Cast<Guid?>().ToList() : [null];
+            var envSetN = envIds.Count > 0 ? envIds.Cast<Guid?>().ToList() : [null];
             var tenantSetN = tenantIds.Count > 0 ? tenantIds.Cast<Guid?>().ToList() : [null];
             var targetSetN = targetIds.Count > 0 ? targetIds.Cast<Guid?>().ToList() : [null];
 
@@ -1294,83 +1281,65 @@
                 foreach (var t in tenantSetN)
                     foreach (var tg in targetSetN)
                     {
-                        var scope = new VariableScope
-                        {
-                            EnvironmentId = e,
-                            TenantId      = t,
-                            TargetId      = tg,
-                            ChannelId     = _popChannelId,
-                            ProcessStepId  = _popProcessStepId,
-                            Roles         = roles.Count > 0 ? [..roles] : null,
-                        };
                         await VariableSvc.CreateVariableAsync(
-                            _project.Id, _newName, _newValue ?? "",
-                            _newType, scope, await Guard.CurrentCallerAsync());
+                            _filterProjectId.Value, _newName, _newValue ?? "", _newType,
+                            new VariableScope
+                            {
+                                EnvironmentId = e, TenantId = t, TargetId = tg,
+                                ChannelId = _popChannelId, ProcessStepId = _popProcessStepId,
+                                Roles = roles.Count > 0 ? [..roles] : null,
+                            }, await Guard.CurrentCallerAsync());
                     }
 
-            _newName = "";
-            _newValue = "";
-            _newType = VariableType.Text;
-            _newScope = new VariableScope();
+            _newName = ""; _newValue = ""; _newType = VariableType.Text; _newScope = new VariableScope();
             ClosePopup();
-            await ReloadAsync();
-            Notifications.Notify(NotificationSeverity.Success, "Added",
-                "Variable was added (multi-scope cartesian).", 3000);
+            await FetchAsync();
+            Notifications.Notify(NotificationSeverity.Success, "Added", "Variable was added (multi-scope).", 3000);
             return;
         }
 
         var sensitiveEdit = _popupEditingVar.Type == VariableType.Sensitive;
-
         if (sensitiveEdit)
         {
-            // Update in place; ciphertext untouched.
-            var scope = new VariableScope
-            {
-                EnvironmentId = envIds.Count > 0 ? envIds[0] : null,
-                TenantId      = tenantIds.Count > 0 ? tenantIds[0] : null,
-                TargetId      = targetIds.Count > 0 ? targetIds[0] : null,
-                ChannelId     = _popChannelId,
-                ProcessStepId  = _popProcessStepId,
-                Roles         = roles.Count > 0 ? roles : null,
-            };
             await VariableSvc.UpdateVariableAsync(
-                _popupEditingVar.Id, _popupEditingVar.Name, null,
-                _popupEditingVar.Type, scope, await Guard.CurrentCallerAsync());
+                _popupEditingVar.Id, _popupEditingVar.Name, null, _popupEditingVar.Type,
+                new VariableScope
+                {
+                    EnvironmentId = envIds.Count > 0 ? envIds[0] : null,
+                    TenantId = tenantIds.Count > 0 ? tenantIds[0] : null,
+                    TargetId = targetIds.Count > 0 ? targetIds[0] : null,
+                    ChannelId = _popChannelId, ProcessStepId = _popProcessStepId,
+                    Roles = roles.Count > 0 ? roles : null,
+                }, await Guard.CurrentCallerAsync());
         }
         else
         {
-            var envSet    = envIds.Count    > 0 ? envIds   .Cast<Guid?>().ToList() : [null];
+            var envSet = envIds.Count > 0 ? envIds.Cast<Guid?>().ToList() : [null];
             var tenantSet = tenantIds.Count > 0 ? tenantIds.Cast<Guid?>().ToList() : [null];
             var targetSet = targetIds.Count > 0 ? targetIds.Cast<Guid?>().ToList() : [null];
-
-            var name  = _popupEditingVar.Name;
+            var name = _popupEditingVar.Name;
             var value = _popupEditingVar.Value;
-            var type  = _popupEditingVar.Type;
+            var type = _popupEditingVar.Type;
 
             await VariableSvc.DeleteVariableAsync(_popupEditingVar.Id, await Guard.CurrentCallerAsync());
-
             foreach (var e in envSet)
                 foreach (var t in tenantSet)
                     foreach (var tg in targetSet)
                     {
-                        var scope = new VariableScope
-                        {
-                            EnvironmentId = e,
-                            TenantId      = t,
-                            TargetId      = tg,
-                            ChannelId     = _popChannelId,
-                            ProcessStepId  = _popProcessStepId,
-                            Roles         = roles.Count > 0 ? [..roles] : null,
-                        };
                         await VariableSvc.CreateVariableAsync(
-                            _project.Id, name, value, type, scope, await Guard.CurrentCallerAsync());
+                            _filterProjectId.Value, name, value, type,
+                            new VariableScope
+                            {
+                                EnvironmentId = e, TenantId = t, TargetId = tg,
+                                ChannelId = _popChannelId, ProcessStepId = _popProcessStepId,
+                                Roles = roles.Count > 0 ? [..roles] : null,
+                            }, await Guard.CurrentCallerAsync());
                     }
         }
 
         ClosePopup();
-        await ReloadAsync();
-        Notifications.Notify(NotificationSeverity.Success, "Scope saved",
-            "Variable scope was updated.", 3000);
+        await FetchAsync();
+        Notifications.Notify(NotificationSeverity.Success, "Scope saved", "Variable scope was updated.", 3000);
     }
 
     private async Task OpenAdvancedEditorAsync()
@@ -1383,19 +1352,15 @@
                 new Dictionary<string, object?>
                 {
                     [nameof(VariableFormDialog.Variable)] = _popupEditingVar,
-                    [nameof(VariableFormDialog.ProjectId)] = _project?.Id,
+                    [nameof(VariableFormDialog.ProjectId)] = _filterProjectId,
                 },
                 new DialogOptions { Width = "640px" });
-            await ReloadAsync();
+            await FetchAsync();
         }
     }
 
-    // ÔöÇÔöÇ Array-as-list editor ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    // ── Array editor ────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Renders a short preview for a stored StringArray value. The full JSON
-    /// can be long; the user opens the popup to see/edit it as lines.
-    /// </summary>
     private static string FormatArrayPreview(string? json)
     {
         var items = ParseArrayJson(json);
@@ -1409,21 +1374,9 @@
 
     private static List<string> ParseArrayJson(string? json)
     {
-        if (string.IsNullOrWhiteSpace(json))
-        {
-            return [];
-        }
-        try
-        {
-            return System.Text.Json.JsonSerializer.Deserialize<List<string>>(json) ?? [];
-        }
-        catch
-        {
-            // Fallback: treat as comma-separated.
-            return json.Split(',', StringSplitOptions.None)
-                       .Select(s => s.Trim())
-                       .ToList();
-        }
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try { return System.Text.Json.JsonSerializer.Deserialize<List<string>>(json) ?? []; }
+        catch { return json.Split(',', StringSplitOptions.None).Select(s => s.Trim()).ToList(); }
     }
 
     private void OpenArrayEditor(MouseEventArgs args, Variable v)
@@ -1446,7 +1399,7 @@
     {
         const double popupWidth = 460;
         const double margin = 8;
-        _arrayPopupTop  = args.ClientY + margin;
+        _arrayPopupTop = args.ClientY + margin;
         _arrayPopupLeft = args.ClientX - popupWidth / 2;
         if (_arrayPopupLeft < margin) _arrayPopupLeft = margin;
     }
@@ -1456,19 +1409,10 @@
     private async Task SaveArrayAsync()
     {
         if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
-
-        // Convert lines into a JSON array string. Newlines are split on \n
-        // and \r\n alike; trailing \r is stripped. Empty lines are preserved
-        // because empty array entries are sometimes meaningful.
-        var lines = (_arrayLines ?? "")
-            .Split('\n', StringSplitOptions.None)
-            .Select(l => l.TrimEnd('\r'))
-            .ToList();
+        var lines = (_arrayLines ?? "").Split('\n', StringSplitOptions.None).Select(l => l.TrimEnd('\r')).ToList();
         var json = System.Text.Json.JsonSerializer.Serialize(lines);
-
         if (_arrayEditingVar is null)
         {
-            // New-row case: just stage the value, persist on Add.
             _newValue = json;
         }
         else
@@ -1476,11 +1420,53 @@
             await VariableSvc.UpdateVariableAsync(
                 _arrayEditingVar.Id, _arrayEditingVar.Name, json,
                 _arrayEditingVar.Type, _arrayEditingVar.Scope, await Guard.CurrentCallerAsync());
-            await ReloadAsync();
-            Notifications.Notify(NotificationSeverity.Success, "Saved",
-                "Array value updated.", 3000);
+            await FetchAsync();
+            Notifications.Notify(NotificationSeverity.Success, "Saved", "Array value updated.", 3000);
         }
-
         CloseArrayEditor();
+    }
+
+    // ── Preview ─────────────────────────────────────────────────────────
+
+    private async Task RunPreviewAsync()
+    {
+        if (!_previewProjectId.HasValue || !_previewEnvId.HasValue) return;
+        _previewLoading = true;
+        _previewResult = null;
+        _previewRows = [];
+        StateHasChanged();
+
+        try
+        {
+            var targetRoles = _previewTargetId.HasValue
+                ? _targets.FirstOrDefault(t => t.Id == _previewTargetId)?.Roles ?? []
+                : [];
+
+            IReadOnlyList<Guid>? tenantTagIds = null;
+            if (_previewTenantId.HasValue)
+            {
+                tenantTagIds = await VariableSvc.GetTenantTagIdsAsync(_previewTenantId.Value);
+            }
+
+            var resolved = await VariableSvc.ResolveAsync(
+                _previewProjectId.Value, _previewEnvId.Value, _previewTargetId,
+                targetRoles, tenantId: _previewTenantId, tenantTagIds: tenantTagIds);
+
+            var sensitive = await VariableSvc.GetSensitiveNamesAsync(_previewProjectId.Value);
+
+            _previewResult = resolved;
+            _previewRows = resolved
+                .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(kv => new PreviewRow(kv.Key, kv.Value, sensitive.Contains(kv.Key)))
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Preview failed", ex.Message, 5000);
+        }
+        finally
+        {
+            _previewLoading = false;
+        }
     }
 }

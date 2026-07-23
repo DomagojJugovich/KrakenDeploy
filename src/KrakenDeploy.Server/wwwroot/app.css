@@ -1784,6 +1784,30 @@ a.kraken-back-link .rzi { font-size: 16px; }
 
 /* Variable grid auxiliary styles (RadzenDataGrid handles the table chrome). */
 
+/* Filter chips */
+.kraken-filter-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    font-size: 12px;
+    border-radius: 12px;
+    background: var(--surface-3, rgba(128,128,128,.15));
+    border: 1px solid var(--border);
+    white-space: nowrap;
+}
+.kraken-filter-chip-x {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0 2px;
+    opacity: 0.6;
+    color: inherit;
+}
+.kraken-filter-chip-x:hover { opacity: 1; }
+
 /* Filter bar above the variable grid */
 .kraken-var-filter-bar {
     display: flex;

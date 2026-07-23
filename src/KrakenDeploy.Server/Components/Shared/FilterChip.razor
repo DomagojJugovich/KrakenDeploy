@@ -1,0 +1,9 @@
+<span class="kraken-filter-chip">
+    @Label
+    <button type="button" class="kraken-filter-chip-x" @onclick="OnRemove" @onclick:stopPropagation="true">&times;</button>
+</span>
+
+@code {
+    [Parameter] public string Label { get; set; } = "";
+    [Parameter] public EventCallback OnRemove { get; set; }
+}
