@@ -11,6 +11,7 @@ using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Targets;
+using KrakenDeploy.Server.Core.Domain.Tenants;
 using KrakenDeploy.Server.Core.Domain.Variables;
 using KrakenDeploy.Server.Data.Encryption;
 using KrakenDeploy.Server.Data.Services;
@@ -220,6 +221,22 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         return e;
     }
 
+    /// <summary>Seeds a Tenant in the Default Space (F1 serialization-key tests
+    /// need real tenant rows because the task→tenant composite FK is enforced).</summary>
+    public async Task<Tenant> SeedTenantAsync(string name = "test-tenant")
+    {
+        await using var db = _postgres.CreateContext();
+        var t = new Tenant
+        {
+            SpaceId = WellKnown.DefaultSpaceId,
+            Name    = name,
+            Slug    = $"tn-{Guid.NewGuid():N}",
+        };
+        db.Tenants.Add(t);
+        await db.SaveChangesAsync();
+        return t;
+    }
+
     /// <summary>Seeds N targets in the Default Space with TransportMode.Reverse
     /// (the agent-side mode the orchestrator targets). Returns them in the
     /// order names were supplied.</summary>
@@ -286,7 +303,10 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         DeploymentFailureMode failureMode = DeploymentFailureMode.BestEffort,
         // E3 transitive self-recursion coverage: seed a child (ParentTaskId set)
         // whose DeployRelease step targets an ancestor's project.
-        Guid? parentTaskId = null)
+        Guid? parentTaskId = null,
+        // F1 serialization-key tests: the tenant component of (project, env, tenant).
+        // The tenant must already exist (composite FK) — seed via SeedTenantAsync.
+        Guid? tenantId = null)
     {
         ArgumentNullException.ThrowIfNull(targets);
         if (targets.Count == 0)
@@ -302,6 +322,7 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             ProjectId     = projectId,
             ReleaseId     = releaseId,
             EnvironmentId = environmentId,
+            TenantId      = tenantId,
             Status        = DeploymentStatus.Queued,
             FailureMode   = failureMode,
             ParentTaskId  = parentTaskId,

@@ -161,12 +161,34 @@ public sealed class DeploymentWorker(
     /// </summary>
     private async Task GateThenDispatchCoreAsync(Guid accountId, Guid deploymentId, CancellationToken ct)
     {
-        if (await IsChildTaskAsync(deploymentId, ct).ConfigureAwait(false))
+        var probe = await ProbeGateAsync(deploymentId, ct).ConfigureAwait(false);
+
+        if (probe is { ParentTaskId: not null })
         {
             // No gate slot — covered by the parent's. Still tracked for
             // blue-green drain: a child is real in-flight orchestration work.
+            // (Still serialized at claim time — a child Deployment goes through
+            // the same F1 (project,env,tenant) predicate in TryClaimAsync.)
             using var childTracking = inFlightGauge.Track();
             await DispatchCoreAsync(accountId, deploymentId, ct).ConfigureAwait(false);
+            return;
+        }
+
+        // F1 — (project, env, tenant) serialization, evaluated BEFORE gate
+        // acquisition. If another deployment of the same key is already Running,
+        // leave this TOP-LEVEL deployment Queued WITHOUT taking a NodeTaskGate
+        // slot, so a blocked task never starves the node's capacity for other
+        // deployments (the minutely stale-Queued re-signal retries it — no new
+        // poller). Racy by design: the authoritative guard is the advisory-locked
+        // claim in ServerTaskLease.TryClaimAsync; this only avoids burning a slot
+        // + the prep I/O in the common blocked case. RunbookRun is exempt.
+        if (probe is { Kind: ServerTaskKind.Deployment, IsSerializationBlocked: true })
+        {
+            logger.LogDebug(
+                "DeploymentWorker: deployment {Id} waiting — another deployment of project " +
+                "{ProjectId} to environment {EnvironmentId} is already Running; staying Queued " +
+                "(no gate slot taken).",
+                deploymentId, probe.ProjectId, probe.EnvironmentId);
             return;
         }
 
@@ -180,22 +202,58 @@ public sealed class DeploymentWorker(
     }
 
     /// <summary>
-    /// E3 — cheap filter-free parentage probe used to decide gate bypass. A row
-    /// with a non-null <c>ParentTaskId</c> is a child of an
-    /// <c>Octopus.DeployRelease</c> step. Returns <c>false</c> for a missing row
-    /// (dispatch proceeds, loads, and no-ops on the missing deployment).
+    /// E3 + F1 — the pre-gate probe. One filter-free read (the worker background
+    /// scope has no ambient Space) of the row's gate-relevant shape:
+    /// <list type="bullet">
+    ///   <item><c>ParentTaskId</c> — a non-null value is a child of an
+    ///   <c>Octopus.DeployRelease</c> step, which bypasses the NodeTaskGate (its
+    ///   slot is held by the parent; E3).</item>
+    ///   <item><c>Kind</c> + a same-key running-peer flag — a top-level
+    ///   <c>Deployment</c> whose (project, env, tenant) already has a Running peer
+    ///   is left Queued without taking a slot (F1). The peer read is issued only
+    ///   for a top-level deployment; a child, a runbook run, or a missing row skip
+    ///   it.</item>
+    /// </list>
+    /// Returns <c>null</c> for a missing row (dispatch proceeds, loads, and no-ops
+    /// on the absent task — parity with the pre-F1 parentage probe).
     /// </summary>
-    private async Task<bool> IsChildTaskAsync(Guid deploymentId, CancellationToken ct)
+    private async Task<GateProbe?> ProbeGateAsync(Guid deploymentId, CancellationToken ct)
     {
         await using var scope = scopeFactory.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<KrakenDbContext>();
-        return await db.ServerTasks
+
+        var row = await db.ServerTasks
             .IgnoreQueryFilters()
             .Where(t => t.Id == deploymentId)
-            .Select(t => t.ParentTaskId != null)
+            .Select(t => new { t.ParentTaskId, t.Kind, t.ProjectId, t.EnvironmentId, t.TenantId })
             .FirstOrDefaultAsync(ct)
             .ConfigureAwait(false);
+        if (row is null)
+        {
+            return null;
+        }
+
+        var blocked = row.ParentTaskId is null
+            && row.Kind == ServerTaskKind.Deployment
+            && await db.ServerTasks
+                .IgnoreQueryFilters()
+                .AnyAsync(
+                    ServerTaskLease.RunningDeploymentPeerPredicate(
+                        deploymentId, row.ProjectId, row.EnvironmentId, row.TenantId),
+                    ct)
+                .ConfigureAwait(false);
+
+        return new GateProbe(
+            row.ParentTaskId, row.Kind, row.ProjectId, row.EnvironmentId, blocked);
     }
+
+    /// <summary>Pre-gate probe shape (see <see cref="ProbeGateAsync"/>).</summary>
+    private sealed record GateProbe(
+        Guid? ParentTaskId,
+        ServerTaskKind Kind,
+        Guid ProjectId,
+        Guid EnvironmentId,
+        bool IsSerializationBlocked);
 
     private async Task DispatchCoreAsync(Guid accountId, Guid deploymentId, CancellationToken ct)
     {
@@ -406,13 +464,27 @@ public sealed class DeploymentWorker(
                 // build (and deliver) the same bundle twice concurrently. Flow:
                 // Queued→Running (claimed, leased) → bundle build →
                 // PendingOfflineResult (lease released in the transition).
-                if (!await ServerTaskLease.TryClaimAsync(db, deployment.Id, timeProvider, ct)
-                        .ConfigureAwait(false))
+                var offlineClaim = await ServerTaskLease.TryClaimAsync(db, deployment.Id, timeProvider, ct)
+                    .ConfigureAwait(false);
+                if (offlineClaim != ServerTaskClaimResult.Claimed)
                 {
-                    logger.LogInformation(
-                        "DeploymentWorker: offline deployment {Id} was not claimable (cancelled " +
-                        "or already claimed by another wake-up); skipping dispatch.",
-                        deploymentId);
+                    // Two calls (not a ternary template) — the log message template
+                    // must be a compile-time constant (CA2254).
+                    if (offlineClaim == ServerTaskClaimResult.SerializationBlocked)
+                    {
+                        logger.LogInformation(
+                            "DeploymentWorker: offline deployment {Id} lost the (project,env,tenant) " +
+                            "serialization race — another deployment of the same key started first; " +
+                            "staying Queued for the minutely re-signal to retry.",
+                            deploymentId);
+                    }
+                    else
+                    {
+                        logger.LogInformation(
+                            "DeploymentWorker: offline deployment {Id} was not claimable (cancelled " +
+                            "or already claimed by another wake-up); skipping dispatch.",
+                            deploymentId);
+                    }
                     return;
                 }
 
@@ -611,13 +683,27 @@ public sealed class DeploymentWorker(
             // running elsewhere all fail the WHERE status=Queued and bail here.
             // The claim also stamps the dispatch lease (renewed below) and
             // clears ScheduledFor so the scheduled job never re-matches it.
-            if (!await ServerTaskLease.TryClaimAsync(db, deployment.Id, timeProvider, ct)
-                    .ConfigureAwait(false))
+            var claim = await ServerTaskLease.TryClaimAsync(db, deployment.Id, timeProvider, ct)
+                .ConfigureAwait(false);
+            if (claim != ServerTaskClaimResult.Claimed)
             {
-                logger.LogInformation(
-                    "DeploymentWorker: deployment {Id} was not claimable (cancelled or already " +
-                    "claimed by another wake-up); skipping dispatch.",
-                    deploymentId);
+                // Two calls (not a ternary template) — the log message template
+                // must be a compile-time constant (CA2254).
+                if (claim == ServerTaskClaimResult.SerializationBlocked)
+                {
+                    logger.LogInformation(
+                        "DeploymentWorker: deployment {Id} lost the (project,env,tenant) " +
+                        "serialization race — another deployment of the same key started first; " +
+                        "staying Queued for the minutely re-signal to retry.",
+                        deploymentId);
+                }
+                else
+                {
+                    logger.LogInformation(
+                        "DeploymentWorker: deployment {Id} was not claimable (cancelled or " +
+                        "already claimed by another wake-up); skipping dispatch.",
+                        deploymentId);
+                }
                 return;
             }
 

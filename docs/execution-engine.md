@@ -355,12 +355,36 @@ Two properties to be aware of:
 - **Lease ownership is by expiry, never by `ClaimedBy`** (forensic only) —
   deliberate, so two blue-green slots on one machine cannot misjudge each
   other's liveness.
-- **There is no project/environment mutual exclusion.** Nothing prevents
-  two deployments to the same project + environment — even the same
-  target — from running concurrently. The only guards are the per-task
-  claim and xmin. `BlockConcurrentDeployments` on the manual-intervention
-  step is informational only. If Octopus-style "one task per project/env"
-  serialization is ever assumed, it must first be built.
+- **Deployment serialization by (project, environment, tenant) — F1.** A
+  deployment is claimed only when no OTHER `Deployment` of the same
+  `(ProjectId, EnvironmentId, TenantId)` is `Running` (Octopus-parity "one
+  deployment per project/environment/tenant"). A NULL tenant is its **own** key:
+  untenanted deployments serialize among themselves, while different tenants of
+  the same project+environment proceed in parallel. Enforced at **claim** time in
+  `ServerTaskLease.TryClaimAsync`: for a deployment the claim runs inside
+  `pg_advisory_xact_lock(hash64(project, env, tenant))` — a blocking,
+  transaction-scoped lock — and re-checks the "no running peer" predicate
+  (`RunningDeploymentPeerPredicate`) as a **separate statement**, so two
+  concurrent claimants of one key cannot both see "no peer" and both win: the
+  lock-loser blocks until the winner commits, then its fresh READ COMMITTED
+  snapshot sees the winner's `Running` row and is refused
+  (`ServerTaskClaimResult.SerializationBlocked`). The claim wraps the transaction
+  in the DbContext's execution strategy because the web host runs with
+  `EnableRetryOnFailure`; the retry ambiguity is safe — it can only yield a false
+  `NotQueued` (the worker bails on a row it truly claimed → the reconciler fails
+  that ownerless `Running` row), never a double-claim. A refused claim leaves the
+  task `Queued`. `DeploymentWorker` also evaluates the same predicate **before**
+  acquiring a `NodeTaskGate` slot, so a blocked deployment consumes no slot
+  (capacity stays available for other keys); the minutely stale-`Queued`
+  re-signal retries it once the running deployment goes terminal — **no new
+  poller**. Deployments only — a `RunbookRun` is **exempt** (operational tooling
+  runs concurrently), expressed as the kind branch in `TryClaimAsync`. The rule
+  is **unavoidable** by design: no bypass setting, no per-project opt-out
+  (decision 2026-07-18). Backed by the partial index
+  `ix_server_tasks_running_deployment_peer` (running deployments only).
+  `BlockConcurrentDeployments` on the manual-intervention step remains
+  informational only. The only other concurrency guards are the per-task claim
+  and xmin.
 
 ## 8. The deployment/runbook unification (D1 — execution-deep)
 

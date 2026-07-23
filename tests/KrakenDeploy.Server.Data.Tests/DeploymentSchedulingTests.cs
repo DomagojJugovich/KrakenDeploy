@@ -145,7 +145,7 @@ public sealed class DeploymentSchedulingTests(PostgresFixture postgres)
         await using (var db = postgres.CreateContext())
         {
             (await ServerTaskLease.TryClaimAsync(db, deployment.Id, TimeProvider.System))
-                .Should().BeTrue();
+                .Should().Be(ServerTaskClaimResult.Claimed);
         }
         await job.ExecuteAsync(CancellationToken.None);
         queue.Reader.TryRead(out _).Should().BeFalse("a claimed (Running) row is never re-signalled");

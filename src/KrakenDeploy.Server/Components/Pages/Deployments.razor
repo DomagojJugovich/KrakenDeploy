@@ -55,7 +55,13 @@
                 EmptyText="No deployments match the current filters.">
     <Columns>
         <RadzenDataGridColumn TItem="Deployment" Property="Status" Title="Status" Width="160px">
-            <Template Context="d"><StatusPill Deployment="d.Status" /></Template>
+            <Template Context="d">
+                <StatusPill Deployment="d.Status" />
+                @if (QueueWaitReason(d) is { } reason)
+                {
+                    <div class="cell-muted" style="font-size:11px; line-height:1.3; margin-top:3px;">@reason</div>
+                }
+            </Template>
         </RadzenDataGridColumn>
 
         <RadzenDataGridColumn TItem="Deployment" UniqueID="project-release" Title="Project / Release" Width="260px" Sortable="false">
@@ -246,6 +252,30 @@
         _filtered = q.ToList();
         _grid?.Reload();
     }
+
+    // F1 — the queue-wait reason for a Queued deployment blocked by the
+    // (project, environment, tenant) serialization rule. Computed in-memory over
+    // the already-loaded _all set (which holds every deployment in the Space,
+    // including the Running peers), so there is no per-row DB round-trip. Mirrors
+    // ServerTaskLease.RunningDeploymentPeerPredicate (null tenant is its own key
+    // via the == comparison).
+    private string? QueueWaitReason(Deployment d)
+    {
+        if (d.Status != DeploymentStatus.Queued || !IsBlockedByRunningPeer(d))
+        {
+            return null;
+        }
+        var project = d.Release?.Project?.Name ?? "this project";
+        var env = d.Environment?.Name ?? "this environment";
+        return $"Waiting: another deployment of {project} to {env} is running.";
+    }
+
+    private bool IsBlockedByRunningPeer(Deployment d)
+        => _all.Any(o => o.Id != d.Id
+            && o.Status == DeploymentStatus.Running
+            && o.ProjectId == d.ProjectId
+            && o.EnvironmentId == d.EnvironmentId
+            && o.TenantId == d.TenantId);
 
     private string EnvColor(Guid envId)
         => _envColor.TryGetValue(envId, out var i) ? $"env-c{i % 6}" : "env-c0";

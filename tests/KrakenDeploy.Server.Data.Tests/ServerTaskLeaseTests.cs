@@ -1,5 +1,6 @@
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data.Tests.OrchestratorHarness;
 using Microsoft.EntityFrameworkCore;
 
@@ -27,8 +28,9 @@ public sealed class ServerTaskLeaseTests(PostgresFixture postgres)
         var first = await ServerTaskLease.TryClaimAsync(db, id, TimeProvider.System);
         var second = await ServerTaskLease.TryClaimAsync(db, id, TimeProvider.System);
 
-        first.Should().BeTrue("the first wake-up claims the row");
-        second.Should().BeFalse("a duplicate wake-up must lose the claim and bail");
+        first.Should().Be(ServerTaskClaimResult.Claimed, "the first wake-up claims the row");
+        second.Should().Be(ServerTaskClaimResult.NotQueued,
+            "a duplicate wake-up must lose the claim and bail");
 
         var task = await db.ServerTasks.IgnoreQueryFilters().AsNoTracking()
             .FirstAsync(t => t.Id == id);
@@ -51,7 +53,8 @@ public sealed class ServerTaskLeaseTests(PostgresFixture postgres)
             .ExecuteUpdateAsync(s => s.SetProperty(t => t.Status, DeploymentStatus.Cancelled));
 
         (await ServerTaskLease.TryClaimAsync(db, id, TimeProvider.System))
-            .Should().BeFalse("cancel-before-dispatch must win over any wake-up");
+            .Should().Be(ServerTaskClaimResult.NotQueued,
+                "cancel-before-dispatch must win over any wake-up");
     }
 
     [Fact]
@@ -60,7 +63,8 @@ public sealed class ServerTaskLeaseTests(PostgresFixture postgres)
         var id = await SeedQueuedDeploymentAsync();
 
         await using var db = postgres.CreateContext();
-        (await ServerTaskLease.TryClaimAsync(db, id, TimeProvider.System)).Should().BeTrue();
+        (await ServerTaskLease.TryClaimAsync(db, id, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed);
 
         var before = await db.ServerTasks.IgnoreQueryFilters().AsNoTracking()
             .Where(t => t.Id == id).Select(t => t.LeaseUntil).FirstAsync();
@@ -83,6 +87,123 @@ public sealed class ServerTaskLeaseTests(PostgresFixture postgres)
     // ServerTaskLease.ReleaseAsync — the mid-flight release belonged to the
     // deleted runbook hand-off model; terminal writes clear the lease inline.
 
+    // ── F1: (project, environment, tenant) serialization ─────────────────────
+
+    [Fact]
+    public async Task Second_deployment_of_same_project_env_is_blocked_until_first_terminal()
+    {
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var key = await SeedSharedKeyAsync(harness);
+        var first  = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets);
+        var second = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets);
+
+        await using var db = postgres.CreateContext();
+        (await ServerTaskLease.TryClaimAsync(db, first, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed, "the first deployment of the key wins");
+        (await ServerTaskLease.TryClaimAsync(db, second, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.SerializationBlocked,
+                "a second deployment of the same (project, env, tenant) must wait");
+
+        // The refused task stays Queued (the minutely re-signal retries it).
+        (await StatusOf(db, second)).Should().Be(DeploymentStatus.Queued);
+
+        // Once the first is terminal, the key frees and the second can claim.
+        await db.ServerTasks.IgnoreQueryFilters().Where(t => t.Id == first)
+            .ExecuteUpdateAsync(s => s.SetProperty(t => t.Status, DeploymentStatus.Succeeded));
+        (await ServerTaskLease.TryClaimAsync(db, second, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed,
+                "with the running deployment terminal the key is free");
+    }
+
+    [Fact]
+    public async Task Different_tenants_of_same_project_env_claim_in_parallel()
+    {
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var key = await SeedSharedKeyAsync(harness);
+        var t1 = await harness.SeedTenantAsync("tenant-a");
+        var t2 = await harness.SeedTenantAsync("tenant-b");
+        var d1 = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets, tenantId: t1.Id);
+        var d2 = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets, tenantId: t2.Id);
+
+        await using var db = postgres.CreateContext();
+        (await ServerTaskLease.TryClaimAsync(db, d1, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed);
+        (await ServerTaskLease.TryClaimAsync(db, d2, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed,
+                "different tenants of the same project+env are independent keys");
+    }
+
+    [Fact]
+    public async Task Null_tenant_is_its_own_serialization_key()
+    {
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var key = await SeedSharedKeyAsync(harness);
+        var tenant = await harness.SeedTenantAsync("tenant-a");
+        var tenanted    = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets, tenantId: tenant.Id);
+        var untenantedA = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets);
+        var untenantedB = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets);
+
+        await using var db = postgres.CreateContext();
+        (await ServerTaskLease.TryClaimAsync(db, tenanted, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed);
+        (await ServerTaskLease.TryClaimAsync(db, untenantedA, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed,
+                "a tenanted run does not block an untenanted one — NULL tenant is its own key");
+        (await ServerTaskLease.TryClaimAsync(db, untenantedB, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.SerializationBlocked,
+                "untenanted deployments serialize among themselves");
+    }
+
+    [Fact]
+    public async Task Concurrent_claims_of_same_key_let_exactly_one_win()
+    {
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var key = await SeedSharedKeyAsync(harness);
+        var a = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets);
+        var b = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets);
+
+        // Two claimants on SEPARATE connections, racing. The (project,env,tenant)
+        // advisory xact lock must let exactly one through — without it, write-skew
+        // under READ COMMITTED would let both see "no peer" and both win.
+        await using var dbA = postgres.CreateContext();
+        await using var dbB = postgres.CreateContext();
+        var results = await Task.WhenAll(
+            ServerTaskLease.TryClaimAsync(dbA, a, TimeProvider.System),
+            ServerTaskLease.TryClaimAsync(dbB, b, TimeProvider.System));
+
+        results.Count(r => r == ServerTaskClaimResult.Claimed).Should().Be(1,
+            "the advisory lock serializes the check+claim so only one same-key deployment runs");
+        results.Count(r => r == ServerTaskClaimResult.SerializationBlocked).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task RunbookRuns_are_exempt_from_deployment_serialization()
+    {
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var key = await SeedSharedKeyAsync(harness);
+        var deployment = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets);
+        var run        = await harness.SeedRunbookRunAsync(key.ProjectId, key.EnvId);
+
+        await using var db = postgres.CreateContext();
+        // A Running deployment of the key does NOT block a runbook run of the
+        // same project+env — runbook runs are exempt (they take the plain claim).
+        (await ServerTaskLease.TryClaimAsync(db, deployment, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed);
+        (await ServerTaskLease.TryClaimAsync(db, run, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed,
+                "runbook runs are exempt from (project, env, tenant) serialization");
+
+        // And symmetrically: a Running runbook run is not a deployment peer, so it
+        // does not block a fresh deployment of the same key. (Retire the earlier
+        // deployment first so only the runbook run is Running.)
+        await db.ServerTasks.IgnoreQueryFilters().Where(t => t.Id == deployment)
+            .ExecuteUpdateAsync(s => s.SetProperty(t => t.Status, DeploymentStatus.Succeeded));
+        var deployment2 = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets);
+        (await ServerTaskLease.TryClaimAsync(db, deployment2, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed,
+                "a Running runbook run is not a deployment peer");
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private async Task<Guid> SeedQueuedDeploymentAsync(DateTimeOffset? scheduledFor = null)
@@ -104,4 +225,25 @@ public sealed class ServerTaskLeaseTests(PostgresFixture postgres)
 
         return id;
     }
+
+    /// <summary>Seeds ONE project + environment + release + target so several
+    /// deployments can be created that share the same (project, env) key —
+    /// unlike <see cref="SeedQueuedDeploymentAsync"/>, which mints a fresh
+    /// project/env each call. Unique Guid-based names avoid slug collisions
+    /// between tests sharing the class's cloned database.</summary>
+    private static async Task<(Guid ProjectId, Guid ReleaseId, Guid EnvId, List<DeploymentTarget> Targets)>
+        SeedSharedKeyAsync(OrchestratorTestHarness harness)
+    {
+        var project = await harness.SeedProjectAsync($"lp-{Guid.NewGuid():N}"[..16]);
+        var env = await harness.SeedEnvironmentAsync($"le-{Guid.NewGuid():N}"[..16]);
+        var targets = await harness.SeedTargetsAsync($"ft-{Guid.NewGuid():N}"[..12]);
+        var release = await harness.SeedReleaseAsync(project.Id, "1.0", StepBuilder.Script("s1"));
+        return (project.Id, release.Id, env.Id, targets);
+    }
+
+    private static async Task<DeploymentStatus> StatusOf(KrakenDbContext db, Guid id)
+        => await db.ServerTasks.IgnoreQueryFilters()
+            .Where(t => t.Id == id)
+            .Select(t => t.Status)
+            .FirstAsync();
 }
