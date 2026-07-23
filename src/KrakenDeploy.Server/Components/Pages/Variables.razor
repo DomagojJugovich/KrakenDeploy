@@ -898,11 +898,13 @@ else
     // ── Fetch ───────────────────────────────────────────────────────────
 
     private int _fetchGeneration;
+    private int _activeFetches;
 
     private async Task FetchAsync()
     {
         if (!HasAnyFilter) return;
         var gen = ++_fetchGeneration;
+        _activeFetches++;
         _fetching = true;
         StateHasChanged();
 
@@ -967,7 +969,8 @@ else
         }
         finally
         {
-            if (gen == _fetchGeneration)
+            _activeFetches--;
+            if (_activeFetches == 0)
             {
                 _fetching = false;
             }
@@ -1141,20 +1144,22 @@ else
 
     private async Task AddValueAsync(Variable v)
     {
-        if (!_filterProjectId.HasValue) return;
+        var projectId = v.Set.ProjectId ?? _filterProjectId;
+        if (!projectId.HasValue) return;
         if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
         await VariableSvc.CreateVariableAsync(
-            _filterProjectId.Value, v.Name, "", VariableType.Text, new VariableScope(), await Guard.CurrentCallerAsync());
+            projectId.Value, v.Name, "", VariableType.Text, new VariableScope(), await Guard.CurrentCallerAsync());
         await FetchAsync();
     }
 
     private async Task DuplicateAsync(Variable v)
     {
-        if (!_filterProjectId.HasValue) return;
+        var projectId = v.Set.ProjectId ?? _filterProjectId;
+        if (!projectId.HasValue) return;
         if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
         var rawValue = v.Type == VariableType.Sensitive ? "" : v.Value;
         await VariableSvc.CreateVariableAsync(
-            _filterProjectId.Value, v.Name + " (copy)", rawValue, v.Type,
+            projectId.Value, v.Name + " (copy)", rawValue, v.Type,
             new VariableScope
             {
                 EnvironmentId = v.Scope.EnvironmentId,
