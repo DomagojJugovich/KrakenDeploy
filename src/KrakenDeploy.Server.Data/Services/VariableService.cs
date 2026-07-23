@@ -249,19 +249,14 @@ public class VariableService(
 
     /// <summary>
     /// Searches variables across projects with optional filters. Returns full
-    /// entities (no redaction) for the edit grid. Filters are AND-combined;
-    /// a null/empty filter is ignored.
+    /// entities (no redaction) for the edit grid. Project and name filters are
+    /// applied server-side; scope filters (env, tenant, role, step, target)
+    /// are applied in-memory by the caller since Scope is a jsonb column.
     /// </summary>
     public async Task<List<Variable>> SearchVariablesAsync(
         Guid? projectId = null,
-        Guid? environmentId = null,
-        Guid? tenantId = null,
-        string? role = null,
-        Guid? stepId = null,
-        Guid? targetId = null,
         string? nameContains = null,
         IReadOnlyCollection<Guid>? projectIds = null,
-        IReadOnlyCollection<Guid>? environmentIds = null,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -276,42 +271,6 @@ public class VariableService(
         {
             query = query.Where(v => v.Set.ProjectId != null
                                      && projectIds.Contains(v.Set.ProjectId.Value));
-        }
-
-        if (environmentId.HasValue)
-        {
-            query = query.Where(v => v.Scope.EnvironmentId == null
-                                     || v.Scope.EnvironmentId == environmentId.Value);
-        }
-        else if (environmentIds is { Count: > 0 })
-        {
-            query = query.Where(v => v.Scope.EnvironmentId == null
-                                     || environmentIds.Contains(v.Scope.EnvironmentId.Value));
-        }
-
-        if (tenantId.HasValue)
-        {
-            query = query.Where(v => v.Scope.TenantId == null
-                                     || v.Scope.TenantId == tenantId.Value);
-        }
-
-        if (!string.IsNullOrWhiteSpace(role))
-        {
-            query = query.Where(v => v.Scope.Roles == null
-                                     || v.Scope.Roles.Count == 0
-                                     || v.Scope.Roles.Contains(role));
-        }
-
-        if (stepId.HasValue)
-        {
-            query = query.Where(v => v.Scope.ProcessStepId == null
-                                     || v.Scope.ProcessStepId == stepId.Value);
-        }
-
-        if (targetId.HasValue)
-        {
-            query = query.Where(v => v.Scope.TargetId == null
-                                     || v.Scope.TargetId == targetId.Value);
         }
 
         if (!string.IsNullOrWhiteSpace(nameContains))

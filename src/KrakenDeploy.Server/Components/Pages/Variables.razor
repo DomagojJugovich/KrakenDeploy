@@ -909,31 +909,43 @@ else
         try
         {
             IReadOnlyCollection<Guid>? projectIds = null;
-            IReadOnlyCollection<Guid>? environmentIds = null;
-
             if (_filterProjectTagId.HasValue)
             {
                 projectIds = await TagSvc.GetEntityIdsWithAnyTagAsync(TaggableEntityKind.Project, [_filterProjectTagId.Value]);
             }
-            if (_filterEnvTagId.HasValue)
-            {
-                environmentIds = await TagSvc.GetEntityIdsWithAnyTagAsync(TaggableEntityKind.Environment, [_filterEnvTagId.Value]);
-            }
 
             var results = await VariableSvc.SearchVariablesAsync(
                 projectId: _filterProjectId,
-                environmentId: _filterEnvId,
-                tenantId: _filterTenantId,
-                role: _filterRole.Length > 0 ? _filterRole : null,
-                stepId: _filterStepId,
-                targetId: _filterTargetId,
                 nameContains: _filterName.Length > 0 ? _filterName : null,
-                projectIds: projectIds,
-                environmentIds: environmentIds);
+                projectIds: projectIds);
 
             if (gen != _fetchGeneration) return;
 
-            _variables = results;
+            HashSet<Guid>? envIds = null;
+            if (_filterEnvTagId.HasValue)
+            {
+                envIds = await TagSvc.GetEntityIdsWithAnyTagAsync(TaggableEntityKind.Environment, [_filterEnvTagId.Value]);
+            }
+
+            if (gen != _fetchGeneration) return;
+
+            _variables = results.Where(v =>
+            {
+                if (_filterEnvId.HasValue && v.Scope.EnvironmentId.HasValue
+                    && v.Scope.EnvironmentId != _filterEnvId.Value) return false;
+                if (envIds is { Count: > 0 } && v.Scope.EnvironmentId.HasValue
+                    && !envIds.Contains(v.Scope.EnvironmentId.Value)) return false;
+                if (_filterTenantId.HasValue && v.Scope.TenantId.HasValue
+                    && v.Scope.TenantId != _filterTenantId.Value) return false;
+                if (_filterRole.Length > 0 && v.Scope.Roles is { Count: > 0 }
+                    && !v.Scope.Roles.Contains(_filterRole, StringComparer.OrdinalIgnoreCase)) return false;
+                if (_filterStepId.HasValue && v.Scope.ProcessStepId.HasValue
+                    && v.Scope.ProcessStepId != _filterStepId.Value) return false;
+                if (_filterTargetId.HasValue && v.Scope.TargetId.HasValue
+                    && v.Scope.TargetId != _filterTargetId.Value) return false;
+                return true;
+            }).ToList();
+
             _sourceNames.Clear();
             _lockedIds.Clear();
             _includedSets = [];
