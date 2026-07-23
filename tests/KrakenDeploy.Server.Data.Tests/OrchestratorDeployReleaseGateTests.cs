@@ -41,14 +41,19 @@ public sealed class OrchestratorDeployReleaseGateTests(PostgresFixture postgres)
         var tag = Guid.NewGuid().ToString("N")[..8];
         var env = await harness.SeedEnvironmentAsync($"dr-env-{tag}");
 
-        // One child project (target-side step) that both parents deploy-release.
-        var childProjectId = await harness.SeedChildProjectWithReleaseAsync(
-            $"dr-child-{tag}", StepBuilder.Script("child-step"));
-
-        // Two parent projects, each a single server-side DeployRelease → child.
+        // Two parent projects, each a single server-side DeployRelease → its OWN
+        // distinct child project. Distinct (project, env) keys so the two children
+        // run CONCURRENTLY, which is what this gate-bypass/no-deadlock test needs.
+        // (A shared child project would now serialize under F1 (project,env,tenant)
+        // serialization — the second child would wait for the first, and this
+        // harness runs no reconciler to re-signal it within the test window. F1
+        // child serialization is covered in ServerTaskLeaseTests /
+        // OrchestratorSerializationTests, not here.)
         var deployments = new List<(Guid Id, FakeAgent Agent)>(capacity);
         for (var i = 0; i < capacity; i++)
         {
+            var childProjectId = await harness.SeedChildProjectWithReleaseAsync(
+                $"dr-child-{tag}-{i}", StepBuilder.Script("child-step"));
             var parentProject = await harness.SeedProjectAsync($"dr-parent-{tag}-{i}");
             var parentRelease = await harness.SeedReleaseAsync(
                 parentProject.Id, "1.0", StepBuilder.DeployRelease("deploy-child", childProjectId));
