@@ -235,14 +235,7 @@ else
             : null;
 
     private string FormatDuration()
-    {
-        if (Run?.StartedUtc is null)    { return "—"; }
-        var end = Run.CompletedUtc ?? DateTimeOffset.UtcNow;
-        var dur = end - Run.StartedUtc.Value;
-        return dur.TotalHours >= 1
-            ? $"{(int)dur.TotalHours}h {dur.Minutes}m {dur.Seconds}s"
-            : $"{dur.Minutes}m {dur.Seconds}s";
-    }
+        => TaskFormatting.Elapsed(Run?.StartedUtc, Run?.CompletedUtc);
 
     // ── Multi-target rendering helpers (assignments join = the authority) ────
 

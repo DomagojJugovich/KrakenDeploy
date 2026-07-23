@@ -535,14 +535,7 @@ else
             : null;
 
     private string FormatDuration()
-    {
-        if (Deployment?.StartedUtc is null)    { return "—"; }
-        var end = Deployment.CompletedUtc ?? DateTimeOffset.UtcNow;
-        var dur = end - Deployment.StartedUtc.Value;
-        return dur.TotalHours >= 1
-            ? $"{(int)dur.TotalHours}h {dur.Minutes}m {dur.Seconds}s"
-            : $"{dur.Minutes}m {dur.Seconds}s";
-    }
+        => TaskFormatting.Elapsed(Deployment?.StartedUtc, Deployment?.CompletedUtc);
 
     private string DownloadUrl(Guid artifactId)
         => $"/api/deployments/{Id}/artifacts/{artifactId}/download";
