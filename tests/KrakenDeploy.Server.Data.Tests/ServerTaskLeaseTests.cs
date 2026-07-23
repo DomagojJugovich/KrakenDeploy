@@ -236,7 +236,89 @@ public sealed class ServerTaskLeaseTests(PostgresFixture postgres)
                 "a Running runbook run is not a deployment peer");
     }
 
+    [Fact]
+    public async Task Oldest_queued_deployment_of_a_key_claims_first_fifo()
+    {
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var key = await SeedSharedKeyAsync(harness);
+        var d1 = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets);
+        var d2 = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets);
+        var d3 = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets);
+
+        await using var db = postgres.CreateContext();
+        var baseUtc = DateTimeOffset.UtcNow.AddMinutes(-10);
+        await SetCreatedUtc(db, d1, baseUtc);
+        await SetCreatedUtc(db, d2, baseUtc.AddMinutes(1));
+        await SetCreatedUtc(db, d3, baseUtc.AddMinutes(2));
+
+        // No peer is running, yet the younger two defer to the oldest (FIFO).
+        (await ServerTaskLease.TryClaimAsync(db, d3, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.SerializationBlocked, "d1 and d2 are queued earlier");
+        (await ServerTaskLease.TryClaimAsync(db, d2, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.SerializationBlocked, "d1 is queued earlier");
+        (await ServerTaskLease.TryClaimAsync(db, d1, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed, "the oldest queued deployment claims first");
+
+        // d1 terminal → d2 is now the front; d3 still defers to d2.
+        await SetStatus(db, d1, DeploymentStatus.Succeeded);
+        (await ServerTaskLease.TryClaimAsync(db, d3, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.SerializationBlocked, "d2 is still queued earlier");
+        (await ServerTaskLease.TryClaimAsync(db, d2, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed);
+
+        // d2 terminal → d3 is the front.
+        await SetStatus(db, d2, DeploymentStatus.Succeeded);
+        (await ServerTaskLease.TryClaimAsync(db, d3, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed);
+    }
+
+    [Fact]
+    public async Task Future_scheduled_older_sibling_does_not_block_a_due_deployment()
+    {
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var key = await SeedSharedKeyAsync(harness);
+        var older = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets);
+        var due   = await harness.CreateDeploymentAsync(key.ReleaseId, key.EnvId, key.Targets);
+
+        await using var db = postgres.CreateContext();
+        // `older` is queued earlier BUT scheduled for the future → not yet due, so
+        // it must not block the ready `due` one (no starvation by a future-dated
+        // sibling — the FIFO gate only counts already-due Queued peers).
+        await db.ServerTasks.IgnoreQueryFilters().Where(t => t.Id == older)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(t => t.CreatedUtc, DateTimeOffset.UtcNow.AddMinutes(-10))
+                .SetProperty(t => t.ScheduledFor, DateTimeOffset.UtcNow.AddHours(1)));
+
+        (await ServerTaskLease.TryClaimAsync(db, due, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed,
+                "a future-scheduled older sibling is not due and must not block a ready deployment");
+    }
+
+    [Fact]
+    public async Task Claim_runs_through_the_retrying_execution_strategy()
+    {
+        // The web host enables NpgsqlRetryingExecutionStrategy; the deployment
+        // claim opens a user-initiated transaction, which is only legal when driven
+        // THROUGH the execution strategy. This proves the wrapper is correctly
+        // placed — a bare BeginTransactionAsync under retry throws "does not support
+        // user-initiated transactions".
+        var id = await SeedQueuedDeploymentAsync();
+
+        await using var db = postgres.CreateRetryingContext();
+        (await ServerTaskLease.TryClaimAsync(db, id, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed);
+        (await StatusOf(db, id)).Should().Be(DeploymentStatus.Running);
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
+
+    private static async Task SetCreatedUtc(KrakenDbContext db, Guid id, DateTimeOffset createdUtc)
+        => await db.ServerTasks.IgnoreQueryFilters().Where(t => t.Id == id)
+            .ExecuteUpdateAsync(s => s.SetProperty(t => t.CreatedUtc, createdUtc));
+
+    private static async Task SetStatus(KrakenDbContext db, Guid id, DeploymentStatus status)
+        => await db.ServerTasks.IgnoreQueryFilters().Where(t => t.Id == id)
+            .ExecuteUpdateAsync(s => s.SetProperty(t => t.Status, status));
 
     private async Task<Guid> SeedQueuedDeploymentAsync(DateTimeOffset? scheduledFor = null)
     {

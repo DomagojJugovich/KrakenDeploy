@@ -263,15 +263,9 @@
     // ServerTaskLease.InFlightDeploymentPeerPredicate (null tenant is its own key
     // via the == comparison).
     private string? QueueWaitReason(Deployment d)
-    {
-        if (d.Status != DeploymentStatus.Queued || !IsBlockedByInFlightPeer(d))
-        {
-            return null;
-        }
-        var project = d.Release?.Project?.Name ?? "this project";
-        var env = d.Environment?.Name ?? "this environment";
-        return $"Waiting: another deployment of {project} to {env} is running.";
-    }
+        => d.Status == DeploymentStatus.Queued && IsBlockedByInFlightPeer(d)
+            ? QueueWaitMessage.RunningPeer(d.Release?.Project?.Name, d.Environment?.Name)
+            : null;
 
     private bool IsBlockedByInFlightPeer(Deployment d)
         => _all.Any(o => o.Id != d.Id

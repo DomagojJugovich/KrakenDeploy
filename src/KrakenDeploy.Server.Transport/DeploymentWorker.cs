@@ -208,11 +208,12 @@ public sealed class DeploymentWorker(
     ///   <item><c>ParentTaskId</c> — a non-null value is a child of an
     ///   <c>Octopus.DeployRelease</c> step, which bypasses the NodeTaskGate (its
     ///   slot is held by the parent; E3).</item>
-    ///   <item><c>Kind</c> + a same-key running-peer flag — a top-level
-    ///   <c>Deployment</c> whose (project, env, tenant) already has a Running peer
-    ///   is left Queued without taking a slot (F1). The peer read is issued only
-    ///   for a top-level deployment; a child, a runbook run, or a missing row skip
-    ///   it.</item>
+    ///   <item><c>Kind</c> + a same-key deferral flag — a top-level
+    ///   <c>Deployment</c> that must defer to another same-key deployment (an
+    ///   in-flight peer OR an earlier-queued due sibling — the exact claim-time
+    ///   gate, <see cref="ServerTaskLease.ClaimDeferralPredicate"/>) is left Queued
+    ///   without taking a slot (F1). The read is issued only for a top-level
+    ///   deployment; a child, a runbook run, or a missing row skip it.</item>
     /// </list>
     /// Returns <c>null</c> for a missing row (dispatch proceeds, loads, and no-ops
     /// on the absent task — parity with the pre-F1 parentage probe).
@@ -225,7 +226,10 @@ public sealed class DeploymentWorker(
         var row = await db.ServerTasks
             .IgnoreQueryFilters()
             .Where(t => t.Id == deploymentId)
-            .Select(t => new { t.ParentTaskId, t.Kind, t.ProjectId, t.EnvironmentId, t.TenantId })
+            .Select(t => new
+            {
+                t.ParentTaskId, t.Kind, t.ProjectId, t.EnvironmentId, t.TenantId, t.CreatedUtc,
+            })
             .FirstOrDefaultAsync(ct)
             .ConfigureAwait(false);
         if (row is null)
@@ -233,13 +237,18 @@ public sealed class DeploymentWorker(
             return null;
         }
 
+        // Same racy-but-cheap pre-gate skip; the authoritative gate is the
+        // advisory-locked claim. Uses the SAME deferral predicate as the claim so
+        // an earlier-queued (FIFO) sibling also skips the slot, not only in-flight
+        // peers.
         var blocked = row.ParentTaskId is null
             && row.Kind == ServerTaskKind.Deployment
             && await db.ServerTasks
                 .IgnoreQueryFilters()
                 .AnyAsync(
-                    ServerTaskLease.InFlightDeploymentPeerPredicate(
-                        deploymentId, row.ProjectId, row.EnvironmentId, row.TenantId),
+                    ServerTaskLease.ClaimDeferralPredicate(
+                        deploymentId, row.ProjectId, row.EnvironmentId, row.TenantId,
+                        row.CreatedUtc, timeProvider.GetUtcNow()),
                     ct)
                 .ConfigureAwait(false);
 
@@ -464,7 +473,9 @@ public sealed class DeploymentWorker(
                 // build (and deliver) the same bundle twice concurrently. Flow:
                 // Queued→Running (claimed, leased) → bundle build →
                 // PendingOfflineResult (lease released in the transition).
-                var offlineClaim = await ServerTaskLease.TryClaimAsync(db, deployment.Id, timeProvider, ct)
+                // Pass the loaded entity (not just the id) so the claim reads the
+                // serialization key off it — no redundant meta re-read.
+                var offlineClaim = await ServerTaskLease.TryClaimAsync(db, deployment, timeProvider, ct)
                     .ConfigureAwait(false);
                 if (offlineClaim != ServerTaskClaimResult.Claimed)
                 {
@@ -683,7 +694,9 @@ public sealed class DeploymentWorker(
             // running elsewhere all fail the WHERE status=Queued and bail here.
             // The claim also stamps the dispatch lease (renewed below) and
             // clears ScheduledFor so the scheduled job never re-matches it.
-            var claim = await ServerTaskLease.TryClaimAsync(db, deployment.Id, timeProvider, ct)
+            // Pass the loaded entity (not just the id) so the claim reads the
+            // serialization key off it — no redundant meta re-read.
+            var claim = await ServerTaskLease.TryClaimAsync(db, deployment, timeProvider, ct)
                 .ConfigureAwait(false);
             if (claim != ServerTaskClaimResult.Claimed)
             {

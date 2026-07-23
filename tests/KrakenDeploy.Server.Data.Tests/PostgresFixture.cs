@@ -112,11 +112,22 @@ internal static class SharedPostgres
         return builder.ConnectionString;
     }
 
-    internal static KrakenDbContext BuildContext(string connectionString)
+    internal static KrakenDbContext BuildContext(
+        string connectionString, bool enableRetryOnFailure = false)
     {
         var spaceContext = new DefaultSpaceContext();
         var options = new DbContextOptionsBuilder<KrakenDbContext>()
-            .UseNpgsql(connectionString)
+            // enableRetryOnFailure mirrors the WEB HOST (Program.cs) so a test can
+            // exercise the NpgsqlRetryingExecutionStrategy path — specifically that
+            // TryClaimAsync's user-initiated transaction runs THROUGH the execution
+            // strategy (a bare BeginTransactionAsync would throw under retry).
+            .UseNpgsql(connectionString, npgsql =>
+            {
+                if (enableRetryOnFailure)
+                {
+                    npgsql.EnableRetryOnFailure();
+                }
+            })
             .UseSnakeCaseNamingConvention()
             .AddInterceptors(
                 new AuditableEntityInterceptor(TimeProvider.System),
@@ -178,6 +189,12 @@ public sealed class PostgresFixture : IAsyncLifetime, IDbContextFactory<KrakenDb
         _scopeProvider.GetRequiredService<IServiceScopeFactory>();
 
     public KrakenDbContext CreateContext() => SharedPostgres.BuildContext(_connectionString);
+
+    /// <summary>A context whose Npgsql provider has <c>EnableRetryOnFailure</c>
+    /// (the web-host configuration), for tests that must exercise the retrying
+    /// execution strategy rather than the default non-retrying one.</summary>
+    public KrakenDbContext CreateRetryingContext() =>
+        SharedPostgres.BuildContext(_connectionString, enableRetryOnFailure: true);
 
     public async Task InitializeAsync()
     {

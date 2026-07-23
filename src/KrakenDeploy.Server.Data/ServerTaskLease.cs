@@ -44,61 +44,72 @@ public static class ServerTaskLease
             $"kraken:{Environment.MachineName}:pid{Environment.ProcessId}");
 
     /// <summary>
+    /// Convenience overload for callers that hold only the id (tests, ad-hoc
+    /// paths): loads the task's serialization key and delegates. The production
+    /// dispatch paths already have the <see cref="ServerTask"/> loaded and pass it
+    /// to the entity overload, which skips this extra read.
+    /// </summary>
+    public static async Task<ServerTaskClaimResult> TryClaimAsync(
+        KrakenDbContext db, Guid taskId, TimeProvider time, CancellationToken ct = default)
+    {
+        var task = await db.ServerTasks
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .FirstOrDefaultAsync(t => t.Id == taskId, ct)
+            .ConfigureAwait(false);
+        return task is null
+            ? ServerTaskClaimResult.NotQueued // row gone (deleted between wake-up and claim)
+            : await TryClaimAsync(db, task, time, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Atomically claims the task for execution: <c>Queued→Running</c>, stamps
     /// <c>StartedUtc</c> + the lease, and clears <c>ScheduledFor</c> (once
-    /// claimed, the scheduled-dispatch job must never see the row again).
+    /// claimed, the scheduled-dispatch job must never see the row again). Reads
+    /// the serialization key straight off <paramref name="task"/> (immutable after
+    /// creation) — no extra DB round-trip.
     /// <para>
     /// <b>F1 — (project, environment, tenant) serialization.</b> A
-    /// <c>Deployment</c> additionally requires that no OTHER deployment of the
-    /// same <c>(ProjectId, EnvironmentId, TenantId)</c> is currently
-    /// <c>Running</c> (Octopus-parity "one deployment per project/env/tenant";
-    /// NULL tenant is its own key — untenanted deployments serialize among
-    /// themselves, different tenants proceed in parallel). The check + claim run
-    /// inside <c>pg_advisory_xact_lock(hash64(project, env, tenant))</c> so two
-    /// concurrent claimants of the same key cannot both see "no peer Running" and
-    /// both win: the lock-loser blocks until the winner commits, then its
-    /// <b>fresh-per-statement</b> peer read (READ COMMITTED) sees the winner's
-    /// committed <c>Running</c> row and is refused. <c>RunbookRun</c> is EXEMPT
-    /// (operational tooling; runbooks may run concurrently) — it takes the plain
-    /// conditional claim, a single autonomous statement.
+    /// <c>Deployment</c> is claimed only when NO other deployment of the same
+    /// <c>(ProjectId, EnvironmentId, TenantId)</c> should go first — that is, none
+    /// is IN-FLIGHT (<see cref="DeploymentStatusExtensions.InFlightAfterClaim"/>:
+    /// <c>Running</c> or a parked <c>PendingOfflineResult</c>) AND no earlier,
+    /// already-due <c>Queued</c> sibling is still waiting (FIFO — the oldest queued
+    /// deployment of a key goes next, Octopus-parity; a future-scheduled sibling is
+    /// NOT yet due and never blocks). NULL tenant is its own key. The deferral
+    /// check + claim run inside <c>pg_advisory_xact_lock(hash64(project, env,
+    /// tenant))</c> so two concurrent claimants of one key cannot both proceed: the
+    /// lock-loser blocks until the winner commits, then its <b>fresh-per-statement</b>
+    /// read (READ COMMITTED) sees the winner's committed row and is refused.
+    /// <c>RunbookRun</c> is EXEMPT (operational tooling; runbooks may run
+    /// concurrently) — it takes the plain conditional claim, a single autonomous
+    /// statement.
     /// </para>
     /// <para>
     /// Returns <see cref="ServerTaskClaimResult.NotQueued"/> when the row was not
     /// <c>Queued</c> anymore (already claimed by another wake-up, cancelled, or
     /// gone) and <see cref="ServerTaskClaimResult.SerializationBlocked"/> when a
-    /// same-key deployment is running; in both cases the caller must bail without
-    /// dispatching. The task stays <c>Queued</c> and the minutely stale-Queued
-    /// re-signal (<see cref="Jobs.ScheduledDeploymentDispatchJob"/>) retries it.
+    /// same-key deployment is in-flight or an earlier sibling is ahead; in both
+    /// cases the caller must bail without dispatching. The task stays <c>Queued</c>
+    /// and the minutely stale-Queued re-signal
+    /// (<see cref="Jobs.ScheduledDeploymentDispatchJob"/>) retries it.
     /// </para>
     /// </summary>
     public static async Task<ServerTaskClaimResult> TryClaimAsync(
-        KrakenDbContext db, Guid taskId, TimeProvider time, CancellationToken ct = default)
+        KrakenDbContext db, ServerTask task, TimeProvider time, CancellationToken ct = default)
     {
         var now = time.GetUtcNow();
 
-        // The serialization key + kind — immutable after creation, so read it
-        // filter-free up front (the worker scope may have no active Space).
-        var meta = await db.ServerTasks
-            .IgnoreQueryFilters()
-            .Where(t => t.Id == taskId)
-            .Select(t => new { t.Kind, t.ProjectId, t.EnvironmentId, t.TenantId })
-            .FirstOrDefaultAsync(ct)
-            .ConfigureAwait(false);
-        if (meta is null)
-        {
-            return ServerTaskClaimResult.NotQueued; // row gone (deleted between wake-up and claim)
-        }
-
         // RunbookRun is exempt from serialization — plain conditional claim, one
         // autonomous statement (retry-safe as-is; no user transaction needed).
-        if (meta.Kind != ServerTaskKind.Deployment)
+        if (task.Kind != ServerTaskKind.Deployment)
         {
-            return await ClaimConditionalAsync(db, taskId, now, ct).ConfigureAwait(false);
+            return await ClaimConditionalAsync(db, task.Id, now, ct).ConfigureAwait(false);
         }
 
         // Deployment: serialize on (project, env, tenant). The advisory lock +
-        // the peer check + the conditional claim MUST share one transaction, so
-        // it is a user-initiated transaction — which the web host's
+        // the deferral check + the conditional claim MUST share one transaction,
+        // so it is a user-initiated transaction — which the web host's
         // NpgsqlRetryingExecutionStrategy only permits when driven THROUGH the
         // execution strategy (a bare BeginTransactionAsync throws there). The
         // strategy re-runs the whole delegate on a transient fault; the body is
@@ -106,7 +117,7 @@ public static class ServerTaskLease
         // commit-then-transient-fault, which only makes the worker bail on a row
         // it truly claimed (the reconciler then fails that ownerless Running row).
         // It can never double-claim, so the serialization invariant holds.
-        var lockKey = SerializationLockKey(meta.ProjectId, meta.EnvironmentId, meta.TenantId);
+        var lockKey = SerializationLockKey(task.ProjectId, task.EnvironmentId, task.TenantId);
         var strategy = db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
@@ -120,21 +131,23 @@ public static class ServerTaskLease
                 .ConfigureAwait(false);
 
             // Separate statement (fresh READ COMMITTED snapshot AFTER the lock):
-            // the lock-loser sees the winner's just-committed Running row here.
-            var blocked = await db.ServerTasks
+            // the lock-loser sees the winner's just-committed row here. Defer if a
+            // same-key peer is in-flight OR an earlier-queued due sibling waits.
+            var deferred = await db.ServerTasks
                 .IgnoreQueryFilters()
                 .AnyAsync(
-                    InFlightDeploymentPeerPredicate(
-                        taskId, meta.ProjectId, meta.EnvironmentId, meta.TenantId),
+                    ClaimDeferralPredicate(
+                        task.Id, task.ProjectId, task.EnvironmentId, task.TenantId,
+                        task.CreatedUtc, now),
                     ct)
                 .ConfigureAwait(false);
-            if (blocked)
+            if (deferred)
             {
                 await tx.RollbackAsync(ct).ConfigureAwait(false);
                 return ServerTaskClaimResult.SerializationBlocked;
             }
 
-            var result = await ClaimConditionalAsync(db, taskId, now, ct).ConfigureAwait(false);
+            var result = await ClaimConditionalAsync(db, task.Id, now, ct).ConfigureAwait(false);
             await tx.CommitAsync(ct).ConfigureAwait(false);
             return result;
         }).ConfigureAwait(false);
@@ -188,6 +201,36 @@ public static class ServerTaskLease
              && t.ProjectId == projectId
              && t.EnvironmentId == environmentId
              && t.TenantId == tenantId;
+
+    /// <summary>
+    /// The claim-time deferral predicate for a <c>Deployment</c> of the given key:
+    /// another same-key <c>Deployment</c> that should go FIRST — either it is
+    /// IN-FLIGHT (<see cref="InFlightDeploymentPeerPredicate"/> — a Running or
+    /// parked-offline peer) OR it is an earlier, <b>already-due</b> <c>Queued</c>
+    /// sibling (FIFO fairness: the oldest queued deployment of a key claims next,
+    /// Octopus-parity). "Earlier" is by <c>CreatedUtc</c>; a sibling whose
+    /// <c>ScheduledFor</c> is still in the future is NOT due and never blocks — so
+    /// a future-scheduled older deployment can't starve a ready one. Excludes
+    /// <paramref name="excludingTaskId"/> (a task never defers to itself). This is
+    /// the claim/pre-gate gate; the UI queue-reason uses the narrower in-flight
+    /// predicate (its message is specifically "another deployment is running").
+    /// A <c>CreatedUtc</c> tie falls back to the advisory-lock race (harmless —
+    /// exactly one still wins). Shares
+    /// <see cref="DeploymentStatusExtensions.InFlightAfterClaim"/> with the
+    /// in-flight predicate so the two can't drift on which statuses count.
+    /// </summary>
+    public static Expression<Func<ServerTask, bool>> ClaimDeferralPredicate(
+        Guid excludingTaskId, Guid projectId, Guid environmentId, Guid? tenantId,
+        DateTimeOffset createdUtc, DateTimeOffset now)
+        => o => o.Id != excludingTaskId
+             && o.Kind == ServerTaskKind.Deployment
+             && o.ProjectId == projectId
+             && o.EnvironmentId == environmentId
+             && o.TenantId == tenantId
+             && (DeploymentStatusExtensions.InFlightAfterClaim.Contains(o.Status)
+                 || (o.Status == DeploymentStatus.Queued
+                     && (o.ScheduledFor == null || o.ScheduledFor <= now)
+                     && o.CreatedUtc < createdUtc));
 
     /// <summary>
     /// Deterministic 64-bit advisory-lock key for a <c>(project, env, tenant)</c>
