@@ -261,7 +261,9 @@ public class VariableService(
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
-        var query = db.Variables.AsNoTracking().AsQueryable();
+        var query = db.Variables.AsNoTracking()
+            .Include(v => v.Set)
+            .AsQueryable();
 
         if (projectId.HasValue)
         {

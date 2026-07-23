@@ -1265,9 +1265,6 @@ else
 
     private async Task SaveScopeAsync()
     {
-        if (!_filterProjectId.HasValue) return;
-        if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
-
         var roles = _popRoles.Where(r => !string.IsNullOrWhiteSpace(r)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var envIds = _popEnvIds.ToList();
         var tenantIds = _popTenantIds.ToList();
@@ -1275,6 +1272,9 @@ else
 
         if (_popupEditingVar is null)
         {
+            if (!_filterProjectId.HasValue) return;
+            if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
+
             if (envIds.Count <= 1 && tenantIds.Count <= 1 && targetIds.Count <= 1)
             {
                 _newScope = new VariableScope
@@ -1322,6 +1322,10 @@ else
             return;
         }
 
+        if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
+
+        var varProjectId = _popupEditingVar.Set.ProjectId;
+
         var sensitiveEdit = _popupEditingVar.Type == VariableType.Sensitive;
         if (sensitiveEdit)
         {
@@ -1350,8 +1354,10 @@ else
                 foreach (var t in tenantSet)
                     foreach (var tg in targetSet)
                     {
+                        var createProjectId = varProjectId ?? _filterProjectId;
+                        if (!createProjectId.HasValue) continue;
                         await VariableSvc.CreateVariableAsync(
-                            _filterProjectId.Value, name, value, type,
+                            createProjectId.Value, name, value, type,
                             new VariableScope
                             {
                                 EnvironmentId = e, TenantId = t, TargetId = tg,
