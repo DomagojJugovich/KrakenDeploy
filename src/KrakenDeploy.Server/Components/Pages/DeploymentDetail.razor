@@ -67,9 +67,11 @@ else
     @* ── Bold status banner (shared task component — D1 Phase 2) ── *@
     <TaskStatusBanner Status="Deployment.Status"
                       RunningMessage="@RunningStepLabel()"
-                      FailedMessage="@(_diagnosis?.ProbableCause ?? LastErrorLine())"
+                      FailedMessage="@(_diagnosis?.ProbableCause ?? _lastErrorLine)"
                       DefaultFailedMessage="Deployment failed."
-                      FinishedDuration="@FormatDuration()" />
+                      FinishedDuration="@FormatDuration()"
+                      QueuedMessage="@ScheduledMessage()"
+                      HasRun="@(Deployment.StartedUtc is not null)" />
 
     @* ── Summary grid ── *@
     <div class="kr-card kr-card-pad rz-mb-4">
@@ -246,6 +248,10 @@ else
     private List<TaskOutputVariable> _outputVariables = [];
     private List<TaskStepOutcome> _stepOutcomes = [];
     private List<TaskLogLine> _log = [];
+    // Computed ONCE when _log loads (not per render): the banner's FailedMessage
+    // parameter is evaluated on every parent render, so scanning _log there would
+    // re-run Where+OrderByDescending over the whole log on each interaction.
+    private string? _lastErrorLine;
 
     // M11.C — AI diagnosis + its parsed relevant-log-lines.
     private DeploymentDiagnosis? _diagnosis;
@@ -284,6 +290,7 @@ else
             _outputVariables = await DeploymentSvc.GetOutputVariablesAsync(Id);
             _stepOutcomes = await DeploymentSvc.GetStepOutcomesAsync(Id);
             _log = await DeploymentSvc.GetLogAsync(Id);
+            _lastErrorLine = ComputeLastErrorLine();
             await LoadDiagnosisAsync();
         }
     }
@@ -345,6 +352,7 @@ else
                 _outputVariables = await DeploymentSvc.GetOutputVariablesAsync(Id);
                 _stepOutcomes = await DeploymentSvc.GetStepOutcomesAsync(Id);
                 _log = await DeploymentSvc.GetLogAsync(Id);
+                _lastErrorLine = ComputeLastErrorLine();
             }
             _resultFile = null;
 
@@ -399,15 +407,10 @@ else
         _cancelling = true;
         try
         {
+            // The service records the semantic Deployment.Cancelled audit itself.
             var updated = await DeploymentSvc.CancelAsync(Deployment.Id, await Guard.CurrentCallerAsync());
             if (updated is not null)
             {
-                await Audit.RecordAsync(
-                    AuditEventType.DeploymentCancelled,
-                    subjectType: "Deployment",
-                    subjectId:   Deployment.Id.ToString(),
-                    details:     "Deployment cancelled from the deployment detail page.");
-
                 Deployment = await DeploymentSvc.GetAsync(Id);
                 Notify.Notify(new NotificationMessage
                 {
@@ -526,6 +529,11 @@ else
         }
     }
 
+    private string? ScheduledMessage()
+        => Deployment?.ScheduledFor is { } s
+            ? $"Scheduled for {s.ToLocalTime():yyyy-MM-dd HH:mm}."
+            : null;
+
     private string FormatDuration()
     {
         if (Deployment?.StartedUtc is null)    { return "—"; }
@@ -582,7 +590,7 @@ else
         return last is not null ? $"Step {_stepOutcomes.Count} · {last.StepName}" : "In progress…";
     }
 
-    private string? LastErrorLine()
+    private string? ComputeLastErrorLine()
         => _log
             .Where(l => l.Level == "error")
             .OrderByDescending(l => l.Sequence)

@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using KrakenDeploy.Server.Core.Domain.Accounts;
+using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Releases;
@@ -48,7 +49,11 @@ public class RunbookService(
     StepPackageResolver? stepPackageResolver = null,
     // B6: optional — registered in the server host; tests that construct the
     // service directly skip the agent push.
-    IAgentCancelPusher? cancelPusher = null)
+    IAgentCancelPusher? cancelPusher = null,
+    // Optional (same host-registered / tests-skip pattern as cancelPusher):
+    // CancelRunAsync records the semantic RunbookRun.Cancelled audit itself so no
+    // cancel surface can omit it. Null in tests → no semantic row (unasserted).
+    IAuditLog? auditLog = null)
     : IRunbookTrigger, IStepEditingHost
 {
     // ── IStepEditingHost ───────────────────────────────────────────────
@@ -567,6 +572,19 @@ public class RunbookService(
             throw new InvalidOperationException($"Environment {environmentId} not found.");
         }
 
+        if (tenantId.HasValue)
+        {
+            var tenantExists = await db.Tenants.AnyAsync(t => t.Id == tenantId.Value, ct)
+                .ConfigureAwait(false);
+            if (!tenantExists)
+            {
+                // Fail fast with a clean message (parity with CreateAsync) instead
+                // of letting the insert hit fk_server_tasks_tenants_tenant_id and
+                // surface as an uncaught DbUpdateException -> HTTP 500.
+                throw new InvalidOperationException($"Tenant {tenantId.Value} not found.");
+            }
+        }
+
         // ── Build the target id set (mirrors DeploymentService.CreateAsync) ──
         // Primary targetId is always part of the set (the first assignment row —
         // server waves resolve machine variables against it). Additional ids
@@ -632,8 +650,12 @@ public class RunbookService(
         // B1/T1-2 (parity with CreateAsync): exactly ONE dispatch path per run.
         // Only a genuinely FUTURE instant is persisted (the scheduled job is then
         // the sole dispatcher); a due/past value dispatches immediately below.
-        var isScheduledForFuture = scheduledFor.HasValue &&
-            scheduledFor.Value > time.GetUtcNow();
+        // Normalize to UTC: Npgsql rejects a DateTimeOffset with a non-zero offset
+        // on a timestamptz column (the UI picker + REST both hand us a local
+        // offset), so persisting scheduledFor verbatim would throw at SaveChanges.
+        var scheduledUtc = scheduledFor?.ToUniversalTime();
+        var isScheduledForFuture = scheduledUtc.HasValue &&
+            scheduledUtc.Value > time.GetUtcNow();
 
         var run = new RunbookRun
         {
@@ -644,19 +666,19 @@ public class RunbookService(
             TenantId = tenantId,
             Status = DeploymentStatus.Queued,
             FailureMode = failureMode,
-            ScheduledFor = isScheduledForFuture ? scheduledFor : null,
+            ScheduledFor = isScheduledForFuture ? scheduledUtc : null,
             ProcessSnapshot = snapshot,
         };
         initiator.StampOnto(run);   // provenance (fix 6)
-
-        db.RunbookRuns.Add(run);
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         // Target set via the assignment join — the single authority, shared with
         // deployments (parity). AddedUtc gets a strictly increasing MICROSECOND
         // per row so assignment ORDER survives the DB round-trip and the
         // first-assigned target stays canonical (machine-variable resolution
-        // for server waves).
+        // for server waves). Added to the SAME change set as the run so run +
+        // assignments commit atomically — a crash between two saves would else
+        // leave a Queued run with no targets that the reconciler re-signals into
+        // an empty-target-set dispatch.
         var now = time.GetUtcNow();
         for (var i = 0; i < targetIds.Count; i++)
         {
@@ -667,6 +689,7 @@ public class RunbookService(
                 AddedUtc = now.AddMicroseconds(i),
             });
         }
+        db.RunbookRuns.Add(run);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         // Dispatch immediately unless the caller requested a future start time.
@@ -718,15 +741,42 @@ public class RunbookService(
     /// Space); throws <see cref="InvalidOperationException"/> when it is
     /// already terminal.
     /// </summary>
-    public Task<RunbookRun?> CancelRunAsync(
+    public async Task<RunbookRun?> CancelRunAsync(
         Guid id, CallerAuthorization caller, CancellationToken ct = default)
+    {
         // D1 Phase 2 — shared cancel core (T1-8 scope probe → B5 guarded flip →
         // B6 abort push), see ServerTaskCanceller.
-        => ServerTaskCanceller.CancelAsync<RunbookRun>(
+        var run = await ServerTaskCanceller.CancelAsync<RunbookRun>(
             dbFactory, permissions, time, cancelPusher, id, caller,
             taskNoun: "Runbook run",
             pushReason: "Runbook run cancelled by operator.",
-            ct);
+            ct).ConfigureAwait(false);
+
+        // Record the SEMANTIC cancel event here, not at each call site, so no
+        // cancel surface can omit it (a non-null return means the guarded flip
+        // won). The subscription poller prefix-matches "RunbookRun." — a silent
+        // cancel would drop the operator's notification.
+        if (run is not null && auditLog is not null)
+        {
+            await auditLog.RecordAsync(
+                AuditEventType.RunbookRunCancelled,
+                subjectType: "RunbookRun",
+                subjectId:   id.ToString(),
+                details:     "Runbook run cancelled.",
+                ct:          ct).ConfigureAwait(false);
+        }
+        return run;
+    }
+
+    /// <summary>Whether a runbook run with this id exists in the active Space.
+    /// The kind gate for the read endpoints — a deployment id (or a run in
+    /// another Space) returns <c>false</c>, so those endpoints 404 rather than
+    /// serving a deployment's children under a runbook-run route.</summary>
+    public async Task<bool> RunExistsAsync(Guid runId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.RunbookRuns.AnyAsync(r => r.Id == runId, ct).ConfigureAwait(false);
+    }
 
     /// <summary>A runbook run's full log, stitched from compacted step blobs + live
     /// staging in sequence order. Resolves the run first (Space-filtered).</summary>

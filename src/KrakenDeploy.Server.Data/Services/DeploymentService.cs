@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using KrakenDeploy.Server.Core.Domain.Accounts;
+using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.Tenants;
@@ -19,7 +20,12 @@ public class DeploymentService(
     // B6: optional — registered in the server host; tests that construct the
     // service directly (and the CLI) skip the agent push and keep the
     // wave-boundary cancel semantics.
-    IAgentCancelPusher? cancelPusher = null)
+    IAgentCancelPusher? cancelPusher = null,
+    // Optional (same host-registered / tests-skip pattern as cancelPusher):
+    // CancelAsync records the semantic Deployment.Cancelled audit itself so no
+    // cancel surface can omit it. Null in tests → only the interceptor's
+    // "Deployment.Updated" row is written, which no test asserts on.
+    IAuditLog? auditLog = null)
 {
     // ── Create ─────────────────────────────────────────────────────────────
 
@@ -146,8 +152,13 @@ public class DeploymentService(
         // minutely dispatch job re-enqueued it during the worker's prep window
         // (double-dispatch). Only a genuinely FUTURE instant is persisted, and
         // then the scheduled job is the sole dispatcher.
-        var isScheduledForFuture = scheduledFor.HasValue &&
-            scheduledFor.Value > time.GetUtcNow();
+        // Normalize to UTC first: Npgsql rejects a DateTimeOffset with a non-zero
+        // offset on a timestamptz column, and the deploy dialog builds a
+        // local-offset instant, so persisting verbatim throws at SaveChanges on a
+        // non-UTC host.
+        var scheduledUtc = scheduledFor?.ToUniversalTime();
+        var isScheduledForFuture = scheduledUtc.HasValue &&
+            scheduledUtc.Value > time.GetUtcNow();
 
         var deployment = new Deployment
         {
@@ -158,7 +169,7 @@ public class DeploymentService(
             TenantId = tenantId,
             Status = DeploymentStatus.Queued,
             FailureMode = failureMode,
-            ScheduledFor = isScheduledForFuture ? scheduledFor : null,
+            ScheduledFor = isScheduledForFuture ? scheduledUtc : null,
             ParentTaskId = parentTaskId,
             FormValues = promptedValues is { Count: > 0 }
                 ? System.Text.Json.JsonSerializer.Serialize(promptedValues)
@@ -227,17 +238,33 @@ public class DeploymentService(
     /// already in a terminal state.
     /// </para>
     /// </summary>
-    public Task<Deployment?> CancelAsync(
+    public async Task<Deployment?> CancelAsync(
         Guid id, CallerAuthorization caller, CancellationToken ct = default)
+    {
         // D1 Phase 2 — shared cancel core (T1-8 scope probe → B5 guarded flip →
         // B6 abort push). Saving a modified AuditableEntity auto-emits a
-        // "Deployment.Updated" audit row via AuditLogInterceptor; callers
-        // additionally record the semantic AuditEventType.DeploymentCancelled.
-        => ServerTaskCanceller.CancelAsync<Deployment>(
+        // "Deployment.Updated" audit row via AuditLogInterceptor.
+        var deployment = await ServerTaskCanceller.CancelAsync<Deployment>(
             dbFactory, permissions, time, cancelPusher, id, caller,
             taskNoun: "Deployment",
             pushReason: "Cancelled by operator.",
-            ct);
+            ct).ConfigureAwait(false);
+
+        // Record the SEMANTIC cancel event here, not at each call site, so no
+        // cancel surface (UI, REST, a future CLI/MCP/bulk/auto-cancel) can omit
+        // it. A non-null return means the guarded flip won (already-terminal
+        // throws; not-found returns null), so this fires once per real cancel.
+        if (deployment is not null && auditLog is not null)
+        {
+            await auditLog.RecordAsync(
+                AuditEventType.DeploymentCancelled,
+                subjectType: "Deployment",
+                subjectId:   id.ToString(),
+                details:     "Deployment cancelled.",
+                ct:          ct).ConfigureAwait(false);
+        }
+        return deployment;
+    }
 
     // ── Query ──────────────────────────────────────────────────────────────
 

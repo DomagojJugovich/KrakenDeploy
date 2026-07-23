@@ -2395,24 +2395,19 @@ public static class Program
         // fallback — see DeploymentService.CancelAsync. Gated on TaskCancel
         // (Octopus models a deployment as a cancellable task).
         app.MapPost("/api/deployments/{id:guid}/cancel",
-            async (Guid id, DeploymentService deploymentSvc, IAuditLog audit,
+            async (Guid id, DeploymentService deploymentSvc,
                 ClaimsPrincipal user, CancellationToken ct) =>
             {
                 try
                 {
+                    // DeploymentService.CancelAsync records the semantic
+                    // Deployment.Cancelled audit itself (unskippable across surfaces).
                     var deployment = await deploymentSvc
                         .CancelAsync(id, CallerAuthorization.ForUser(user), ct).ConfigureAwait(false);
                     if (deployment is null)
                     {
                         return Results.NotFound();
                     }
-
-                    await audit.RecordAsync(
-                        AuditEventType.DeploymentCancelled,
-                        subjectType: "Deployment",
-                        subjectId:   id.ToString(),
-                        details:     "Deployment cancelled via API.",
-                        ct:          ct).ConfigureAwait(false);
 
                     return Results.Ok(new { deployment.Id, Status = deployment.Status.ToString() });
                 }
@@ -3174,24 +3169,19 @@ public static class Program
         // agent, which kills the running step's process tree. Same TaskCancel
         // permission as the deployment cancel.
         app.MapPost("/api/runbook-runs/{runId:guid}/cancel",
-            async (Guid runId, RunbookService runbookSvc, IAuditLog audit,
+            async (Guid runId, RunbookService runbookSvc,
                 ClaimsPrincipal user, CancellationToken ct) =>
             {
                 try
                 {
+                    // RunbookService.CancelRunAsync records the semantic
+                    // RunbookRun.Cancelled audit itself (unskippable across surfaces).
                     var run = await runbookSvc
                         .CancelRunAsync(runId, CallerAuthorization.ForUser(user), ct).ConfigureAwait(false);
                     if (run is null)
                     {
                         return Results.NotFound();
                     }
-
-                    await audit.RecordAsync(
-                        AuditEventType.RunbookRunCancelled,
-                        subjectType: "RunbookRun",
-                        subjectId:   runId.ToString(),
-                        details:     "Runbook run cancelled via API.",
-                        ct:          ct).ConfigureAwait(false);
 
                     return Results.Ok(new { run.Id, Status = run.Status.ToString() });
                 }
@@ -3250,13 +3240,27 @@ public static class Program
         // ── Runbook-run read surface (D1 Phase 2) ──────────────────────────
         // Read parity with the deployment endpoints: the run's log, per-step
         // outcomes, captured output variables (sensitive values masked in the
-        // service) and collected artifacts. All resolve the run first
-        // (Space-filtered) — a deployment id or foreign run returns empty/404.
+        // service) and collected artifacts. Each resolves the run first
+        // (Space-filtered) — a deployment id or foreign run returns 404/empty,
+        // never another kind's children under a runbook-run route.
 
+        // Mirrors GET /api/deployments/{id}/logs: 404 for an unknown run, ?from=
+        // incremental tail, and the same 4-field projection so one client can
+        // poll either kind.
         app.MapGet("/api/runbook-runs/{runId:guid}/logs",
-            async (Guid runId, RunbookService runbookSvc, CancellationToken ct) =>
-                Results.Ok(await runbookSvc.GetRunLogAsync(runId, ct).ConfigureAwait(false)))
-            .RequirePermission(Permission.RunbookRunView);
+            async (Guid runId, RunbookService runbookSvc, CancellationToken ct, int from = 0) =>
+            {
+                if (!await runbookSvc.RunExistsAsync(runId, ct).ConfigureAwait(false))
+                {
+                    return Results.NotFound();
+                }
+                var log = await runbookSvc.GetRunLogAsync(runId, ct).ConfigureAwait(false);
+                var entries = log
+                    .Where(e => e.Sequence >= from)
+                    .OrderBy(e => e.Sequence)
+                    .Select(e => new { e.Sequence, e.Timestamp, e.Level, e.Message });
+                return Results.Ok(entries);
+            }).RequirePermission(Permission.RunbookRunView);
 
         app.MapGet("/api/runbook-runs/{runId:guid}/step-outcomes",
             async (Guid runId, RunbookService runbookSvc, CancellationToken ct) =>
@@ -3269,18 +3273,38 @@ public static class Program
             .RequirePermission(Permission.RunbookRunView);
 
         app.MapGet("/api/runbook-runs/{runId:guid}/artifacts",
-            async (Guid runId, ArtifactService artifactSvc, CancellationToken ct) =>
-                Results.Ok(await artifactSvc.GetByTaskAsync(runId, ct).ConfigureAwait(false)))
-            .RequirePermission(Permission.ArtifactView);
+            async (Guid runId, RunbookService runbookSvc, ArtifactService artifactSvc, CancellationToken ct) =>
+            {
+                // Gate on run existence so a deployment id can't list its
+                // artifacts under this route (GetByTaskAsync filters by TaskId
+                // alone and is kind-blind).
+                if (!await runbookSvc.RunExistsAsync(runId, ct).ConfigureAwait(false))
+                {
+                    return Results.NotFound();
+                }
+                return Results.Ok(await artifactSvc.GetByTaskAsync(runId, ct).ConfigureAwait(false));
+            }).RequirePermission(Permission.ArtifactView);
 
         app.MapGet("/api/runbook-runs/{runId:guid}/artifacts/{artifactId:guid}/download",
             async (Guid runId, Guid artifactId,
-                ArtifactService artifactSvc, CancellationToken ct) =>
+                RunbookService runbookSvc, ArtifactService artifactSvc, CancellationToken ct) =>
             {
+                if (!await runbookSvc.RunExistsAsync(runId, ct).ConfigureAwait(false))
+                {
+                    return Results.NotFound();
+                }
                 try
                 {
                     var (stream, artifact) = await artifactSvc
                         .OpenReadAsync(artifactId, ct).ConfigureAwait(false);
+                    // Ownership: the artifact must belong to the run in the route
+                    // (OpenReadAsync resolves by artifactId alone), else the URL's
+                    // run segment would be a fiction serving any task's artifact.
+                    if (artifact.TaskId != runId)
+                    {
+                        stream.Dispose();
+                        return Results.NotFound();
+                    }
                     return Results.Stream(stream, artifact.ContentType,
                         fileDownloadName: artifact.FileName, enableRangeProcessing: true);
                 }

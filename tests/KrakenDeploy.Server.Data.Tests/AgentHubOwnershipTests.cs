@@ -503,20 +503,20 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
     private sealed record RunbookGraph(
         Guid RunId,
         DeploymentTarget Primary,
-        DeploymentTarget Secondary,
         DeploymentTarget Foreign);
 
-    // A Running runbook run assigned to two targets (primary + a join-only
-    // secondary) with a third unassigned (foreign). No lease, no registered
-    // sub-plan slot → a completion reaches the hub's post-registry drop path,
-    // where the ownership gate (and nothing else) runs. Mirrors
-    // <see cref="SeedAsync"/> for the runbook kind.
+    // A Running runbook run assigned to one target, with a second unassigned
+    // (foreign). No lease, no registered sub-plan slot → a completion reaches the
+    // hub's post-registry drop path, where the ownership gate (and nothing else)
+    // runs. (The join-only-secondary "allows" case the second assignment used to
+    // back was removed with the pre-Phase-3 finalize tests; the ownership
+    // predicate's multi-target behaviour is covered by the deployment SeedAsync.)
     private static async Task<RunbookGraph> SeedRunbookGraphAsync(OrchestratorTestHarness harness)
     {
         var tag = Guid.NewGuid().ToString("N")[..8];
         var project = await harness.SeedProjectAsync($"own-rb-proj-{tag}");
         var env = await harness.SeedEnvironmentAsync($"own-rb-env-{tag}");
-        var members = await harness.SeedTargetsAsync($"rb-owner-{tag}", $"rb-secondary-{tag}");
+        var owner = (await harness.SeedTargetsAsync($"rb-owner-{tag}"))[0];
         var foreign = (await harness.SeedTargetsAsync($"rb-foreign-{tag}"))[0];
 
         await using var db = harness.CreateContext();
@@ -535,17 +535,12 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
         db.RunbookRuns.Add(run);
         await db.SaveChangesAsync();
 
-        var now = DateTimeOffset.UtcNow;
         db.TaskTargetAssignments.Add(new TaskTargetAssignment
         {
-            TaskId = run.Id, TargetId = members[0].Id, AddedUtc = now,
-        });
-        db.TaskTargetAssignments.Add(new TaskTargetAssignment
-        {
-            TaskId = run.Id, TargetId = members[1].Id, AddedUtc = now.AddMicroseconds(1),
+            TaskId = run.Id, TargetId = owner.Id, AddedUtc = DateTimeOffset.UtcNow,
         });
         await db.SaveChangesAsync();
-        return new RunbookGraph(run.Id, members[0], members[1], foreign);
+        return new RunbookGraph(run.Id, owner, foreign);
     }
 
     private static async Task<ServerTask> GetTaskAsync(OrchestratorTestHarness harness, Guid taskId)

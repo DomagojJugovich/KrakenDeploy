@@ -330,8 +330,9 @@ runtime + outbox; read docs/execution-engine.md §6 "Agent side" first).
    duplicate-key rejection typically self-heals on retry (one failed send + one successful
    retry); the poison scenario needs a REPEATING hub-side fault — e.g. a ~30 s Postgres outage
    while the hub connection stays up returns 5 consecutive HubExceptions. Consequence: a dropped
-   runbook-run completion turns a succeeded run into Failed-after-1h (MaxRunbookRunDuration
-   reaper); a dropped deployment wave completion burns the 1 h wave deadline then re-dispatches
+   runbook-run completion now burns the 1 h wave deadline under a live lease then fails the run
+   (post-D1 Phase 3; the MaxRunbookRunDuration reaper it used to hit is deleted); a dropped
+   deployment wave completion burns the 1 h wave deadline then re-dispatches
    the whole sub-plan. FIX: exempt verdict-class items (StepCompleted, DeploymentCompleted, adhoc
    results) from the poison cap — retry forever with backoff (or park + re-flush on reconnect).
    Keep the existing drop behavior for log lines.
@@ -572,9 +573,9 @@ Design LOCKED (2026-07-16 merge design + 2026-07-18 grill) — do not re-litigat
      Deployment.* events — SubscriptionMatcher wildcard filters break on rename.
    - Generalize the worker's db.Deployments reads to db.ServerTasks (IsCancellationRequestedAsync
      and friends) — otherwise runbook cancel goes unobserved by the merged orchestrator.
-   - Reconciler transition takes TWO releases: keep reap arm 4b (MaxRunbookRunDuration ceiling)
-     alive for one release for legacy in-flight hand-off runs; a naive generalization of the
-     lease-orphan arm would kill LeaseUntil == null legacy runs at boot.
+   - Reconciler transition (DONE, D1 Phase 3): arm 4b (MaxRunbookRunDuration ceiling) is DELETED —
+     pre-production, so no in-flight legacy hand-off runs to drain; the lease-orphan arm now reaps
+     LeaseUntil == null Running rows of BOTH kinds (every live orchestration holds a lease).
 4. Capacity: post-merge, runbook runs acquire NodeTaskGate slots and hold the blue-green drain
    gauge — account for both in Engine:MaxConcurrentTasks sizing and drain semantics.
 5. Locked decisions: the freeze gate is SKIPPED for kind=RunbookRun (Octopus parity — runbooks

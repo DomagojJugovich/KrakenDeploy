@@ -172,15 +172,10 @@
 
         try
         {
+            // The service records the semantic Deployment.Cancelled audit itself.
             var updated = await DeploymentSvc.CancelAsync(d.Id, await Guard.CurrentCallerAsync());
             if (updated is not null)
             {
-                await Audit.RecordAsync(
-                    AuditEventType.DeploymentCancelled,
-                    subjectType: "Deployment",
-                    subjectId:   d.Id.ToString(),
-                    details:     "Deployment cancelled from the deployments list.");
-
                 // Reflect the new terminal status in the loaded row + re-filter.
                 var row = _all.FirstOrDefault(x => x.Id == d.Id);
                 if (row is not null)

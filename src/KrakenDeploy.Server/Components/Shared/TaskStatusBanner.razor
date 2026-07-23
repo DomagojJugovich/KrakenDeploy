@@ -23,6 +23,16 @@
         {
             <span class="banner-msg">Awaiting offline result from an air-gapped target.</span>
         }
+        else if (Status == DeploymentStatus.Queued)
+        {
+            @* Phase 2 makes Queued a long-lived, directly-navigable state
+               (future-scheduled runs) — a "Finished in —" line here is wrong. *@
+            <span class="banner-msg muted">@(QueuedMessage ?? "Waiting to start.")</span>
+        }
+        else if (Status == DeploymentStatus.Cancelled)
+        {
+            <span class="banner-msg muted">Cancelled@(HasRun ? $" after {FinishedDuration}" : " before it started").</span>
+        }
         else
         {
             <span class="banner-msg muted">Finished in @FinishedDuration</span>
@@ -48,6 +58,14 @@
 
     /// <summary>Pre-formatted duration for the finished branch.</summary>
     [Parameter] public string FinishedDuration { get; set; } = "—";
+
+    /// <summary>Shown while Queued (e.g. "Scheduled for 2026-07-23 10:00").
+    /// Falls back to "Waiting to start.".</summary>
+    [Parameter] public string? QueuedMessage { get; set; }
+
+    /// <summary>Whether the task actually started (StartedUtc set) — drives the
+    /// Cancelled branch wording ("after 2m" vs "before it started").</summary>
+    [Parameter] public bool HasRun { get; set; }
 
     // Maps a status to the StatusPill colour family (.st--*) for the bold
     // banner's left border + soft tint.

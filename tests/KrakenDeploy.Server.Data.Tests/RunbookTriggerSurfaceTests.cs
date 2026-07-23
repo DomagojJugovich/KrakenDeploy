@@ -89,6 +89,37 @@ public sealed class RunbookTriggerSurfaceTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task Trigger_with_non_utc_offset_scheduledFor_persists_the_correct_instant()
+    {
+        // Regression: the UI picker + REST hand TriggerAsync a DateTimeOffset with
+        // a LOCAL (non-zero) offset on a non-UTC host. Npgsql rejects a non-zero
+        // offset on a timestamptz column, so persisting verbatim threw at
+        // SaveChanges. The service must normalize to UTC first.
+        var g = await SeedRunbookGraphAsync(targetCount: 1);
+        var (svc, _) = NewService();
+        var futureUtc = DateTimeOffset.UtcNow.AddHours(1);
+        var plusTwo = futureUtc.ToOffset(TimeSpan.FromHours(2)); // same instant, +02:00
+        plusTwo.Offset.Should().Be(TimeSpan.FromHours(2), "the input must carry a non-zero offset");
+
+        var run = await svc.TriggerAsync(
+            g.RunbookId, g.EnvironmentId, g.Targets[0],
+            initiator: TaskInitiator.Scheduled("trigger-surface-test"),
+            caller: CallerAuthorization.System,
+            scheduledFor: plusTwo);
+
+        run.Status.Should().Be(DeploymentStatus.Queued);
+        run.ScheduledFor!.Value.Offset.Should().Be(TimeSpan.Zero,
+            "the stored instant is normalized to UTC (offset 0) for timestamptz");
+
+        await using var db = postgres.CreateContext();
+        var persisted = await db.RunbookRuns
+            .Where(r => r.Id == run.Id).Select(r => r.ScheduledFor).FirstAsync();
+        persisted.Should().NotBeNull();
+        persisted!.Value.Should().BeCloseTo(futureUtc, TimeSpan.FromMicroseconds(1),
+            "the same point in time is preserved, only the offset representation changes");
+    }
+
+    [Fact]
     public async Task Trigger_with_past_scheduledFor_normalizes_to_immediate()
     {
         var g = await SeedRunbookGraphAsync(targetCount: 1);

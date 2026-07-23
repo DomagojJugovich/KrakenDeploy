@@ -208,8 +208,9 @@ public sealed class ServerTasksService(
             QueuedUtc = r.CreatedUtc,
             InitiatedBy = r.CreatedByDisplay,
             Cause = r.Cause,
-            // No per-run page exists; the runbook detail page hosts the Runs tab.
-            DetailUrl = r.RunbookId == Guid.Empty ? null : $"/runbooks/{r.RunbookId}",
+            // Deep-link to the run's own detail page (RunbookRunDetail) — parity
+            // with deployment rows, which link to their detail page.
+            DetailUrl = $"/runbook-runs/{r.Id}",
         };
     }
 

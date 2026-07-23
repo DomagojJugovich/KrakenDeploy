@@ -652,15 +652,10 @@
 
         try
         {
+            // The service records the semantic RunbookRun.Cancelled audit itself.
             var updated = await RunbookSvc.CancelRunAsync(run.Id, await Guard.CurrentCallerAsync());
             if (updated is not null)
             {
-                await Audit.RecordAsync(
-                    AuditEventType.RunbookRunCancelled,
-                    subjectType: "RunbookRun",
-                    subjectId:   run.Id.ToString(),
-                    details:     "Runbook run cancelled from the runbook detail page.");
-
                 run.Status       = updated.Status;
                 run.CompletedUtc = updated.CompletedUtc;
                 Notify.Notify(new NotificationMessage

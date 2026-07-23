@@ -5,11 +5,9 @@
 @using KrakenDeploy.Server.Core.Domain.Runbooks
 @inject RunbookService RunbookSvc
 @inject ArtifactService ArtifactSvc
-@inject NavigationManager Nav
 @inject NotificationService Notify
 @inject DialogService DialogService
 @inject UiActionGuard Guard
-@inject IAuditLog Audit
 
 @* D1 Phase 2 — the runbook-run detail page: the run analogue of
    DeploymentDetail, built from the shared task components (status banner, log
@@ -59,9 +57,11 @@ else
 
     <TaskStatusBanner Status="Run.Status"
                       RunningMessage="@RunningStepLabel()"
-                      FailedMessage="@LastErrorLine()"
+                      FailedMessage="@_lastErrorLine"
                       DefaultFailedMessage="Runbook run failed."
-                      FinishedDuration="@FormatDuration()" />
+                      FinishedDuration="@FormatDuration()"
+                      QueuedMessage="@ScheduledMessage()"
+                      HasRun="@(Run.StartedUtc is not null)" />
 
     @* ── Summary grid ── *@
     <div class="kr-card kr-card-pad rz-mb-4">
@@ -125,6 +125,8 @@ else
     private List<TaskOutputVariable> _outputVariables = [];
     private List<TaskStepOutcome> _stepOutcomes = [];
     private List<TaskLogLine> _log = [];
+    // Computed once when _log loads (not per render) — see DeploymentDetail.
+    private string? _lastErrorLine;
 
     private bool _cancelling;
 
@@ -142,10 +144,19 @@ else
         Run = await RunbookSvc.GetRunAsync(Id);
         if (Run is not null)
         {
-            _artifacts = await ArtifactSvc.GetByTaskAsync(Id);
-            _outputVariables = await RunbookSvc.GetRunOutputVariablesAsync(Id);
-            _stepOutcomes = await RunbookSvc.GetRunStepOutcomesAsync(Id);
-            _log = await RunbookSvc.GetRunLogAsync(Id);
+            // Four independent reads, each on its own pooled DbContext — load in
+            // parallel (mirrors RunbookDetail) rather than serial round trips.
+            var artifactsTask = ArtifactSvc.GetByTaskAsync(Id);
+            var varsTask      = RunbookSvc.GetRunOutputVariablesAsync(Id);
+            var outcomesTask  = RunbookSvc.GetRunStepOutcomesAsync(Id);
+            var logTask       = RunbookSvc.GetRunLogAsync(Id);
+            await Task.WhenAll(artifactsTask, varsTask, outcomesTask, logTask);
+
+            _artifacts       = artifactsTask.Result;
+            _outputVariables = varsTask.Result;
+            _stepOutcomes    = outcomesTask.Result;
+            _log             = logTask.Result;
+            _lastErrorLine   = ComputeLastErrorLine();
         }
     }
 
@@ -176,15 +187,10 @@ else
         _cancelling = true;
         try
         {
+            // The service records the semantic RunbookRun.Cancelled audit itself.
             var updated = await RunbookSvc.CancelRunAsync(Run.Id, await Guard.CurrentCallerAsync());
             if (updated is not null)
             {
-                await Audit.RecordAsync(
-                    AuditEventType.RunbookRunCancelled,
-                    subjectType: "RunbookRun",
-                    subjectId:   Run.Id.ToString(),
-                    details:     "Runbook run cancelled from the run detail page.");
-
                 Run = await RunbookSvc.GetRunAsync(Id);
                 Notify.Notify(new NotificationMessage
                 {
@@ -222,6 +228,11 @@ else
             _cancelling = false;
         }
     }
+
+    private string? ScheduledMessage()
+        => Run?.ScheduledFor is { } s
+            ? $"Scheduled for {s.ToLocalTime():yyyy-MM-dd HH:mm}."
+            : null;
 
     private string FormatDuration()
     {
@@ -267,7 +278,7 @@ else
         return last is not null ? $"Step {_stepOutcomes.Count} · {last.StepName}" : null;
     }
 
-    private string? LastErrorLine()
+    private string? ComputeLastErrorLine()
         => _log
             .Where(l => l.Level == "error")
             .OrderByDescending(l => l.Sequence)
