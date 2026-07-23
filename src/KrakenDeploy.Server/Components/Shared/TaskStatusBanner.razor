@@ -4,7 +4,7 @@
    run-flavored messages. Kind-specific text comes in via parameters — the
    banner itself only branches on DeploymentStatus. *@
 
-<div class="kr-card st--@BannerClass(Status) rz-mb-4">
+<div class="kr-card st--@StatusPill.ClassFor(Status) rz-mb-4">
     <div class="kr-card-pad status-banner">
         <StatusPill Deployment="Status" Variant="StatusPill.PillVariant.Bold" />
         @if (Status == DeploymentStatus.Running)
@@ -67,17 +67,6 @@
     /// Cancelled branch wording ("after 2m" vs "before it started").</summary>
     [Parameter] public bool HasRun { get; set; }
 
-    // Maps a status to the StatusPill colour family (.st--*) for the bold
-    // banner's left border + soft tint.
-    private static string BannerClass(DeploymentStatus s) => s switch
-    {
-        DeploymentStatus.Succeeded             => "ok",
-        DeploymentStatus.SucceededWithWarnings => "warn",
-        DeploymentStatus.Failed                => "fail",
-        DeploymentStatus.Running               => "run",
-        DeploymentStatus.Queued                => "queue",
-        DeploymentStatus.PendingOfflineResult  => "offline",
-        DeploymentStatus.Cancelled             => "idle",
-        _                                      => "idle",
-    };
+    // Card border/tint reuses StatusPill.ClassFor so the wrapper can never drift
+    // from the pill rendered inside it (both map DeploymentStatus -> .st--*).
 }
