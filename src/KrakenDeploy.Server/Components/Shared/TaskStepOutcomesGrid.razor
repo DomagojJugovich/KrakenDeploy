@@ -102,14 +102,7 @@ else
     [Parameter, EditorRequired] public string SettingsKey { get; set; } = "";
 
     private static string FormatStepDuration(TaskStepOutcome o)
-    {
-        if (o.StartedUtc is null) { return "—"; }
-        var dur = o.CompletedUtc - o.StartedUtc.Value;
-        if (dur.TotalSeconds < 1) { return "<1s"; }
-        return dur.TotalHours >= 1
-            ? $"{(int)dur.TotalHours}h {dur.Minutes}m {dur.Seconds}s"
-            : dur.TotalMinutes >= 1
-                ? $"{dur.Minutes}m {dur.Seconds}s"
-                : $"{dur.Seconds}s";
-    }
+        => o.StartedUtc is { } start
+            ? TaskFormatting.Duration(o.CompletedUtc - start)
+            : "—";
 }

@@ -2324,9 +2324,9 @@ public static class Program
                 }
 
                 // Stitched from compacted step blobs + live staging, sequence-ordered.
-                var log = await deploymentSvc.GetLogAsync(id, ct).ConfigureAwait(false);
+                // ?from= tails incrementally: >= from == ReadSinceAsync(from - 1).
+                var log = await deploymentSvc.GetLogAsync(id, from - 1, ct).ConfigureAwait(false);
                 var entries = log
-                    .Where(e => e.Sequence >= from)
                     .OrderBy(e => e.Sequence)
                     .Select(e => new
                     {
@@ -3275,9 +3275,9 @@ public static class Program
                 {
                     return Results.NotFound();
                 }
-                var log = await runbookSvc.GetRunLogAsync(runId, ct).ConfigureAwait(false);
+                // ?from= tails incrementally: >= from == ReadSinceAsync(from - 1).
+                var log = await runbookSvc.GetRunLogAsync(runId, from - 1, ct).ConfigureAwait(false);
                 var entries = log
-                    .Where(e => e.Sequence >= from)
                     .OrderBy(e => e.Sequence)
                     .Select(e => new { e.Sequence, e.Timestamp, e.Level, e.Message });
                 return Results.Ok(entries);

@@ -86,6 +86,11 @@
         _                                      => ("idle", "help", s.ToString()),
     };
 
+    /// <summary>The status-colour family (<c>.st--*</c>) for a deployment status,
+    /// exposed so callers that tint a container (e.g. <c>TaskStatusBanner</c>'s
+    /// card border/tint) reuse this map instead of re-declaring it.</summary>
+    public static string ClassFor(DeploymentStatus s) => MapDeployment(s).Item1;
+
     private static (string, string, string) MapTarget(TargetStatus s) => s switch
     {
         TargetStatus.Online       => ("ok", "check_circle", "Online"),

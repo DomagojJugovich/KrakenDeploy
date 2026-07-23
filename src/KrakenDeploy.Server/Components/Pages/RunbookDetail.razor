@@ -704,18 +704,7 @@
     };
 
     private static string FormatDuration(RunbookRun r)
-    {
-        if (r.StartedUtc is null)
-        {
-            return "—";
-        }
-
-        var end = r.CompletedUtc ?? DateTimeOffset.UtcNow;
-        var dur = end - r.StartedUtc.Value;
-        return dur.TotalHours >= 1
-            ? $"{(int)dur.TotalHours}h {dur.Minutes}m {dur.Seconds}s"
-            : $"{dur.Minutes}m {dur.Seconds}s";
-    }
+        => TaskFormatting.Elapsed(r.StartedUtc, r.CompletedUtc);
 
     // ── M15 follow-up: drag-into-row reparenting ───────────────────────
     //

@@ -291,16 +291,6 @@
 
         var end = d.CompletedUtc
             ?? (d.Status == DeploymentStatus.Running ? DateTimeOffset.UtcNow : (DateTimeOffset?)null);
-        if (end is not { } e)
-        {
-            return "—";
-        }
-
-        var span = e - start;
-        return span.TotalHours >= 1
-            ? $"{(int)span.TotalHours}h {span.Minutes}m"
-            : span.TotalMinutes >= 1
-                ? $"{(int)span.TotalMinutes}m {span.Seconds}s"
-                : $"{Math.Max(0, (int)span.TotalSeconds)}s";
+        return end is { } e ? TaskFormatting.Duration(e - start) : "—";
     }
 }
