@@ -757,6 +757,8 @@ else
 
     protected override async Task OnParametersSetAsync()
     {
+        if (_loaded) return;
+
         try
         {
             _projects = await ProjectSvc.GetAllAsync();
@@ -775,24 +777,21 @@ else
 
             await LoadTagOptionsAsync();
 
-            if (!_loaded)
+            var uri = Nav.ToAbsoluteUri(Nav.Uri);
+            var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
+            if (query.TryGetValue("project", out var projSlug))
             {
-                var uri = Nav.ToAbsoluteUri(Nav.Uri);
-                var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
-                if (query.TryGetValue("project", out var projSlug))
-                {
-                    _filterProjectId = _projects
-                        .FirstOrDefault(p => string.Equals(p.Slug, projSlug.ToString(), StringComparison.OrdinalIgnoreCase))?.Id;
-                }
-                if (query.TryGetValue("env", out var envVal) && Guid.TryParse(envVal, out var envId)) _filterEnvId = envId;
-                if (query.TryGetValue("tenant", out var tenantVal) && Guid.TryParse(tenantVal, out var tenantId)) _filterTenantId = tenantId;
-                if (query.TryGetValue("role", out var roleVal) && roleVal.ToString() is { Length: > 0 } r) _filterRole = r;
-                if (query.TryGetValue("name", out var nameVal) && nameVal.ToString() is { Length: > 0 } n) _filterName = n;
+                _filterProjectId = _projects
+                    .FirstOrDefault(p => string.Equals(p.Slug, projSlug.ToString(), StringComparison.OrdinalIgnoreCase))?.Id;
+            }
+            if (query.TryGetValue("env", out var envVal) && Guid.TryParse(envVal, out var envId)) _filterEnvId = envId;
+            if (query.TryGetValue("tenant", out var tenantVal) && Guid.TryParse(tenantVal, out var tenantId)) _filterTenantId = tenantId;
+            if (query.TryGetValue("role", out var roleVal) && roleVal.ToString() is { Length: > 0 } r) _filterRole = r;
+            if (query.TryGetValue("name", out var nameVal) && nameVal.ToString() is { Length: > 0 } n) _filterName = n;
 
-                if (HasAnyFilter)
-                {
-                    await FetchAsync();
-                }
+            if (HasAnyFilter)
+            {
+                await FetchAsync();
             }
         }
         catch (Exception ex)
@@ -898,9 +897,12 @@ else
 
     // ── Fetch ───────────────────────────────────────────────────────────
 
+    private int _fetchGeneration;
+
     private async Task FetchAsync()
     {
         if (!HasAnyFilter) return;
+        var gen = ++_fetchGeneration;
         _fetching = true;
         StateHasChanged();
 
@@ -918,7 +920,7 @@ else
                 environmentIds = await TagSvc.GetEntityIdsWithAnyTagAsync(TaggableEntityKind.Environment, [_filterEnvTagId.Value]);
             }
 
-            _variables = await VariableSvc.SearchVariablesAsync(
+            var results = await VariableSvc.SearchVariablesAsync(
                 projectId: _filterProjectId,
                 environmentId: _filterEnvId,
                 tenantId: _filterTenantId,
@@ -929,6 +931,9 @@ else
                 projectIds: projectIds,
                 environmentIds: environmentIds);
 
+            if (gen != _fetchGeneration) return;
+
+            _variables = results;
             _sourceNames.Clear();
             _lockedIds.Clear();
             _includedSets = [];
@@ -938,15 +943,22 @@ else
                 await LoadProjectContextAsync(_filterProjectId.Value);
             }
 
+            if (gen != _fetchGeneration) return;
             _hasFetched = true;
         }
         catch (Exception ex)
         {
-            Notifications.Notify(NotificationSeverity.Error, "Fetch failed", ex.Message, 5000);
+            if (gen == _fetchGeneration)
+            {
+                Notifications.Notify(NotificationSeverity.Error, "Fetch failed", ex.Message, 5000);
+            }
         }
         finally
         {
-            _fetching = false;
+            if (gen == _fetchGeneration)
+            {
+                _fetching = false;
+            }
         }
     }
 
