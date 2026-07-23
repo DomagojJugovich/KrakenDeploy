@@ -177,15 +177,17 @@ public class DeploymentService(
         };
         initiator.StampOnto(deployment);   // provenance (fix 6)
 
-        db.Deployments.Add(deployment);
-        await db.SaveChangesAsync(ct).ConfigureAwait(false);
-
-        // Persist the target set. AddedUtc gets a strictly increasing
-        // MICROSECOND per row so assignment ORDER survives the DB round-trip
-        // (Postgres timestamptz stores microseconds — sub-µs ticks would
-        // collapse to equal values). Readers
-        // (DeploymentTargetSetExtensions.ResolvedTargets) sort by it and
-        // treat the first-assigned target as canonical.
+        // Persist the target set in the SAME change set as the deployment so
+        // both commit atomically (parity with RunbookService.TriggerAsync) — a
+        // crash between two saves would else leave a Queued deployment with no
+        // assignments that the stale-Queued reconciler re-signals into an
+        // empty-target-set dispatch (spurious "No target assigned" failure).
+        // deployment.Id is a client-generated key, available before the save.
+        // AddedUtc gets a strictly increasing MICROSECOND per row so assignment
+        // ORDER survives the DB round-trip (Postgres timestamptz stores
+        // microseconds — sub-µs ticks would collapse to equal values). Readers
+        // (DeploymentTargetSetExtensions.ResolvedTargets) sort by it and treat
+        // the first-assigned target as canonical.
         var now = time.GetUtcNow();
         for (var i = 0; i < targetIds.Count; i++)
         {
@@ -196,6 +198,7 @@ public class DeploymentService(
                 AddedUtc = now.AddMicroseconds(i),
             });
         }
+        db.Deployments.Add(deployment);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         // Dispatch immediately unless the caller requested a future start time.
@@ -353,6 +356,17 @@ public class DeploymentService(
             return [];
         }
         return await TaskLogService.ReadAllAsync(db, deploymentId, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Whether a deployment with this id exists in the active Space.
+    /// The kind gate for the artifact read endpoints — a runbook-run id (or a
+    /// deployment in another Space) returns <c>false</c>, so those endpoints 404
+    /// rather than serving another kind's children under a /deployments/ route
+    /// (parity with <c>RunbookService.RunExistsAsync</c>).</summary>
+    public async Task<bool> ExistsAsync(Guid deploymentId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.Deployments.AnyAsync(d => d.Id == deploymentId, ct).ConfigureAwait(false);
     }
 
     /// <summary>

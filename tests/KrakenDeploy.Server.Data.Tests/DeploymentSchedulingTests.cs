@@ -68,6 +68,37 @@ public sealed class DeploymentSchedulingTests(PostgresFixture postgres)
     }
 
     [Fact]
+    public async Task Non_utc_offset_scheduledFor_persists_the_correct_instant()
+    {
+        // Regression: the deploy dialog hands CreateAsync a DateTimeOffset with a
+        // LOCAL (non-zero) offset on a non-UTC host. Npgsql rejects a non-zero
+        // offset on a timestamptz column, so CreateAsync must normalize to UTC
+        // before persist (mirrors the runbook trigger test).
+        var (releaseId, envId, targetId) = await SeedGraphAsync();
+        var queue = Channel.CreateUnbounded<TenantWorkItem>();
+        var svc = NewService(queue);
+        var futureUtc = DateTimeOffset.UtcNow.AddHours(2);
+        var plusTwo = futureUtc.ToOffset(TimeSpan.FromHours(2)); // same instant, +02:00
+        plusTwo.Offset.Should().Be(TimeSpan.FromHours(2), "the input must carry a non-zero offset");
+
+        var deployment = await svc.CreateAsync(
+            releaseId, envId, targetId,
+            initiator: TaskInitiator.Scheduled("scheduling-test"),
+            caller: CallerAuthorization.System,
+            scheduledFor: plusTwo);
+
+        deployment.ScheduledFor!.Value.Offset.Should().Be(TimeSpan.Zero,
+            "the stored instant is normalized to UTC (offset 0) for timestamptz");
+
+        await using var db = postgres.CreateContext();
+        var persisted = await db.ServerTasks.IgnoreQueryFilters()
+            .Where(t => t.Id == deployment.Id).Select(t => t.ScheduledFor).FirstAsync();
+        persisted.Should().NotBeNull();
+        persisted!.Value.Should().BeCloseTo(futureUtc, TimeSpan.FromMicroseconds(1),
+            "the same point in time is preserved, only the offset representation changes");
+    }
+
+    [Fact]
     public async Task Dispatch_job_is_a_pure_wakeup_and_the_claim_ends_the_signalling()
     {
         var (releaseId, envId, targetId) = await SeedGraphAsync();

@@ -2423,18 +2423,39 @@ public static class Program
 
         // ── Artifact API ─────────────────────────────────────────────────────────
         app.MapGet("/api/deployments/{id:guid}/artifacts",
-            async (Guid id, ArtifactService artifactSvc, CancellationToken ct) =>
-                Results.Ok(await artifactSvc.GetByTaskAsync(id, ct).ConfigureAwait(false))
-        ).RequirePermission(Permission.ArtifactView);
+            async (Guid id, DeploymentService deploymentSvc, ArtifactService artifactSvc, CancellationToken ct) =>
+            {
+                // Gate on deployment existence so a runbook-run id can't list its
+                // artifacts under a /deployments/ route (GetByTaskAsync filters by
+                // TaskId alone and is kind-blind). Parity with the runbook route.
+                if (!await deploymentSvc.ExistsAsync(id, ct).ConfigureAwait(false))
+                {
+                    return Results.NotFound();
+                }
+                return Results.Ok(await artifactSvc.GetByTaskAsync(id, ct).ConfigureAwait(false));
+            }).RequirePermission(Permission.ArtifactView);
 
         app.MapGet("/api/deployments/{deploymentId:guid}/artifacts/{artifactId:guid}/download",
             async (Guid deploymentId, Guid artifactId,
-                ArtifactService artifactSvc, CancellationToken ct) =>
+                DeploymentService deploymentSvc, ArtifactService artifactSvc, CancellationToken ct) =>
             {
+                if (!await deploymentSvc.ExistsAsync(deploymentId, ct).ConfigureAwait(false))
+                {
+                    return Results.NotFound();
+                }
                 try
                 {
                     var (stream, artifact) = await artifactSvc
                         .OpenReadAsync(artifactId, ct).ConfigureAwait(false);
+                    // Ownership: the artifact must belong to the deployment in the
+                    // route (OpenReadAsync resolves by artifactId alone), else the
+                    // URL's deployment segment would be a fiction serving any
+                    // task's artifact. Parity with the runbook download route.
+                    if (artifact.TaskId != deploymentId)
+                    {
+                        stream.Dispose();
+                        return Results.NotFound();
+                    }
                     return Results.Stream(stream, artifact.ContentType,
                         fileDownloadName: artifact.FileName, enableRangeProcessing: true);
                 }
