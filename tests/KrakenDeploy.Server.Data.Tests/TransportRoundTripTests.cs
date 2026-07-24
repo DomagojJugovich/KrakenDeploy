@@ -66,10 +66,9 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
         // The consume step SUCCEEDING is the B4 guard: it returns false unless
         // the second wave's sub-plan — built server-side, serialized over the
         // real wire — carried the first step's captured output.
-        var status1 = (await seeder.GetDeploymentAsync(deploymentId)).Status;
-        var diag1 = status1 == DeploymentStatus.Succeeded ? "" : await DumpAsync(seeder, deploymentId);
-        status1.Should().Be(DeploymentStatus.Succeeded,
-            "both steps ran on the real agent and the step-2 sub-plan carried step-1's output{0}", diag1);
+        (await seeder.GetDeploymentAsync(deploymentId)).Status
+            .Should().Be(DeploymentStatus.Succeeded,
+                "both steps ran on the real agent and the step-2 sub-plan carried step-1's output");
 
         await using var db = seeder.CreateContext();
         var log = await TaskLogService.ReadAllAsync(db, deploymentId);
@@ -115,10 +114,9 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
 
         await host.RunDeploymentAsync(deploymentId).WaitAsync(TestTimeout);
 
-        var status2 = (await seeder.GetDeploymentAsync(deploymentId)).Status;
-        var diag2 = status2 == DeploymentStatus.Succeeded ? "" : await DumpAsync(seeder, deploymentId);
-        status2.Should().Be(DeploymentStatus.Succeeded,
-            "the agent-side consume step read the server-side step's capture over the real wire{0}", diag2);
+        (await seeder.GetDeploymentAsync(deploymentId)).Status
+            .Should().Be(DeploymentStatus.Succeeded,
+                "the agent-side consume step read the server-side step's capture over the real wire");
     }
 
     [Fact]
@@ -142,15 +140,8 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
         var dispatch = host.RunDeploymentAsync(deploymentId);
         try
         {
-            try
-            {
-                await WaitUntilAsync(() => agent.Executor.IsExecuting,
-                    "the real agent must have received the wave and be executing");
-            }
-            catch (TimeoutException tex)
-            {
-                throw new TimeoutException(tex.Message + await DumpAsync(seeder, deploymentId), tex);
-            }
+            await WaitUntilAsync(() => agent.Executor.IsExecuting,
+                "the real agent must have received the wave and be executing");
 
             // Hard-drop the connection mid-step: the hub's OnDisconnectedAsync
             // removes the registry entry, and the B3 worker-side monitor must
@@ -206,32 +197,6 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
             }
             await Task.Delay(25);
         }
-    }
-
-    // TEMP DIAGNOSTICS (revert after CI repro): dump the persisted task log,
-    // output variables, and status into a failing assertion's message so a
-    // CI-only failure explains itself (the host wires NullLogger throughout).
-    private static async Task<string> DumpAsync(OrchestratorTestHarness seeder, Guid deploymentId)
-    {
-        var sb = new StringBuilder();
-        var dep = await seeder.GetDeploymentAsync(deploymentId);
-        sb.Append("\n--- DIAGNOSTICS ---\nStatus=").Append(dep.Status.ToString()).Append('\n');
-        await using var db = seeder.CreateContext();
-        sb.Append("--- TASK LOG ---\n");
-        foreach (var entry in await TaskLogService.ReadAllAsync(db, deploymentId))
-        {
-            sb.Append(entry.Message).Append('\n');
-        }
-        sb.Append("--- OUTPUT VARS ---\n");
-        var vars = await db.TaskOutputVariables.IgnoreQueryFilters()
-            .Where(v => v.TaskId == deploymentId)
-            .Select(v => v.Name + "=" + v.Value)
-            .ToListAsync();
-        foreach (var v in vars)
-        {
-            sb.Append(v).Append('\n');
-        }
-        return sb.ToString();
     }
 }
 
