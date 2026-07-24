@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.0 |
-| **Date** | 2026-07-16 |
+| **Version** | 1.1 |
+| **Date** | 2026-07-24 |
 | **Authors** | Domagoj Jugović, Claude (Opus 4.8) |
 | **Status** | Approved |
 | **Technologies** | .NET 10, SignalR (WebSocket), Kestrel, JWT (HS256), Docker Compose, GitHub Actions |
@@ -52,6 +52,54 @@ Three seams pinned:
 
 All three run in the normal Docker test leg (Windows dev box + Linux CI; the
 server-side script body is OS-branched).
+
+## Why Docker-category tests skip the Windows CI leg
+
+`ci.yml` runs the build+test matrix on **both** `ubuntu-latest` and
+`windows-latest`, but the two legs deliberately run **different** test sets:
+
+- **Linux** runs the full suite, Testcontainers included:
+  `dotnet test KrakenDeploy.sln` (with `TESTCONTAINERS_RYUK_DISABLED=true`).
+- **Windows** excludes the container tests:
+  `dotnet test … --filter "Category!=Docker"`.
+
+Every suite that needs a real Postgres — `TransportRoundTripTests` and the rest
+of `KrakenDeploy.Server.Data.Tests` — is tagged `[Trait("Category","Docker")]`
+and therefore runs **only on the Linux leg**.
+
+**Why not on Windows CI.** GitHub-hosted `windows-latest` runners cannot run
+**Linux** containers. Docker is present, but in Windows-container mode; Linux
+containers would need nested virtualization / a WSL2 backend the hosted image
+does not provide. `Testcontainers.PostgreSql` pulls the Linux `postgres:16`
+image, and the official Postgres image has **no** Windows-container variant
+([docker-library/postgres#505](https://github.com/docker-library/postgres/issues/505)
+— a request that never shipped). GitHub documents this as a hard rule: Docker
+container actions, job containers, and service containers **require a Linux
+runner** ([GitHub Docs — About service containers](https://docs.github.com/en/actions/using-containerized-services/about-service-containers)).
+
+**Alternatives considered and rejected:**
+
+- *Unofficial Postgres Windows-container image* (e.g. `stellirin/postgres-windows`)
+  — a supply-chain and maintenance liability, and Testcontainers' `PostgreSqlBuilder`
+  is built around the Linux image. Rejected.
+- *Native Postgres on the Windows runner* (e.g. `ikalnytskyi/action-setup-postgres`)
+  plus a fixture that connects to an external instance instead of a Testcontainer
+  — viable, but it adds a second Postgres provisioning path to maintain. Deferred:
+  the container-backed suites exercise **OS-neutral managed step handlers**
+  (`RoundTripStepHandler`, EF/Npgsql), so the Windows-specific coverage gain is
+  marginal.
+
+**What still covers Windows.** The behavior that genuinely differs by OS —
+`.ps1` execution (UTF-8 + BOM), IIS / Windows-service steps, and the
+`IsAgentApphost` path-separator logic — lives in **non-Docker** unit tests that
+DO run on the Windows leg. The Windows **dev box** also still runs the full
+Docker suite via Docker Desktop; only the hosted Windows **CI** leg skips it.
+
+**Consequence to remember.** A Docker-category test that fails only on Linux is
+invisible to the Windows leg — a green Windows job says **nothing** about the
+container-backed suites. This bit us on 2026-07-24: `IsAgentApphost` (a
+*non-Docker* test) was caught on both legs, but the three `TransportRoundTripTests`
+failures surfaced on Linux only, precisely because Windows never runs them.
 
 ## The smoke now deploys
 
@@ -140,3 +188,13 @@ users; audit T0-9's unwritable-DataPath observed in the wild).
 
 - `docs/production-fix-prompts-2026-07-13.md` — B8 work package
 - `docs/agent-wire-contract.md` (B6), `docs/disconnect-reconciliation.md` (B3)
+- [docker-library/postgres#505 — "PostgreSQL as a Windows Container"](https://github.com/docker-library/postgres/issues/505) (feature request, never shipped)
+- [GitHub Docs — About service containers](https://docs.github.com/en/actions/using-containerized-services/about-service-containers) (container / service features require a Linux runner)
+- [GitHub Docs — GitHub-hosted runners reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+
+## History
+
+| Version | Date | Author(s) | Change |
+|---|---|---|---|
+| 1.0 | 2026-07-16 | Domagoj Jugović, Claude (Opus 4.8) | Initial — B8 round-trip suite, smoke-deploy, uncovered defects |
+| 1.1 | 2026-07-24 | Domagoj Jugović, Claude (Opus 4.8) | Added "Why Docker-category tests skip the Windows CI leg" (CI matrix rationale + rejected alternatives) |
