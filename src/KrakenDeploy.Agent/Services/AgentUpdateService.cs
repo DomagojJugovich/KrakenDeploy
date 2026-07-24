@@ -299,7 +299,12 @@ public sealed class AgentUpdateService(
             return false;
         }
 
-        var name = Path.GetFileName(processPath);
+        // Match the file name honouring BOTH separators regardless of host OS:
+        // Path.GetFileName only splits on the running OS's separator, so a
+        // Windows-style path evaluated on Linux (or vice-versa) comes back whole
+        // and misclassifies the apphost. (-1 when no separator) + 1 => whole string.
+        var cut = processPath.AsSpan().LastIndexOfAny('/', '\\');
+        var name = processPath[(cut + 1)..];
         return SelfUpdateFileOps.AgentExeNames.Contains(name, StringComparer.OrdinalIgnoreCase);
     }
 
