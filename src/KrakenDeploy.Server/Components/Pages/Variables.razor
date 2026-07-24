@@ -338,6 +338,7 @@
                     AllowFiltering="true" FilterMode="FilterMode.Simple"
                     AllowSorting="true" AllowPaging="true" PageSize="50"
                     AllowGrouping="true"
+                    DefaultGroups="@_defaultGroups"
                     Render="@OnGridRender"
                     AllGroupsExpanded="@_allExpanded"
                     AllGroupsExpandedChanged="@(v => _allExpanded = v)"
@@ -909,35 +910,22 @@ else
         _ => "none",
     };
 
-    // Seeds the default grouping once the grid exists, and keeps the SelectBar
-    // honest when grouping changes behind our back (drag-to-group, chip remove,
-    // persisted-settings restore).
-    //
-    // NOTE: gate on our own flag, NOT args.FirstRender — the grid's
-    // OnAfterRenderAsync awaits (settings JS roundtrip), so later renders
-    // complete BEFORE the first one reaches this callback: the observed call
-    // order is first=false, false, ..., then first=true LAST. Keying the seed
-    // off FirstRender let the sync branch overwrite the default to "none"
-    // before the seed ever ran.
-    private bool _groupSeeded;
+    // Default grouping for a first-time visitor (no persisted grid settings).
+    // Passed to KrakenGrid.DefaultGroups so the grid seeds it WITHOUT the page
+    // mutating Groups — a page-side seed trips Radzen's auto-persist (every
+    // Groups mutation calls SaveSettings) and clobbered the user's stored
+    // grouping with the default on every load. Matches GroupDescriptorFor("name").
+    private static readonly GroupDescriptor[] _defaultGroups =
+        [new GroupDescriptor { Property = nameof(Variable.Name), Title = "Name", SortOrder = SortOrder.Ascending }];
 
+    // Keeps the "Group by" SelectBar honest with whatever the grid actually
+    // groups by — persisted-settings restore, drag-to-group, chip-remove, or the
+    // KrakenGrid default. Deliberately does NOT seed: seeding here (grid.Groups
+    // .Add) would auto-persist and overwrite the stored grouping every load.
     private void OnGridRender(DataGridRenderEventArgs<Variable> args)
     {
         if (args.Grid is not { } grid) return;
 
-        if (!_groupSeeded)
-        {
-            _groupSeeded = true;
-            if (grid.Groups.Count == 0 && GroupDescriptorFor(_groupBy) is { } seed)
-            {
-                grid.Groups.Add(seed);
-                StateHasChanged();
-            }
-            return;
-        }
-
-        // Persisted settings restored after the seed (or drag / chip-remove)
-        // win — reflect whatever the grid actually groups by.
         var actual = GroupKeyFromProperty(grid.Groups.FirstOrDefault()?.Property);
         if (actual != _groupBy)
         {
@@ -1061,6 +1049,20 @@ else
     // ── Lifecycle ───────────────────────────────────────────────────────
 
     private string? _appliedQuery;
+    private bool _disposed;
+
+    protected override void OnInitialized()
+    {
+        // Query-only, same-route navigations reuse THIS component instance
+        // (the project page's Edit button → ?project=…, or a filter link →
+        // ?env=…). Under global interactivity + enhanced navigation the page's
+        // parameters/lifecycle are NOT reliably re-run for a query-only change,
+        // so OnParametersSetAsync alone misses them — the URL updates but no
+        // filter chip appears and no fetch runs. LocationChanged is the
+        // documented hook that always fires on a location change; we re-read the
+        // query there. Same pattern as SpaceSwitcher. Unsubscribed in Dispose.
+        Nav.LocationChanged += OnLocationChanged;
+    }
 
     protected override async Task OnParametersSetAsync()
     {
@@ -1094,25 +1096,74 @@ else
             }
         }
 
-        // Re-applied on every navigation, not just first mount — the Edit
-        // button on the project page navigates here with ?project=… and the
-        // router reuses this component instance when only the query changes.
+        // First mount applies here; same-route query-only navigations are
+        // additionally covered by OnLocationChanged. The _appliedQuery guard in
+        // ApplyQueryFromCurrentUrlAsync keeps the two paths idempotent so the
+        // same navigation is never applied (or fetched) twice.
+        await ApplyQueryFromCurrentUrlAsync();
+    }
+
+    // Re-reads the current URL's query string and applies it to the filters,
+    // fetching when at least one filter is present. Guarded by _appliedQuery so
+    // SyncFiltersToUrl's history-replace navigation (which sets _appliedQuery
+    // BEFORE navigating) can't trigger a re-apply loop, and so the
+    // OnParametersSet and LocationChanged paths never double-fetch one nav.
+    private async Task ApplyQueryFromCurrentUrlAsync()
+    {
+        if (!_loaded || _loadError is not null) return;
+
         var uri = Nav.ToAbsoluteUri(Nav.Uri);
-        if (_loadError is null && uri.Query != _appliedQuery)
+        if (uri.Query == _appliedQuery) return;
+
+        _appliedQuery = uri.Query;
+        var applied = ApplyQueryFilters(uri.Query);
+        if (applied && HasAnyFilter)
         {
-            _appliedQuery = uri.Query;
-            var applied = ApplyQueryFilters(uri.Query);
-            if (applied && HasAnyFilter)
-            {
-                await FetchAsync();
-            }
+            await FetchAsync();
         }
+        else
+        {
+            // Query changed but carried no actionable filter (e.g. an empty
+            // query) — reflect the current state without a fetch.
+            StateHasChanged();
+        }
+    }
+
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        // Marshal onto the Dispatcher and swallow faults: this is a void-returning
+        // event handler, so an unguarded async continuation would surface as an
+        // unobserved async-void exception that tears down the circuit.
+        _ = InvokeAsync(async () =>
+        {
+            try
+            {
+                if (_disposed) return;
+
+                // A navigation AWAY from this page fires this too, just before the
+                // component is disposed — ignore anything not targeting this page
+                // so we don't start a pointless fetch during teardown.
+                var uri = Nav.ToAbsoluteUri(Nav.Uri);
+                if (!string.Equals(uri.AbsolutePath, Sp("/variables"), StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                await ApplyQueryFromCurrentUrlAsync();
+            }
+            catch (Exception ex)
+            {
+                Notifications.Notify(NotificationSeverity.Error, "Filter failed", ex.Message, 5000);
+            }
+        });
     }
 
     public void Dispose()
     {
         // Kill any pending debounce and invalidate in-flight fetches so their
         // continuations can't touch services after the circuit tears down.
+        _disposed = true;
+        Nav.LocationChanged -= OnLocationChanged;
         _fetchSeq++;
         _debounceCts?.Cancel();
         _debounceCts?.Dispose();

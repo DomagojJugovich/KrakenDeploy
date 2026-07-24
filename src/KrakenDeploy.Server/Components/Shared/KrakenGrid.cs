@@ -39,6 +39,18 @@ public class KrakenGrid<TItem> : RadzenDataGrid<TItem>
     /// across all rows/instances of the page; omit to disable persistence.</summary>
     [Parameter] public string? SettingsKey { get; set; }
 
+    /// <summary>
+    /// Grouping applied ONLY on first load when this grid has no persisted
+    /// settings yet (nothing in localStorage). Persisted grouping — and the
+    /// user's later drag / select / clear — always wins. Supplying this lets a
+    /// page declare its default grouping WITHOUT mutating
+    /// <see cref="RadzenDataGrid{TItem}.Groups"/> itself: a page that seeds
+    /// Groups on render trips Radzen's auto-persist (every Groups mutation calls
+    /// <c>SaveSettings()</c>) and clobbers the stored grouping with the default
+    /// on every load.
+    /// </summary>
+    [Parameter] public IEnumerable<GroupDescriptor>? DefaultGroups { get; set; }
+
     private DataGridSettings? _persisted;
 
     // Backs the mouse drag-to-group drop fallback (krakenGridGroupDrop in
@@ -136,6 +148,18 @@ public class KrakenGrid<TItem> : RadzenDataGrid<TItem>
             catch
             {
                 // Prerender / storage unavailable — grid keeps declared layout.
+            }
+        }
+
+        // First load with nothing persisted → apply the caller's default
+        // grouping ONCE, here where we KNOW no stored settings will override it.
+        // (Pages must NOT seed Groups themselves — see DefaultGroups.) On every
+        // later load _persisted is non-null, so the user's stored grouping wins.
+        if (firstRender && _persisted is null && DefaultGroups is not null && Groups.Count == 0)
+        {
+            foreach (var group in DefaultGroups)
+            {
+                Groups.Add(group);
             }
         }
 
