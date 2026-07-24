@@ -170,7 +170,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 2 | C6 | Agent self-upgrade atomicity + rollback (rewritten) | ✅ fix/ops-agent-upgrade-atomic | M | E-B |
 | 3 — engine merge | D1 | server_tasks ENGINE merge (2026-07-16 design supersedes the old prompt) | ✅ P1 `0a8d1a5` · P2+P3 `e247c46` | XL | E-A, E-B, E-C, E-D |
 | 3 | D3 | Promote control-flow config keys to typed columns (+ rolling-warning rider) | ✅ 3e2388a | M | — |
-| 4 — engine features | F1 | Same (project, environment, tenant) deployment serialization | ⬜ | M | D1 |
+| 4 — engine features | F1 | Same (project, environment, tenant) deployment serialization | ✅ fa2fad5·de44a02·a4f3f85·a6384ee | M | D1 |
 | 4 | F2 | Per-target "Allow parallel task execution" + execution-started deadline arming | ⬜ | M | E-B, D1 |
 | 4 | F3 | Settings GUI: Engine document + AgentUpdate + logging + auth + SSRF | ⬜ | L | — |
 | 4 | F4 | Remove the `ApiKey:Key` config auth path | ⬜ | S | — |
