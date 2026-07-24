@@ -452,7 +452,13 @@ internal sealed class RoundTripHost : IAsyncDisposable
             new NeverUsedPackageSource(),
             new NullArtifactSink(),
             loader,
-            Options.Create(new AgentConfig()),
+            // DataPath MUST match the loader's + the staged package dir: the executor
+            // stages each step's working dirs under it, and the production default
+            // (/var/lib/krakendeploy-agent on Linux) is NOT writable by a non-root CI
+            // runner — leaving it unset made every agent-side step throw
+            // UnauthorizedAccessException on ubuntu-latest while passing on Windows
+            // (path resolves onto C:\) and in a root container.
+            Options.Create(new AgentConfig { DataPath = _agentDataPath }),
             NullLogger<DeploymentExecutor>.Instance);
 
         link.OnRunDeployment(plan => Task.Run(() => executor.ExecuteAsync(plan)));
