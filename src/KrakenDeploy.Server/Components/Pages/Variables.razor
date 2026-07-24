@@ -2,6 +2,7 @@
 @inherits SpaceScopedComponentBase
 @rendermode InteractiveServer
 @attribute [Authorize]
+@implements IDisposable
 
 @using KrakenDeploy.Server.Core.Domain.Variables
 @using KrakenDeploy.Server.Core.Domain.Environments
@@ -38,7 +39,7 @@
                           Click="@(() => _mode = VarMode.Edit)" />
             <RadzenButton Text="Preview" Size="ButtonSize.Small"
                           ButtonStyle="@(_mode == VarMode.Preview ? ButtonStyle.Primary : ButtonStyle.Light)"
-                          Click="@(() => _mode = VarMode.Preview)" />
+                          Click="@SwitchToPreview" />
         </RadzenStack>
         @if (_hasFetched)
         {
@@ -47,13 +48,32 @@
     </RadzenStack>
     @if (_mode == VarMode.Edit && _hasFetched)
     {
-        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
-            <RadzenButton Icon="unfold_less" Text="Collapse all"
-                          ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
-                          Click="@(() => SetAllExpanded(false))" />
-            <RadzenButton Icon="unfold_more" Text="Expand all"
-                          ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
-                          Click="@(() => SetAllExpanded(true))" />
+        <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.6rem">
+            @* Explicit grouping control — drag-to-group still works, but it's a
+               finicky drop target (worse without the new-variable bar), and once
+               a group is dragged off it can't be re-added. This is the reliable,
+               project-independent path. *@
+            <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.4rem">
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-0">Group by</RadzenText>
+                <RadzenSelectBar TValue="string" Value="@_groupBy" ValueChanged="OnGroupByChanged"
+                                 Size="ButtonSize.ExtraSmall">
+                    <Items>
+                        <RadzenSelectBarItem Text="None" Value="@("none")" />
+                        <RadzenSelectBarItem Text="Name" Value="@("name")" />
+                        <RadzenSelectBarItem Text="Type" Value="@("type")" />
+                        <RadzenSelectBarItem Text="Source" Value="@("source")" />
+                    </Items>
+                </RadzenSelectBar>
+            </RadzenStack>
+            @if (_groupBy != "none")
+            {
+                <RadzenButton Icon="unfold_less" Text="Collapse all"
+                              ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                              Click="@(() => SetAllExpanded(false))" />
+                <RadzenButton Icon="unfold_more" Text="Expand all"
+                              ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                              Click="@(() => SetAllExpanded(true))" />
+            }
         </RadzenStack>
     }
 </RadzenStack>
@@ -74,14 +94,26 @@
 
 @if (_mode == VarMode.Edit)
 {
-    @* ── Main filter row ─────────────────────────────────────────────── *@
-    <div class="kraken-var-filter-bar rz-mb-2">
+    @* ── Primary selector: the project anchors editing (new-variable bar,
+          included sets, steps/channels) — everything below it is a filter. *@
+    <div class="kraken-var-primary-bar rz-mb-2">
+        <RadzenLabel Text="Project" class="kraken-var-primary-label" />
         <RadzenDropDown TValue="Guid?" Value="@_filterProjectId"
-                        ValueChanged="@(async (Guid? v) => await OnFilterChangedAsync(() => _filterProjectId = v))"
+                        ValueChanged="@(async (Guid? v) => await OnProjectFilterChangedAsync(v))"
                         Data="@_projects" TextProperty="Name" ValueProperty="Id"
                         AllowFiltering="true"
                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                        Placeholder="Project" Style="width: 180px;" />
+                        Placeholder="Select a project..." Style="width: 280px;" />
+        @if (!_filterProjectId.HasValue)
+        {
+            <span class="rz-color-secondary" style="font-size: 12px;">
+                Pick a project to edit its variables — or search across projects with the filters below.
+            </span>
+        }
+    </div>
+
+    @* ── Filter row ──────────────────────────────────────────────────── *@
+    <div class="kraken-var-filter-bar rz-mb-2">
         <RadzenDropDown TValue="Guid?" Value="@_filterEnvId"
                         ValueChanged="@(async (Guid? v) => await OnFilterChangedAsync(() => _filterEnvId = v))"
                         Data="@_environments" TextProperty="Name" ValueProperty="Id"
@@ -94,12 +126,15 @@
                         AllowFiltering="true"
                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                         Placeholder="Tenant" Style="width: 150px;" />
-        <RadzenDropDown TValue="string" Value="@_filterRole"
+        @* Value must be null (not "") when empty, else Radzen suppresses the
+           placeholder and the field renders blank. AllowClear is deliberately
+           off here — it threw ArgumentException on these filter dropdowns. *@
+        <RadzenDropDown TValue="string" Value="@(_filterRole.Length > 0 ? _filterRole : null)"
                         ValueChanged="@(async (string v) => await OnFilterChangedAsync(() => _filterRole = v ?? ""))"
                         Data="@_availableRoles"
                         AllowFiltering="true"
                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
-                        Placeholder="Role" Style="width: 130px;" />
+                        Placeholder="Roles" Style="width: 130px;" />
         <RadzenDropDown TValue="Guid?" Value="@_filterStepId"
                         ValueChanged="@(async (Guid? v) => await OnFilterChangedAsync(() => _filterStepId = v))"
                         Data="@_projectStepNames" TextProperty="Name" ValueProperty="Id"
@@ -107,9 +142,14 @@
                         FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                         Placeholder="Step" Style="width: 150px;"
                         Disabled="@(!_filterProjectId.HasValue)" />
-        <RadzenTextBox @bind-Value="_filterName" Placeholder="Name search..."
-                       Style="width: 160px;"
-                       @onkeyup="OnNameKeyUp" />
+        @* Native input: RadzenTextBox commits @bind-Value only on blur/change,
+           so the debounced keyup fetch would always see the PREVIOUS value.
+           oninput keeps _filterName current on every keystroke. *@
+        <input class="rz-textbox" placeholder="Name search..."
+               style="width: 160px;"
+               value="@_filterName"
+               @oninput="@(e => _filterName = e.Value?.ToString() ?? "")"
+               @onkeyup="OnNameKeyUp" />
         <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.5rem">
             <RadzenCheckBox TValue="bool" @bind-Value="_autoApply" Name="autoApply" />
             <RadzenLabel Text="Auto" Component="autoApply" Style="cursor:pointer; font-size:13px;" />
@@ -217,30 +257,30 @@
     }
 
     @* ── Content area ────────────────────────────────────────────────── *@
-    @if (_fetching)
+    @if (!_hasFetched)
     {
-        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Fetching variables...</RadzenText>
+        @if (_fetching)
+        {
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Fetching variables...</RadzenText>
+        }
+        else if (!HasAnyFilter)
+        {
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                Select a project above to edit its variables, or set any filter for a cross-project
+                search@(_autoApply ? "." : ", then click Apply.")
+            </RadzenText>
+        }
+        else
+        {
+            <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                @(_autoApply ? "Fetching variables..." : "Filters changed. Click Apply to fetch.")
+            </RadzenText>
+        }
     }
-    else if (!_hasFetched && !HasAnyFilter)
+    else
     {
-        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-            Set at least one filter above, then @( _autoApply ? "results will appear automatically." : "click Apply.")
-        </RadzenText>
-    }
-    else if (!_hasFetched && HasAnyFilter && !_autoApply)
-    {
-        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-            Filters changed. Click Apply to fetch.
-        </RadzenText>
-    }
-    else if (_variables.Count == 0 && _hasFetched)
-    {
-        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
-            No variables match the current filters.
-        </RadzenText>
-    }
-    else if (_hasFetched)
-    {
+        @* Grid stays mounted across refetches (IsLoading shows the overlay);
+           unmounting it on every fetch lost edit/paging state and flickered. *@
         @* ── New variable row (only when a project is selected) ──────── *@
         @if (_filterProjectId.HasValue)
         {
@@ -289,10 +329,17 @@
             </RequirePermission>
         }
 
-        <KrakenGrid SettingsKey="all-variables" @ref="_grid" Data="@_variables" TItem="Variable"
+        @* NOTE: RadzenDataGrid.Groups is NOT a [Parameter] — a Groups="..."
+           attribute is silently swallowed by CaptureUnmatchedValues. Grouping
+           is driven programmatically via _grid.Groups (see OnGridRender /
+           ApplyGroupByAsync), which is the officially supported pattern. *@
+        <KrakenGrid SettingsKey="all-variables" @key="@("all-variables-grid")" @ref="_grid" Data="@_variables" TItem="Variable"
+                    IsLoading="@_fetching"
                     AllowFiltering="true" FilterMode="FilterMode.Simple"
                     AllowSorting="true" AllowPaging="true" PageSize="50"
-                    AllowGrouping="true" Groups="@_groups"
+                    AllowGrouping="true"
+                    DefaultGroups="@_defaultGroups"
+                    Render="@OnGridRender"
                     AllGroupsExpanded="@_allExpanded"
                     AllGroupsExpandedChanged="@(v => _allExpanded = v)"
                     AllowColumnResize="true"
@@ -300,9 +347,9 @@
                     CellRender="@OnCellRender"
                     CellClick="@OnCellClickAsync"
                     RowUpdate="@OnRowUpdateAsync"
-                    EmptyText="No variables match.">
+                    EmptyText="No variables match the current filters.">
             <GroupHeaderTemplate Context="group">
-                <strong>@group.Data.Key</strong>
+                <strong>@GroupKeyLabel(group)</strong>
                 <span class="rz-color-secondary rz-ml-2">
                     (@group.Data.Count value@(group.Data.Count == 1 ? "" : "s"))
                 </span>
@@ -321,7 +368,7 @@
                     </EditTemplate>
                 </RadzenDataGridColumn>
 
-                <RadzenDataGridColumn TItem="Variable" Property="Value" Title="Value" Sortable="false">
+                <RadzenDataGridColumn TItem="Variable" Property="Value" Title="Value" Sortable="false" Groupable="false">
                     <Template Context="v">
                         @if (v.Type == VariableType.Sensitive)
                         {
@@ -370,14 +417,50 @@
                     </EditTemplate>
                 </RadzenDataGridColumn>
 
-                <RadzenDataGridColumn TItem="Variable" Title="Source" Width="140px" Sortable="false" Filterable="false">
+                @* UniqueID + GroupProperty make this template column drag-groupable —
+                   Radzen's drop handler skips columns with neither a Property nor a
+                   UniqueID, so without these Source could never be dragged to the
+                   group panel. Groups by SetId; the header maps id → friendly name. *@
+                <RadzenDataGridColumn TItem="Variable" Title="Source" Width="140px" Sortable="false" Filterable="false"
+                                      UniqueID="source" GroupProperty="@nameof(Variable.SetId)">
                     <Template Context="v">
                         <span class="@(IsLocked(v) ? "rz-color-secondary" : "")">@SourceLabel(v)</span>
                     </Template>
                 </RadzenDataGridColumn>
 
-                <RadzenDataGridColumn TItem="Variable" Title="Scope" Sortable="false" Filterable="false">
+                <RadzenDataGridColumn TItem="Variable" Title="Scope" Sortable="false" Filterable="false" Groupable="false">
                     <Template Context="v">
+                        @if (IsLocked(v))
+                        {
+                            @* Library rows are read-only here — scope chips without the edit affordance. *@
+                            <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" Gap="0.3rem" AlignItems="AlignItems.Center">
+                                @if (v.Scope.IsUnscoped)
+                                {
+                                    <span class="rz-color-secondary" style="font-size:12px;">unscoped</span>
+                                }
+                                @if (v.Scope.EnvironmentId is { } lEnvId)
+                                {
+                                    <RadzenBadge Text="@($"env: {EnvName(lEnvId)}")" BadgeStyle="BadgeStyle.Info" IsPill="true" />
+                                }
+                                @if (v.Scope.TenantId is { } lTenantId)
+                                {
+                                    <RadzenBadge Text="@($"tenant: {TenantName(lTenantId)}")" BadgeStyle="BadgeStyle.Success" IsPill="true" />
+                                }
+                                @if (v.Scope.TargetId is { } lTargetId)
+                                {
+                                    <RadzenBadge Text="@($"target: {TargetName(lTargetId)}")" BadgeStyle="BadgeStyle.Secondary" IsPill="true" />
+                                }
+                                @if (v.Scope.Roles is { Count: > 0 })
+                                {
+                                    @foreach (var r in v.Scope.Roles)
+                                    {
+                                        <RadzenBadge Text="@($"role: {r}")" BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                                    }
+                                }
+                            </RadzenStack>
+                        }
+                        else
+                        {
                         <button type="button"
                                 class="@(v.Scope.IsUnscoped ? "kraken-vargrid-link kraken-scope-unbound-btn" : "kraken-scope-chip-btn")"
                                 @onclick="@(args => OpenScopePopup(args, v))"
@@ -420,10 +503,11 @@
                                 </RadzenStack>
                             }
                         </button>
+                        }
                     </Template>
                 </RadzenDataGridColumn>
 
-                <RadzenDataGridColumn TItem="Variable" Title="" Width="140px" Sortable="false" Filterable="false" TextAlign="TextAlign.Right">
+                <RadzenDataGridColumn TItem="Variable" Title="" Width="140px" Sortable="false" Filterable="false" Groupable="false" TextAlign="TextAlign.Right">
                     <Template Context="v">
                         @if (!IsLocked(v))
                         {
@@ -484,7 +568,8 @@ else
         <RadzenStack Orientation="Orientation.Horizontal" Gap="0.75rem" AlignItems="AlignItems.End" Wrap="FlexWrap.Wrap">
             <div>
                 <RadzenLabel Text="Project" />
-                <RadzenDropDown TValue="Guid?" @bind-Value="_previewProjectId"
+                <RadzenDropDown TValue="Guid?" Value="@_previewProjectId"
+                                ValueChanged="@(async (Guid? v) => await OnPreviewProjectChangedAsync(v))"
                                 Data="@_projects" TextProperty="Name" ValueProperty="Id"
                                 AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                                 Placeholder="Select..." Style="width: 180px;" />
@@ -496,6 +581,16 @@ else
                                 AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
                                 Placeholder="Select..." Style="width: 180px;" />
             </div>
+            @if (_previewChannels.Count > 0)
+            {
+                <div>
+                    <RadzenLabel Text="Channel" />
+                    <RadzenDropDown TValue="Guid?" @bind-Value="_previewChannelId"
+                                    Data="@_previewChannels" TextProperty="Name" ValueProperty="Id"
+                                    AllowClear="true" AllowFiltering="true" FilterCaseSensitivity="FilterCaseSensitivity.CaseInsensitive"
+                                    Placeholder="(any channel)" Style="width: 160px;" />
+                </div>
+            }
             <div>
                 <RadzenLabel Text="Target" />
                 <RadzenDropDown TValue="Guid?" @bind-Value="_previewTargetId"
@@ -520,23 +615,42 @@ else
     {
         <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Resolving...</RadzenText>
     }
-    else if (_previewResult is not null)
+    else if (_previewRan)
     {
         <RadzenCard>
-            <RadzenText TextStyle="TextStyle.H6" class="rz-mb-2">Resolved variables (@_previewResult.Count)</RadzenText>
-            @if (_previewResult.Count == 0)
+            <RadzenText TextStyle="TextStyle.H6" class="rz-mb-2">Resolved variables (@_previewRows.Count)</RadzenText>
+            @if (_previewRows.Count == 0)
             {
                 <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">No variables match the selected context.</RadzenText>
             }
             else
             {
-                <KrakenGrid SettingsKey="var-preview" Data="@_previewRows" TItem="PreviewRow"
+                var ambiguousCount = _previewRows.Count(r => r.Ambiguous);
+                @if (ambiguousCount > 0)
+                {
+                    <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false" class="rz-mb-2">
+                        @ambiguousCount variable@(ambiguousCount == 1 ? "" : "s") resolve ambiguously: two or more
+                        definitions tie at the same specificity <strong>and</strong> source with differing values, so the
+                        deployed value is not deterministic. See the marked rows and narrow those scopes to disambiguate.
+                    </RadzenAlert>
+                }
+                <KrakenGrid SettingsKey="var-preview" Data="@_previewRows" TItem="VariablePreviewRow"
                             AllowSorting="true" AllowPaging="true" PageSize="50"
                             AllowColumnResize="true" AllowFiltering="true" FilterMode="FilterMode.Simple"
                             GridLines="DataGridGridLines.Horizontal">
                     <Columns>
-                        <RadzenDataGridColumn TItem="PreviewRow" Property="Name" Title="Name" Width="280px" />
-                        <RadzenDataGridColumn TItem="PreviewRow" Property="Value" Title="Value">
+                        <RadzenDataGridColumn TItem="VariablePreviewRow" Property="Name" Title="Name" Width="260px">
+                            <Template Context="r">
+                                @if (r.Ambiguous)
+                                {
+                                    <RadzenIcon Icon="warning"
+                                                Style="font-size:0.95rem; color: var(--rz-warning); margin-right:4px; vertical-align:middle;"
+                                                title="@($"Ambiguous — {r.TiedCount} definitions tie at this specificity and source with differing values. The winner is chosen arbitrarily; narrow the scopes to make it deterministic.")" />
+                                }
+                                @r.Name
+                            </Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="VariablePreviewRow" Property="Value" Title="Value">
                             <Template Context="r">
                                 @if (r.Sensitive)
                                 {
@@ -548,8 +662,70 @@ else
                                 }
                             </Template>
                         </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="VariablePreviewRow" Property="Source" Title="Source" Width="150px">
+                            <Template Context="r">
+                                <span class="@(r.Source == "Project" ? "" : "rz-color-secondary")">@r.Source</span>
+                            </Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="VariablePreviewRow" Title="Winning scope" Sortable="false" Filterable="false" UniqueID="winning-scope">
+                            <Template Context="r">
+                                @if (r.Scope.IsUnscoped)
+                                {
+                                    <span class="rz-color-secondary" style="font-size:12px;">unscoped</span>
+                                }
+                                else
+                                {
+                                    <RadzenStack Orientation="Orientation.Horizontal" Wrap="FlexWrap.Wrap" Gap="0.3rem" AlignItems="AlignItems.Center">
+                                        @if (r.Scope.EnvironmentId is { } pEnvId)
+                                        {
+                                            <RadzenBadge Text="@($"env: {EnvName(pEnvId)}")" BadgeStyle="BadgeStyle.Info" IsPill="true" />
+                                        }
+                                        @if (r.Scope.TenantId is { } pTenantId)
+                                        {
+                                            <RadzenBadge Text="@($"tenant: {TenantName(pTenantId)}")" BadgeStyle="BadgeStyle.Success" IsPill="true" />
+                                        }
+                                        @if (r.Scope.TargetId is { } pTargetId)
+                                        {
+                                            <RadzenBadge Text="@($"target: {TargetName(pTargetId)}")" BadgeStyle="BadgeStyle.Secondary" IsPill="true" />
+                                        }
+                                        @if (r.Scope.ChannelId is { } pChannelId)
+                                        {
+                                            <RadzenBadge Text="@($"channel: {PreviewChannelName(pChannelId)}")" BadgeStyle="BadgeStyle.Warning" IsPill="true" />
+                                        }
+                                        @if (r.Scope.ProcessStepId is { } pStepId)
+                                        {
+                                            <RadzenBadge Text="@($"step: {PreviewStepName(pStepId)}")" BadgeStyle="BadgeStyle.Primary" IsPill="true" />
+                                        }
+                                        @if (r.Scope.Roles is { Count: > 0 })
+                                        {
+                                            @foreach (var role in r.Scope.Roles)
+                                            {
+                                                <RadzenBadge Text="@($"role: {role}")" BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                                            }
+                                        }
+                                        @if (r.Scope.TenantTagIds is { Count: > 0 } ptt)
+                                        {
+                                            <RadzenBadge Text="@($"tenant-tag ×{ptt.Count}")" BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                                        }
+                                    </RadzenStack>
+                                }
+                            </Template>
+                        </RadzenDataGridColumn>
+                        <RadzenDataGridColumn TItem="VariablePreviewRow" Property="Specificity" Title="Spec." Width="90px" TextAlign="TextAlign.Right">
+                            <Template Context="r">
+                                <span title="@($"Scope specificity — higher wins. {r.CandidateCount} candidate definition(s) matched this context.")"
+                                      class="@(r.CandidateCount > 1 ? "" : "rz-color-secondary")">
+                                    @r.Specificity@(r.CandidateCount > 1 ? $" ({r.CandidateCount})" : "")
+                                </span>
+                            </Template>
+                        </RadzenDataGridColumn>
                     </Columns>
                 </KrakenGrid>
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mt-2">
+                    Spec. = scope specificity of the winning definition (higher wins); (n) = number of definitions that
+                    matched this context for the name. A <RadzenIcon Icon="warning" Style="font-size:0.85rem; vertical-align:middle;" />
+                    marks a name whose winner is ambiguous — tied at the same specificity and source with differing values.
+                </RadzenText>
             }
         </RadzenCard>
     }
@@ -677,6 +853,7 @@ else
     private List<TagOption> _projectTagOptions = [];
     private List<TagOption> _envTagOptions = [];
     private List<TagOption> _tenantTagSetOptions = [];
+    private Dictionary<Guid, HashSet<Guid>> _tenantTagSetTagIds = [];
 
     // ── Filter state ────────────────────────────────────────────────────
     private Guid? _filterProjectId;
@@ -707,19 +884,135 @@ else
     private Dictionary<Guid, string> _sourceNames = [];
     private HashSet<Guid> _lockedIds = [];
 
-    private readonly List<GroupDescriptor> _groups = [new() { Property = nameof(Variable.Name) }];
+    // Grouping is driven by the explicit "Group by" control, not (only) drag-to-
+    // group. Radzen re-applies grouping when the Groups REFERENCE changes, so each
+    // change assigns a fresh ObservableCollection. Source groups by SetId (a real
+    // property) and the header maps the id to a friendly label via _setSourceNames.
+    private string _groupBy = "name";
+    private Dictionary<Guid, string> _setSourceNames = [];
     private bool? _allExpanded = true;
     private void SetAllExpanded(bool v) => _allExpanded = v;
+
+    private static GroupDescriptor? GroupDescriptorFor(string key) => key switch
+    {
+        "name"   => new GroupDescriptor { Property = nameof(Variable.Name), Title = "Name", SortOrder = SortOrder.Ascending },
+        "type"   => new GroupDescriptor { Property = nameof(Variable.Type), Title = "Type", SortOrder = SortOrder.Ascending },
+        "source" => new GroupDescriptor { Property = nameof(Variable.SetId), Title = "Source" },
+        _        => null,
+    };
+
+    private static string GroupKeyFromProperty(string? property) => property switch
+    {
+        nameof(Variable.Name)  => "name",
+        nameof(Variable.Type)  => "type",
+        nameof(Variable.SetId) => "source",
+        null => "none",
+        _ => "none",
+    };
+
+    // Default grouping for a first-time visitor (no persisted grid settings).
+    // Passed to KrakenGrid.DefaultGroups so the grid seeds it WITHOUT the page
+    // mutating Groups — a page-side seed trips Radzen's auto-persist (every
+    // Groups mutation calls SaveSettings) and clobbered the user's stored
+    // grouping with the default on every load. Matches GroupDescriptorFor("name").
+    private static readonly GroupDescriptor[] _defaultGroups =
+        [new GroupDescriptor { Property = nameof(Variable.Name), Title = "Name", SortOrder = SortOrder.Ascending }];
+
+    // Keeps the "Group by" SelectBar honest with whatever the grid actually
+    // groups by — persisted-settings restore, drag-to-group, chip-remove, or the
+    // KrakenGrid default. Deliberately does NOT seed: seeding here (grid.Groups
+    // .Add) would auto-persist and overwrite the stored grouping every load.
+    private void OnGridRender(DataGridRenderEventArgs<Variable> args)
+    {
+        if (args.Grid is not { } grid) return;
+
+        var actual = GroupKeyFromProperty(grid.Groups.FirstOrDefault()?.Property);
+        if (actual != _groupBy)
+        {
+            _groupBy = actual;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OnGroupByChanged(string value)
+    {
+        _groupBy = string.IsNullOrEmpty(value) ? "none" : value;
+        if (_grid is null) return;
+        _grid.Groups.Clear();
+        if (GroupDescriptorFor(_groupBy) is { } desc)
+        {
+            _grid.Groups.Add(desc);
+        }
+        // Public view invalidation — the internal grouped view caches until
+        // something nulls it (drag does this internally; we go through Reload).
+        await _grid.Reload();
+    }
+
+    // Group-header label: SetId (Source grouping) is a Guid — map it to the
+    // same friendly source name the Source column shows; other dimensions
+    // display their raw key (variable name, variable type).
+    private string GroupKeyLabel(Radzen.Group group)
+    {
+        var key = group.Data.Key;
+        if (group.GroupDescriptor?.Property == nameof(Variable.SetId))
+        {
+            return key is Guid sid && _setSourceNames.TryGetValue(sid, out var n) ? n : "Unknown source";
+        }
+        return key?.ToString() ?? "(none)";
+    }
 
     // ── Preview mode ────────────────────────────────────────────────────
     private Guid? _previewProjectId;
     private Guid? _previewEnvId;
     private Guid? _previewTargetId;
     private Guid? _previewTenantId;
+    // Channel is release-level: the real deploy path resolves with the
+    // release's ChannelId, so previewing without it would silently hide every
+    // channel-scoped override. "(any channel)" = null = the base resolution.
+    private Guid? _previewChannelId;
+    private List<Channel> _previewChannels = [];
+
+    // Carry the edit-mode filter context into the preview so "filter project,
+    // switch to Preview" starts pre-seeded instead of blank.
+    private async Task SwitchToPreview()
+    {
+        _previewProjectId ??= _filterProjectId;
+        _previewEnvId ??= _filterEnvId;
+        _previewTenantId ??= _filterTenantId;
+        _previewTargetId ??= _filterTargetId;
+        await LoadPreviewChannelsAsync(_previewProjectId);
+        _mode = VarMode.Preview;
+    }
+
+    private async Task OnPreviewProjectChangedAsync(Guid? projectId)
+    {
+        _previewProjectId = projectId;
+        _previewChannelId = null;   // channels are project-specific
+        await LoadPreviewChannelsAsync(projectId);
+    }
+
+    private async Task LoadPreviewChannelsAsync(Guid? projectId)
+    {
+        if (projectId is { } pid)
+        {
+            _previewChannels = await ChannelSvc.GetForProjectAsync(pid);
+            _previewChannelNames = _previewChannels.ToDictionary(c => c.Id, c => c.Name);
+        }
+        else
+        {
+            _previewChannels = [];
+            _previewChannelNames = [];
+        }
+    }
+
     private bool _previewLoading;
-    private Dictionary<string, string>? _previewResult;
-    private List<PreviewRow> _previewRows = [];
-    private sealed record PreviewRow(string Name, string Value, bool Sensitive);
+    private bool _previewRan;
+    private List<VariablePreviewRow> _previewRows = [];
+    // Channel/step display names for the PREVIEW project's scope badges — the
+    // edit-mode _channels/_projectStepNames belong to the filtered project,
+    // which can differ from the previewed one.
+    private Dictionary<Guid, string> _previewChannelNames = [];
+    private Dictionary<Guid, string> _previewStepNames = [];
 
     // ── New variable row ────────────────────────────────────────────────
     private string _newName = "";
@@ -755,53 +1048,181 @@ else
 
     // ── Lifecycle ───────────────────────────────────────────────────────
 
+    private string? _appliedQuery;
+    private bool _disposed;
+
+    protected override void OnInitialized()
+    {
+        // Query-only, same-route navigations reuse THIS component instance
+        // (the project page's Edit button → ?project=…, or a filter link →
+        // ?env=…). Under global interactivity + enhanced navigation the page's
+        // parameters/lifecycle are NOT reliably re-run for a query-only change,
+        // so OnParametersSetAsync alone misses them — the URL updates but no
+        // filter chip appears and no fetch runs. LocationChanged is the
+        // documented hook that always fires on a location change; we re-read the
+        // query there. Same pattern as SpaceSwitcher. Unsubscribed in Dispose.
+        Nav.LocationChanged += OnLocationChanged;
+    }
+
     protected override async Task OnParametersSetAsync()
     {
-        if (_loaded) return;
-
-        try
+        if (!_loaded)
         {
-            _projects = await ProjectSvc.GetAllAsync();
-            _environments = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true);
-            _envNames = _environments.ToDictionary(e => e.Id, e => e.Name);
-            _tenants = await TenantSvc.GetAllAsync();
-            _tenantNames = _tenants.ToDictionary(t => t.Id, t => t.Name);
-            _targets = await TargetSvc.GetAllAsync();
-            _targetNames = _targets.ToDictionary(t => t.Id, t => t.Name);
-            _targetTenantMap = await TargetSvc.GetTenantAssociationMapAsync();
-            _availableRoles = _targets.SelectMany(t => t.Roles)
-                .Where(r => !string.IsNullOrWhiteSpace(r))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(r => r, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            await LoadTagOptionsAsync();
-
-            var uri = Nav.ToAbsoluteUri(Nav.Uri);
-            var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
-            if (query.TryGetValue("project", out var projSlug))
+            try
             {
-                _filterProjectId = _projects
-                    .FirstOrDefault(p => string.Equals(p.Slug, projSlug.ToString(), StringComparison.OrdinalIgnoreCase))?.Id;
+                _projects = await ProjectSvc.GetAllAsync();
+                _environments = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true);
+                _envNames = _environments.ToDictionary(e => e.Id, e => e.Name);
+                _tenants = await TenantSvc.GetAllAsync();
+                _tenantNames = _tenants.ToDictionary(t => t.Id, t => t.Name);
+                _targets = await TargetSvc.GetAllAsync();
+                _targetNames = _targets.ToDictionary(t => t.Id, t => t.Name);
+                _targetTenantMap = await TargetSvc.GetTenantAssociationMapAsync();
+                _availableRoles = _targets.SelectMany(t => t.Roles)
+                    .Where(r => !string.IsNullOrWhiteSpace(r))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(r => r, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                await LoadTagOptionsAsync();
             }
-            if (query.TryGetValue("env", out var envVal) && Guid.TryParse(envVal, out var envId)) _filterEnvId = envId;
-            if (query.TryGetValue("tenant", out var tenantVal) && Guid.TryParse(tenantVal, out var tenantId)) _filterTenantId = tenantId;
-            if (query.TryGetValue("role", out var roleVal) && roleVal.ToString() is { Length: > 0 } r) _filterRole = r;
-            if (query.TryGetValue("name", out var nameVal) && nameVal.ToString() is { Length: > 0 } n) _filterName = n;
-
-            if (HasAnyFilter)
+            catch (Exception ex)
             {
-                await FetchAsync();
+                _loadError = ex.Message;
+            }
+            finally
+            {
+                _loaded = true;
             }
         }
-        catch (Exception ex)
+
+        // First mount applies here; same-route query-only navigations are
+        // additionally covered by OnLocationChanged. The _appliedQuery guard in
+        // ApplyQueryFromCurrentUrlAsync keeps the two paths idempotent so the
+        // same navigation is never applied (or fetched) twice.
+        await ApplyQueryFromCurrentUrlAsync();
+    }
+
+    // Re-reads the current URL's query string and applies it to the filters,
+    // fetching when at least one filter is present. Guarded by _appliedQuery so
+    // SyncFiltersToUrl's history-replace navigation (which sets _appliedQuery
+    // BEFORE navigating) can't trigger a re-apply loop, and so the
+    // OnParametersSet and LocationChanged paths never double-fetch one nav.
+    private async Task ApplyQueryFromCurrentUrlAsync()
+    {
+        if (!_loaded || _loadError is not null) return;
+
+        var uri = Nav.ToAbsoluteUri(Nav.Uri);
+        if (uri.Query == _appliedQuery) return;
+
+        _appliedQuery = uri.Query;
+        var applied = ApplyQueryFilters(uri.Query);
+        if (applied && HasAnyFilter)
         {
-            _loadError = ex.Message;
+            await FetchAsync();
         }
-        finally
+        else
         {
-            _loaded = true;
+            // Query changed but carried no actionable filter (e.g. an empty
+            // query) — reflect the current state without a fetch.
+            StateHasChanged();
         }
+    }
+
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        // Marshal onto the Dispatcher and swallow faults: this is a void-returning
+        // event handler, so an unguarded async continuation would surface as an
+        // unobserved async-void exception that tears down the circuit.
+        _ = InvokeAsync(async () =>
+        {
+            try
+            {
+                if (_disposed) return;
+
+                // A navigation AWAY from this page fires this too, just before the
+                // component is disposed — ignore anything not targeting this page
+                // so we don't start a pointless fetch during teardown.
+                var uri = Nav.ToAbsoluteUri(Nav.Uri);
+                if (!string.Equals(uri.AbsolutePath, Sp("/variables"), StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                await ApplyQueryFromCurrentUrlAsync();
+            }
+            catch (Exception ex)
+            {
+                Notifications.Notify(NotificationSeverity.Error, "Filter failed", ex.Message, 5000);
+            }
+        });
+    }
+
+    public void Dispose()
+    {
+        // Kill any pending debounce and invalidate in-flight fetches so their
+        // continuations can't touch services after the circuit tears down.
+        _disposed = true;
+        Nav.LocationChanged -= OnLocationChanged;
+        _fetchSeq++;
+        _debounceCts?.Cancel();
+        _debounceCts?.Dispose();
+    }
+
+    // Returns true when the query string carried at least one filter key.
+    private bool ApplyQueryFilters(string queryString)
+    {
+        var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(queryString);
+        var applied = false;
+        if (query.TryGetValue("project", out var projSlug))
+        {
+            _filterProjectId = _projects
+                .FirstOrDefault(p => string.Equals(p.Slug, projSlug.ToString(), StringComparison.OrdinalIgnoreCase))?.Id;
+            _filterStepId = null;
+            applied = true;
+        }
+        if (query.TryGetValue("env", out var envVal) && Guid.TryParse(envVal, out var envId)) { _filterEnvId = envId; applied = true; }
+        if (query.TryGetValue("tenant", out var tenantVal) && Guid.TryParse(tenantVal, out var tenantId)) { _filterTenantId = tenantId; applied = true; }
+        if (query.TryGetValue("role", out var roleVal) && roleVal.ToString() is { Length: > 0 } r) { _filterRole = r; applied = true; }
+        if (query.TryGetValue("name", out var nameVal) && nameVal.ToString() is { Length: > 0 } n) { _filterName = n; applied = true; }
+        // After the project block — it resets the step filter.
+        if (query.TryGetValue("step", out var stepVal) && Guid.TryParse(stepVal, out var stepId)) { _filterStepId = stepId; applied = true; }
+        if (query.TryGetValue("target", out var targetVal) && Guid.TryParse(targetVal, out var targetId)) { _filterTargetId = targetId; applied = true; }
+        return applied;
+    }
+
+    // Mirrors the current filters into the URL (history-replace) so the view is
+    // shareable and F5-stable. Runs when a fetch commits and when filters are
+    // cleared; _appliedQuery is set FIRST so the navigation-triggered
+    // OnParametersSetAsync pass doesn't re-apply what we just wrote. Advanced
+    // tag filters are intentionally not persisted.
+    private void SyncFiltersToUrl()
+    {
+        if (!RendererInfo.IsInteractive) return;
+
+        var parts = new List<string>();
+        if (_filterProjectId is { } pid
+            && _projects.FirstOrDefault(p => p.Id == pid)?.Slug is { } slug)
+        {
+            parts.Add($"project={Uri.EscapeDataString(slug)}");
+        }
+        if (_filterEnvId is { } envId) parts.Add($"env={envId}");
+        if (_filterTenantId is { } tenantId) parts.Add($"tenant={tenantId}");
+        if (_filterRole.Length > 0) parts.Add($"role={Uri.EscapeDataString(_filterRole)}");
+        if (_filterName.Length > 0) parts.Add($"name={Uri.EscapeDataString(_filterName)}");
+        if (_filterStepId is { } stepId) parts.Add($"step={stepId}");
+        if (_filterTargetId is { } targetId) parts.Add($"target={targetId}");
+
+        var query = parts.Count > 0 ? "?" + string.Join("&", parts) : "";
+        var uri = Nav.ToAbsoluteUri(Nav.Uri);
+        if (uri.Query == query)
+        {
+            _appliedQuery = query;
+            return;
+        }
+
+        _appliedQuery = query;
+        Nav.NavigateTo(uri.AbsolutePath + query, replace: true);
     }
 
     private async Task LoadTagOptionsAsync()
@@ -822,6 +1243,8 @@ else
         _tenantTagSetOptions = tenantSets
             .Select(s => new TagOption(s.Id, s.Name))
             .ToList();
+        _tenantTagSetTagIds = tenantSets
+            .ToDictionary(s => s.Id, s => s.Tags.Select(t => t.Id).ToHashSet());
     }
 
     // ── Filter change + debounce ────────────────────────────────────────
@@ -832,15 +1255,26 @@ else
         await MaybeAutoFetchAsync();
     }
 
-    private void OnNameKeyUp(KeyboardEventArgs e)
+    private async Task OnProjectFilterChangedAsync(Guid? projectId)
+    {
+        _filterProjectId = projectId;
+        // Steps, channels and the pending new-variable scope belong to the
+        // previously selected project — carrying them over would silently
+        // filter/scope against ids from another project.
+        _filterStepId = null;
+        _newScope = new VariableScope();
+        await MaybeAutoFetchAsync();
+    }
+
+    private async Task OnNameKeyUp(KeyboardEventArgs e)
     {
         if (e.Key == "Enter" && !_autoApply && HasAnyFilter)
         {
-            _ = FetchAsync();
+            await FetchAsync();
         }
         else if (_autoApply)
         {
-            _ = MaybeAutoFetchAsync();
+            await MaybeAutoFetchAsync();
         }
     }
 
@@ -870,12 +1304,11 @@ else
         }
         else if (!HasAnyFilter)
         {
-            _variables = [];
-            _hasFetched = false;
+            ResetResults();
         }
     }
 
-    private async Task ClearAllFiltersAsync()
+    private Task ClearAllFiltersAsync()
     {
         _filterProjectId = null;
         _filterEnvId = null;
@@ -887,135 +1320,212 @@ else
         _filterProjectTagId = null;
         _filterEnvTagId = null;
         _filterTenantTagSetId = null;
+        ResetResults();
+        return Task.CompletedTask;
+    }
+
+    // Clears the result state AND invalidates any in-flight fetch so a slow
+    // fetch that started before the clear cannot commit stale rows afterwards.
+    private void ResetResults()
+    {
+        _fetchSeq++;
+        _debounceCts?.Cancel();
         _variables = [];
         _includedSets = [];
         _sourceNames.Clear();
         _lockedIds.Clear();
         _hasFetched = false;
-        await Task.CompletedTask;
+        _fetching = false;
+        SyncFiltersToUrl();
     }
 
     // ── Fetch ───────────────────────────────────────────────────────────
+    //
+    // Latest-wins design: every fetch gets a sequence number; all data is
+    // loaded into locals and committed to component state at a single point,
+    // only when the fetch is still the newest. The finally block ALWAYS
+    // re-renders via InvokeAsync — FetchAsync is reachable from contexts
+    // Blazor does not re-render automatically (context-menu callbacks,
+    // debounced continuations), which is how the UI used to strand on
+    // "Fetching variables..." with the data already written.
 
-    private int _fetchGeneration;
+    private int _fetchSeq;
+
+    private sealed record FilterSnapshot(
+        Guid? ProjectId, Guid? EnvId, Guid? TenantId, string Role, Guid? StepId,
+        string Name, Guid? TargetId, Guid? ProjectTagId, Guid? EnvTagId, Guid? TenantTagSetId);
+
+    private sealed record FetchResult(
+        List<Variable> Variables,
+        List<VariableSet> IncludedSets,
+        Dictionary<Guid, string> SourceNames,
+        HashSet<Guid> LockedIds,
+        List<Channel> Channels,
+        List<StepOption> Steps,
+        List<string> Roles);
 
     private async Task FetchAsync()
     {
         if (!HasAnyFilter) return;
-        var gen = ++_fetchGeneration;
+        var seq = ++_fetchSeq;
         _fetching = true;
         StateHasChanged();
 
         try
         {
-            IReadOnlyCollection<Guid>? projectIds = null;
-            if (_filterProjectTagId.HasValue)
-            {
-                projectIds = await TagSvc.GetEntityIdsWithAnyTagAsync(TaggableEntityKind.Project, [_filterProjectTagId.Value]);
-            }
+            var snapshot = new FilterSnapshot(
+                _filterProjectId, _filterEnvId, _filterTenantId, _filterRole, _filterStepId,
+                _filterName, _filterTargetId, _filterProjectTagId, _filterEnvTagId, _filterTenantTagSetId);
 
-            var results = await VariableSvc.SearchVariablesAsync(
-                projectId: _filterProjectId,
-                nameContains: _filterName.Length > 0 ? _filterName : null,
-                projectIds: projectIds);
+            var result = await BuildFetchResultAsync(snapshot);
 
-            if (gen != _fetchGeneration) return;
+            if (seq != _fetchSeq) return;
 
-            HashSet<Guid>? envIds = null;
-            if (_filterEnvTagId.HasValue)
-            {
-                envIds = await TagSvc.GetEntityIdsWithAnyTagAsync(TaggableEntityKind.Environment, [_filterEnvTagId.Value]);
-            }
-
-            if (gen != _fetchGeneration) return;
-
-            _variables = results.Where(v =>
-            {
-                if (_filterEnvId.HasValue && v.Scope.EnvironmentId.HasValue
-                    && v.Scope.EnvironmentId != _filterEnvId.Value) return false;
-                if (envIds is { Count: > 0 } && v.Scope.EnvironmentId.HasValue
-                    && !envIds.Contains(v.Scope.EnvironmentId.Value)) return false;
-                if (_filterTenantId.HasValue && v.Scope.TenantId.HasValue
-                    && v.Scope.TenantId != _filterTenantId.Value) return false;
-                if (_filterRole.Length > 0 && v.Scope.Roles is { Count: > 0 }
-                    && !v.Scope.Roles.Contains(_filterRole, StringComparer.OrdinalIgnoreCase)) return false;
-                if (_filterStepId.HasValue && v.Scope.ProcessStepId.HasValue
-                    && v.Scope.ProcessStepId != _filterStepId.Value) return false;
-                if (_filterTargetId.HasValue && v.Scope.TargetId.HasValue
-                    && v.Scope.TargetId != _filterTargetId.Value) return false;
-                return true;
-            }).ToList();
-
-            _sourceNames.Clear();
-            _lockedIds.Clear();
-            _includedSets = [];
-
-            if (_filterProjectId.HasValue)
-            {
-                await LoadProjectContextAsync(_filterProjectId.Value);
-            }
-
-            if (gen != _fetchGeneration) return;
+            _variables = result.Variables;
+            _includedSets = result.IncludedSets;
+            _sourceNames = result.SourceNames;
+            _lockedIds = result.LockedIds;
+            _channels = result.Channels;
+            _projectStepNames = result.Steps;
+            _availableRoles = result.Roles;
+            // SetId → friendly source label, for the "group by Source" header.
+            _setSourceNames = _variables
+                .GroupBy(v => v.SetId)
+                .ToDictionary(g => g.Key, g => SourceLabel(g.First()));
             _hasFetched = true;
+            SyncFiltersToUrl();
         }
         catch (Exception ex)
         {
-            if (gen == _fetchGeneration)
+            if (seq == _fetchSeq)
             {
                 Notifications.Notify(NotificationSeverity.Error, "Fetch failed", ex.Message, 5000);
             }
         }
         finally
         {
-            if (gen == _fetchGeneration)
+            if (seq == _fetchSeq)
             {
                 _fetching = false;
             }
+            await InvokeAsync(StateHasChanged);
         }
     }
 
-    private async Task LoadProjectContextAsync(Guid projectId)
+    // Pure load: reads everything the grid needs into a result object without
+    // touching component state, so a superseded fetch can be discarded whole.
+    private async Task<FetchResult> BuildFetchResultAsync(FilterSnapshot f)
     {
-        var project = _projects.FirstOrDefault(p => p.Id == projectId);
-        if (project is null) return;
-
-        _channels = await ChannelSvc.GetForProjectAsync(project.Id);
-        var process = await ProcessSvc.GetAsync(project.Id);
-        _projectStepNames = process?.Steps.Select(s => new StepOption(s.Id, s.Name)).ToList() ?? [];
-
-        var stepRoles = process?.Steps.SelectMany(s => s.TargetRoles) ?? [];
-        _availableRoles = _targets.SelectMany(t => t.Roles)
-            .Concat(stepRoles)
-            .Where(r => !string.IsNullOrWhiteSpace(r))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(r => r, StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        _includedSets = await VariableSvc.GetIncludedSetsAsync(project.Id);
-        foreach (var set in _includedSets)
+        IReadOnlyCollection<Guid>? projectIds = null;
+        if (f.ProjectTagId.HasValue)
         {
-            foreach (var v in set.Variables)
-            {
-                _sourceNames[v.Id] = set.Name ?? "Library";
-                _lockedIds.Add(v.Id);
-            }
+            projectIds = await TagSvc.GetEntityIdsWithAnyTagAsync(TaggableEntityKind.Project, [f.ProjectTagId.Value]);
         }
 
-        var libVars = _includedSets.SelectMany(s => s.Variables).ToList();
-        var existing = _variables.Select(v => v.Id).ToHashSet();
-        foreach (var lv in libVars)
+        HashSet<Guid>? envIds = null;
+        if (f.EnvTagId.HasValue)
         {
-            if (!existing.Contains(lv.Id))
-            {
-                _variables.Add(lv);
-            }
+            envIds = await TagSvc.GetEntityIdsWithAnyTagAsync(TaggableEntityKind.Environment, [f.EnvTagId.Value]);
         }
+
+        HashSet<Guid>? tenantSetTagIds = null;
+        if (f.TenantTagSetId.HasValue)
+        {
+            tenantSetTagIds = _tenantTagSetTagIds.TryGetValue(f.TenantTagSetId.Value, out var ids) ? ids : [];
+        }
+
+        var results = await VariableSvc.SearchVariablesAsync(
+            projectId: f.ProjectId,
+            nameContains: f.Name.Length > 0 ? f.Name : null,
+            projectIds: projectIds);
+
+        bool MatchesScopeFilters(Variable v)
+        {
+            if (f.EnvId.HasValue && v.Scope.EnvironmentId.HasValue
+                && v.Scope.EnvironmentId != f.EnvId.Value) return false;
+            if (envIds is not null && v.Scope.EnvironmentId.HasValue
+                && !envIds.Contains(v.Scope.EnvironmentId.Value)) return false;
+            if (f.TenantId.HasValue && v.Scope.TenantId.HasValue
+                && v.Scope.TenantId != f.TenantId.Value) return false;
+            if (f.Role.Length > 0 && v.Scope.Roles is { Count: > 0 }
+                && !v.Scope.Roles.Contains(f.Role, StringComparer.OrdinalIgnoreCase)) return false;
+            if (f.StepId.HasValue && v.Scope.ProcessStepId.HasValue
+                && v.Scope.ProcessStepId != f.StepId.Value) return false;
+            if (f.TargetId.HasValue && v.Scope.TargetId.HasValue
+                && v.Scope.TargetId != f.TargetId.Value) return false;
+            if (tenantSetTagIds is not null && v.Scope.TenantTagIds is { Count: > 0 }
+                && !v.Scope.TenantTagIds.Any(tenantSetTagIds.Contains)) return false;
+            return true;
+        }
+
+        var variables = results.Where(MatchesScopeFilters).ToList();
+
+        var includedSets = new List<VariableSet>();
+        var sourceNames = new Dictionary<Guid, string>();
+        var lockedIds = new HashSet<Guid>();
+        var channels = _channels;
+        var steps = new List<StepOption>();
+        var roles = _availableRoles;
+
+        if (f.ProjectId.HasValue && _projects.Any(p => p.Id == f.ProjectId.Value))
+        {
+            channels = await ChannelSvc.GetForProjectAsync(f.ProjectId.Value);
+            var process = await ProcessSvc.GetAsync(f.ProjectId.Value);
+            steps = process?.Steps.Select(s => new StepOption(s.Id, s.Name)).ToList() ?? [];
+
+            var stepRoles = process?.Steps.SelectMany(s => s.TargetRoles) ?? [];
+            roles = _targets.SelectMany(t => t.Roles)
+                .Concat(stepRoles)
+                .Where(r => !string.IsNullOrWhiteSpace(r))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(r => r, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            includedSets = await VariableSvc.GetIncludedSetsAsync(f.ProjectId.Value);
+            foreach (var set in includedSets)
+            {
+                foreach (var v in set.Variables)
+                {
+                    sourceNames[v.Id] = set.Name ?? "Library";
+                    lockedIds.Add(v.Id);
+                }
+            }
+
+            // Overlay the included library variables, subject to the SAME
+            // name + scope filters as the project's own rows.
+            var existing = variables.Select(v => v.Id).ToHashSet();
+            foreach (var lv in includedSets.SelectMany(s => s.Variables))
+            {
+                if (existing.Contains(lv.Id)) continue;
+                if (f.Name.Length > 0
+                    && !lv.Name.Contains(f.Name, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!MatchesScopeFilters(lv)) continue;
+                variables.Add(lv);
+            }
+
+            variables = variables
+                .OrderBy(v => v.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(v => v.Id)
+                .ToList();
+        }
+
+        return new FetchResult(variables, includedSets, sourceNames, lockedIds, channels, steps, roles);
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────
 
     private bool IsLocked(Variable v) => _lockedIds.Contains(v.Id);
-    private string SourceLabel(Variable v) => _sourceNames.TryGetValue(v.Id, out var s) ? s : "Project";
+
+    private string SourceLabel(Variable v)
+    {
+        if (_sourceNames.TryGetValue(v.Id, out var s)) return s;
+        return v.Set?.Kind switch
+        {
+            VariableSetKind.Library => v.Set.Name ?? "Library",
+            VariableSetKind.TenantCommon => "Tenant",
+            _ => v.Set?.ProjectId is { } pid ? ProjectName(pid) : "Project",
+        };
+    }
     private string ProjectName(Guid id) => _projects.FirstOrDefault(p => p.Id == id)?.Name ?? "?";
     private string EnvName(Guid id) => _envNames.TryGetValue(id, out var n) ? n : "?";
     private string TenantName(Guid id) => _tenantNames.TryGetValue(id, out var n) ? n : "?";
@@ -1060,21 +1570,33 @@ else
         if (args.Column is { } col && IsEditableProperty(col.Property)
             && args.Data is { } data && !IsLocked(data))
         {
+            if (data.Type == VariableType.Sensitive)
+            {
+                // The entity's Value holds ciphertext. Blank it for the edit
+                // session so (a) the ciphertext never reaches the browser and
+                // (b) saving without retyping doesn't re-encrypt the
+                // ciphertext into garbage. Empty on save = keep stored value.
+                data.Value = "";
+            }
             await _grid.EditRow(data);
         }
     }
 
     private async Task OnRowUpdateAsync(Variable v)
     {
-        if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
+        if (!await Guard.AllowAsync(EditPermissionFor(v))) return;
         try
         {
-            await VariableSvc.UpdateVariableAsync(v.Id, v.Name, v.Value, v.Type, v.Scope, await Guard.CurrentCallerAsync());
+            var valueToSend = v.Type == VariableType.Sensitive && string.IsNullOrEmpty(v.Value)
+                ? null   // sensitive left blank -> keep the stored ciphertext
+                : v.Value;
+            await VariableSvc.UpdateVariableAsync(v.Id, v.Name, valueToSend, v.Type, v.Scope, await Guard.CurrentCallerAsync());
             await FetchAsync();
         }
         catch (Exception ex)
         {
             Notifications.Notify(NotificationSeverity.Error, "Save failed", ex.Message, 5000);
+            await FetchAsync();
         }
     }
 
@@ -1127,47 +1649,77 @@ else
             new() { Text = "Add Value", Value = "add", Icon = "add" },
             new() { Text = "Duplicate Variable", Value = "duplicate", Icon = "content_copy" },
             new() { Text = "Delete Variable", Value = "delete", Icon = "delete" },
-        }, async e =>
+        }, e =>
         {
             ContextMenu.Close();
-            switch (e.Value)
+            // The service callback is a plain Action — an async lambda here
+            // would be async void: exceptions would kill the circuit and the
+            // page would never re-render after the awaited work finishes.
+            _ = RunRowActionAsync(e.Value?.ToString(), v);
+        });
+    }
+
+    private async Task RunRowActionAsync(string? action, Variable v)
+    {
+        try
+        {
+            switch (action)
             {
                 case "add": await AddValueAsync(v); break;
                 case "duplicate": await DuplicateAsync(v); break;
                 case "delete": await DeleteAsync(v); break;
             }
-        });
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Action failed", ex.Message, 5000);
+        }
+        finally
+        {
+            await InvokeAsync(StateHasChanged);
+        }
     }
+
+    // The permission the pre-check should use for a row: library-set rows are
+    // guarded by LibraryVariableSetEdit, everything else by VariableEdit. The
+    // service re-checks authoritatively either way.
+    private static Permission EditPermissionFor(Variable v) =>
+        v.Set?.Kind == VariableSetKind.Library ? Permission.LibraryVariableSetEdit : Permission.VariableEdit;
 
     private async Task AddValueAsync(Variable v)
     {
-        if (!_filterProjectId.HasValue) return;
-        if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
-        await VariableSvc.CreateVariableAsync(
-            _filterProjectId.Value, v.Name, "", VariableType.Text, new VariableScope(), await Guard.CurrentCallerAsync());
+        if (!await Guard.AllowAsync(EditPermissionFor(v))) return;
+        // Create in the variable's own set — works for project rows, library
+        // rows and rows found without a project filter alike.
+        await VariableSvc.CreateVariableInSetAsync(
+            v.SetId, v.Name, "", VariableType.Text, new VariableScope(), await Guard.CurrentCallerAsync());
         await FetchAsync();
     }
 
     private async Task DuplicateAsync(Variable v)
     {
-        if (!_filterProjectId.HasValue) return;
-        if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
+        if (!await Guard.AllowAsync(EditPermissionFor(v))) return;
         var rawValue = v.Type == VariableType.Sensitive ? "" : v.Value;
-        await VariableSvc.CreateVariableAsync(
-            _filterProjectId.Value, v.Name + " (copy)", rawValue, v.Type,
-            new VariableScope
-            {
-                EnvironmentId = v.Scope.EnvironmentId,
-                TenantId = v.Scope.TenantId,
-                TargetId = v.Scope.TargetId,
-                Roles = v.Scope.Roles is { Count: > 0 } r ? [..r] : null,
-            }, await Guard.CurrentCallerAsync());
+        await VariableSvc.CreateVariableInSetAsync(
+            v.SetId, v.Name + " (copy)", rawValue, v.Type,
+            CloneScope(v.Scope), await Guard.CurrentCallerAsync());
         await FetchAsync();
     }
 
+    private static VariableScope CloneScope(VariableScope s) => new()
+    {
+        EnvironmentId = s.EnvironmentId,
+        TenantId = s.TenantId,
+        TargetId = s.TargetId,
+        ChannelId = s.ChannelId,
+        ProcessStepId = s.ProcessStepId,
+        Roles = s.Roles is { Count: > 0 } r ? [..r] : null,
+        TenantTagIds = s.TenantTagIds is { Count: > 0 } tt ? [..tt] : null,
+    };
+
     private async Task DeleteAsync(Variable v)
     {
-        if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
+        if (!await Guard.AllowAsync(EditPermissionFor(v))) return;
         var confirmed = await Dialog.Confirm(
             $"Delete variable '{v.Name}'? This cannot be undone.",
             "Confirm Delete",
@@ -1224,6 +1776,14 @@ else
 
     private void OpenScopePopup(MouseEventArgs args, Variable v)
     {
+        if (IsLocked(v))
+        {
+            // Included library rows are shown for context only — their scope
+            // is owned by the library set page.
+            Notifications.Notify(NotificationSeverity.Info, "Library variable",
+                "Edit this variable in its library variable set.", 4000);
+            return;
+        }
         _popupEditingVar = v;
         SeedPopupFromScope(v.Scope);
         SetPopupPosition(args);
@@ -1265,27 +1825,36 @@ else
 
     private async Task SaveScopeAsync()
     {
-        if (!_filterProjectId.HasValue) return;
-        if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
-
         var roles = _popRoles.Where(r => !string.IsNullOrWhiteSpace(r)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         var envIds = _popEnvIds.ToList();
         var tenantIds = _popTenantIds.ToList();
         var targetIds = _popTargetIds.ToList();
 
+        VariableScope ScopeFor(Guid? env, Guid? tenant, Guid? target, List<Guid>? tenantTags) => new()
+        {
+            EnvironmentId = env,
+            TenantId = tenant,
+            TargetId = target,
+            ChannelId = _popChannelId,
+            ProcessStepId = _popProcessStepId,
+            Roles = roles.Count > 0 ? [..roles] : null,
+            // The popup has no tenant-tag picker; preserve whatever the
+            // variable already carries instead of silently wiping it.
+            TenantTagIds = tenantTags is { Count: > 0 } ? [..tenantTags] : null,
+        };
+
         if (_popupEditingVar is null)
         {
+            if (!_filterProjectId.HasValue) return;
+            if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
+
             if (envIds.Count <= 1 && tenantIds.Count <= 1 && targetIds.Count <= 1)
             {
-                _newScope = new VariableScope
-                {
-                    EnvironmentId = envIds.Count > 0 ? envIds[0] : null,
-                    TenantId = tenantIds.Count > 0 ? tenantIds[0] : null,
-                    TargetId = targetIds.Count > 0 ? targetIds[0] : null,
-                    ChannelId = _popChannelId,
-                    ProcessStepId = _popProcessStepId,
-                    Roles = roles.Count > 0 ? roles : null,
-                };
+                _newScope = ScopeFor(
+                    envIds.Count > 0 ? envIds[0] : null,
+                    tenantIds.Count > 0 ? tenantIds[0] : null,
+                    targetIds.Count > 0 ? targetIds[0] : null,
+                    _newScope.TenantTagIds);
                 ClosePopup();
                 return;
             }
@@ -1301,19 +1870,23 @@ else
             var tenantSetN = tenantIds.Count > 0 ? tenantIds.Cast<Guid?>().ToList() : [null];
             var targetSetN = targetIds.Count > 0 ? targetIds.Cast<Guid?>().ToList() : [null];
 
-            foreach (var e in envSetN)
-                foreach (var t in tenantSetN)
-                    foreach (var tg in targetSetN)
-                    {
-                        await VariableSvc.CreateVariableAsync(
-                            _filterProjectId.Value, _newName, _newValue ?? "", _newType,
-                            new VariableScope
-                            {
-                                EnvironmentId = e, TenantId = t, TargetId = tg,
-                                ChannelId = _popChannelId, ProcessStepId = _popProcessStepId,
-                                Roles = roles.Count > 0 ? [..roles] : null,
-                            }, await Guard.CurrentCallerAsync());
-                    }
+            try
+            {
+                foreach (var e in envSetN)
+                    foreach (var t in tenantSetN)
+                        foreach (var tg in targetSetN)
+                        {
+                            await VariableSvc.CreateVariableAsync(
+                                _filterProjectId.Value, _newName, _newValue ?? "", _newType,
+                                ScopeFor(e, t, tg, null), await Guard.CurrentCallerAsync());
+                        }
+            }
+            catch (Exception ex)
+            {
+                Notifications.Notify(NotificationSeverity.Error, "Add failed", ex.Message, 5000);
+                await FetchAsync();
+                return;
+            }
 
             _newName = ""; _newValue = ""; _newType = VariableType.Text; _newScope = new VariableScope();
             ClosePopup();
@@ -1322,43 +1895,54 @@ else
             return;
         }
 
-        var sensitiveEdit = _popupEditingVar.Type == VariableType.Sensitive;
-        if (sensitiveEdit)
-        {
-            await VariableSvc.UpdateVariableAsync(
-                _popupEditingVar.Id, _popupEditingVar.Name, null, _popupEditingVar.Type,
-                new VariableScope
-                {
-                    EnvironmentId = envIds.Count > 0 ? envIds[0] : null,
-                    TenantId = tenantIds.Count > 0 ? tenantIds[0] : null,
-                    TargetId = targetIds.Count > 0 ? targetIds[0] : null,
-                    ChannelId = _popChannelId, ProcessStepId = _popProcessStepId,
-                    Roles = roles.Count > 0 ? roles : null,
-                }, await Guard.CurrentCallerAsync());
-        }
-        else
-        {
-            var envSet = envIds.Count > 0 ? envIds.Cast<Guid?>().ToList() : [null];
-            var tenantSet = tenantIds.Count > 0 ? tenantIds.Cast<Guid?>().ToList() : [null];
-            var targetSet = targetIds.Count > 0 ? targetIds.Cast<Guid?>().ToList() : [null];
-            var name = _popupEditingVar.Name;
-            var value = _popupEditingVar.Value;
-            var type = _popupEditingVar.Type;
+        if (!await Guard.AllowAsync(EditPermissionFor(_popupEditingVar))) return;
 
-            await VariableSvc.DeleteVariableAsync(_popupEditingVar.Id, await Guard.CurrentCallerAsync());
-            foreach (var e in envSet)
-                foreach (var t in tenantSet)
-                    foreach (var tg in targetSet)
-                    {
-                        await VariableSvc.CreateVariableAsync(
-                            _filterProjectId.Value, name, value, type,
-                            new VariableScope
-                            {
-                                EnvironmentId = e, TenantId = t, TargetId = tg,
-                                ChannelId = _popChannelId, ProcessStepId = _popProcessStepId,
-                                Roles = roles.Count > 0 ? [..roles] : null,
-                            }, await Guard.CurrentCallerAsync());
-                    }
+        var existingTenantTags = _popupEditingVar.Scope.TenantTagIds;
+        // Sensitive vars never multi-expand (the popup already warns) — the
+        // stored ciphertext can't be copied through the create path without
+        // double-encrypting it.
+        var singleTarget = (envIds.Count <= 1 && tenantIds.Count <= 1 && targetIds.Count <= 1)
+                           || _popupEditingVar.Type == VariableType.Sensitive;
+
+        try
+        {
+            if (singleTarget)
+            {
+                // Plain scope change — update in place (value: null keeps the
+                // stored value untouched, including Sensitive ciphertext).
+                await VariableSvc.UpdateVariableAsync(
+                    _popupEditingVar.Id, _popupEditingVar.Name, null, _popupEditingVar.Type,
+                    ScopeFor(
+                        envIds.Count > 0 ? envIds[0] : null,
+                        tenantIds.Count > 0 ? tenantIds[0] : null,
+                        targetIds.Count > 0 ? targetIds[0] : null,
+                        existingTenantTags), await Guard.CurrentCallerAsync());
+            }
+            else
+            {
+                // Multi-scope expansion — one clone per combination, applied
+                // atomically by the service (all-or-nothing).
+                var envSet = envIds.Count > 0 ? envIds.Cast<Guid?>().ToList() : [null];
+                var tenantSet = tenantIds.Count > 0 ? tenantIds.Cast<Guid?>().ToList() : [null];
+                var targetSet = targetIds.Count > 0 ? targetIds.Cast<Guid?>().ToList() : [null];
+
+                var scopes = new List<VariableScope>();
+                foreach (var e in envSet)
+                    foreach (var t in tenantSet)
+                        foreach (var tg in targetSet)
+                        {
+                            scopes.Add(ScopeFor(e, t, tg, existingTenantTags));
+                        }
+
+                await VariableSvc.ReplaceVariableScopesAsync(
+                    _popupEditingVar.Id, scopes, await Guard.CurrentCallerAsync());
+            }
+        }
+        catch (Exception ex)
+        {
+            Notifications.Notify(NotificationSeverity.Error, "Scope save failed", ex.Message, 5000);
+            await FetchAsync();
+            return;
         }
 
         ClosePopup();
@@ -1376,7 +1960,9 @@ else
                 new Dictionary<string, object?>
                 {
                     [nameof(VariableFormDialog.Variable)] = _popupEditingVar,
-                    [nameof(VariableFormDialog.ProjectId)] = _filterProjectId,
+                    // The variable's OWN project drives the channel/step pickers —
+                    // it can differ from the page filter (tag search, no project).
+                    [nameof(VariableFormDialog.ProjectId)] = _popupEditingVar.Set?.ProjectId ?? _filterProjectId,
                 },
                 new DialogOptions { Width = "640px" });
             await FetchAsync();
@@ -1432,7 +2018,6 @@ else
 
     private async Task SaveArrayAsync()
     {
-        if (!await Guard.AllowAsync(Permission.VariableEdit)) return;
         var lines = (_arrayLines ?? "").Split('\n', StringSplitOptions.None).Select(l => l.TrimEnd('\r')).ToList();
         var json = System.Text.Json.JsonSerializer.Serialize(lines);
         if (_arrayEditingVar is null)
@@ -1441,11 +2026,20 @@ else
         }
         else
         {
-            await VariableSvc.UpdateVariableAsync(
-                _arrayEditingVar.Id, _arrayEditingVar.Name, json,
-                _arrayEditingVar.Type, _arrayEditingVar.Scope, await Guard.CurrentCallerAsync());
-            await FetchAsync();
-            Notifications.Notify(NotificationSeverity.Success, "Saved", "Array value updated.", 3000);
+            if (!await Guard.AllowAsync(EditPermissionFor(_arrayEditingVar))) return;
+            try
+            {
+                await VariableSvc.UpdateVariableAsync(
+                    _arrayEditingVar.Id, _arrayEditingVar.Name, json,
+                    _arrayEditingVar.Type, _arrayEditingVar.Scope, await Guard.CurrentCallerAsync());
+                await FetchAsync();
+                Notifications.Notify(NotificationSeverity.Success, "Saved", "Array value updated.", 3000);
+            }
+            catch (Exception ex)
+            {
+                Notifications.Notify(NotificationSeverity.Error, "Save failed", ex.Message, 5000);
+                return;
+            }
         }
         CloseArrayEditor();
     }
@@ -1456,7 +2050,7 @@ else
     {
         if (!_previewProjectId.HasValue || !_previewEnvId.HasValue) return;
         _previewLoading = true;
-        _previewResult = null;
+        _previewRan = false;
         _previewRows = [];
         StateHasChanged();
 
@@ -1472,17 +2066,26 @@ else
                 tenantTagIds = await VariableSvc.GetTenantTagIdsAsync(_previewTenantId.Value);
             }
 
-            var resolved = await VariableSvc.ResolveAsync(
+            // Provenance-aware resolution: winner value + source set + winning
+            // scope + specificity per name. channelId is passed so channel-scoped
+            // overrides resolve exactly as they would at deploy time (the deploy
+            // path resolves with the release's ChannelId). Sensitive winners
+            // arrive masked — the plaintext is never decrypted for previews.
+            _previewRows = await VariableSvc.PreviewResolveAsync(
                 _previewProjectId.Value, _previewEnvId.Value, _previewTargetId,
-                targetRoles, tenantId: _previewTenantId, tenantTagIds: tenantTagIds);
+                targetRoles, tenantId: _previewTenantId, channelId: _previewChannelId,
+                tenantTagIds: tenantTagIds);
 
-            var sensitive = await VariableSvc.GetSensitiveNamesAsync(_previewProjectId.Value);
+            // Channel names are already loaded for the picker; a step-scoped
+            // winner can't surface here (preview has no step dimension) but
+            // resolve its name defensively if one ever does.
+            if (_previewStepNames.Count == 0 && _previewRows.Any(r => r.Scope.ProcessStepId.HasValue))
+            {
+                var process = await ProcessSvc.GetAsync(_previewProjectId.Value);
+                _previewStepNames = process?.Steps.ToDictionary(s => s.Id, s => s.Name) ?? [];
+            }
 
-            _previewResult = resolved;
-            _previewRows = resolved
-                .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
-                .Select(kv => new PreviewRow(kv.Key, kv.Value, sensitive.Contains(kv.Key)))
-                .ToList();
+            _previewRan = true;
         }
         catch (Exception ex)
         {
@@ -1493,4 +2096,7 @@ else
             _previewLoading = false;
         }
     }
+
+    private string PreviewChannelName(Guid id) => _previewChannelNames.TryGetValue(id, out var n) ? n : "?";
+    private string PreviewStepName(Guid id) => _previewStepNames.TryGetValue(id, out var n) ? n : "?";
 }

@@ -437,4 +437,305 @@ public class VariableServiceTests(PostgresFixture postgres) : IClassFixture<Post
         resolved["Tags"].Should().StartWith("[",
             because: "StringArray variables are returned as JSON arrays for the deployment worker to split");
     }
+
+    // ── SearchVariables (cross-project grid query) ───────────────────────────
+
+    [Fact]
+    public async Task SearchVariables_name_filter_is_case_insensitive()
+    {
+        await using var db = postgres.CreateContext();
+        var svc = CreateService(postgres);
+        var project = await SeedProjectAsync(db);
+
+        await svc.CreateVariableAsync(project.Id, "ConnectionString", "x", VariableType.Text, null, CallerAuthorization.System);
+        await svc.CreateVariableAsync(project.Id, "Unrelated", "y", VariableType.Text, null, CallerAuthorization.System);
+
+        var hits = await svc.SearchVariablesAsync(projectId: project.Id, nameContains: "connection");
+
+        hits.Should().ContainSingle(v => v.Name == "ConnectionString",
+            because: "the UI promises case-insensitive name search");
+    }
+
+    [Fact]
+    public async Task SearchVariables_escapes_like_wildcards_in_the_search_term()
+    {
+        await using var db = postgres.CreateContext();
+        var svc = CreateService(postgres);
+        var project = await SeedProjectAsync(db);
+
+        await svc.CreateVariableAsync(project.Id, "Rate100%", "x", VariableType.Text, null, CallerAuthorization.System);
+        await svc.CreateVariableAsync(project.Id, "Rate100x", "y", VariableType.Text, null, CallerAuthorization.System);
+
+        var hits = await svc.SearchVariablesAsync(projectId: project.Id, nameContains: "100%");
+
+        hits.Should().ContainSingle(v => v.Name == "Rate100%",
+            because: "a literal % in the term must not act as a LIKE wildcard");
+    }
+
+    [Fact]
+    public async Task SearchVariables_empty_projectIds_matches_nothing()
+    {
+        await using var db = postgres.CreateContext();
+        var svc = CreateService(postgres);
+        var project = await SeedProjectAsync(db);
+        await svc.CreateVariableAsync(project.Id, "SomeVar", "x", VariableType.Text, null, CallerAuthorization.System);
+
+        // Empty collection = a project-tag filter that matched no project.
+        var hits = await svc.SearchVariablesAsync(projectIds: Array.Empty<Guid>());
+
+        hits.Should().BeEmpty(
+            because: "an empty containment set must not silently widen to 'no filter'");
+    }
+
+    [Fact]
+    public async Task SearchVariables_projectIds_restricts_to_the_given_projects()
+    {
+        await using var db = postgres.CreateContext();
+        var svc = CreateService(postgres);
+        var projectA = await SeedProjectAsync(db);
+        var projectB = await SeedProjectAsync(db);
+
+        await svc.CreateVariableAsync(projectA.Id, "VarA", "x", VariableType.Text, null, CallerAuthorization.System);
+        await svc.CreateVariableAsync(projectB.Id, "VarB", "y", VariableType.Text, null, CallerAuthorization.System);
+
+        var hits = await svc.SearchVariablesAsync(projectIds: [projectA.Id]);
+
+        hits.Should().OnlyContain(v => v.Set.ProjectId == projectA.Id);
+        hits.Should().ContainSingle(v => v.Name == "VarA");
+    }
+
+    // ── ReplaceVariableScopes (atomic multi-scope expansion) ─────────────────
+
+    [Fact]
+    public async Task ReplaceVariableScopes_expands_to_one_row_per_scope_and_removes_original()
+    {
+        await using var db = postgres.CreateContext();
+        var svc = CreateService(postgres);
+        var (project, envA, _) = await SeedContextAsync(db, []);
+        var envB = new DeploymentEnvironment { Slug = $"env-{Guid.NewGuid():N}", Name = "Staging" };
+        db.Environments.Add(envB);
+        await db.SaveChangesAsync();
+
+        var original = await svc.CreateVariableAsync(
+            project.Id, "Multi", "shared-value", VariableType.Text, null, CallerAuthorization.System);
+
+        var created = await svc.ReplaceVariableScopesAsync(
+            original.Id,
+            [new VariableScope { EnvironmentId = envA.Id }, new VariableScope { EnvironmentId = envB.Id }],
+            CallerAuthorization.System);
+
+        created.Should().HaveCount(2);
+        var rows = (await svc.SearchVariablesAsync(projectId: project.Id)).Where(v => v.Name == "Multi").ToList();
+        rows.Should().HaveCount(2);
+        rows.Should().NotContain(v => v.Id == original.Id, because: "the original is replaced by the clones");
+        rows.Select(v => v.Scope.EnvironmentId).Should().BeEquivalentTo(new Guid?[] { envA.Id, envB.Id });
+        rows.Should().OnlyContain(v => v.Value == "shared-value");
+    }
+
+    [Fact]
+    public async Task ReplaceVariableScopes_single_scope_updates_in_place()
+    {
+        await using var db = postgres.CreateContext();
+        var svc = CreateService(postgres);
+        var (project, env, _) = await SeedContextAsync(db, []);
+
+        var original = await svc.CreateVariableAsync(
+            project.Id, "Single", "v", VariableType.Text, null, CallerAuthorization.System);
+
+        var result = await svc.ReplaceVariableScopesAsync(
+            original.Id, [new VariableScope { EnvironmentId = env.Id }], CallerAuthorization.System);
+
+        result.Should().ContainSingle().Which.Id.Should().Be(original.Id,
+            because: "a single scope is an in-place update, not a replace");
+        (await svc.GetVariableAsync(original.Id))!.Scope.EnvironmentId.Should().Be(env.Id);
+    }
+
+    [Fact]
+    public async Task ReplaceVariableScopes_refuses_sensitive_multi_scope_and_keeps_original()
+    {
+        await using var db = postgres.CreateContext();
+        var svc = CreateService(postgres);
+        var (project, envA, _) = await SeedContextAsync(db, []);
+        var envB = new DeploymentEnvironment { Slug = $"env-{Guid.NewGuid():N}", Name = "Staging" };
+        db.Environments.Add(envB);
+        await db.SaveChangesAsync();
+
+        var original = await svc.CreateVariableAsync(
+            project.Id, "Secret", "s3cr3t", VariableType.Sensitive, null, CallerAuthorization.System);
+
+        var act = () => svc.ReplaceVariableScopesAsync(
+            original.Id,
+            [new VariableScope { EnvironmentId = envA.Id }, new VariableScope { EnvironmentId = envB.Id }],
+            CallerAuthorization.System);
+
+        await act.Should().ThrowAsync<InvalidOperationException>();
+        (await svc.GetVariableAsync(original.Id)).Should().NotBeNull(
+            because: "a refused expansion must leave the variable untouched");
+    }
+
+    [Fact]
+    public async Task ReplaceVariableScopes_library_step_scope_is_refused_atomically()
+    {
+        await using var db = postgres.CreateContext();
+        var svc = CreateService(postgres);
+        var (_, env, _) = await SeedContextAsync(db, []);
+
+        var lib = await svc.CreateLibrarySetAsync("Atomic Lib", null);
+        var original = await svc.CreateVariableInSetAsync(
+            lib.Id, "LibVar", "x", VariableType.Text, null, CallerAuthorization.System);
+
+        var act = () => svc.ReplaceVariableScopesAsync(
+            original.Id,
+            [new VariableScope { EnvironmentId = env.Id }, new VariableScope { ProcessStepId = Guid.NewGuid() }],
+            CallerAuthorization.System);
+
+        await act.Should().ThrowAsync<InvalidOperationException>(
+            because: "library variables cannot carry step scope");
+        var still = await svc.GetVariablesInSetAsync(lib.Id);
+        still.Should().ContainSingle(v => v.Id == original.Id,
+            because: "the guard fires before any row is touched — no clones, original intact");
+    }
+
+    // ── PreviewResolve (provenance) ──────────────────────────────────────────
+
+    [Fact]
+    public async Task PreviewResolve_reports_winner_source_scope_specificity_and_candidate_count()
+    {
+        await using var db = postgres.CreateContext();
+        var svc = CreateService(postgres);
+        var (project, env, target) = await SeedContextAsync(db, []);
+
+        var lib = await svc.CreateLibrarySetAsync("Common Config", null);
+        await svc.IncludeSetAsync(project.Id, lib.Id, CallerAuthorization.System);
+
+        await svc.CreateVariableAsync(
+            project.Id, "Url", "project-default", VariableType.Text, null, CallerAuthorization.System);
+        await svc.CreateVariableInSetAsync(
+            lib.Id, "Url", "lib-env-scoped", VariableType.Text,
+            new VariableScope { EnvironmentId = env.Id }, CallerAuthorization.System);
+
+        var rows = await svc.PreviewResolveAsync(project.Id, env.Id, target.Id, target.Roles);
+
+        var url = rows.Single(r => r.Name == "Url");
+        url.Value.Should().Be("lib-env-scoped", because: "env scope beats the unscoped project default");
+        url.Source.Should().Be("Common Config");
+        url.Specificity.Should().Be(1 << 3, because: "environment is rank bit 3 in the place-value order");
+        url.CandidateCount.Should().Be(2);
+        url.Scope.EnvironmentId.Should().Be(env.Id);
+    }
+
+    [Fact]
+    public async Task PreviewResolve_channel_scoped_variable_resolves_only_when_that_channel_is_given()
+    {
+        await using var db = postgres.CreateContext();
+        var svc = CreateService(postgres);
+        var (project, env, target) = await SeedContextAsync(db, []);
+        var channelId = Guid.NewGuid();
+
+        await svc.CreateVariableAsync(
+            project.Id, "Feature", "base", VariableType.Text, null, CallerAuthorization.System);
+        await svc.CreateVariableAsync(
+            project.Id, "Feature", "channel-override", VariableType.Text,
+            new VariableScope { ChannelId = channelId }, CallerAuthorization.System);
+
+        // No channel context — the channel-scoped row is excluded, base wins.
+        var noChannel = await svc.PreviewResolveAsync(project.Id, env.Id, target.Id, target.Roles);
+        var baseRow = noChannel.Single(r => r.Name == "Feature");
+        baseRow.Value.Should().Be("base");
+        baseRow.CandidateCount.Should().Be(1, because: "the channel-scoped definition must not even be a candidate");
+
+        // With the matching channel — the channel-scoped row wins on specificity.
+        var withChannel = await svc.PreviewResolveAsync(
+            project.Id, env.Id, target.Id, target.Roles, channelId: channelId);
+        var overrideRow = withChannel.Single(r => r.Name == "Feature");
+        overrideRow.Value.Should().Be("channel-override",
+            because: "a channel-scoped definition must resolve exactly as it would at deploy time");
+        overrideRow.CandidateCount.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task PreviewResolve_masks_sensitive_winners_without_decrypting()
+    {
+        await using var db = postgres.CreateContext();
+        var svc = CreateService(postgres);
+        var (project, env, target) = await SeedContextAsync(db, []);
+
+        await svc.CreateVariableAsync(
+            project.Id, "ApiKey", "super-secret", VariableType.Sensitive, null, CallerAuthorization.System);
+
+        var rows = await svc.PreviewResolveAsync(project.Id, env.Id, target.Id, target.Roles);
+
+        var row = rows.Single(r => r.Name == "ApiKey");
+        row.Sensitive.Should().BeTrue();
+        row.Value.Should().BeEmpty(because: "the preview must never carry the decrypted secret");
+        row.Source.Should().Be("Project");
+    }
+
+    // ── PreviewResolve ambiguity detection ───────────────────────────────────
+
+    [Fact]
+    public async Task PreviewResolve_flags_ambiguous_when_equal_specificity_and_origin_disagree_on_value()
+    {
+        await using var db = postgres.CreateContext();
+        var svc = CreateService(postgres);
+        var (project, env, target) = await SeedContextAsync(db, []);
+
+        // Two project variables, same name, IDENTICAL scope, DIFFERENT values →
+        // same specificity + same origin → the winner is picked arbitrarily.
+        await svc.CreateVariableAsync(project.Id, "Dup", "value-a", VariableType.Text,
+            new VariableScope { EnvironmentId = env.Id }, CallerAuthorization.System);
+        await svc.CreateVariableAsync(project.Id, "Dup", "value-b", VariableType.Text,
+            new VariableScope { EnvironmentId = env.Id }, CallerAuthorization.System);
+
+        var rows = await svc.PreviewResolveAsync(project.Id, env.Id, target.Id, target.Roles);
+
+        var dup = rows.Single(r => r.Name == "Dup");
+        dup.Ambiguous.Should().BeTrue(because: "two equally-scoped project vars with differing values are non-deterministic");
+        dup.TiedCount.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task PreviewResolve_not_ambiguous_when_equal_specificity_broken_by_origin()
+    {
+        await using var db = postgres.CreateContext();
+        var svc = CreateService(postgres);
+        var (project, env, target) = await SeedContextAsync(db, []);
+
+        var lib = await svc.CreateLibrarySetAsync("Overlay", null);
+        await svc.IncludeSetAsync(project.Id, lib.Id, CallerAuthorization.System);
+
+        // Same name + same specificity but DIFFERENT origins (project vs library):
+        // project wins deterministically, so this is NOT flagged.
+        await svc.CreateVariableAsync(project.Id, "Edge", "from-project", VariableType.Text,
+            new VariableScope { EnvironmentId = env.Id }, CallerAuthorization.System);
+        await svc.CreateVariableInSetAsync(lib.Id, "Edge", "from-library", VariableType.Text,
+            new VariableScope { EnvironmentId = env.Id }, CallerAuthorization.System);
+
+        var rows = await svc.PreviewResolveAsync(project.Id, env.Id, target.Id, target.Roles);
+
+        var edge = rows.Single(r => r.Name == "Edge");
+        edge.Value.Should().Be("from-project");
+        edge.Ambiguous.Should().BeFalse(because: "a same-specificity clash resolved by origin (project > library) is deterministic");
+        edge.TiedCount.Should().Be(1, because: "only the project definition sits at the winning specificity AND origin");
+    }
+
+    [Fact]
+    public async Task PreviewResolve_not_ambiguous_when_tied_values_are_identical()
+    {
+        await using var db = postgres.CreateContext();
+        var svc = CreateService(postgres);
+        var (project, env, target) = await SeedContextAsync(db, []);
+
+        // Tied at the same specificity + origin, but SAME value → harmless, not flagged.
+        await svc.CreateVariableAsync(project.Id, "Same", "one", VariableType.Text,
+            new VariableScope { EnvironmentId = env.Id }, CallerAuthorization.System);
+        await svc.CreateVariableAsync(project.Id, "Same", "one", VariableType.Text,
+            new VariableScope { EnvironmentId = env.Id }, CallerAuthorization.System);
+
+        var rows = await svc.PreviewResolveAsync(project.Id, env.Id, target.Id, target.Roles);
+
+        var same = rows.Single(r => r.Name == "Same");
+        same.TiedCount.Should().Be(2);
+        same.Ambiguous.Should().BeFalse(because: "identical values tying produce the same result either way");
+    }
 }

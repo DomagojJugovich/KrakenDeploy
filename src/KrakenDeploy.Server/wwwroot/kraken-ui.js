@@ -15,6 +15,75 @@ window.krakenDownload = function (fileName, text) {
     setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
 };
 
+// ── RadzenDataGrid drag-to-group: mouse drop fallback ───────────────────────
+// Upstream wires the MOUSE drop solely to a Blazor @onmouseup on
+// .rz-group-header; touch gets a JS elementFromPoint fallback, mouse does not
+// (Radzen.Blazor.js startColumnReorder). When that mouseup doesn't reach the
+// Blazor handler, the pending drag state strands inside the grid and fires on
+// the NEXT click that lands on the panel — grouping appears to need an "extra
+// click". Mirror the touch fallback for mouse: while a column-drag ghost is
+// active, a mouseup whose point is over a registered grid's group panel
+// invokes the grid's official JSInvokable drop handler. Idempotent by
+// upstream's own guards: if the Blazor handler already ran, the drag state is
+// cleared / the descriptor already exists, and the extra invoke is a no-op.
+window.krakenGridGroupDrop = (function () {
+    var refs = [];
+
+    document.addEventListener('mouseup', function (e) {
+        // Capture phase: runs before Radzen's own document-level cleanup
+        // removes the ghost, so its presence identifies an active drag.
+        var ghost = document.querySelector('th[id$="visual"].rz-column-draggable');
+        if (!ghost) {
+            return;
+        }
+        // Users aim the GHOST (drawn offset from the cursor), not the cursor
+        // hotspot — a release that "looks" on the panel often has its point a
+        // few px outside (measured live: inPanel=false with ghost overlapping).
+        // Accept the drop when the cursor is within a margin of the panel OR
+        // when the ghost's rectangle overlaps it.
+        var MARGIN = 28;
+        var ghostRect = ghost.getBoundingClientRect();
+        for (var i = 0; i < refs.length; i++) {
+            var gridEl = refs[i].gridEl;
+            if (!gridEl || !gridEl.isConnected) {
+                continue;
+            }
+            var panel = gridEl.querySelector('.rz-group-header');
+            if (!panel) {
+                continue;
+            }
+            var pr = panel.getBoundingClientRect();
+            var pointHit =
+                e.clientX >= pr.left - MARGIN && e.clientX <= pr.right + MARGIN &&
+                e.clientY >= pr.top - MARGIN && e.clientY <= pr.bottom + MARGIN;
+            var ghostHit = ghostRect.width > 0 &&
+                ghostRect.left < pr.right && ghostRect.right > pr.left &&
+                ghostRect.top < pr.bottom && ghostRect.bottom > pr.top;
+            if (pointHit || ghostHit) {
+                (function (r) {
+                    // Give Blazor's own @onmouseup dispatch a head start; when
+                    // it handled the drop this lands as a no-op.
+                    setTimeout(function () {
+                        try { r.dotnetRef.invokeMethodAsync('RadzenGrid.OnColumnDropToGroup'); } catch (err) { }
+                    }, 150);
+                })(refs[i]);
+                return;
+            }
+        }
+    }, true);
+
+    return {
+        register: function (gridEl, dotnetRef) {
+            refs.push({ gridEl: gridEl, dotnetRef: dotnetRef });
+        },
+        // Keyed by the grid's root element — DotNetObjectReference proxies
+        // don't keep JS identity across interop calls, elements do.
+        unregister: function (gridEl) {
+            refs = refs.filter(function (r) { return r.gridEl !== gridEl; });
+        }
+    };
+})();
+
 (function () {
     // ── RadzenPivotDataGrid filter-popup double-toggle ──────────────────────
     // Upstream (RadzenPivotDataGrid.razor, still present in 10.4.x/master)

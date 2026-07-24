@@ -39,7 +39,27 @@ public class KrakenGrid<TItem> : RadzenDataGrid<TItem>
     /// across all rows/instances of the page; omit to disable persistence.</summary>
     [Parameter] public string? SettingsKey { get; set; }
 
+    /// <summary>
+    /// Grouping applied ONLY on first load when this grid has no persisted
+    /// settings yet (nothing in localStorage). Persisted grouping — and the
+    /// user's later drag / select / clear — always wins. Supplying this lets a
+    /// page declare its default grouping WITHOUT mutating
+    /// <see cref="RadzenDataGrid{TItem}.Groups"/> itself: a page that seeds
+    /// Groups on render trips Radzen's auto-persist (every Groups mutation calls
+    /// <c>SaveSettings()</c>) and clobbers the stored grouping with the default
+    /// on every load.
+    /// </summary>
+    [Parameter] public IEnumerable<GroupDescriptor>? DefaultGroups { get; set; }
+
     private DataGridSettings? _persisted;
+
+    // Backs the mouse drag-to-group drop fallback (krakenGridGroupDrop in
+    // kraken-ui.js): upstream's mouse drop relies solely on a Blazor
+    // @onmouseup on the group panel; when that dispatch is missed the drag
+    // state strands until a later click. The JS side mirrors upstream's own
+    // touch fallback and invokes the grid's JSInvokable drop handler.
+    private DotNetObjectReference<KrakenGrid<TItem>>? _groupDropRef;
+    private bool _groupDropRegistered;
 
     private string StorageKey => $"kraken-grid:{SettingsKey}";
 
@@ -89,6 +109,22 @@ public class KrakenGrid<TItem> : RadzenDataGrid<TItem>
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (firstRender && AllowGrouping && !_groupDropRegistered)
+        {
+            _groupDropRegistered = true;
+            _groupDropRef = DotNetObjectReference.Create(this);
+            try
+            {
+                await JS.InvokeVoidAsync("krakenGridGroupDrop.register", Element, _groupDropRef);
+            }
+            catch (Exception ex)
+            {
+                // Stock drop path still applies without the fallback; log the
+                // reason so a silent registration failure can't hide again.
+                Console.WriteLine($"[krakengrid] group-drop registration failed: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
         if (firstRender && !string.IsNullOrEmpty(SettingsKey))
         {
             try
@@ -112,6 +148,18 @@ public class KrakenGrid<TItem> : RadzenDataGrid<TItem>
             catch
             {
                 // Prerender / storage unavailable — grid keeps declared layout.
+            }
+        }
+
+        // First load with nothing persisted → apply the caller's default
+        // grouping ONCE, here where we KNOW no stored settings will override it.
+        // (Pages must NOT seed Groups themselves — see DefaultGroups.) On every
+        // later load _persisted is non-null, so the user's stored grouping wins.
+        if (firstRender && _persisted is null && DefaultGroups is not null && Groups.Count == 0)
+        {
+            foreach (var group in DefaultGroups)
+            {
+                Groups.Add(group);
             }
         }
 
@@ -173,6 +221,30 @@ public class KrakenGrid<TItem> : RadzenDataGrid<TItem>
         catch
         {
             // Persistence failure shouldn't break the grid.
+        }
+    }
+
+    public override void Dispose()
+    {
+        if (_groupDropRef is not null)
+        {
+            _ = UnregisterGroupDropAsync();
+            _groupDropRef.Dispose();
+            _groupDropRef = null;
+        }
+        base.Dispose();
+        GC.SuppressFinalize(this);
+    }
+
+    private async Task UnregisterGroupDropAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("krakenGridGroupDrop.unregister", Element);
+        }
+        catch
+        {
+            // Circuit already gone — the JS registry entry dies with the page.
         }
     }
 }

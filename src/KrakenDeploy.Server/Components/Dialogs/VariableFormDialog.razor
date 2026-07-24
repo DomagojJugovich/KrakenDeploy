@@ -280,6 +280,11 @@
             ChannelId = _model.ChannelId,
             ProcessStepId = _model.ProcessStepId,
             Roles = roles.Count > 0 ? roles : null,
+            // This form has no pickers for target / tenant-tag scope — carry
+            // the edited variable's existing values through instead of
+            // silently wiping those dimensions on save.
+            TargetId = Variable?.Scope.TargetId,
+            TenantTagIds = Variable?.Scope.TenantTagIds is { Count: > 0 } tt ? [.. tt] : null,
         };
 
         try
@@ -314,8 +319,9 @@
 
             Dialog.Close(true);
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex)
         {
+            // Shown in-form; letting it escape would take down the circuit.
             _errorMessage = ex.Message;
         }
     }

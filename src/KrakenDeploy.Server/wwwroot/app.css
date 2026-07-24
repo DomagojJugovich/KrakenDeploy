@@ -1808,6 +1808,48 @@ a.kraken-back-link .rzi { font-size: 16px; }
 }
 .kraken-filter-chip-x:hover { opacity: 1; }
 
+/* Drag-to-group starts ONLY from the .rz-column-drag handle (the ⋮ glyph before
+   the column title) — signal the affordance without touching its geometry
+   (padding/negative margins here crush the header titles into the glyph). */
+.rz-column-drag {
+    cursor: grab;
+}
+
+.rz-column-drag:active {
+    cursor: grabbing;
+}
+
+/* The group-panel strip is a thin drop target; releasing the drag slightly off
+   it leaves Radzen's pending drag state hanging (it then fires on the NEXT
+   click that lands on the panel — reads as "nothing happened, then it suddenly
+   grouped"). Pure vertical padding makes the target taller and forgiving. */
+.rz-group-header {
+    padding-top: 0.75rem;
+    padding-bottom: 0.75rem;
+    min-height: 2.6rem;
+}
+
+/* Primary project selector above the variable filter bar */
+.kraken-var-primary-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    align-items: center;
+    padding: 0.6rem 0.75rem;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--rz-primary);
+    border-radius: 6px;
+}
+
+.kraken-var-primary-bar .kraken-var-primary-label {
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-3);
+}
+
 /* Filter bar above the variable grid */
 .kraken-var-filter-bar {
     display: flex;

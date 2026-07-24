@@ -221,6 +221,78 @@ public class VariableService(
     }
 
     /// <summary>
+    /// Replaces a variable's scope with one row per entry in <paramref name="scopes"/>,
+    /// atomically — the multi-scope expansion behind the scope popup. With a single
+    /// scope the variable is updated in place (id preserved); with several, the
+    /// clones are inserted and the original deleted in ONE SaveChanges, so a
+    /// failure leaves the original untouched (no lost variable, no stray clones).
+    /// Name, value, type and prompt settings are carried over unchanged.
+    /// </summary>
+    public async Task<List<Variable>> ReplaceVariableScopesAsync(
+        Guid id,
+        IReadOnlyList<VariableScope> scopes,
+        CallerAuthorization caller,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(scopes);
+        ArgumentNullException.ThrowIfNull(caller);
+        if (scopes.Count == 0)
+        {
+            throw new ArgumentException("At least one scope is required.", nameof(scopes));
+        }
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        var variable = await db.Variables
+            .FindAsync([id], ct)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Variable {id} not found.");
+
+        await EnsureSetEditScopeAsync(db, caller, variable.SetId, ct).ConfigureAwait(false);
+
+        var kind = await db.VariableSets
+            .Where(vs => vs.Id == variable.SetId)
+            .Select(vs => vs.Kind)
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false);
+        foreach (var scope in scopes)
+        {
+            GuardLibrarySetScope(kind, scope);
+        }
+
+        if (scopes.Count == 1)
+        {
+            variable.Scope = scopes[0];
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            return [variable];
+        }
+
+        if (variable.Type == VariableType.Sensitive)
+        {
+            // Mirrors the UI rule: sensitive values are never fan-copied.
+            throw new InvalidOperationException(
+                "Sensitive variables cannot be expanded to multiple scopes.");
+        }
+
+        var clones = scopes.Select(s => new Variable
+        {
+            SetId = variable.SetId,
+            SpaceId = variable.SpaceId,
+            Name = variable.Name,
+            Value = variable.Value,
+            Type = variable.Type,
+            PromptText = variable.PromptText,
+            PromptRequired = variable.PromptRequired,
+            Scope = s,
+        }).ToList();
+
+        db.Variables.AddRange(clones);
+        db.Variables.Remove(variable);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return clones;
+    }
+
+    /// <summary>
     /// Deletes a variable by ID. Returns <c>false</c> if not found.
     /// </summary>
     public async Task<bool> DeleteVariableAsync(
@@ -261,21 +333,33 @@ public class VariableService(
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
-        var query = db.Variables.AsNoTracking().AsQueryable();
+        var query = db.Variables.AsNoTracking()
+            .Include(v => v.Set)
+            .AsQueryable();
 
         if (projectId.HasValue)
         {
             query = query.Where(v => v.Set.ProjectId == projectId.Value);
         }
-        else if (projectIds is { Count: > 0 })
+        else if (projectIds is not null)
         {
+            // A non-null collection is a hard containment filter: an empty one
+            // (e.g. a project tag applied to no project) matches NOTHING —
+            // treating it as "no filter" would silently return every variable.
+            if (projectIds.Count == 0)
+            {
+                return [];
+            }
             query = query.Where(v => v.Set.ProjectId != null
                                      && projectIds.Contains(v.Set.ProjectId.Value));
         }
 
         if (!string.IsNullOrWhiteSpace(nameContains))
         {
-            query = query.Where(v => v.Name.Contains(nameContains));
+            // ILIKE with escaped wildcards — the UI promises case-insensitive
+            // name search, and a literal "%"/"_" in the term must not widen it.
+            var pattern = "%" + EscapeLikePattern(nameContains) + "%";
+            query = query.Where(v => EF.Functions.ILike(v.Name, pattern, @"\"));
         }
 
         return await query
@@ -284,6 +368,9 @@ public class VariableService(
             .ToListAsync(ct)
             .ConfigureAwait(false);
     }
+
+    private static string EscapeLikePattern(string term) =>
+        term.Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_");
 
     // ── Library variable sets ──────────────────────────────────────────────
 
@@ -692,7 +779,8 @@ public class VariableService(
 
                 if (tenantSet is not null)
                 {
-                    candidates.AddRange(tenantSet.Variables.Select(v => Candidate(v, TenantOriginRank)));
+                    candidates.AddRange(tenantSet.Variables.Select(v =>
+                        Candidate(v, TenantOriginRank, "Tenant common")));
                 }
             }
         }
@@ -719,7 +807,8 @@ public class VariableService(
             {
                 if (libSets.TryGetValue(link.VariableSetId, out var set))
                 {
-                    candidates.AddRange(set.Variables.Select(v => Candidate(v, link.SortOrder)));
+                    candidates.AddRange(set.Variables.Select(v =>
+                        Candidate(v, link.SortOrder, set.Name ?? "Library")));
                 }
             }
         }
@@ -733,10 +822,83 @@ public class VariableService(
 
         if (projectSet is not null)
         {
-            candidates.AddRange(projectSet.Variables.Select(v => Candidate(v, VariableSnapshot.ProjectLayer)));
+            candidates.AddRange(projectSet.Variables.Select(v =>
+                Candidate(v, VariableSnapshot.ProjectLayer, "Project")));
         }
 
         return candidates;
+    }
+
+    /// <summary>
+    /// Preview-grade resolution with provenance: for each name, the winning
+    /// candidate plus WHERE it came from (source set), the winning scope, its
+    /// specificity rank and how many definitions competed. Sensitive winners
+    /// are flagged and their values are never decrypted (the preview masks
+    /// them anyway, so the plaintext never needs to exist here).
+    /// <para>
+    /// Also detects <b>ambiguous</b> resolution: when two-or-more definitions
+    /// tie at the winning specificity AND the same origin rank with
+    /// <i>differing</i> values, the resolver's <c>FirstOrDefault</c> pick is
+    /// arbitrary (order-dependent) — the deployment result is not deterministic
+    /// and the operator should narrow the scopes. A same-specificity clash
+    /// broken by origin (project &gt; library) is deterministic and NOT flagged.
+    /// </para>
+    /// </summary>
+    public async Task<List<VariablePreviewRow>> PreviewResolveAsync(
+        Guid projectId,
+        Guid environmentId,
+        Guid? targetId,
+        IReadOnlyList<string> targetRoles,
+        Guid? tenantId = null,
+        Guid? channelId = null,
+        Guid? stepId = null,
+        IReadOnlyList<Guid>? tenantTagIds = null,
+        CancellationToken ct = default)
+    {
+        var candidates = await BuildLiveCandidatesAsync(projectId, tenantId, ct).ConfigureAwait(false);
+        var rows = new List<VariablePreviewRow>();
+
+        foreach (var group in candidates.GroupBy(c => c.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            var matching = group
+                .Where(c => c.Scope.Matches(environmentId, targetId, targetRoles, tenantId, channelId, stepId, tenantTagIds))
+                .ToList();
+
+            var winner = matching
+                .OrderByDescending(c => c.Scope.SpecificityScore())
+                .ThenByDescending(c => c.OriginRank)
+                .FirstOrDefault();
+
+            if (winner is null)
+            {
+                continue;
+            }
+
+            // The set the winner was actually chosen from: same specificity AND
+            // same origin. More than one here means the pick was arbitrary.
+            var winnerSpec = winner.Scope.SpecificityScore();
+            var tied = matching
+                .Where(c => c.Scope.SpecificityScore() == winnerSpec && c.OriginRank == winner.OriginRank)
+                .ToList();
+            // Identical values tying is harmless (same result either way); only a
+            // clash of DIFFERENT values is a real non-deterministic ambiguity.
+            var ambiguous = tied.Count > 1
+                && tied.Select(c => c.Value).Distinct(StringComparer.Ordinal).Count() > 1;
+
+            var sensitive = winner.Type == VariableType.Sensitive;
+            rows.Add(new VariablePreviewRow(
+                winner.Name,
+                sensitive ? "" : winner.Value,
+                sensitive,
+                winner.Source ?? "Project",
+                winner.Scope,
+                winnerSpec,
+                matching.Count,
+                tied.Count,
+                ambiguous));
+        }
+
+        return rows.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     /// <summary>
@@ -793,8 +955,8 @@ public class VariableService(
 
     private const int TenantOriginRank = -1;
 
-    private static ScopedCandidate Candidate(Variable v, int originRank) =>
-        new(v.Name, v.Value, v.Type, v.Scope, originRank);
+    private static ScopedCandidate Candidate(Variable v, int originRank, string? source = null) =>
+        new(v.Name, v.Value, v.Type, v.Scope, originRank, source);
 
     /// <summary>
     /// Library variable sets are reusable across projects, so they cannot be
@@ -860,9 +1022,11 @@ public class VariableService(
 
     // One variable competing to win a name during resolution. OriginRank orders
     // the source (tenant < library-by-SortOrder < project) and breaks ties ONLY
-    // when two candidates are scoped with equal specificity.
+    // when two candidates are scoped with equal specificity. Source is a display
+    // label carried for the preview/provenance path; deploy paths leave it null.
     private sealed record ScopedCandidate(
-        string Name, string Value, VariableType Type, VariableScope Scope, int OriginRank);
+        string Name, string Value, VariableType Type, VariableScope Scope, int OriginRank,
+        string? Source = null);
 
     /// <summary>
     /// Resolves a deployment's effective variable set from a frozen
@@ -1019,6 +1183,29 @@ public sealed record VariableDto(
     string Value,
     string Type,
     VariableScope Scope);
+
+/// <summary>
+/// One row of a variable-resolution preview: the winning value for a name plus
+/// its provenance — which set it came from, the winning scope, the scope's
+/// specificity rank (higher wins) and how many candidate definitions matched
+/// the context. Sensitive winners carry an empty <see cref="Value"/>.
+/// <para>
+/// <see cref="TiedCount"/> is how many definitions sat at the winning specificity
+/// AND origin — the set the winner was chosen from. <see cref="Ambiguous"/> is
+/// <c>true</c> when that set holds more than one <i>distinct value</i>, i.e. the
+/// resolver's choice was arbitrary and the deployment result is non-deterministic.
+/// </para>
+/// </summary>
+public sealed record VariablePreviewRow(
+    string Name,
+    string Value,
+    bool Sensitive,
+    string Source,
+    VariableScope Scope,
+    int Specificity,
+    int CandidateCount,
+    int TiedCount,
+    bool Ambiguous);
 
 /// <summary>
 /// Result of <see cref="VariableService.ResolveFromSnapshotWithStepsAsync"/>:
