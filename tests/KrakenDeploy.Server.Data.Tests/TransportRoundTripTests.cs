@@ -66,9 +66,10 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
         // The consume step SUCCEEDING is the B4 guard: it returns false unless
         // the second wave's sub-plan — built server-side, serialized over the
         // real wire — carried the first step's captured output.
-        (await seeder.GetDeploymentAsync(deploymentId)).Status
-            .Should().Be(DeploymentStatus.Succeeded,
-                "both steps ran on the real agent and the step-2 sub-plan carried step-1's output");
+        var status1 = (await seeder.GetDeploymentAsync(deploymentId)).Status;
+        var diag1 = status1 == DeploymentStatus.Succeeded ? "" : "\n--- HOST LOGS ---\n" + host.DrainLogs();
+        status1.Should().Be(DeploymentStatus.Succeeded,
+            "both steps ran on the real agent and the step-2 sub-plan carried step-1's output{0}", diag1);
 
         await using var db = seeder.CreateContext();
         var log = await TaskLogService.ReadAllAsync(db, deploymentId);
@@ -114,9 +115,10 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
 
         await host.RunDeploymentAsync(deploymentId).WaitAsync(TestTimeout);
 
-        (await seeder.GetDeploymentAsync(deploymentId)).Status
-            .Should().Be(DeploymentStatus.Succeeded,
-                "the agent-side consume step read the server-side step's capture over the real wire");
+        var status2 = (await seeder.GetDeploymentAsync(deploymentId)).Status;
+        var diag2 = status2 == DeploymentStatus.Succeeded ? "" : "\n--- HOST LOGS ---\n" + host.DrainLogs();
+        status2.Should().Be(DeploymentStatus.Succeeded,
+            "the agent-side consume step read the server-side step's capture over the real wire{0}", diag2);
     }
 
     [Fact]
@@ -140,8 +142,15 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
         var dispatch = host.RunDeploymentAsync(deploymentId);
         try
         {
-            await WaitUntilAsync(() => agent.Executor.IsExecuting,
-                "the real agent must have received the wave and be executing");
+            try
+            {
+                await WaitUntilAsync(() => agent.Executor.IsExecuting,
+                    "the real agent must have received the wave and be executing");
+            }
+            catch (TimeoutException tex)
+            {
+                throw new TimeoutException(tex.Message + "\n--- HOST LOGS ---\n" + host.DrainLogs(), tex);
+            }
 
             // Hard-drop the connection mid-step: the hub's OnDisconnectedAsync
             // removes the registry entry, and the B3 worker-side monitor must
@@ -305,6 +314,7 @@ internal sealed class RoundTripHost : IAsyncDisposable
     private readonly List<RealAgent> _agents = [];
     private readonly string _agentDataPath;
     private readonly string _serverUrl;
+    private readonly System.Collections.Concurrent.ConcurrentQueue<string> _logSink;
 
     public sealed record RealAgent(
         SignalRServerLink Link, DeploymentExecutor Executor) : IAsyncDisposable
@@ -317,19 +327,42 @@ internal sealed class RoundTripHost : IAsyncDisposable
     }
 
     private RoundTripHost(
-        WebApplication app, DeploymentWorker worker, string agentDataPath, string serverUrl)
+        WebApplication app, DeploymentWorker worker, string agentDataPath, string serverUrl,
+        System.Collections.Concurrent.ConcurrentQueue<string> logSink)
     {
         _app = app;
         _worker = worker;
         _agentDataPath = agentDataPath;
         _serverUrl = serverUrl;
+        _logSink = logSink;
+    }
+
+    /// <summary>TEMP DIAGNOSTICS round A (revert): drain the collected host logs.</summary>
+    public string DrainLogs()
+    {
+        var sb = new StringBuilder();
+        while (_logSink.TryDequeue(out var line))
+        {
+            sb.Append(line).Append('\n');
+        }
+        return sb.ToString();
     }
 
     public static async Task<RoundTripHost> StartAsync(
         PostgresFixture postgres, EngineOptions? engineOptions = null)
     {
         var builder = WebApplication.CreateBuilder();
+        // TEMP DIAGNOSTICS round A (revert): capture the connection lifecycle —
+        // hub connect/disconnect (with the disconnect reason), SignalR/transport
+        // close reasons, and the agent executor + worker dispatch — into an
+        // in-memory sink to see WHY the agent connection is absent at wave dispatch.
+        var logSink = new System.Collections.Concurrent.ConcurrentQueue<string>();
         builder.Logging.ClearProviders();
+        builder.Logging.AddProvider(new CollectingLoggerProvider(logSink));
+        builder.Logging.SetMinimumLevel(LogLevel.Warning);
+        builder.Logging.AddFilter("KrakenDeploy", LogLevel.Debug);
+        builder.Logging.AddFilter("Microsoft.AspNetCore.SignalR", LogLevel.Debug);
+        builder.Logging.AddFilter("Microsoft.AspNetCore.Http.Connections", LogLevel.Debug);
         builder.WebHost.UseKestrel().UseUrls("http://127.0.0.1:0");
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
@@ -423,13 +456,13 @@ internal sealed class RoundTripHost : IAsyncDisposable
             inFlightGauge:        new InFlightWorkGauge(),
             timeProvider:         TimeProvider.System,
             engineOptions:        Options.Create(engineOptions ?? new EngineOptions()),
-            logger:               NullLogger<DeploymentWorker>.Instance);
+            logger:               app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<DeploymentWorker>());
 
         var agentDataPath = Path.Combine(
             Path.GetTempPath(), $"kraken-roundtrip-agent-{Guid.NewGuid():N}");
         StageRoundTripStepPackage(agentDataPath);
 
-        return new RoundTripHost(app, worker, agentDataPath, serverUrl);
+        return new RoundTripHost(app, worker, agentDataPath, serverUrl, logSink);
     }
 
     /// <summary>Connects a REAL agent (WebSocket SignalR + real executor with the
@@ -444,16 +477,17 @@ internal sealed class RoundTripHost : IAsyncDisposable
                 ["StepPackages:AllowUnsignedLoads"] = "true",
             })
             .Build();
-        var loader = new StepPackageLoader(loaderConfig, NullLogger<StepPackageLoader>.Instance);
+        var lf = _app.Services.GetRequiredService<ILoggerFactory>();
+        var loader = new StepPackageLoader(loaderConfig, lf.CreateLogger<StepPackageLoader>());
 
-        var link = new SignalRServerLink(NullLogger<SignalRServerLink>.Instance);
+        var link = new SignalRServerLink(lf.CreateLogger<SignalRServerLink>());
         var executor = new DeploymentExecutor(
             link,
             new NeverUsedPackageSource(),
             new NullArtifactSink(),
             loader,
             Options.Create(new AgentConfig()),
-            NullLogger<DeploymentExecutor>.Instance);
+            lf.CreateLogger<DeploymentExecutor>());
 
         link.OnRunDeployment(plan => Task.Run(() => executor.ExecuteAsync(plan)));
         link.OnCancelDeployment((taskId, reason) =>
@@ -564,5 +598,37 @@ internal sealed class RoundTripHost : IAsyncDisposable
         public Task<string?> UploadAsync(
             Guid deploymentId, string stepName, string filePath, CancellationToken ct)
             => Task.FromResult<string?>(null);
+    }
+}
+
+// TEMP DIAGNOSTICS round A (revert): in-memory ILogger sink so the hub
+// connect/disconnect + SignalR transport close reasons land in the failing
+// assertion's message on the CI runner.
+internal sealed class CollectingLoggerProvider(System.Collections.Concurrent.ConcurrentQueue<string> sink)
+    : ILoggerProvider
+{
+    public ILogger CreateLogger(string categoryName) => new CollectingLogger(categoryName, sink);
+
+    public void Dispose() => GC.SuppressFinalize(this);
+}
+
+internal sealed class CollectingLogger(
+    string category, System.Collections.Concurrent.ConcurrentQueue<string> sink) : ILogger
+{
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+    public bool IsEnabled(LogLevel logLevel) => true;
+
+    public void Log<TState>(
+        LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+        Func<TState, Exception?, string> formatter)
+    {
+        var cat = category.Contains('.') ? category[(category.LastIndexOf('.') + 1)..] : category;
+        var line = "[" + logLevel.ToString() + "] " + cat + ": " + formatter(state, exception);
+        if (exception is not null)
+        {
+            line = line + " || " + exception.GetType().Name + ": " + exception.Message;
+        }
+        sink.Enqueue(line);
     }
 }
