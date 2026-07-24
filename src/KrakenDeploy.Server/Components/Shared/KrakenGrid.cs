@@ -41,6 +41,14 @@ public class KrakenGrid<TItem> : RadzenDataGrid<TItem>
 
     private DataGridSettings? _persisted;
 
+    // Backs the mouse drag-to-group drop fallback (krakenGridGroupDrop in
+    // kraken-ui.js): upstream's mouse drop relies solely on a Blazor
+    // @onmouseup on the group panel; when that dispatch is missed the drag
+    // state strands until a later click. The JS side mirrors upstream's own
+    // touch fallback and invokes the grid's JSInvokable drop handler.
+    private DotNetObjectReference<KrakenGrid<TItem>>? _groupDropRef;
+    private bool _groupDropRegistered;
+
     private string StorageKey => $"kraken-grid:{SettingsKey}";
 
     /// <summary>
@@ -89,6 +97,22 @@ public class KrakenGrid<TItem> : RadzenDataGrid<TItem>
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (firstRender && AllowGrouping && !_groupDropRegistered)
+        {
+            _groupDropRegistered = true;
+            _groupDropRef = DotNetObjectReference.Create(this);
+            try
+            {
+                await JS.InvokeVoidAsync("krakenGridGroupDrop.register", Element, _groupDropRef);
+            }
+            catch (Exception ex)
+            {
+                // Stock drop path still applies without the fallback; log the
+                // reason so a silent registration failure can't hide again.
+                Console.WriteLine($"[krakengrid] group-drop registration failed: {ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
         if (firstRender && !string.IsNullOrEmpty(SettingsKey))
         {
             try
@@ -173,6 +197,30 @@ public class KrakenGrid<TItem> : RadzenDataGrid<TItem>
         catch
         {
             // Persistence failure shouldn't break the grid.
+        }
+    }
+
+    public override void Dispose()
+    {
+        if (_groupDropRef is not null)
+        {
+            _ = UnregisterGroupDropAsync();
+            _groupDropRef.Dispose();
+            _groupDropRef = null;
+        }
+        base.Dispose();
+        GC.SuppressFinalize(this);
+    }
+
+    private async Task UnregisterGroupDropAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("krakenGridGroupDrop.unregister", Element);
+        }
+        catch
+        {
+            // Circuit already gone — the JS registry entry dies with the page.
         }
     }
 }

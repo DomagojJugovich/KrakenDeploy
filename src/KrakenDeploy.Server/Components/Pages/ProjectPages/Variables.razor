@@ -23,13 +23,19 @@
     {
         <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">Loading…</RadzenText>
     }
+    else if (_loadError is not null)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" ShowIcon="true" AllowClose="false">
+            Failed to load: @_loadError
+        </RadzenAlert>
+    }
     else if (_project is null)
     {
         <RadzenAlert AlertStyle="AlertStyle.Warning" ShowIcon="true" AllowClose="false">
             Project '@Slug' was not found.
         </RadzenAlert>
     }
-    else if (_variables.Count == 0)
+    else if (_variables.Count == 0 && _includedSets.Count == 0)
     {
         <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
             No variables defined for this project.
@@ -88,6 +94,10 @@
                                 {
                                     <RadzenBadge Text="role" BadgeStyle="BadgeStyle.Light" IsPill="true" />
                                 }
+                                @if (v.Scope.ChannelId.HasValue)
+                                {
+                                    <RadzenBadge Text="channel" BadgeStyle="BadgeStyle.Warning" IsPill="true" />
+                                }
                                 @if (v.Scope.ProcessStepId.HasValue)
                                 {
                                     <RadzenBadge Text="step" BadgeStyle="BadgeStyle.Primary" IsPill="true" />
@@ -98,6 +108,23 @@
                 </RadzenDataGridColumn>
             </Columns>
         </KrakenGrid>
+
+        @if (_includedSets.Count > 0)
+        {
+            <RadzenCard class="rz-mt-3">
+                <RadzenText TextStyle="TextStyle.H6" class="rz-mb-2">Included Library Variable Sets</RadzenText>
+                <RadzenStack Gap="0.4rem">
+                    @foreach (var set in _includedSets)
+                    {
+                        <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.5rem">
+                            <RadzenIcon Icon="library_books" Style="font-size:1.1rem; opacity:0.6;" />
+                            <RadzenText TextStyle="TextStyle.Body2" class="rz-mb-0">@set.Name</RadzenText>
+                            <RadzenBadge Text="@($"{set.Variables.Count} vars")" BadgeStyle="BadgeStyle.Light" IsPill="true" />
+                        </RadzenStack>
+                    }
+                </RadzenStack>
+            </RadzenCard>
+        }
     }
 </ProjectShell>
 
@@ -106,15 +133,28 @@
 
     private Project? _project;
     private List<VariableDto> _variables = [];
+    private List<VariableSet> _includedSets = [];
     private bool _loaded;
+    private string? _loadError;
 
     protected override async Task OnParametersSetAsync()
     {
-        _project = await ProjectSvc.GetBySlugAsync(Slug);
-        if (_project is not null)
+        try
         {
-            _variables = await VariableSvc.GetVariablesAsync(_project.Id);
+            _project = await ProjectSvc.GetBySlugAsync(Slug);
+            if (_project is not null)
+            {
+                _variables = await VariableSvc.GetVariablesAsync(_project.Id);
+                _includedSets = await VariableSvc.GetIncludedSetsAsync(_project.Id);
+            }
         }
-        _loaded = true;
+        catch (Exception ex)
+        {
+            _loadError = ex.Message;
+        }
+        finally
+        {
+            _loaded = true;
+        }
     }
 }
