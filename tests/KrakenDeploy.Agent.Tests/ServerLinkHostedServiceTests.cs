@@ -216,6 +216,52 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
         }
     }
 
+    // ── F2-followup 1: the push handler must NOT await the work ─────────────
+
+    [Fact]
+    public async Task Deployment_push_handler_returns_without_awaiting_the_run()
+    {
+        // The SignalR client dispatches server→client invocations through a
+        // single-reader channel and AWAITS each handler before dispatching the next.
+        // So if this handler returns the WORK task, the agent processes exactly one
+        // push at a time: B7's machine queue and F2's per-target flag become
+        // unreachable, and a CancelDeploymentAsync push queues behind the very
+        // deployment it targets. This test pins the shape at the production wiring
+        // site — TransportRoundTripTests proves the resulting behaviour over a real
+        // hub, but only this one fails if ServerLinkHostedService regresses.
+        _link.HoldCompletion = new SemaphoreSlim(0);
+        var service = CreateService();
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await _link.WaitForRegistrationsAsync(1, TestTimeout);
+            _link.DeploymentHandler.Should().NotBeNull(
+                "the supervisor wires the deployment handler before opening the connection");
+
+            // The run will park in CompleteDeploymentAsync and stay in flight.
+            var handlerReturned = _link.DeploymentHandler!(Plan());
+
+            await handlerReturned.WaitAsync(TimeSpan.FromSeconds(5));
+            handlerReturned.IsCompletedSuccessfully.Should().BeTrue(
+                "the handler must hand the message loop straight back; awaiting the run "
+                + "here is what serialized every server→agent push");
+        }
+        finally
+        {
+            _link.HoldCompletion!.Release(10);
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private static DeploymentPlan Plan() => new(
+        DeploymentId: Guid.NewGuid(),
+        EnvironmentName: "test",
+        Steps: [],
+        Variables: new Dictionary<string, string>(),
+        ArrayVariables: new Dictionary<string, string[]>(),
+        DispatchId: Guid.NewGuid());
+
     // ── Fakes ──────────────────────────────────────────────────────────────
 
     private sealed class FakeServerLink : IServerLink
@@ -286,9 +332,18 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
             CancellationToken ct)
             => Task.CompletedTask;
 
-        public Task CompleteDeploymentAsync(
+        /// <summary>Set by the F2-followup-1 test to keep a run in flight while it
+        /// asserts the push handler already returned.</summary>
+        public SemaphoreSlim? HoldCompletion { get; set; }
+
+        public async Task CompleteDeploymentAsync(
             Guid deploymentId, Guid dispatchId, bool success, string? errorMessage, CancellationToken ct)
-            => Task.CompletedTask;
+        {
+            if (HoldCompletion is { } hold)
+            {
+                await hold.WaitAsync(CancellationToken.None);
+            }
+        }
 
         public Task ReportStepCompletedAsync(
             Guid deploymentId, Guid dispatchId, int stepIndex, string stepName, bool success,
@@ -303,7 +358,11 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
             Guid deploymentId, Guid dispatchId, CancellationToken ct)
             => Task.CompletedTask;
 
-        public void OnRunDeployment(Func<DeploymentPlan, Task> handler) { }
+        /// <summary>F2-followup 1 — captured so a test can invoke the REAL
+        /// registered handler and assert it returns without awaiting the run.</summary>
+        public Func<DeploymentPlan, Task>? DeploymentHandler { get; private set; }
+        public void OnRunDeployment(Func<DeploymentPlan, Task> handler)
+            => DeploymentHandler = handler;
         public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler) { }
         public void OnCancelDeployment(Func<Guid, string?, Task> handler) { }
         public void OnClosed(Func<Exception?, Task> handler) => _closedHandlers.Add(handler);

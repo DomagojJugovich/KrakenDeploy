@@ -49,6 +49,22 @@ public sealed class ServerLinkHostedService(
     // Replaced at the start of every cycle; the OnClosed handler resolves it.
     private volatile TaskCompletionSource<Exception?>? _closedSignal;
 
+    /// <summary>
+    /// F2-followup 1 — work started by a detached push handler. Tracked for two
+    /// reasons: a faulted handler must be LOGGED rather than left as an unobserved
+    /// task exception (the pre-detach shape got that for free, because SignalR
+    /// awaited and logged it), and shutdown gets a bounded chance to let
+    /// queued-but-unstarted work unwind.
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Task, byte> _detachedHandlers = new();
+
+    /// <summary>How long shutdown waits for detached handlers. Deliberately short:
+    /// a genuinely executing deployment can run for hours and agent death mid-deploy
+    /// is B1's lease/reconciler story, not this service's. The wait exists so a plan
+    /// still QUEUED on the machine gate — whose wait observes
+    /// <c>stoppingToken</c> — can unwind its registry entry and staging first.</summary>
+    private static readonly TimeSpan DetachedHandlerDrainTimeout = TimeSpan.FromSeconds(5);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // E8 — clear any staging trees a previous process left behind before any
@@ -71,14 +87,46 @@ public sealed class ServerLinkHostedService(
         // ── One-time handler wiring (re-applied to every connection) ─────
         // Register deployment handler BEFORE opening the connection so no
         // RunDeploymentAsync messages can arrive before the handler is wired.
+        //
+        // F2-followup 1 — these handlers are DETACHED deliberately, and returning
+        // Task.CompletedTask is the whole point. The SignalR client dispatches
+        // server→client invocations through a single-reader channel and AWAITS each
+        // handler, so returning the work task (what `Task.Run(…, ct)` does — it
+        // UNWRAPS) made the agent process exactly one push at a time. Measured
+        // consequences of that shape:
+        //   * two deployments to one box could never overlap, so B7's machine queue
+        //     and F2's per-target AllowParallelTaskExecution were both unreachable —
+        //     the transport, not the gate, was doing the serializing;
+        //   * an ad-hoc command was not delivered while a deployment ran, so the
+        //     ad-hoc gate wait / bounded refusal never fired;
+        //   * a CancelDeploymentAsync push queued behind the very deployment it
+        //     targeted and arrived after the run had finished, so B6's cooperative
+        //     abort and process-tree kill never fired on an operator cancel;
+        //   * a supervisor reconnect blocked on the in-flight run.
+        // Task.Run still hops off the message-loop thread — ExecuteAsync's
+        // synchronous prefix can await a superseded attempt's unwind, which must not
+        // stall the loop either.
         serverLink.OnRunDeployment(plan =>
-            Task.Run(() => deploymentExecutor.ExecuteAsync(plan), stoppingToken));
+        {
+            TrackDetachedHandler(
+                Task.Run(
+                    () => deploymentExecutor.ExecuteAsync(
+                        plan, orchestrateSteps: false, hostStopping: stoppingToken),
+                    stoppingToken),
+                $"deployment {plan.DeploymentId} attempt {plan.DispatchId}");
+            return Task.CompletedTask;
+        });
 
         // M11.E.7 — same gate-before-open contract for ad-hoc commands.
         // The executor is fail-closed: refuses on signature mismatch /
         // missing public key, always reports back to the dispatcher.
         serverLink.OnRunAdhocScript(cmd =>
-            Task.Run(() => adhocExecutor.HandleAsync(cmd), stoppingToken));
+        {
+            TrackDetachedHandler(
+                Task.Run(() => adhocExecutor.HandleAsync(cmd, stoppingToken), stoppingToken),
+                $"adhoc session {cmd.SessionId} iter {cmd.IterNumber}");
+            return Task.CompletedTask;
+        });
 
         // B6 — cooperative abort push. Synchronous signal (no Task.Run): it
         // only flips the in-flight run's CancellationTokenSource; the heavy
@@ -258,11 +306,73 @@ public sealed class ServerLinkHostedService(
         // beats a silent zombie. The finally still reports shutdown.
         finally
         {
+            // Drain BEFORE the link goes down: an unwinding handler still wants to
+            // report its aborted completion over it.
+            await DrainDetachedHandlersAsync().ConfigureAwait(false);
             await ReportShutdownAndDisconnectAsync().ConfigureAwait(false);
         }
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Registers a detached push handler so its failure is visible and shutdown can
+    /// drain it. The continuation runs on <see cref="CancellationToken.None"/> — it
+    /// must still fire when the host is stopping, which is exactly when a handler is
+    /// most likely to fault.
+    /// </summary>
+    private void TrackDetachedHandler(Task work, string description)
+    {
+        _detachedHandlers.TryAdd(work, 0);
+        _ = work.ContinueWith(
+            completed =>
+            {
+                _detachedHandlers.TryRemove(completed, out _);
+                if (completed.IsFaulted)
+                {
+                    logger.LogError(completed.Exception,
+                        "Unhandled error in the detached {Description} handler.", description);
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    /// <summary>
+    /// Gives detached handlers <see cref="DetachedHandlerDrainTimeout"/> to finish at
+    /// shutdown. Never throws: a handler that is still running past the bound is
+    /// reported and abandoned to the server-side lease reconciler.
+    /// </summary>
+    private async Task DrainDetachedHandlersAsync()
+    {
+        var pending = _detachedHandlers.Keys.Where(t => !t.IsCompleted).ToArray();
+        if (pending.Length == 0)
+        {
+            return;
+        }
+
+        logger.LogInformation(
+            "Waiting up to {Timeout} for {Count} in-flight push handler(s) to unwind.",
+            DetachedHandlerDrainTimeout, pending.Length);
+        try
+        {
+            await Task.WhenAll(pending).WaitAsync(DetachedHandlerDrainTimeout).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            logger.LogWarning(
+                "{Count} push handler(s) still running after {Timeout}; abandoning them. " +
+                "The server's lease reconciler owns any interrupted task.",
+                pending.Count(t => !t.IsCompleted), DetachedHandlerDrainTimeout);
+        }
+        catch (Exception ex)
+        {
+            // Handler faults are already logged per-handler by TrackDetachedHandler;
+            // WhenAll re-throwing them here must not break shutdown.
+            logger.LogDebug(ex, "A detached handler faulted during shutdown drain.");
+        }
+    }
 
     private enum RegistrationOutcome
     {

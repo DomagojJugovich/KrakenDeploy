@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.0 |
-| **Date** | 2026-07-16 |
+| **Version** | 1.1 |
+| **Date** | 2026-07-25 |
 | **Authors** | Domagoj Jugović, Claude (Opus 4.8) |
 | **Status** | Approved |
 | **Technologies** | .NET 10, SignalR, SemaphoreSlim, NTFS/ext4 atomic rename |
@@ -41,11 +41,20 @@ multi-lock acquisition. The agent is the single authority for its own box.
 
 The slot itself is `MachineExecutionGate`, a process-wide agent singleton (F2
 extracted it out of `DeploymentExecutor` so more than one caller can share it).
-A holder keeps it for the whole plan body (Octopus tentacle-mutex parity):
+A holder keeps it for one dispatched sub-plan — i.e. one WAVE (see Residuals):
 concurrent deployments, runbook runs **and ad-hoc scripts** to the same box
 serialize FIFO instead of interleaving file/IIS/service mutations; waves
 *within* a plan keep their parallelism. A queued plan writes
 `--- Waiting for another task to finish on this machine ---` to its task log.
+
+The gate is only reachable because the agent's SignalR push handlers are
+**detached** (`ServerLinkHostedService` returns `Task.CompletedTask`, not the work
+task). The client awaits each client-method handler, so returning the work task
+made the agent process one push at a time — the transport, not the gate, did the
+serializing, and B7's queue, F2's per-target flag, the B6 supersede path and the
+cancel push were all unreachable. Pinned by
+`ServerLinkHostedServiceTests.Deployment_push_handler_returns_without_awaiting_the_run`
+and three real-hub tests in `TransportRoundTripTests`.
 
 Registration in the B6 single-flight registry happens **before** queueing, so
 a queued plan stays cancellable and supersedable — the wait observes the run's
@@ -53,6 +62,12 @@ token, and a cancel lands in the aborted-completion path with nothing
 executed. `AgentUpdateService`'s is-it-safe-to-swap gate covers queued plans
 too (registry-derived since B6). It does **not** cover a running ad-hoc script
 (pre-existing gap; ad-hoc runs are not in `_running`).
+
+A plan QUEUED on the gate also observes the host's shutdown token, so it unwinds
+its registry entry and staging at shutdown instead of parking on a disposed
+semaphore (`SemaphoreSlim.Dispose` does not signal pending waiters). Step
+execution is deliberately NOT linked to shutdown — a disconnect or shutdown must
+never abort a step that is already running.
 
 ### Ad-hoc scripts take the slot too (F2)
 
@@ -146,7 +161,14 @@ extractions → one complete dir, no temp survivors);
 - The node cap bounds **orchestrations**, not queued channel depth — a
   million queued deployments still consume channel memory (bounded by
   real-world usage; the DB is the durable queue).
-- Ad-hoc scripts bypass the machine queue (deliberate, above).
+- The gate is per AGENT PROCESS, not per physical machine: two targets modelled
+  on one box are two processes, two gates, and no serialization between them.
+  Nothing enforces `MachineName` uniqueness. The offline runner likewise builds
+  its own gate (deliberately uncoordinated with a live agent).
+- The gate's unit is the dispatched sub-plan, i.e. one WAVE — the server
+  dispatches per wave, so the slot is released and re-taken at each wave
+  boundary. An ad-hoc script can therefore still slot in between two waves of
+  one deployment.
 - No per-target fairness across agents: the cap is node-global, FIFO.
 
 ## References

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 1.8 |
+| **Version** | 1.9 |
 | **Date** | 2026-07-25 |
 | **Authors** | Domagoj Jugovic, Claude (Fable 5), Claude (Opus 4.8), Claude (Opus 5) |
 | **Status** | Draft |
@@ -282,9 +282,12 @@ Two properties to be aware of:
   loop (`ServerLinkHostedService`) has no broad catch — an unexpected
   supervisor crash stops the host so service-manager recovery restarts the
   agent (a visible crash-loop beats a silent zombie).
-- **Machine execution gate** (`MachineExecutionGate`, F2): one unit of work at a
-  time on the box — deployments, runbook runs and (F2) ad-hoc scripts share the
-  same process-wide slot, FIFO. `DeploymentTarget.AllowParallelTaskExecution`
+- **Machine execution gate** (`MachineExecutionGate`, F2): one dispatched sub-plan
+  (i.e. one WAVE) at a time per agent PROCESS — deployments, runbook runs and (F2)
+  ad-hoc scripts share the same slot, FIFO. It is only reachable because the agent's
+  push handlers are detached (F2-followup 1); returning the work task made the
+  SignalR client serialize every server→agent push, so the transport rather than the
+  gate did the serializing. `DeploymentTarget.AllowParallelTaskExecution`
   (default off, stamped into the plan / adhoc command at dispatch) opts a target
   out; it never relaxes F1's `(project, environment, tenant)` serialization,
   which is server-side. Ad-hoc's wait is BOUNDED (`Adhoc:MaxQueueWait`, default
@@ -564,6 +567,7 @@ runbook block, behavior-identical).
 
 | Version | Date | Change |
 |---|---|---|
+| 1.9 | 2026-07-25 | **F2-followup 1 — concurrent push dispatch.** The agent's `RunDeploymentAsync` / `RunAdhocScriptAsync` handlers now return `Task.CompletedTask` instead of the work task. The SignalR client dispatches client-method invocations through a single-reader channel and AWAITS each handler, so the previous shape made the agent process exactly one push at a time: B7's machine queue, F2's per-target flag, the B6 supersede path and cancel-while-queued were all unreachable, and a `CancelDeploymentAsync` push queued behind the very deployment it targeted (so the process-tree kill never fired on an operator cancel). Detached work is tracked so a faulted handler is logged rather than left unobserved, and shutdown drains it briefly. The QUEUED gate wait now also observes the host shutdown token — step execution deliberately does not, since a shutdown must never abort a running step. CONTRACT CHANGE: none. |
 | 1.8 | 2026-07-25 | **F2 — per-target parallelism + execution-started deadline arming** (§6, §7, timer table). New `DeploymentTarget.AllowParallelTaskExecution` (default off) stamped into the dispatched plan / adhoc command; the agent's machine execution slot moved out of `DeploymentExecutor` into the shared `MachineExecutionGate` singleton and ad-hoc scripts now take it too (bounded by `Adhoc:MaxQueueWait`, refusing rather than running late). The wave deadline arms in two stages: dispatch-time backstop (`budget + Engine:MaxTargetQueueWait`) then re-armed to the pure execution budget on `ReportExecutionStartedAsync`, so queueing behind a busy machine no longer burns the budget while B3's always-armed invariant survives a wedged agent. CONTRACT CHANGE: `DeploymentPlan` + `AdhocScriptCommand` gain `AllowParallelTaskExecution`, new `IAgentHubServer.ReportExecutionStartedAsync`, `AgentContract.CurrentVersion` 1 → 2. EF: migration `AddTargetAllowParallelTaskExecution`. Branch `feat/eng-per-target-parallelism`. |
 | 1.7 | 2026-07-22 | **D1 engine merge (Phases 2+3)** — Phase 2 trigger surface: `RunbookService.TriggerAsync` / `IRunbookTrigger` / REST / RunbookDetail UI gain multi-target (`additionalTargetIds`, primary-first microsecond-ordered assignments) + `ScheduledFor` (future-only, one dispatch path) + a `failureMode` knob (BestEffort/Atomic; UI shows it for rolling runs) with `DeploymentService.CreateAsync` semantics. Run read surface: new `RunbookRunDetail.razor` page + `/api/runbook-runs/{id}/logs\|step-outcomes\|output-variables\|artifacts(/download)`; shared task detail components (`TaskStatusBanner`, `TaskLogView`, `TaskStepOutcomesGrid`, `TaskOutputVariablesView`, `TaskArtifactsGrid`) extracted from `DeploymentDetail` and rendered by both pages. Dedupes: `ServerTaskCanceller` (one guarded cancel core), `OctopusSystemVariablesBuilder.AddTaskScoped` + nullable-release `AddReleaseScoped`. Phase 3 legacy deletion (§6/§8/§9): AgentHub runbook fallback finalize → post-registry warn-and-drop for either kind (+ hub `PruneRetentionAsync` deleted); reconciler arm 4 + `Engine:MaxRunbookRunDuration` removed; arm 3 orphan predicate now "expired OR null lease" for BOTH kinds; dead `ServerTaskLease.ReleaseAsync` removed; stale pre-D1 hand-off claims corrected across XML docs. `RunbookRun.TimedOut` audit constant retained as historical. No soak needed pre-production (no deployed instance). CONTRACT CHANGE: none on the agent wire; REST `TriggerRunbookRunRequest` gains optional `ScheduledFor` + `AdditionalTargetIds` + `FailureMode`. |
 | 1.6 | 2026-07-19 | **D1 engine merge (Phase 1)** — runbook runs now execute through the single `DeploymentWorker` orchestrator via a kind-branched `ITaskDispatchSource` accessor (§8); they gain waves, multi-target fan-out, server-side steps (RunOnServer now runs on the SERVER — security fix), rolling, failure modes, the M14 step knobs online, lease renewal and orphan reconciliation. `RunbookRunWorker` + `RunbookRunChannel` deleted; `RunbookService.TriggerAsync` enqueues onto the shared task channel. Reconciler arms generalised to both kinds (§6): arm 3 lease-orphan reconcile is kind-agnostic with a kind-branched null-lease predicate; the E9 disconnect-reap + pre-hand-off arms are removed (B3 covers runbook runs); arm 4 (MaxRunbookRunDuration) + the hub runbook fallback finalize are kept INTERIM for one release to drain legacy hand-off runs. Additive `RunbookRun.*` audit vocabulary (`TaskAuditVocabulary`); runbook retention now worker-fired + counts SucceededWithWarnings. CONTRACT CHANGE: runbook dispatch shape (runbook runs now dispatched as per-target sub-plans via the sub-plan registry, not one whole-plan hand-off). Branch `refactor/eng-server-tasks-engine-merge`. |

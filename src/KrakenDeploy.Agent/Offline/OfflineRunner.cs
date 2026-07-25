@@ -110,7 +110,10 @@ public sealed class OfflineRunner(ILoggerFactory loggerFactory)
             // output variables across waves and reporting per-step + completion
             // through serverLink, which writes deployment-log.txt + deployment-result.json
             // (+ result-signature.bin) into the bundle root.
-            await executor.ExecuteAsync(plan, orchestrateSteps: true).ConfigureAwait(false);
+            // ct doubles as the "host stopping" token for the gate wait — offline
+            // runs one plan against their own gate, so it never actually contends.
+            await executor.ExecuteAsync(plan, orchestrateSteps: true, hostStopping: ct)
+                .ConfigureAwait(false);
             return await ReadExitCodeAsync(bundleDir, ct).ConfigureAwait(false);
         }
         finally

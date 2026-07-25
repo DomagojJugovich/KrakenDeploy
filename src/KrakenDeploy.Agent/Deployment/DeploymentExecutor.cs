@@ -140,7 +140,20 @@ public sealed class DeploymentExecutor(
     /// semantics. Defaults to <c>false</c> so the online agent path (server
     /// orchestrates) is unchanged.
     /// </param>
-    public async Task ExecuteAsync(DeploymentPlan plan, bool orchestrateSteps = false)
+    /// <param name="hostStopping">
+    /// F2-followup 1 — the agent host's shutdown token. Linked into the MACHINE GATE
+    /// WAIT only (not into step execution: a disconnect or shutdown must never abort
+    /// a step that is already running — see docs/execution-engine.md §6). Without it
+    /// a plan queued on the gate at shutdown would park forever: the gate's ordinary
+    /// wait observes only the per-run token, which nothing fires at shutdown, so
+    /// <see cref="ExecuteAsync"/>'s finally would never run and the registry entry
+    /// would leak — keeping <see cref="IsExecuting"/> true and blocking self-upgrade.
+    /// Unreachable before the push handlers were detached, hence the default.
+    /// </param>
+    public async Task ExecuteAsync(
+        DeploymentPlan plan,
+        bool orchestrateSteps = false,
+        CancellationToken hostStopping = default)
     {
         ArgumentNullException.ThrowIfNull(plan);
 
@@ -180,8 +193,14 @@ public sealed class DeploymentExecutor(
                 plan.DeploymentId, plan.DispatchId, existing.DispatchId);
             existing.CancelReason = "Superseded by a newer dispatch of the same task.";
             existing.Cts.Cancel();
+            // CancellationToken.None deliberately: this is the bounded wait for the
+            // OLD attempt to unwind, and a host shutdown must not cut it short — the
+            // whole point is that two attempts never overlap on the same extract
+            // dirs / IIS handles. The force-detach below is the escape hatch.
             var unwound = await Task
-                .WhenAny(existing.Completed.Task, Task.Delay(SupersedeUnwindTimeout))
+                .WhenAny(
+                    existing.Completed.Task,
+                    Task.Delay(SupersedeUnwindTimeout, CancellationToken.None))
                 .ConfigureAwait(false) == existing.Completed.Task;
             if (!unwound)
             {
@@ -237,7 +256,7 @@ public sealed class DeploymentExecutor(
             // their parallelism either way. NOTE the unit is the dispatched
             // sub-plan, i.e. one WAVE — the server dispatches per wave, so the slot
             // is released and re-taken at every wave boundary.
-            var slot = await AcquireMachineSlotAsync(plan, forceDetachedStuck, ct)
+            var slot = await AcquireMachineSlotAsync(plan, forceDetachedStuck, ct, hostStopping)
                 .ConfigureAwait(false);
             if (slot.Abandoned)
             {
@@ -473,7 +492,8 @@ public sealed class DeploymentExecutor(
     /// </para>
     /// </summary>
     private async Task<MachineSlot> AcquireMachineSlotAsync(
-        DeploymentPlan plan, bool forceDetachedStuck, CancellationToken ct)
+        DeploymentPlan plan, bool forceDetachedStuck, CancellationToken ct,
+        CancellationToken hostStopping)
     {
         if (plan.AllowParallelTaskExecution)
         {
@@ -484,7 +504,17 @@ public sealed class DeploymentExecutor(
             return MachineSlot.Bypassed;
         }
 
-        if (await executionGate.TryAcquireNowAsync(ct).ConfigureAwait(false) is { } uncontended)
+        // F2-followup 1: the QUEUE wait also unblocks at host shutdown, so a plan
+        // parked here does not survive the gate's DI disposal (SemaphoreSlim.Dispose
+        // does not signal pending waiters — the await would never resume and this
+        // run's finally would never run). Linked per-acquisition and disposed
+        // immediately, so no registration accumulates on the long-lived host token.
+        // Step execution is NOT linked: a shutdown must not abort a running step.
+        using var queueWait = CancellationTokenSource.CreateLinkedTokenSource(ct, hostStopping);
+        var queueToken = queueWait.Token;
+
+        if (await executionGate.TryAcquireNowAsync(queueToken).ConfigureAwait(false)
+                is { } uncontended)
         {
             return MachineSlot.Held(uncontended);
         }
@@ -496,10 +526,10 @@ public sealed class DeploymentExecutor(
         if (!forceDetachedStuck)
         {
             return MachineSlot.Held(
-                await executionGate.AcquireAsync(ct).ConfigureAwait(false));
+                await executionGate.AcquireAsync(queueToken).ConfigureAwait(false));
         }
 
-        if (await executionGate.AcquireAsync(WedgedGateAcquireTimeout, ct)
+        if (await executionGate.AcquireAsync(WedgedGateAcquireTimeout, queueToken)
                 .ConfigureAwait(false) is { } bounded)
         {
             return MachineSlot.Held(bounded);

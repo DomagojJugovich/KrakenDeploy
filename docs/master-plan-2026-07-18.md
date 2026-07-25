@@ -171,9 +171,9 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 3 — engine merge | D1 | server_tasks ENGINE merge (2026-07-16 design supersedes the old prompt) | ✅ P1 `0a8d1a5` · P2+P3 `e247c46` | XL | E-A, E-B, E-C, E-D |
 | 3 | D3 | Promote control-flow config keys to typed columns (+ rolling-warning rider) | ✅ 3e2388a | M | — |
 | 4 — engine features | F1 | Same (project, environment, tenant) deployment serialization | ✅ fa2fad5·de44a02·a4f3f85·a6384ee | M | D1 |
-| 4 | F2 | Per-target "Allow parallel task execution" + execution-started deadline arming | ⬜ code on `feat/eng-per-target-parallelism`; **NOT done** — the agent's SignalR handler returns the unwrapped work task, so pushes dispatch sequentially and the flag is inert outside a post-reconnect window. See §F2-followups. | M | E-B, D1 |
+| 4 | F2 | Per-target "Allow parallel task execution" + execution-started deadline arming | ⬜ merged `79f200e`; **still NOT done** — followup 1 (concurrent push dispatch) DONE, so the flag now actually works; followups 2-10 open. See §F2-followups. | M | E-B, D1 |
 | 4 | F3 | Settings GUI: Engine document + AgentUpdate + logging + auth + SSRF | ⬜ | L | — |
-| 4 | F4 | Remove the `ApiKey:Key` config auth path | ⬜ | S | — |
+| 4 | F4 | Remove the `ApiKey:Key` config auth path | ✅ fix/sec-remove-config-apikey | S | — |
 | 5 — product features | WP3 | Real manual intervention (pause/approve/reject) | ⬜ | XL | D1 |
 | 5 | WP4 | Reachability + edit affordances (rescoped: 4 items) | ⬜ | S | — |
 | 5 | WP5 | Missing CRUD end-to-end (target/release/group delete + user profile edit) | ✅ 5c23420·5d0d1b6 | M | — |
@@ -713,7 +713,17 @@ Branch: feat/eng-per-target-parallelism
 The branch is committed but F2 is **not** delivered. Ordered by severity; the first
 one gates the rest, because until it lands the feature cannot be observed at all.
 
-1. **The flag is inert.** `ServerLinkHostedService` wires both push handlers as
+1. ~~**The flag is inert.**~~ **DONE.** Both handlers are now detached
+   (`return Task.CompletedTask`), the queued gate wait observes host shutdown, and
+   handler faults are logged instead of left unobserved. Pinned by
+   `ServerLinkHostedServiceTests.Deployment_push_handler_returns_without_awaiting_the_run`
+   (fails by timeout against the old shape) plus three real-hub tests —
+   `Second_deployment_to_the_same_machine_waits_for_the_gate`,
+   `Parallel_flag_lets_a_second_deployment_run_while_the_first_blocks`,
+   `Operator_cancel_push_reaches_a_running_deployment` — all three verified to FAIL
+   against the pre-fix wiring and pass against the fix. B6's cooperative cancel now
+   reaches a running deployment, which the same root cause had also broken.
+   Original diagnosis: `ServerLinkHostedService` wired both push handlers as
    `Task.Run(() => …ExecuteAsync(plan), stoppingToken)`, which returns the UNWRAPPED
    work task; the SignalR client feeds all client invocations through one
    `SingleReader` channel and awaits each handler, so the agent processes exactly one
@@ -742,7 +752,9 @@ one gates the rest, because until it lands the feature cannot be observed at all
    Bound the ad-hoc *hold*, not just its wait.
 4. **The gate is per WAVE, not per plan** (the server dispatches one sub-plan per
    wave), so an ad-hoc script can still slot in at a wave boundary against a
-   half-applied box. Three doc/comment sites still claim "the whole plan body".
+   half-applied box. The DOCS are now correct (`node-concurrency-and-cache.md` states
+   it and lists it under Residuals); the open question is whether the gate should be
+   held across waves, or a server-side per-target lease used instead.
 5. **Unvalidated durations.** `Engine:MaxTargetQueueWait` and `Adhoc:MaxQueueWait`
    accept a bare number, which `TimeSpan.Parse` reads as DAYS (`"4"` → 4 days). The
    former makes `CancelAfter` throw above ~49.7 d and fail EVERY deployment at
@@ -763,8 +775,7 @@ one gates the rest, because until it lands the feature cannot be observed at all
    pass the map into `DispatchAsync` and delete the interface.
 9. **Docs to correct**: "can extend a deadline, never shorten one" is inverted (the
    re-arm normally shortens, and the hub method's reduced authorization is argued from
-   that false premise); `docs/node-concurrency-and-cache.md:149` still lists "Ad-hoc
-   scripts bypass the machine queue" as a residual; `docs/adhoc-actions.md:93`'s
+   that false premise); `docs/adhoc-actions.md:93`'s
    locked-invariant gloss is false for the unsigned `AllowParallelTaskExecution` field;
    `docs/disconnect-reconciliation.md` (Approved) still describes single-stage arming
    and omits the new knob.

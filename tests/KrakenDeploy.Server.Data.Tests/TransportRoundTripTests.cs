@@ -163,7 +163,179 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
         status.Should().Be(DeploymentStatus.Failed);
     }
 
+    // ── F2-followup 1: the agent must accept a SECOND push while one is running ──
+    //
+    // These three are the only tests in the repo that can observe the defect: every
+    // other suite either fakes the agent side (so the SignalR client's single-reader
+    // dispatch loop is absent) or dispatches exactly one deployment per agent.
+
+    [Fact]
+    public async Task Second_deployment_to_the_same_machine_waits_for_the_gate()
+    {
+        await using var seeder = new OrchestratorTestHarness(postgres);
+        await using var host = await RoundTripHost.StartAsync(postgres, new EngineOptions
+        {
+            // Nothing server-side may un-hang this: the gate is the only thing that
+            // should hold the second deployment, and the release is the only thing
+            // that should let it through.
+            MaxTargetWaveDuration    = TimeSpan.FromMinutes(5),
+            AgentDisconnectWaveGrace = TimeSpan.Zero,
+        });
+
+        var (blocking, quick, target) = await SeedTwoProjectsOneTargetAsync(seeder);
+        var agent = await host.ConnectRealAgentAsync(target);
+
+        var blockingRun = host.RunDeploymentAsync(blocking);
+        try
+        {
+            await WaitUntilAsync(() => agent.Executor.IsExecuting,
+                "the blocking deployment must be executing and holding the machine gate");
+            await WaitUntilAsync(() => agent.Gate.IsHeld,
+                "the gate must actually be held, not merely registered in flight");
+
+            // The second push IS delivered now (pre-fix it was not: the client awaited
+            // the first handler), so the plan reaches the agent and queues on the gate.
+            var quickRun = host.RunDeploymentAsync(quick);
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            quickRun.IsCompleted.Should().BeFalse(
+                "the second deployment must be QUEUED behind the first on the machine gate");
+            (await seeder.GetOutcomesAsync(quick)).Should().BeEmpty(
+                "a queued plan must not have run any step yet");
+
+            // Release the holder; the queued plan then inherits the machine.
+            agent.Executor.TryCancel(blocking, "test releases the machine");
+            await blockingRun.WaitAsync(TestTimeout);
+            await quickRun.WaitAsync(TestTimeout);
+
+            (await seeder.GetDeploymentAsync(quick)).Status
+                .Should().Be(DeploymentStatus.Succeeded,
+                    "once the gate frees, the queued deployment runs to completion");
+
+            // The load-bearing assertion. "Did not complete" alone is satisfied by an
+            // UNDELIVERED plan, which is exactly the pre-fix behaviour — so prove the
+            // plan reached the agent and queued on the gate, by its own task log.
+            await using var db = seeder.CreateContext();
+            var quickLog = await TaskLogService.ReadAllAsync(db, quick);
+            quickLog.Should().Contain(
+                l => l.Message.Contains("Waiting for another task to finish on this machine"),
+                "the second plan must have been DELIVERED and queued on the machine gate — "
+                + "pre-fix it was never dispatched to the agent at all");
+        }
+        finally
+        {
+            agent.Executor.TryCancel(blocking, "test teardown");
+            await blockingRun.WaitAsync(TestTimeout);
+        }
+    }
+
+    [Fact]
+    public async Task Parallel_flag_lets_a_second_deployment_run_while_the_first_blocks()
+    {
+        await using var seeder = new OrchestratorTestHarness(postgres);
+        await using var host = await RoundTripHost.StartAsync(postgres, new EngineOptions
+        {
+            MaxTargetWaveDuration    = TimeSpan.FromMinutes(5),
+            AgentDisconnectWaveGrace = TimeSpan.Zero,
+        });
+
+        var (blocking, quick, target) = await SeedTwoProjectsOneTargetAsync(seeder);
+        // The ONLY difference from the test above.
+        await seeder.SetAllowParallelTaskExecutionAsync(target.Id, true);
+        var agent = await host.ConnectRealAgentAsync(target);
+
+        var blockingRun = host.RunDeploymentAsync(blocking);
+        try
+        {
+            await WaitUntilAsync(() => agent.Executor.IsExecuting,
+                "the blocking deployment must be executing");
+
+            // With the flag the second plan bypasses the gate, so it completes WHILE
+            // the first is still blocked mid-step. This is F2's headline behaviour and
+            // it is impossible unless the agent accepts a second push concurrently.
+            await host.RunDeploymentAsync(quick).WaitAsync(TestTimeout);
+
+            (await seeder.GetDeploymentAsync(quick)).Status
+                .Should().Be(DeploymentStatus.Succeeded);
+            blockingRun.IsCompleted.Should().BeFalse(
+                "the first deployment is still blocked — the second overtook it");
+            agent.Gate.IsHeld.Should().BeFalse(
+                "a bypassing plan must not have taken the slot, and must not have "
+                + "released one it never held");
+        }
+        finally
+        {
+            agent.Executor.TryCancel(blocking, "test teardown");
+            await blockingRun.WaitAsync(TestTimeout);
+        }
+    }
+
+    [Fact]
+    public async Task Operator_cancel_push_reaches_a_running_deployment()
+    {
+        // B6's cooperative abort travelled the same broken path: the cancel push was
+        // queued behind the deployment it targeted and arrived after the run ended, so
+        // TryCancel found nothing in flight and the process-tree kill never fired.
+        // Here the ONLY thing that can end this deployment is the pushed cancel — the
+        // test never calls TryCancel on the success path.
+        await using var seeder = new OrchestratorTestHarness(postgres);
+        await using var host = await RoundTripHost.StartAsync(postgres, new EngineOptions
+        {
+            MaxTargetWaveDuration    = TimeSpan.FromMinutes(5),
+            AgentDisconnectWaveGrace = TimeSpan.Zero,
+        });
+
+        var (deploymentId, target) = await SeedTwoStepDeploymentAsync(
+            seeder, RoundTripSteps.Block("hang"), RoundTripSteps.Produce("never-reached"));
+        var agent = await host.ConnectRealAgentAsync(target);
+
+        var dispatch = host.RunDeploymentAsync(deploymentId);
+        try
+        {
+            await WaitUntilAsync(() => agent.Executor.IsExecuting,
+                "the real agent must be executing before the cancel is pushed");
+
+            await host.CancelDeploymentAsync(deploymentId);
+
+            await dispatch.WaitAsync(TestTimeout);
+            (await seeder.GetDeploymentAsync(deploymentId)).Status
+                .Should().Be(DeploymentStatus.Cancelled);
+            await WaitUntilAsync(() => !agent.Executor.IsExecuting,
+                "the pushed cancel must have aborted the in-flight run on the agent");
+        }
+        finally
+        {
+            agent.Executor.TryCancel(deploymentId, "test teardown");
+        }
+    }
+
     // ── Seeding ─────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Two deployments in DIFFERENT projects aimed at ONE target: the first blocks
+    /// mid-step, the second is a one-step no-op. Different projects on purpose — F1
+    /// serializes same-(project, environment, tenant) deployments at claim time, so
+    /// same-project deployments would never both reach the agent and the test would
+    /// pass for the wrong reason.
+    /// </summary>
+    private static async Task<(Guid Blocking, Guid Quick, DeploymentTarget Target)>
+        SeedTwoProjectsOneTargetAsync(OrchestratorTestHarness seeder)
+    {
+        var tag = Guid.NewGuid().ToString("N")[..8];
+        var env = await seeder.SeedEnvironmentAsync($"rt-e-{tag}");
+        var targets = await seeder.SeedTargetsAsync($"rt-t-{tag}");
+
+        var blockingProject = await seeder.SeedProjectAsync($"rt-block-{tag}");
+        var blockingRelease = await seeder.SeedReleaseAsync(
+            blockingProject.Id, "1.0", RoundTripSteps.Block("hang"));
+        var blocking = await seeder.CreateDeploymentAsync(blockingRelease.Id, env.Id, targets);
+
+        var quickProject = await seeder.SeedProjectAsync($"rt-quick-{tag}");
+        var quickRelease = await seeder.SeedReleaseAsync(
+            quickProject.Id, "1.0", RoundTripSteps.Produce("fast"));
+        var quick = await seeder.CreateDeploymentAsync(quickRelease.Id, env.Id, targets);
+
+        return (blocking, quick, targets[0]);
+    }
 
     private static async Task<(Guid DeploymentId, DeploymentTarget Target)> SeedTwoStepDeploymentAsync(
         OrchestratorTestHarness seeder, StepBuilder step1, StepBuilder step2)
@@ -355,6 +527,9 @@ internal sealed class RoundTripHost : IAsyncDisposable
         services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
         services.AddSingleton<Core.Domain.Accounts.IAccountContext, Accounts.DisabledAccountContext>();
         services.AddSingleton<AgentJwtService>();
+        // B6 — the REAL cancel pusher over the REAL hub, so an operator cancel travels
+        // the actual wire to the agent instead of a test shortcut.
+        services.AddSingleton<IAgentCancelPusher, AgentCancelPusher>();
 
         // Mirrors Program.cs's AgentJwt scheme: same issuer/audience, the
         // query-string token hand-off SignalR WebSockets require, and the A8
@@ -466,7 +641,18 @@ internal sealed class RoundTripHost : IAsyncDisposable
             Options.Create(new AgentConfig { DataPath = _agentDataPath }),
             NullLogger<DeploymentExecutor>.Instance);
 
-        link.OnRunDeployment(plan => Task.Run(() => executor.ExecuteAsync(plan)));
+        // Mirrors ServerLinkHostedService's wiring EXACTLY, including the thing that
+        // matters: the handler returns Task.CompletedTask instead of the work task.
+        // Returning the work task (what `Task.Run(() => …)` yields — it unwraps) makes
+        // the SignalR client await it before dispatching the next push, which is the
+        // F2-followup-1 defect: two deployments could never overlap and a cancel push
+        // queued behind the deployment it targeted. Tests here would silently pass
+        // against the broken shape if this harness kept it.
+        link.OnRunDeployment(plan =>
+        {
+            _ = Task.Run(() => executor.ExecuteAsync(plan));
+            return Task.CompletedTask;
+        });
         link.OnCancelDeployment((taskId, reason) =>
         {
             executor.TryCancel(taskId, reason);
@@ -510,6 +696,22 @@ internal sealed class RoundTripHost : IAsyncDisposable
 
     public Task RunDeploymentAsync(Guid deploymentId, CancellationToken ct = default)
         => _worker.DispatchForTestAsync(deploymentId, ct);
+
+    /// <summary>
+    /// Cancels through the REAL <see cref="DeploymentService"/> in THIS host's
+    /// container, so the B6 cooperative-cancel push travels the real hub to the real
+    /// agent. Using the seeder harness's CancelAsync instead would fire its own
+    /// pusher over the FAKE hub and never reach the agent.
+    /// </summary>
+    public async Task CancelDeploymentAsync(Guid deploymentId, CancellationToken ct = default)
+    {
+        await using var scope = _app.Services
+            .GetRequiredService<IServiceScopeFactory>().CreateAsyncScope();
+        var svc = scope.ServiceProvider.GetRequiredService<DeploymentService>();
+        await svc.CancelAsync(
+                deploymentId, Core.Domain.Security.CallerAuthorization.System, ct)
+            .ConfigureAwait(false);
+    }
 
     /// <summary>Stages THIS test assembly as the round-trip step package in the
     /// agent's package cache (the SamplePluginStepHandler loader pattern).</summary>

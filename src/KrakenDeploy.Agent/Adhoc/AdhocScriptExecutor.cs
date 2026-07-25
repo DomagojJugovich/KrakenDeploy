@@ -97,8 +97,15 @@ public sealed class AdhocScriptExecutor(
             : DefaultGateWaitTimeout;
     }
 
-    /// <summary>Entry point — wire this to <c>IServerLink.OnRunAdhocScript</c>.</summary>
-    public async Task HandleAsync(AdhocScriptCommand command)
+    /// <summary>Entry point — wire this to <c>IServerLink.OnRunAdhocScript</c>.
+    /// <paramref name="hostStopping"/> (F2-followup 1) is the agent host's shutdown
+    /// token, observed while QUEUED on the machine gate so a script waiting its turn
+    /// unwinds at shutdown instead of parking on a disposed semaphore. It is
+    /// deliberately NOT passed to the invoker: a shutdown must not half-kill a script
+    /// that is already running (and the server has no ad-hoc abort to reconcile
+    /// with).</summary>
+    public async Task HandleAsync(
+        AdhocScriptCommand command, CancellationToken hostStopping = default)
     {
         ArgumentNullException.ThrowIfNull(command);
 
@@ -156,7 +163,7 @@ public sealed class AdhocScriptExecutor(
         // so a diagnostic script could run straight into a deployment's file / IIS /
         // service operations on the same box. Bounded so a long-running deployment
         // cannot pin an interactive script indefinitely.
-        var slot = await AcquireMachineSlotAsync(command).ConfigureAwait(false);
+        var slot = await AcquireMachineSlotAsync(command, hostStopping).ConfigureAwait(false);
         if (slot.Refused)
         {
             return; // AcquireMachineSlotAsync already reported the refusal.
@@ -186,7 +193,8 @@ public sealed class AdhocScriptExecutor(
     /// entirely when the target sets
     /// <see cref="AdhocScriptCommand.AllowParallelTaskExecution"/>.
     /// </summary>
-    private async Task<AdhocMachineSlot> AcquireMachineSlotAsync(AdhocScriptCommand command)
+    private async Task<AdhocMachineSlot> AcquireMachineSlotAsync(
+        AdhocScriptCommand command, CancellationToken hostStopping)
     {
         if (command.AllowParallelTaskExecution)
         {
@@ -200,7 +208,7 @@ public sealed class AdhocScriptExecutor(
         var gateWait = ResolveGateWaitTimeout();
         try
         {
-            if (await executionGate.TryAcquireNowAsync(CancellationToken.None)
+            if (await executionGate.TryAcquireNowAsync(hostStopping)
                     .ConfigureAwait(false) is { } uncontended)
             {
                 return new AdhocMachineSlot(uncontended, false);
@@ -211,7 +219,7 @@ public sealed class AdhocScriptExecutor(
                 "machine execution slot (another task is running on this machine).",
                 command.SessionId, command.IterNumber, gateWait);
 
-            if (await executionGate.AcquireAsync(gateWait, CancellationToken.None)
+            if (await executionGate.AcquireAsync(gateWait, hostStopping)
                     .ConfigureAwait(false) is { } queued)
             {
                 return new AdhocMachineSlot(queued, false);
@@ -227,10 +235,12 @@ public sealed class AdhocScriptExecutor(
                 .ConfigureAwait(false);
             return new AdhocMachineSlot(null, true);
         }
-        catch (ObjectDisposedException ex)
+        catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
         {
-            // The agent host is shutting down and DI disposed the gate. Report
-            // rather than let this escape: the dispatcher's slot is waiting and
+            // The agent host is shutting down: either hostStopping fired while this
+            // script was QUEUED on the gate (OperationCanceledException), or DI got
+            // there first and disposed the gate (ObjectDisposedException). Report
+            // rather than let either escape — the dispatcher's slot is waiting and
             // this class's contract is that every path closes it.
             logger.LogWarning(ex,
                 "Adhoc session {SessionId} iter {Iter} refused: the agent is shutting down.",
