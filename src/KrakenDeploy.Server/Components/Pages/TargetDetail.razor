@@ -18,6 +18,8 @@
 @inject RunbookService RunbookSvc
 @inject AuditLogService AuditSvc
 @inject AgentAccessRevoker AgentRevoker
+@inject KrakenDeploy.Server.Auth.TargetDecommissioner Decommissioner
+@inject NavigationManager Nav
 @inject ISpaceContext SpaceCtx
 @inject IEncryptionService Encryption
 @inject NotificationService Notify
@@ -46,10 +48,23 @@ else
                 <div style="display:flex; align-items:center; gap:10px;">
                     <span class="kraken-channel-pill">@TransportLabel(Target.TransportMode)</span>
                     <StatusPill Target="Target.Status" />
+                    @if (Target.IsRetired)
+                    {
+                        <RadzenBadge Text="Retired" BadgeStyle="BadgeStyle.Secondary" IsPill="true" />
+                    }
                 </div>
             </div>
         </div>
     </div>
+
+    @if (Target.IsRetired)
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Info" Variant="Variant.Flat" Shade="Shade.Lighter"
+                     ShowIcon="true" AllowClose="false" class="rz-mb-3">
+            This target is <strong>retired</strong> — hidden from target matching and dispatch,
+            and its agent is rejected at connect. Execution history is preserved.
+        </RadzenAlert>
+    }
 
     <div class="kraken-detail-layout">
         @* ── Left sub-nav ── *@
@@ -563,6 +578,58 @@ else
                     }
                 </div>
             }
+
+            @* ════ Decommission (WP5 item 1) ════ *@
+            @if (_section == "decommission")
+            {
+                <div class="kr-card kr-card-pad" style="max-width: 720px;">
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">Decommission</RadzenText>
+
+                    <div class="kraken-def">
+                        <div class="kraken-def-label">Retire
+                            <div class="kraken-def-sub">
+                                Hides the target from target matching and dispatch and rejects its
+                                agent at connect. The row and all execution history are preserved —
+                                this is the only supported path for a target that has ever been
+                                deployed to.
+                            </div>
+                        </div>
+                        <div class="kraken-def-value" style="padding-top:6px;">
+                            @if (Target.IsRetired)
+                            {
+                                <RadzenBadge Text="Already retired" BadgeStyle="BadgeStyle.Secondary" IsPill="true" />
+                            }
+                            else
+                            {
+                                <RequirePermission Permission="Permission.MachineRetire">
+                                    <RadzenButton Text="Retire target" Icon="archive"
+                                                  Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Warning"
+                                                  Variant="Variant.Flat"
+                                                  IsBusy="_decommissioning" Click="RetireAsync" />
+                                </RequirePermission>
+                            }
+                        </div>
+                    </div>
+
+                    <div class="kraken-def">
+                        <div class="kraken-def-label">Delete
+                            <div class="kraken-def-sub">
+                                Permanently removes the target. Only possible while it has NO
+                                deployment or runbook history (the history FKs refuse deletion
+                                otherwise — retire it instead). Cannot be undone.
+                            </div>
+                        </div>
+                        <div class="kraken-def-value" style="padding-top:6px;">
+                            <RequirePermission Permission="Permission.MachineDelete">
+                                <RadzenButton Text="Delete target" Icon="delete_forever"
+                                              Size="ButtonSize.Small" ButtonStyle="ButtonStyle.Danger"
+                                              Variant="Variant.Flat"
+                                              IsBusy="_decommissioning" Click="DeleteAsync" />
+                            </RequirePermission>
+                        </div>
+                    </div>
+                </div>
+            }
         </div>
     </div>
 }
@@ -580,6 +647,7 @@ else
         ("deployments", "Deployments", "play_circle"),
         ("runbooks", "Runbook runs", "menu_book"),
         ("events", "Events", "history"),
+        ("decommission", "Decommission", "archive"),
     ];
     private string _section = "settings";
 
@@ -597,6 +665,7 @@ else
     private bool _savingSettings;
     private bool _savingLock;
     private bool _revokingAgent;
+    private bool _decommissioning;
     private readonly TargetRiskLevel[] _riskLevels = Enum.GetValues<TargetRiskLevel>();
 
     // ── Tab data (lazy) ────────────────────────────────────────────────────
@@ -799,6 +868,93 @@ else
         finally
         {
             _revokingAgent = false;
+        }
+    }
+
+    // WP5 item 1: retire (soft-decommission) the target. Server-side re-checks the
+    // permission (UiActionGuard, bypassing the UI cache) before mutating.
+    private async Task RetireAsync()
+    {
+        if (Target is null) return;
+        if (!await Guard.AllowAsync(Permission.MachineRetire)) return;
+
+        var confirmed = await Dialog.Confirm(
+            $"Retire '{Target.Name}'? It is hidden from target matching and dispatch and its " +
+            "agent is rejected at connect. Execution history is preserved.",
+            "Confirm Retire",
+            new ConfirmOptions { OkButtonText = "Retire", CancelButtonText = "Cancel" });
+        if (confirmed != true) return;
+
+        _decommissioning = true;
+        try
+        {
+            var ok = await Decommissioner.RetireAsync(Target.Id, await Guard.CurrentCallerAsync());
+            if (ok)
+            {
+                Target.IsRetired = true;
+                Target.Status = TargetStatus.Disabled;
+                Notify.Notify(NotificationSeverity.Success, "Retired",
+                    $"'{Target.Name}' is retired.", 4000);
+            }
+            else
+            {
+                Notify.Notify(NotificationSeverity.Warning, "Not found",
+                    "The target could not be found in this Space.", 5000);
+            }
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error, "Retire failed", ex.Message, 6000);
+        }
+        finally
+        {
+            _decommissioning = false;
+        }
+    }
+
+    // WP5 item 1: hard-delete a history-free target. The service refuses (throws)
+    // while execution history references the target.
+    private async Task DeleteAsync()
+    {
+        if (Target is null) return;
+        if (!await Guard.AllowAsync(Permission.MachineDelete)) return;
+
+        var confirmed = await Dialog.Confirm(
+            $"Delete '{Target.Name}'? This permanently removes the target and is only possible " +
+            "while it has no deployment or runbook history (otherwise retire is the only " +
+            "option). This cannot be undone.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+        if (confirmed != true) return;
+
+        _decommissioning = true;
+        try
+        {
+            var ok = await Decommissioner.DeleteAsync(Target.Id, await Guard.CurrentCallerAsync());
+            if (ok)
+            {
+                Notify.Notify(NotificationSeverity.Success, "Deleted",
+                    $"'{Target.Name}' was deleted.", 4000);
+                Nav.NavigateTo(Sp("/targets"));
+            }
+            else
+            {
+                Notify.Notify(NotificationSeverity.Warning, "Not found",
+                    "The target could not be found in this Space.", 5000);
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            // History exists — the service refuses a hard delete; surface the reason.
+            Notify.Notify(NotificationSeverity.Warning, "Cannot delete", ex.Message, 8000);
+        }
+        catch (Exception ex)
+        {
+            Notify.Notify(NotificationSeverity.Error, "Delete failed", ex.Message, 6000);
+        }
+        finally
+        {
+            _decommissioning = false;
         }
     }
 

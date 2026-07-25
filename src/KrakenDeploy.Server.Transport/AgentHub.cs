@@ -90,6 +90,18 @@ public sealed class AgentHub(
             return;
         }
 
+        if (target.IsRetired)
+        {
+            // A retired (soft-decommissioned) target must not reconnect: it is hidden
+            // from matching/dispatch and its history is preserved, so an agent that
+            // keeps trying to check in is refused here rather than marked Online.
+            logger.LogWarning(
+                "Retired target {TargetId} connected (conn {ConnectionId}); aborting.",
+                targetId.Value, Context.ConnectionId);
+            Context.Abort();
+            return;
+        }
+
         // Register only after the target is positively resolved (in the right account).
         // Record the connection's account (host-derived, pinned by AgentAccountHubFilter
         // before this runs; Guid.Empty single-instance) so dispatch can assert a target's
@@ -175,6 +187,40 @@ public sealed class AgentHub(
         {
             return new AgentRegistrationResult(
                 Accepted: false, AgentContract.CurrentVersion, "Unknown target.");
+        }
+
+        if (target.IsRetired)
+        {
+            // Refuse a retired (soft-decommissioned) target's registration: it is
+            // hidden from matching/dispatch and its history preserved. Remove the
+            // connection from the dispatch registry (undispatchable NOW). Keep the
+            // status Disabled (as TargetService.RetireAsync set it) rather than
+            // downgrading to Offline, so the fleet summary still reflects the
+            // decommissioned state.
+            registry.TryRemove(Context.ConnectionId, out _);
+            target.Status = TargetStatus.Disabled;
+            await db.SaveChangesAsync().ConfigureAwait(false);
+
+            const string message =
+                "This target has been retired and can no longer connect. " +
+                "Re-enroll a new target if the host is being recommissioned.";
+            logger.LogWarning(
+                "Retired target {TargetId} (agent {AgentVersion}) REFUSED registration.",
+                targetId.Value, request.AgentVersion);
+            await auditLog.RecordAsync(
+                KrakenDeploy.Server.Core.Domain.Audit.AuditEventType.AgentRetiredTargetRejected,
+                subjectType: "DeploymentTarget",
+                subjectId:   targetId.Value.ToString(),
+                subjectName: target.Name,
+                details:     "Registration refused: target is retired.").ConfigureAwait(false);
+
+            var retiredAccountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;
+            await statusPublisher
+                .PublishAsync(targetId.Value, TargetStatus.Disabled, target.LastSeenUtc, retiredAccountId)
+                .ConfigureAwait(false);
+
+            return new AgentRegistrationResult(
+                Accepted: false, AgentContract.CurrentVersion, message);
         }
 
         // B6: contract-version gate. An agent speaking a different wire version

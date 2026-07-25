@@ -20,7 +20,7 @@ public sealed class TargetServiceRevokeTests(PostgresFixture postgres)
     [Fact]
     public async Task RevokeAgentTokenAsync_increments_version()
     {
-        var svc = new TargetService(postgres);
+        var svc = new TargetService(postgres, new AllowAllPermissionEvaluator());
         var id = await SeedTargetAsync(agentTokenVersion: 0);
 
         var v1 = await svc.RevokeAgentTokenAsync(id);
@@ -40,7 +40,7 @@ public sealed class TargetServiceRevokeTests(PostgresFixture postgres)
     [Fact]
     public async Task RevokeAgentTokenAsync_returns_null_for_missing_target()
     {
-        var svc = new TargetService(postgres);
+        var svc = new TargetService(postgres, new AllowAllPermissionEvaluator());
 
         (await svc.RevokeAgentTokenAsync(Guid.NewGuid())).Should().BeNull();
     }

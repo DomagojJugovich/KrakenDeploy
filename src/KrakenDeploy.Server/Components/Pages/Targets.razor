@@ -8,6 +8,8 @@
 @inject ITargetStatusNotifier StatusNotifier
 @inject DialogService Dialog
 @inject NotificationService Notification
+@inject UiActionGuard Guard
+@inject KrakenDeploy.Server.Auth.TargetDecommissioner Decommissioner
 
 <PageTitle>Deployment Targets - KrakenDeploy</PageTitle>
 
@@ -75,6 +77,11 @@
         <RadzenDataGridColumn TItem="DeploymentTarget" Property="Name" Title="Name" Width="220px">
             <Template Context="t">
                 <a class="primary-link" href="@Sp($"/targets/{t.Id}")">@t.Name</a>
+                @if (t.IsRetired)
+                {
+                    <RadzenBadge Text="Retired" BadgeStyle="BadgeStyle.Secondary" IsPill="true"
+                                 class="rz-ml-1" title="Retired — hidden from matching and dispatch; history preserved." />
+                }
                 @if (!string.IsNullOrEmpty(t.MachineName))
                 {
                     <div class="mono cell-muted" style="font-size:12px;">@t.MachineName</div>
@@ -127,6 +134,25 @@
                 <span class="cell-muted" title="@(t.LastSeenUtc?.ToString("u") ?? "never")">@RelativeTime(t.LastSeenUtc)</span>
             </Template>
         </RadzenDataGridColumn>
+
+        <RadzenDataGridColumn TItem="DeploymentTarget" UniqueID="actions" Title="" Width="110px"
+                              Sortable="false" Filterable="false" TextAlign="TextAlign.Right">
+            <Template Context="t">
+                @if (!t.IsRetired)
+                {
+                    <RequirePermission Permission="Permission.MachineRetire">
+                        <RadzenButton Icon="archive" ButtonStyle="ButtonStyle.Warning"
+                                      Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                                      Click="@(() => RetireAsync(t))" title="Retire target" />
+                    </RequirePermission>
+                }
+                <RequirePermission Permission="Permission.MachineDelete">
+                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                  Size="ButtonSize.ExtraSmall"
+                                  Click="@(() => DeleteAsync(t))" title="Delete target" />
+                </RequirePermission>
+            </Template>
+        </RadzenDataGridColumn>
     </Columns>
 </KrakenGrid>
 
@@ -144,7 +170,9 @@
 
     protected override async Task OnInitializedAsync()
     {
-        _targets = await TargetSvc.GetAllAsync();
+        // Management page: show retired targets too (they're hidden from
+        // matching/dispatch surfaces, but operators still manage them here).
+        _targets = await TargetSvc.GetAllAsync(includeRetired: true);
         Recompute();
     }
 
@@ -208,7 +236,7 @@
 
         if (result is true)
         {
-            _targets = await TargetSvc.GetAllAsync();
+            _targets = await TargetSvc.GetAllAsync(includeRetired: true);
             Recompute();
             Notification.Notify(new NotificationMessage
             {
@@ -217,6 +245,86 @@
                 Detail = "The deployment target has been created. Install the agent using the provided token.",
                 Duration = 6000,
             });
+        }
+    }
+
+    // ── Retire / Delete (WP5 item 1) ─────────────────────────────────────────
+
+    private async Task RetireAsync(DeploymentTarget t)
+    {
+        if (!await Guard.AllowAsync(Permission.MachineRetire)) return;
+
+        var confirmed = await Dialog.Confirm(
+            $"Retire '{t.Name}'? It is hidden from target matching and dispatch and its " +
+            "agent is rejected at connect. Execution history is preserved. You can delete " +
+            "it later only if it has no deployment or runbook history.",
+            "Confirm Retire",
+            new ConfirmOptions { OkButtonText = "Retire", CancelButtonText = "Cancel" });
+        if (confirmed != true) return;
+
+        try
+        {
+            var ok = await Decommissioner.RetireAsync(t.Id, await Guard.CurrentCallerAsync());
+            if (ok)
+            {
+                _targets = await TargetSvc.GetAllAsync(includeRetired: true);
+                Recompute();
+                Notification.Notify(NotificationSeverity.Success, "Retired",
+                    $"'{t.Name}' is retired.", 4000);
+            }
+            else
+            {
+                Notification.Notify(NotificationSeverity.Warning, "Not found",
+                    "The target could not be found in this Space.", 5000);
+            }
+        }
+        catch (Exception ex)
+        {
+            Notification.Notify(NotificationSeverity.Error, "Retire failed", ex.Message, 6000);
+        }
+    }
+
+    private async Task DeleteAsync(DeploymentTarget t)
+    {
+        if (!await Guard.AllowAsync(Permission.MachineDelete)) return;
+
+        var verbiage = t.IsRetired
+            ? $"Delete '{t.Name}'? This permanently removes the target. It is only possible " +
+              "because the target has no deployment or runbook history; otherwise retire is " +
+              "the only option. This cannot be undone."
+            : $"Delete '{t.Name}'? A target with any deployment or runbook history cannot be " +
+              "deleted — retire it instead. This cannot be undone.";
+
+        var confirmed = await Dialog.Confirm(
+            verbiage,
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+        if (confirmed != true) return;
+
+        try
+        {
+            var ok = await Decommissioner.DeleteAsync(t.Id, await Guard.CurrentCallerAsync());
+            if (ok)
+            {
+                _targets = await TargetSvc.GetAllAsync(includeRetired: true);
+                Recompute();
+                Notification.Notify(NotificationSeverity.Success, "Deleted",
+                    $"'{t.Name}' was deleted.", 4000);
+            }
+            else
+            {
+                Notification.Notify(NotificationSeverity.Warning, "Not found",
+                    "The target could not be found in this Space.", 5000);
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            // History exists — the service refuses a hard delete; surface the reason.
+            Notification.Notify(NotificationSeverity.Warning, "Cannot delete", ex.Message, 8000);
+        }
+        catch (Exception ex)
+        {
+            Notification.Notify(NotificationSeverity.Error, "Delete failed", ex.Message, 6000);
         }
     }
 

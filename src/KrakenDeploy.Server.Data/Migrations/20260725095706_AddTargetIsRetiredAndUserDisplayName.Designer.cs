@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using KrakenDeploy.Server.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -12,9 +13,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace KrakenDeploy.Server.Data.Migrations
 {
     [DbContext(typeof(KrakenDbContext))]
-    partial class KrakenDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260725095706_AddTargetIsRetiredAndUserDisplayName")]
+    partial class AddTargetIsRetiredAndUserDisplayName
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -3178,12 +3181,6 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)")
                         .HasColumnName("agent_version");
-
-                    b.Property<bool>("AllowParallelTaskExecution")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("allow_parallel_task_execution");
 
                     b.Property<bool>("AutoUpdateEnabled")
                         .ValueGeneratedOnAdd()

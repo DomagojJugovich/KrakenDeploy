@@ -5,6 +5,8 @@
 
 @inject ReleaseService ReleaseSvc
 @inject DialogService Dialog
+@inject NotificationService Notification
+@inject UiActionGuard Guard
 
 <PageTitle>Releases - KrakenDeploy</PageTitle>
 
@@ -96,6 +98,16 @@
                 </RequirePermission>
             </Template>
         </RadzenDataGridColumn>
+        <RadzenDataGridColumn TItem="Release" Title="" Width="70px" Sortable="false"
+                              Filterable="false" TextAlign="TextAlign.Right">
+            <Template Context="r">
+                <RequirePermission Permission="Permission.ReleaseDelete">
+                    <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                  Size="ButtonSize.ExtraSmall"
+                                  Click="@(() => DeleteAsync(r))" title="Delete release" />
+                </RequirePermission>
+            </Template>
+        </RadzenDataGridColumn>
     </Columns>
 </KrakenGrid>
 
@@ -133,6 +145,39 @@
                 [nameof(DeployReleaseDialog.ReleaseId)] = r.Id,
             },
             DeployReleaseDialog.BuildOptions());
+    }
+
+    private async Task DeleteAsync(Release r)
+    {
+        if (!await Guard.AllowAsync(Permission.ReleaseDelete)) return;
+
+        var confirmed = await Dialog.Confirm(
+            $"Delete release '{r.Version}'? This is only possible while no deployment " +
+            "references it — a release with deployment history cannot be deleted. " +
+            "This cannot be undone.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+        if (confirmed != true) return;
+
+        try
+        {
+            var ok = await ReleaseSvc.DeleteAsync(r.Id, await Guard.CurrentCallerAsync());
+            if (ok)
+            {
+                await LoadAsync();
+                Notification.Notify(NotificationSeverity.Success, "Deleted",
+                    $"Release '{r.Version}' was deleted.", 4000);
+            }
+            else
+            {
+                Notification.Notify(NotificationSeverity.Warning, "Not found",
+                    "The release could not be found in this Space.", 5000);
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notification.Notify(NotificationSeverity.Warning, "Cannot delete", ex.Message, 8000);
+        }
     }
 
     private async Task LoadAsync()

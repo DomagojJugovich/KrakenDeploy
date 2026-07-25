@@ -96,6 +96,13 @@ public class ProjectService(IDbContextFactory<KrakenDbContext> dbFactory)
             .ConfigureAwait(false);
     }
 
+    /// <summary>A single project group by id, or null if absent / foreign-Space.</summary>
+    public async Task<ProjectGroup?> GetGroupAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.ProjectGroups.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
+    }
+
     /// <summary>Creates a new project group at the end of the display order.</summary>
     public async Task<ProjectGroup> CreateGroupAsync(
         string name, string slug, string? description, CancellationToken ct = default)
@@ -124,6 +131,75 @@ public class ProjectService(IDbContextFactory<KrakenDbContext> dbFactory)
         db.ProjectGroups.Add(group);
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
         return group;
+    }
+
+    /// <summary>
+    /// Renames / re-describes a project group (WP5 item 3). The default group may be
+    /// renamed but its <see cref="ProjectGroup.IsDefault"/> flag is preserved. Returns
+    /// <c>null</c> if the group does not exist (or is outside the caller's Space).
+    /// </summary>
+    public async Task<ProjectGroup?> UpdateGroupAsync(
+        Guid id, string name, string slug, string? description, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        ArgumentException.ThrowIfNullOrEmpty(slug);
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        if (await db.ProjectGroups.AnyAsync(g => g.Slug == slug && g.Id != id, ct).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException($"Slug '{slug}' is already taken.");
+        }
+
+        var group = await db.ProjectGroups.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
+        if (group is null)
+        {
+            return null;
+        }
+
+        group.Name = name;
+        group.Slug = slug;
+        group.Description = description;
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return group;
+    }
+
+    /// <summary>
+    /// Deletes a project group (WP5 item 3). Refuses the bootstrap default group
+    /// (<see cref="ProjectGroup.IsDefault"/>) and any group that still holds projects
+    /// — <c>projects.project_group_id</c> is a required RESTRICT FK, so members are
+    /// never silently orphaned or reassigned; move them out first. Returns <c>null</c>
+    /// if the group does not exist (or is outside the caller's Space).
+    /// </summary>
+    public async Task<bool> DeleteGroupAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        var group = await db.ProjectGroups.FindAsync(new object?[] { id }, ct).ConfigureAwait(false);
+        if (group is null)
+        {
+            return false;
+        }
+
+        if (group.IsDefault)
+        {
+            throw new InvalidOperationException(
+                "The Default Project Group cannot be deleted.");
+        }
+
+        var projectCount = await db.Projects
+            .CountAsync(p => p.ProjectGroupId == id, ct)
+            .ConfigureAwait(false);
+        if (projectCount > 0)
+        {
+            throw new InvalidOperationException(
+                $"Project group '{group.Name}' still contains {projectCount} project(s). " +
+                "Move them to another group before deleting it.");
+        }
+
+        db.ProjectGroups.Remove(group);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return true;
     }
 
     /// <summary>

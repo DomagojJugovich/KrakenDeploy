@@ -158,6 +158,11 @@ public sealed record TriggerRunbookRunRequest(
 
 public sealed record CreateTenantRequest(string Name, string Slug, string? Description);
 
+// ── User API ───────────────────────────────────────────────────────────────────
+
+/// <summary>WP5 item 4 — profile edit payload (display name + email).</summary>
+public sealed record UpdateUserRequest(string? DisplayName, string? Email);
+
 // ── Tag Sets API (extended tag sets — docs/extended-tag-sets-plan.md) ─────────
 
 public sealed record CreateTagSetRequest(

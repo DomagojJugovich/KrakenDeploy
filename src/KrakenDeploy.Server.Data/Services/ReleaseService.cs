@@ -294,6 +294,71 @@ public class ReleaseService(
         return release;
     }
 
+    // ── Delete ─────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Deletes a release (WP5 item 2). Refused (throws
+    /// <see cref="InvalidOperationException"/>) while any deployment references it —
+    /// <c>server_tasks.release_id</c> is a RESTRICT FK (execution history is
+    /// delete-proof, decision 7), so a release that has ever been deployed cannot be
+    /// removed out from under its deployments. The release's process/variable
+    /// snapshots are owned JSONB columns on the row and disappear with it; there is
+    /// no separate snapshot table. Returns false if the release does not exist (or is
+    /// outside the caller's Space).
+    /// <para>
+    /// Release retention (WP9) prunes <em>deployments</em> by project+environment,
+    /// not releases, so there is no shared release-deletion path to coordinate with —
+    /// the RESTRICT FK is the single guard both surfaces respect.
+    /// </para>
+    /// </summary>
+    public async Task<bool> DeleteAsync(
+        Guid releaseId, CallerAuthorization caller, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(caller);
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // T1-8: authoritative sub-Space authorization — deleting a release is scoped
+        // to its project. Strict; resolve the release's Space/Project filter-free so a
+        // foreign-Space release id fails closed. Mirrors UpdateVariablesAsync.
+        if (!caller.IsSystem)
+        {
+            var scope = await db.Releases.IgnoreQueryFilters()
+                .Where(r => r.Id == releaseId)
+                .Select(r => new { r.SpaceId, r.ProjectId })
+                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            await permissions.EnsureScopedAsync(
+                caller, Permission.ReleaseDelete,
+                new PermissionScope(SpaceId: scope?.SpaceId, ProjectId: scope?.ProjectId), ct)
+                .ConfigureAwait(false);
+        }
+
+        var release = await db.Releases
+            .FirstOrDefaultAsync(r => r.Id == releaseId, ct)
+            .ConfigureAwait(false);
+        if (release is null)
+        {
+            return false;
+        }
+
+        // Execution history pins its releases (RESTRICT). Refuse loudly rather than
+        // orphan deployments — prune the deployments via retention first if a release
+        // truly must go.
+        var deploymentCount = await db.Deployments
+            .CountAsync(d => d.ReleaseId == releaseId, ct)
+            .ConfigureAwait(false);
+        if (deploymentCount > 0)
+        {
+            throw new InvalidOperationException(
+                $"Release '{release.Version}' has {deploymentCount} deployment(s) and cannot be " +
+                "deleted. Deployment history is delete-proof; remove the deployments first " +
+                "(e.g. via retention) before deleting the release.");
+        }
+
+        db.Releases.Remove(release);
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return true;
+    }
+
     /// <summary>
     /// Reads the project's <see cref="VariableSet"/> and projects each row
     /// into the wire-side <see cref="VariableSnapshot"/> shape — preserves

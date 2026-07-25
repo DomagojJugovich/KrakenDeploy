@@ -50,13 +50,35 @@
 </div>
 
 @code {
+    /// <summary>When set, the dialog edits this group; otherwise it creates a new one.</summary>
+    [Parameter] public ProjectGroup? Group { get; set; }
+
+    private bool IsEdit => Group is not null;
+
     private readonly FormModel _model = new();
     private string? _errorMessage;
     private string _lastAutoSlug = "";
+    private bool _initialized;
+
+    protected override void OnParametersSet()
+    {
+        // OnParametersSet runs on every parameter-set cycle (e.g. a parent
+        // re-render while the dialog is open); initialize only once so user
+        // edits aren't clobbered by the original group values.
+        if (_initialized || Group is null) return;
+        _initialized = true;
+
+        _model.Name = Group.Name;
+        _model.Slug = Group.Slug;
+        _model.Description = Group.Description;
+        // In edit mode the slug is user-managed; disable auto-slug from name.
+        _lastAutoSlug = Group.Slug;
+    }
 
     private void OnNameChanged(string? value)
     {
         if (value is null) return;
+        if (IsEdit) return; // editing keeps the existing slug unless changed by hand
         if (_model.Slug != _lastAutoSlug) return;
 
         _lastAutoSlug = ProjectService.Slugify(value);
@@ -67,14 +89,22 @@
     {
         _errorMessage = null;
 
-        if (!await Guard.AllowAsync(Permission.ProjectGroupCreate))
+        var permission = IsEdit ? Permission.ProjectGroupEdit : Permission.ProjectGroupCreate;
+        if (!await Guard.AllowAsync(permission))
         {
             return;
         }
 
         try
         {
-            await ProjectSvc.CreateGroupAsync(_model.Name, _model.Slug, _model.Description);
+            if (IsEdit)
+            {
+                await ProjectSvc.UpdateGroupAsync(Group!.Id, _model.Name, _model.Slug, _model.Description);
+            }
+            else
+            {
+                await ProjectSvc.CreateGroupAsync(_model.Name, _model.Slug, _model.Description);
+            }
             Dialog.Close(true);
         }
         catch (InvalidOperationException ex)

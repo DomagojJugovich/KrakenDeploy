@@ -84,6 +84,19 @@
             </Template>
         </RadzenDataGridColumn>
         <RadzenDataGridColumn TItem="ApplicationUser" Property="Email" Title="Email" />
+        <RadzenDataGridColumn TItem="ApplicationUser" Property="DisplayName" Title="Display name"
+                              Width="200px">
+            <Template Context="u">
+                @if (string.IsNullOrWhiteSpace(u.DisplayName))
+                {
+                    <span class="rz-color-secondary">—</span>
+                }
+                else
+                {
+                    @u.DisplayName
+                }
+            </Template>
+        </RadzenDataGridColumn>
         <RadzenDataGridColumn TItem="ApplicationUser" Property="UserName" Title="Username"
                               Width="220px" />
         <RadzenDataGridColumn TItem="ApplicationUser" Title="Email status" Width="130px"
@@ -118,7 +131,7 @@
                 }
             </Template>
         </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="ApplicationUser" Title="" Width="170px"
+        <RadzenDataGridColumn TItem="ApplicationUser" Title="" Width="200px"
                               Filterable="false" Sortable="false"
                               TextAlign="TextAlign.Right">
             <Template Context="u">
@@ -131,6 +144,9 @@
                     </RequirePermission>
                 }
                 <RequirePermission Permission="Permission.UserEdit">
+                    <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
+                                  Size="ButtonSize.ExtraSmall"
+                                  Click="@(() => EditAsync(u))" title="Edit profile" />
                     @if (u.IsDisabled)
                     {
                         <RadzenButton Icon="lock_open" ButtonStyle="ButtonStyle.Success"
@@ -214,6 +230,23 @@
             {
                 _kindFilter = UserKindFilter.ServiceAccounts;
             }
+        }
+    }
+
+    private async Task EditAsync(ApplicationUser user)
+    {
+        if (!await Guard.AllowAsync(Permission.UserEdit)) return;
+
+        var result = await Dialog.OpenAsync<EditUserDialog>(
+            "Edit User",
+            new Dictionary<string, object?> { [nameof(EditUserDialog.User)] = user },
+            new DialogOptions { Width = "520px" });
+
+        if (result is true)
+        {
+            _users = await UserSvc.GetAllAsync();
+            Notify.Notify(NotificationSeverity.Success, "Updated",
+                user.DisplayName ?? user.Email ?? user.UserName ?? "", 4000);
         }
     }
 

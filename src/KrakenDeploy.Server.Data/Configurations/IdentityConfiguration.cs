@@ -36,5 +36,11 @@ public static class IdentityConfiguration
             .OnDelete(DeleteBehavior.SetNull);
         modelBuilder.Entity<ApplicationUser>()
             .HasIndex(u => u.LastOidcProviderId);
+
+        // WP5 item 4: optional human-readable display name (preferred UI/audit
+        // label; falls back to UserName/Email when null).
+        modelBuilder.Entity<ApplicationUser>()
+            .Property(u => u.DisplayName)
+            .HasMaxLength(200);
     }
 }
