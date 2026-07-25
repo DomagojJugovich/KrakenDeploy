@@ -196,10 +196,14 @@ public sealed class AgentHub(
             // connection from the dispatch registry (undispatchable NOW). Keep the
             // status Disabled (as TargetService.RetireAsync set it) rather than
             // downgrading to Offline, so the fleet summary still reflects the
-            // decommissioned state.
+            // decommissioned state. Only write if the status actually changed
+            // (avoids a redundant DB write on every zombie-agent reconnect).
             registry.TryRemove(Context.ConnectionId, out _);
-            target.Status = TargetStatus.Disabled;
-            await db.SaveChangesAsync().ConfigureAwait(false);
+            if (target.Status != TargetStatus.Disabled)
+            {
+                target.Status = TargetStatus.Disabled;
+                await db.SaveChangesAsync().ConfigureAwait(false);
+            }
 
             const string message =
                 "This target has been retired and can no longer connect. " +

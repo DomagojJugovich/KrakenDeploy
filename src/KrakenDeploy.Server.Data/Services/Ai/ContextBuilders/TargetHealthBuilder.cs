@@ -80,7 +80,9 @@ public sealed class TargetHealthBuilder(IDbContextFactory<KrakenDbContext> dbFac
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
-        var q = db.DeploymentTargets.AsNoTracking().AsQueryable();
+        var q = db.DeploymentTargets.AsNoTracking()
+            .Where(t => !t.IsRetired)
+            .AsQueryable();
         if (!string.IsNullOrWhiteSpace(role))
         {
             q = q.Where(t => t.Roles.Contains(role));

@@ -26,6 +26,29 @@ public class ReleaseService(
     StepPackageResolver? stepPackageResolver = null,
     ILogger<ReleaseService>? logger = null)
 {
+    // T1-8: the release-id-keyed mutations authorize against the release's
+    // project, so a grant scoped to Project=X can't edit a release in Project=Y.
+    // Resolve the release's Space/Project filter-free so a foreign-Space release id
+    // fails closed. System (internal) callers skip. Mirrors the per-service
+    // Ensure*ScopeAsync helpers (TenantService, TargetService, etc.).
+    private async Task EnsureReleaseScopeAsync(
+        KrakenDbContext db, CallerAuthorization caller, Guid releaseId,
+        Permission permission, CancellationToken ct)
+    {
+        if (caller.IsSystem)
+        {
+            return;
+        }
+        var scope = await db.Releases.IgnoreQueryFilters()
+            .Where(r => r.Id == releaseId)
+            .Select(r => new { r.SpaceId, r.ProjectId })
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        await permissions.EnsureScopedAsync(
+            caller, permission,
+            new PermissionScope(SpaceId: scope?.SpaceId, ProjectId: scope?.ProjectId), ct)
+            .ConfigureAwait(false);
+    }
+
     // ── Create ─────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -266,20 +289,9 @@ public class ReleaseService(
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         // T1-8: authoritative sub-Space authorization — re-snapshotting variables
-        // is an edit of THIS release's project. Strict; resolve the release's
-        // Space/Project filter-free so a foreign-Space release id fails closed.
-        // Mirrors CreateAsync; System (internal) callers skip.
-        if (!caller.IsSystem)
-        {
-            var scope = await db.Releases.IgnoreQueryFilters()
-                .Where(r => r.Id == releaseId)
-                .Select(r => new { r.SpaceId, r.ProjectId })
-                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-            await permissions.EnsureScopedAsync(
-                caller, Permission.ReleaseEdit,
-                new PermissionScope(SpaceId: scope?.SpaceId, ProjectId: scope?.ProjectId), ct)
-                .ConfigureAwait(false);
-        }
+        // is an edit of THIS release's project. Strict; System callers skip.
+        await EnsureReleaseScopeAsync(db, caller, releaseId, Permission.ReleaseEdit, ct)
+            .ConfigureAwait(false);
 
         var release = await db.Releases
             .FirstOrDefaultAsync(r => r.Id == releaseId, ct)
@@ -318,19 +330,9 @@ public class ReleaseService(
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
         // T1-8: authoritative sub-Space authorization — deleting a release is scoped
-        // to its project. Strict; resolve the release's Space/Project filter-free so a
-        // foreign-Space release id fails closed. Mirrors UpdateVariablesAsync.
-        if (!caller.IsSystem)
-        {
-            var scope = await db.Releases.IgnoreQueryFilters()
-                .Where(r => r.Id == releaseId)
-                .Select(r => new { r.SpaceId, r.ProjectId })
-                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
-            await permissions.EnsureScopedAsync(
-                caller, Permission.ReleaseDelete,
-                new PermissionScope(SpaceId: scope?.SpaceId, ProjectId: scope?.ProjectId), ct)
-                .ConfigureAwait(false);
-        }
+        // to its project. Strict; System callers skip.
+        await EnsureReleaseScopeAsync(db, caller, releaseId, Permission.ReleaseDelete, ct)
+            .ConfigureAwait(false);
 
         var release = await db.Releases
             .FirstOrDefaultAsync(r => r.Id == releaseId, ct)
