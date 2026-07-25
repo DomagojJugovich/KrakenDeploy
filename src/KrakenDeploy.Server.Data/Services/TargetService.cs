@@ -130,13 +130,13 @@ public class TargetService(
     public async Task<List<DeploymentTarget>> GetAllAsync(
         bool includeRetired = true, CancellationToken ct = default)
     {
-        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var q = db.DeploymentTargets.AsQueryable();
         if (!includeRetired)
         {
             q = q.Where(t => !t.IsRetired);
         }
-        return await q.OrderBy(t => t.Name).ToListAsync(ct);
+        return await q.OrderBy(t => t.Name).ToListAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -303,11 +303,16 @@ public class TargetService(
 
         // Execution history pins its targets (RESTRICT). Refuse loudly rather than
         // orphan assignments / step outcomes — retire preserves history, delete does not.
-        var hasAssignments = await db.TaskTargetAssignments
-            .AnyAsync(a => a.TargetId == id, ct).ConfigureAwait(false);
-        var hasOutcomes = await db.TaskStepOutcomes
-            .AnyAsync(o => o.TargetId == id, ct).ConfigureAwait(false);
-        if (hasAssignments || hasOutcomes)
+        if (await db.TaskTargetAssignments
+            .AnyAsync(a => a.TargetId == id, ct).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException(
+                $"Target '{target.Name}' has execution history and cannot be deleted. " +
+                "Retire it instead — retiring hides it from matching and dispatch while " +
+                "preserving its deployment and runbook history.");
+        }
+        if (await db.TaskStepOutcomes
+            .AnyAsync(o => o.TargetId == id, ct).ConfigureAwait(false))
         {
             throw new InvalidOperationException(
                 $"Target '{target.Name}' has execution history and cannot be deleted. " +

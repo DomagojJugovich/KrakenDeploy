@@ -41,8 +41,12 @@ public sealed class DashboardService(
             .ConfigureAwait(false);
 
         // ── Targets (status only; cheap projection) ──────────────────────
+        // Retired targets are excluded from the fleet summary — they're
+        // decommissioned and would read as perpetually-offline, dragging down
+        // the "X/Y online" count.
         var targetStatuses = await db.DeploymentTargets
             .AsNoTracking()
+            .Where(t => !t.IsRetired)
             .Select(t => new { t.Id, t.Status })
             .ToListAsync(ct)
             .ConfigureAwait(false);
