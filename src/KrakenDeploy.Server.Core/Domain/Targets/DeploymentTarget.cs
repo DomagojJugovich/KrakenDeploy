@@ -53,6 +53,26 @@ public class DeploymentTarget : AuditableEntity, ISpaceScoped
     public bool AutoUpdateEnabled { get; set; } = true;
 
     /// <summary>
+    /// F2 — Octopus "Allow parallel task execution" parity. When <c>false</c> (the
+    /// default, and the safe one) every task dispatched to this machine —
+    /// deployment, runbook run or ad-hoc script — takes the agent's single machine
+    /// execution slot, so tasks serialize FIFO instead of interleaving file / IIS /
+    /// service operations. When <c>true</c> the agent runs them concurrently.
+    /// <para>
+    /// Stamped into <c>DeploymentPlan.AllowParallelTaskExecution</c> /
+    /// <c>AdhocScriptCommand.AllowParallelTaskExecution</c> at dispatch time, so a
+    /// flip applies to the next dispatch, not to work already queued on the agent.
+    /// </para>
+    /// <para>
+    /// This does NOT relax the F1 same-(project, environment, tenant) deployment
+    /// serialization, which is enforced server-side at claim time and has no
+    /// per-target opt-out; it only affects same-machine execution of DIFFERENT
+    /// tasks.
+    /// </para>
+    /// </summary>
+    public bool AllowParallelTaskExecution { get; set; }
+
+    /// <summary>
     /// Tenants this target is directly associated with — the PRIMARY
     /// tenant↔target link (Octopus "Associated Tenants"). Tenant-aware
     /// filtering (e.g. variable scoping) reads THIS relation. Tags applied to

@@ -2233,11 +2233,25 @@ public sealed class DeploymentWorker(
         // up, and one dead agent blocked blue-green retirement indefinitely.
         var stepTimeoutConfigured = waveTimeoutSeconds > 0;
         var configuredCeiling = engineOptions.Value.MaxTargetWaveDuration;
-        var effectiveDeadline = stepTimeoutConfigured
+        var executionBudget = stepTimeoutConfigured
             ? TimeSpan.FromSeconds(waveTimeoutSeconds)
             // Non-positive config would mean "immediately" — fall back to the
             // shipped default rather than reintroducing an unbounded wait.
             : (configuredCeiling > TimeSpan.Zero ? configuredCeiling : TimeSpan.FromHours(1));
+
+        // F2: the budget above is EXECUTION time. It used to be armed at dispatch,
+        // so a sub-plan queued behind another task on the same machine burned its
+        // whole deadline while waiting — an operator's 30 s step timeout blew up
+        // purely because the box was busy. It is now armed when the agent reports
+        // gate acquisition (ReportExecutionStartedAsync). The dispatch-time arm
+        // becomes a BACKSTOP — execution budget plus the queue-wait ceiling — so
+        // B3's "always armed" invariant still holds when that report never arrives
+        // (a wedged agent that stays connected but never executes).
+        var configuredQueueWait = engineOptions.Value.MaxTargetQueueWait;
+        var queueWaitCeiling = configuredQueueWait > TimeSpan.Zero
+            ? configuredQueueWait
+            : EngineOptions.DefaultMaxTargetQueueWait;
+        var dispatchBackstop = executionBudget + queueWaitCeiling;
 
         while (true)
         {
@@ -2285,10 +2299,17 @@ public sealed class DeploymentWorker(
 
             var tcs = new TaskCompletionSource<SubPlanResult>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
-            subPlans.Register(deployment.Id, targetId, attemptPlan.DispatchId, tcs);
 
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            linkedCts.CancelAfter(effectiveDeadline);
+            // F2: armed with the backstop now, re-armed with the pure execution
+            // budget the moment the agent says it took the machine gate. Registered
+            // AFTER the deadline object exists but BEFORE the plan is pushed, so an
+            // agent that reports instantly still finds its slot.
+            linkedCts.CancelAfter(dispatchBackstop);
+            var waveDeadline = new WaveDeadline(linkedCts, executionBudget);
+            subPlans.Register(
+                deployment.Id, targetId, attemptPlan.DispatchId, tcs,
+                onExecutionStarted: waveDeadline.ArmForExecution);
             var thisAttemptTimedOut = false;
 
             // B3: watch the agent's connection while this attempt is awaited —
@@ -2318,11 +2339,18 @@ public sealed class DeploymentWorker(
                         thisAttemptTimedOut = true;
                         subPlanResult = new SubPlanResult(
                             Success: false,
-                            ErrorMessage: stepTimeoutConfigured
-                                ? $"Target step wave timed out after {waveTimeoutSeconds}s."
-                                : "Target step wave exceeded the server-side maximum " +
-                                  $"duration ({effectiveDeadline}) with no step timeout " +
-                                  "configured; the agent never reported completion.");
+                            // F2: distinguish "never got the machine" from "ran too
+                            // long" — the operator fix differs (a busy/wedged box vs
+                            // a slow step), and only the latter is a step timeout.
+                            ErrorMessage: !waveDeadline.ArmedForExecution
+                                ? "Target step wave never started executing: the agent did " +
+                                  $"not acquire its machine execution slot within {dispatchBackstop} " +
+                                  "(another task may be holding it, or the agent is wedged)."
+                                : stepTimeoutConfigured
+                                    ? $"Target step wave timed out after {waveTimeoutSeconds}s."
+                                    : "Target step wave exceeded the server-side maximum " +
+                                      $"duration ({executionBudget}) with no step timeout " +
+                                      "configured; the agent never reported completion.");
                     }
                     else
                     {
@@ -2402,6 +2430,54 @@ public sealed class DeploymentWorker(
         }
 
         return (subPlanResult, timedOut, lastPerStepResults);
+    }
+
+    /// <summary>
+    /// F2 — one wave attempt's deadline timer, in two stages:
+    /// <list type="number">
+    ///   <item>armed at DISPATCH with the backstop ceiling (execution budget +
+    ///     <see cref="EngineOptions.MaxTargetQueueWait"/>), so B3's "the wave
+    ///     deadline is always armed" invariant holds even if the agent never
+    ///     reports;</item>
+    ///   <item>re-armed with the pure EXECUTION budget the moment the agent reports
+    ///     it acquired its machine execution gate — queue time behind a busy target
+    ///     therefore does not consume the wave's budget.</item>
+    /// </list>
+    /// <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/> reschedules the
+    /// existing timer, so the second arm replaces the first outright.
+    /// <para>
+    /// Contract: <see cref="ArmForExecution"/> is called from the reporting agent's
+    /// hub thread and MUST NOT throw. At-most-once is the REGISTRY's job — a fresh
+    /// slot and a fresh <see cref="WaveDeadline"/> are created per attempt, and
+    /// <c>PendingSubPlanRegistry.TryMarkExecutionStarted</c> interlocks the one-shot
+    /// before invoking this — so no second guard is needed here. It does tolerate
+    /// arriving after the attempt already ended: the linked source is disposed by
+    /// the attempt's <c>using</c>, which is exactly the
+    /// <see cref="ObjectDisposedException"/> swallowed here.
+    /// </para>
+    /// </summary>
+    private sealed class WaveDeadline(CancellationTokenSource cts, TimeSpan executionBudget)
+    {
+        /// <summary>Whether the agent ever reported gate acquisition for this
+        /// attempt — lets a timeout say "never started" instead of mislabelling a
+        /// queue-ceiling hit as a step timeout. Written on the hub thread, read on
+        /// the orchestrator's, hence volatile.</summary>
+        public bool ArmedForExecution => Volatile.Read(ref _armedForExecution);
+        private bool _armedForExecution;
+
+        public void ArmForExecution()
+        {
+            Volatile.Write(ref _armedForExecution, true);
+            try
+            {
+                cts.CancelAfter(executionBudget);
+            }
+            catch (ObjectDisposedException)
+            {
+                // The attempt finished (or was cancelled) while this report was in
+                // flight — there is no longer a deadline to move.
+            }
+        }
     }
 
     /// <summary>
@@ -2824,7 +2900,11 @@ public sealed class DeploymentWorker(
             Steps:           steps,
             Variables:       flatVars,
             ArrayVariables:  arrayVars,
-            SensitiveVariableNames: stepResolution.SensitiveNames);
+            SensitiveVariableNames: stepResolution.SensitiveNames,
+            // F2 — the target's own concurrency policy, resolved at plan-build time
+            // (a flip applies to the next dispatch, not to work already queued on
+            // the agent). Never relaxes the F1 (project, env, tenant) serialization.
+            AllowParallelTaskExecution: target.AllowParallelTaskExecution);
 
         return new TargetDispatchContext(
             Target:              target,

@@ -133,6 +133,46 @@ else
                         </div>
                     </div>
 
+                    @* F2 — per-target concurrency. Off by default: the agent runs one
+                       task at a time on this machine. *@
+                    <div class="kraken-def">
+                        <div class="kraken-def-label">Allow parallel task execution
+                            <div class="kraken-def-sub">
+                                By default this machine runs one task at a time — deployments,
+                                runbook runs and ad-hoc scripts queue behind each other.
+                            </div>
+                        </div>
+                        <div class="kraken-def-value">
+                            <RadzenStack Orientation="Orientation.Horizontal" Gap="10px" AlignItems="AlignItems.Center">
+                                <RadzenCheckBox @bind-Value="_allowParallelTaskExecution"
+                                                Name="allowParallel"
+                                                aria-label="Allow parallel task execution" />
+                                <RadzenLabel Component="allowParallel"
+                                             Text="Run multiple tasks on this machine at the same time" />
+                            </RadzenStack>
+                            @if (_allowParallelTaskExecution)
+                            {
+                                <div class="kraken-health kraken-health--warn kraken-health--inline rz-mt-2">
+                                    <RadzenIcon Icon="warning" />
+                                    <div>
+                                        Parallel steps on one machine can interleave file, IIS and
+                                        Windows service operations — two tasks touching the same
+                                        website, service or directory may corrupt each other. Only
+                                        enable this where the tasks reaching this machine are known
+                                        to be independent.
+                                    </div>
+                                </div>
+                            }
+                            <div class="kraken-def-sub rz-mt-2">
+                                This never bypasses deployment serialization: two deployments of the
+                                same project, environment and tenant still run one after the other,
+                                whatever this setting says. It only affects how <em>different</em>
+                                tasks share this machine. Changes apply to the next dispatch, not to
+                                work already queued on the agent.
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="kraken-def-section">Machine</div>
 
                     <div class="kraken-def">
@@ -549,6 +589,7 @@ else
     private List<string> _roleCatalog = [];
     private string _newRole = "";
     private TargetRiskLevel _riskLevel;
+    private bool _allowParallelTaskExecution;
     private IEnumerable<Guid> _environmentIds = [];
     private IEnumerable<Guid> _tenantIds = [];
     private List<DeploymentEnvironment> _environments = [];
@@ -596,6 +637,7 @@ else
 
         _name = Target.Name;
         _riskLevel = Target.RiskLevel;
+        _allowParallelTaskExecution = Target.AllowParallelTaskExecution;
 
         // Include archived: this multiselect full-replaces the target's served
         // environments on save, so a since-archived env must stay listed.
@@ -676,12 +718,14 @@ else
                 Id, _name,
                 _roles.Where(r => !string.IsNullOrWhiteSpace(r)).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
                 _riskLevel,
+                _allowParallelTaskExecution,
                 _environmentIds.ToList(),
                 _tenantIds.ToList());
 
-            // Refresh the header copies of name / risk.
+            // Refresh the header copies of name / risk / concurrency.
             Target.Name = _name.Trim();
             Target.RiskLevel = _riskLevel;
+            Target.AllowParallelTaskExecution = _allowParallelTaskExecution;
 
             Notify.Notify(NotificationSeverity.Success, "Saved", "Target settings were saved.", 3000);
         }

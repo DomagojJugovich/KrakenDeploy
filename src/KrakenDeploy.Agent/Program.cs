@@ -173,8 +173,13 @@ static async Task<int> RunAsync(string[] args)
     // docs/architecture.md "Pre-production policy" and TASKS.md D-8.9.
 
     // ── Scoped/Transient services ────────────────────────────────────────
-    // E5: DeploymentExecutor is a process-wide SINGLETON — it owns the machine
-    // execution gate (one plan at a time on this agent) and the in-flight
+    // B7/F2: the machine execution gate — this box's single execution slot —
+    // MUST be a process-wide singleton, and is now shared by the deployment and
+    // ad-hoc paths (F2 brought ad-hoc scripts under it). A non-singleton
+    // registration would hand each consumer its own semaphore and silently
+    // disable serialization altogether.
+    builder.Services.AddSingleton<MachineExecutionGate>();
+    // E5: DeploymentExecutor is a process-wide SINGLETON — it holds the in-flight
     // registry (_running) that AgentUpdateService.IsExecuting reads to refuse a
     // binary swap mid-deployment. Registered Transient, ServerLinkHostedService
     // (runs deployments) and AgentUpdateService (reads the guard) each got their

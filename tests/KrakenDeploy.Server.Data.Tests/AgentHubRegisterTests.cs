@@ -207,7 +207,11 @@ file sealed class NeverUsedScopeFactory : IServiceScopeFactory
 
 file sealed class NeverUsedPendingSubPlanRegistry : IPendingSubPlanRegistry
 {
-    public void Register(Guid deploymentId, Guid targetId, Guid dispatchId, TaskCompletionSource<SubPlanResult> tcs)
+    public void Register(Guid deploymentId, Guid targetId, Guid dispatchId,
+        TaskCompletionSource<SubPlanResult> tcs, Action? onExecutionStarted = null)
+        => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
+
+    public bool TryMarkExecutionStarted(Guid deploymentId, Guid targetId, Guid dispatchId)
         => throw new NotSupportedException("IPendingSubPlanRegistry is not used by RegisterAsync.");
 
     public SubPlanCompletionRoute RouteCompletion(Guid deploymentId, Guid targetId, Guid dispatchId, SubPlanResult result)

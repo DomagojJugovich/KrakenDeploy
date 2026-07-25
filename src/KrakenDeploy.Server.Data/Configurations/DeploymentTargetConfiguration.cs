@@ -51,6 +51,12 @@ public class DeploymentTargetConfiguration : IEntityTypeConfiguration<Deployment
 
         builder.Property(x => x.AutoUpdateEnabled).IsRequired().HasDefaultValue(true);
 
+        // F2 — per-target "Allow parallel task execution". Store-default false so
+        // existing rows backfill to the SAFE (serialized) behaviour; false is the
+        // CLR default too, so no HasSentinel dance is needed (unlike RiskLevel).
+        builder.Property(x => x.AllowParallelTaskExecution)
+            .IsRequired().HasDefaultValue(false);
+
         builder.Property(x => x.RegistrationKeyHash).HasMaxLength(128);
         builder.Property(x => x.RegistrationTokenExpiresUtc);
 

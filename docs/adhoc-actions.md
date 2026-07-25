@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Status** | Approved |
-| **Version** | 1.3 (M11.E) |
-| **Last updated** | 2026-05-29 |
+| **Version** | 1.4 (M11.E + F2) |
+| **Last updated** | 2026-07-25 |
 | **Applies to** | KrakenDeploy server `/adhoc` page + `/mcp` `run_adhoc_action` tool, agent verify-then-run pipeline |
 | **Technologies** | .NET 10, `System.Management.Automation` 7.6 (PowerShell AST parser), `RSA-SHA256` signing, SignalR control plane, Radzen Blazor UI |
 | **Projects** | `KrakenDeploy.Contracts.Adhoc`, `KrakenDeploy.Server.Data.Services.Ai.Adhoc`, `KrakenDeploy.Server.Transport` (`AdhocDispatcher`, `AdhocSessionService`), `KrakenDeploy.Agent.Adhoc`, `KrakenDeploy.Mcp.Tools.AdhocTools` |
@@ -48,6 +48,10 @@ operator prompt
       ↓ load Adhoc:TrustedPublicKey
       ↓ AdhocScriptSigner.Verify           ← FAIL-CLOSED on mismatch
       ↓ (valid)
+      ↓ MachineExecutionGate               ← F2: queue behind this box's running
+      ↓                                      task (bounded; REFUSE on expiry).
+      ↓                                      Skipped when the target sets
+      ↓                                      AllowParallelTaskExecution.
       ↓ ScriptRunner.RunAndReturnExitCodeAsync (pwsh, captured stdout/stderr)
       ↓
   IAgentHubServer.ReportAdhocResultAsync   (SignalR)
@@ -136,6 +140,8 @@ Honesty up front. The AST gate is one layer of defence, not the only one.
 | `SpaceAiSettings.AdhocEnabled` | per-Space row in `space_ai_settings` (UI: **Configuration → AI Settings**) | bool | Off by default. Disabling hides the **New session** CTA and surfaces an "Ad-hoc actions are disabled for this Space" banner. |
 | `SpaceAiSettings.AdhocTwoPersonApproval` | per-Space row in `space_ai_settings` (UI: **Configuration → AI Settings**) | bool | Off by default. When on, high-risk iterations (Mutating OR a Production target) require a second, distinct approver before sign+dispatch. |
 | `DeploymentTarget.RiskLevel` | per-target column `deployment_targets.risk_level` (UI: **target detail page**, MachineEdit) | `{Development,Staging,Production}` | Operator-set; **default Production** (fail-safe, backfilled). Drives the louder approval banner + the two-person trigger (session risk = MAX over the frozen set). |
+| `Adhoc:MaxQueueWait` | agent `appsettings.json` | `TimeSpan` string (e.g. `00:04:00`) | **F2.** Bounded wait for the agent's machine execution slot. On expiry the agent REFUSES and reports an `AgentError` — it never runs late. Default 4 min, deliberately BELOW the server's 5 min per-target wait (`AdhocDispatcher.DefaultTimeout`); raise both together or a queued script can outlive the dispatcher's verdict. Non-positive → default. |
+| `DeploymentTarget.AllowParallelTaskExecution` | per-target column `deployment_targets.allow_parallel_task_execution` (UI: **target detail → Settings**, MachineEdit) | bool | **F2.** Off by default. When off the script queues behind any deployment / runbook run on that machine; when on it bypasses the slot and may interleave with them. Stamped per target onto each dispatched command. |
 | `KrakenAiFeature.Adhoc` budget bucket | implicit | — | Every LLM call (generation + verdict) attributes to this bucket via the M11.A wrapper; budget overflow → `BudgetExceeded` typed exception → 503 to the UI / MCP caller. |
 
 ### Key generation example (operator runbook)
@@ -289,3 +295,4 @@ behind STOP-AND-ASK.
 | Version | Date | Change |
 |---|---|---|
 | 1.0 | 2026-05-29 | Initial release (M11.E commits 1–7). |
+| 1.4 | 2026-07-25 | **F2** — ad-hoc scripts now take the agent's machine execution slot instead of bypassing it (an approved diagnostic could previously run straight into a deployment's file / IIS / service operations). The wait is bounded by `Adhoc:MaxQueueWait` and REFUSES on expiry so a script the dispatcher already timed out never executes late. Per-target opt-out via `DeploymentTarget.AllowParallelTaskExecution`, stamped onto each command. CONTRACT CHANGE: `AdhocScriptCommand` gains `AllowParallelTaskExecution` (outside the signature binding — it is an execution-serialization hint, not an authorization input); `AgentContract.CurrentVersion` 1 → 2. |

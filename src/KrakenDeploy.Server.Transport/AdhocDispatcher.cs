@@ -2,7 +2,10 @@ using System.Text.Json;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Contracts.Adhoc;
 using KrakenDeploy.Server.Core.Domain.Ai;
+using KrakenDeploy.Server.Data;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace KrakenDeploy.Server.Transport;
@@ -54,6 +57,7 @@ public sealed class AdhocDispatcher(
     IAgentConnectionRegistry connections,
     IPendingAdhocRegistry pending,
     IAdhocAgentPusher pusher,
+    ITargetConcurrencyPolicy concurrencyPolicy,
     ILogger<AdhocDispatcher> logger) : IAdhocDispatcher
 {
     /// <summary>
@@ -99,6 +103,14 @@ public sealed class AdhocDispatcher(
             return [];
         }
 
+        // F2 — "Allow parallel task execution" is PER TARGET, so the command is
+        // stamped per target even though the signed script text is shared. One read
+        // for the whole frozen set. A target missing from the map (deleted since the
+        // set was frozen) falls back to false = take the machine gate, the safe
+        // default.
+        var parallelByTarget = await concurrencyPolicy
+            .GetAllowParallelAsync(targetIds, ct).ConfigureAwait(false);
+
         var command = new AdhocScriptCommand(
             SessionId:  session.Id,
             IterNumber: iteration.IterNumber,
@@ -109,8 +121,13 @@ public sealed class AdhocDispatcher(
         var tasks = new List<Task<AdhocPerTargetResult>>(targetIds.Count);
         foreach (var targetId in targetIds)
         {
+            var perTargetCommand = command with
+            {
+                AllowParallelTaskExecution =
+                    parallelByTarget.TryGetValue(targetId, out var allow) && allow,
+            };
             tasks.Add(DispatchToTargetAsync(
-                session.Id, iteration.IterNumber, targetId, dispatchAccountId, command,
+                session.Id, iteration.IterNumber, targetId, dispatchAccountId, perTargetCommand,
                 effectiveTimeout, ct));
         }
 
@@ -225,6 +242,65 @@ public sealed class AdhocDispatcher(
 public interface IAdhocAgentPusher
 {
     Task PushAsync(string connectionId, AdhocScriptCommand command, CancellationToken ct);
+}
+
+/// <summary>
+/// F2 — resolves each dispatch target's machine-concurrency policy
+/// (<c>DeploymentTarget.AllowParallelTaskExecution</c>). A seam for the same reason
+/// <see cref="IAdhocAgentPusher"/> is one: the dispatcher stays exercisable in unit
+/// tests without a database. The DEPLOYMENT path needs no seam — its plan builder
+/// already has the target entity loaded.
+/// </summary>
+public interface ITargetConcurrencyPolicy
+{
+    /// <summary>
+    /// <c>targetId → AllowParallelTaskExecution</c>. Targets that no longer exist
+    /// are simply absent; callers must treat "absent" as <c>false</c> (take the
+    /// machine gate) — the safe default.
+    /// </summary>
+    Task<IReadOnlyDictionary<Guid, bool>> GetAllowParallelAsync(
+        IReadOnlyCollection<Guid> targetIds, CancellationToken ct);
+}
+
+/// <summary>
+/// Production <see cref="ITargetConcurrencyPolicy"/>. Read-only and filter-free:
+/// the dispatch path has no ambient Space, and target ids are globally unique so
+/// this cannot cross accounts (the caller has already applied the P3-8 per-target
+/// cross-account connection guard).
+/// <para>
+/// Singleton over <see cref="IServiceScopeFactory"/>, NOT over the context factory
+/// — <c>IDbContextFactory</c> is SCOPED in this app (multi-account routing resolves
+/// the tenant database per scope), so capturing it here would be the exact captive
+/// dependency Dev's <c>ValidateOnBuild</c> refuses (it did, on the first boot of
+/// this change). The per-read scope also rides the caller's ambient account
+/// (AsyncLocal), so the lookup reads the right tenant database. Same shape as
+/// <see cref="AgentCancelPusher"/>.
+/// </para>
+/// </summary>
+public sealed class DbTargetConcurrencyPolicy(
+    IServiceScopeFactory scopeFactory) : ITargetConcurrencyPolicy
+{
+    public async Task<IReadOnlyDictionary<Guid, bool>> GetAllowParallelAsync(
+        IReadOnlyCollection<Guid> targetIds, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(targetIds);
+        if (targetIds.Count == 0)
+        {
+            return new Dictionary<Guid, bool>();
+        }
+
+        await using var scope = scopeFactory.CreateAsyncScope();
+        var dbFactory = scope.ServiceProvider
+            .GetRequiredService<IDbContextFactory<KrakenDbContext>>();
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.DeploymentTargets
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(t => targetIds.Contains(t.Id))
+            .Select(t => new { t.Id, t.AllowParallelTaskExecution })
+            .ToDictionaryAsync(t => t.Id, t => t.AllowParallelTaskExecution, ct)
+            .ConfigureAwait(false);
+    }
 }
 
 /// <summary>

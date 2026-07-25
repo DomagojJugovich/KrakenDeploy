@@ -607,7 +607,9 @@ file sealed class OwnershipFakeHubCallerContext(Guid targetId) : HubCallerContex
 /// path where the ownership gate lives; all other members are harmless no-ops.</summary>
 file sealed class FalseSubPlanRegistry : IPendingSubPlanRegistry
 {
-    public void Register(Guid deploymentId, Guid targetId, Guid dispatchId, TaskCompletionSource<SubPlanResult> tcs) { }
+    public void Register(Guid deploymentId, Guid targetId, Guid dispatchId,
+        TaskCompletionSource<SubPlanResult> tcs, Action? onExecutionStarted = null) { }
+    public bool TryMarkExecutionStarted(Guid deploymentId, Guid targetId, Guid dispatchId) => false;
     public SubPlanCompletionRoute RouteCompletion(Guid deploymentId, Guid targetId, Guid dispatchId, SubPlanResult result)
         => SubPlanCompletionRoute.NoPendingSubPlan;
     public bool IsRetiredDispatch(Guid dispatchId) => false;

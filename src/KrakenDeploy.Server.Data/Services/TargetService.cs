@@ -25,14 +25,16 @@ public class TargetService(IDbContextFactory<KrakenDbContext> dbFactory)
 
     /// <summary>
     /// Persists the target Settings form in one transaction: display name,
-    /// roles, risk level, and the direct tenant / environment associations
-    /// (collections are replaced to match the given id sets).
+    /// roles, risk level, the F2 parallel-task-execution flag, and the direct
+    /// tenant / environment associations (collections are replaced to match the
+    /// given id sets).
     /// </summary>
     public async Task SaveSettingsAsync(
         Guid id,
         string name,
         List<string> roles,
         TargetRiskLevel riskLevel,
+        bool allowParallelTaskExecution,
         IReadOnlyCollection<Guid> environmentIds,
         IReadOnlyCollection<Guid> tenantIds,
         CancellationToken ct = default)
@@ -50,6 +52,7 @@ public class TargetService(IDbContextFactory<KrakenDbContext> dbFactory)
         target.Name = name.Trim();
         target.Roles = roles;
         target.RiskLevel = riskLevel;
+        target.AllowParallelTaskExecution = allowParallelTaskExecution;
 
         var envs = await db.Environments
             .Where(e => environmentIds.Contains(e.Id))

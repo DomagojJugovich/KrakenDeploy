@@ -24,6 +24,14 @@ public abstract record OutboxItem
         Guid DeploymentId, Guid DispatchId, bool Success, string? ErrorMessage) : OutboxItem;
 
     public sealed record AdhocResult(AdhocScriptResult Result) : OutboxItem;
+
+    /// <summary>
+    /// F2 — "this attempt took the machine execution gate and is running now".
+    /// Queued (not sent direct) so it keeps FIFO order ahead of the plan's own step
+    /// reports; ADVISORY, so unlike the verdict-class items it is droppable as
+    /// poison — see <see cref="ServerLinkOutbox.MaxSendAttemptsPerItem"/>.
+    /// </summary>
+    public sealed record ExecutionStarted(Guid DeploymentId, Guid DispatchId) : OutboxItem;
 }
 
 /// <summary>
@@ -63,14 +71,26 @@ public sealed class ServerLinkOutbox(
     internal static readonly TimeSpan DisconnectedPollInterval = TimeSpan.FromSeconds(1);
 
     /// <summary>
-    /// Consecutive CONNECTED-send failures after which a LOG line is dropped as
-    /// poison (a hub-side rejection would otherwise wedge the queue forever, and
-    /// the agent's local rolling file retains it anyway). E6: verdict-class items
-    /// (step/deployment completions, adhoc results) are NEVER dropped — they
-    /// retry forever with backoff past this cap. Failures while disconnected
-    /// never count — those wait, not retry.
+    /// Consecutive CONNECTED-send failures after which an ADVISORY item is dropped
+    /// as poison (a hub-side rejection would otherwise wedge the queue forever, and
+    /// the agent's local rolling file retains log lines anyway). E6: verdict-class
+    /// items (step/deployment completions, adhoc results) are NEVER dropped — they
+    /// retry forever with backoff past this cap. Failures while disconnected never
+    /// count — those wait, not retry.
+    /// <para>
+    /// Advisory = <see cref="OutboxItem.Log"/> and (F2)
+    /// <see cref="OutboxItem.ExecutionStarted"/>: dropping the latter only leaves
+    /// the wave on the server's dispatch-time backstop ceiling, whereas letting it
+    /// head-of-line-block the FIFO queue would strand the deployment's completion
+    /// and turn a succeeded run into a reaper-<c>Failed</c> one — strictly worse.
+    /// </para>
     /// </summary>
     internal const int MaxSendAttemptsPerItem = 5;
+
+    /// <summary>Advisory items are droppable as poison; verdict-class items never
+    /// are (E6/F2 — see <see cref="MaxSendAttemptsPerItem"/>).</summary>
+    private static bool IsAdvisory(OutboxItem item)
+        => item is OutboxItem.Log or OutboxItem.ExecutionStarted;
 
     /// <summary>Backoff ceiling a never-dropped verdict item uses once it passes
     /// <see cref="MaxSendAttemptsPerItem"/> consecutive connected failures, so a
@@ -181,26 +201,28 @@ public sealed class ServerLinkOutbox(
                 // server fault (e.g. a DB blip inside the hub method) gets retried.
                 connectedAttempts++;
 
-                // E6: only LOG lines are droppable as poison — a persistently
-                // rejected log line must not wedge the queue, and the agent's
-                // local rolling file retains it anyway. VERDICT-class items
-                // (step/deployment completions, adhoc results) are NEVER dropped:
-                // a lost completion turns a succeeded run into a reaper-Failed one,
-                // so they retry forever with backoff — a repeating hub-side fault
-                // (e.g. a ~30 s Postgres outage returning consecutive
-                // HubExceptions) must burn no verdict.
-                if (item is OutboxItem.Log && connectedAttempts >= MaxSendAttemptsPerItem)
+                // E6/F2: only ADVISORY items are droppable as poison — a
+                // persistently rejected log line or execution-started marker must
+                // not wedge the queue (the local rolling file retains log lines;
+                // a lost execution-started marker just leaves the wave on the
+                // server's backstop ceiling). VERDICT-class items (step/deployment
+                // completions, adhoc results) are NEVER dropped: a lost completion
+                // turns a succeeded run into a reaper-Failed one, so they retry
+                // forever with backoff — a repeating hub-side fault (e.g. a ~30 s
+                // Postgres outage returning consecutive HubExceptions) must burn no
+                // verdict.
+                if (IsAdvisory(item) && connectedAttempts >= MaxSendAttemptsPerItem)
                 {
                     logger.LogError(ex,
-                        "Outbox log line failed {Attempts} consecutive sends while " +
+                        "Outbox advisory item {Item} failed {Attempts} consecutive sends while " +
                         "connected; dropped as poison to keep the queue moving.",
-                        connectedAttempts);
+                        item.GetType().Name, connectedAttempts);
                     return;
                 }
 
                 // Surface a stuck verdict at warning once it passes the (former)
                 // cap; the normal transient retry stays at debug.
-                if (item is not OutboxItem.Log && connectedAttempts == MaxSendAttemptsPerItem)
+                if (!IsAdvisory(item) && connectedAttempts == MaxSendAttemptsPerItem)
                 {
                     logger.LogWarning(ex,
                         "Outbox verdict item {Item} failed {Attempts} consecutive sends " +

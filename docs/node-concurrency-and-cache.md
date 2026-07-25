@@ -32,29 +32,61 @@ Runbook-run dispatch is **not** counted: the server-side hand-off is
 milliseconds (the run executes on the agent, where the machine queue below
 bounds it).
 
-## Agent: one plan at a time per machine
+## Agent: one task at a time per machine
 
 Chosen fork (confirmed): the machine queue lives **agent-side**, not as
 server-side target locks — server locks are per-process, so a blue-green
 overlap would bypass them, and multi-target deployments would need ordered
 multi-lock acquisition. The agent is the single authority for its own box.
 
-`DeploymentExecutor` holds a machine execution slot for the whole plan body
-(Octopus tentacle-mutex parity): concurrent deployments and runbook runs to
-the same box serialize FIFO instead of interleaving file/IIS/service
-mutations; waves *within* a plan keep their parallelism. A queued plan writes
+The slot itself is `MachineExecutionGate`, a process-wide agent singleton (F2
+extracted it out of `DeploymentExecutor` so more than one caller can share it).
+A holder keeps it for the whole plan body (Octopus tentacle-mutex parity):
+concurrent deployments, runbook runs **and ad-hoc scripts** to the same box
+serialize FIFO instead of interleaving file/IIS/service mutations; waves
+*within* a plan keep their parallelism. A queued plan writes
 `--- Waiting for another task to finish on this machine ---` to its task log.
 
 Registration in the B6 single-flight registry happens **before** queueing, so
 a queued plan stays cancellable and supersedable — the wait observes the run's
 token, and a cancel lands in the aborted-completion path with nothing
 executed. `AgentUpdateService`'s is-it-safe-to-swap gate covers queued plans
-too (registry-derived since B6).
+too (registry-derived since B6). It does **not** cover a running ad-hoc script
+(pre-existing gap; ad-hoc runs are not in `_running`).
 
-Consequence to know: a wave dispatched to a busy agent burns its server-side
-wave deadline (B3) while queued — same semantics as Octopus "waiting on
-mutex". Ad-hoc scripts do **not** take the machine slot (deliberate: they are
-operator-interactive diagnostics).
+### Ad-hoc scripts take the slot too (F2)
+
+Before F2 ad-hoc scripts bypassed the gate outright — "deliberate: they are
+operator-interactive diagnostics" — which meant an approved diagnostic script
+could run straight into a deployment's file / IIS / service operations. They now
+queue like everything else, with one difference: the wait is **bounded**
+(`Adhoc:MaxQueueWait`, default 4 min) and on expiry the agent REFUSES and
+reports an `AgentError` instead of running. The bound is deliberately below the
+server's per-target ad-hoc wait (`AdhocDispatcher.DefaultTimeout`, 5 min) so a
+script the dispatcher has already resolved as "timed out" never executes late —
+otherwise an operator who saw the timeout and approved a fresh iteration would
+get both. The two ends are coupled by intent, not by the wire: raise the config
+knob if you raise the dispatcher timeout.
+
+### Per-target opt-out (F2)
+
+`DeploymentTarget.AllowParallelTaskExecution` (Octopus "Allow parallel task
+execution", default **off**) is stamped into `DeploymentPlan` /
+`AdhocScriptCommand` at dispatch time; the agent bypasses the gate for that unit
+of work. It is per **target**, so one machine's opt-in cannot leak onto another
+in the same fan-out, and a flip applies to the next dispatch, not to work already
+queued on the agent. It never relaxes the F1 same-`(project, environment,
+tenant)` deployment serialization — that is enforced server-side at claim time
+and has no per-target opt-out.
+
+### Queueing no longer burns the wave deadline (F2)
+
+It used to: a wave dispatched to a busy agent spent its whole server-side B3
+deadline queued. The agent now reports gate acquisition
+(`IAgentHubServer.ReportExecutionStartedAsync`) and the server arms the wave
+budget from that point; the dispatch-time arm becomes a backstop
+(`budget + Engine:MaxTargetQueueWait`, default 2 h) so a wedged agent that never
+reports is still reaped. See `docs/execution-engine.md` §6.
 
 ## Package cache: existence == completeness
 

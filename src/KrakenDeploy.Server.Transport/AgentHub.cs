@@ -565,6 +565,54 @@ public sealed class AgentHub(
     }
 
     /// <summary>
+    /// F2 — the agent reports that this dispatch attempt has ACQUIRED its machine
+    /// execution gate and is executing now. The orchestrator re-arms the wave
+    /// deadline from here (the dispatch-time arm is only the backstop ceiling), so a
+    /// sub-plan queued behind a long-running task on the same box does not burn its
+    /// budget while waiting.
+    /// <para>
+    /// Authorization needs no DB round-trip on this path, unlike the log / step /
+    /// completion reports: the slot is looked up by (task id, THIS connection's
+    /// claimed target id) and the attempt's server-generated
+    /// <see cref="KrakenDeploy.Contracts.DeploymentPlan.DispatchId"/> must match
+    /// exactly. A foreign agent therefore probes its OWN (empty) slot and gets a
+    /// no-op — it cannot reach another target's wave even knowing the task id.
+    /// </para>
+    /// <para>
+    /// Purely advisory: an unmatched report (retired attempt, unknown task,
+    /// post-restart, duplicate outbox delivery) is a silent no-op. It can extend a
+    /// deadline, never shorten one, and never touches a task's verdict.
+    /// </para>
+    /// </summary>
+    public Task ReportExecutionStartedAsync(Guid deploymentId, Guid dispatchId)
+    {
+        var connectionTargetId = GetTargetId();
+        if (connectionTargetId is null)
+        {
+            logger.LogWarning(
+                "ReportExecutionStarted from connection {ConnectionId} with no valid " +
+                "NameIdentifier claim; dropping.", Context.ConnectionId);
+            return Task.CompletedTask;
+        }
+
+        if (subPlans.TryMarkExecutionStarted(deploymentId, connectionTargetId.Value, dispatchId))
+        {
+            logger.LogDebug(
+                "Task {Id} target {Target} dispatch {Dispatch} started executing on the agent; " +
+                "wave deadline re-armed from gate acquisition.",
+                deploymentId, connectionTargetId.Value, dispatchId);
+        }
+        else
+        {
+            logger.LogDebug(
+                "ReportExecutionStarted for task {Id} target {Target} dispatch {Dispatch} " +
+                "matched no open attempt (retired, duplicate or unknown); ignored.",
+                deploymentId, connectionTargetId.Value, dispatchId);
+        }
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
     /// M14.4 — per-step boundary callback from the agent. Persists captured
     /// output variables (same upsert as the pre-M14.4 path) AND records the
     /// per-step outcome in <see cref="IPendingSubPlanRegistry"/> so

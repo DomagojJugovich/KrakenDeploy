@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using FluentAssertions;
 using KrakenDeploy.Agent.Adhoc;
+using KrakenDeploy.Agent.Deployment;
 using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Contracts.Adhoc;
@@ -38,7 +39,7 @@ public sealed class AdhocScriptExecutorTests
         var serverLink = new RecordingServerLink();
         var executor = new AdhocScriptExecutor(
             serverLink, EmptyConfig(), new NeverInvokedRunner(),
-            NullLogger<AdhocScriptExecutor>.Instance);
+            new MachineExecutionGate(), NullLogger<AdhocScriptExecutor>.Instance);
 
         await executor.HandleAsync(new AdhocScriptCommand(
             Guid.NewGuid(), 1, "Get-Date", "AAAA"));
@@ -55,7 +56,7 @@ public sealed class AdhocScriptExecutorTests
         var executor = new AdhocScriptExecutor(
             serverLink, ConfigWithKey("not-a-pem-string"),
             new NeverInvokedRunner(),
-            NullLogger<AdhocScriptExecutor>.Instance);
+            new MachineExecutionGate(), NullLogger<AdhocScriptExecutor>.Instance);
 
         await executor.HandleAsync(new AdhocScriptCommand(
             Guid.NewGuid(), 1, "Get-Date", "AAAA"));
@@ -77,7 +78,7 @@ public sealed class AdhocScriptExecutorTests
             var runner = new NeverInvokedRunner();
             var executor = new AdhocScriptExecutor(
                 serverLink, ConfigWithKey(pem), runner,
-                NullLogger<AdhocScriptExecutor>.Instance);
+                new MachineExecutionGate(), NullLogger<AdhocScriptExecutor>.Instance);
 
             // Same signature, but the script bytes have changed by one char.
             await executor.HandleAsync(new AdhocScriptCommand(
@@ -102,7 +103,7 @@ public sealed class AdhocScriptExecutorTests
             var runner = new NeverInvokedRunner();
             var executor = new AdhocScriptExecutor(
                 serverLink, ConfigWithKey(pem), runner,
-                NullLogger<AdhocScriptExecutor>.Instance);
+                new MachineExecutionGate(), NullLogger<AdhocScriptExecutor>.Instance);
 
             // Replay iter-2 signature as iter-3 — must fail.
             await executor.HandleAsync(new AdhocScriptCommand(
@@ -130,7 +131,7 @@ public sealed class AdhocScriptExecutorTests
 
             var executor = new AdhocScriptExecutor(
                 serverLink, ConfigWithKey(pem), runner,
-                NullLogger<AdhocScriptExecutor>.Instance);
+                new MachineExecutionGate(), NullLogger<AdhocScriptExecutor>.Instance);
 
             await executor.HandleAsync(new AdhocScriptCommand(
                 sessionId, 1, "Get-Date", sig));
@@ -158,7 +159,7 @@ public sealed class AdhocScriptExecutorTests
             var executor = new AdhocScriptExecutor(
                 serverLink, ConfigWithKey(pem),
                 new ThrowingRunner(new InvalidOperationException("pwsh missing")),
-                NullLogger<AdhocScriptExecutor>.Instance);
+                new MachineExecutionGate(), NullLogger<AdhocScriptExecutor>.Instance);
 
             await executor.HandleAsync(new AdhocScriptCommand(
                 sessionId, 1, "Get-Date", sig));
@@ -192,6 +193,7 @@ public sealed class AdhocScriptExecutorTests
         public Task ReportStepCompletedAsync(Guid deploymentId, Guid dispatchId, int stepIndex, string stepName, bool success,
             string? errorMessage, IReadOnlyDictionary<string, string> outputVariables,
             IReadOnlyCollection<string> sensitiveOutputNames, CancellationToken ct) => Task.CompletedTask;
+        public Task ReportExecutionStartedAsync(Guid deploymentId, Guid dispatchId, CancellationToken ct) => Task.CompletedTask;
         public void OnRunDeployment(Func<DeploymentPlan, Task> handler) { }
         public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler) { }
         public void OnCancelDeployment(Func<Guid, string?, Task> handler) { }

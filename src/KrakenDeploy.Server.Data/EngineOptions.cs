@@ -23,6 +23,35 @@ public sealed class EngineOptions
     public TimeSpan MaxTargetWaveDuration { get; set; } = TimeSpan.FromHours(1);
 
     /// <summary>
+    /// F2 — how long a dispatched sub-plan may sit in the agent's machine execution
+    /// queue (waiting for another task on that box to finish) before the server
+    /// gives up on it.
+    /// <para>
+    /// The wave deadline itself arms when the agent reports it ACQUIRED the machine
+    /// gate (<c>IAgentHubServer.ReportExecutionStartedAsync</c>), so queue time no
+    /// longer burns the wave's budget. This value is the other half: the
+    /// dispatch-time BACKSTOP is <c>wave budget + this</c>, which keeps B3's "the
+    /// wave deadline is always armed" invariant true when the report never
+    /// arrives — a wedged agent that stays connected but never executes again.
+    /// </para>
+    /// <para>
+    /// Generous by default because it is only the slow path: an agent that actually
+    /// disconnects is reaped by <see cref="AgentDisconnectWaveGrace"/> within
+    /// minutes, and the agent escalates its own wedged gate
+    /// (<c>DeploymentExecutor.WedgedGateAcquireTimeout</c>). Lower it only if you
+    /// would rather fail a queued wave than let it wait behind long-running work.
+    /// Non-positive falls back to <see cref="DefaultMaxTargetQueueWait"/>.
+    /// </para>
+    /// </summary>
+    public TimeSpan MaxTargetQueueWait { get; set; } = DefaultMaxTargetQueueWait;
+
+    /// <summary>Shipped default for <see cref="MaxTargetQueueWait"/>. Named so the
+    /// consumer's non-positive fallback and this initializer cannot drift apart —
+    /// the pre-existing ceilings restate their defaults as literals in
+    /// <c>DeploymentWorker</c>, which is the trap this avoids repeating.</summary>
+    public static readonly TimeSpan DefaultMaxTargetQueueWait = TimeSpan.FromHours(2);
+
+    /// <summary>
     /// How long a mid-wave agent disconnect is tolerated before the wave is
     /// cancelled (resolves as a wave failure into the deployment's
     /// BestEffort/Atomic failure mode). Deliberately longer than the hub's

@@ -70,6 +70,17 @@ public interface IServerLink : IAsyncDisposable
         Guid deploymentId, Guid dispatchId, bool success, string? errorMessage, CancellationToken ct);
 
     /// <summary>
+    /// F2 — reports that this dispatch attempt has ACQUIRED the machine execution
+    /// gate and is executing now, so the server arms the wave deadline from gate
+    /// acquisition instead of from dispatch (queue time behind a busy target no
+    /// longer burns the wave's budget). Advisory: a lost report only degrades the
+    /// wave to the server's dispatch-time backstop ceiling, never to a wrong
+    /// verdict — which is why the outbox may drop it as poison rather than let it
+    /// head-of-line-block a verdict.
+    /// </summary>
+    Task ReportExecutionStartedAsync(Guid deploymentId, Guid dispatchId, CancellationToken ct);
+
+    /// <summary>
     /// M14.4 — reports per-step boundary: success/failure outcome, optional
     /// error message, and any output variables captured via
     /// <c>Set-OctopusVariable</c> / <c>##octopus[setVariable]</c> markers.

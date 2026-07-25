@@ -61,6 +61,30 @@ public interface IAgentHubServer
         Guid deploymentId, Guid dispatchId, bool success, string? errorMessage);
 
     /// <summary>
+    /// F2 CONTRACT CHANGE — reports that the dispatched sub-plan has ACQUIRED the
+    /// agent's machine execution gate and is now executing. Sent exactly once per
+    /// dispatch attempt, immediately before the first step runs; for a target with
+    /// <see cref="DeploymentPlan.AllowParallelTaskExecution"/> the gate is bypassed
+    /// and the report goes out immediately on receipt.
+    /// <para>
+    /// The server arms the wave deadline from THIS point instead of from dispatch,
+    /// so a sub-plan queued behind a long-running task on the same machine does not
+    /// burn its deadline while waiting. A dispatch-time backstop ceiling
+    /// (<c>wave budget + Engine:MaxTargetQueueWait</c>) stays armed for the case
+    /// where this report never arrives (dead or wedged agent), so B3's
+    /// "the wave deadline is always armed" invariant survives.
+    /// </para>
+    /// <para>
+    /// <paramref name="dispatchId"/> echoes <see cref="DeploymentPlan.DispatchId"/>
+    /// and MUST match the attempt the server is currently awaiting: a report from a
+    /// superseded / retired attempt must not extend the live attempt's deadline.
+    /// The report is advisory — losing it degrades to the backstop, it never
+    /// changes a task's verdict.
+    /// </para>
+    /// </summary>
+    Task ReportExecutionStartedAsync(Guid deploymentId, Guid dispatchId);
+
+    /// <summary>
     /// M14.4 — reports the per-step boundary back to the server: success/
     /// failure outcome, optional error message, and any output variables
     /// captured via <c>Set-OctopusVariable</c> / <c>##octopus[setVariable]</c>

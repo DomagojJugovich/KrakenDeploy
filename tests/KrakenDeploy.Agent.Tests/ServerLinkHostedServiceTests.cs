@@ -52,17 +52,22 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
         var serverOptions = Options.Create(new ServerOptions { Url = "https://server.example" });
         var configuration = new ConfigurationBuilder().Build();
 
+        // B7/F2: both executors share ONE machine execution gate — that shared
+        // instance IS the serialization, so the host wires them from the same object.
+        var executionGate = new MachineExecutionGate();
         var deploymentExecutor = new DeploymentExecutor(
             _link,
             new StubPackageSource(),
             new StubArtifactSink(),
             new StepPackageLoader(
                 configuration, NullLogger<StepPackageLoader>.Instance, new StubStepPackageSource()),
+            executionGate,
             agentConfig,
             NullLogger<DeploymentExecutor>.Instance);
 
         var adhocExecutor = new AdhocScriptExecutor(
-            _link, configuration, new StubAdhocInvoker(), NullLogger<AdhocScriptExecutor>.Instance);
+            _link, configuration, new StubAdhocInvoker(), executionGate,
+            NullLogger<AdhocScriptExecutor>.Instance);
 
         return new ServerLinkHostedService(
             context,
@@ -292,6 +297,10 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
             => Task.CompletedTask;
 
         public Task ReportAdhocResultAsync(AdhocScriptResult result, CancellationToken ct)
+            => Task.CompletedTask;
+
+        public Task ReportExecutionStartedAsync(
+            Guid deploymentId, Guid dispatchId, CancellationToken ct)
             => Task.CompletedTask;
 
         public void OnRunDeployment(Func<DeploymentPlan, Task> handler) { }

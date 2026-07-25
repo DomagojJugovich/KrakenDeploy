@@ -46,7 +46,23 @@ public sealed record DeploymentPlan(
     /// "no key": offline bundles and pre-B2 plans keep today's match-by-
     /// (deployment, target) behaviour.
     /// </summary>
-    Guid DispatchId = default);
+    Guid DispatchId = default,
+    /// <summary>
+    /// F2 CONTRACT CHANGE — the dispatch target's
+    /// <c>DeploymentTarget.AllowParallelTaskExecution</c>, stamped at plan-build
+    /// time (Octopus "Allow parallel task execution" parity). <c>false</c> (the
+    /// default) means the agent runs this plan through its machine-wide execution
+    /// gate: one task at a time on that box, FIFO. <c>true</c> means the plan
+    /// bypasses the gate, so it may interleave with OTHER tasks already running on
+    /// the same machine.
+    /// <para>
+    /// This never relaxes the F1 (project, environment, tenant) deployment
+    /// serialization — that is enforced server-side at claim time and is
+    /// unavoidable by design. The flag only affects same-machine execution of
+    /// DIFFERENT tasks.
+    /// </para>
+    /// </summary>
+    bool AllowParallelTaskExecution = false);
 
 /// <summary>
 /// One step within a <see cref="DeploymentPlan"/>.
