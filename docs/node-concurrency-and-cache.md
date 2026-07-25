@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 1.1 |
+| **Version** | 1.2 |
 | **Date** | 2026-07-25 |
 | **Authors** | Domagoj Jugović, Claude (Opus 4.8) |
 | **Status** | Approved |
@@ -12,6 +12,15 @@
 Production-readiness fix **B7** (audit items T1-3 remainder, T1-4): bounded
 concurrency on both sides of the wire, and caches that survive crashes and
 concurrent access. No contract change; one new config key.
+
+> v1.2 (2026-07-25, F2-followup 3): the ad-hoc bound is now ONE
+> `Adhoc:MaxTotalDuration` covering queue wait **plus** execution, replacing the
+> queue-only `Adhoc:MaxQueueWait` — see "Ad-hoc scripts take the slot too".
+>
+> v1.1 (2026-07-25, F2): the agent's execution slot moved out of
+> `DeploymentExecutor` into the shared `MachineExecutionGate`, ad-hoc scripts
+> now take it, and `DeploymentTarget.AllowParallelTaskExecution` opts a target
+> out.
 
 ## Server: the node task cap
 
@@ -74,14 +83,22 @@ never abort a step that is already running.
 Before F2 ad-hoc scripts bypassed the gate outright — "deliberate: they are
 operator-interactive diagnostics" — which meant an approved diagnostic script
 could run straight into a deployment's file / IIS / service operations. They now
-queue like everything else, with one difference: the wait is **bounded**
-(`Adhoc:MaxQueueWait`, default 4 min) and on expiry the agent REFUSES and
-reports an `AgentError` instead of running. The bound is deliberately below the
-server's per-target ad-hoc wait (`AdhocDispatcher.DefaultTimeout`, 5 min) so a
-script the dispatcher has already resolved as "timed out" never executes late —
-otherwise an operator who saw the timeout and approved a fresh iteration would
-get both. The two ends are coupled by intent, not by the wire: raise the config
-knob if you raise the dispatcher timeout.
+queue like everything else, with one difference: the whole thing is **bounded**
+by a single `Adhoc:MaxTotalDuration` budget (default 5 min) measured from the
+moment the command arrives. Expire while queued and the agent REFUSES with an
+`AgentError`; expire while running and it kills the process tree and reports the
+timeout.
+
+The budget spans BOTH phases on purpose. Separate wait and run bounds looked
+tidier but did not deliver the property they claimed: a 3:59 queue plus a 5:00
+run still outlived the server's per-target ad-hoc wait
+(`AdhocDispatcher.DefaultTimeout`, 5 min), so a script the dispatcher had already
+resolved as "timed out" could execute — and mutate the box — afterwards, while an
+operator who saw the timeout and approved a fresh iteration got both. One budget
+equal to the dispatcher's timeout is what actually closes that window. The two
+ends are coupled by intent, not by the wire: raise the config knob if you raise
+the dispatcher timeout. Values that are unparseable, non-positive, or over 24 h
+warn and fall back to the default — note a bare number parses as DAYS.
 
 ### Per-target opt-out (F2)
 

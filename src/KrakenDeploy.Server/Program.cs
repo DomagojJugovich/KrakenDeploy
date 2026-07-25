@@ -237,8 +237,15 @@ public static class Program
             builder.Configuration.GetSection(SsrfOptions.SectionName));
         // B3 — engine resilience ceilings (wave deadline, disconnect grace,
         // runbook max duration). No `Engine` section => sane defaults stand.
-        builder.Services.Configure<KrakenDeploy.Server.Data.EngineOptions>(
-            builder.Configuration.GetSection(KrakenDeploy.Server.Data.EngineOptions.SectionName));
+        // F2-followup 5 — validated at startup: a bare number binds as DAYS, and a
+        // multi-week ceiling overflows CancelAfter and fails EVERY dispatch. Fail
+        // the host with a named key instead of every deployment with "Parameter 'delay'".
+        builder.Services.AddOptions<KrakenDeploy.Server.Data.EngineOptions>()
+            .Bind(builder.Configuration.GetSection(KrakenDeploy.Server.Data.EngineOptions.SectionName))
+            .ValidateOnStart();
+        builder.Services.AddSingleton<
+            IValidateOptions<KrakenDeploy.Server.Data.EngineOptions>,
+            KrakenDeploy.Server.Data.EngineOptionsValidator>();
         // Registers IKrakenAi + KrakenAiClientFactory + prompt sanitiser/cost
         // catalog. AddKrakenDeployData already registered the DB-backed
         // IKrakenAiSettingsProvider / IKrakenAiCallSink / IBudgetTracker, so
@@ -696,11 +703,6 @@ public static class Program
         // M11.E.7 — per-target adhoc-script dispatch + result collation.
         builder.Services.AddSingleton<IPendingAdhocRegistry, PendingAdhocRegistry>();
         builder.Services.AddSingleton<IAdhocAgentPusher, HubContextAdhocAgentPusher>();
-        // F2 — per-target "Allow parallel task execution", stamped onto each
-        // dispatched adhoc command. Singleton over IServiceScopeFactory (NOT the
-        // SCOPED IDbContextFactory — see DbTargetConcurrencyPolicy), so the
-        // singleton AdhocDispatcher can consume it without a captive dependency.
-        builder.Services.AddSingleton<ITargetConcurrencyPolicy, DbTargetConcurrencyPolicy>();
         builder.Services.AddSingleton<IAdhocDispatcher, AdhocDispatcher>();
         // M11.E commits 3 + 5 — LLM-driven generation + verdict + the session
         // orchestrator. Signing key is loaded lazily on first approval.

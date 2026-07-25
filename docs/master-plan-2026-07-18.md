@@ -171,7 +171,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 3 — engine merge | D1 | server_tasks ENGINE merge (2026-07-16 design supersedes the old prompt) | ✅ P1 `0a8d1a5` · P2+P3 `e247c46` | XL | E-A, E-B, E-C, E-D |
 | 3 | D3 | Promote control-flow config keys to typed columns (+ rolling-warning rider) | ✅ 3e2388a | M | — |
 | 4 — engine features | F1 | Same (project, environment, tenant) deployment serialization | ✅ fa2fad5·de44a02·a4f3f85·a6384ee | M | D1 |
-| 4 | F2 | Per-target "Allow parallel task execution" + execution-started deadline arming | ⬜ merged `79f200e`; **still NOT done** — followup 1 (concurrent push dispatch) DONE, so the flag now actually works; followups 2-10 open. See §F2-followups. | M | E-B, D1 |
+| 4 | F2 | Per-target "Allow parallel task execution" + execution-started deadline arming | ✅ merged `79f200e` + followups 1-10. One item DEFERRED by decision: the machine gate is per WAVE, not per plan (§F2-followups item 4) — documented as a Residual, revisit with F1's server-side serialization. | M | E-B, D1 |
 | 4 | F3 | Settings GUI: Engine document + AgentUpdate + logging + auth + SSRF | ⬜ | L | — |
 | 4 | F4 | Remove the `ApiKey:Key` config auth path | ✅ fix/sec-remove-config-apikey | S | — |
 | 5 — product features | WP3 | Real manual intervention (pause/approve/reject) | ⬜ | XL | D1 |
@@ -710,8 +710,9 @@ Branch: feat/eng-per-target-parallelism
 
 ##### §F2-followups — open findings from the max-effort review (2026-07-25)
 
-The branch is committed but F2 is **not** delivered. Ordered by severity; the first
-one gates the rest, because until it lands the feature cannot be observed at all.
+**Status 2026-07-25: items 1-3 and 5-10 are DONE; item 4 is DEFERRED as a documented
+design decision.** Kept below in full because the diagnoses are the rationale for the
+fixes, and because item 4 stays open. Ordered by original severity.
 
 1. ~~**The flag is inert.**~~ **DONE.** Both handlers are now detached
    (`return Task.CompletedTask`), the queued gate wait observes host shutdown, and
@@ -739,53 +740,103 @@ one gates the rest, because until it lands the feature cannot be observed at all
    cancel-while-queued live code for the first time, so it needs transport-level tests
    (`TransportRoundTripTests` is the right harness and today dispatches only one
    deployment per test).
-2. **The flag also bypasses the same-task supersede guard.** The bypass returns before
+2. ~~**The flag also bypasses the same-task supersede guard.**~~ **DONE.**
+   `AcquireMachineSlotAsync` now checks `forceDetachedStuck` BEFORE the bypass and
+   REFUSES (not serializes) a parallel-enabled re-dispatch whose predecessor was
+   force-detached - a bypassing predecessor holds no slot to serialize the two attempts
+   against, so refusing is the only honest answer. Pinned by
+   `Parallel_flag_still_refuses_to_run_two_attempts_of_the_same_task`.
+   Original diagnosis: the bypass returned before
    the `forceDetachedStuck` bounded acquisition, so two attempts of ONE task can run
    concurrently — colliding on `Stop/Start-WebAppPool`, the shared physical site path,
    the retention prune, and `Stop/Start-Service`. Contradicts the promise in
    `DeploymentTarget`, `DeploymentContracts` and the target-edit UI that the flag
    affects only DIFFERENT tasks.
-3. **A hung ad-hoc script holds the gate forever** — the invoker gets
-   `CancellationToken.None`, `ScriptRunner` has no internal timeout, and no ad-hoc
-   abort exists on the wire; the deployment-side queue wait is unbounded, so every
-   later deployment to that target fails at the backstop until the agent is restarted.
-   Bound the ad-hoc *hold*, not just its wait.
-4. **The gate is per WAVE, not per plan** (the server dispatches one sub-plan per
-   wave), so an ad-hoc script can still slot in at a wave boundary against a
-   half-applied box. The DOCS are now correct (`node-concurrency-and-cache.md` states
-   it and lists it under Residuals); the open question is whether the gate should be
-   held across waves, or a server-side per-target lease used instead.
-5. **Unvalidated durations.** `Engine:MaxTargetQueueWait` and `Adhoc:MaxQueueWait`
-   accept a bare number, which `TimeSpan.Parse` reads as DAYS (`"4"` → 4 days). The
-   former makes `CancelAfter` throw above ~49.7 d and fail EVERY deployment at
-   dispatch; the latter silently inverts the "never executes late" guarantee. F3's
-   "Validate > 0" is not enough — the format needs pinning too.
-6. **The re-arm is not clamped** to the dispatch backstop, so the real worst case is
-   `2 × MaxTargetWaveDuration + MaxTargetQueueWait` (4 h on defaults), not the
-   "backstop ceiling" the knob is named and documented as. Relatedly, a lost advisory
-   marker inflates an explicit `TimeoutSeconds = 30` to 2 h 00 m 30 s while holding the
-   node task slot, lease, in-flight gauge and F1 key.
-7. **`TryMarkExecutionStarted` burns the one-shot mark before invoking the callback**,
-   so a throwing callback loses the arm permanently and the retry logs "matched no open
-   attempt". Latent today; it is now the single authority for at-most-once.
-8. **`ITargetConcurrencyPolicy` is a test seam in production code** whose fresh DI scope
-   does not carry the circuit's account (fails closed by throwing, aborting the whole
-   approved dispatch with the iteration already committed as `Executing`).
-   `AdhocSessionService` already reads the same frozen target rows on a live context —
-   pass the map into `DispatchAsync` and delete the interface.
-9. **Docs to correct**: "can extend a deadline, never shorten one" is inverted (the
-   re-arm normally shortens, and the hub method's reduced authorization is argued from
-   that false premise); `docs/adhoc-actions.md:93`'s
-   locked-invariant gloss is false for the unsigned `AllowParallelTaskExecution` field;
-   `docs/disconnect-reconciliation.md` (Approved) still describes single-stage arming
-   and omits the new knob.
-10. **Test gaps**: `Queued_sub_plan_does_not_burn_its_wave_deadline_while_waiting` and
-    `Explicit_step_timeout_is_measured_from_gate_acquisition` both pass with the re-arm
-    disabled (proven by commenting out the fake's mark call) — only
-    `Hung_agent_that_started_executing_…` is load-bearing; `harness.Gauge.Count
-    .Should().Be(0)` cannot fail (the test seam bypasses both production `Track()`
-    calls); and no test covers `OutboxItem.ExecutionStarted` being advisory/droppable.
-
+3. ~~**A hung ad-hoc script holds the gate forever.**~~ **DONE.** ONE
+   `Adhoc:MaxTotalDuration` budget (default 5 min, matching `AdhocDispatcher.DefaultTimeout`)
+   now spans the gate wait AND the run, measured from receipt: expire while queued =>
+   REFUSE; expire while running => kill the process tree and report the timeout. One
+   budget rather than separate wait/run bounds because separate bounds still allowed
+   late execution (3:59 queued + 5:00 running beats a 5 min dispatcher). Pinned by
+   `Adhoc_script_that_outruns_its_budget_is_killed_and_releases_the_machine`.
+   Original diagnosis: the ad-hoc invoker got `CancellationToken.None`, `ScriptRunner`
+   has no internal timeout, and no ad-hoc abort exists on the wire; the deployment-side
+   queue wait was unbounded, so every later deployment to that target failed at the
+   backstop until the agent was restarted.
+4. **The gate is per WAVE, not per plan** - **DEFERRED, documented, still open.** The
+   server dispatches one sub-plan per wave, so the agent releases and re-takes the slot
+   at every wave boundary and an ad-hoc script can still slot in against a half-applied
+   box. NOT fixed here, deliberately: holding an agent-side gate across waves means
+   holding it across a server round-trip with no dispatch guaranteed to follow (a
+   cancelled or failed wave would strand the slot until process restart - strictly worse
+   than the current gap), and the alternative is a server-side per-target lease, which
+   is a different mechanism in a different process and a work package of its own, not a
+   followup. `MachineExecutionGate` is deliberately NOT the place to fix it. Recorded as
+   a Residual in `docs/node-concurrency-and-cache.md` and in `docs/execution-engine.md`'s
+   history row. Revisit alongside F1's server-side serialization, which already owns
+   per-(project, environment, tenant) exclusion and is the natural home for per-target
+   exclusion.
+5. ~~**Unvalidated durations.**~~ **DONE.** `EngineOptionsValidator`
+   (`IValidateOptions<EngineOptions>` + `ValidateOnStart`) refuses, by key name: a bare
+   number (checked against the RAW config string - after binding, `"4"` and
+   `"4.00:00:00"` are indistinguishable, and the realistic typo lands at four days,
+   INSIDE any useful magnitude ceiling), a non-positive duration, anything above 7 days,
+   and a non-positive `MaxConcurrentTasks`. Agent side, `Adhoc:MaxTotalDuration` warns
+   and falls back on unparseable / non-positive / >24 h. Pinned by
+   `EngineOptionsValidatorTests`, including a case proving the rejected ceiling really
+   would have made `CancelAfter` throw. **F3 must keep this validation when these knobs
+   move into the settings document.**
+   Original diagnosis: `Engine:MaxTargetQueueWait` and `Adhoc:MaxQueueWait` accepted a
+   bare number, which `TimeSpan` binding reads as DAYS; the former made `CancelAfter`
+   throw above ~49.7 d and fail EVERY deployment at dispatch, the latter silently
+   inverted the "never executes late" guarantee.
+6. ~~**The re-arm is not clamped.**~~ **DONE.** `WaveDeadline.ComputeArmWindow` returns
+   `min(executionBudget, remainingToBackstop)`, or `null` (cancel now) once the backstop
+   is spent, so the backstop is a real ceiling and the worst case is no longer
+   `2 x MaxTargetWaveDuration + MaxTargetQueueWait` (4 h on defaults). Every arm
+   additionally passes through `ClampToTimerLimit`: an explicit `TimeoutSeconds` near
+   `int.MaxValue` is ~68 years, which made `CancelAfter` throw
+   `ArgumentOutOfRangeException` AT DISPATCH and fail the wave with a raw
+   "Parameter 'delay'" before anything reached the agent (pre-existing since B3,
+   reachable without any misconfiguration). Pinned by `WaveDeadlineClampTests`,
+   including a property sweep asserting no input yields a delay `CancelAfter` rejects.
+   The residual "a lost marker leaves the wave on the backstop" is by design - that is
+   what the backstop is for.
+7. ~~**`TryMarkExecutionStarted` burns the one-shot mark before invoking the callback.**~~
+   **DONE.** The mark is still set first (concurrent redeliveries must not both arm) but
+   is handed back if the callback throws, and the exception propagates rather than being
+   swallowed - the one state the two-stage deadline must never be in is "running on the
+   backstop while `ArmedForExecution` claims it started". Pinned by
+   `A_throwing_callback_hands_the_one_shot_back_so_a_retry_can_still_arm`.
+8. ~~**`ITargetConcurrencyPolicy` is a test seam in production code.**~~ **DONE.**
+   Interface, `DbTargetConcurrencyPolicy`, the DI registration and the test fake are all
+   deleted (~60 lines). `IAdhocDispatcher.DispatchAsync` takes
+   `IReadOnlyDictionary<Guid, bool> allowParallelByTarget`; `AdhocSessionService`
+   resolves it on the SAME DbContext that just approved the iteration, so the dispatch
+   reads one consistent snapshot with no second scope, no second connection, and no
+   captive-dependency hazard (the fresh scope also did not carry the circuit's account).
+   Absent target => take the gate, matching the fail-safe convention
+   `ComputeMaxRiskAsync` already uses. Pinned by
+   `Dispatch_receives_the_per_target_parallel_flag_from_the_database` and
+   `A_target_deleted_after_freezing_is_absent_from_the_flag_map` (real Postgres).
+9. ~~**Docs to correct.**~~ **DONE.** `AgentHub.ReportExecutionStartedAsync`'s inverted
+   claim is replaced by the three real guards (strict dispatch-id match, registry
+   one-shot, clamped re-arm) and the honest direction (a matched report normally
+   SHORTENS). `docs/adhoc-actions.md` v1.5: the unsigned `AllowParallelTaskExecution`
+   field is now an explicit entry under "What the gate explicitly does NOT guarantee",
+   and the stale `Adhoc:MaxQueueWait` row / diagram / history are corrected.
+   `docs/disconnect-reconciliation.md` v1.2 documents two-stage arming +
+   `Engine:MaxTargetQueueWait` + startup validation.
+   `docs/node-concurrency-and-cache.md` v1.2 and `docs/execution-engine.md` v1.10
+   likewise.
+10. ~~**Test gaps.**~~ **DONE.** The two weak arming tests now queue LONGER than the
+    execution budget and then do real work (new `FakeAgent.WorkAfterAcquiring`), which
+    makes the arming POINT observable: both now FAIL under a bare-budget dispatch arm AND
+    under true pre-F2 semantics (no re-arm), each verified by running that mutation. The
+    tautological `harness.Gauge.Count.Should().Be(0)` is replaced by an elapsed-time
+    bound on the wedged wave going terminal - the thing that actually frees the real
+    gauge. `OutboxItem.ExecutionStarted` gains FIFO-order and advisory-poison-drop
+    coverage in `ServerLinkOutboxTests`.
 #### F3 — Settings GUI: Engine document + operational knobs *(preamble + addendum)*
 
 ```text

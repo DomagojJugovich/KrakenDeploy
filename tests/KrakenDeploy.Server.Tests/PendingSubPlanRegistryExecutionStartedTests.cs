@@ -141,4 +141,41 @@ public sealed class PendingSubPlanRegistryExecutionStartedTests
             .Should().BeFalse("the first attempt is no longer the awaited one");
         firstArmed.Should().Be(1);
     }
+
+    /// <summary>
+    /// F2-followup 7 — the one-shot marker is set BEFORE the callback runs (so
+    /// concurrent redeliveries cannot both arm), which means a throwing callback
+    /// would otherwise consume the only chance to arm: the attempt would keep
+    /// running on the dispatch backstop while <c>ArmedForExecution</c> claimed it had
+    /// started, and a later report could never correct it. Hand the marker back.
+    /// </summary>
+    [Fact]
+    public void A_throwing_callback_hands_the_one_shot_back_so_a_retry_can_still_arm()
+    {
+        var registry = new PendingSubPlanRegistry();
+        var dispatchId = Guid.NewGuid();
+        var calls = 0;
+        registry.Register(
+            DeploymentId, TargetId, dispatchId, new TaskCompletionSource<SubPlanResult>(),
+            onExecutionStarted: () =>
+            {
+                if (++calls == 1)
+                {
+                    throw new InvalidOperationException("boom");
+                }
+            });
+
+        // The exception is NOT swallowed — the hub should surface a broken callback
+        // rather than log-and-forget a deadline that silently never armed.
+        var first = () => registry.TryMarkExecutionStarted(DeploymentId, TargetId, dispatchId);
+        first.Should().Throw<InvalidOperationException>().WithMessage("boom");
+
+        registry.TryMarkExecutionStarted(DeploymentId, TargetId, dispatchId)
+            .Should().BeTrue("the failed arm did not consume the one-shot");
+        calls.Should().Be(2);
+
+        registry.TryMarkExecutionStarted(DeploymentId, TargetId, dispatchId)
+            .Should().BeFalse("the successful arm did consume it");
+        calls.Should().Be(2);
+    }
 }

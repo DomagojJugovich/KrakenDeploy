@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 1.9 |
+| **Version** | 1.10 |
 | **Date** | 2026-07-25 |
 | **Authors** | Domagoj Jugovic, Claude (Fable 5), Claude (Opus 4.8), Claude (Opus 5) |
 | **Status** | Draft |
@@ -205,12 +205,20 @@ Two properties to be aware of:
   timeout blew up purely because the machine was busy), while an agent that stays
   connected and never acquires the slot — wedged — is still reaped by the
   backstop. A backstop hit is reported as "never started executing", distinct
-  from a step timeout, because the operator fix differs. The report is advisory:
-  it can only move a deadline later, is matched STRICTLY against the awaited
-  `DispatchId` (a superseded attempt's late report cannot extend the live
-  attempt), and is droppable by the agent's outbox rather than allowed to
-  head-of-line-block a verdict. Server-side waves are not ceilinged (known
-  residual, §9).
+  from a step timeout, because the operator fix differs. The report is advisory
+  and cannot buy an agent extra time: it is matched STRICTLY against the awaited
+  `DispatchId` (a superseded attempt's late report cannot touch the live one),
+  the registry interlocks it to once per attempt, and the re-arm is **clamped to
+  the backstop instant** — so a report arriving just before the backstop gets
+  only the remainder, not another full budget. Total time per attempt is capped
+  at the backstop whether the report arrives early, late, or never. The report is
+  also droppable by the agent's outbox rather than allowed to head-of-line-block
+  a verdict. Server-side waves are not ceilinged (known residual, §9).
+- **Bad `Engine` durations are refused at startup**, not per deployment. A bare
+  number binds as DAYS (`"MaxTargetQueueWait": "4"` = four days), and a
+  multi-week ceiling overflows `CancelAfter` and would fail EVERY dispatch with a
+  raw "Parameter 'delay'". `EngineOptionsValidator` (`ValidateOnStart`) rejects
+  bare numbers, non-positive values, and anything above 7 days, naming the key.
 - **Agent-disconnect monitor**: a target continuously disconnected for
   `Engine:AgentDisconnectWaveGrace` (default 2 min) has its sub-plan slot
   cancelled; the wave resolves that target as a failure into the failure
@@ -290,10 +298,13 @@ Two properties to be aware of:
   gate did the serializing. `DeploymentTarget.AllowParallelTaskExecution`
   (default off, stamped into the plan / adhoc command at dispatch) opts a target
   out; it never relaxes F1's `(project, environment, tenant)` serialization,
-  which is server-side. Ad-hoc's wait is BOUNDED (`Adhoc:MaxQueueWait`, default
-  4 min, deliberately under the server's 5 min per-target ad-hoc wait) and
-  REFUSES on expiry — a script the dispatcher already gave up on must not run
-  late. Details + rationale in `docs/node-concurrency-and-cache.md`.
+  which is server-side. Ad-hoc gets ONE bound covering queue wait AND execution
+  (`Adhoc:MaxTotalDuration`, default 5 min, matching the server's per-target
+  ad-hoc wait): REFUSE if it expires while queued, kill the process tree if it
+  expires while running. A script the dispatcher already gave up on must not run
+  late, and separate wait/run bounds did not deliver that (3:59 queued + 5:00
+  running beats a 5 min dispatcher). Details + rationale in
+  `docs/node-concurrency-and-cache.md`.
 - **Outbox** (`ServerLinkOutbox`): all logs, step reports, completions,
   adhoc results and (F2) execution-started markers go through one
   process-lifetime FIFO channel — strict global order, head retried until
@@ -567,8 +578,8 @@ runbook block, behavior-identical).
 
 | Version | Date | Change |
 |---|---|---|
-| 1.9 | 2026-07-25 | **F2-followup 1 — concurrent push dispatch.** The agent's `RunDeploymentAsync` / `RunAdhocScriptAsync` handlers now return `Task.CompletedTask` instead of the work task. The SignalR client dispatches client-method invocations through a single-reader channel and AWAITS each handler, so the previous shape made the agent process exactly one push at a time: B7's machine queue, F2's per-target flag, the B6 supersede path and cancel-while-queued were all unreachable, and a `CancelDeploymentAsync` push queued behind the very deployment it targeted (so the process-tree kill never fired on an operator cancel). Detached work is tracked so a faulted handler is logged rather than left unobserved, and shutdown drains it briefly. The QUEUED gate wait now also observes the host shutdown token — step execution deliberately does not, since a shutdown must never abort a running step. CONTRACT CHANGE: none. |
-| 1.8 | 2026-07-25 | **F2 — per-target parallelism + execution-started deadline arming** (§6, §7, timer table). New `DeploymentTarget.AllowParallelTaskExecution` (default off) stamped into the dispatched plan / adhoc command; the agent's machine execution slot moved out of `DeploymentExecutor` into the shared `MachineExecutionGate` singleton and ad-hoc scripts now take it too (bounded by `Adhoc:MaxQueueWait`, refusing rather than running late). The wave deadline arms in two stages: dispatch-time backstop (`budget + Engine:MaxTargetQueueWait`) then re-armed to the pure execution budget on `ReportExecutionStartedAsync`, so queueing behind a busy machine no longer burns the budget while B3's always-armed invariant survives a wedged agent. CONTRACT CHANGE: `DeploymentPlan` + `AdhocScriptCommand` gain `AllowParallelTaskExecution`, new `IAgentHubServer.ReportExecutionStartedAsync`, `AgentContract.CurrentVersion` 1 → 2. EF: migration `AddTargetAllowParallelTaskExecution`. Branch `feat/eng-per-target-parallelism`. |
+| 1.10 | 2026-07-25 | **F2 followups 1-10** (§6, §7). Agent SignalR push handlers detached: `RunDeploymentAsync` / `RunAdhocScriptAsync` return `Task.CompletedTask` instead of the work task, because `HubConnection`'s single-reader receive loop AWAITS each handler — so returning the work serialized every server→agent push and the transport, not the gate, was doing the serializing (F2's gate was therefore untested end-to-end; proved with a real loopback hub). Handlers are tracked and drained on shutdown. A parallel-enabled target now REFUSES a re-dispatch whose predecessor was force-detached — a bypassing predecessor holds no slot to serialize the two attempts against. Ad-hoc moved from a queue-only bound to ONE `Adhoc:MaxTotalDuration` spanning queue wait plus execution (separate bounds still let a script outlive the dispatcher's verdict). The execution-budget re-arm is CLAMPED to the dispatch backstop, so a late gate report can shorten an attempt but never push it past the configured ceiling, and every `CancelAfter` arm is capped at the timer limit (an explicit `TimeoutSeconds` near `int.MaxValue` previously threw at dispatch and failed the wave before anything reached the agent). All `Engine` durations validated at startup (`EngineOptionsValidator` + `ValidateOnStart`) — a bare number binds as DAYS. `ITargetConcurrencyPolicy` / `DbTargetConcurrencyPolicy` deleted; the ad-hoc flag map is read on the caller's existing DbContext. KNOWN, DEFERRED: the machine gate is acquired per WAVE, not per plan, so another task can interleave between a plan's waves. |
+| 1.8 | 2026-07-25 | **F2 — per-target parallelism + execution-started deadline arming** (§6, §7, timer table). New `DeploymentTarget.AllowParallelTaskExecution` (default off) stamped into the dispatched plan / adhoc command; the agent's machine execution slot moved out of `DeploymentExecutor` into the shared `MachineExecutionGate` singleton and ad-hoc scripts now take it too (bounded, refusing rather than running late). The wave deadline arms in two stages: dispatch-time backstop (`budget + Engine:MaxTargetQueueWait`) then re-armed to the pure execution budget on `ReportExecutionStartedAsync`, so queueing behind a busy machine no longer burns the budget while B3's always-armed invariant survives a wedged agent. CONTRACT CHANGE: `DeploymentPlan` + `AdhocScriptCommand` gain `AllowParallelTaskExecution`, new `IAgentHubServer.ReportExecutionStartedAsync`, `AgentContract.CurrentVersion` 1 → 2. EF: migration `AddTargetAllowParallelTaskExecution`. Branch `feat/eng-per-target-parallelism`. |
 | 1.7 | 2026-07-22 | **D1 engine merge (Phases 2+3)** — Phase 2 trigger surface: `RunbookService.TriggerAsync` / `IRunbookTrigger` / REST / RunbookDetail UI gain multi-target (`additionalTargetIds`, primary-first microsecond-ordered assignments) + `ScheduledFor` (future-only, one dispatch path) + a `failureMode` knob (BestEffort/Atomic; UI shows it for rolling runs) with `DeploymentService.CreateAsync` semantics. Run read surface: new `RunbookRunDetail.razor` page + `/api/runbook-runs/{id}/logs\|step-outcomes\|output-variables\|artifacts(/download)`; shared task detail components (`TaskStatusBanner`, `TaskLogView`, `TaskStepOutcomesGrid`, `TaskOutputVariablesView`, `TaskArtifactsGrid`) extracted from `DeploymentDetail` and rendered by both pages. Dedupes: `ServerTaskCanceller` (one guarded cancel core), `OctopusSystemVariablesBuilder.AddTaskScoped` + nullable-release `AddReleaseScoped`. Phase 3 legacy deletion (§6/§8/§9): AgentHub runbook fallback finalize → post-registry warn-and-drop for either kind (+ hub `PruneRetentionAsync` deleted); reconciler arm 4 + `Engine:MaxRunbookRunDuration` removed; arm 3 orphan predicate now "expired OR null lease" for BOTH kinds; dead `ServerTaskLease.ReleaseAsync` removed; stale pre-D1 hand-off claims corrected across XML docs. `RunbookRun.TimedOut` audit constant retained as historical. No soak needed pre-production (no deployed instance). CONTRACT CHANGE: none on the agent wire; REST `TriggerRunbookRunRequest` gains optional `ScheduledFor` + `AdditionalTargetIds` + `FailureMode`. |
 | 1.6 | 2026-07-19 | **D1 engine merge (Phase 1)** — runbook runs now execute through the single `DeploymentWorker` orchestrator via a kind-branched `ITaskDispatchSource` accessor (§8); they gain waves, multi-target fan-out, server-side steps (RunOnServer now runs on the SERVER — security fix), rolling, failure modes, the M14 step knobs online, lease renewal and orphan reconciliation. `RunbookRunWorker` + `RunbookRunChannel` deleted; `RunbookService.TriggerAsync` enqueues onto the shared task channel. Reconciler arms generalised to both kinds (§6): arm 3 lease-orphan reconcile is kind-agnostic with a kind-branched null-lease predicate; the E9 disconnect-reap + pre-hand-off arms are removed (B3 covers runbook runs); arm 4 (MaxRunbookRunDuration) + the hub runbook fallback finalize are kept INTERIM for one release to drain legacy hand-off runs. Additive `RunbookRun.*` audit vocabulary (`TaskAuditVocabulary`); runbook retention now worker-fired + counts SucceededWithWarnings. CONTRACT CHANGE: runbook dispatch shape (runbook runs now dispatched as per-target sub-plans via the sub-plan registry, not one whole-plan hand-off). Branch `refactor/eng-server-tasks-engine-merge`. |
 | 1.5 | 2026-07-19 | E-D engine hygiene: E8 — agent step staging keyed by `{deploymentId}/{dispatchId}/{stepIndex}`, per-step cleanup moved into a `finally` (fires on the early-failure and timeout/cancel paths too), plus a per-task staging sweep on run end and a whole-root sweep at agent boot (§6 Agent side). Log-sequence counter moved off `server_tasks` into a one-row-per-task `task_log_counters` table (atomic `INSERT … ON CONFLICT` allocator) so log appends no longer churn the row's `xmin` (the B5 token) and force `ServerTaskStatusWriter` retries. E9 (**INTERIM**, deleted by D1) — the dispatch reconciler reaps an agent-owned runbook run whose single target has been continuously disconnected past `Engine:AgentDisconnectWaveGrace` (via `IAgentLivenessProbe` + the target's `LastSeenUtc`), and `RunbookRunWorker` re-verifies the target connection at hand-off and fast-fails instead of dispatching into a dead connection id (§6/§8). CONTRACT CHANGE: none (new `task_log_counters` table — migration `AddTaskLogCounters`). |

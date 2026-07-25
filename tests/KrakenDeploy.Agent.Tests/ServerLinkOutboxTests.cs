@@ -80,6 +80,81 @@ public sealed class ServerLinkOutboxTests
         await pump;
     }
 
+    /// <summary>
+    /// F2 — the execution-started marker is the FIRST thing a wave emits (it reports
+    /// gate acquisition, before step 1), so it must leave the queue ahead of that
+    /// wave's step reports. Out of order it would arrive after the completion the
+    /// server uses to retire the attempt's slot, and the deadline it exists to re-arm
+    /// would already be gone.
+    /// </summary>
+    [Fact]
+    public async Task Execution_started_marker_keeps_its_place_at_the_head_of_the_wave()
+    {
+        var h = new Harness();
+        using var cts = new CancellationTokenSource();
+        var pump = h.Outbox.PumpAsync(cts.Token);
+
+        var deploymentId = Guid.NewGuid();
+        var dispatchId = Guid.NewGuid();
+        h.Outbox.Enqueue(new OutboxItem.ExecutionStarted(deploymentId, dispatchId));
+        h.Outbox.Enqueue(new OutboxItem.Log(deploymentId, dispatchId, 0, "info", "step output"));
+        h.Outbox.Enqueue(new OutboxItem.DeploymentCompleted(deploymentId, dispatchId, true, null));
+
+        await h.WaitForSentAsync(3);
+
+        h.Sent.Select(i => i.GetType().Name).Should().Equal(
+            [
+                nameof(OutboxItem.ExecutionStarted),
+                nameof(OutboxItem.Log),
+                nameof(OutboxItem.DeploymentCompleted),
+            ]);
+
+        cts.Cancel();
+        await pump;
+    }
+
+    /// <summary>
+    /// F2 — the marker is ADVISORY, so a hub that keeps rejecting it must not wedge
+    /// the queue. Dropping it costs the wave nothing but its tighter deadline (it
+    /// stays on the server's dispatch-time backstop); head-of-line-blocking the FIFO
+    /// behind it would strand the deployment's COMPLETION and turn a run that
+    /// succeeded into a reaper-failed one — strictly worse.
+    /// </summary>
+    [Fact]
+    public async Task A_rejected_execution_started_marker_is_dropped_not_head_of_line_blocking()
+    {
+        var h = new Harness();
+        var attempts = 0;
+        var deploymentId = Guid.NewGuid();
+        var dispatchId = Guid.NewGuid();
+        var victim = new OutboxItem.ExecutionStarted(deploymentId, dispatchId);
+        h.FailWith = item =>
+        {
+            if (item is OutboxItem.ExecutionStarted)
+            {
+                Interlocked.Increment(ref attempts);
+                return new HubException("ReportExecutionStartedAsync rejected");
+            }
+            return null;
+        };
+
+        using var cts = new CancellationTokenSource();
+        var pump = h.Outbox.PumpAsync(cts.Token);
+
+        h.Outbox.Enqueue(victim);
+        h.Outbox.Enqueue(new OutboxItem.DeploymentCompleted(deploymentId, dispatchId, true, null));
+
+        await h.WaitForSentAsync(1);
+
+        attempts.Should().Be(ServerLinkOutbox.MaxSendAttemptsPerItem,
+            "advisory items get the capped retries, then go");
+        h.Sent.Single().Should().BeOfType<OutboxItem.DeploymentCompleted>(
+            "the verdict behind it must still get through");
+
+        cts.Cancel();
+        await pump;
+    }
+
     [Fact]
     public async Task Items_buffered_while_disconnected_flush_on_reconnect()
     {

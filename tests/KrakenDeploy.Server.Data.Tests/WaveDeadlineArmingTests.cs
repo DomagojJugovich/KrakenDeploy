@@ -38,22 +38,28 @@ public sealed class WaveDeadlineArmingTests(PostgresFixture postgres)
     {
         await using var harness = new OrchestratorTestHarness(postgres, new EngineOptions
         {
-            // Execution budget far SHORTER than the queue wait: pre-F2 this 2 s
-            // clock started at dispatch and the wave died while still queued.
-            MaxTargetWaveDuration    = TimeSpan.FromSeconds(2),
+            // Execution budget shorter than the queue wait AND shorter than the
+            // queueing alone: pre-F2 this 6 s clock started at dispatch, so the wave
+            // died at 6 s while still sitting in the machine queue.
+            MaxTargetWaveDuration    = TimeSpan.FromSeconds(6),
             MaxTargetQueueWait       = TimeSpan.FromSeconds(45),
             AgentDisconnectWaveGrace = TimeSpan.Zero,   // isolate the deadline path
         });
         var (deploymentId, targets) = await SeedAsync(harness, [StepBuilder.Script("deploy")], ["t1"]);
         var agent = harness.ConnectFakeAgent(targets[0]);
-        agent.QueueBeforeExecuting = TimeSpan.FromSeconds(5);
+        // Queue LONGER than the budget, so a dispatch-time arm with the bare budget
+        // is caught, AND do real work afterwards, so the arming POINT is observable —
+        // with an instantaneous wave any deadline past the queue wait passes, which
+        // cannot distinguish "armed at acquisition" from "armed with the backstop".
+        agent.QueueBeforeExecuting = TimeSpan.FromSeconds(8);
+        agent.WorkAfterAcquiring = TimeSpan.FromSeconds(4);
 
         await harness.RunDeploymentAsync(deploymentId).WaitAsync(TestGuard);
 
         var deployment = await harness.GetDeploymentAsync(deploymentId);
         deployment.Status.Should().Be(DeploymentStatus.Succeeded,
-            "the 2 s execution budget must start at gate acquisition, so 5 s of " +
-            "queueing behind another task on the machine cannot consume it");
+            "the 6 s execution budget must start at gate acquisition: 8 s queued + " +
+            "4 s working is 12 s from dispatch, but only 4 s of the budget");
 
         var outcomes = await harness.GetOutcomesAsync(deploymentId);
         outcomes.Should().ContainSingle().Which.Outcome.Should().Be(StepOutcomeKind.Succeeded);
@@ -71,16 +77,18 @@ public sealed class WaveDeadlineArmingTests(PostgresFixture postgres)
             AgentDisconnectWaveGrace = TimeSpan.Zero,
         });
         var (deploymentId, targets) = await SeedAsync(
-            harness, [new StepBuilder { Name = "deploy", TimeoutSeconds = 2 }], ["t1"]);
+            harness, [new StepBuilder { Name = "deploy", TimeoutSeconds = 6 }], ["t1"]);
 
         var agent = harness.ConnectFakeAgent(targets[0]);
-        agent.QueueBeforeExecuting = TimeSpan.FromSeconds(5);
+        agent.QueueBeforeExecuting = TimeSpan.FromSeconds(8);
+        agent.WorkAfterAcquiring = TimeSpan.FromSeconds(4);
 
         await harness.RunDeploymentAsync(deploymentId).WaitAsync(TestGuard);
 
         (await harness.GetDeploymentAsync(deploymentId)).Status
             .Should().Be(DeploymentStatus.Succeeded,
-                "a 2 s step timeout must not be spent waiting for a busy machine");
+                "a 6 s step timeout bounds EXECUTION: 4 s of work fits, even though " +
+                "8 s of queueing before it puts the finish 12 s after dispatch");
     }
 
     [Fact]
@@ -131,12 +139,18 @@ public sealed class WaveDeadlineArmingTests(PostgresFixture postgres)
         var (deploymentId, targets) = await SeedAsync(harness, [StepBuilder.Script("deploy")], ["t1"]);
         harness.ConnectFakeAgent(targets[0]).NeverAcquireMachineSlot = true;
 
-        using (harness.Gauge.Track())
-        {
-            await harness.RunDeploymentAsync(deploymentId).WaitAsync(TestGuard);
-        }
-        harness.Gauge.Count.Should().Be(0,
-            "a wedged agent must not hold the in-flight gauge (and blue-green drain) hostage");
+        // NOTE the old shape here wrapped this in `using (harness.Gauge.Track())` and
+        // then asserted `Gauge.Count == 0`, which the `using` guarantees on its own —
+        // it could not fail. What actually needs pinning is that the wedged wave goes
+        // TERMINAL on the backstop, which is what frees the real gauge (and with it
+        // blue-green drain). Elapsed time is the observable for that.
+        var sw = Stopwatch.StartNew();
+        await harness.RunDeploymentAsync(deploymentId).WaitAsync(TestGuard);
+        sw.Stop();
+
+        sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(20),
+            "only the ~3 s dispatch backstop can reap an agent that never reports — a " +
+            "wedged agent must not hold a dispatch slot (and blue-green drain) hostage");
 
         (await harness.GetDeploymentAsync(deploymentId)).Status
             .Should().Be(DeploymentStatus.Failed);

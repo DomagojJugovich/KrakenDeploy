@@ -93,7 +93,7 @@ public sealed class MachineExecutionGateSharingTests
         runner.Invocations.Should().Be(0, "the script MUST NOT run after the wait expired");
         var result = link.AdhocResults.Should().ContainSingle().Subject;
         result.ExitCode.Should().Be(-1);
-        result.AgentError.Should().Contain("Another task is still running on this machine");
+        result.AgentError.Should().Contain("held this machine for the whole");
 
         // The refusal must not have released a slot it never held.
         link.ReleaseFirstCompletion.Release();
@@ -159,6 +159,43 @@ public sealed class MachineExecutionGateSharingTests
         link.ExecutionStarted.Should().ContainSingle().Which.Dep.Should().Be(taskId);
     }
 
+    [Fact]
+    public async Task Adhoc_script_that_outruns_its_budget_is_killed_and_releases_the_machine()
+    {
+        // F2-followup 3. F2 bounded only the gate WAIT, so a script that acquired the
+        // slot then hung held the machine FOREVER: the invoker got
+        // CancellationToken.None, ScriptRunner has no internal timeout, and no ad-hoc
+        // abort exists on the wire. Every later deployment to that box then failed at
+        // the server's backstop, repeatedly, until the agent was restarted.
+        using var gate = new MachineExecutionGate();
+        var link = new SharedLink();
+        var (priv, pem) = NewKeyPair();
+        using var _ = priv;
+        // Never returns on its own — only the budget can end it.
+        var runner = new SignallingRunner { BlockUntilReleased = true };
+        var adhoc = BuildAdhocExecutor(
+            link, gate, pem, runner, gateWait: TimeSpan.FromMilliseconds(300));
+
+        await adhoc.HandleAsync(Command(Guid.NewGuid(), priv)).WaitAsync(TestTimeout);
+
+        runner.Invocations.Should().Be(1, "the script did start — it acquired the slot");
+        var result = link.AdhocResults.Should().ContainSingle().Subject;
+        result.ExitCode.Should().Be(-1);
+        result.AgentError.Should().Contain("did not finish within its",
+            "the operator must see that the agent terminated it, not a bare server timeout");
+        gate.IsHeld.Should().BeFalse(
+            "the machine must be free again — a hung script must not strand the slot");
+
+        // A deployment can now take the machine immediately.
+        var deployments = BuildDeploymentExecutor(link, gate);
+        var taskId = Guid.NewGuid();
+        link.ReleaseFirstCompletion.Release();
+        await deployments.ExecuteAsync(Plan(taskId)).WaitAsync(TestTimeout);
+        link.ExecutionStarted.Should().Contain(e => e.Dep == taskId);
+
+        runner.Release.Release(); // let the fake's own wait unwind
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private static DeploymentExecutor BuildDeploymentExecutor(
@@ -188,9 +225,9 @@ public sealed class MachineExecutionGateSharingTests
             NullLogger<AdhocScriptExecutor>.Instance)
         {
             // Pass the nullable straight through: TimeSpan.Zero is now a MEANINGFUL
-            // value ("refuse immediately"), not the "unset" sentinel it used to be,
+            // value ("expire immediately"), not the "unset" sentinel it used to be,
             // so flattening null to zero here would make every test refuse at once.
-            GateWaitTimeout = gateWait,
+            MaxTotalDuration = gateWait,
         };
 
     private static (RSA Private, string PublicPem) NewKeyPair()

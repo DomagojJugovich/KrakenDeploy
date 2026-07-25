@@ -93,6 +93,15 @@ public sealed class FakeAgent
     /// </summary>
     public TimeSpan? QueueBeforeExecuting { get; set; }
 
+    /// <summary>
+    /// F2 — how long the wave takes AFTER the agent has reported gate acquisition.
+    /// Distinct from <see cref="QueueBeforeExecuting"/> on purpose: with zero work
+    /// time a test cannot tell "the budget is measured from acquisition" from "the
+    /// budget is merely larger than the queue wait", because any deadline past the
+    /// queue wait passes. Real work time is what makes the arming point observable.
+    /// </summary>
+    public TimeSpan? WorkAfterAcquiring { get; set; }
+
     /// <summary>Optional callback invoked at the end of each
     /// <c>RunDeploymentAsync</c> — after the wave's steps are recorded + the TCS
     /// is resolved — receiving the 1-based wave count. Lets a test mutate
@@ -258,6 +267,13 @@ internal sealed class FakeAgentClient(
         if (agent.NeverReport)
         {
             return;
+        }
+
+        // F2 — the wave's actual work, timed from gate acquisition. If the server
+        // armed the deadline from DISPATCH instead, queue + work overruns it.
+        if (agent.WorkAfterAcquiring is { } work)
+        {
+            await Task.Delay(work).ConfigureAwait(false);
         }
 
         // Per-step boundary reports — order matches plan.Steps so the

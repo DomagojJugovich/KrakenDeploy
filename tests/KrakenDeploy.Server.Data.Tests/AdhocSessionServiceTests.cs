@@ -149,6 +149,66 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
         session.MaxIterations.Should().Be(2);
     }
 
+    // ── F2: per-target machine concurrency reaches the dispatcher ───────────
+
+    /// <summary>
+    /// F2-followup 8 — the service resolves <c>AllowParallelTaskExecution</c> for the
+    /// frozen set on its OWN DbContext (the one that just approved the iteration) and
+    /// hands the map to the dispatcher. Before the followup this lived behind an
+    /// <c>ITargetConcurrencyPolicy</c> singleton that opened a second scope and a
+    /// second connection to read rows this context already had — and which had to be
+    /// registered over <c>IServiceScopeFactory</c> to dodge a captive dependency.
+    /// </summary>
+    [Fact]
+    public async Task Dispatch_receives_the_per_target_parallel_flag_from_the_database()
+    {
+        var serial = await SeedTargetAsync("web-serial");
+        var parallel = await SeedTargetAsync("web-parallel", allowParallelTaskExecution: true);
+        var harness = NewHarness(
+            generation: CannedGeneration("Get-Date"),
+            verdict:    CannedVerdict("AllSucceeded"));
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "what's the date", AdhocMode.Readonly,
+            [serial.Id, parallel.Id], Guid.NewGuid(), "ops", default);
+        var iterId = await harness.Service.GenerateFirstIterationAsync(sessionId, default);
+        await harness.Service.ApproveIterationAsync(
+            sessionId, iterId, Guid.NewGuid(), "ops", null, default);
+
+        harness.Dispatcher.LastAllowParallel.Should().NotBeNull();
+        harness.Dispatcher.LastAllowParallel!.Should().BeEquivalentTo(
+            new Dictionary<Guid, bool> { [serial.Id] = false, [parallel.Id] = true });
+    }
+
+    /// <summary>A target deleted between freeze and dispatch is simply absent from
+    /// the map; the dispatcher reads that as "take the machine gate" — fail safe, not
+    /// fail open, matching how the risk computation treats an unresolvable target.</summary>
+    [Fact]
+    public async Task A_target_deleted_after_freezing_is_absent_from_the_flag_map()
+    {
+        var kept = await SeedTargetAsync("web-kept", allowParallelTaskExecution: true);
+        var doomed = await SeedTargetAsync("web-doomed", allowParallelTaskExecution: true);
+        var harness = NewHarness(
+            generation: CannedGeneration("Get-Date"),
+            verdict:    CannedVerdict("AllSucceeded"));
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "what's the date", AdhocMode.Readonly,
+            [kept.Id, doomed.Id], Guid.NewGuid(), "ops", default);
+        var iterId = await harness.Service.GenerateFirstIterationAsync(sessionId, default);
+
+        await using (var db = postgres.CreateContext())
+        {
+            await db.DeploymentTargets.Where(t => t.Id == doomed.Id).ExecuteDeleteAsync();
+        }
+
+        await harness.Service.ApproveIterationAsync(
+            sessionId, iterId, Guid.NewGuid(), "ops", null, default);
+
+        harness.Dispatcher.LastAllowParallel!.Should().BeEquivalentTo(
+            new Dictionary<Guid, bool> { [kept.Id] = true });
+    }
+
     // ── Gate invariants (M11.E.15) ──────────────────────────────────────────
 
     [Fact]
@@ -478,7 +538,8 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private async Task<DeploymentTarget> SeedTargetAsync(
-        string name, TargetRiskLevel risk = TargetRiskLevel.Development)
+        string name, TargetRiskLevel risk = TargetRiskLevel.Development,
+        bool allowParallelTaskExecution = false)
     {
         await using var db = postgres.CreateContext();
         var t = new DeploymentTarget
@@ -488,6 +549,7 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
             Roles = ["web"],
             Status = TargetStatus.Online,
             RiskLevel = risk,
+            AllowParallelTaskExecution = allowParallelTaskExecution,
         };
         db.DeploymentTargets.Add(t);
         await db.SaveChangesAsync();
@@ -514,7 +576,7 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
             },
             WellKnown.DefaultSpaceId);
 
-    private sealed record Harness(AdhocSessionService Service);
+    private sealed record Harness(AdhocSessionService Service, FakeAdhocDispatcher Dispatcher);
 
     private Harness NewHarness(
         AdhocGenerationResult? generation = null,
@@ -554,7 +616,7 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
             genSvc, verdictSvc, keyProvider, dispatcher,
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             audit, config, TimeProvider.System, logger);
-        return new Harness(service);
+        return new Harness(service, dispatcher);
     }
 
     private static AdhocGenerationResult CannedGeneration(string script)
@@ -604,10 +666,16 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
     /// verdict + state-machine without hitting a real agent.</summary>
     private sealed class FakeAdhocDispatcher : IAdhocDispatcher
     {
+        /// <summary>F2 — the flag map the service resolved for the last dispatch, so a
+        /// test can assert the per-target lookup without a live agent.</summary>
+        public IReadOnlyDictionary<Guid, bool>? LastAllowParallel { get; private set; }
+
         public Task<IReadOnlyList<AdhocPerTargetResult>> DispatchAsync(
             AdhocSession session, AdhocIteration iteration, Guid dispatchAccountId,
+            IReadOnlyDictionary<Guid, bool> allowParallelByTarget,
             CancellationToken ct, TimeSpan? timeout = null)
         {
+            LastAllowParallel = allowParallelByTarget;
             var ids = JsonSerializer.Deserialize<List<Guid>>(session.FrozenTargetSetJson) ?? [];
             var results = ids
                 .Select(id => new AdhocPerTargetResult(id, new AdhocScriptResult(

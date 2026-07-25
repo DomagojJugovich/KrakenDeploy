@@ -630,8 +630,16 @@ public sealed class AgentHub(
     /// </para>
     /// <para>
     /// Purely advisory: an unmatched report (retired attempt, unknown task,
-    /// post-restart, duplicate outbox delivery) is a silent no-op. It can extend a
-    /// deadline, never shorten one, and never touches a task's verdict.
+    /// post-restart, duplicate outbox delivery) is a silent no-op, and no report ever
+    /// touches a task's verdict. What a MATCHED report does is normally SHORTEN the
+    /// attempt's remaining time — it swaps the backstop ceiling (execution budget +
+    /// queue-wait ceiling) for the execution budget alone. Three guards bound what an
+    /// agent can buy for itself by reporting: the dispatch id must match the live
+    /// attempt exactly, the registry's interlock makes it one-shot per attempt, and
+    /// the re-arm is CLAMPED to the backstop instant (F2-followup 6), so reporting
+    /// late cannot stack another full budget on top of the queue wait. Total time is
+    /// therefore capped at the backstop no matter when — or whether — the report
+    /// arrives.
     /// </para>
     /// </summary>
     public Task ReportExecutionStartedAsync(Guid deploymentId, Guid dispatchId)

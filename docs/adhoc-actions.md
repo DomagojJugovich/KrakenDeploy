@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Approved |
-| **Version** | 1.4 (M11.E + F2) |
+| **Version** | 1.5 (M11.E + F2 + followups) |
 | **Last updated** | 2026-07-25 |
 | **Applies to** | KrakenDeploy server `/adhoc` page + `/mcp` `run_adhoc_action` tool, agent verify-then-run pipeline |
 | **Technologies** | .NET 10, `System.Management.Automation` 7.6 (PowerShell AST parser), `RSA-SHA256` signing, SignalR control plane, Radzen Blazor UI |
@@ -49,10 +49,14 @@ operator prompt
       ↓ AdhocScriptSigner.Verify           ← FAIL-CLOSED on mismatch
       ↓ (valid)
       ↓ MachineExecutionGate               ← F2: queue behind this box's running
-      ↓                                      task (bounded; REFUSE on expiry).
-      ↓                                      Skipped when the target sets
+      ↓                                      task. Skipped when the target sets
       ↓                                      AllowParallelTaskExecution.
       ↓ ScriptRunner.RunAndReturnExitCodeAsync (pwsh, captured stdout/stderr)
+                                           ← ONE Adhoc:MaxTotalDuration budget
+                                             spans the gate wait AND the run:
+                                             REFUSE if it expires queued, kill
+                                             the process tree if it expires
+                                             running.
       ↓
   IAgentHubServer.ReportAdhocResultAsync   (SignalR)
       ↓
@@ -126,6 +130,17 @@ Honesty up front. The AST gate is one layer of defence, not the only one.
    sense. But if an operator approves a script that *depends on external
    state*, that state can change between approval and execution. Treat
    it like any other script.
+4. **`AllowParallelTaskExecution` rides OUTSIDE the signature (F2).** The
+   signature binds the (`SessionId`, `IterNumber`, script bytes) triple; the
+   per-target concurrency flag is not part of it, so an attacker with write
+   access to the transport could flip it. That is deliberate and bounded: the
+   flag decides only whether the script waits for the machine's execution slot,
+   so flipping it changes *interleaving*, never *what runs* or *whether the
+   operator approved it*. The flag is an execution-serialization hint, not an
+   authorization input, and putting it under the signature would mean re-signing
+   per target for a property the operator sets on the target, not on the script.
+   **Mitigation:** the transport is mutually authenticated (agent JWT, A8) over
+   TLS; a flip requires already owning the channel.
 
 ---
 
@@ -140,7 +155,7 @@ Honesty up front. The AST gate is one layer of defence, not the only one.
 | `SpaceAiSettings.AdhocEnabled` | per-Space row in `space_ai_settings` (UI: **Configuration → AI Settings**) | bool | Off by default. Disabling hides the **New session** CTA and surfaces an "Ad-hoc actions are disabled for this Space" banner. |
 | `SpaceAiSettings.AdhocTwoPersonApproval` | per-Space row in `space_ai_settings` (UI: **Configuration → AI Settings**) | bool | Off by default. When on, high-risk iterations (Mutating OR a Production target) require a second, distinct approver before sign+dispatch. |
 | `DeploymentTarget.RiskLevel` | per-target column `deployment_targets.risk_level` (UI: **target detail page**, MachineEdit) | `{Development,Staging,Production}` | Operator-set; **default Production** (fail-safe, backfilled). Drives the louder approval banner + the two-person trigger (session risk = MAX over the frozen set). |
-| `Adhoc:MaxQueueWait` | agent `appsettings.json` | `TimeSpan` string (e.g. `00:04:00`) | **F2.** Bounded wait for the agent's machine execution slot. On expiry the agent REFUSES and reports an `AgentError` — it never runs late. Default 4 min, deliberately BELOW the server's 5 min per-target wait (`AdhocDispatcher.DefaultTimeout`); raise both together or a queued script can outlive the dispatcher's verdict. Non-positive → default. |
+| `Adhoc:MaxTotalDuration` | agent `appsettings.json` | `TimeSpan` string (e.g. `00:05:00`) — a BARE NUMBER means DAYS | **F2.** ONE budget covering queue wait **plus** execution, measured from receipt of the command. On expiry while queued the agent REFUSES and reports an `AgentError`; on expiry while running it KILLS the process tree and reports the timeout. Default 5 min, matching the server's per-target wait (`AdhocDispatcher.DefaultTimeout`) — a single bound is what actually stops a script outliving the dispatcher's verdict, which separate wait/run bounds did not (queue 3:59 + run 5:00 still beat a 5 min dispatcher). Unparseable, non-positive, or above 24 h → warn + default. |
 | `DeploymentTarget.AllowParallelTaskExecution` | per-target column `deployment_targets.allow_parallel_task_execution` (UI: **target detail → Settings**, MachineEdit) | bool | **F2.** Off by default. When off the script queues behind any deployment / runbook run on that machine; when on it bypasses the slot and may interleave with them. Stamped per target onto each dispatched command. |
 | `KrakenAiFeature.Adhoc` budget bucket | implicit | — | Every LLM call (generation + verdict) attributes to this bucket via the M11.A wrapper; budget overflow → `BudgetExceeded` typed exception → 503 to the UI / MCP caller. |
 
@@ -295,4 +310,5 @@ behind STOP-AND-ASK.
 | Version | Date | Change |
 |---|---|---|
 | 1.0 | 2026-05-29 | Initial release (M11.E commits 1–7). |
-| 1.4 | 2026-07-25 | **F2** — ad-hoc scripts now take the agent's machine execution slot instead of bypassing it (an approved diagnostic could previously run straight into a deployment's file / IIS / service operations). The wait is bounded by `Adhoc:MaxQueueWait` and REFUSES on expiry so a script the dispatcher already timed out never executes late. Per-target opt-out via `DeploymentTarget.AllowParallelTaskExecution`, stamped onto each command. CONTRACT CHANGE: `AdhocScriptCommand` gains `AllowParallelTaskExecution` (outside the signature binding — it is an execution-serialization hint, not an authorization input); `AgentContract.CurrentVersion` 1 → 2. |
+| 1.4 | 2026-07-25 | **F2** — ad-hoc scripts now take the agent's machine execution slot instead of bypassing it (an approved diagnostic could previously run straight into a deployment's file / IIS / service operations). Per-target opt-out via `DeploymentTarget.AllowParallelTaskExecution`, stamped onto each command. CONTRACT CHANGE: `AdhocScriptCommand` gains `AllowParallelTaskExecution` (outside the signature binding — it is an execution-serialization hint, not an authorization input); `AgentContract.CurrentVersion` 1 → 2. |
+| 1.5 | 2026-07-25 | **F2-followup 3** — the gate wait and the run share ONE `Adhoc:MaxTotalDuration` budget measured from receipt, replacing the queue-only `Adhoc:MaxQueueWait`. Separate bounds did not deliver the property they claimed: a 3:59 queue plus a 5:00 run still outlived the dispatcher's 5 min verdict, so a script could execute — and mutate a box — after the operator had been told it timed out. Expiry while queued REFUSES; expiry while running kills the process tree. |

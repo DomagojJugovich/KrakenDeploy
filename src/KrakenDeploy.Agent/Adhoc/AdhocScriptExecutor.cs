@@ -23,8 +23,12 @@ namespace KrakenDeploy.Agent.Adhoc;
 ///   <item>F2 — takes the machine execution gate (unless the target sets
 ///         <see cref="AdhocScriptCommand.AllowParallelTaskExecution"/>) so the
 ///         script waits its turn behind a running deployment / runbook run
-///         instead of interleaving with its file / IIS / service operations.
-///         Bounded by <see cref="GateWaitTimeout"/> → REFUSE on expiry.</item>
+///         instead of interleaving with its file / IIS / service operations.</item>
+///   <item>F2-followup 3 — ONE budget (<see cref="MaxTotalDuration"/>) from receipt
+///         covers the queue wait AND the run, so the script can never still be
+///         executing after the server's dispatcher has reported it timed out.
+///         Expiry while queued → REFUSE; expiry while running → the process tree is
+///         killed and the partial output reported.</item>
 ///   <item>If verification passes, runs the script via <see cref="ScriptRunner"/>
 ///         capturing stdout / stderr / exit code into a structured
 ///         <see cref="AdhocScriptResult"/>.</item>
@@ -55,46 +59,82 @@ public sealed class AdhocScriptExecutor(
         Path.Combine(Path.GetTempPath(), "kraken-adhoc");
 
     /// <summary>
-    /// F2 default for the bounded gate wait: how long a queued ad-hoc script waits
-    /// for the machine execution slot before REFUSING to run.
+    /// F2-followup 3 default for <see cref="MaxTotalDuration"/>: the agent's whole
+    /// budget for one ad-hoc command, measured from RECEIPT and split across queueing
+    /// on the machine gate and running the script.
     /// <para>
-    /// Deliberately shorter than <c>AdhocDispatcher.DefaultTimeout</c> (5 min, the
-    /// server's per-target wait) so a script the server has already given up on
-    /// never executes late — an operator who saw "timed out" and approved a fresh
-    /// iteration must not get both. Operators who raise the dispatcher timeout
-    /// should raise <c>Adhoc:MaxQueueWait</c> to match; the two ends are coupled
-    /// by intent, not by the wire.
+    /// Matches <c>AdhocDispatcher.DefaultTimeout</c> — the server's per-target wait,
+    /// also measured from dispatch — because that is the deadline the operator
+    /// actually sees. F2 bounded only the queue WAIT, which left two ways to execute
+    /// after the dispatcher had already reported "timed out": queue 3:59 then run for
+    /// minutes, or hold the slot forever (the invoker got
+    /// <see cref="CancellationToken.None"/> and <c>ScriptRunner</c> has no internal
+    /// timeout, so one hung diagnostic blocked every later deployment on that box
+    /// until the agent was restarted). One budget from receipt closes both.
     /// </para>
     /// </summary>
-    private static readonly TimeSpan DefaultGateWaitTimeout = TimeSpan.FromMinutes(4);
+    internal static readonly TimeSpan DefaultMaxTotalDuration = TimeSpan.FromMinutes(5);
 
     /// <summary>
-    /// Test-only override for the bounded gate wait. <c>null</c> (production) reads
-    /// <c>Adhoc:MaxQueueWait</c> instead. Nullable rather than a <c>TimeSpan.Zero</c>
-    /// sentinel so a test CAN ask for "refuse immediately"; note the DI container
-    /// does property injection for nobody, so production always sees <c>null</c>.
+    /// Upper bound accepted for <c>Adhoc:MaxTotalDuration</c>. Guards the
+    /// <see cref="SemaphoreSlim.WaitAsync(TimeSpan, CancellationToken)"/> /
+    /// <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/> range and, more
+    /// usefully, catches the bare-integer footgun: <c>TimeSpan.Parse("5")</c> is FIVE
+    /// DAYS, not five minutes (F2-followup 5).
     /// </summary>
-    internal TimeSpan? GateWaitTimeout { get; init; }
+    private static readonly TimeSpan MaxAcceptedTotalDuration = TimeSpan.FromHours(24);
 
     /// <summary>
-    /// Resolves the bounded gate wait: the test override, else
-    /// <c>Adhoc:MaxQueueWait</c> (a <see cref="TimeSpan"/> string, e.g.
-    /// <c>00:04:00</c>), else <see cref="DefaultGateWaitTimeout"/>. A non-positive
-    /// configured value falls back to the default rather than degenerating into
-    /// "refuse immediately". A METHOD, not a property: it reads configuration, so
-    /// the call site should show that it is not free — read it once into a local.
+    /// Test-only override for <see cref="ResolveMaxTotalDuration"/>. <c>null</c>
+    /// (production) reads <c>Adhoc:MaxTotalDuration</c> instead. Nullable rather than a
+    /// <c>TimeSpan.Zero</c> sentinel so a test CAN ask for "expire immediately"; note
+    /// the DI container does property injection for nobody, so production always sees
+    /// <c>null</c>.
     /// </summary>
-    private TimeSpan ResolveGateWaitTimeout()
+    internal TimeSpan? MaxTotalDuration { get; init; }
+
+    /// <summary>
+    /// Resolves the total budget: the test override, else
+    /// <c>Adhoc:MaxTotalDuration</c>, else <see cref="DefaultMaxTotalDuration"/>. A
+    /// METHOD, not a property: it reads configuration, so the call site should show
+    /// that it is not free — read it once into a local.
+    /// <para>
+    /// F2-followup 5 — a value outside <c>(0, 24h]</c> is REJECTED with a warning and
+    /// the default used, because the realistic misconfiguration is a bare integer that
+    /// <see cref="TimeSpan.Parse(string, IFormatProvider)"/> silently reads as DAYS.
+    /// Accepting <c>"5"</c> as five days would defeat the entire guarantee this bound
+    /// exists to provide.
+    /// </para>
+    /// </summary>
+    private TimeSpan ResolveMaxTotalDuration()
     {
-        if (GateWaitTimeout is { } explicitWait)
+        if (MaxTotalDuration is { } explicitBudget)
         {
-            return explicitWait;
+            return explicitBudget;
         }
-        var configured = config["Adhoc:MaxQueueWait"];
-        return TimeSpan.TryParse(configured, CultureInfo.InvariantCulture, out var parsed)
-               && parsed > TimeSpan.Zero
-            ? parsed
-            : DefaultGateWaitTimeout;
+
+        var configured = config["Adhoc:MaxTotalDuration"];
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return DefaultMaxTotalDuration;
+        }
+        if (!TimeSpan.TryParse(configured, CultureInfo.InvariantCulture, out var parsed))
+        {
+            logger.LogWarning(
+                "Adhoc:MaxTotalDuration '{Value}' is not a TimeSpan; using {Default}. " +
+                "Use a d.hh:mm:ss form such as 00:05:00.", configured, DefaultMaxTotalDuration);
+            return DefaultMaxTotalDuration;
+        }
+        if (parsed <= TimeSpan.Zero || parsed > MaxAcceptedTotalDuration)
+        {
+            logger.LogWarning(
+                "Adhoc:MaxTotalDuration '{Value}' resolves to {Parsed}, outside the accepted " +
+                "range (0, {Max}]; using {Default}. NOTE a bare number is parsed as DAYS — " +
+                "'5' means 5 days, not 5 minutes; write 00:05:00.",
+                configured, parsed, MaxAcceptedTotalDuration, DefaultMaxTotalDuration);
+            return DefaultMaxTotalDuration;
+        }
+        return parsed;
     }
 
     /// <summary>Entry point — wire this to <c>IServerLink.OnRunAdhocScript</c>.
@@ -158,12 +198,21 @@ public sealed class AdhocScriptExecutor(
             return;
         }
 
+        // F2-followup 3 — ONE budget from here, covering the queue wait AND the run,
+        // so the script can never still be executing after the server's dispatcher has
+        // reported this iteration as timed out. Linked to the host shutdown token too,
+        // and disposed on the way out so nothing accumulates on it.
+        var budget = ResolveMaxTotalDuration();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(hostStopping);
+        deadline.CancelAfter(budget);
+
         // Step 3 (F2): take the machine execution slot unless the target allows
         // parallel task execution. Pre-F2 ad-hoc scripts bypassed the gate outright,
         // so a diagnostic script could run straight into a deployment's file / IIS /
         // service operations on the same box. Bounded so a long-running deployment
         // cannot pin an interactive script indefinitely.
-        var slot = await AcquireMachineSlotAsync(command, hostStopping).ConfigureAwait(false);
+        var slot = await AcquireMachineSlotAsync(command, budget, deadline.Token)
+            .ConfigureAwait(false);
         if (slot.Refused)
         {
             return; // AcquireMachineSlotAsync already reported the refusal.
@@ -173,7 +222,7 @@ public sealed class AdhocScriptExecutor(
         // bypassing script holds none, and disposing null is a no-op.
         using (slot.Lease)
         {
-            await RunAndReportAsync(command).ConfigureAwait(false);
+            await RunAndReportAsync(command, budget, deadline.Token).ConfigureAwait(false);
         }
     }
 
@@ -186,15 +235,15 @@ public sealed class AdhocScriptExecutor(
         MachineExecutionGate.Releaser? Lease, bool Refused);
 
     /// <summary>
-    /// F2 — takes the machine execution slot for an ad-hoc script, bounded by
-    /// <see cref="ResolveGateWaitTimeout"/>. Refuses (and reports) rather than
-    /// running late when the slot stays held: a script the server's dispatcher has
-    /// already resolved as timed out must not execute afterwards. Bypasses the gate
-    /// entirely when the target sets
+    /// F2 — takes the machine execution slot for an ad-hoc script, bounded by the
+    /// remaining total budget (<paramref name="deadlineToken"/>). Refuses (and
+    /// reports) rather than running late when the slot stays held: a script the
+    /// server's dispatcher has already resolved as timed out must not execute
+    /// afterwards. Bypasses the gate entirely when the target sets
     /// <see cref="AdhocScriptCommand.AllowParallelTaskExecution"/>.
     /// </summary>
     private async Task<AdhocMachineSlot> AcquireMachineSlotAsync(
-        AdhocScriptCommand command, CancellationToken hostStopping)
+        AdhocScriptCommand command, TimeSpan budget, CancellationToken deadlineToken)
     {
         if (command.AllowParallelTaskExecution)
         {
@@ -205,48 +254,46 @@ public sealed class AdhocScriptExecutor(
             return new AdhocMachineSlot(null, false);
         }
 
-        var gateWait = ResolveGateWaitTimeout();
         try
         {
-            if (await executionGate.TryAcquireNowAsync(hostStopping)
+            if (await executionGate.TryAcquireNowAsync(deadlineToken)
                     .ConfigureAwait(false) is { } uncontended)
             {
                 return new AdhocMachineSlot(uncontended, false);
             }
 
             logger.LogInformation(
-                "Adhoc session {SessionId} iter {Iter} is waiting up to {Timeout} for the " +
-                "machine execution slot (another task is running on this machine).",
-                command.SessionId, command.IterNumber, gateWait);
+                "Adhoc session {SessionId} iter {Iter} is waiting for the machine execution " +
+                "slot (another task is running on this machine); its total budget is {Budget}.",
+                command.SessionId, command.IterNumber, budget);
 
-            if (await executionGate.AcquireAsync(gateWait, hostStopping)
+            // The whole remaining budget is available for queueing — but every second
+            // spent here is a second the script does NOT get, which is the point: the
+            // pair can never exceed the budget the dispatcher is timing against.
+            if (await executionGate.AcquireAsync(Timeout.InfiniteTimeSpan, deadlineToken)
                     .ConfigureAwait(false) is { } queued)
             {
                 return new AdhocMachineSlot(queued, false);
             }
 
-            logger.LogWarning(
-                "Adhoc session {SessionId} iter {Iter} refused: the machine execution " +
-                "slot was still held after {Timeout}.",
-                command.SessionId, command.IterNumber, gateWait);
-            await ReportFailureAsync(command,
-                $"Another task is still running on this machine after {gateWait}; " +
-                "the script was NOT executed. Re-run it once the machine is free.")
-                .ConfigureAwait(false);
-            return new AdhocMachineSlot(null, true);
+            // Unreachable: an infinite wait either acquires or throws on the token.
+            throw new InvalidOperationException(
+                "Unbounded gate acquisition returned without a lease.");
         }
         catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
         {
-            // The agent host is shutting down: either hostStopping fired while this
-            // script was QUEUED on the gate (OperationCanceledException), or DI got
-            // there first and disposed the gate (ObjectDisposedException). Report
-            // rather than let either escape — the dispatcher's slot is waiting and
-            // this class's contract is that every path closes it.
-            logger.LogWarning(ex,
-                "Adhoc session {SessionId} iter {Iter} refused: the agent is shutting down.",
-                command.SessionId, command.IterNumber);
+            // Either the total budget expired while QUEUED, or the host is shutting
+            // down (the token is linked to both), or DI disposed the gate first. All
+            // three mean the script was NOT executed — report rather than let it
+            // escape, because the dispatcher's slot is waiting and this class's
+            // contract is that every path closes it.
+            logger.LogWarning(
+                "Adhoc session {SessionId} iter {Iter} refused: never acquired the machine " +
+                "execution slot within its {Budget} budget (or the agent is stopping).",
+                command.SessionId, command.IterNumber, budget);
             await ReportFailureAsync(command,
-                "The agent is shutting down; the script was NOT executed.")
+                $"Another task held this machine for the whole {budget} budget (or the agent " +
+                "is stopping); the script was NOT executed. Re-run it once the machine is free.")
                 .ConfigureAwait(false);
             return new AdhocMachineSlot(null, true);
         }
@@ -258,7 +305,8 @@ public sealed class AdhocScriptExecutor(
     /// <c>using</c> — keeping this body at its natural indentation instead of
     /// nesting 60-odd pre-existing lines inside a try/finally.
     /// </summary>
-    private async Task RunAndReportAsync(AdhocScriptCommand command)
+    private async Task RunAndReportAsync(
+        AdhocScriptCommand command, TimeSpan budget, CancellationToken deadlineToken)
     {
         // Step 4: execute via ScriptRunner; capture stdout / stderr / exit code.
         var stdout = new StringBuilder();
@@ -283,7 +331,28 @@ public sealed class AdhocScriptExecutor(
                     (level == "error" ? stderr : stdout).AppendLine(line);
                     return Task.CompletedTask;
                 },
-                ct: CancellationToken.None).ConfigureAwait(false);
+                // F2-followup 3: whatever is LEFT of the total budget. Previously
+                // CancellationToken.None, so ScriptRunner's process-tree kill was dead
+                // code on this path and a hung script held the machine gate forever.
+                ct: deadlineToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Budget expired (or the host is stopping) mid-script. ScriptRunner has
+            // already killed the process tree and reaped it; report what we captured so
+            // the operator sees partial output rather than a bare server-side timeout.
+            logger.LogWarning(
+                "Adhoc session {SessionId} iter {Iter} was terminated: it did not finish " +
+                "within its {Budget} budget (or the agent is stopping).",
+                command.SessionId, command.IterNumber, budget);
+            await ReportFailureAsync(command,
+                $"The script did not finish within its {budget} budget and was terminated " +
+                "(its process tree was killed). Raise Adhoc:MaxTotalDuration on the agent — " +
+                "and the server's per-target timeout with it — if the work legitimately " +
+                "takes longer.",
+                stdout.ToString(), stderr.ToString()).ConfigureAwait(false);
+            TryCleanWorkingDir(workingDir);
+            return;
         }
         catch (Exception ex)
         {

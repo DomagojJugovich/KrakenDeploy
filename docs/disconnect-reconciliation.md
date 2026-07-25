@@ -2,13 +2,18 @@
 
 | | |
 |---|---|
-| **Version** | 1.1 |
-| **Date** | 2026-07-22 |
+| **Version** | 1.2 |
+| **Date** | 2026-07-25 |
 | **Authors** | Domagoj Jugovic, Claude (Opus 4.8) |
 | **Status** | Approved |
 | **Technologies** | .NET 10, SignalR, EF Core 10, PostgreSQL |
 | **Projects** | KrakenDeploy.Server.Transport, KrakenDeploy.Server.Data, KrakenDeploy.Server |
 
+> v1.2 (2026-07-25): §1 updated for F2 — the wave deadline now arms in TWO
+> stages (dispatch-time backstop, then a clamped re-arm on the agent's
+> gate-acquisition report) and `Engine:MaxTargetQueueWait` is documented. All
+> `Engine` durations are validated at startup.
+>
 > v1.1 (2026-07-22): §4 rewritten and `Engine:MaxRunbookRunDuration` removed —
 > the D1 engine merge routed runbook runs through the unified orchestrator
 > (they hold a lease for the whole orchestration), and D1 Phase 3 deleted the
@@ -50,6 +55,28 @@ distinct from a configured step timeout so operators can tell them apart.
 Server-side waves — including manual-intervention gates that legitimately wait
 hours — are **not** subject to this ceiling. Non-positive configuration falls
 back to the default rather than reintroducing an unbounded wait.
+
+**F2 made the arming two-stage.** The budget above is EXECUTION time, and a
+sub-plan can sit in the agent's machine execution queue before it executes at
+all — pre-F2 that queue time burned the wave's budget, so an operator's 30 s
+step timeout blew up purely because the box was busy. Now:
+
+1. at DISPATCH the attempt is armed with the **backstop ceiling** = budget +
+   `Engine:MaxTargetQueueWait` (default 2 h), which is what keeps this
+   document's core invariant — *the wave deadline is always armed* — true for an
+   agent that stays connected but never executes;
+2. when the agent reports gate acquisition (`ReportExecutionStartedAsync`) the
+   timer is **re-armed with the execution budget alone**, clamped so the re-arm
+   can never push the attempt past the stage-1 backstop instant.
+
+A stage-1 (backstop) hit reports "never started executing"; a stage-2 hit
+reports the ordinary duration message. The distinction matters because the
+operator fix differs: a busy or wedged machine, versus a slow step.
+
+All `Engine` durations are validated at startup (`EngineOptionsValidator`,
+`ValidateOnStart`). A bare number binds as DAYS — `"MaxTargetQueueWait": "4"`
+means four days — and a multi-week value overflows `CancelAfter`, which would
+fail EVERY dispatch. Both are refused by key name at boot instead.
 
 ## 2. Mid-wave disconnect monitor (worker-side)
 
@@ -115,6 +142,7 @@ gauge returns to 0.
 ```json
 "Engine": {
   "MaxTargetWaveDuration":    "01:00:00",
+  "MaxTargetQueueWait":       "02:00:00",
   "AgentDisconnectWaveGrace": "00:02:00"
 }
 ```

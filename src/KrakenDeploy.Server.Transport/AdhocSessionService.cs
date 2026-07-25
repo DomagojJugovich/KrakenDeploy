@@ -327,7 +327,10 @@ public sealed class AdhocSessionService(
         // Pass the dispatching account so the dispatcher can fail-closed against a target
         // whose live connection belongs to a different account (Guid.Empty = single-instance).
         var dispatchAccountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;
-        var results = await dispatcher.DispatchAsync(session, iter, dispatchAccountId, ct).ConfigureAwait(false);
+        var allowParallel = await ReadAllowParallelAsync(db, session, ct).ConfigureAwait(false);
+        var results = await dispatcher
+            .DispatchAsync(session, iter, dispatchAccountId, allowParallel, ct)
+            .ConfigureAwait(false);
 
         iter.ResultsJson = JsonSerializer.Serialize(results);
         iter.Status      = AdhocIterationStatus.Completed;
@@ -649,6 +652,28 @@ public sealed class AdhocSessionService(
         // Any frozen target that can no longer be resolved counts as Production.
         if (levels.Count < ids.Count) { return TargetRiskLevel.Production; }
         return levels.Count == 0 ? TargetRiskLevel.Production : levels.Max();
+    }
+
+    /// <summary>
+    /// F2 — <c>targetId → AllowParallelTaskExecution</c> across the frozen target
+    /// set, read on the SAME context that resolved and approved the session so the
+    /// dispatch sees one consistent snapshot. An absent target (deleted since the set
+    /// was frozen, or outside this context's query-filter scope) is simply missing;
+    /// the dispatcher treats that as <c>false</c> = take the machine gate, matching
+    /// the fail-safe convention <see cref="ComputeMaxRiskAsync"/> already uses.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<Guid, bool>> ReadAllowParallelAsync(
+        KrakenDbContext db, AdhocSession session, CancellationToken ct)
+    {
+        var ids = JsonSerializer.Deserialize<List<Guid>>(session.FrozenTargetSetJson) ?? [];
+        if (ids.Count == 0) { return new Dictionary<Guid, bool>(); }
+
+        return await db.DeploymentTargets
+            .AsNoTracking()
+            .Where(t => ids.Contains(t.Id))
+            .Select(t => new { t.Id, t.AllowParallelTaskExecution })
+            .ToDictionaryAsync(t => t.Id, t => t.AllowParallelTaskExecution, ct)
+            .ConfigureAwait(false);
     }
 
     /// <summary>

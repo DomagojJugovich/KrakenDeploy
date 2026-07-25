@@ -1,3 +1,6 @@
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
+
 namespace KrakenDeploy.Server.Data;
 
 /// <summary>
@@ -100,4 +103,116 @@ public sealed class EngineOptions
     /// shipped default.
     /// </summary>
     public TimeSpan MaxDeployReleaseWaitDuration { get; set; } = TimeSpan.FromHours(1);
+}
+
+/// <summary>
+/// F2-followup 5 — fails the host at startup on an unusable <c>Engine</c> duration
+/// instead of letting it surface as an opaque per-deployment crash.
+/// <para>
+/// The motivating misconfiguration is not exotic: <see cref="TimeSpan.Parse(string)"/>
+/// reads a BARE NUMBER as days, so <c>"Engine:MaxTargetQueueWait": "4"</c> means four
+/// DAYS, not four minutes. Combined with the F2 dispatch backstop
+/// (<c>MaxTargetWaveDuration + MaxTargetQueueWait</c>) that pushes
+/// <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/> past its
+/// <c>uint.MaxValue - 1</c> ms limit, which throws
+/// <see cref="ArgumentOutOfRangeException"/> on EVERY wave dispatch — every deployment
+/// failing with a raw "Parameter 'delay'" message and nothing reaching any agent.
+/// </para>
+/// <para>
+/// Two checks, because one does not cover the other. The magnitude ceiling catches
+/// values big enough to be obviously wrong (and to overflow <c>CancelAfter</c>), but
+/// the realistic typo — <c>"4"</c> — lands at four days, well INSIDE any ceiling
+/// generous enough to be useful. So the bare-number form is rejected on sight, from
+/// the raw configured string: once the binder has produced a <see cref="TimeSpan"/>,
+/// <c>"4"</c> and <c>"4.00:00:00"</c> are indistinguishable, and the second one is
+/// something an operator can only have written on purpose.
+/// </para>
+/// <para>
+/// The consumers keep their non-positive fallbacks as belt-and-braces for tests and
+/// other hosts that construct <see cref="EngineOptions"/> directly.
+/// </para>
+/// </summary>
+public sealed class EngineOptionsValidator(IConfiguration configuration)
+    : IValidateOptions<EngineOptions>
+{
+    /// <summary>Largest accepted value for any Engine duration. Well inside
+    /// <c>CancelAfter</c>'s range, and generous enough for the slowest realistic
+    /// deployment.</summary>
+    public static readonly TimeSpan MaxAcceptedDuration = TimeSpan.FromDays(7);
+
+    public ValidateOptionsResult Validate(string? name, EngineOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        var section = configuration.GetSection(EngineOptions.SectionName);
+        var failures = new List<string>();
+
+        Check(nameof(EngineOptions.MaxTargetWaveDuration), options.MaxTargetWaveDuration);
+        Check(nameof(EngineOptions.MaxTargetQueueWait), options.MaxTargetQueueWait);
+        Check(nameof(EngineOptions.AgentDisconnectWaveGrace), options.AgentDisconnectWaveGrace,
+            // Zero is the documented "disable the disconnect monitor" switch.
+            allowZero: true);
+        Check(nameof(EngineOptions.MaxDeployReleaseWaitDuration),
+            options.MaxDeployReleaseWaitDuration);
+
+        if (options.MaxConcurrentTasks <= 0)
+        {
+            failures.Add(
+                $"Engine:{nameof(EngineOptions.MaxConcurrentTasks)} must be positive, " +
+                $"got {options.MaxConcurrentTasks}.");
+        }
+
+        return failures.Count == 0
+            ? ValidateOptionsResult.Success
+            : ValidateOptionsResult.Fail(failures);
+
+        void Check(string key, TimeSpan value, bool allowZero = false)
+        {
+            var raw = section[key];
+            if (raw is not null && IsBareNumber(raw))
+            {
+                failures.Add(
+                    $"Engine:{key} is '{raw}', which TimeSpan binding reads as " +
+                    $"{raw.Trim()} DAYS, not minutes or hours. Write the unit out as " +
+                    "[d.]hh:mm:ss — '00:04:00' for four minutes, '04:00:00' for four " +
+                    $"hours, '{raw.Trim()}.00:00:00' if you really did mean days.");
+                return;
+            }
+
+            if (value < TimeSpan.Zero || (!allowZero && value == TimeSpan.Zero))
+            {
+                failures.Add($"Engine:{key} must be a positive duration, got {value}.");
+            }
+            else if (value > MaxAcceptedDuration)
+            {
+                failures.Add(
+                    $"Engine:{key} is {value}, above the {MaxAcceptedDuration} ceiling.");
+            }
+        }
+    }
+
+    /// <summary>Digits only (optionally signed) — the form
+    /// <see cref="TimeSpan.Parse(string)"/> silently interprets as whole days.</summary>
+    private static bool IsBareNumber(string raw)
+    {
+        var trimmed = raw.AsSpan().Trim();
+        if (trimmed.Length > 0 && (trimmed[0] is '-' or '+'))
+        {
+            trimmed = trimmed[1..];
+        }
+
+        if (trimmed.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (var c in trimmed)
+        {
+            if (!char.IsAsciiDigit(c))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 }

@@ -2251,7 +2251,10 @@ public sealed class DeploymentWorker(
         var queueWaitCeiling = configuredQueueWait > TimeSpan.Zero
             ? configuredQueueWait
             : EngineOptions.DefaultMaxTargetQueueWait;
-        var dispatchBackstop = executionBudget + queueWaitCeiling;
+        // Clamped once: an explicit step TimeoutSeconds is honoured as-is and is an
+        // int of seconds, so the sum can exceed what CancelAfter accepts.
+        var dispatchBackstop = WaveDeadline.ClampToTimerLimit(
+            executionBudget + queueWaitCeiling);
 
         while (true)
         {
@@ -2306,7 +2309,10 @@ public sealed class DeploymentWorker(
             // AFTER the deadline object exists but BEFORE the plan is pushed, so an
             // agent that reports instantly still finds its slot.
             linkedCts.CancelAfter(dispatchBackstop);
-            var waveDeadline = new WaveDeadline(linkedCts, executionBudget);
+            var waveDeadline = new WaveDeadline(
+                linkedCts, executionBudget,
+                backstopDeadline: timeProvider.GetUtcNow() + dispatchBackstop,
+                timeProvider);
             subPlans.Register(
                 deployment.Id, targetId, attemptPlan.DispatchId, tcs,
                 onExecutionStarted: waveDeadline.ArmForExecution);
@@ -2441,10 +2447,14 @@ public sealed class DeploymentWorker(
     ///     reports;</item>
     ///   <item>re-armed with the pure EXECUTION budget the moment the agent reports
     ///     it acquired its machine execution gate — queue time behind a busy target
-    ///     therefore does not consume the wave's budget.</item>
+    ///     therefore does not consume the wave's budget — but CLAMPED so the re-arm
+    ///     can never push the attempt past the stage-1 backstop instant.</item>
     /// </list>
     /// <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/> reschedules the
-    /// existing timer, so the second arm replaces the first outright.
+    /// existing timer, so the second arm replaces the first outright; the clamp is
+    /// what keeps that replacement from being an extension. In the normal case
+    /// (report within the queue-wait ceiling) the clamp is inert and the attempt gets
+    /// its whole execution budget.
     /// <para>
     /// Contract: <see cref="ArmForExecution"/> is called from the reporting agent's
     /// hub thread and MUST NOT throw. At-most-once is the REGISTRY's job — a fresh
@@ -2456,7 +2466,11 @@ public sealed class DeploymentWorker(
     /// <see cref="ObjectDisposedException"/> swallowed here.
     /// </para>
     /// </summary>
-    private sealed class WaveDeadline(CancellationTokenSource cts, TimeSpan executionBudget)
+    internal sealed class WaveDeadline(
+        CancellationTokenSource cts,
+        TimeSpan executionBudget,
+        DateTimeOffset backstopDeadline,
+        TimeProvider timeProvider)
     {
         /// <summary>Whether the agent ever reported gate acquisition for this
         /// attempt — lets a timeout say "never started" instead of mislabelling a
@@ -2470,7 +2484,19 @@ public sealed class DeploymentWorker(
             Volatile.Write(ref _armedForExecution, true);
             try
             {
-                cts.CancelAfter(executionBudget);
+                var window = ComputeArmWindow(
+                    executionBudget, backstopDeadline - timeProvider.GetUtcNow());
+                if (window is { } delay)
+                {
+                    cts.CancelAfter(delay);
+                }
+                else
+                {
+                    // Already at or past the backstop: the dispatch-time timer is
+                    // firing anyway, but CancelAfter rejects negatives, so cancel
+                    // outright rather than reschedule.
+                    cts.Cancel();
+                }
             }
             catch (ObjectDisposedException)
             {
@@ -2478,6 +2504,52 @@ public sealed class DeploymentWorker(
                 // flight — there is no longer a deadline to move.
             }
         }
+
+        /// <summary>
+        /// F2-followup 6 — the re-arm window: the execution budget, CLAMPED to what
+        /// is left of the dispatch backstop. <c>null</c> means "the backstop is
+        /// already spent, cancel now".
+        /// <para>
+        /// Arming with the bare budget would let a late report EXTEND the attempt
+        /// past the backstop — a report arriving a second before it buys another
+        /// full budget, so the ceiling the operator configured (wave + queue wait)
+        /// is not actually a ceiling, and a slow-but-alive agent could stretch a
+        /// wave indefinitely by reporting late on each retry. Clamping leaves the
+        /// normal case untouched (a report inside the queue-wait ceiling has the
+        /// whole budget available) and makes the pathological one borrow nothing.
+        /// </para>
+        /// </summary>
+        internal static TimeSpan? ComputeArmWindow(
+            TimeSpan executionBudget, TimeSpan remainingToBackstop)
+        {
+            if (remainingToBackstop <= TimeSpan.Zero)
+            {
+                return null;
+            }
+
+            return ClampToTimerLimit(
+                remainingToBackstop < executionBudget ? remainingToBackstop : executionBudget);
+        }
+
+        /// <summary>
+        /// Largest delay <see cref="CancellationTokenSource.CancelAfter(TimeSpan)"/>
+        /// accepts (<c>Timer.MaxSupportedTimeout</c>, ~49.7 days). Anything larger
+        /// throws <see cref="ArgumentOutOfRangeException"/>.
+        /// </summary>
+        internal static readonly TimeSpan MaxTimerDelay =
+            TimeSpan.FromMilliseconds(uint.MaxValue - 1);
+
+        /// <summary>
+        /// Caps a deadline at what the timer can express. Reachable without any
+        /// misconfiguration: an explicit per-step <c>TimeoutSeconds</c> is honoured
+        /// as-is (operator intent, deliberately not subject to the engine ceiling)
+        /// and it is an <see cref="int"/> of SECONDS, so a large one is ~68 years —
+        /// past which the arm threw and failed the wave at dispatch with a raw
+        /// "Parameter 'delay'". A timeout that far out is indistinguishable from no
+        /// timeout, so capping it loses nothing an operator can observe.
+        /// </summary>
+        internal static TimeSpan ClampToTimerLimit(TimeSpan delay)
+            => delay > MaxTimerDelay ? MaxTimerDelay : delay;
     }
 
     /// <summary>

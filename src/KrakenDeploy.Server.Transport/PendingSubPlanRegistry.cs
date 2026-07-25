@@ -270,8 +270,21 @@ public sealed class PendingSubPlanRegistry : IPendingSubPlanRegistry
 
         // The callback re-arms a CancellationTokenSource timer that the attempt may
         // already have disposed (it ends concurrently with this hub call) — the
-        // callback owns that guard; by contract it does not throw.
-        slot.OnExecutionStarted?.Invoke();
+        // callback owns that guard; by contract it does not throw. If one ever does,
+        // hand the one-shot back so a retry (the agent re-reports on reconnect) can
+        // still arm the deadline: swallowing the marker AND the arm would leave the
+        // attempt running on the backstop while claiming it had started executing,
+        // which is the one state the two-stage deadline must never be in.
+        try
+        {
+            slot.OnExecutionStarted?.Invoke();
+        }
+        catch
+        {
+            Interlocked.Exchange(ref slot.ExecutionStartedMarked, 0);
+            throw;
+        }
+
         return true;
     }
 

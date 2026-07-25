@@ -390,6 +390,61 @@ public sealed class DeploymentExecutorCancelTests
         await oldRun.WaitAsync(TestTimeout);
     }
 
+    [Fact]
+    public async Task Parallel_flag_still_refuses_to_run_two_attempts_of_the_same_task()
+    {
+        // F2-followup 2. AllowParallelTaskExecution opts out of serializing against
+        // OTHER tasks; it must NOT opt out of B6's same-task guarantee. A stuck
+        // predecessor that ignores cancellation gets force-detached, and on a
+        // parallel-enabled target there is no machine slot keeping the two apart —
+        // so the new attempt must be ABANDONED, not started. Pre-fix the flag
+        // short-circuited before forceDetachedStuck was ever consulted, and both
+        // attempts ran over the same app pool / site path / services.
+        var link = new WedgeLink();
+        var executor = new DeploymentExecutor(
+            link,
+            new NullPackageSource(),
+            new NullArtifactSink(),
+            new StepPackageLoader(
+                new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance),
+            new MachineExecutionGate(),
+            Options.Create(new AgentConfig()),
+            NullLogger<DeploymentExecutor>.Instance)
+        {
+            SupersedeUnwindTimeout = TimeSpan.FromMilliseconds(150),
+            WedgedGateAcquireTimeout = TimeSpan.FromMilliseconds(150),
+        };
+
+        var taskId = Guid.NewGuid();
+        var oldDispatch = Guid.NewGuid();
+        var newDispatch = Guid.NewGuid();
+
+        var oldRun = Task.Run(() => executor.ExecuteAsync(
+            Plan(taskId, oldDispatch, allowParallel: true)));
+        await WaitUntilAsync(() => executor.IsExecuting,
+            "the old attempt must be in flight (it holds no gate — it bypassed)");
+
+        await executor.ExecuteAsync(Plan(taskId, newDispatch, allowParallel: true))
+            .WaitAsync(TestTimeout);
+
+        var refusal = link.Completions.Should().ContainSingle(
+            "only the new attempt's refusal is recorded").Subject;
+        refusal.Dispatch.Should().Be(newDispatch);
+        refusal.Success.Should().BeFalse();
+        refusal.Error.Should().Contain("could not be serialized",
+            "the refusal must name the real reason — no machine slot exists on a "
+            + "parallel-enabled target — not the wedged-gate reason");
+        // The stuck predecessor legitimately reported one (it bypassed the gate and
+        // entered the body); the ABANDONED attempt must not, because that report sits
+        // inside the execution body it never reached.
+        link.ExecutionStarted.Select(e => e.Dispatch).Should().Equal([oldDispatch],
+            "only the predecessor executed — the second attempt was abandoned before "
+            + "entering the execution body");
+
+        link.ReleaseStuck.Release();
+        await oldRun.WaitAsync(TestTimeout);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private static DeploymentExecutor BuildExecutor(GateLink link) => new(
@@ -481,6 +536,9 @@ public sealed class DeploymentExecutorCancelTests
     private sealed class WedgeLink : IServerLink
     {
         public ConcurrentQueue<(Guid Dep, Guid Dispatch, bool Success, string? Error)> Completions { get; } = new();
+        /// <summary>F2-followup 2 — asserted: an ABANDONED attempt must report no
+        /// execution start, because that report sits inside the execution body.</summary>
+        public ConcurrentQueue<(Guid Dep, Guid Dispatch)> ExecutionStarted { get; } = new();
         public SemaphoreSlim ReleaseStuck { get; } = new(0);
         private int _completionCalls;
 
@@ -511,7 +569,10 @@ public sealed class DeploymentExecutorCancelTests
             IReadOnlyCollection<string> sensitiveOutputNames, CancellationToken ct) => Task.CompletedTask;
         public Task ReportAdhocResultAsync(AdhocScriptResult result, CancellationToken ct) => Task.CompletedTask;
         public Task ReportExecutionStartedAsync(Guid deploymentId, Guid dispatchId, CancellationToken ct)
-            => Task.CompletedTask;
+        {
+            ExecutionStarted.Enqueue((deploymentId, dispatchId));
+            return Task.CompletedTask;
+        }
         public void OnRunDeployment(Func<DeploymentPlan, Task> handler) { }
         public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler) { }
         public void OnCancelDeployment(Func<Guid, string?, Task> handler) { }

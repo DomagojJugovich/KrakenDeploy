@@ -497,6 +497,39 @@ public sealed class DeploymentExecutor(
     {
         if (plan.AllowParallelTaskExecution)
         {
+            // F2-followup 2 — the flag opts out of serializing against OTHER tasks.
+            // It must NOT opt out of the SAME-task guarantee ("two attempts must never
+            // touch the same extract dirs / IIS handles concurrently", above). Normally
+            // the supersede block upholds that by cancelling and awaiting the old
+            // attempt; when that attempt is non-cooperative it is force-detached and
+            // the machine gate is what kept the two apart. A parallel-enabled target
+            // has no such slot — the detached attempt never took one — so there is
+            // nothing to serialize against and starting now would run two attempts of
+            // ONE task over the same app pool, physical site path and services.
+            // Refuse instead, with the same shape as the wedged-gate escalation: the
+            // server re-dispatches, and the stuck machine surfaces for an operator.
+            if (forceDetachedStuck)
+            {
+                logger.LogError(
+                    "Task {DeploymentId} attempt {DispatchId} abandoned: a previous attempt " +
+                    "did not unwind and was force-detached, and this target allows parallel " +
+                    "task execution — so there is no machine slot to serialize the two " +
+                    "attempts against. Refusing to run them concurrently.",
+                    plan.DeploymentId, plan.DispatchId);
+                await LogAsync(plan.DeploymentId, "error",
+                    "--- A previous attempt of this task is still running and could not be " +
+                    "stopped. Because this target allows parallel task execution there is no " +
+                    "machine slot to serialize against, so this attempt is abandoned rather " +
+                    "than run concurrently with it. The machine likely needs the agent " +
+                    "restarted. ---", CancellationToken.None)
+                    .ConfigureAwait(false);
+                await ReportAbandonedAttemptAsync(plan,
+                    "A previous attempt of this task did not unwind, and the target allows " +
+                    "parallel task execution, so the two attempts could not be serialized.")
+                    .ConfigureAwait(false);
+                return MachineSlot.AbandonedWedged;
+            }
+
             logger.LogInformation(
                 "Task {DeploymentId} attempt {DispatchId} bypasses the machine execution " +
                 "gate: the target allows parallel task execution.",
@@ -545,21 +578,33 @@ public sealed class DeploymentExecutor(
             "execution slot. Abandoning this attempt; the machine likely needs the " +
             "agent restarted. ---", CancellationToken.None)
             .ConfigureAwait(false);
+        await ReportAbandonedAttemptAsync(plan,
+            "Agent wedged: a previous task did not release the machine execution slot.")
+            .ConfigureAwait(false);
+        return MachineSlot.AbandonedWedged;
+    }
+
+    /// <summary>
+    /// Reports a failed completion for an attempt that never executed. Shared by the
+    /// two abandonment paths in <see cref="AcquireMachineSlotAsync"/>. Best-effort by
+    /// contract and on <see cref="CancellationToken.None"/> — the report must outlive
+    /// whatever token caused the abandonment, and failing to send it must not mask the
+    /// abandonment itself.
+    /// </summary>
+    private async Task ReportAbandonedAttemptAsync(DeploymentPlan plan, string reason)
+    {
         try
         {
             await serverLink.CompleteDeploymentAsync(
                 plan.DeploymentId, plan.DispatchId, success: false,
-                errorMessage: "Agent wedged: a previous task did not release the machine " +
-                              "execution slot.",
-                CancellationToken.None).ConfigureAwait(false);
+                errorMessage: reason, CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             logger.LogError(ex,
-                "Failed to report the wedged-gate failure for {DeploymentId}.",
-                plan.DeploymentId);
+                "Failed to report the abandoned attempt {DispatchId} of {DeploymentId}.",
+                plan.DispatchId, plan.DeploymentId);
         }
-        return MachineSlot.AbandonedWedged;
     }
 
     /// <summary>

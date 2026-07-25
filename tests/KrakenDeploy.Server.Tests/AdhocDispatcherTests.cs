@@ -45,13 +45,13 @@ public sealed class AdhocDispatcherTests
         var pending = new PendingAdhocRegistry();
         var dispatcher = new AdhocDispatcher(
             connections, pending, new RecordingPusher(connections, pending),
-            new FakeConcurrencyPolicy(), NullLogger<AdhocDispatcher>.Instance);
+            NullLogger<AdhocDispatcher>.Instance);
 
         var session = SessionWithTargets(Guid.NewGuid());
         var iteration = SignedIteration();
         iteration.ScriptSignature = null;
 
-        var act = async () => await dispatcher.DispatchAsync(session, iteration, Guid.Empty, CancellationToken.None);
+        var act = async () => await dispatcher.DispatchAsync(session, iteration, Guid.Empty, NoParallelTargets, CancellationToken.None);
         await act.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*no signature*");
     }
@@ -63,10 +63,10 @@ public sealed class AdhocDispatcherTests
         var pending = new PendingAdhocRegistry();
         var dispatcher = new AdhocDispatcher(
             connections, pending, new RecordingPusher(connections, pending),
-            new FakeConcurrencyPolicy(), NullLogger<AdhocDispatcher>.Instance);
+            NullLogger<AdhocDispatcher>.Instance);
 
         var results = await dispatcher.DispatchAsync(
-            SessionWithTargets(), SignedIteration(), Guid.Empty, CancellationToken.None);
+            SessionWithTargets(), SignedIteration(), Guid.Empty, NoParallelTargets, CancellationToken.None);
 
         results.Should().BeEmpty();
     }
@@ -90,10 +90,10 @@ public sealed class AdhocDispatcherTests
         var pending = new PendingAdhocRegistry();
         var pusher = new RecordingPusher(connections, pending);
         var dispatcher = new AdhocDispatcher(connections, pending, pusher,
-            new FakeConcurrencyPolicy(), NullLogger<AdhocDispatcher>.Instance);
+            NullLogger<AdhocDispatcher>.Instance);
 
         var results = await dispatcher.DispatchAsync(
-            SessionWithTargets(inSetA, inSetB), SignedIteration(), Guid.Empty, CancellationToken.None);
+            SessionWithTargets(inSetA, inSetB), SignedIteration(), Guid.Empty, NoParallelTargets, CancellationToken.None);
 
         results.Should().HaveCount(2);
         var expectedConnections = ExpectedConnAB;
@@ -114,10 +114,10 @@ public sealed class AdhocDispatcherTests
         var pending = new PendingAdhocRegistry();
         var pusher = new RecordingPusher(connections, pending);
         var dispatcher = new AdhocDispatcher(connections, pending, pusher,
-            new FakeConcurrencyPolicy(), NullLogger<AdhocDispatcher>.Instance);
+            NullLogger<AdhocDispatcher>.Instance);
 
         var results = await dispatcher.DispatchAsync(
-            SessionWithTargets(online, offline), SignedIteration(), Guid.Empty, CancellationToken.None);
+            SessionWithTargets(online, offline), SignedIteration(), Guid.Empty, NoParallelTargets, CancellationToken.None);
 
         results.Should().HaveCount(2);
         results.Where(r => r.Result.AgentError is not null).Should().ContainSingle(
@@ -142,11 +142,11 @@ public sealed class AdhocDispatcherTests
                 Stdout: $"out-{cmd.IterNumber}", Stderr: "", AgentError: null));
 
         var dispatcher = new AdhocDispatcher(connections, pending, pusher,
-            new FakeConcurrencyPolicy(), NullLogger<AdhocDispatcher>.Instance);
+            NullLogger<AdhocDispatcher>.Instance);
         var session = SessionWithTargets(a, b);
         var iteration = SignedIteration(script: "Get-Date", sig: "sig-xyz");
 
-        var results = await dispatcher.DispatchAsync(session, iteration, Guid.Empty, CancellationToken.None);
+        var results = await dispatcher.DispatchAsync(session, iteration, Guid.Empty, NoParallelTargets, CancellationToken.None);
 
         results.Should().HaveCount(2);
         results.Should().AllSatisfy(r =>
@@ -166,11 +166,11 @@ public sealed class AdhocDispatcherTests
         connections.Add("c", t);
 
         var dispatcher = new AdhocDispatcher(connections, new PendingAdhocRegistry(),
-            new ThrowingPusher(), new FakeConcurrencyPolicy(),
+            new ThrowingPusher(),
             NullLogger<AdhocDispatcher>.Instance);
 
         var results = await dispatcher.DispatchAsync(
-            SessionWithTargets(t), SignedIteration(), Guid.Empty, CancellationToken.None);
+            SessionWithTargets(t), SignedIteration(), Guid.Empty, NoParallelTargets, CancellationToken.None);
 
         results.Should().ContainSingle();
         results[0].TargetId.Should().Be(t);
@@ -184,7 +184,7 @@ public sealed class AdhocDispatcherTests
         var pending = new PendingAdhocRegistry();
         var dispatcher = new AdhocDispatcher(
             connections, pending, new RecordingPusher(connections, pending),
-            new FakeConcurrencyPolicy(), NullLogger<AdhocDispatcher>.Instance);
+            NullLogger<AdhocDispatcher>.Instance);
 
         var session = new AdhocSession
         {
@@ -195,7 +195,7 @@ public sealed class AdhocDispatcherTests
         };
 
         var act = async () => await dispatcher.DispatchAsync(
-            session, SignedIteration(), Guid.Empty, CancellationToken.None);
+            session, SignedIteration(), Guid.Empty, NoParallelTargets, CancellationToken.None);
 
         await act.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*FrozenTargetSetJson*");
@@ -216,10 +216,10 @@ public sealed class AdhocDispatcherTests
         var pending = new PendingAdhocRegistry();
         var pusher = new RecordingPusher(connections, pending);
         var dispatcher = new AdhocDispatcher(connections, pending, pusher,
-            new FakeConcurrencyPolicy(), NullLogger<AdhocDispatcher>.Instance);
+            NullLogger<AdhocDispatcher>.Instance);
 
         var results = await dispatcher.DispatchAsync(
-            SessionWithTargets(target), SignedIteration(), accountB, CancellationToken.None);
+            SessionWithTargets(target), SignedIteration(), accountB, NoParallelTargets, CancellationToken.None);
 
         results.Should().ContainSingle();
         results[0].TargetId.Should().Be(target);
@@ -240,10 +240,10 @@ public sealed class AdhocDispatcherTests
         var pending = new PendingAdhocRegistry();
         var pusher = new RecordingPusher(connections, pending);
         var dispatcher = new AdhocDispatcher(connections, pending, pusher,
-            new FakeConcurrencyPolicy(), NullLogger<AdhocDispatcher>.Instance);
+            NullLogger<AdhocDispatcher>.Instance);
 
         var results = await dispatcher.DispatchAsync(
-            SessionWithTargets(target), SignedIteration(), account, CancellationToken.None);
+            SessionWithTargets(target), SignedIteration(), account, NoParallelTargets, CancellationToken.None);
 
         results.Should().ContainSingle();
         results[0].Result.AgentError.Should().BeNull();
@@ -269,18 +269,21 @@ public sealed class AdhocDispatcherTests
 
         var pending = new PendingAdhocRegistry();
         var pusher = new RecordingPusher(connections, pending);
-        var policy = new FakeConcurrencyPolicy();
-        policy.AllowParallel[serialTarget] = false;
-        policy.AllowParallel[parallelTarget] = true;
-        // deletedTarget is deliberately ABSENT from the map (removed since the set
-        // was frozen) — it must fall back to the safe serialized default.
+        var allowParallel = new Dictionary<Guid, bool>
+        {
+            [serialTarget] = false,
+            [parallelTarget] = true,
+            // deletedTarget is deliberately ABSENT (removed since the set was frozen,
+            // or filtered out of the caller's query scope) — it must fall back to the
+            // safe serialized default.
+        };
 
         var dispatcher = new AdhocDispatcher(connections, pending, pusher,
-            policy, NullLogger<AdhocDispatcher>.Instance);
+            NullLogger<AdhocDispatcher>.Instance);
 
         await dispatcher.DispatchAsync(
             SessionWithTargets(serialTarget, parallelTarget, deletedTarget),
-            SignedIteration(), Guid.Empty, CancellationToken.None);
+            SignedIteration(), Guid.Empty, allowParallel, CancellationToken.None);
 
         pusher.CommandsByTarget[serialTarget].AllowParallelTaskExecution.Should().BeFalse();
         pusher.CommandsByTarget[parallelTarget].AllowParallelTaskExecution.Should().BeTrue();
@@ -291,28 +294,16 @@ public sealed class AdhocDispatcherTests
         // the identical signed (session, iteration, script) triple.
         pusher.CommandsByTarget.Values.Select(c => c.Signature).Distinct()
             .Should().ContainSingle();
-        policy.Queried.Should().BeEquivalentTo(
-            [serialTarget, parallelTarget, deletedTarget],
-            "the whole frozen set is resolved in one read, not per target");
     }
 
     // ── Fakes ───────────────────────────────────────────────────────────────
 
-    /// <summary>F2 — no target opts into parallel execution unless a test says so.
-    /// Mirrors "absent means false" (take the machine gate) from the real
-    /// <see cref="ITargetConcurrencyPolicy"/>.</summary>
-    private sealed class FakeConcurrencyPolicy : ITargetConcurrencyPolicy
-    {
-        public Dictionary<Guid, bool> AllowParallel { get; } = [];
-        public List<Guid> Queried { get; } = [];
-
-        public Task<IReadOnlyDictionary<Guid, bool>> GetAllowParallelAsync(
-            IReadOnlyCollection<Guid> targetIds, CancellationToken ct)
-        {
-            Queried.AddRange(targetIds);
-            return Task.FromResult<IReadOnlyDictionary<Guid, bool>>(AllowParallel);
-        }
-    }
+    /// <summary>F2 — the default flag map: nothing opts into parallel execution, so
+    /// every target takes its machine gate. Empty rather than fully populated on
+    /// purpose — "absent means take the gate" is the contract, and the tests that do
+    /// not care about the flag should exercise that path.</summary>
+    private static readonly IReadOnlyDictionary<Guid, bool> NoParallelTargets =
+        new Dictionary<Guid, bool>();
 
     /// <summary>
     /// Records every push the dispatcher makes and resolves the matching
