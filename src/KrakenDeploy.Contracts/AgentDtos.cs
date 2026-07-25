@@ -13,11 +13,19 @@ namespace KrakenDeploy.Contracts;
 public static class AgentContract
 {
     /// <summary>
-    /// Version 1 = the B6 freeze surface: DispatchId on plan + completion +
-    /// step + log reports, CancelDeploymentAsync push, registration result,
-    /// Roles removed from registration.
+    /// Version history:
+    /// <list type="bullet">
+    ///   <item><c>1</c> — the B6 freeze surface: DispatchId on plan + completion +
+    ///     step + log reports, CancelDeploymentAsync push, registration result,
+    ///     Roles removed from registration.</item>
+    ///   <item><c>2</c> — F2: <see cref="DeploymentPlan.AllowParallelTaskExecution"/>
+    ///     and <c>AdhocScriptCommand.AllowParallelTaskExecution</c> on the wire, plus
+    ///     the new <see cref="IAgentHubServer.ReportExecutionStartedAsync"/> report
+    ///     (the server arms the wave deadline from it, so a v1 agent would leave
+    ///     every wave on the dispatch-time backstop).</item>
+    /// </list>
     /// </summary>
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
 }
 
 /// <summary>

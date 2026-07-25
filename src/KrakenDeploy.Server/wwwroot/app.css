@@ -1437,6 +1437,21 @@ a.kraken-matrix-celllink:hover { background: var(--surface-2); }
 .kraken-health--idle { --c: var(--idle);    --cs: var(--idle-soft); }
 .kraken-health--warn { --c: var(--queue);   --cs: var(--queue-soft); }
 
+/* Compact inline variant of the banner above — sits under a risky setting rather
+   than at the top of a section (F2: parallel task execution). Reuses the
+   --c/--cs colour pair, so .kraken-health--warn (or any other modifier) styles it. */
+.kraken-health--inline {
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+    margin-bottom: 0;
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: var(--text-2);
+    max-width: 560px;
+}
+.kraken-health--inline .rzi { font-size: 18px; flex: 0 0 auto; }
+
 /* Back-link above detail pages ("← All releases") */
 a.kraken-back-link {
     display: inline-flex;

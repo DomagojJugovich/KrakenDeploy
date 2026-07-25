@@ -36,4 +36,22 @@ public sealed record AdhocScriptCommand(
     /// <summary>Base64 RSA-SHA256 signature produced server-side via
     /// <see cref="AdhocScriptSigner.Sign"/> using the
     /// <c>Adhoc:SigningKey</c>.</summary>
-    string Signature);
+    string Signature,
+    /// <summary>
+    /// F2 CONTRACT CHANGE — the receiving target's
+    /// <c>DeploymentTarget.AllowParallelTaskExecution</c>. Stamped per target by
+    /// the dispatcher (the same command text fans out to the frozen set, but this
+    /// flag is per-machine). <c>false</c> (the default) makes the script take the
+    /// agent's machine execution gate, so it waits its turn behind a running
+    /// deployment / runbook run instead of interleaving with it; <c>true</c>
+    /// bypasses the gate.
+    /// <para>
+    /// Deliberately OUTSIDE the signature binding
+    /// (<see cref="AdhocScriptSigner"/> binds <c>(SessionId, IterNumber,
+    /// Script)</c>): it is a local execution-serialization hint, not an
+    /// authorization input — flipping it cannot make a script run that the
+    /// operator did not approve, only change whether it interleaves. Server
+    /// configuration, not agent state, is the source of truth.
+    /// </para>
+    /// </summary>
+    bool AllowParallelTaskExecution = false);

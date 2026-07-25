@@ -307,12 +307,15 @@ internal sealed class RoundTripHost : IAsyncDisposable
     private readonly string _serverUrl;
 
     public sealed record RealAgent(
-        SignalRServerLink Link, DeploymentExecutor Executor) : IAsyncDisposable
+        SignalRServerLink Link, DeploymentExecutor Executor, MachineExecutionGate Gate)
+        : IAsyncDisposable
     {
         public async ValueTask DisposeAsync()
         {
             await Link.DisposeAsync().ConfigureAwait(false);
-            Executor.Dispose();
+            // F2: the machine execution slot moved out of the executor into this
+            // shared singleton, so teardown disposes the gate instead.
+            Gate.Dispose();
         }
     }
 
@@ -447,11 +450,13 @@ internal sealed class RoundTripHost : IAsyncDisposable
         var loader = new StepPackageLoader(loaderConfig, NullLogger<StepPackageLoader>.Instance);
 
         var link = new SignalRServerLink(NullLogger<SignalRServerLink>.Instance);
+        var executionGate = new MachineExecutionGate();
         var executor = new DeploymentExecutor(
             link,
             new NeverUsedPackageSource(),
             new NullArtifactSink(),
             loader,
+            executionGate,
             // DataPath MUST match the loader's + the staged package dir: the executor
             // stages each step's working dirs under it, and the production default
             // (/var/lib/krakendeploy-agent on Linux) is NOT writable by a non-root CI
@@ -498,7 +503,7 @@ internal sealed class RoundTripHost : IAsyncDisposable
                 $"Real registration refused: {registration?.Message ?? "null result"}");
         }
 
-        var agent = new RealAgent(link, executor);
+        var agent = new RealAgent(link, executor, executionGate);
         _agents.Add(agent);
         return agent;
     }

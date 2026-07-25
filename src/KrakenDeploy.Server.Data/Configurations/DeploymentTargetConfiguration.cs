@@ -51,6 +51,12 @@ public class DeploymentTargetConfiguration : IEntityTypeConfiguration<Deployment
 
         builder.Property(x => x.AutoUpdateEnabled).IsRequired().HasDefaultValue(true);
 
+        // F2 — per-target "Allow parallel task execution". Store-default false so
+        // existing rows backfill to the SAFE (serialized) behaviour; false is the
+        // CLR default too, so no HasSentinel dance is needed (unlike RiskLevel).
+        builder.Property(x => x.AllowParallelTaskExecution)
+            .IsRequired().HasDefaultValue(false);
+
         // Soft-delete / decommission flag. Store-default false backfills existing
         // rows; false is the CLR default too, so no HasSentinel dance is needed.
         builder.Property(x => x.IsRetired).IsRequired().HasDefaultValue(false);

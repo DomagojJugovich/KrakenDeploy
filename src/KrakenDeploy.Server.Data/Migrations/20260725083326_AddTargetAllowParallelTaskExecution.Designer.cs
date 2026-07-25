@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using KrakenDeploy.Server.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -12,9 +13,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace KrakenDeploy.Server.Data.Migrations
 {
     [DbContext(typeof(KrakenDbContext))]
-    partial class KrakenDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260725083326_AddTargetAllowParallelTaskExecution")]
+    partial class AddTargetAllowParallelTaskExecution
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -3195,12 +3198,6 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_utc");
 
-                    b.Property<bool>("IsRetired")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("boolean")
-                        .HasDefaultValue(false)
-                        .HasColumnName("is_retired");
-
                     b.Property<DateTimeOffset?>("LastSeenUtc")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("last_seen_utc");
@@ -3576,11 +3573,6 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .IsConcurrencyToken()
                         .HasColumnType("text")
                         .HasColumnName("concurrency_stamp");
-
-                    b.Property<string>("DisplayName")
-                        .HasMaxLength(200)
-                        .HasColumnType("character varying(200)")
-                        .HasColumnName("display_name");
 
                     b.Property<string>("Email")
                         .HasMaxLength(256)

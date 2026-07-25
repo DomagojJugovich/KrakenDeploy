@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| **Version** | 1.0 |
-| **Date** | 2026-07-16 |
-| **Authors** | Domagoj Jugović, Claude (Opus 4.8) |
+| **Version** | 1.1 |
+| **Date** | 2026-07-25 |
+| **Authors** | Domagoj Jugović, Claude (Opus 4.8), Claude (Opus 5) |
 | **Status** | Approved |
 | **Technologies** | .NET 10, SignalR, gRPC (proto3), PowerShell/Bash |
 | **Projects** | KrakenDeploy.Contracts, KrakenDeploy.Agent, KrakenDeploy.Agent.Transport, KrakenDeploy.Server.Transport, KrakenDeploy.Steps.Common |
@@ -12,7 +12,24 @@
 Production-readiness fix **B6** (audit items T2-5, T1-3): the last breaking pass
 over the agent wire before external agents exist. Everything here is a
 **CONTRACT CHANGE**; `AgentContract.CurrentVersion = 1` names the resulting
-surface.
+surface. Later passes append to it — the current version and what each pass
+added are tabulated below.
+
+## Version history
+
+| Version | Pass | Surface added / changed |
+|---|---|---|
+| 1 | B6 (this document) | `DispatchId` on plan + completion + step + log reports, `CancelDeploymentAsync` push, `AgentRegistrationResult`, `Roles` removed from registration. |
+| 2 | F2 (2026-07-25) | `DeploymentPlan.AllowParallelTaskExecution` + `AdhocScriptCommand.AllowParallelTaskExecution` (per-target machine-concurrency policy, appended + defaulted `false`); new `IAgentHubServer.ReportExecutionStartedAsync(deploymentId, dispatchId)`. |
+
+**Why F2 bumps the version rather than riding v1.** Both new plan fields are
+appended and default to the safe value, so a v1 agent would deserialize them
+fine — but a v1 agent never sends `ReportExecutionStartedAsync`, and the server
+now arms the wave deadline from it. Such an agent would leave every wave on the
+dispatch-time backstop ceiling (`budget + Engine:MaxTargetQueueWait`, default
+2 h) instead of its real budget, and would silently keep bypassing the machine
+gate for ad-hoc scripts. That is a semantic divergence the refusal must catch,
+not a wire-shape one.
 
 ## The contract, versioned
 

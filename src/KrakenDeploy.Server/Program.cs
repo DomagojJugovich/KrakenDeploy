@@ -696,6 +696,11 @@ public static class Program
         // M11.E.7 — per-target adhoc-script dispatch + result collation.
         builder.Services.AddSingleton<IPendingAdhocRegistry, PendingAdhocRegistry>();
         builder.Services.AddSingleton<IAdhocAgentPusher, HubContextAdhocAgentPusher>();
+        // F2 — per-target "Allow parallel task execution", stamped onto each
+        // dispatched adhoc command. Singleton over IServiceScopeFactory (NOT the
+        // SCOPED IDbContextFactory — see DbTargetConcurrencyPolicy), so the
+        // singleton AdhocDispatcher can consume it without a captive dependency.
+        builder.Services.AddSingleton<ITargetConcurrencyPolicy, DbTargetConcurrencyPolicy>();
         builder.Services.AddSingleton<IAdhocDispatcher, AdhocDispatcher>();
         // M11.E commits 3 + 5 — LLM-driven generation + verdict + the session
         // orchestrator. Signing key is loaded lazily on first approval.

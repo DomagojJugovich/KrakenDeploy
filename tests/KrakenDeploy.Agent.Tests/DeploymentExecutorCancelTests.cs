@@ -20,6 +20,11 @@ namespace KrakenDeploy.Agent.Tests;
 /// attempt is ignored; a NEWER attempt supersedes (cancels + awaits) the old
 /// one. The gate link holds the FIRST success-path completion in flight
 /// (honoring the run's token), so tests can act while a task is registered.
+/// <para>
+/// Also covers B7's machine execution queue and F2's per-target opt-out
+/// (<c>DeploymentPlan.AllowParallelTaskExecution</c>) plus the execution-started
+/// report the server arms its wave deadline from.
+/// </para>
 /// </summary>
 public sealed class DeploymentExecutorCancelTests
 {
@@ -119,8 +124,9 @@ public sealed class DeploymentExecutorCancelTests
         var taskB = Guid.NewGuid();
 
         var runA = Task.Run(() => executor.ExecuteAsync(Plan(taskA, Guid.NewGuid())));
-        await WaitUntilAsync(() => executor.IsExecuting,
-            "task A must hold the machine (blocked in its completion send)");
+        await WaitUntilAsync(() => link.ExecutionStarted.Count == 1,
+            "the first task must hold the machine — its execution-started report is "
+            + "emitted right after acquisition, whereas IsExecuting flips at registration");
 
         var runB = Task.Run(() => executor.ExecuteAsync(Plan(taskB, Guid.NewGuid())));
         // Give B ample time to (incorrectly) run if the gate were absent —
@@ -146,7 +152,9 @@ public sealed class DeploymentExecutorCancelTests
         var taskB = Guid.NewGuid();
 
         var runA = Task.Run(() => executor.ExecuteAsync(Plan(taskA, Guid.NewGuid())));
-        await WaitUntilAsync(() => executor.IsExecuting, "task A must hold the machine");
+        await WaitUntilAsync(() => link.ExecutionStarted.Count == 1,
+            "the first task must hold the machine — its execution-started report is "
+            + "emitted right after acquisition, whereas IsExecuting flips at registration");
 
         var runB = Task.Run(() => executor.ExecuteAsync(Plan(taskB, Guid.NewGuid())));
         await WaitUntilAsync(() => executor.TryCancel(taskB, "operator changed their mind"),
@@ -164,6 +172,126 @@ public sealed class DeploymentExecutorCancelTests
         await runA.WaitAsync(TestTimeout);
         link.Completions.Last().Dep.Should().Be(taskA);
         link.Completions.Last().Success.Should().BeTrue();
+    }
+
+    // ── F2: per-target "Allow parallel task execution" ─────────────────────
+
+    [Fact]
+    public async Task Parallel_flag_lets_two_tasks_interleave_on_one_machine()
+    {
+        // Same shape as Plans_for_different_tasks_serialize_FIFO, but task B's
+        // target opted into parallel execution: it must NOT wait for A.
+        var link = new GateLink();
+        var executor = BuildExecutor(link);
+        var taskA = Guid.NewGuid();
+        var taskB = Guid.NewGuid();
+
+        var runA = Task.Run(() => executor.ExecuteAsync(Plan(taskA, Guid.NewGuid())));
+        await WaitUntilAsync(() => link.ExecutionStarted.Count == 1,
+            "the first task must hold the machine — its execution-started report is "
+            + "emitted right after acquisition, whereas IsExecuting flips at registration");
+
+        var runB = Task.Run(() => executor.ExecuteAsync(
+            Plan(taskB, Guid.NewGuid(), allowParallel: true)));
+        await runB.WaitAsync(TestTimeout);
+
+        // B completed while A still holds the slot — the gate was bypassed.
+        var completion = link.Completions.Should().ContainSingle(
+            "only task B has reported; task A is still blocked holding the machine").Subject;
+        completion.Dep.Should().Be(taskB);
+        completion.Success.Should().BeTrue();
+
+        link.ReleaseFirstCompletion.Release();
+        await runA.WaitAsync(TestTimeout);
+        link.Completions.Last().Dep.Should().Be(taskA);
+    }
+
+    [Fact]
+    public async Task Parallel_flag_does_not_release_a_gate_it_never_took()
+    {
+        // Regression guard: a bypassing plan must not Release() the semaphore on
+        // its way out — that would hand a phantom permit to the next waiter and
+        // silently break serialization for every later task on this machine.
+        var link = new GateLink();
+        var executor = BuildExecutor(link);
+        var holder = Guid.NewGuid();
+
+        var runHolder = Task.Run(() => executor.ExecuteAsync(Plan(holder, Guid.NewGuid())));
+        await WaitUntilAsync(() => link.ExecutionStarted.Count == 1,
+            "the first task must hold the machine — its execution-started report is "
+            + "emitted right after acquisition, whereas IsExecuting flips at registration");
+
+        // A bypassing plan runs to completion while the holder keeps the slot.
+        await executor.ExecuteAsync(Plan(Guid.NewGuid(), Guid.NewGuid(), allowParallel: true))
+            .WaitAsync(TestTimeout);
+
+        // A SERIAL plan must still be blocked behind the holder.
+        var serial = Guid.NewGuid();
+        var runSerial = Task.Run(() => executor.ExecuteAsync(Plan(serial, Guid.NewGuid())));
+        await Task.Delay(300);
+        link.Completions.Select(c => c.Dep).Should().NotContain(serial,
+            "the bypassing plan must not have leaked a permit to the serial queue");
+
+        link.ReleaseFirstCompletion.Release();
+        await Task.WhenAll(runHolder, runSerial).WaitAsync(TestTimeout);
+        link.Completions.Select(c => c.Dep).Should().Contain(serial);
+    }
+
+    // ── F2: the execution-started report drives the server's deadline arming ──
+
+    [Fact]
+    public async Task Execution_started_is_reported_only_once_the_machine_slot_is_taken()
+    {
+        var link = new GateLink();
+        var executor = BuildExecutor(link);
+        var taskA = Guid.NewGuid();
+        var taskB = Guid.NewGuid();
+        var dispatchB = Guid.NewGuid();
+
+        var runA = Task.Run(() => executor.ExecuteAsync(Plan(taskA, Guid.NewGuid())));
+        await WaitUntilAsync(() => link.ExecutionStarted.Count == 1,
+            "the first task must hold the machine — its execution-started report is "
+            + "emitted right after acquisition, whereas IsExecuting flips at registration");
+        link.ExecutionStarted.Single().Dep.Should().Be(taskA);
+
+        var runB = Task.Run(() => executor.ExecuteAsync(Plan(taskB, dispatchB)));
+        await Task.Delay(300);
+        link.ExecutionStarted.Should().HaveCount(1,
+            "task B is QUEUED — reporting it now would arm its wave deadline while " +
+            "it is still waiting, which is exactly the defect F2 fixes");
+
+        link.ReleaseFirstCompletion.Release();
+        await Task.WhenAll(runA, runB).WaitAsync(TestTimeout);
+
+        link.ExecutionStarted.Select(e => e.Dep).Should().Equal([taskA, taskB]);
+        link.ExecutionStarted.Last().Dispatch.Should().Be(dispatchB,
+            "the report must carry the attempt key so a retired attempt cannot " +
+            "re-arm the live attempt's deadline");
+    }
+
+    [Fact]
+    public async Task Cancel_while_queued_reports_no_execution_start()
+    {
+        var link = new GateLink();
+        var executor = BuildExecutor(link);
+        var taskA = Guid.NewGuid();
+        var taskB = Guid.NewGuid();
+
+        var runA = Task.Run(() => executor.ExecuteAsync(Plan(taskA, Guid.NewGuid())));
+        await WaitUntilAsync(() => link.ExecutionStarted.Count == 1,
+            "the first task must hold the machine — its execution-started report is "
+            + "emitted right after acquisition, whereas IsExecuting flips at registration");
+
+        var runB = Task.Run(() => executor.ExecuteAsync(Plan(taskB, Guid.NewGuid())));
+        await WaitUntilAsync(() => executor.TryCancel(taskB, "changed their mind"),
+            "task B must be registered (queued) and cancellable");
+        await runB.WaitAsync(TestTimeout);
+
+        link.ExecutionStarted.Select(e => e.Dep).Should().NotContain(taskB,
+            "nothing executed, so nothing may extend a deadline");
+
+        link.ReleaseFirstCompletion.Release();
+        await runA.WaitAsync(TestTimeout);
     }
 
     // ── E5: the self-update guard is only live if the executor is a singleton ──
@@ -186,6 +314,7 @@ public sealed class DeploymentExecutorCancelTests
         services.AddSingleton<IArtifactSink>(new NullArtifactSink());
         services.AddSingleton(new StepPackageLoader(
             new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance));
+        services.AddSingleton<MachineExecutionGate>();
         services.AddSingleton(Options.Create(new AgentConfig()));
         services.AddSingleton<ILogger<DeploymentExecutor>>(NullLogger<DeploymentExecutor>.Instance);
         services.AddSingleton<DeploymentExecutor>();   // ← the lifetime under test
@@ -227,6 +356,7 @@ public sealed class DeploymentExecutorCancelTests
             new NullArtifactSink(),
             new StepPackageLoader(
                 new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance),
+            new MachineExecutionGate(),
             Options.Create(new AgentConfig()),
             NullLogger<DeploymentExecutor>.Instance)
         {
@@ -268,16 +398,19 @@ public sealed class DeploymentExecutorCancelTests
         new NullArtifactSink(),
         new StepPackageLoader(
             new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance),
+        new MachineExecutionGate(),
         Options.Create(new AgentConfig()),
         NullLogger<DeploymentExecutor>.Instance);
 
-    private static DeploymentPlan Plan(Guid taskId, Guid dispatchId) => new(
+    private static DeploymentPlan Plan(
+        Guid taskId, Guid dispatchId, bool allowParallel = false) => new(
         DeploymentId: taskId,
         EnvironmentName: "test",
         Steps: [],
         Variables: new Dictionary<string, string>(),
         ArrayVariables: new Dictionary<string, string[]>(),
-        DispatchId: dispatchId);
+        DispatchId: dispatchId,
+        AllowParallelTaskExecution: allowParallel);
 
     private static async Task WaitUntilAsync(Func<bool> condition, string because)
     {
@@ -299,6 +432,9 @@ public sealed class DeploymentExecutorCancelTests
     private sealed class GateLink : IServerLink
     {
         public ConcurrentQueue<(Guid Dep, Guid Dispatch, bool Success, string? Error)> Completions { get; } = new();
+        /// <summary>F2 — every execution-started report, in order. The executor sends
+        /// one per attempt right AFTER it takes (or bypasses) the machine gate.</summary>
+        public ConcurrentQueue<(Guid Dep, Guid Dispatch)> ExecutionStarted { get; } = new();
         public SemaphoreSlim ReleaseFirstCompletion { get; } = new(0);
         private int _completionCalls;
 
@@ -324,6 +460,11 @@ public sealed class DeploymentExecutorCancelTests
             string? errorMessage, IReadOnlyDictionary<string, string> outputVariables,
             IReadOnlyCollection<string> sensitiveOutputNames, CancellationToken ct) => Task.CompletedTask;
         public Task ReportAdhocResultAsync(AdhocScriptResult result, CancellationToken ct) => Task.CompletedTask;
+        public Task ReportExecutionStartedAsync(Guid deploymentId, Guid dispatchId, CancellationToken ct)
+        {
+            ExecutionStarted.Enqueue((deploymentId, dispatchId));
+            return Task.CompletedTask;
+        }
         public void OnRunDeployment(Func<DeploymentPlan, Task> handler) { }
         public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler) { }
         public void OnCancelDeployment(Func<Guid, string?, Task> handler) { }
@@ -369,6 +510,8 @@ public sealed class DeploymentExecutorCancelTests
             string? errorMessage, IReadOnlyDictionary<string, string> outputVariables,
             IReadOnlyCollection<string> sensitiveOutputNames, CancellationToken ct) => Task.CompletedTask;
         public Task ReportAdhocResultAsync(AdhocScriptResult result, CancellationToken ct) => Task.CompletedTask;
+        public Task ReportExecutionStartedAsync(Guid deploymentId, Guid dispatchId, CancellationToken ct)
+            => Task.CompletedTask;
         public void OnRunDeployment(Func<DeploymentPlan, Task> handler) { }
         public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler) { }
         public void OnCancelDeployment(Func<Guid, string?, Task> handler) { }

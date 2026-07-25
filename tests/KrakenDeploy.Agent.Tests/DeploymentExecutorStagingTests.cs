@@ -123,6 +123,7 @@ public sealed class DeploymentExecutorStagingTests
         new NullArtifactSink(),
         new StepPackageLoader(
             new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance),
+        new MachineExecutionGate(),
         Options.Create(new AgentConfig { DataPath = dataPath }),
         NullLogger<DeploymentExecutor>.Instance);
 
@@ -160,6 +161,7 @@ public sealed class DeploymentExecutorStagingTests
             string? errorMessage, IReadOnlyDictionary<string, string> outputVariables,
             IReadOnlyCollection<string> sensitiveOutputNames, CancellationToken ct) => Task.CompletedTask;
         public Task ReportAdhocResultAsync(AdhocScriptResult result, CancellationToken ct) => Task.CompletedTask;
+        public Task ReportExecutionStartedAsync(Guid deploymentId, Guid dispatchId, CancellationToken ct) => Task.CompletedTask;
         public void OnRunDeployment(Func<DeploymentPlan, Task> handler) { }
         public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler) { }
         public void OnCancelDeployment(Func<Guid, string?, Task> handler) { }

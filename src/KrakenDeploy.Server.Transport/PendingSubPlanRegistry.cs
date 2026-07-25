@@ -73,8 +73,34 @@ public interface IPendingSubPlanRegistry
     /// (<see cref="KrakenDeploy.Contracts.DeploymentPlan.DispatchId"/>);
     /// <see cref="Guid.Empty"/> preserves the legacy match-by-(deployment,
     /// target) behaviour for callers without a key.
+    /// <para>
+    /// F2 — <paramref name="onExecutionStarted"/> fires (at most once, on the
+    /// caller-agnostic hub thread) when <see cref="TryMarkExecutionStarted"/>
+    /// matches THIS attempt: the orchestrator uses it to re-arm the wave deadline
+    /// from gate acquisition. It must be tolerant of running late — the attempt may
+    /// already have ended.
+    /// </para>
     /// </summary>
-    void Register(Guid deploymentId, Guid targetId, Guid dispatchId, TaskCompletionSource<SubPlanResult> tcs);
+    void Register(
+        Guid deploymentId, Guid targetId, Guid dispatchId,
+        TaskCompletionSource<SubPlanResult> tcs,
+        Action? onExecutionStarted = null);
+
+    /// <summary>
+    /// F2 — records that the agent reported "this attempt acquired my machine
+    /// execution gate and is executing now", and invokes the slot's
+    /// <c>onExecutionStarted</c> callback the FIRST time it matches. Returns
+    /// <c>true</c> only on that first match.
+    /// <para>
+    /// Matching is STRICT (unlike <see cref="RouteCompletion"/>): the open slot's
+    /// dispatch id must equal <paramref name="dispatchId"/> exactly and
+    /// <see cref="Guid.Empty"/> never matches. A report from a superseded /
+    /// re-dispatched attempt must not extend the LIVE attempt's deadline, and the
+    /// message only exists from agent contract v2 onwards, so every genuine sender
+    /// carries a real key.
+    /// </para>
+    /// </summary>
+    bool TryMarkExecutionStarted(Guid deploymentId, Guid targetId, Guid dispatchId);
 
     /// <summary>
     /// B2 (B6.2 pulled forward) — route an agent completion to the pending
@@ -170,7 +196,29 @@ public enum SubPlanCompletionRoute
 
 public sealed class PendingSubPlanRegistry : IPendingSubPlanRegistry
 {
-    private sealed record Slot(Guid DispatchId, TaskCompletionSource<SubPlanResult> Tcs);
+    /// <summary>
+    /// One dispatch attempt's in-flight state. A CLASS, not a record: it carries
+    /// mutable state (<see cref="ExecutionStartedMarked"/>) and the
+    /// remove-if-unchanged in <see cref="RouteCompletion"/> wants IDENTITY
+    /// ("is the same slot object still registered?"), which is exactly what
+    /// <c>EqualityComparer&lt;Slot&gt;.Default</c> gives a plain class.
+    /// </summary>
+    private sealed class Slot(
+        Guid dispatchId,
+        TaskCompletionSource<SubPlanResult> tcs,
+        Action? onExecutionStarted)
+    {
+        public Guid DispatchId { get; } = dispatchId;
+        public TaskCompletionSource<SubPlanResult> Tcs { get; } = tcs;
+
+        /// <summary>F2 — fired once, when this attempt's execution-started report
+        /// lands. Must not throw (it runs on the reporting agent's hub call).</summary>
+        public Action? OnExecutionStarted { get; } = onExecutionStarted;
+
+        /// <summary>F2 — 0 until the attempt's execution-started report has been
+        /// accepted; the at-least-once outbox may deliver it twice.</summary>
+        public int ExecutionStartedMarked;
+    }
 
     private readonly ConcurrentDictionary<(Guid DeploymentId, Guid TargetId), Slot> _pending = new();
     // Per-(deployment, target) per-step results bag. Survives until the next
@@ -188,15 +236,43 @@ public sealed class PendingSubPlanRegistry : IPendingSubPlanRegistry
     private readonly ConcurrentDictionary<Guid, byte> _retired = new();
     private readonly ConcurrentQueue<Guid> _retiredOrder = new();
 
-    public void Register(Guid deploymentId, Guid targetId, Guid dispatchId, TaskCompletionSource<SubPlanResult> tcs)
+    public void Register(
+        Guid deploymentId, Guid targetId, Guid dispatchId,
+        TaskCompletionSource<SubPlanResult> tcs,
+        Action? onExecutionStarted = null)
     {
         ArgumentNullException.ThrowIfNull(tcs);
         var key = (deploymentId, targetId);
         // Overwrite any stale entry (should not normally happen — caller
         // guarantees only one sub-plan per (deployment, target) at a time).
-        _pending[key] = new Slot(dispatchId, tcs);
+        _pending[key] = new Slot(dispatchId, tcs, onExecutionStarted);
         // New wave starts with a clean per-step bag.
         _stepResults[key] = [];
+    }
+
+    public bool TryMarkExecutionStarted(Guid deploymentId, Guid targetId, Guid dispatchId)
+    {
+        // Strict match: Guid.Empty is the shared "no key" marker and must never
+        // arm anything, and a non-empty id must be THIS attempt's — a superseded
+        // attempt's late report cannot extend the live attempt's deadline.
+        if (dispatchId == Guid.Empty
+            || !_pending.TryGetValue((deploymentId, targetId), out var slot)
+            || slot.DispatchId != dispatchId)
+        {
+            return false;
+        }
+
+        // At-least-once delivery: only the first report arms.
+        if (Interlocked.Exchange(ref slot.ExecutionStartedMarked, 1) != 0)
+        {
+            return false;
+        }
+
+        // The callback re-arms a CancellationTokenSource timer that the attempt may
+        // already have disposed (it ends concurrently with this hub call) — the
+        // callback owns that guard; by contract it does not throw.
+        slot.OnExecutionStarted?.Invoke();
+        return true;
     }
 
     public SubPlanCompletionRoute RouteCompletion(

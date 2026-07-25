@@ -90,8 +90,13 @@ public sealed class OfflineRunner(ILoggerFactory loggerFactory)
         loader = new StepPackageLoader(
             config, loggerFactory.CreateLogger<StepPackageLoader>(), stepSource);
 
+        // A fresh gate per offline invocation: this process runs exactly one plan
+        // and exits, so there is nothing to serialize against. A live agent on the
+        // same box has its OWN gate in its own process — an offline run is
+        // deliberately not coordinated with it (pre-existing behaviour).
+        using var executionGate = new MachineExecutionGate();
         var executor = new DeploymentExecutor(
-            serverLink, packageSource, artifactSink, loader, agentConfig,
+            serverLink, packageSource, artifactSink, loader, executionGate, agentConfig,
             loggerFactory.CreateLogger<DeploymentExecutor>());
 
         log.LogInformation(

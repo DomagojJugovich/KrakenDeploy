@@ -262,6 +262,16 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         return list;
     }
 
+    /// <summary>F2 — flips a seeded target's "Allow parallel task execution" flag,
+    /// which the plan builder stamps into every sub-plan dispatched to it.</summary>
+    public async Task SetAllowParallelTaskExecutionAsync(Guid targetId, bool allow)
+    {
+        await using var db = _postgres.CreateContext();
+        await db.DeploymentTargets.IgnoreQueryFilters()
+            .Where(t => t.Id == targetId)
+            .ExecuteUpdateAsync(s => s.SetProperty(t => t.AllowParallelTaskExecution, allow));
+    }
+
     /// <summary>
     /// Seeds a release with the given step plans. Each step is a
     /// target-side Kraken.Script step (so wave classification puts them on

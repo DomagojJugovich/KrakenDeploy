@@ -1,5 +1,7 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using KrakenDeploy.Agent.Deployment;
 using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts.Adhoc;
 using KrakenDeploy.Steps.Common;
@@ -18,6 +20,11 @@ namespace KrakenDeploy.Agent.Adhoc;
 ///   <item>Verifies <see cref="AdhocScriptCommand.Signature"/> against the
 ///         command's <c>(SessionId, IterNumber, Script)</c> binding via
 ///         <see cref="AdhocScriptSigner.Verify"/>. Mismatch → REFUSE.</item>
+///   <item>F2 — takes the machine execution gate (unless the target sets
+///         <see cref="AdhocScriptCommand.AllowParallelTaskExecution"/>) so the
+///         script waits its turn behind a running deployment / runbook run
+///         instead of interleaving with its file / IIS / service operations.
+///         Bounded by <see cref="GateWaitTimeout"/> → REFUSE on expiry.</item>
 ///   <item>If verification passes, runs the script via <see cref="ScriptRunner"/>
 ///         capturing stdout / stderr / exit code into a structured
 ///         <see cref="AdhocScriptResult"/>.</item>
@@ -37,6 +44,7 @@ public sealed class AdhocScriptExecutor(
     IServerLink serverLink,
     IConfiguration config,
     IAdhocScriptInvoker invoker,
+    MachineExecutionGate executionGate,
     ILogger<AdhocScriptExecutor> logger)
 {
     /// <summary>
@@ -45,6 +53,49 @@ public sealed class AdhocScriptExecutor(
     /// </summary>
     private static readonly string StagingRoot =
         Path.Combine(Path.GetTempPath(), "kraken-adhoc");
+
+    /// <summary>
+    /// F2 default for the bounded gate wait: how long a queued ad-hoc script waits
+    /// for the machine execution slot before REFUSING to run.
+    /// <para>
+    /// Deliberately shorter than <c>AdhocDispatcher.DefaultTimeout</c> (5 min, the
+    /// server's per-target wait) so a script the server has already given up on
+    /// never executes late — an operator who saw "timed out" and approved a fresh
+    /// iteration must not get both. Operators who raise the dispatcher timeout
+    /// should raise <c>Adhoc:MaxQueueWait</c> to match; the two ends are coupled
+    /// by intent, not by the wire.
+    /// </para>
+    /// </summary>
+    private static readonly TimeSpan DefaultGateWaitTimeout = TimeSpan.FromMinutes(4);
+
+    /// <summary>
+    /// Test-only override for the bounded gate wait. <c>null</c> (production) reads
+    /// <c>Adhoc:MaxQueueWait</c> instead. Nullable rather than a <c>TimeSpan.Zero</c>
+    /// sentinel so a test CAN ask for "refuse immediately"; note the DI container
+    /// does property injection for nobody, so production always sees <c>null</c>.
+    /// </summary>
+    internal TimeSpan? GateWaitTimeout { get; init; }
+
+    /// <summary>
+    /// Resolves the bounded gate wait: the test override, else
+    /// <c>Adhoc:MaxQueueWait</c> (a <see cref="TimeSpan"/> string, e.g.
+    /// <c>00:04:00</c>), else <see cref="DefaultGateWaitTimeout"/>. A non-positive
+    /// configured value falls back to the default rather than degenerating into
+    /// "refuse immediately". A METHOD, not a property: it reads configuration, so
+    /// the call site should show that it is not free — read it once into a local.
+    /// </summary>
+    private TimeSpan ResolveGateWaitTimeout()
+    {
+        if (GateWaitTimeout is { } explicitWait)
+        {
+            return explicitWait;
+        }
+        var configured = config["Adhoc:MaxQueueWait"];
+        return TimeSpan.TryParse(configured, CultureInfo.InvariantCulture, out var parsed)
+               && parsed > TimeSpan.Zero
+            ? parsed
+            : DefaultGateWaitTimeout;
+    }
 
     /// <summary>Entry point — wire this to <c>IServerLink.OnRunAdhocScript</c>.</summary>
     public async Task HandleAsync(AdhocScriptCommand command)
@@ -100,11 +151,110 @@ public sealed class AdhocScriptExecutor(
             return;
         }
 
-        // Step 3: execute via ScriptRunner; capture stdout / stderr / exit code.
+        // Step 3 (F2): take the machine execution slot unless the target allows
+        // parallel task execution. Pre-F2 ad-hoc scripts bypassed the gate outright,
+        // so a diagnostic script could run straight into a deployment's file / IIS /
+        // service operations on the same box. Bounded so a long-running deployment
+        // cannot pin an interactive script indefinitely.
+        var slot = await AcquireMachineSlotAsync(command).ConfigureAwait(false);
+        if (slot.Refused)
+        {
+            return; // AcquireMachineSlotAsync already reported the refusal.
+        }
+
+        // Disposing the lease hands the machine to the next queued task; a
+        // bypassing script holds none, and disposing null is a no-op.
+        using (slot.Lease)
+        {
+            await RunAndReportAsync(command).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// One acquisition attempt's outcome. <see cref="Refused"/> means the script was
+    /// NOT executed and the failure has ALREADY been reported to the dispatcher, so
+    /// the caller must return silently.
+    /// </summary>
+    private readonly record struct AdhocMachineSlot(
+        MachineExecutionGate.Releaser? Lease, bool Refused);
+
+    /// <summary>
+    /// F2 — takes the machine execution slot for an ad-hoc script, bounded by
+    /// <see cref="ResolveGateWaitTimeout"/>. Refuses (and reports) rather than
+    /// running late when the slot stays held: a script the server's dispatcher has
+    /// already resolved as timed out must not execute afterwards. Bypasses the gate
+    /// entirely when the target sets
+    /// <see cref="AdhocScriptCommand.AllowParallelTaskExecution"/>.
+    /// </summary>
+    private async Task<AdhocMachineSlot> AcquireMachineSlotAsync(AdhocScriptCommand command)
+    {
+        if (command.AllowParallelTaskExecution)
+        {
+            logger.LogInformation(
+                "Adhoc session {SessionId} iter {Iter} bypasses the machine execution gate: " +
+                "the target allows parallel task execution.",
+                command.SessionId, command.IterNumber);
+            return new AdhocMachineSlot(null, false);
+        }
+
+        var gateWait = ResolveGateWaitTimeout();
+        try
+        {
+            if (await executionGate.TryAcquireNowAsync(CancellationToken.None)
+                    .ConfigureAwait(false) is { } uncontended)
+            {
+                return new AdhocMachineSlot(uncontended, false);
+            }
+
+            logger.LogInformation(
+                "Adhoc session {SessionId} iter {Iter} is waiting up to {Timeout} for the " +
+                "machine execution slot (another task is running on this machine).",
+                command.SessionId, command.IterNumber, gateWait);
+
+            if (await executionGate.AcquireAsync(gateWait, CancellationToken.None)
+                    .ConfigureAwait(false) is { } queued)
+            {
+                return new AdhocMachineSlot(queued, false);
+            }
+
+            logger.LogWarning(
+                "Adhoc session {SessionId} iter {Iter} refused: the machine execution " +
+                "slot was still held after {Timeout}.",
+                command.SessionId, command.IterNumber, gateWait);
+            await ReportFailureAsync(command,
+                $"Another task is still running on this machine after {gateWait}; " +
+                "the script was NOT executed. Re-run it once the machine is free.")
+                .ConfigureAwait(false);
+            return new AdhocMachineSlot(null, true);
+        }
+        catch (ObjectDisposedException ex)
+        {
+            // The agent host is shutting down and DI disposed the gate. Report
+            // rather than let this escape: the dispatcher's slot is waiting and
+            // this class's contract is that every path closes it.
+            logger.LogWarning(ex,
+                "Adhoc session {SessionId} iter {Iter} refused: the agent is shutting down.",
+                command.SessionId, command.IterNumber);
+            await ReportFailureAsync(command,
+                "The agent is shutting down; the script was NOT executed.")
+                .ConfigureAwait(false);
+            return new AdhocMachineSlot(null, true);
+        }
+    }
+
+    /// <summary>
+    /// Runs the verified script and reports its outcome. Split out of
+    /// <see cref="HandleAsync"/> so the machine-slot lease wraps it in a plain
+    /// <c>using</c> — keeping this body at its natural indentation instead of
+    /// nesting 60-odd pre-existing lines inside a try/finally.
+    /// </summary>
+    private async Task RunAndReportAsync(AdhocScriptCommand command)
+    {
+        // Step 4: execute via ScriptRunner; capture stdout / stderr / exit code.
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
         var workingDir = Path.Combine(StagingRoot, command.SessionId.ToString("N"),
-            command.IterNumber.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            command.IterNumber.ToString(CultureInfo.InvariantCulture));
         Directory.CreateDirectory(workingDir);
 
         int exitCode;
@@ -116,7 +266,7 @@ public sealed class AdhocScriptExecutor(
                 envVars: new Dictionary<string, string>
                 {
                     ["KrakenAdhocSessionId"]  = command.SessionId.ToString(),
-                    ["KrakenAdhocIterNumber"] = command.IterNumber.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["KrakenAdhocIterNumber"] = command.IterNumber.ToString(CultureInfo.InvariantCulture),
                 },
                 onOutput: (level, line) =>
                 {
@@ -139,7 +289,7 @@ public sealed class AdhocScriptExecutor(
 
         TryCleanWorkingDir(workingDir);
 
-        // Step 4: report.
+        // Step 5: report.
         var result = new AdhocScriptResult(
             SessionId:  command.SessionId,
             IterNumber: command.IterNumber,

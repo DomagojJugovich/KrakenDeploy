@@ -237,6 +237,16 @@ public sealed class SignalRServerLink : IServerLink
         return Task.CompletedTask;
     }
 
+    // F2: queued rather than sent direct so FIFO puts it ahead of this plan's own
+    // step reports and completion — the server can never observe a step report for
+    // an attempt it hasn't yet armed. Droppable as poison (advisory).
+    public Task ReportExecutionStartedAsync(
+        Guid deploymentId, Guid dispatchId, CancellationToken ct)
+    {
+        _outbox.Enqueue(new OutboxItem.ExecutionStarted(deploymentId, dispatchId));
+        return Task.CompletedTask;
+    }
+
     public Task ReportStepCompletedAsync(
         Guid deploymentId,
         Guid dispatchId,
@@ -296,6 +306,9 @@ public sealed class SignalRServerLink : IServerLink
 
             OutboxItem.AdhocResult a => connection.InvokeAsync(
                 "ReportAdhocResultAsync", a.Result, ct),
+
+            OutboxItem.ExecutionStarted e => connection.InvokeAsync(
+                "ReportExecutionStartedAsync", e.DeploymentId, e.DispatchId, ct),
 
             _ => throw new NotSupportedException($"Unknown outbox item {item.GetType().Name}."),
         };

@@ -29,14 +29,10 @@ public sealed class DeploymentExecutor(
     IPackageSource packageDownloader,
     IArtifactSink artifactUploader,
     StepPackageLoader stepPackageLoader,
+    MachineExecutionGate executionGate,
     IOptions<AgentConfig> agentConfig,
-    ILogger<DeploymentExecutor> logger) : IDisposable
+    ILogger<DeploymentExecutor> logger)
 {
-    /// <summary>App-lifetime singleton; the DI container disposes it at
-    /// shutdown (releases the execution gate's wait handle).</summary>
-    public void Dispose() => _executionGate.Dispose();
-
-
     /// <summary>
     /// True while a deployment is executing. Read by <see cref="Services.AgentUpdateService"/>
     /// to avoid swapping the agent binary during an in-flight deployment.
@@ -74,13 +70,13 @@ public sealed class DeploymentExecutor(
     /// the agent forever behind the stuck step. Overridable for tests.</summary>
     internal TimeSpan WedgedGateAcquireTimeout { get; init; } = DefaultWedgedGateAcquireTimeout;
 
-    /// <summary>
-    /// B7 — the machine's execution slot: ONE plan (deployment or runbook run)
-    /// executes at a time on this agent, FIFO for async waiters. Registration
-    /// in <see cref="_running"/> happens BEFORE queueing, so a queued plan is
-    /// still cancellable / supersedable; the wait observes the run's token.
-    /// </summary>
-    private readonly SemaphoreSlim _executionGate = new(1, 1);
+    // B7/F2 — the machine's execution slot: ONE unit of work (deployment, runbook
+    // run or ad-hoc script) executes at a time on this agent, FIFO for async
+    // waiters. Registration in _running happens BEFORE queueing, so a queued plan
+    // is still cancellable / supersedable; the wait observes the run's token.
+    // F2 moved the semaphore into the shared MachineExecutionGate singleton so the
+    // ad-hoc path takes the SAME slot, and made the gate opt-out per target via
+    // DeploymentPlan.AllowParallelTaskExecution.
 
     private sealed class RunningDeployment(Guid dispatchId)
     {
@@ -233,69 +229,36 @@ public sealed class DeploymentExecutor(
 
         try
         {
-            // ── B7: the machine's execution slot ────────────────────────
-            // ONE plan executes at a time on this agent (Octopus tentacle-
-            // mutex parity): concurrent deployments and runbook runs hitting
-            // the same box serialize FIFO instead of interleaving file/IIS/
-            // service mutations. Waves WITHIN a plan keep their parallelism.
-            // A cancel or supersede while queued unblocks the wait via the
-            // run token — the OperationCanceledException lands in the
-            // aborted-completion catch below with nothing executed.
-            if (!await _executionGate.WaitAsync(TimeSpan.Zero, ct).ConfigureAwait(false))
+            // ── B7/F2: the machine's execution slot ─────────────────────
+            // By default ONE dispatched sub-plan executes at a time on this agent
+            // (Octopus tentacle-mutex parity): concurrent deployments, runbook runs
+            // and ad-hoc scripts hitting the same box serialize FIFO instead of
+            // interleaving file/IIS/service mutations. Waves WITHIN a sub-plan keep
+            // their parallelism either way. NOTE the unit is the dispatched
+            // sub-plan, i.e. one WAVE — the server dispatches per wave, so the slot
+            // is released and re-taken at every wave boundary.
+            var slot = await AcquireMachineSlotAsync(plan, forceDetachedStuck, ct)
+                .ConfigureAwait(false);
+            if (slot.Abandoned)
             {
-                await LogAsync(plan.DeploymentId, "info",
-                    "--- Waiting for another task to finish on this machine ---", ct)
-                    .ConfigureAwait(false);
-
-                if (forceDetachedStuck)
-                {
-                    // A superseded old attempt was force-detached above but a
-                    // non-cooperative step may still hold the gate. Bound the wait
-                    // so this attempt cannot wedge the agent forever behind it; on
-                    // expiry escalate (log + task log + failed completion) and
-                    // abandon the attempt. The server re-dispatches, and the stuck
-                    // machine surfaces for operator intervention/restart instead of
-                    // heartbeating Online while silently never executing again.
-                    if (!await _executionGate
-                            .WaitAsync(WedgedGateAcquireTimeout, ct).ConfigureAwait(false))
-                    {
-                        logger.LogError(
-                            "Task {DeploymentId} attempt {DispatchId} could not acquire the " +
-                            "machine execution gate within {Timeout} after force-detaching a " +
-                            "stuck predecessor; the agent appears wedged. Abandoning this attempt.",
-                            plan.DeploymentId, plan.DispatchId, WedgedGateAcquireTimeout);
-                        await LogAsync(plan.DeploymentId, "error",
-                            "--- The agent is wedged: a previous task is not releasing the " +
-                            "machine execution slot. Abandoning this attempt; the machine " +
-                            "likely needs the agent restarted. ---", CancellationToken.None)
-                            .ConfigureAwait(false);
-                        try
-                        {
-                            await serverLink.CompleteDeploymentAsync(
-                                plan.DeploymentId, plan.DispatchId, success: false,
-                                errorMessage: "Agent wedged: a previous task did not release " +
-                                              "the machine execution slot.",
-                                CancellationToken.None).ConfigureAwait(false);
-                        }
-                        catch (Exception ex)
-                        {
-                            logger.LogError(ex,
-                                "Failed to report the wedged-gate failure for {DeploymentId}.",
-                                plan.DeploymentId);
-                        }
-                        // The outer finally removes our registry entry and signals
-                        // completion; the gate was never acquired, so nothing to
-                        // release. Do NOT enter the execution try below.
-                        return;
-                    }
-                }
-                else
-                {
-                    await _executionGate.WaitAsync(ct).ConfigureAwait(false);
-                }
+                // AcquireMachineSlotAsync already logged the escalation and
+                // reported the failed completion. The outer finally removes our
+                // registry entry and signals completion; the gate was never
+                // acquired, so there is nothing to release. Do NOT enter the
+                // execution try below.
+                return;
             }
-            try
+            // A bypassing plan holds no lease, and disposing null is a no-op — so
+            // the release needs no "did I take it?" flag.
+            using (slot.Lease)
             {
+
+            // F2 — the plan is now EXECUTING, not queued. The server arms the wave
+            // deadline from this report instead of from dispatch, so queue time
+            // behind a busy target no longer burns the wave's budget. Advisory and
+            // best-effort: if it never lands, the server's dispatch-time backstop
+            // ceiling still bounds the wave (B3's always-armed invariant).
+            await ReportExecutionStartedAsync(plan, ct).ConfigureAwait(false);
 
             // ── M14.4 — partition into waves agent-side ─────────────────
             // The server already pre-flattens waves (one wave per sub-plan
@@ -381,16 +344,7 @@ public sealed class DeploymentExecutor(
                     ct)
                 .ConfigureAwait(false);
 
-            }
-            finally
-            {
-                // B7: hand the machine to the next queued plan. Reached only
-                // when the slot WAS acquired — a cancel while queued throws
-                // out of WaitAsync above, before this try. The disposed-guard
-                // covers host shutdown racing an in-flight plan's unwind.
-                try { _executionGate.Release(); }
-                catch (ObjectDisposedException) { }
-            }
+            } // B7: disposing the lease hands the machine to the next queued plan.
         }
         catch (OperationCanceledException) when (run.Cts.IsCancellationRequested)
         {
@@ -471,6 +425,134 @@ public sealed class DeploymentExecutor(
             ((ICollection<KeyValuePair<Guid, RunningDeployment>>)_running)
                 .Remove(new(plan.DeploymentId, run));
             run.Completed.TrySetResult();
+        }
+    }
+
+    /// <summary>
+    /// Outcome of <see cref="AcquireMachineSlotAsync"/>. The third state is why a
+    /// plain <c>bool</c> would not do: "did not acquire" also means "the escalation
+    /// has ALREADY been logged and reported", so the caller must return silently
+    /// rather than report again.
+    /// </summary>
+    private readonly record struct MachineSlot(
+        MachineExecutionGate.Releaser? Lease, bool Abandoned)
+    {
+        /// <summary>The slot is held; dispose <see cref="Lease"/> to release it.</summary>
+        internal static MachineSlot Held(MachineExecutionGate.Releaser lease) => new(lease, false);
+
+        /// <summary>F2 — the target allows parallel task execution, so no slot was
+        /// taken and there is nothing to release.</summary>
+        internal static MachineSlot Bypassed { get; } = new(null, false);
+
+        /// <summary>Wedged gate: this attempt is abandoned, already reported.</summary>
+        internal static MachineSlot AbandonedWedged { get; } = new(null, true);
+    }
+
+    /// <summary>
+    /// B7/F2 — takes this machine's execution slot for <paramref name="plan"/>,
+    /// announcing the wait in the task log when the slot is busy. Returns
+    /// <see cref="MachineSlot.Bypassed"/> when the target sets
+    /// <c>AllowParallelTaskExecution</c> (the plan may then interleave with OTHER
+    /// tasks on this box; the F1 project/environment/tenant serialization is
+    /// unaffected — that is enforced server-side at claim time).
+    /// <para>
+    /// Returns <see cref="MachineSlot.AbandonedWedged"/> ONLY on the wedged-gate
+    /// escalation: a superseded predecessor was force-detached
+    /// (<paramref name="forceDetachedStuck"/>) but its non-cooperative step still
+    /// holds the slot, so the wait is BOUNDED by
+    /// <see cref="WedgedGateAcquireTimeout"/> and on expiry this attempt is
+    /// abandoned — logged, written to the task log, and reported as a failed
+    /// completion — rather than wedging the agent forever behind the stuck step
+    /// (a zombie heartbeating Online while silently never executing again).
+    /// </para>
+    /// <para>
+    /// A cancel or supersede while queued unblocks the wait via the run token; the
+    /// resulting <see cref="OperationCanceledException"/> propagates to the
+    /// aborted-completion catch in <see cref="ExecuteAsync"/> with nothing executed
+    /// and nothing to release.
+    /// </para>
+    /// </summary>
+    private async Task<MachineSlot> AcquireMachineSlotAsync(
+        DeploymentPlan plan, bool forceDetachedStuck, CancellationToken ct)
+    {
+        if (plan.AllowParallelTaskExecution)
+        {
+            logger.LogInformation(
+                "Task {DeploymentId} attempt {DispatchId} bypasses the machine execution " +
+                "gate: the target allows parallel task execution.",
+                plan.DeploymentId, plan.DispatchId);
+            return MachineSlot.Bypassed;
+        }
+
+        if (await executionGate.TryAcquireNowAsync(ct).ConfigureAwait(false) is { } uncontended)
+        {
+            return MachineSlot.Held(uncontended);
+        }
+
+        await LogAsync(plan.DeploymentId, "info",
+            "--- Waiting for another task to finish on this machine ---", ct)
+            .ConfigureAwait(false);
+
+        if (!forceDetachedStuck)
+        {
+            return MachineSlot.Held(
+                await executionGate.AcquireAsync(ct).ConfigureAwait(false));
+        }
+
+        if (await executionGate.AcquireAsync(WedgedGateAcquireTimeout, ct)
+                .ConfigureAwait(false) is { } bounded)
+        {
+            return MachineSlot.Held(bounded);
+        }
+
+        logger.LogError(
+            "Task {DeploymentId} attempt {DispatchId} could not acquire the machine " +
+            "execution gate within {Timeout} after force-detaching a stuck predecessor; " +
+            "the agent appears wedged. Abandoning this attempt.",
+            plan.DeploymentId, plan.DispatchId, WedgedGateAcquireTimeout);
+        await LogAsync(plan.DeploymentId, "error",
+            "--- The agent is wedged: a previous task is not releasing the machine " +
+            "execution slot. Abandoning this attempt; the machine likely needs the " +
+            "agent restarted. ---", CancellationToken.None)
+            .ConfigureAwait(false);
+        try
+        {
+            await serverLink.CompleteDeploymentAsync(
+                plan.DeploymentId, plan.DispatchId, success: false,
+                errorMessage: "Agent wedged: a previous task did not release the machine " +
+                              "execution slot.",
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex,
+                "Failed to report the wedged-gate failure for {DeploymentId}.",
+                plan.DeploymentId);
+        }
+        return MachineSlot.AbandonedWedged;
+    }
+
+    /// <summary>
+    /// F2 — reports "this sub-plan has the machine and is executing now" so the
+    /// server re-arms the wave deadline from gate acquisition rather than from
+    /// dispatch. Swallows every failure: the report is purely advisory (a lost one
+    /// leaves the wave on the server's dispatch-time backstop ceiling), so it must
+    /// never fail a run that is otherwise about to execute fine.
+    /// </summary>
+    private async Task ReportExecutionStartedAsync(DeploymentPlan plan, CancellationToken ct)
+    {
+        try
+        {
+            await serverLink
+                .ReportExecutionStartedAsync(plan.DeploymentId, plan.DispatchId, ct)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            logger.LogWarning(ex,
+                "Failed to report execution start for {DeploymentId} attempt {DispatchId}; " +
+                "the server falls back to its dispatch-time deadline ceiling.",
+                plan.DeploymentId, plan.DispatchId);
         }
     }
 

@@ -55,6 +55,9 @@ public sealed class FileSystemServerLink(
     public Task HeartbeatAsync(HeartbeatRequest request, CancellationToken ct) => Task.CompletedTask;
     public Task ReportStatusAsync(string status, CancellationToken ct) => Task.CompletedTask;
     public Task ReportAdhocResultAsync(AdhocScriptResult result, CancellationToken ct) => Task.CompletedTask;
+    // F2: no server to arm a wave deadline — an offline bundle is a single local run.
+    public Task ReportExecutionStartedAsync(Guid deploymentId, Guid dispatchId, CancellationToken ct)
+        => Task.CompletedTask;
     public void OnRunDeployment(Func<DeploymentPlan, Task> handler) { }
     public void OnRunAdhocScript(Func<AdhocScriptCommand, Task> handler) { }
     public void OnCancelDeployment(Func<Guid, string?, Task> handler) { }

@@ -69,8 +69,29 @@ public sealed class FakeAgent
 
     /// <summary>B3 — the agent receives the wave, STAYS connected and reports
     /// nothing (hung script, default TimeoutSeconds=0). The wave's TCS stays
-    /// pending; the server-side wave deadline must fire.</summary>
+    /// pending; the server-side wave deadline must fire. It DOES report execution
+    /// started first: a hung script is one that took the machine slot and then
+    /// stalled, so the F2 execution budget (not the queue backstop) must reap it.
+    /// </summary>
     public bool NeverReport { get; set; }
+
+    /// <summary>
+    /// F2 — the agent receives the wave, stays connected, and never even reports
+    /// execution start (it never acquires its machine slot — wedged behind a
+    /// non-cooperative predecessor). Only the DISPATCH-TIME backstop ceiling can
+    /// reap this, which is what keeps B3's always-armed invariant true.
+    /// </summary>
+    public bool NeverAcquireMachineSlot { get; set; }
+
+    /// <summary>
+    /// F2 — the agent QUEUES the received sub-plan behind another task on the same
+    /// machine for this long, then reports execution start and runs the wave
+    /// normally. <c>RunDeploymentAsync</c> returns immediately (as the real hub push
+    /// does) and the work continues on a detached task, so the orchestrator is
+    /// genuinely parked on its TCS while the queue wait elapses — that is the only
+    /// way this exercises the deadline rather than the push.
+    /// </summary>
+    public TimeSpan? QueueBeforeExecuting { get; set; }
 
     /// <summary>Optional callback invoked at the end of each
     /// <c>RunDeploymentAsync</c> — after the wave's steps are recorded + the TCS
@@ -189,6 +210,41 @@ internal sealed class FakeAgentClient(
         // B4 — record what this wave's sub-plan actually carried (merged
         // output variables, sensitive names) for test assertions.
         agent.ReceivedPlans.Add(plan);
+
+        // F2 — a wedged agent never acquires its machine slot, so it never reports
+        // execution start; only the dispatch-time backstop ceiling can reap it.
+        if (agent.NeverAcquireMachineSlot)
+        {
+            return;
+        }
+
+        // F2 — queue behind another task on this machine, then execute. Detached so
+        // the push returns immediately (as the real hub does) and the orchestrator
+        // is genuinely parked on its TCS across the queue wait.
+        if (agent.QueueBeforeExecuting is { } queueWait)
+        {
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(queueWait).ConfigureAwait(false);
+                await ExecuteWaveAsync(plan).ConfigureAwait(false);
+            });
+            return;
+        }
+
+        await ExecuteWaveAsync(plan).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The wave body, from machine-slot acquisition onwards. Split out of
+    /// <see cref="RunDeploymentAsync"/> so F2's queue simulation can run it on a
+    /// detached task after the push has returned.
+    /// </summary>
+    private async Task ExecuteWaveAsync(DeploymentPlan plan)
+    {
+        // F2 — a real (contract v2) agent reports gate acquisition before its first
+        // step; the server re-arms the wave deadline from it. Modelled here so the
+        // harness exercises the same arming path production does.
+        subPlans.TryMarkExecutionStarted(plan.DeploymentId, agent.TargetId, plan.DispatchId);
 
         // B3 failure-mode simulations: the plan was DELIVERED but the agent
         // never reports back. VanishBeforeReporting additionally drops the
