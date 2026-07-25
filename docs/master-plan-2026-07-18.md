@@ -173,7 +173,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 4 — engine features | F1 | Same (project, environment, tenant) deployment serialization | ✅ fa2fad5·de44a02·a4f3f85·a6384ee | M | D1 |
 | 4 | F2 | Per-target "Allow parallel task execution" + execution-started deadline arming | ⬜ code on `feat/eng-per-target-parallelism`; **NOT done** — the agent's SignalR handler returns the unwrapped work task, so pushes dispatch sequentially and the flag is inert outside a post-reconnect window. See §F2-followups. | M | E-B, D1 |
 | 4 | F3 | Settings GUI: Engine document + AgentUpdate + logging + auth + SSRF | ⬜ | L | — |
-| 4 | F4 | Remove the `ApiKey:Key` config auth path | ⬜ | S | — |
+| 4 | F4 | Remove the `ApiKey:Key` config auth path | ✅ fix/sec-remove-config-apikey | S | — |
 | 5 — product features | WP3 | Real manual intervention (pause/approve/reject) | ⬜ | XL | D1 |
 | 5 | WP4 | Reachability + edit affordances (rescoped: 4 items) | ⬜ | S | — |
 | 5 | WP5 | Missing CRUD end-to-end (target/release/group delete + user profile edit) | ✅ 5c23420·5d0d1b6 | M | — |
