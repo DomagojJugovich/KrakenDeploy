@@ -51,4 +51,14 @@ public class ApplicationUser : IdentityUser<Guid>
     /// Null = use the application default.
     /// </summary>
     public string? Theme { get; set; }
+
+    /// <summary>
+    /// Optional human-readable display name (WP5 item 4). When set it is the
+    /// preferred label in the UI and audit rows; otherwise surfaces fall back to
+    /// <see cref="IdentityUser{TKey}.UserName"/> / <see cref="IdentityUser{TKey}.Email"/>
+    /// as before. Distinct from the username (the sign-in identity, equal to the
+    /// email for humans) so an operator can present a friendly name without
+    /// changing how the account authenticates.
+    /// </summary>
+    public string? DisplayName { get; set; }
 }

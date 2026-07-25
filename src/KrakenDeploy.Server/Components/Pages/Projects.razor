@@ -105,6 +105,23 @@ else
                         <td colspan="@colSpan">
                             <span class="kraken-matrix-group-name">@group.GroupName</span>
                             <span class="kraken-matrix-group-count">@group.Projects.Count</span>
+                            @if (group.GroupId is { } gid)
+                            {
+                                <span class="kraken-matrix-group-actions" style="float:right;">
+                                    <RequirePermission Permission="Permission.ProjectGroupEdit">
+                                        <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light"
+                                                      Size="ButtonSize.ExtraSmall" class="rz-mr-1"
+                                                      Click="@(() => OpenEditGroupDialogAsync(gid))"
+                                                      title="Rename project group" />
+                                    </RequirePermission>
+                                    <RequirePermission Permission="Permission.ProjectGroupDelete">
+                                        <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                                      Size="ButtonSize.ExtraSmall"
+                                                      Click="@(() => DeleteGroupAsync(gid, group.GroupName, group.Projects.Count))"
+                                                      title="Delete project group" />
+                                    </RequirePermission>
+                                </span>
+                            }
                         </td>
                     </tr>
                     @foreach (var p in VisibleProjects(group))
@@ -317,6 +334,67 @@ else
         {
             _optionsLoaded = false; // group options for the filter flyout changed
             await LoadAsync();
+        }
+    }
+
+    private async Task OpenEditGroupDialogAsync(Guid groupId)
+    {
+        var group = await ProjectSvc.GetGroupAsync(groupId);
+        if (group is null) return;
+
+        var result = await Dialog.OpenAsync<ProjectGroupFormDialog>(
+            "Edit Project Group",
+            new Dictionary<string, object?> { [nameof(ProjectGroupFormDialog.Group)] = group },
+            new DialogOptions { Width = "520px" });
+
+        if (result is true)
+        {
+            _optionsLoaded = false;
+            await LoadAsync();
+        }
+    }
+
+    private async Task DeleteGroupAsync(Guid groupId, string name, int projectCount)
+    {
+        if (!await Guard.AllowAsync(Permission.ProjectGroupDelete)) return;
+
+        // A non-empty group can't be deleted (required RESTRICT FK) — tell the
+        // operator what to do instead of offering a doomed confirm.
+        if (projectCount > 0)
+        {
+            await Dialog.Alert(
+                $"Project group '{name}' still contains {projectCount} project(s). " +
+                "Move them to another group before deleting it.",
+                "Cannot delete group");
+            return;
+        }
+
+        var confirmed = await Dialog.Confirm(
+            $"Delete project group '{name}'? This cannot be undone.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+        if (confirmed != true) return;
+
+        try
+        {
+            var ok = await ProjectSvc.DeleteGroupAsync(groupId);
+            if (ok)
+            {
+                _optionsLoaded = false;
+                await LoadAsync();
+                Notifications.Notify(NotificationSeverity.Success, "Deleted",
+                    $"Project group '{name}' was deleted.", 4000);
+            }
+            else
+            {
+                Notifications.Notify(NotificationSeverity.Warning, "Not found",
+                    "The project group could not be found.", 5000);
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Default group — the service refuses; surface the reason.
+            Notifications.Notify(NotificationSeverity.Warning, "Cannot delete", ex.Message, 8000);
         }
     }
 

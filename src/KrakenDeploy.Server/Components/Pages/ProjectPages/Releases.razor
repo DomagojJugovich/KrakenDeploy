@@ -156,6 +156,15 @@
                                           Click="@(() => UpdateVariablesAsync(r))"
                                           title="Re-snapshot the project's current variable set into this release." />
                         </RequirePermission>
+                        <RequirePermission Permission="Permission.ReleaseDelete">
+                            <RadzenButton Icon="delete"
+                                          Size="ButtonSize.ExtraSmall"
+                                          ButtonStyle="ButtonStyle.Danger"
+                                          Variant="Variant.Text"
+                                          class="rz-ml-1"
+                                          Click="@(() => DeleteAsync(r))"
+                                          title="Delete release" />
+                        </RequirePermission>
                     </Template>
                 </RadzenDataGridColumn>
             </Columns>
@@ -268,6 +277,44 @@
         finally
         {
             _updatingRelease = null;
+        }
+    }
+
+    /// <summary>
+    /// WP5 item 2 — delete a release. Refused by the service while any deployment
+    /// references it (execution history is delete-proof); the page surfaces the
+    /// reason and reloads otherwise.
+    /// </summary>
+    private async Task DeleteAsync(Release release)
+    {
+        if (!await Guard.AllowAsync(Permission.ReleaseDelete)) return;
+
+        var confirmed = await Dialog.Confirm(
+            $"Delete release '{release.Version}'? This is only possible while no deployment " +
+            "references it — a release with deployment history cannot be deleted. " +
+            "This cannot be undone.",
+            "Confirm Delete",
+            new ConfirmOptions { OkButtonText = "Delete", CancelButtonText = "Cancel" });
+        if (confirmed != true) return;
+
+        try
+        {
+            var ok = await ReleaseSvc.DeleteAsync(release.Id, await Guard.CurrentCallerAsync());
+            if (ok)
+            {
+                await ReloadAsync();
+                Notifications.Notify(NotificationSeverity.Success, "Deleted",
+                    $"Release '{release.Version}' was deleted.", 4000);
+            }
+            else
+            {
+                Notifications.Notify(NotificationSeverity.Warning, "Not found",
+                    "The release could not be found.", 5000);
+            }
+        }
+        catch (InvalidOperationException ex)
+        {
+            Notifications.Notify(NotificationSeverity.Warning, "Cannot delete", ex.Message, 8000);
         }
     }
 

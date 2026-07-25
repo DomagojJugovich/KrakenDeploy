@@ -381,7 +381,8 @@
         var rbTask  = RunbookSvc.GetAsync(Id);
         var runsTask = RunbookSvc.GetRunsAsync(Id);
         var envTask = EnvSvc.GetAllOrderedAsync();
-        var tgtTask = TargetSvc.GetAllAsync();
+        // Dispatch surface: a retired target can no longer be run against.
+        var tgtTask = TargetSvc.GetAllAsync(includeRetired: false);
         await Task.WhenAll(rbTask, runsTask, envTask, tgtTask);
 
         _runbook      = rbTask.Result;

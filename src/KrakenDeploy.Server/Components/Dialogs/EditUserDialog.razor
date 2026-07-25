@@ -1,0 +1,110 @@
+@using KrakenDeploy.Server.Core.Domain.Security
+@using KrakenDeploy.Server.Data.Identity
+@inject DialogService Dialog
+@inject UserService UserSvc
+@inject UiActionGuard Guard
+
+<div style="min-width: 460px; padding: 0.25rem 0;">
+    <EditForm Model="_model" OnValidSubmit="SaveAsync">
+        <DataAnnotationsValidator />
+        <RadzenStack Gap="1rem">
+            <div>
+                <RadzenLabel Text="Display name" />
+                <RadzenTextBox @bind-Value="_model.DisplayName"
+                               Style="width:100%"
+                               aria-label="Display name" />
+                <ValidationMessage For="() => _model.DisplayName" class="kraken-validation-error" />
+                <div class="rz-text-caption rz-color-secondary-light" style="margin-top:0.25rem;">
+                    Preferred label shown in the UI and audit rows. Falls back to the
+                    email when left blank.
+                </div>
+            </div>
+
+            @if (User.Kind != UserKind.ServiceAccount)
+            {
+                <div>
+                    <RadzenLabel Text="Email *" />
+                    <RadzenTextBox @bind-Value="_model.Email"
+                                   Style="width:100%"
+                                   aria-label="Email" />
+                    <ValidationMessage For="() => _model.Email" class="kraken-validation-error" />
+                </div>
+            }
+            else
+            {
+                @* Service accounts authenticate via API keys with a synthetic
+                   @kraken.local email — only the display name is editable. *@
+                <div>
+                    <RadzenLabel Text="Email" />
+                    <RadzenTextBox Value="@User.Email" Disabled="true" Style="width:100%" />
+                </div>
+            }
+
+            @if (_errorMessage is not null)
+            {
+                <div class="kraken-login-error rz-text-body2">@_errorMessage</div>
+            }
+
+            <RadzenStack Orientation="Orientation.Horizontal"
+                         JustifyContent="JustifyContent.End"
+                         Gap="0.5rem">
+                <RadzenButton Text="Cancel"
+                              ButtonStyle="ButtonStyle.Light"
+                              Click="@(_ => Dialog.Close(false))" />
+                <RadzenButton Text="Save"
+                              ButtonType="ButtonType.Submit"
+                              ButtonStyle="ButtonStyle.Primary" />
+            </RadzenStack>
+        </RadzenStack>
+    </EditForm>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ApplicationUser User { get; set; } = default!;
+
+    private readonly FormModel _model = new();
+    private string? _errorMessage;
+    private bool _initialized;
+
+    protected override void OnParametersSet()
+    {
+        // OnParametersSet runs on every parameter-set cycle (e.g. a parent
+        // re-render while the dialog is open); initialize only once so user
+        // edits aren't clobbered by the original user values.
+        if (_initialized) return;
+        _initialized = true;
+
+        _model.DisplayName = User.DisplayName ?? "";
+        _model.Email = User.Email ?? "";
+    }
+
+    private async Task SaveAsync()
+    {
+        _errorMessage = null;
+
+        if (!await Guard.AllowAsync(Permission.UserEdit))
+        {
+            return;
+        }
+
+        try
+        {
+            var email = User.Kind == UserKind.ServiceAccount ? null : _model.Email;
+            await UserSvc.UpdateProfileAsync(User.Id, _model.DisplayName, email);
+            Dialog.Close(true);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _errorMessage = ex.Message;
+        }
+    }
+
+    private sealed class FormModel
+    {
+        [System.ComponentModel.DataAnnotations.MaxLength(200)]
+        public string DisplayName { get; set; } = "";
+
+        [System.ComponentModel.DataAnnotations.EmailAddress(ErrorMessage = "Enter a valid email address.")]
+        public string Email { get; set; } = "";
+    }
+}

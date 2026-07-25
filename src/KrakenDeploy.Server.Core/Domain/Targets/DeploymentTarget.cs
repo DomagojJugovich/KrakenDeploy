@@ -53,6 +53,19 @@ public class DeploymentTarget : AuditableEntity, ISpaceScoped
     public bool AutoUpdateEnabled { get; set; } = true;
 
     /// <summary>
+    /// Soft-delete / decommission flag. A retired target is hidden from target
+    /// matching and dispatch (deploy-dialog pickers, runbook trigger), its agent
+    /// is rejected at <c>AgentHub</c> connect, and it no longer counts toward the
+    /// fleet health summary — but the row (and therefore all execution history
+    /// that references it via the RESTRICT FKs on <c>task_target_assignments</c>
+    /// and <c>task_step_outcomes</c>) is preserved. Retire is the ONLY supported
+    /// path for a target that has ever been deployed to; a hard
+    /// <see cref="TargetService.DeleteAsync"/> is refused while history exists.
+    /// Defaults to false.
+    /// </summary>
+    public bool IsRetired { get; set; }
+
+    /// <summary>
     /// Tenants this target is directly associated with — the PRIMARY
     /// tenant↔target link (Octopus "Associated Tenants"). Tenant-aware
     /// filtering (e.g. variable scoping) reads THIS relation. Tags applied to

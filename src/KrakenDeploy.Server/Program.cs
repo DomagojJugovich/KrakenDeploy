@@ -632,6 +632,9 @@ public static class Program
         builder.Services.AddSingleton<AgentJwtService>();
         // A8/T1-12: agent-token revocation (bump version + drop live tunnel + audit).
         builder.Services.AddScoped<AgentAccessRevoker>();
+        // WP5 item 1: target retire (soft-decommission) + hard-delete, dropping the
+        // live tunnel via the in-memory connection registry.
+        builder.Services.AddScoped<TargetDecommissioner>();
         builder.Services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
         builder.Services.AddSingleton<TargetStatusPublisher>();
         builder.Services.AddSingleton<ServerAgentUpdateService>();
@@ -1543,7 +1546,7 @@ public static class Program
         // ── Target API (CLI / REST) ──────────────────────────────────────────
         app.MapGet("/api/targets",
             async (TargetService targetSvc, CancellationToken ct) =>
-                Results.Ok(await targetSvc.GetAllAsync(ct).ConfigureAwait(false))
+                Results.Ok(await targetSvc.GetAllAsync(includeRetired: true, ct).ConfigureAwait(false))
         ).RequirePermission(Permission.MachineView);
 
         // ── Package API ──────────────────────────────────────────────────────
@@ -1770,6 +1773,27 @@ public static class Program
                     return Results.NotFound(new { error = ex.Message });
                 }
             }).RequirePermission(Permission.ReleaseEdit);
+
+        // WP5 item 2: delete a release. Refused (409) while any deployment
+        // references it — execution history is delete-proof (RESTRICT FK).
+        app.MapDelete("/api/releases/{releaseId:guid}",
+            async (Guid releaseId, ReleaseService releaseSvc, ClaimsPrincipal user, CancellationToken ct) =>
+            {
+                try
+                {
+                    var deleted = await releaseSvc
+                        .DeleteAsync(releaseId, CallerAuthorization.ForUser(user), ct).ConfigureAwait(false);
+                    return deleted ? Results.NoContent() : Results.NotFound();
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.Conflict(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.ReleaseDelete);
 
         // ── Variable API ─────────────────────────────────────────────────────
         app.MapGet("/api/projects/{projectId:guid}/variables",
@@ -2667,6 +2691,63 @@ public static class Program
                     ? Results.Ok(new { revoked = true })
                     : Results.NotFound();
             }).RequirePermission(Permission.MachineEdit);
+
+        // WP5 item 1: retire (soft-decommission) a target — hidden from matching /
+        // dispatch, agent rejected at connect, history preserved. The only supported
+        // path for a target that has ever been deployed to.
+        app.MapPost("/api/targets/{id:guid}/retire",
+            async (Guid id, TargetDecommissioner decommissioner, ClaimsPrincipal user, CancellationToken ct) =>
+            {
+                try
+                {
+                    var retired = await decommissioner
+                        .RetireAsync(id, CallerAuthorization.ForUser(user), ct).ConfigureAwait(false);
+                    return retired ? Results.Ok(new { retired = true }) : Results.NotFound();
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+                }
+            }).RequirePermission(Permission.MachineRetire);
+
+        // WP5 item 1: hard-delete a history-free target. Refused (400) while execution
+        // history references the target — retire such a target instead.
+        app.MapDelete("/api/targets/{id:guid}",
+            async (Guid id, TargetDecommissioner decommissioner, ClaimsPrincipal user, CancellationToken ct) =>
+            {
+                try
+                {
+                    var deleted = await decommissioner
+                        .DeleteAsync(id, CallerAuthorization.ForUser(user), ct).ConfigureAwait(false);
+                    return deleted ? Results.NoContent() : Results.NotFound();
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.MachineDelete);
+
+        // WP5 item 4: edit a user's profile (display name + email). There is no
+        // broader /api/users surface; this is the single user-management write
+        // endpoint, mirroring the UserService Manager-based pattern.
+        app.MapPut("/api/users/{id:guid}",
+            async (Guid id, UpdateUserRequest req, UserService userSvc, CancellationToken ct) =>
+            {
+                try
+                {
+                    var updated = await userSvc
+                        .UpdateProfileAsync(id, req.DisplayName, req.Email, ct).ConfigureAwait(false);
+                    return updated ? Results.Ok(new { updated = true }) : Results.NotFound();
+                }
+                catch (InvalidOperationException ex)
+                {
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.UserEdit);
 
         // ── Tenant API ─────────────────────────────────────────────────────────────
 

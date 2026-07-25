@@ -110,7 +110,7 @@ public sealed class CrossSpaceParentScopingTests(PostgresFixture postgres)
     public async Task TargetService_does_not_read_other_space()
     {
         var g = await SeedAsync();
-        var svc = new TargetService(postgres);
+        var svc = new TargetService(postgres, new AllowAllPermissionEvaluator());
 
         (await svc.GetAsync(g.TargetId)).Should().BeNull();
     }

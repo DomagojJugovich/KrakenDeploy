@@ -438,6 +438,23 @@ public static class AuditEventType
     /// agent must re-enroll. Details: target id + new token version.</summary>
     public const string AgentTokenRevoked = "Agent.TokenRevoked";
 
+    /// <summary>A target was retired (soft-decommissioned): hidden from target
+    /// matching/dispatch and its agent rejected at connect, but the row and all
+    /// execution history preserved. Retire is the only supported path for a
+    /// target that has ever been deployed to. Details: target id + name.</summary>
+    public const string TargetRetired = "Target.Retired";
+
+    /// <summary>A target was hard-deleted (only possible while it has NO execution
+    /// history — the RESTRICT FKs on task_target_assignments / task_step_outcomes
+    /// refuse deletion otherwise). Details: target id + name.</summary>
+    public const string TargetDeleted = "Target.Deleted";
+
+    /// <summary>An agent tried to connect/register against a RETIRED target and was
+    /// refused (the connection is aborted / registration rejected and the target
+    /// marked Offline). Fires per reconnect attempt — visibility into a host that
+    /// keeps checking in after decommission. Details: target id + name.</summary>
+    public const string AgentRetiredTargetRejected = "Agent.RetiredTargetRejected";
+
     /// <summary>A8 — an agent renewed its bearer token via the sliding-refresh
     /// endpoint, authenticated by its current (non-revoked) token. One row per
     /// refresh gives a forensic trail of which agent renewed when — an anomaly

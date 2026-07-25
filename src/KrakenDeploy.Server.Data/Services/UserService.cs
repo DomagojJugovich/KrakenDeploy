@@ -249,6 +249,64 @@ public class UserService(
         return tempPassword;
     }
 
+    /// <summary>
+    /// Edits a user's profile (WP5 item 4): the optional display name and the
+    /// email. Mirrors <see cref="SetDisabledAsync"/>'s UserManager-based pattern.
+    /// For humans (whose username equals the email) the username is kept in step
+    /// with a changed email so the sign-in identity tracks the new address. All
+    /// field changes are persisted in a SINGLE <see cref="UserManager{TUser}.UpdateAsync"/>
+    /// so a failure can't leave the username and email out of sync. Service accounts
+    /// keep their synthetic <c>@kraken.local</c> email and <c>svc-*</c> username —
+    /// only their display name is editable. Returns <c>false</c> if the user was
+    /// not found.
+    /// </summary>
+    public async Task<bool> UpdateProfileAsync(
+        Guid id, string? displayName, string? email, CancellationToken ct = default)
+    {
+        var user = await userManager.FindByIdAsync(id.ToString()).ConfigureAwait(false);
+        if (user is null)
+        {
+            return false;
+        }
+
+        user.DisplayName = string.IsNullOrWhiteSpace(displayName) ? null : displayName.Trim();
+
+        if (user.Kind != UserKind.ServiceAccount &&
+            !string.IsNullOrWhiteSpace(email) &&
+            !string.Equals(email.Trim(), user.Email, StringComparison.OrdinalIgnoreCase))
+        {
+            var newEmail = email.Trim();
+
+            var existing = await userManager.FindByEmailAsync(newEmail).ConfigureAwait(false);
+            if (existing is not null && existing.Id != user.Id)
+            {
+                throw new InvalidOperationException($"A user with email '{newEmail}' already exists.");
+            }
+
+            // Humans sign in with username == email; keep them in step so the
+            // account stays reachable at the new address. Set the normalized forms
+            // directly and persist with the single UpdateAsync below — using
+            // SetUserNameAsync + SetEmailAsync would write in two separate saves,
+            // leaving the account inconsistent if the second one failed. The
+            // UserValidator that runs inside UpdateAsync still enforces uniqueness.
+            user.UserName = newEmail;
+            user.NormalizedUserName = userManager.NormalizeName(newEmail);
+            user.Email = newEmail;
+            user.NormalizedEmail = userManager.NormalizeEmail(newEmail);
+            // A new address must be re-confirmed; keep the account usable by
+            // marking it confirmed (parity with InviteAsync, which seeds confirmed).
+            user.EmailConfirmed = true;
+        }
+
+        var update = await userManager.UpdateAsync(user).ConfigureAwait(false);
+        if (!update.Succeeded)
+        {
+            throw new InvalidOperationException(
+                "Failed to update user: " + string.Join(", ", update.Errors.Select(e => e.Description)));
+        }
+        return true;
+    }
+
     /// <summary>Persist the user's Radzen theme choice. No-op if user not found.</summary>
     public async Task UpdateThemeAsync(Guid userId, string? theme, CancellationToken ct = default)
     {
