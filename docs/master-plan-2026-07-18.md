@@ -176,7 +176,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 4 | F4 | Remove the `ApiKey:Key` config auth path | ⬜ | S | — |
 | 5 — product features | WP3 | Real manual intervention (pause/approve/reject) | ⬜ | XL | D1 |
 | 5 | WP4 | Reachability + edit affordances (rescoped: 4 items) | ⬜ | S | — |
-| 5 | WP5 | Missing CRUD end-to-end (target/release/group delete + user profile edit) | ⬜ | M | — |
+| 5 | WP5 | Missing CRUD end-to-end (target/release/group delete + user profile edit) | ✅ 5c23420·5d0d1b6 | M | — |
 | 5 | WP6 | Finish project tabs (variables trio + runbooks tab) | ⬜ | L | — |
 | 5 | WP9 | Retention expansion (rescoped: releases, packages, files, log age-cap) | ⬜ | L | D1 |
 | 5 | WP8 | Prompted variables | ⬜ | L | WP1 (done) |
