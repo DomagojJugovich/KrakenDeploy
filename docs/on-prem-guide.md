@@ -94,6 +94,20 @@ KrakenDeploy supports local accounts (email/password) and OIDC single sign-on.
 The bootstrap admin is created via the CLI. Additional users are invited through
 **Configuration** → **Users** → **Invite User**.
 
+### API keys for CLI / REST access
+
+The legacy shared `ApiKey:Key` configuration value was **removed**. Requests
+carrying the old static key are rejected with `401`. API access now uses
+**per-user keys** (hashed at rest, revocable, optionally Space-restricted):
+
+1. **UI:** Configuration → **API Keys** → create a key (shown once — copy it).
+2. **CLI (headless bootstrap):**
+   `dotnet KrakenDeploy.Server.dll apikeys create --user <email> --name <purpose>`
+
+Pass the key in the `X-Api-Key` header. If a leftover `ApiKey:Key` value is
+still present in your configuration, the server logs a one-time warning at
+startup and ignores the value — remove it and mint a per-user key instead.
+
 ### OIDC (recommended for production)
 
 1. Set up an OIDC application in your identity provider. See `docs/oidc-templates/`
