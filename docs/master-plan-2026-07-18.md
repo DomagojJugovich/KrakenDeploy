@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 1.2 |
+| **Version** | 1.3 |
 | **Date** | 2026-07-27 |
 | **Authors** | Domagoj Jugović, Claude (Fable 5; 10-agent verification workflow) |
 | **Status** | Review |
@@ -961,11 +961,13 @@ Scope:
    the existing window/connected checks; keep IsExecuting only as a fast pre-check). Fixes the
    2026-07-25 audit CLASH: ad-hoc work was invisible to IsExecuting so the swap killed running
    scripts, and the check-to-swap gap was a TOCTOU.
-5. CONTRACT CHANGE: drop AdhocScriptCommand.AllowParallelTaskExecution (dead — ad-hoc is
-   unconditionally shared) — UNLESS WP16's OPEN-1 lands on the per-run console concurrency
-   checkbox, in which case RETAIN the field (unchecked → WRITE, checked → READ) and only the
-   AI-session dispatch path pins it to READ. Resolve OPEN-1 before starting this item.
-   AgentContract.CurrentVersion 2 → 3. Update agent-wire-contract.md,
+5. CONTRACT CHANGE (WP16 OPEN-1 resolved 2026-07-27): RETAIN
+   AdhocScriptCommand.AllowParallelTaskExecution. The agent maps it true → READ,
+   false → WRITE. The AI-session dispatch path always sends TRUE (B2: gated AI scripts are
+   read-always); the console (WP16) maps its per-run checkbox onto the field
+   (unchecked → false → WRITE — the default). AgentContract.CurrentVersion 2 → 3 (an old
+   agent reads true as full bypass — no lock at all — which is exactly the behaviour F5
+   removes; skew must be refused). Update agent-wire-contract.md,
    adhoc-actions.md, node-concurrency-and-cache.md (two-mode gate + updater participation).
 6. OfflineRunner unaffected (fresh gate per invocation, single plan).
 
@@ -1903,14 +1905,14 @@ Scope:
    per run (Desktop default on Windows / Core — C5 currently defaults Desktop; add the per-run
    knob through ScriptRunner if missing); visible budget field defaulting from
    Adhoc:MaxTotalDuration (the 5-min AI default may not fit hand work — P5 note).
-5. [OPEN-1 — blocks F5 item 5] Concurrency: Octopus's console has a per-run checkbox "Allow
-   running concurrently with other scripts and Script Console Tasks", DEFAULT EXCLUSIVE.
-   Our B2 (ad-hoc = READ always) was decided for the gated AI flow. Decide: (a) console
-   inherits READ-always — simplest, F5 drops the wire field; or (b) console gets the Octopus
-   checkbox — unchecked → WRITE, checked → READ; F5 retains the field. RECOMMENDATION: (b) —
+5. Concurrency (OPEN-1 RESOLVED 2026-07-27, Domagoj): the console gets the Octopus-parity
+   per-run checkbox "Allow running concurrently with other scripts" — unchecked (DEFAULT) →
+   EXCLUSIVE (write), checked → SHARED (read). Maps onto the retained
+   AdhocScriptCommand.AllowParallelTaskExecution field (see F5 item 5). The AI-session flow
+   stays READ-always (B2) — only console runs carry the operator's per-run choice. Rationale:
    a hand-written script has no mode gate and its author is exactly the person who does not
-   think about cross-task clashes; exclusive-by-default is the safe default, and the checkbox
-   is the informed opt-in.
+   think about cross-task clashes; exclusive-by-default is the safe default, the checkbox the
+   informed opt-in.
 6. Permission: NEW Permission.ScriptConsoleExecute — do NOT reuse AdhocActionsExecute (the AI
    flow is approval-gated; the console is not; state-institution RBAC must be able to grant
    them separately). Audit event per run: script hash, frozen target list, initiator.
@@ -1922,8 +1924,9 @@ Scope:
 Acceptance: round trip on 2 targets with per-target output and exit codes visible; signature
 tamper test refuses on the agent; budget expiry kills the tree and reports; a set-resolved
 duplicate target dedups; permission denial without ScriptConsoleExecute; console run visible on
-/tasks and under /tasks?target=; concurrency per the OPEN-1 decision — if (b), test BOTH modes
-(exclusive console blocks a deployment wave; checked console co-runs with a Shared deployment).
+/tasks and under /tasks?target=; concurrency tested in BOTH modes (default/unchecked console run blocks and is blocked like a
+writer — e.g. it waits for a running deployment wave; checked console run co-runs with Shared
+work and other checked console runs).
 Branch: feat/script-console
 ```
 
@@ -1931,6 +1934,7 @@ Branch: feat/script-console
 
 | Version | Date | Change |
 |---|---|---|
+| 1.3 | 2026-07-27 | WP16 OPEN-1 resolved: console adopts the per-run concurrency checkbox (unchecked → WRITE default, checked → READ); F5 item 5 flipped from "drop the wire field" to "retain + map" with the skew rationale. OPEN-2 (gate for hand-written scripts) still open. |
 | 1.2 | 2026-07-27 | Added **WP16** (Script Console — Tasks-page entry, reuses the ad-hoc execution path; OPEN-1 concurrency checkbox vs READ-always, OPEN-2 gate for hand-written scripts). Screenshot-verified Octopus parity: console lives on the Tasks page and its per-run concurrency DEFAULTS TO EXCLUSIVE — nuances the B2 evidence (issue #5853 concerned system scripts, not the console). F5 item 5 gains the OPEN-1 caveat (field retention). |
 | 1.1 | 2026-07-25 | F2 closed (followups 1–10; item 4 re-resolved). Added §5 decision log 2026-07-25 and Phase-4 WPs **F5** (agent reader-writer gate + updater write-lock), **F6** (server-side per-plan target exclusion at claim time — mutual-consent model, project/runbook consent flags, FIFO by overlap, reason string, /tasks?target filter), **F7** (parallel-safety-audit riders incl. secrets-in-%TEMP% GDPR fix). All three scheduled pre-go-live; F6 added to WP-BASELINE dependencies. |
 | 1.0 | 2026-07-18 | Initial version. Unifies finish-plan-2026-07-05 (v1.3) + production-fix-prompts-2026-07-13 (v1.1); folds in the 2026-07-16 execution-engine audit (E-series, D1 merge design) and the 2026-07-18 10-agent code verification of every open WP; adds F1–F4, WP-BASELINE, D5-FOLD; archives both originals. |
