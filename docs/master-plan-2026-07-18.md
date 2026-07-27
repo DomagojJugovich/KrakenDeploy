@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 1.3 |
+| **Version** | 1.4 |
 | **Date** | 2026-07-27 |
 | **Authors** | Domagoj Jugović, Claude (Fable 5; 10-agent verification workflow) |
 | **Status** | Review |
@@ -1892,10 +1892,19 @@ Scope:
    AdhocScriptSigner (the agent's fail-closed verify is untouched); dispatched via
    AdhocDispatcher; per-target results and the budget apply. NO generation call, NO verdict
    call, NO iteration loop, NO approval flow (the author is the runner — Octopus parity).
-2. [OPEN-2] AST gate for hand-written scripts: recommend running AdhocScriptGate in Mutating
-   mode as defence-in-depth (hard-block list only); Octopus has no gate at all on its console.
-   Decide before build; if gated, surface analysis findings inline rather than refusing
-   silently.
+2. AST gate (OPEN-2 RESOLVED 2026-07-27, Domagoj: advisory): AdhocScriptGate ALWAYS runs in
+   Mutating mode on console scripts, but its findings are ADVISORY — rendered inline
+   ("line 3: Invoke-Expression — dynamic code execution"), and running requires an explicit
+   "Run anyway" acknowledgement that is written into the audit event alongside the script
+   hash and target list. ONE hard refusal is kept: Invoke-Command with a remoting parameter —
+   that is not script hygiene, it breaks the console's own frozen-target-set contract.
+   Rationale for advisory over hard: the blocklist cannot stop a console author anyway
+   (Start-Process / bare executables pass), while hard mode false-positives on everyday LAUS
+   ops work — Set-ItemProperty is THE cmdlet for IIS: drive config yet sits on the
+   always-forbidden list, ditto registry quick fixes, Remove-Item -Recurse -Force on temp
+   dirs, [System.IO.File]:: helpers — and ungated deployment script steps would become the
+   workaround path. Implementation note: the gate API stays as-is; the console maps every
+   violation kind to WARN except ForbiddenRemoting → hard refuse.
 3. Target selection: individual targets; set-based by environment / target tags / tenants,
    resolved to a frozen set AT SUBMIT (dedup mandatory — F7 item 4 is a hard prerequisite).
    "Run on the Server" (ServerScriptStepRunner path) is OPTIONAL scope — arbitrary operator
@@ -1926,7 +1935,9 @@ tamper test refuses on the agent; budget expiry kills the tree and reports; a se
 duplicate target dedups; permission denial without ScriptConsoleExecute; console run visible on
 /tasks and under /tasks?target=; concurrency tested in BOTH modes (default/unchecked console run blocks and is blocked like a
 writer — e.g. it waits for a running deployment wave; checked console run co-runs with Shared
-work and other checked console runs).
+work and other checked console runs). Gate: a script containing Invoke-Expression surfaces the
+finding and runs only after explicit acknowledgement, which lands in the audit event;
+Invoke-Command -ComputerName is hard-refused with no acknowledgement path.
 Branch: feat/script-console
 ```
 
@@ -1934,6 +1945,7 @@ Branch: feat/script-console
 
 | Version | Date | Change |
 |---|---|---|
+| 1.4 | 2026-07-27 | WP16 OPEN-2 resolved: ADVISORY Mutating-mode gate on console scripts (findings inline, explicit acknowledged "Run anyway" recorded in the audit event; sole hard block = Invoke-Command with a remoting target, which breaks the frozen-target-set contract). WP16 has no open decisions left. |
 | 1.3 | 2026-07-27 | WP16 OPEN-1 resolved: console adopts the per-run concurrency checkbox (unchecked → WRITE default, checked → READ); F5 item 5 flipped from "drop the wire field" to "retain + map" with the skew rationale. OPEN-2 (gate for hand-written scripts) still open. |
 | 1.2 | 2026-07-27 | Added **WP16** (Script Console — Tasks-page entry, reuses the ad-hoc execution path; OPEN-1 concurrency checkbox vs READ-always, OPEN-2 gate for hand-written scripts). Screenshot-verified Octopus parity: console lives on the Tasks page and its per-run concurrency DEFAULTS TO EXCLUSIVE — nuances the B2 evidence (issue #5853 concerned system scripts, not the console). F5 item 5 gains the OPEN-1 caveat (field retention). |
 | 1.1 | 2026-07-25 | F2 closed (followups 1–10; item 4 re-resolved). Added §5 decision log 2026-07-25 and Phase-4 WPs **F5** (agent reader-writer gate + updater write-lock), **F6** (server-side per-plan target exclusion at claim time — mutual-consent model, project/runbook consent flags, FIFO by overlap, reason string, /tasks?target filter), **F7** (parallel-safety-audit riders incl. secrets-in-%TEMP% GDPR fix). All three scheduled pre-go-live; F6 added to WP-BASELINE dependencies. |
