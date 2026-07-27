@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.0 |
-| **Date** | 2026-07-18 |
+| **Version** | 1.1 |
+| **Date** | 2026-07-25 |
 | **Authors** | Domagoj Jugović, Claude (Fable 5; 10-agent verification workflow) |
 | **Status** | Review |
 | **Technologies** | .NET 10, Blazor Server, Radzen, EF Core 10, PostgreSQL, SignalR, gRPC, Hangfire |
@@ -171,9 +171,12 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 3 — engine merge | D1 | server_tasks ENGINE merge (2026-07-16 design supersedes the old prompt) | ✅ P1 `0a8d1a5` · P2+P3 `e247c46` | XL | E-A, E-B, E-C, E-D |
 | 3 | D3 | Promote control-flow config keys to typed columns (+ rolling-warning rider) | ✅ 3e2388a | M | — |
 | 4 — engine features | F1 | Same (project, environment, tenant) deployment serialization | ✅ fa2fad5·de44a02·a4f3f85·a6384ee | M | D1 |
-| 4 | F2 | Per-target "Allow parallel task execution" + execution-started deadline arming | ✅ merged `79f200e` + followups 1-10. One item DEFERRED by decision: the machine gate is per WAVE, not per plan (§F2-followups item 4) — documented as a Residual, revisit with F1's server-side serialization. | M | E-B, D1 |
+| 4 | F2 | Per-target "Allow parallel task execution" + execution-started deadline arming | ✅ merged `79f200e` + followups 1-10. One item DEFERRED by decision: the machine gate is per WAVE, not per plan (§F2-followups item 4) — documented as a Residual; scheduled 2026-07-25 as F5+F6. | M | E-B, D1 |
 | 4 | F3 | Settings GUI: Engine document + AgentUpdate + logging + auth + SSRF | ⬜ | L | — |
 | 4 | F4 | Remove the `ApiKey:Key` config auth path | ✅ fix/sec-remove-config-apikey | S | — |
+| 4 | F5 | Machine gate reader-writer rework (mutual-consent shared mode + updater write-lock) | ⬜ | M | F2 |
+| 4 | F6 | Server-side per-plan target exclusion at claim time (project/runbook consent flags, FIFO by overlap, reason string, /tasks?target filter) | ⬜ | M | F1, F5 |
+| 4 | F7 | Shared-state hardening riders (parallel-safety audit 2026-07-25: secrets in %TEMP%, server script CWD, boot-sweep guard, ad-hoc dedup, hygiene) | ⬜ | M | — |
 | 5 — product features | WP3 | Real manual intervention (pause/approve/reject) | ⬜ | XL | D1 |
 | 5 | WP4 | Reachability + edit affordances (rescoped: 4 items) | ⬜ | S | — |
 | 5 | WP5 | Missing CRUD end-to-end (target/release/group delete + user profile edit) | ✅ 5c23420·5d0d1b6 | M | — |
@@ -187,7 +190,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 6 — structurals pre-freeze | D2 | Rename Deployment→Task wire/enum surface | ⬜ | L | D1 |
 | 6 | D4 | Split Server.Data → Data + Application | ⬜ | L | — |
 | 6 | D7 | Architecture-enforcement tests (delta only; D5-boundary asserts deferred) | ⬜ | S | D4 |
-| 7 — final pre-freeze | WP-BASELINE | Migration-history squash + C4 data-correctness tests + expand/contract lint + v1 freeze checklist | ⬜ | M | every schema-touching WP above (D1, D3, F2, WP3, WP5, WP7, WP8, WP9, WP15) |
+| 7 — final pre-freeze | WP-BASELINE | Migration-history squash + C4 data-correctness tests + expand/contract lint + v1 freeze checklist | ⬜ | M | every schema-touching WP above (D1, D3, F2, F6, WP3, WP5, WP7, WP8, WP9, WP15) |
 | | | **GO-LIVE (~mid-Oct 2026; scope fixed, date flexes — drift from mid-Sept accepted 2026-07-18)** | | | |
 | post | WP13 | Invites, signing-keys UI, AiCostOverride, authorized live log tail | ⬜ | L | — |
 | post | D5-FOLD | "SaaS revival" package: D5 decouple + D6 pooled factory + WP12 per-account DEK + blue-green stranding fixes + boundary tests | ⬜ | XL | D1, D4 |
@@ -246,6 +249,30 @@ Also locked in the same session: WP3 approval model (step-defined responsible te
 | N18 | C6 | ✅ done 2026-07-19 (branch `fix/ops-agent-upgrade-atomic`). Whole-dir swap with backup + in-process rollback; SHA-256 verified on every apply (server computes it, never trusts the manifest field); refuses hashless / contract-skewed builds; post-restart health gate (registration-accepted) → commit-or-rollback; outcome reported to POST `/api/agents/update-status` as a Space-scoped target audit row. Absorbs WP11's agent-update item (multi-file payload). Residual: in-process updater cannot recover a hard-kill in the two-move window or a build whose apphost won't launch — marker persisted for a future external supervisor. |
 
 ---
+
+### Resolved 2026-07-25 (grill session — per-plan target exclusion; F5/F6/F7)
+
+Triggered by Domagoj's production observation on Octopus: per-script mutexes let two
+deployment PROCESSES interleave at step boundaries and clash on shared folders —
+"the only real protection is to let one plan finish, then the other." Verified from
+Octopus Tentacle source (`ScriptIsolationMutex.cs`): their lock is an in-process
+`AsyncReaderWriterLock`, acquired per SCRIPT, type-blind (no task-type on the wire),
+and `NoIsolation` takes the READ side — the "bypass" is a downgrade to shared, not
+a bypass. Octopus has no per-plan target exclusion anywhere; F6 is a deliberate
+divergence. A 12-area parallel-safety audit of our own agent/server (2026-07-25) found
+the engine internals safe by construction and produced F7's rider list.
+
+| # | Item | Decision |
+|---|---|---|
+| P1 | Exclusion unit | Per TARGET, per WHOLE PLAN, enforced SERVER-side at claim time. State = in-flight `server_tasks` rows (no lock table — B1 lease/reconciler releases a crashed holder for free); one GLOBAL claim-decision advisory lock serializes claim decisions (subsumes/wraps F1's per-key lock). Blue-green safe: both slots share one Postgres |
+| P2 | Consent model | Mutual-consent reader-writer: `mode(work on T) = Shared iff T.AllowParallel OR source.AllowParallel, else Exclusive`; co-run iff no writer present. One-sided consent still serializes — an author's confidence is one half of a two-party clash |
+| P3 | Consent flags | NEW `Project.AllowParallelTaskExecution` (author consent, deployments) + SEPARATE `Runbook.AllowParallelTaskExecution` (Domagoj: separate flag, not one project knob). `Target.AllowParallelTaskExecution` keeps its meaning: operator forces Shared for the whole box. No scopeable/step-level consent — "very confusing for process author"; within-plan parallelism already exists (`StepStartTrigger.StartWithPrevious`) |
+| P4 | Kind symmetry | Deployments AND runbook runs both participate (full symmetry). Runbooks stay F1-exempt for the (project, env, tenant) key. `Octopus.DeployRelease` children never conflict with their ancestor chain (E3 shape) |
+| P5 | Ad-hoc | SHARED always, never excludes, never participates in the claim predicate. Wave-gap (ad-hoc slipping between two waves of an exclusive plan) explicitly ACCEPTED — no dispatch-time check. Semantics attach to the EXECUTION path (`AdhocScriptExecutor`), because a manual script console (Octopus targets-page analog) is planned and must inherit them |
+| P6 | Ordering | FIFO by overlap — F1's discipline extended to set-valued keys: defer also when an OLDER due Queued task conflicts. Only CONFLICTING pairs order (mutual-Shared overlap neither defers nor orders). Starvation designed away; convoys accepted and made legible (P8) |
+| P7 | Visibility | F1-style reason on the task ("Waiting for target X — busy with #N; M ahead") + ONE task-log line on first deferral. Tasks page gains `?target=` filter resolved via `task_target_assignments`; TargetDetail links "View tasks for this machine". No new page |
+| P8 | Updater | Agent self-upgrade takes the WRITE lock for extract+swap+exit — fixes the audit CLASH (upgrade killed running ad-hoc work; check-to-swap TOCTOU) |
+| P9 | Schedule | ALL of F5/F6/F7 land BEFORE go-live; breaking changes still allowed (pre-production). F6 joins WP-BASELINE's schema-dependency list |
 
 ## 6. Work-package prompts
 
@@ -773,9 +800,10 @@ fixes, and because item 4 stays open. Ordered by original severity.
    is a different mechanism in a different process and a work package of its own, not a
    followup. `MachineExecutionGate` is deliberately NOT the place to fix it. Recorded as
    a Residual in `docs/node-concurrency-and-cache.md` and in `docs/execution-engine.md`'s
-   history row. Revisit alongside F1's server-side serialization, which already owns
-   per-(project, environment, tenant) exclusion and is the natural home for per-target
-   exclusion.
+   history row. RESOLVED 2026-07-25 (grill session, §5): scheduled pre-go-live as
+   **F5** (agent reader-writer gate) + **F6** (server-side per-plan target exclusion at
+   claim time) — the server, which sees whole plans, is the only place per-plan
+   exclusion is expressible; F1's claim-time machinery is the vehicle.
 5. ~~**Unvalidated durations.**~~ **DONE.** `EngineOptionsValidator`
    (`IValidateOptions<EngineOptions>` + `ValidateOnStart`) refuses, by key name: a bare
    number (checked against the RAW config string - after binding, `"4"` and
@@ -904,6 +932,136 @@ unaffected; smoke suites green using provisioned keys; boot warning fires when t
 is present. CONTRACT CHANGE: removal of a documented auth mechanism — breaking for any operator
 using ApiKey:Key; note it loudly.
 Branch: fix/sec-remove-config-apikey
+```
+
+#### F5 — Machine gate reader-writer rework *(preamble only; do after F2)*
+
+```text
+TASK: Rework the agent's MachineExecutionGate from a binary mutex into a reader-writer gate
+(Octopus ScriptIsolationMutex parity — verified from Tentacle source: NoIsolation takes the READ
+side of the same lock; "bypass" is a downgrade to shared, never an actual bypass), and put the
+agent self-upgrade under it. Locked decisions P2/P5/P8 (§5, 2026-07-25).
+
+Scope:
+1. MachineExecutionGate: reader-writer semantics. EXCLUSIVE (write) is the default plan mode;
+   SHARED (read) when the dispatched plan carries AllowParallelTaskExecution = true; ad-hoc
+   acquires SHARED ALWAYS. Co-running requires no writer. Keep: idempotent Releaser, IsHeld
+   observability (extend with reader count), bounded acquisition (TryAcquireNowAsync +
+   AcquireAsync(timeout) in read AND write variants). Writers must not be starved by a stream
+   of readers — pick/build a primitive that queues fairly.
+2. DeploymentExecutor.AcquireMachineSlotAsync: flag=true → acquire READ instead of returning
+   Bypassed-with-no-lock. The forceDetachedStuck refusal stays BEFORE acquisition and keeps
+   refusing (two attempts of ONE task must not co-run even as two readers). Wedged-gate
+   escalation keeps its bounded waits, now mode-aware.
+3. AdhocScriptExecutor: acquire READ always; the single Adhoc:MaxTotalDuration budget from
+   F2-followup 3 is unchanged (refuse if expired while queued, kill the tree if expired while
+   running).
+4. AgentUpdateService: take the WRITE lock for the extract+swap+Environment.Exit window (after
+   the existing window/connected checks; keep IsExecuting only as a fast pre-check). Fixes the
+   2026-07-25 audit CLASH: ad-hoc work was invisible to IsExecuting so the swap killed running
+   scripts, and the check-to-swap gap was a TOCTOU.
+5. CONTRACT CHANGE: drop AdhocScriptCommand.AllowParallelTaskExecution (dead — ad-hoc is
+   unconditionally shared); AgentContract.CurrentVersion 2 → 3. Update agent-wire-contract.md,
+   adhoc-actions.md, node-concurrency-and-cache.md (two-mode gate + updater participation).
+6. OfflineRunner unaffected (fresh gate per invocation, single plan).
+
+Acceptance: read∥read co-run on one agent; write excludes reads and reads exclude a write (both
+directions); ad-hoc∥ad-hoc co-run; ad-hoc queued behind an exclusive wave dies on its budget,
+not on a gate timeout; the updater waits for ALL work kinds and blocks new work while swapping;
+the supersede-refusal regression test still passes; contract-skew refusal updated for v3.
+Mutation-verify the exclusion tests (invert a mode, tests must fail).
+Branch: feat/eng-machine-gate-rw
+```
+
+#### F6 — Server-side per-plan target exclusion at claim time *(preamble + addendum; do after F5)*
+
+```text
+TASK: No two tasks operate on the same serial target concurrently, for the WHOLE plan duration —
+claim-time exclusion in the server, closing §F2-followups item 4. Motivation (Domagoj,
+production Octopus): per-script mutexes still interleave two deployment PROCESSES at step
+boundaries; shared folders clash; the only real protection is one plan at a time. Octopus has no
+equivalent (Tentacle source verified) — deliberate divergence. Locked decisions P1–P7 (§5,
+2026-07-25).
+
+Scope:
+1. Schema/EF: projects.allow_parallel_task_execution + runbooks.allow_parallel_task_execution
+   (bool NOT NULL default false) + migration. UI: checkboxes on Project settings and Runbook
+   settings with the same warning-copy pattern as the target flag (author consent: "this
+   process is self-contained — may run alongside other consenting work on a machine").
+2. Plan build (DeploymentWorker): DeploymentPlan.AllowParallelTaskExecution =
+   target.Allow || (Deployment → project.Allow; RunbookRun → runbook.Allow). Wire shape
+   unchanged (bool).
+3. Claim (ServerTaskLease.TryClaimAsync), applying to Deployment AND RunbookRun: under ONE
+   global advisory lock (constant key — replaces or wraps F1's per-key lock; document which),
+   run F1's (project,env,tenant) deferral (deployments only, unchanged) AND the target-conflict
+   predicate:
+   - per-target mode from the OR-composition above; conflict = a shared target where at least
+     one side is Exclusive;
+   - defer if any IN-FLIGHT task conflicts OR any OLDER already-due Queued task conflicts
+     (FIFO by overlap; mutual-Shared overlap neither defers nor orders);
+   - tasks with ParentTaskId never conflict with their ancestor chain (DeployRelease children);
+   - target sets read from task_target_assignments (exist from creation for both kinds).
+   Blocked tasks stay Queued; verify the minutely re-signal covers runbook runs too.
+4. Reason surface: blocked claim records blocker (task id/title, target, queue position); task
+   detail renders "Waiting for target X — busy with #N (title); M ahead"; ONE task-log line on
+   FIRST deferral only. Extend F1's reason mechanism — do not invent a second one.
+5. Tasks page: [SupplyParameterFromQuery] target filter on /s/{slug}/tasks, resolved via a
+   task_target_assignments join in ServerTasksService (row Title never contains machine names —
+   a string match is wrong); TargetDetail gets "View tasks for this machine" →
+   /s/{slug}/tasks?target={id}. No new page.
+6. Docs: execution-engine.md (claim chapter: two-layer model — server claim exclusion above the
+   agent RW gate), node-concurrency-and-cache.md (wave-gap residual now applies to ad-hoc only),
+   disconnect-reconciliation.md note: deferral happens BEFORE dispatch, so F2's queue-wait
+   backstop arithmetic is untouched.
+
+Acceptance (integration, real Postgres): exclusive-vs-exclusive same-target defers with FIFO
+order; both-consenting co-claim; one-sided consent defers; runbook↔deployment symmetric both
+directions; DeployRelease child claims while its parent is in-flight on the same target; disjoint
+targets unaffected; two concurrent claimants with overlapping sets cannot both pass (advisory-lock
+race test); the blocked task carries the reason and exactly one first-deferral log line;
+/tasks?target= returns exactly the assignment-joined rows. CONTRACT CHANGE: none on the agent
+wire; EF migration (two columns) — F6 joins WP-BASELINE's dependency list.
+Branch: feat/eng-per-plan-target-exclusion
+```
+
+#### F7 — Shared-state hardening riders *(preamble only; independent of F5/F6)*
+
+```text
+TASK: Close the shared-state defects from the 2026-07-25 agent/server parallel-safety audit.
+Re-verify each finding at HEAD before fixing (file:line refs are from 2026-07-25).
+
+Scope, by severity:
+1. Secrets in cleartext %TEMP% (GDPR-relevant — RH state institutions): the generated .ps1
+   embeds ALL resolved variables INCLUDING sensitive values into the $OctopusParameters literal
+   (ScriptStepHandler preamble; ServerScriptStepRunner equivalent) and writes it to
+   Path.GetTempPath() — under LocalSystem that is C:\Windows\Temp with a permissive ACL;
+   deletion is best-effort and skipped on abrupt exits. Fix: write scripts under the
+   per-dispatch staging dir (agent) / a per-dispatch server work dir, delete in finally;
+   evaluate passing sensitive values via environment instead of the script literal. Never log
+   values while fixing.
+2. ServerScriptStepRunner WorkingDirectory = Path.GetTempPath(): every server-side script on a
+   node shares one CWD — relative-path I/O collides ACROSS deployments. Fix: per-dispatch work
+   dir, cleaned in finally.
+3. SweepOrphanedStagingOnBoot wipes the entire staging root with no ownership guard — a second
+   agent process on one DataPath (misconfig / restart overlap) wipes the incumbent's live
+   staging mid-step. Fix: lock-file/PID guard or sweep only provably-orphaned subtrees; log
+   what was swept.
+4. Ad-hoc frozen-target-set dedup (BLOCKS the planned manual script console): a duplicate
+   targetId yields two identical concurrent commands sharing one workdir — the first finisher
+   deletes the other's CWD mid-run. Fix: dedup at freeze (CreateSessionAsync) AND defensively
+   in ParseFrozenTargets.
+5. Hygiene batch: StepPackageLoader reads bare config["DataPath"] instead of Agent:DataPath
+   (step-package cache lands in CWD-relative ./data; smoke compose carries a workaround — fix
+   and remove it); StepPackageLoader._cache.TryAdd loser leaks a collectible ALC (unload on
+   lose); AgentIdentityStore.SaveAsync is a non-atomic overwrite of agent.json (tmp+rename,
+   like AgentUpgradeMarker); LocalPackageCache delta-base picks directory-enumeration order —
+   pick highest version.
+
+Acceptance: each of 1–5 lands with a test where a harness reaches it (dedup, atomic save,
+DataPath key, delta-base order, per-dispatch CWD isolation) or a documented manual verification
+(ACL check on the script location); all existing suites green; no new config keys. NOT in
+scope: gate/claim concurrency semantics (F5/F6 own those).
+Branch: fix/agent-shared-state-hardening
 ```
 
 ### Phase 5 — product features (corrected from the 2026-07-18 verification digest)
@@ -1715,4 +1873,5 @@ Branch: docs/reconciliation
 
 | Version | Date | Change |
 |---|---|---|
+| 1.1 | 2026-07-25 | F2 closed (followups 1–10; item 4 re-resolved). Added §5 decision log 2026-07-25 and Phase-4 WPs **F5** (agent reader-writer gate + updater write-lock), **F6** (server-side per-plan target exclusion at claim time — mutual-consent model, project/runbook consent flags, FIFO by overlap, reason string, /tasks?target filter), **F7** (parallel-safety-audit riders incl. secrets-in-%TEMP% GDPR fix). All three scheduled pre-go-live; F6 added to WP-BASELINE dependencies. |
 | 1.0 | 2026-07-18 | Initial version. Unifies finish-plan-2026-07-05 (v1.3) + production-fix-prompts-2026-07-13 (v1.1); folds in the 2026-07-16 execution-engine audit (E-series, D1 merge design) and the 2026-07-18 10-agent code verification of every open WP; adds F1–F4, WP-BASELINE, D5-FOLD; archives both originals. |
