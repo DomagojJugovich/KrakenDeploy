@@ -90,8 +90,19 @@ jobs:
       # job so the server/agent image layers built above are cached and reused
       # (a separate job runs on a fresh runner with no Docker cache, doubling the
       # ~image build cost). Each script tears its own compose stack down on exit.
+      #
+      # KNOWN RED — non-blocking on purpose. The multi-account boot path fails
+      # ("Server did not become healthy in time") pending per-account DEK/KEK
+      # (WP12, inside D5-FOLD — POST-go-live), and multi-account itself is
+      # DEFERRED for v1. Without continue-on-error this step aborted the job and
+      # the BLUE-GREEN smoke below never ran — and blue-green DOES ship in v1, so
+      # a shipping feature lost its end-to-end coverage while main sat
+      # permanently red, hiding real regressions. The step still surfaces as a red
+      # annotation on every run, and flips to a genuine pass when WP12 lands.
+      # Remove continue-on-error then.
       - name: Run smoke test (multi-account SaaS)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        continue-on-error: true
         run: bash scripts/smoke-multiaccount.sh
 
       # Blue-green slot-router smoke: two live "releases" behind the per-node
