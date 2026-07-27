@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 1.4 |
+| **Version** | 1.5 |
 | **Date** | 2026-07-27 |
 | **Authors** | Domagoj Jugović, Claude (Fable 5; 10-agent verification workflow) |
 | **Status** | Review |
@@ -193,7 +193,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 7 — final pre-freeze | WP-BASELINE | Migration-history squash + C4 data-correctness tests + expand/contract lint + v1 freeze checklist | ⬜ | M | every schema-touching WP above (D1, D3, F2, F6, WP3, WP5, WP7, WP8, WP9, WP15) |
 | | | **GO-LIVE (~mid-Oct 2026; scope fixed, date flexes — drift from mid-Sept accepted 2026-07-18)** | | | |
 | post | WP13 | Invites, signing-keys UI, AiCostOverride, authorized live log tail | ⬜ | L | — |
-| post | D5-FOLD | "SaaS revival" package: D5 decouple + D6 pooled factory + WP12 per-account DEK + blue-green stranding fixes + boundary tests | ⬜ | XL | D1, D4 |
+| post | D5-FOLD | "SaaS revival" package: D5 decouple + D6 pooled factory + WP12 per-account DEK + blue-green stranding fixes + boundary tests. **WP12 acceptance MUST include removing both `continue-on-error` lines from the CI smoke job** (multi-account + blue-green) — both are red solely on the M13.D.2 DEK fail-fast, so a fixed SaaS path would otherwise look identical to a broken one. | ⬜ | XL | D1, D4 |
 | post | WP14 | Documentation reconciliation (expanded scope) | ⬜ | L | C1 (caddy rider) |
 | post | WP16 | Script Console — hand-written ad-hoc runs (Tasks-page entry, signed, budgeted; placement movable pre-go-live if wanted) | ⬜ | L | F5, F7 |
 
@@ -234,7 +234,7 @@ Also locked in the same session: WP3 approval model (step-defined responsible te
 | N2 | Completed WPs | Table only (§2), no prompts carried |
 | N3 | Ordering | Foundations first: engine correctness (E) → ops → engine merge (D1) → engine features (F) → product features → structurals → baseline |
 | N4 | D1 snapshot location | **Accessor resolution** — snapshots stay on `Release`/`RunbookRun`, kind-branched accessor; NO ServerTask column move (overrides the old D1 prompt's "hang ProcessSnapshotJson on ServerTask" suggestion) |
-| N5 | WP12 (per-account DEK) | Folded into the post-go-live D5-FOLD package (multi-account stays deferred for v1) |
+| N5 | WP12 (per-account DEK) | Folded into the post-go-live D5-FOLD package (multi-account stays deferred for v1). 2026-07-27 rider: WP12 also unblocks the blue-green smoke — blue-green is multi-account-only by D-bg-5, so its stack must set MultiAccount:Enabled and therefore hits the same DEK fail-fast; both smokes are `continue-on-error` until WP12 (commits `d140993`, `2c34c19`) |
 | N6 | Blue-green stranding fixes (2026-07-16 audit) | Into the D5-FOLD package |
 | N7 | F3 scope | All four groups incl. the AdministerSystem-gated SSRF allowlists |
 | N8 | Go-live date | Drift from ~mid-Sept to **~mid-Oct 2026** accepted; scope stays fixed |
@@ -1945,6 +1945,7 @@ Branch: feat/script-console
 
 | Version | Date | Change |
 |---|---|---|
+| 1.5 | 2026-07-27 | CI: both SaaS-path smokes (multi-account, blue-green) marked `continue-on-error` — both fail solely on the M13.D.2 "envelope encryption does not support MultiAccount" boot fail-fast, and blue-green cannot be reconfigured around it (multi-account-only by D-bg-5). Removing both flags added to WP12/D5-FOLD acceptance. Corrects an earlier claim in `d140993` that blue-green ships in v1 — it does not; single-node on-prem upgrades stop → migrate → start. |
 | 1.4 | 2026-07-27 | WP16 OPEN-2 resolved: ADVISORY Mutating-mode gate on console scripts (findings inline, explicit acknowledged "Run anyway" recorded in the audit event; sole hard block = Invoke-Command with a remoting target, which breaks the frozen-target-set contract). WP16 has no open decisions left. |
 | 1.3 | 2026-07-27 | WP16 OPEN-1 resolved: console adopts the per-run concurrency checkbox (unchecked → WRITE default, checked → READ); F5 item 5 flipped from "drop the wire field" to "retain + map" with the skew rationale. OPEN-2 (gate for hand-written scripts) still open. |
 | 1.2 | 2026-07-27 | Added **WP16** (Script Console — Tasks-page entry, reuses the ad-hoc execution path; OPEN-1 concurrency checkbox vs READ-always, OPEN-2 gate for hand-written scripts). Screenshot-verified Octopus parity: console lives on the Tasks page and its per-run concurrency DEFAULTS TO EXCLUSIVE — nuances the B2 evidence (issue #5853 concerned system scripts, not the console). F5 item 5 gains the OPEN-1 caveat (field retention). |
