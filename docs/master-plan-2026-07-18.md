@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.1 |
-| **Date** | 2026-07-25 |
+| **Version** | 1.2 |
+| **Date** | 2026-07-27 |
 | **Authors** | Domagoj Jugović, Claude (Fable 5; 10-agent verification workflow) |
 | **Status** | Review |
 | **Technologies** | .NET 10, Blazor Server, Radzen, EF Core 10, PostgreSQL, SignalR, gRPC, Hangfire |
@@ -195,6 +195,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | post | WP13 | Invites, signing-keys UI, AiCostOverride, authorized live log tail | ⬜ | L | — |
 | post | D5-FOLD | "SaaS revival" package: D5 decouple + D6 pooled factory + WP12 per-account DEK + blue-green stranding fixes + boundary tests | ⬜ | XL | D1, D4 |
 | post | WP14 | Documentation reconciliation (expanded scope) | ⬜ | L | C1 (caddy rider) |
+| post | WP16 | Script Console — hand-written ad-hoc runs (Tasks-page entry, signed, budgeted; placement movable pre-go-live if wanted) | ⬜ | L | F5, F7 |
 
 Folded/retired rows (do not schedule separately): **C4** → inside WP-BASELINE; **WP12, D5, D6** → inside D5-FOLD; **E9** → interim, deleted by D1; **WP11's agent-update item** → inside C6.
 
@@ -961,7 +962,10 @@ Scope:
    2026-07-25 audit CLASH: ad-hoc work was invisible to IsExecuting so the swap killed running
    scripts, and the check-to-swap gap was a TOCTOU.
 5. CONTRACT CHANGE: drop AdhocScriptCommand.AllowParallelTaskExecution (dead — ad-hoc is
-   unconditionally shared); AgentContract.CurrentVersion 2 → 3. Update agent-wire-contract.md,
+   unconditionally shared) — UNLESS WP16's OPEN-1 lands on the per-run console concurrency
+   checkbox, in which case RETAIN the field (unchecked → WRITE, checked → READ) and only the
+   AI-session dispatch path pins it to READ. Resolve OPEN-1 before starting this item.
+   AgentContract.CurrentVersion 2 → 3. Update agent-wire-contract.md,
    adhoc-actions.md, node-concurrency-and-cache.md (two-mode gate + updater participation).
 6. OfflineRunner unaffected (fresh gate per invocation, single plan).
 
@@ -1869,9 +1873,64 @@ Branch: docs/reconciliation
 
 ---
 
+#### WP16 — Script Console *(preamble only; post-go-live, placement movable)*
+
+```text
+TASK: Octopus-parity Script Console — an operator writes a one-off script BY HAND and runs it on
+selected targets, with no project, release or deployment attached. Entry point: a "Script
+console" button on /s/{slug}/tasks (Octopus puts it on its Tasks page — screenshot-verified
+2026-07-27), plus a prefilled link from TargetDetail. This is the manual counterpart of the AI
+ad-hoc flow and MUST reuse its execution path — locked decision P5 (§5, 2026-07-25): concurrency
+semantics and the MaxTotalDuration budget live in AdhocScriptExecutor/AdhocScriptCommand, so the
+console inherits them by construction, not by copy.
+
+Scope:
+1. Reuse the ad-hoc pipeline minus the LLM: a console run is an AdhocSession (new
+   SessionKind.Console) with exactly ONE iteration whose script the operator wrote; signed via
+   AdhocScriptSigner (the agent's fail-closed verify is untouched); dispatched via
+   AdhocDispatcher; per-target results and the budget apply. NO generation call, NO verdict
+   call, NO iteration loop, NO approval flow (the author is the runner — Octopus parity).
+2. [OPEN-2] AST gate for hand-written scripts: recommend running AdhocScriptGate in Mutating
+   mode as defence-in-depth (hard-block list only); Octopus has no gate at all on its console.
+   Decide before build; if gated, surface analysis findings inline rather than refusing
+   silently.
+3. Target selection: individual targets; set-based by environment / target tags / tenants,
+   resolved to a frozen set AT SUBMIT (dedup mandatory — F7 item 4 is a hard prerequisite).
+   "Run on the Server" (ServerScriptStepRunner path) is OPTIONAL scope — arbitrary operator
+   script on the server node is a bigger blast radius; include only behind the new permission,
+   or defer.
+4. Script body: language dropdown (PowerShell v1; bash for Linux targets); PowerShell Edition
+   per run (Desktop default on Windows / Core — C5 currently defaults Desktop; add the per-run
+   knob through ScriptRunner if missing); visible budget field defaulting from
+   Adhoc:MaxTotalDuration (the 5-min AI default may not fit hand work — P5 note).
+5. [OPEN-1 — blocks F5 item 5] Concurrency: Octopus's console has a per-run checkbox "Allow
+   running concurrently with other scripts and Script Console Tasks", DEFAULT EXCLUSIVE.
+   Our B2 (ad-hoc = READ always) was decided for the gated AI flow. Decide: (a) console
+   inherits READ-always — simplest, F5 drops the wire field; or (b) console gets the Octopus
+   checkbox — unchecked → WRITE, checked → READ; F5 retains the field. RECOMMENDATION: (b) —
+   a hand-written script has no mode gate and its author is exactly the person who does not
+   think about cross-task clashes; exclusive-by-default is the safe default, and the checkbox
+   is the informed opt-in.
+6. Permission: NEW Permission.ScriptConsoleExecute — do NOT reuse AdhocActionsExecute (the AI
+   flow is approval-gated; the console is not; state-institution RBAC must be able to grant
+   them separately). Audit event per run: script hash, frozen target list, initiator.
+7. Tasks page: console runs appear as rows — ServerTasksService today aggregates deployments +
+   runbook runs + Hangfire only; add console/ad-hoc sessions with a DetailUrl to a run detail
+   view (per-target stdout/stderr/exit code). They must also surface via the F6 ?target=
+   filter.
+
+Acceptance: round trip on 2 targets with per-target output and exit codes visible; signature
+tamper test refuses on the agent; budget expiry kills the tree and reports; a set-resolved
+duplicate target dedups; permission denial without ScriptConsoleExecute; console run visible on
+/tasks and under /tasks?target=; concurrency per the OPEN-1 decision — if (b), test BOTH modes
+(exclusive console blocks a deployment wave; checked console co-runs with a Shared deployment).
+Branch: feat/script-console
+```
+
 ## 7. History
 
 | Version | Date | Change |
 |---|---|---|
+| 1.2 | 2026-07-27 | Added **WP16** (Script Console — Tasks-page entry, reuses the ad-hoc execution path; OPEN-1 concurrency checkbox vs READ-always, OPEN-2 gate for hand-written scripts). Screenshot-verified Octopus parity: console lives on the Tasks page and its per-run concurrency DEFAULTS TO EXCLUSIVE — nuances the B2 evidence (issue #5853 concerned system scripts, not the console). F5 item 5 gains the OPEN-1 caveat (field retention). |
 | 1.1 | 2026-07-25 | F2 closed (followups 1–10; item 4 re-resolved). Added §5 decision log 2026-07-25 and Phase-4 WPs **F5** (agent reader-writer gate + updater write-lock), **F6** (server-side per-plan target exclusion at claim time — mutual-consent model, project/runbook consent flags, FIFO by overlap, reason string, /tasks?target filter), **F7** (parallel-safety-audit riders incl. secrets-in-%TEMP% GDPR fix). All three scheduled pre-go-live; F6 added to WP-BASELINE dependencies. |
 | 1.0 | 2026-07-18 | Initial version. Unifies finish-plan-2026-07-05 (v1.3) + production-fix-prompts-2026-07-13 (v1.1); folds in the 2026-07-16 execution-engine audit (E-series, D1 merge design) and the 2026-07-18 10-agent code verification of every open WP; adds F1–F4, WP-BASELINE, D5-FOLD; archives both originals. |
