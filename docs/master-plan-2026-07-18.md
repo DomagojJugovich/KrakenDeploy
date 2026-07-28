@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| **Version** | 1.5 |
-| **Date** | 2026-07-27 |
+| **Version** | 2.0 |
+| **Date** | 2026-07-28 |
 | **Authors** | Domagoj Jugović, Claude (Fable 5; 10-agent verification workflow) |
 | **Status** | Review |
 | **Technologies** | .NET 10, Blazor Server, Radzen, EF Core 10, PostgreSQL, SignalR, gRPC, Hangfire |
 | **Scope** | Whole repo @ current local `main` |
 
-> **WARNING — local `main` is ~154 commits ahead of `origin/main`** (measured 2026-07-18 at `d96d0f9` vs origin `58db6be`; the count grows as work lands). Every "Done" below — WP1/WP2, the db-schema chain, the entire A/B/C stack — exists **only locally**. Push before relying on origin for anything; a lost disk loses the product. This document was authored while C5 ran concurrently on branch `fix/ops-windows-script-encoding` in the same working tree.
+> **NOTE — origin is current** since 2026-07-27 (`646e1d9`); the old "~154 commits ahead" warning is retired. Keep pushing after every landed WP — the SaaS-path smokes only run on push to `main`, and an unpushed disk is still an unbacked product.
 
 ---
 
@@ -177,6 +177,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 4 | F5 | Machine gate reader-writer rework (mutual-consent shared mode + updater write-lock) | ⬜ | M | F2 |
 | 4 | F6 | Server-side per-plan target exclusion at claim time (project/runbook consent flags, FIFO by overlap, reason string, /tasks?target filter) | ⬜ | M | F1, F5 |
 | 4 | F7 | Shared-state hardening riders (parallel-safety audit 2026-07-25: secrets in %TEMP%, server script CWD, boot-sweep guard, ad-hoc dedup, hygiene) | ⬜ | M | — |
+| 4 | BG1 | Topology split + on-prem blue-green (`Deployment:Topology` enum, platform release registry in KrakenDb, onprem `bluegreen` compose profile, non-additive stop-the-world guard) | ⬜ | L | D1; land before D4 and WP-BASELINE |
 | 5 — product features | WP3 | Real manual intervention (pause/approve/reject) | ⬜ | XL | D1 |
 | 5 | WP4 | Reachability + edit affordances (rescoped: 4 items) | ⬜ | S | — |
 | 5 | WP5 | Missing CRUD end-to-end (target/release/group delete + user profile edit) | ✅ 5c23420·5d0d1b6 | M | — |
@@ -190,10 +191,10 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 6 — structurals pre-freeze | D2 | Rename Deployment→Task wire/enum surface | ⬜ | L | D1 |
 | 6 | D4 | Split Server.Data → Data + Application | ⬜ | L | — |
 | 6 | D7 | Architecture-enforcement tests (delta only; D5-boundary asserts deferred) | ⬜ | S | D4 |
-| 7 — final pre-freeze | WP-BASELINE | Migration-history squash + C4 data-correctness tests + expand/contract lint + v1 freeze checklist | ⬜ | M | every schema-touching WP above (D1, D3, F2, F6, WP3, WP5, WP7, WP8, WP9, WP15) |
+| 7 — final pre-freeze | WP-BASELINE | Migration-history squash + C4 data-correctness tests + expand/contract lint (**MANDATORY, not advisory — T4: BG topologies depend on additive-only migrations between live releases**) + v1 freeze checklist. The squash covers KrakenDbContext only; BG1's `PlatformReleaseDbContext` has its own history table and stays out of it. | ⬜ | M | every schema-touching WP above (D1, D3, F2, F6, BG1, WP3, WP5, WP7, WP8, WP9, WP15) |
 | | | **GO-LIVE (~mid-Oct 2026; scope fixed, date flexes — drift from mid-Sept accepted 2026-07-18)** | | | |
 | post | WP13 | Invites, signing-keys UI, AiCostOverride, authorized live log tail | ⬜ | L | — |
-| post | D5-FOLD | "SaaS revival" package: D5 decouple + D6 pooled factory + WP12 per-account DEK + blue-green stranding fixes + boundary tests. **WP12 acceptance MUST include removing both `continue-on-error` lines from the CI smoke job** (multi-account + blue-green) — both are red solely on the M13.D.2 DEK fail-fast, so a fixed SaaS path would otherwise look identical to a broken one. | ⬜ | XL | D1, D4 |
+| post | D5-FOLD | "SaaS revival" package: D5 quarantine + D6 pooled factory + WP12 per-account DEK + blue-green stranding fixes + boundary tests. Part 1's blue-green decoupling ABSORBED by BG1 (pre-go-live, T7 2026-07-28). **WP12 acceptance: remove the multi-account smoke's `continue-on-error` AND add SaaS-mode blue-green coverage (flip/drain under multi-account — intentional per Domagoj 2026-07-27)** — the blue-green smoke itself goes green+blocking in BG1. | ⬜ | XL | D1, D4, BG1 |
 | post | WP14 | Documentation reconciliation (expanded scope) | ⬜ | L | C1 (caddy rider) |
 | post | WP16 | Script Console — hand-written ad-hoc runs (Tasks-page entry, signed, budgeted; placement movable pre-go-live if wanted) | ⬜ | L | F5, F7 |
 
@@ -274,6 +275,31 @@ the engine internals safe by construction and produced F7's rider list.
 | P7 | Visibility | F1-style reason on the task ("Waiting for target X — busy with #N; M ahead") + ONE task-log line on first deferral. Tasks page gains `?target=` filter resolved via `task_target_assignments`; TargetDetail links "View tasks for this machine". No new page |
 | P8 | Updater | Agent self-upgrade takes the WRITE lock for extract+swap+exit — fixes the audit CLASH (upgrade killed running ad-hoc work; check-to-swap TOCTOU) |
 | P9 | Schedule | ALL of F5/F6/F7 land BEFORE go-live; breaking changes still allowed (pre-production). F6 joins WP-BASELINE's schema-dependency list |
+
+### Resolved 2026-07-28 (grill session — topology & on-prem blue-green; BG1)
+
+Trigger: Domagoj asked how Octopus handles on-prem HA upgrades and whether our blue-green
+could serve on-prem too. Research (octopus.com/docs, primary sources cited in the BG1 prompt
+and `reference_octopus_ha_upgrade` memory): Octopus's documented HA upgrade is a FULL-CLUSTER
+outage — drain all nodes, stop all, upgrade the schema once, restart; "All Octopus Server
+nodes must run the same version of Octopus Deploy"; mixed versions risk data corruption (their
+own Kubernetes page); nothing blue-green exists for the Octopus Server product, on-prem or
+cloud; best automated outcome they publish is a 5–10 minute outage. KrakenDeploy already has
+the slot design — the draining release keeps its own orchestrator until in-flight deployments
+finish — so offering it on-prem is a genuine differentiator, blocked only by the accidental
+coupling of blue-green to `MultiAccount:Enabled`. This block supersedes **D-bg-5**.
+
+| # | Item | Decision |
+|---|---|---|
+| T1 | On-prem blue-green | Blue-green (3 slots per node + per-node Router) is available ON-PREM, on one server or several. **D-bg-5 superseded** (it said slots+YARP are SaaS/multi-node-HA only; the code guard at `ReleaseCommands.cs:58` enforces the stale decision and is re-keyed by BG1). |
+| T2 | Topology selection | New `Deployment:Topology` enum: `OnPrem` (default) / `OnPremBlueGreen` / `Saas`, chosen at INSTALLER level (kraken-init prompt). Ends `MultiAccount:Enabled`'s triple duty (tenancy / control-plane / blue-green): tenancy+control-plane consumers re-key to `Topology == Saas`, blue-green consumers to `Topology != OnPrem`. A config still carrying the old key fails boot with a named migration message (breaking allowed, pre-prod). |
+| T3 | Registry home | The release registry stays TWO TABLES + the same `pg_advisory_xact_lock` transitions, extracted into a tiny `PlatformReleaseDbContext`: `Saas` → catalog connection (same tables it has today); `OnPremBlueGreen` → KrakenDb under a dedicated `platform` schema with its OWN migrations-history table (keeps WP-BASELINE's squash clean and expand/contract rules able to treat it as never-changing infrastructure). **Text file REJECTED**: transitions are check-then-act across two tables from separate PROCESSES (CLI invocations, drain-watcher on any node, router reads) — a file has no cross-process transaction; the failure mode is two Active releases or a Retired default = fleet-wide 503, and flock does not span nodes. **Main-DB-without-schema-separation rejected** for Domagoj's stated reason (confusing later) — the `platform` schema is the naming fix. |
+| T4 | Non-additive migrations | BG topologies commit to expand/contract: ADDITIVE-ONLY while more than one release is live. A non-additive change ⇒ documented stop-the-world upgrade (drain all slots → stop → migrate → start) — i.e. exactly Octopus's only mode, as our worst case instead of our every case. Enforced: `database --upgrade`/`setup` REFUSES while the registry shows another non-Retired release (explicit `--stop-the-world` override for the runbook), and WP-BASELINE's expand/contract lint becomes MANDATORY. Hangfire storage-schema bumps count as non-additive (both releases share the single-DB Hangfire schema on-prem). |
+| T5 | Front tier | D-bg-6 (separate HA Caddy front tier, 2+ nodes) is scoped to Saas. On-prem BG: the per-node Router IS the entry point; a single box running 3 slots + router is the supported minimum. |
+| T6 | Delivery form (ASSUMPTION) | v1 on-prem BG ships as the DOCKER topology — `deploy/onprem` gains a `bluegreen` compose profile. Bare-metal Windows-service slot installs are deferred until a customer needs them. Awaiting Domagoj's confirmation; everything else in this block is decided. |
+| T7 | D5-FOLD rescope | BG1 absorbs D5 Part 1's blue-green decoupling. D5-FOLD keeps: `IPlatformControlPlane` quarantine, D6 pooled factory, WP12 per-account DEK, blue-green stranding fixes, boundary tests. WP12 acceptance now: remove the multi-account smoke's `continue-on-error` + add SaaS-mode blue-green smoke coverage (blue-green under multi-account is intentional). |
+| T8 | CI | BG1 re-points `docker-compose.smoke-bluegreen.yml` at `Topology=OnPremBlueGreen` (no multi-account, registry in KrakenDb) and REMOVES that step's `continue-on-error` — the blue-green smoke becomes green AND blocking pre-go-live. The multi-account smoke stays advisory-red until WP12. |
+| T9 | Ordering refresh | Pre-go-live execution order: F5 → F6 → F7 → **BG1** → F3 → phase 5 (WP4 first — smallest — then WP3, WP6, WP9, WP8, WP7, WP15, WP10, WP11) → D2 → D4 (must account for the new Platform pieces) → D7 → WP-BASELINE → go-live. Scope fixed, date flexes (reaffirmed — BG1 is L-sized and accepted as pre-go-live scope). |
 
 ## 6. Work-package prompts
 
@@ -1070,6 +1096,72 @@ scope: gate/claim concurrency semantics (F5/F6 own those).
 Branch: fix/agent-shared-state-hardening
 ```
 
+#### BG1 — Topology split + on-prem blue-green *(preamble + addendum; after F7, before D4/WP-BASELINE)*
+
+```text
+TASK: Make blue-green slot deployment available ON-PREM (1..N servers, 3 slots per node) and
+introduce an explicit deployment topology, ending MultiAccount:Enabled's triple duty. Locked
+decisions T1–T8 (§5, 2026-07-28); supersedes D-bg-5 in blue-green-slot-deployment.md.
+Competitive context (sourced 2026-07-27): Octopus's documented HA upgrade is a full-cluster
+outage; "All Octopus Server nodes must run the same version of Octopus Deploy"
+(octopus.com/docs/best-practices/self-hosted-octopus/high-availability); their Kubernetes page
+says mixed versions risk data corruption; no blue-green of the Octopus Server exists anywhere.
+Ours: slot flip, and the draining release keeps its OWN orchestrator until its in-flight
+deployments finish.
+
+Scope:
+1. `Deployment:Topology` = OnPrem (default) | OnPremBlueGreen | Saas. Re-key EVERY
+   MultiAccount:Enabled read by its TRUE concern — grep-verified list 2026-07-28:
+   - tenancy/control-plane → `Topology == Saas`: Program.cs boot (AddKrakenControlPlane,
+     account-routed AddKrakenDeployData, M13.D.2 DEK fail-fast — stays for Saas until WP12,
+     Hangfire-in-catalog at :807-810, ControlPlaneDevSeed at :894, :990 endpoints),
+     OidcRegistrar.cs:89, HangfireJobRegistrar.cs:117 + AccountBackupRunner,
+     ServiceCollectionExtensions.cs:96 (HttpAccountContext), AgentAccountHubFilter, CLI:
+     CliHost.cs:73 (tenant resolution), EncryptionCommands.cs:318, BackupCommands.cs:45,
+     RestoreCommands.cs:86, SeedDemoCommands.cs:33.
+   - blue-green → `Topology != OnPrem`: ReleaseCommands.cs:58 (drop the D-bg-5 error text).
+   A config still carrying MultiAccount:Enabled fails boot/CLI with a named migration message.
+2. Extract `app_releases` + `platform_settings` into a minimal `PlatformReleaseDbContext` in a
+   neutral project location (NOT ControlPlane — respect the coming D4 split; ReleaseRegistry +
+   ReleaseDrainWatcher move with it; advisory lock key "KDRELREG" unchanged). Connections:
+   Saas → catalog (same physical tables it reads today — no data move); OnPremBlueGreen →
+   KrakenDb, dedicated `platform` schema, OWN __EFMigrationsHistory_platform (WP-BASELINE's
+   squash of the app schema stays untouched). OnPrem: none of it is registered.
+3. Router: code untouched — it already takes a plain NpgsqlDataSource + two raw SQL reads;
+   point its connection at KrakenDb in on-prem BG. deploy/onprem gains a `bluegreen` compose
+   profile: 3 slot services + router, shared DataPath volume (co-located slots MUST share it),
+   operator DP-cert mount pattern from the C-series. Single box = supported minimum; the
+   router is the entry point (T5; D-bg-6 stays SaaS-only).
+4. Register DrainModeHangfireStopper + ReleaseDrainWatcher in the OnPremBlueGreen job path
+   (absorbs D5 Part 1's decoupling item). Verify the draining release stops ITS Hangfire
+   server; document that the shared single-DB Hangfire schema makes Hangfire storage upgrades
+   NON-additive events (T4).
+5. Non-additive guard (T4): `database --upgrade` and `database setup` refuse while the
+   registry shows another non-Retired release; `--stop-the-world` override. on-prem-guide
+   gains TWO upgrade runbooks: rolling additive (register slot → health → flip → drain →
+   retire) and stop-the-world non-additive (drain all → stop → migrate → start).
+6. kraken-init: topology prompt (default OnPrem) with one-paragraph consequence text for
+   OnPremBlueGreen ("commits you to additive-only migrations between live releases;
+   non-additive upgrades need a stop window").
+7. CI (T8): rewrite docker-compose.smoke-bluegreen.yml → Topology=OnPremBlueGreen (drop
+   MultiAccount__Enabled + the Catalog connection; registry + router on KrakenDb); REMOVE the
+   blue-green step's continue-on-error — it must PASS and gate again. Multi-account smoke
+   untouched (advisory-red until WP12).
+8. Docs: blue-green-slot-deployment.md vNext (supersede D-bg-5, on-prem chapter,
+   expand/contract contract), on-prem-guide.md BG chapter, saas-multi-account-architecture.md
+   D7 note, execution-engine.md pointer.
+
+Acceptance: the onprem bluegreen profile boots 2 live slots + router with NO multi-account
+config; `releases register|flip|retire|status` round-trips against the KrakenDb registry; a
+cookie-pinned session survives a flip; a drain lets an in-flight deployment finish on the old
+release while new sessions land on the new one; `database --upgrade` refuses with a second
+live release and proceeds with --stop-the-world; OnPrem default topology behaves exactly as
+today (regression suites green); Saas topology unchanged (DEK fail-fast intact); stale
+MultiAccount:Enabled config → named error; blue-green smoke GREEN and BLOCKING in CI.
+BREAKING: config key replaced; new EF context + `platform` schema.
+Branch: feat/topology-onprem-bluegreen
+```
+
 ### Phase 5 — product features (corrected from the 2026-07-18 verification digest)
 
 #### WP3 — Real manual intervention (pause / approve / reject) *(preamble only; depends on D1)*
@@ -1752,10 +1844,11 @@ Part 1 — D5: decouple ControlPlane/blue-green/HA from the MultiAccount flag.
   shipped on-prem binary does not compile the SaaS surface (DB-per-account provisioning,
   FileSecretStore, fleet migrator). Keep the MultiAccount:Enabled fail-fast until Part 3 removes
   it properly.
-- Decouple blue-green/HA from the account flag: register DrainModeHangfireStopper +
-  ReleaseDrainWatcher in the single-instance recurring-job path too; give the release registry
-  (app_releases/platform_settings) a home in single-instance mode so on-prem HA gets
-  zero-downtime upgrades without the SaaS catalog. The Router is already standalone.
+- ~~Decouple blue-green/HA from the account flag~~ — ABSORBED by BG1 (pre-go-live,
+  2026-07-28, T7): topology enum, PlatformReleaseDbContext in KrakenDb, drain components in
+  the OnPremBlueGreen job path, router re-pointed. Part 1 here keeps ONLY the ControlPlane
+  quarantine (previous bullet) and the documentation item (next bullet). D5 starts from BG1's
+  topology split — the Saas branch is already isolated behind `Topology == Saas` by then.
 - Document the SaaS quarantine + revival gate.
 
 Part 2 — D6: DbContext factory mode-dependent pooling. AddDbContextFactory<KrakenDbContext> is
@@ -1945,6 +2038,7 @@ Branch: feat/script-console
 
 | Version | Date | Change |
 |---|---|---|
+| 2.0 | 2026-07-28 | **Topology & on-prem blue-green.** New §5 block "Resolved 2026-07-28" (T1–T9; supersedes D-bg-5): `Deployment:Topology` enum (OnPrem default / OnPremBlueGreen / Saas, installer-level), blue-green available on-prem (3 slots, 1..N servers, router = entry point), release registry → `PlatformReleaseDbContext` (KrakenDb `platform` schema on-prem / catalog on SaaS — text file rejected: no cross-process transactions), non-additive migrations = stop-the-world with a `database --upgrade` guard, expand/contract lint now MANDATORY. New WP **BG1** (L, pre-go-live, after F7); D5-FOLD Part 1 rescoped (BG decoupling absorbed); WP-BASELINE deps + lint scope updated; execution order refreshed (T9). Origin-sync banner retired. Motivated by Octopus research: their HA upgrade is a full-cluster outage, mixed versions forbidden, no server blue-green exists — this is a differentiator. |
 | 1.5 | 2026-07-27 | CI: both SaaS-path smokes (multi-account, blue-green) marked `continue-on-error` — both fail solely on the M13.D.2 "envelope encryption does not support MultiAccount" boot fail-fast, and blue-green cannot be reconfigured around it (multi-account-only by D-bg-5). Removing both flags added to WP12/D5-FOLD acceptance. Corrects an earlier claim in `d140993` that blue-green ships in v1 — it does not; single-node on-prem upgrades stop → migrate → start. |
 | 1.4 | 2026-07-27 | WP16 OPEN-2 resolved: ADVISORY Mutating-mode gate on console scripts (findings inline, explicit acknowledged "Run anyway" recorded in the audit event; sole hard block = Invoke-Command with a remoting target, which breaks the frozen-target-set contract). WP16 has no open decisions left. |
 | 1.3 | 2026-07-27 | WP16 OPEN-1 resolved: console adopts the per-run concurrency checkbox (unchecked → WRITE default, checked → READ); F5 item 5 flipped from "drop the wire field" to "retain + map" with the skew rationale. OPEN-2 (gate for hand-written scripts) still open. |
