@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 2.0 |
+| **Version** | 2.1 |
 | **Date** | 2026-07-28 |
 | **Authors** | Domagoj Jugović, Claude (Fable 5; 10-agent verification workflow) |
 | **Status** | Review |
@@ -177,7 +177,8 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 4 | F5 | Machine gate reader-writer rework (mutual-consent shared mode + updater write-lock) | ⬜ | M | F2 |
 | 4 | F6 | Server-side per-plan target exclusion at claim time (project/runbook consent flags, FIFO by overlap, reason string, /tasks?target filter) | ⬜ | M | F1, F5 |
 | 4 | F7 | Shared-state hardening riders (parallel-safety audit 2026-07-25: secrets in %TEMP%, server script CWD, boot-sweep guard, ad-hoc dedup, hygiene) | ⬜ | M | — |
-| 4 | BG1 | Topology split + on-prem blue-green (`Deployment:Topology` enum, platform release registry in KrakenDb, onprem `bluegreen` compose profile, non-additive stop-the-world guard) | ⬜ | L | D1; land before D4 and WP-BASELINE |
+| 4 | BG1 | Topology split + on-prem blue-green (`Deployment:Topology` enum, platform release registry in KrakenDb, onprem `bluegreen` compose profile, marker-aware stop-the-world guard, maintenance-mode queue gate) | ⬜ | L | D1; land before D4 and WP-BASELINE |
+| 4 | BG2 | Windows-service slot delivery (per-slot services + Router service + PowerShell install/upgrade scripts with `-WhatIf`) | ⬜ | M | BG1 |
 | 5 — product features | WP3 | Real manual intervention (pause/approve/reject) | ⬜ | XL | D1 |
 | 5 | WP4 | Reachability + edit affordances (rescoped: 4 items) | ⬜ | S | — |
 | 5 | WP5 | Missing CRUD end-to-end (target/release/group delete + user profile edit) | ✅ 5c23420·5d0d1b6 | M | — |
@@ -191,7 +192,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 6 — structurals pre-freeze | D2 | Rename Deployment→Task wire/enum surface | ⬜ | L | D1 |
 | 6 | D4 | Split Server.Data → Data + Application | ⬜ | L | — |
 | 6 | D7 | Architecture-enforcement tests (delta only; D5-boundary asserts deferred) | ⬜ | S | D4 |
-| 7 — final pre-freeze | WP-BASELINE | Migration-history squash + C4 data-correctness tests + expand/contract lint (**MANDATORY, not advisory — T4: BG topologies depend on additive-only migrations between live releases**) + v1 freeze checklist. The squash covers KrakenDbContext only; BG1's `PlatformReleaseDbContext` has its own history table and stays out of it. | ⬜ | M | every schema-touching WP above (D1, D3, F2, F6, BG1, WP3, WP5, WP7, WP8, WP9, WP15) |
+| 7 — final pre-freeze | WP-BASELINE | Migration-history squash + C4 data-correctness tests + expand/contract lint (**MANDATORY — T4: BG topologies depend on additive-only migrations between live releases; the lint verifies `[StopTheWorld]` markers by operation analysis, unmarked destructive op = CI failure**) + v1 freeze checklist. The squash covers KrakenDbContext only; BG1's `PlatformReleaseDbContext` has its own history table and stays out of it. | ⬜ | M | every schema-touching WP above (D1, D3, F2, F6, BG1, WP3, WP5, WP7, WP8, WP9, WP15) |
 | | | **GO-LIVE (~mid-Oct 2026; scope fixed, date flexes — drift from mid-Sept accepted 2026-07-18)** | | | |
 | post | WP13 | Invites, signing-keys UI, AiCostOverride, authorized live log tail | ⬜ | L | — |
 | post | D5-FOLD | "SaaS revival" package: D5 quarantine + D6 pooled factory + WP12 per-account DEK + blue-green stranding fixes + boundary tests. Part 1's blue-green decoupling ABSORBED by BG1 (pre-go-live, T7 2026-07-28). **WP12 acceptance: remove the multi-account smoke's `continue-on-error` AND add SaaS-mode blue-green coverage (flip/drain under multi-account — intentional per Domagoj 2026-07-27)** — the blue-green smoke itself goes green+blocking in BG1. | ⬜ | XL | D1, D4, BG1 |
@@ -294,12 +295,14 @@ coupling of blue-green to `MultiAccount:Enabled`. This block supersedes **D-bg-5
 | T1 | On-prem blue-green | Blue-green (3 slots per node + per-node Router) is available ON-PREM, on one server or several. **D-bg-5 superseded** (it said slots+YARP are SaaS/multi-node-HA only; the code guard at `ReleaseCommands.cs:58` enforces the stale decision and is re-keyed by BG1). |
 | T2 | Topology selection | New `Deployment:Topology` enum: `OnPrem` (default) / `OnPremBlueGreen` / `Saas`, chosen at INSTALLER level (kraken-init prompt). Ends `MultiAccount:Enabled`'s triple duty (tenancy / control-plane / blue-green): tenancy+control-plane consumers re-key to `Topology == Saas`, blue-green consumers to `Topology != OnPrem`. A config still carrying the old key fails boot with a named migration message (breaking allowed, pre-prod). |
 | T3 | Registry home | The release registry stays TWO TABLES + the same `pg_advisory_xact_lock` transitions, extracted into a tiny `PlatformReleaseDbContext`: `Saas` → catalog connection (same tables it has today); `OnPremBlueGreen` → KrakenDb under a dedicated `platform` schema with its OWN migrations-history table (keeps WP-BASELINE's squash clean and expand/contract rules able to treat it as never-changing infrastructure). **Text file REJECTED**: transitions are check-then-act across two tables from separate PROCESSES (CLI invocations, drain-watcher on any node, router reads) — a file has no cross-process transaction; the failure mode is two Active releases or a Retired default = fleet-wide 503, and flock does not span nodes. **Main-DB-without-schema-separation rejected** for Domagoj's stated reason (confusing later) — the `platform` schema is the naming fix. |
-| T4 | Non-additive migrations | BG topologies commit to expand/contract: ADDITIVE-ONLY while more than one release is live. A non-additive change ⇒ documented stop-the-world upgrade (drain all slots → stop → migrate → start) — i.e. exactly Octopus's only mode, as our worst case instead of our every case. Enforced: `database --upgrade`/`setup` REFUSES while the registry shows another non-Retired release (explicit `--stop-the-world` override for the runbook), and WP-BASELINE's expand/contract lint becomes MANDATORY. Hangfire storage-schema bumps count as non-additive (both releases share the single-DB Hangfire schema on-prem). |
+| T4 | Non-additive migrations | BG topologies commit to expand/contract: ADDITIVE-ONLY while more than one release is live; a non-additive change ⇒ documented stop-the-world upgrade (drain all slots → stop → migrate → start) — exactly Octopus's only mode, as our worst case instead of our every case. **Enforcement is MARKER-AWARE** (refined 2026-07-28 v2.1 — the v2.0 wording refused ANY migration while a second release was live, which would have blocked every rolling upgrade and defeated expand/contract): non-additive EF migrations carry an explicit `[StopTheWorld]` marker; `database --upgrade`/`setup` refuses a MARKED pending migration while another non-Retired release exists (`--stop-the-world` override) and lets purely-additive pending sets through — that IS the rolling upgrade. WP-BASELINE's lint (MANDATORY) verifies markers by operation analysis: Drop*/Rename*/narrowing Alter ⇒ marker required, CI fails on an unmarked destructive op. Hangfire: auto schema migration DISABLED in BG topologies (PrepareSchemaIfNecessary=false at slot boot); its schema migrates only inside `database --upgrade`, version-checked, always treated as marked. |
 | T5 | Front tier | D-bg-6 (separate HA Caddy front tier, 2+ nodes) is scoped to Saas. On-prem BG: the per-node Router IS the entry point; a single box running 3 slots + router is the supported minimum. |
-| T6 | Delivery form (ASSUMPTION) | v1 on-prem BG ships as the DOCKER topology — `deploy/onprem` gains a `bluegreen` compose profile. Bare-metal Windows-service slot installs are deferred until a customer needs them. Awaiting Domagoj's confirmation; everything else in this block is decided. |
+| T6 | Delivery form (RESOLVED 2026-07-28) | v1 on-prem BG ships BOTH forms: Docker (`deploy/onprem` `bluegreen` compose profile — BG1) AND bare-metal Windows-service slots (**BG2**: per-slot Windows services + Router service + PowerShell install/upgrade scripts with mandatory `-WhatIf`). Split into two WPs so BG1 lands and re-greens CI early; BG2 depends on BG1. |
 | T7 | D5-FOLD rescope | BG1 absorbs D5 Part 1's blue-green decoupling. D5-FOLD keeps: `IPlatformControlPlane` quarantine, D6 pooled factory, WP12 per-account DEK, blue-green stranding fixes, boundary tests. WP12 acceptance now: remove the multi-account smoke's `continue-on-error` + add SaaS-mode blue-green smoke coverage (blue-green under multi-account is intentional). |
 | T8 | CI | BG1 re-points `docker-compose.smoke-bluegreen.yml` at `Topology=OnPremBlueGreen` (no multi-account, registry in KrakenDb) and REMOVES that step's `continue-on-error` — the blue-green smoke becomes green AND blocking pre-go-live. The multi-account smoke stays advisory-red until WP12. |
-| T9 | Ordering refresh | Pre-go-live execution order: F5 → F6 → F7 → **BG1** → F3 → phase 5 (WP4 first — smallest — then WP3, WP6, WP9, WP8, WP7, WP15, WP10, WP11) → D2 → D4 (must account for the new Platform pieces) → D7 → WP-BASELINE → go-live. Scope fixed, date flexes (reaffirmed — BG1 is L-sized and accepted as pre-go-live scope). |
+| T9 | Ordering refresh | Pre-go-live execution order: F5 → F6 → F7 → **BG1** → **BG2** → F3 → phase 5 (WP4 first — smallest — then WP3, WP6, WP9, WP8, WP7, WP15, WP10, WP11) → D2 → D4 (must account for the new Platform pieces) → D7 → WP-BASELINE → go-live. Scope fixed, date flexes (reaffirmed — BG1+BG2 accepted as pre-go-live scope). |
+| T10 | Non-additive DETECTION (Domagoj: "how will we know that is about to happen?") | Three layers, and the operator needs NO foresight: (1) dev-time — the WP-BASELINE lint analyses every migration's operations and forces the `[StopTheWorld]` marker onto destructive ones, so the knowledge is captured when the migration is WRITTEN; (2) build-time — CI watch on `Directory.Packages.props` bumps of storage-schema-owning packages (Hangfire.PostgreSql, Npgsql/EF major) ⇒ release notes must declare stop-the-world; (3) upgrade-time — `database --upgrade` refuses BY NAME ("migration X is marked stop-the-world") and points at the runbook. The operator finds out exactly when it matters, from the tool, not from memory. |
+| T11 | Maintenance mode gates the queue (Domagoj 2026-07-28) | During maintenance: NO scheduled deployment starts, NO new task accepted (creation endpoints refuse with a banner); queued + scheduled work fires at FIRST re-signal after maintenance ends (the F1 stays-Queued machinery already provides this); in-flight tasks run to COMPLETION (drain semantics — maintenance never kills work). Gate lives at the CLAIM path (`ServerTaskLease.TryClaimAsync`) — the single choke point — not at dispatch or per-endpoint. Rationale: no deployment should run into a mid-upgrade environment; Octopus's maintenance mode documentedly lets queued AND scheduled deployments start, which is the hole we refuse to copy. Scope: BG1 item 9 (the stop-the-world runbook depends on it). |
 
 ## 6. Work-package prompts
 
@@ -1136,10 +1139,18 @@ Scope:
    (absorbs D5 Part 1's decoupling item). Verify the draining release stops ITS Hangfire
    server; document that the shared single-DB Hangfire schema makes Hangfire storage upgrades
    NON-additive events (T4).
-5. Non-additive guard (T4): `database --upgrade` and `database setup` refuse while the
-   registry shows another non-Retired release; `--stop-the-world` override. on-prem-guide
-   gains TWO upgrade runbooks: rolling additive (register slot → health → flip → drain →
-   retire) and stop-the-world non-additive (drain all → stop → migrate → start).
+5. Non-additive guard (T4/T10, MARKER-AWARE): introduce a `[StopTheWorld]` migration marker
+   (attribute or manifest — pick one, document it). `database --upgrade`/`setup` refuses a
+   MARKED pending migration while the registry shows another non-Retired release, naming the
+   migration and the runbook; purely-additive pending sets proceed — that IS the rolling
+   upgrade. `--stop-the-world` override for the documented full-stop runbook. Hangfire in BG
+   topologies: PrepareSchemaIfNecessary=false at slot boot (a new slot must NEVER auto-migrate
+   the shared Hangfire schema while the old release is live); Hangfire schema migrates only
+   inside `database --upgrade`, version-checked, treated as marked. CI: a
+   Directory.Packages.props diff watch flags bumps of Hangfire.PostgreSql / storage-owning
+   packages. on-prem-guide gains TWO upgrade runbooks: rolling additive (register slot →
+   health → flip → drain → retire) and stop-the-world non-additive (maintenance on → drain
+   all → stop → migrate → start → maintenance off).
 6. kraken-init: topology prompt (default OnPrem) with one-paragraph consequence text for
    OnPremBlueGreen ("commits you to additive-only migrations between live releases;
    non-additive upgrades need a stop window").
@@ -1150,16 +1161,59 @@ Scope:
 8. Docs: blue-green-slot-deployment.md vNext (supersede D-bg-5, on-prem chapter,
    expand/contract contract), on-prem-guide.md BG chapter, saas-multi-account-architecture.md
    D7 note, execution-engine.md pointer.
+9. Maintenance mode gates the queue (T11): while maintenance is ON — the claim path
+   (`ServerTaskLease.TryClaimAsync`, single choke point) refuses to claim, so queued AND
+   scheduled tasks stay Queued and fire on the first re-signal after maintenance ends;
+   task-creating endpoints (deploy/runbook trigger, ad-hoc approve-dispatch) refuse with a
+   clear message + UI banner; in-flight tasks run to completion. First verify current
+   behaviour (there is a pending investigation chip); Octopus's maintenance mode lets queued
+   and scheduled deployments START — do not copy that hole. Tests: scheduled deployment due
+   during maintenance does not start and starts after; new deploy refused; running deployment
+   finishes.
 
 Acceptance: the onprem bluegreen profile boots 2 live slots + router with NO multi-account
 config; `releases register|flip|retire|status` round-trips against the KrakenDb registry; a
 cookie-pinned session survives a flip; a drain lets an in-flight deployment finish on the old
-release while new sessions land on the new one; `database --upgrade` refuses with a second
-live release and proceeds with --stop-the-world; OnPrem default topology behaves exactly as
-today (regression suites green); Saas topology unchanged (DEK fail-fast intact); stale
+release while new sessions land on the new one; `database --upgrade` refuses a [StopTheWorld]-marked
+pending migration while a second release is live (naming it), lets a purely-additive pending
+set through in the same situation, and proceeds with --stop-the-world; a scheduled deployment
+due during maintenance stays Queued and fires after; OnPrem default topology behaves exactly
+as today (regression suites green); Saas topology unchanged (DEK fail-fast intact); stale
 MultiAccount:Enabled config → named error; blue-green smoke GREEN and BLOCKING in CI.
 BREAKING: config key replaced; new EF context + `platform` schema.
 Branch: feat/topology-onprem-bluegreen
+```
+
+#### BG2 — Windows-service slot delivery *(preamble + addendum; after BG1)*
+
+```text
+TASK: Deliver the OnPremBlueGreen topology on bare-metal Windows — per-slot Windows services
+instead of compose services. Locked T6 (§5, 2026-07-28). Same registry, router, runbooks and
+guards as BG1; this WP is packaging, service lifecycle and operator scripts only.
+
+Scope:
+1. Layout: N side-by-side versioned slot installs (e.g. C:\KrakenDeploy\slots\1..3) each
+   registered as a Windows service (KrakenDeploySlot1..N) with per-slot appsettings (slot
+   port, topology, shared connection string); Router as a service (KrakenDeployRouter) on the
+   operator-facing port; ONE shared Server:DataPath directory + DP cert for all slots
+   (co-located slot rule); shared Postgres.
+2. PowerShell operator scripts — ALL state-changing scripts support -WhatIf (house rule):
+   New-KrakenSlotInstall (provision a slot service), Install-KrakenRelease -Slot N -Package
+   (unpack new version into the slot dir, stamp release id, invoke `releases register`),
+   Invoke-KrakenFlip / -Drain / -Retire (wrap the CLI verbs), Invoke-KrakenStopTheWorld
+   (maintenance on → drain all → stop services → database --upgrade --stop-the-world → start
+   → maintenance off). Scripts are Windows PowerShell 5.1-compatible (state the shell).
+3. Windows specifics: service account guidance (gMSA preferred, LocalSystem fallback — note
+   %TEMP% ACL implications from the F7 secrets finding); DataPath ACL locked to the service
+   account; firewall notes (only the Router port exposed); per-slot dirs make the
+   .backup/.failed sibling-collision (F7 hygiene) impossible — verify, don't assume.
+4. Docs: on-prem-guide Windows chapter mirroring the Docker runbooks 1:1.
+
+Acceptance: two slot services + router service on one Windows box; rolling upgrade executed
+end-to-end via the scripts with an in-flight deployment surviving on the draining slot;
+stop-the-world script honours the maintenance gate and the marker guard; every state-changing
+script demonstrates -WhatIf; DataPath ACL verified. Size M.
+Branch: feat/bluegreen-windows-services
 ```
 
 ### Phase 5 — product features (corrected from the 2026-07-18 verification digest)
@@ -2038,6 +2092,7 @@ Branch: feat/script-console
 
 | Version | Date | Change |
 |---|---|---|
+| 2.1 | 2026-07-28 | T6 resolved (Windows-service slots ARE v1 — new **BG2**, M, after BG1); T4 refined to MARKER-AWARE guard — v2.0's wording refused any migration while a second release lived, which would have blocked every rolling upgrade (caught via Domagoj's "how will we know" question); new T10 (three-layer non-additive detection: lint forces markers at write time, CI package-bump watch, upgrade-time refusal by name) and T11 (maintenance mode gates the queue at the claim path — no scheduled starts, no new tasks, in-flight finishes, queued fires on first re-signal after; Octopus's documented hole not copied) — BG1 gains item 9 + acceptance lines. |
 | 2.0 | 2026-07-28 | **Topology & on-prem blue-green.** New §5 block "Resolved 2026-07-28" (T1–T9; supersedes D-bg-5): `Deployment:Topology` enum (OnPrem default / OnPremBlueGreen / Saas, installer-level), blue-green available on-prem (3 slots, 1..N servers, router = entry point), release registry → `PlatformReleaseDbContext` (KrakenDb `platform` schema on-prem / catalog on SaaS — text file rejected: no cross-process transactions), non-additive migrations = stop-the-world with a `database --upgrade` guard, expand/contract lint now MANDATORY. New WP **BG1** (L, pre-go-live, after F7); D5-FOLD Part 1 rescoped (BG decoupling absorbed); WP-BASELINE deps + lint scope updated; execution order refreshed (T9). Origin-sync banner retired. Motivated by Octopus research: their HA upgrade is a full-cluster outage, mixed versions forbidden, no server blue-green exists — this is a differentiator. |
 | 1.5 | 2026-07-27 | CI: both SaaS-path smokes (multi-account, blue-green) marked `continue-on-error` — both fail solely on the M13.D.2 "envelope encryption does not support MultiAccount" boot fail-fast, and blue-green cannot be reconfigured around it (multi-account-only by D-bg-5). Removing both flags added to WP12/D5-FOLD acceptance. Corrects an earlier claim in `d140993` that blue-green ships in v1 — it does not; single-node on-prem upgrades stop → migrate → start. |
 | 1.4 | 2026-07-27 | WP16 OPEN-2 resolved: ADVISORY Mutating-mode gate on console scripts (findings inline, explicit acknowledged "Run anyway" recorded in the audit event; sole hard block = Invoke-Command with a remoting target, which breaks the frozen-target-set contract). WP16 has no open decisions left. |
