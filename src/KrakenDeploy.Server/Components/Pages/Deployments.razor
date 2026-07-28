@@ -9,6 +9,7 @@
 @inject DialogService Dialog
 @inject NotificationService Notify
 @inject IAuditLog Audit
+@inject MaintenanceModeService MaintenanceSvc
 
 <PageTitle>Deployments - KrakenDeploy</PageTitle>
 
@@ -145,9 +146,15 @@
         ("Queued", DeploymentStatus.Queued),
     ];
 
+    // Non-null while instance-wide maintenance is on: the claim gate refuses EVERY
+    // task, so it outranks the per-key serialization rule as the queue-wait reason.
+    private MaintenanceState? _maintenanceHold;
+
     protected override async Task OnInitializedAsync()
     {
         _all = await DeploymentSvc.GetAllAsync();
+        var maintenance = await MaintenanceSvc.GetStateAsync();
+        _maintenanceHold = maintenance.Enabled ? maintenance : null;
         // Include archived: historical deployments to a since-retired
         // environment must still filter and colour-map correctly.
         _envs = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true);
@@ -262,10 +269,22 @@
     // list can't drift — and mirrors the key comparison of
     // ServerTaskLease.InFlightDeploymentPeerPredicate (null tenant is its own key
     // via the == comparison).
+    // Maintenance mode wins: while the claim gate is closed no task can start, so
+    // reporting "another deployment is running" would name the wrong constraint.
     private string? QueueWaitReason(Deployment d)
-        => d.Status == DeploymentStatus.Queued && IsBlockedByInFlightPeer(d)
+    {
+        if (d.Status != DeploymentStatus.Queued)
+        {
+            return null;
+        }
+        if (_maintenanceHold is { } hold)
+        {
+            return QueueWaitMessage.MaintenanceHold(hold.Reason);
+        }
+        return IsBlockedByInFlightPeer(d)
             ? QueueWaitMessage.RunningPeer(d.Release?.Project?.Name, d.Environment?.Name)
             : null;
+    }
 
     private bool IsBlockedByInFlightPeer(Deployment d)
         => _all.Any(o => o.Id != d.Id

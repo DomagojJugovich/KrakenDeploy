@@ -16,6 +16,7 @@
 @inject UiActionGuard Guard
 @inject IAuditLog Audit
 @inject IServiceProvider Services
+@inject MaintenanceModeService MaintenanceSvc
 
 <PageTitle>Deployment @(Deployment?.Id.ToString()[..8]) - KrakenDeploy</PageTitle>
 
@@ -271,6 +272,11 @@ else
     // branch, so it is harmlessly ignored once the row leaves Queued. Computed on
     // load (below).
     private bool _blockedByInFlightPeer;
+
+    // Non-null while this Queued task is held by the instance-wide maintenance gate
+    // (the claim is refused, so it cannot start until maintenance is disabled). Held
+    // as the state rather than a bool so the banner can quote the operator's reason.
+    private MaintenanceState? _maintenanceHold;
 
     // Cancel is meaningful only before a deployment reaches a terminal state.
     private bool CanCancel =>
@@ -550,17 +556,35 @@ else
     // The page is load-time static (no live poll), so this is as fresh as the
     // rest of the page; it is never consulted once the row leaves Queued.
     private async Task RefreshQueueReasonAsync()
-        => _blockedByInFlightPeer = Deployment is { Status: DeploymentStatus.Queued }
+    {
+        if (Deployment is not { Status: DeploymentStatus.Queued })
+        {
+            _blockedByInFlightPeer = false;
+            _maintenanceHold = null;
+            return;
+        }
+
+        // The maintenance gate in ServerTaskLease.TryClaimAsync refuses the claim
+        // outright, so it outranks the serialization rule as the reason this task
+        // hasn't started. Read it first and skip the peer probe when it applies.
+        var maintenance = await MaintenanceSvc.GetStateAsync();
+        _maintenanceHold = maintenance.Enabled ? maintenance : null;
+        _blockedByInFlightPeer = _maintenanceHold is null
             && await DeploymentSvc.HasInFlightPeerAsync(
                 Deployment.Id, Deployment.ProjectId, Deployment.EnvironmentId, Deployment.TenantId);
+    }
 
-    // F1 — the reason a Queued deployment is waiting. A future schedule takes
-    // precedence (the task is intentionally held); otherwise, if another
-    // deployment of the same (project, environment, tenant) is in-flight, the
-    // serialization rule is holding this one back. Null → the banner falls back
-    // to its generic "Waiting to start." text.
+    // F1 — the reason a Queued deployment is waiting. Maintenance mode wins (the
+    // claim is refused for every task, so nothing else it might be waiting on
+    // matters); then a future schedule (the task is intentionally held); then the
+    // (project,env,tenant) serialization rule. Null → the banner falls back to its
+    // generic "Waiting to start." text.
     private string? QueuedMessage()
     {
+        if (_maintenanceHold is { } hold)
+        {
+            return QueueWaitMessage.MaintenanceHold(hold.Reason);
+        }
         if (ScheduledMessage() is { } scheduled)
         {
             return scheduled;

@@ -11,14 +11,34 @@
     Maintenance mode
 </RadzenText>
 <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
-    Instance-wide write lock. When enabled, every POST/PUT/PATCH/DELETE
-    that isn't on the exemption list (login, agent transport, Hangfire
-    dashboard, this page, healthz, diagnostics) gets a <code>503 Service
-    Unavailable</code> with the operator-supplied reason in the body —
-    unless the caller holds <code>BypassMaintenance</code>.
-    <code>SystemAdministrator</code> and <code>SystemManager</code> bypass
-    automatically. Recurring Hangfire jobs short-circuit on the flag too,
-    so a backup that fires mid-upgrade doesn't race the work.
+    Instance-wide write lock <strong>and task-queue stop</strong>. When enabled:
+</RadzenText>
+<RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-4">
+    <ul style="margin:0; padding-left:1.25rem;">
+        <li>
+            Every POST/PUT/PATCH/DELETE that isn't on the exemption list
+            (login, agent transport, Hangfire dashboard, this page, healthz,
+            diagnostics) gets a <code>503 Service Unavailable</code> with the
+            operator-supplied reason in the body — unless the caller holds
+            <code>BypassMaintenance</code>.
+            <code>SystemAdministrator</code> and <code>SystemManager</code>
+            bypass automatically.
+        </li>
+        <li>
+            <strong>No new deployment or runbook run starts.</strong> Tasks
+            already queued — including scheduled ones whose time arrives
+            during the window — stay <code>Queued</code> instead of draining,
+            and start on their own once you disable maintenance. Note this
+            gate is <em>not</em> subject to <code>BypassMaintenance</code>:
+            queueing a task is blocked for nobody, but starting one is
+            blocked for everybody.
+        </li>
+        <li>
+            The backup, subscription-poller and digest-flush jobs pause.
+            Other recurring jobs — notably the dispatch reconciler that
+            recovers tasks orphaned by a restart — keep running by design.
+        </li>
+    </ul>
 </RadzenText>
 
 @if (_state is null)
@@ -91,9 +111,13 @@ else
             </RadzenStack>
 
             <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-0">
-                Tip: enabling mid-task is safe — in-flight requests
-                finish; new write attempts get the 503 from the next
-                request boundary onward.
+                Tip: enabling mid-task is safe — in-flight requests finish,
+                and a deployment already running <strong>keeps running to
+                completion</strong> (it is not aborted; the agent transport
+                stays reachable on purpose). New write attempts get the 503
+                from the next request boundary onward, and the next task to
+                be picked up is refused instead. Check the task list is
+                clear before starting a migration.
             </RadzenText>
         </RadzenStack>
     </RadzenCard>

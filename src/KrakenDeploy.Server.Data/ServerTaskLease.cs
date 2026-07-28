@@ -2,6 +2,8 @@ using System.Globalization;
 using System.Linq;
 using System.Linq.Expressions;
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Core.Domain.Maintenance;
+using KrakenDeploy.Server.Data.Services;
 using Microsoft.EntityFrameworkCore;
 
 namespace KrakenDeploy.Server.Data;
@@ -94,11 +96,51 @@ public static class ServerTaskLease
     /// and the minutely stale-Queued re-signal
     /// (<see cref="Jobs.ScheduledDeploymentDispatchJob"/>) retries it.
     /// </para>
+    /// <para>
+    /// <b>Maintenance gate.</b> Returns
+    /// <see cref="ServerTaskClaimResult.MaintenanceBlocked"/> while instance-wide
+    /// maintenance mode is on, so enabling maintenance actually STOPS THE QUEUE
+    /// rather than only walling off HTTP mutations. The gate lives here because the
+    /// claim is the single choke point for <c>Queued→Running</c>: every wake-up
+    /// source (create-time enqueue, the minutely re-signal, the boot reconciler)
+    /// funnels through it, so one check covers them all — gating the dispatch job
+    /// instead would leave the create-time path wide open, and would wrongly also
+    /// stop that job's orphan-reconciliation arm, which MUST keep running through a
+    /// restart-heavy maintenance window.
+    /// </para>
+    /// <para>
+    /// A CHILD task (<c>ParentTaskId != null</c>, spawned by an
+    /// <c>Octopus.DeployRelease</c> step) is EXEMPT: it is the continuation of an
+    /// already-claimed parent, not new work, and blocking it would strand the
+    /// parent's <c>WaitForChildAsync</c> behind a child that can never claim —
+    /// while the parent keeps renewing its lease, so the reconciler never reaps it
+    /// either. Same reasoning as the E3 <c>NodeTaskGate</c> bypass in
+    /// <c>DeploymentWorker.GateThenDispatchCoreAsync</c>.
+    /// </para>
     /// </summary>
     public static async Task<ServerTaskClaimResult> TryClaimAsync(
         KrakenDbContext db, ServerTask task, TimeProvider time, CancellationToken ct = default)
     {
         var now = time.GetUtcNow();
+
+        // Maintenance gate, ahead of the kind branch so it covers deployments AND
+        // runbook runs. Read straight off the claim's own context — cache-free (the
+        // SettingsService instance cache has a 10 s TTL that would let a burst of
+        // tasks through after the operator flips the switch) and, on the Deployment
+        // path below, on the same connection as the claim itself. The residual
+        // window is one in-flight claim racing the enable commit, which no gate can
+        // close and which the operator already tolerates for tasks claimed a
+        // millisecond earlier.
+        if (task.ParentTaskId is null)
+        {
+            var maintenance = await SettingsService
+                .ReadOrDefaultAsync<MaintenanceSettings>(db, ct: ct)
+                .ConfigureAwait(false);
+            if (maintenance.Enabled)
+            {
+                return ServerTaskClaimResult.MaintenanceBlocked;
+            }
+        }
 
         // RunbookRun is exempt from serialization — plain conditional claim, one
         // autonomous statement (retry-safe as-is; no user transaction needed).
@@ -344,7 +386,7 @@ public static class ServerTaskLease
 
 /// <summary>
 /// Outcome of <see cref="ServerTaskLease.TryClaimAsync"/>. Only
-/// <see cref="Claimed"/> lets the caller dispatch; the other two both leave the
+/// <see cref="Claimed"/> lets the caller dispatch; the others all leave the
 /// task <c>Queued</c> for the minutely re-signal to retry, and differ only so the
 /// worker can log the reason accurately.
 /// </summary>
@@ -361,4 +403,10 @@ public enum ServerTaskClaimResult
     /// <c>(project, environment, tenant)</c> is <c>Running</c>; the claim was
     /// refused to keep them serialized. Bail; the task stays <c>Queued</c>.</summary>
     SerializationBlocked,
+
+    /// <summary>Instance-wide maintenance mode is on, so no NEW task may start.
+    /// Bail; the task stays <c>Queued</c> and claims normally the moment the
+    /// operator disables maintenance (the minutely re-signal retries it — closing
+    /// the window needs no extra poller). Child tasks never see this.</summary>
+    MaintenanceBlocked,
 }

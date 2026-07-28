@@ -489,6 +489,13 @@ public sealed class DeploymentWorker(
                             "staying Queued for the minutely re-signal to retry.",
                             deploymentId);
                     }
+                    else if (offlineClaim == ServerTaskClaimResult.MaintenanceBlocked)
+                    {
+                        logger.LogInformation(
+                            "DeploymentWorker: offline deployment {Id} not started — the instance is " +
+                            "in maintenance mode; staying Queued until maintenance is disabled.",
+                            deploymentId);
+                    }
                     else
                     {
                         logger.LogInformation(
@@ -708,6 +715,13 @@ public sealed class DeploymentWorker(
                         "DeploymentWorker: deployment {Id} lost the (project,env,tenant) " +
                         "serialization race — another deployment of the same key started first; " +
                         "staying Queued for the minutely re-signal to retry.",
+                        deploymentId);
+                }
+                else if (claim == ServerTaskClaimResult.MaintenanceBlocked)
+                {
+                    logger.LogInformation(
+                        "DeploymentWorker: task {Id} not started — the instance is in maintenance " +
+                        "mode; staying Queued until maintenance is disabled.",
                         deploymentId);
                 }
                 else

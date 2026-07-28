@@ -5,11 +5,30 @@ namespace KrakenDeploy.Server.Core.Domain.Maintenance;
 /// <summary>
 /// System-scoped <see cref="ISettingsDocument"/> (key <c>"maintenance"</c>)
 /// holding the instance-wide maintenance flag.
-/// When <see cref="Enabled"/> is true, the maintenance middleware
-/// refuses POST/PUT/PATCH/DELETE on most endpoints with HTTP 503 and a
-/// body that surfaces <see cref="Reason"/>. Hangfire recurring jobs
-/// short-circuit at the top of their handler too — so a backup that
-/// fires mid-upgrade doesn't race the migration.
+/// When <see cref="Enabled"/> is true:
+/// <list type="bullet">
+///   <item>the maintenance middleware refuses POST/PUT/PATCH/DELETE on
+///   most endpoints with HTTP 503 and a body that surfaces
+///   <see cref="Reason"/>;</item>
+///   <item>NO new server task starts — <c>ServerTaskLease.TryClaimAsync</c>
+///   refuses the <c>Queued→Running</c> claim with
+///   <c>MaintenanceBlocked</c>, so already-queued and
+///   already-due-scheduled deployments stay queued instead of draining
+///   through the window. Child tasks (a <c>DeployRelease</c> step's
+///   sub-deployment) are exempt so an in-flight parent can finish;</item>
+///   <item><i>some</i> Hangfire recurring jobs short-circuit — the ones
+///   that opt in via <c>MaintenancePause</c> (backup, subscription
+///   poller, digest flush) — so a backup that fires mid-upgrade doesn't
+///   race the migration. The rest, notably the dispatch reconciler, keep
+///   running by design: its orphan-recovery arm must survive a
+///   restart-heavy window.</item>
+/// </list>
+///
+/// <para>
+/// In-flight tasks are NOT aborted — they run to completion, and the
+/// agent transport stays exempt from the middleware so they can. The
+/// contract is "nothing NEW starts", not "everything stops".
+/// </para>
 ///
 /// <para>
 /// Bypass is permission-gated (<c>BypassMaintenance</c>). Sys-admins

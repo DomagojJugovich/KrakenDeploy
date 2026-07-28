@@ -18,4 +18,16 @@ public static class QueueWaitMessage
     public static string RunningPeer(string? projectName, string? environmentName)
         => $"Waiting: another deployment of {projectName ?? "this project"} to " +
            $"{environmentName ?? "this environment"} is running.";
+
+    /// <summary>The reason shown for a Queued task held by the maintenance gate in
+    /// <c>ServerTaskLease.TryClaimAsync</c>. Takes precedence over
+    /// <see cref="RunningPeer"/> in the pages: while maintenance is on, the gate is
+    /// the binding constraint regardless of what else is in flight. Without this the
+    /// task would sit at a bare "Waiting to start." and read as a hung queue.</summary>
+    public static string MaintenanceHold(string? reason)
+        => string.IsNullOrWhiteSpace(reason)
+            ? "Waiting: the instance is in maintenance mode. This task starts "
+              + "automatically once maintenance is disabled."
+            : $"Waiting: the instance is in maintenance mode ({reason.Trim()}). "
+              + "This task starts automatically once maintenance is disabled.";
 }

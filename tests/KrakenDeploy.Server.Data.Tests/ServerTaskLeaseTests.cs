@@ -1,6 +1,7 @@
 using FluentAssertions;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Targets;
+using KrakenDeploy.Server.Data.Services;
 using KrakenDeploy.Server.Data.Tests.OrchestratorHarness;
 using Microsoft.EntityFrameworkCore;
 
@@ -310,7 +311,129 @@ public sealed class ServerTaskLeaseTests(PostgresFixture postgres)
         (await StatusOf(db, id)).Should().Be(DeploymentStatus.Running);
     }
 
+    // ── Maintenance gate ───────────────────────────────────────────────────
+    //
+    // Octopus's maintenance mode blocks non-admin CHANGES but does NOT stop the
+    // task queue: already-queued and scheduled deployments still start and run to
+    // completion during the window. These tests pin that KrakenDeploy does NOT
+    // share that hole — the gate sits on the claim, the single choke point every
+    // wake-up source funnels through, so the queue genuinely stops.
+
+    [Fact]
+    public async Task Maintenance_mode_blocks_the_claim_and_leaves_the_task_queued()
+    {
+        var id = await SeedQueuedDeploymentAsync();
+
+        await using var db = postgres.CreateContext();
+        await WithMaintenanceAsync("Upgrading to v1.2", async () =>
+        {
+            (await ServerTaskLease.TryClaimAsync(db, id, TimeProvider.System))
+                .Should().Be(ServerTaskClaimResult.MaintenanceBlocked,
+                    "no new task may start while the instance is in maintenance");
+
+            (await StatusOf(db, id)).Should().Be(DeploymentStatus.Queued,
+                "a refused claim must leave the row Queued for the post-window re-signal");
+        });
+
+        // Window closed → the very same row claims normally, no operator action and
+        // no extra poller needed (the minutely stale-Queued re-signal drives it).
+        (await ServerTaskLease.TryClaimAsync(db, id, TimeProvider.System))
+            .Should().Be(ServerTaskClaimResult.Claimed,
+                "disabling maintenance must let the queue drain again");
+    }
+
+    [Fact]
+    public async Task Maintenance_mode_blocks_an_already_due_scheduled_deployment()
+    {
+        // The exact Octopus hole: a deployment scheduled for a time that ARRIVES
+        // during the maintenance window. The minutely dispatch job still signals it
+        // (its orphan-reconciliation arm must keep running, so the job itself is
+        // deliberately not paused) — the claim is what refuses to start it.
+        var id = await SeedQueuedDeploymentAsync(scheduledFor: DateTimeOffset.UtcNow.AddMinutes(-5));
+
+        await using var db = postgres.CreateContext();
+        await WithMaintenanceAsync("Migrating the schema", async () =>
+        {
+            (await ServerTaskLease.TryClaimAsync(db, id, TimeProvider.System))
+                .Should().Be(ServerTaskClaimResult.MaintenanceBlocked,
+                    "a scheduled deployment whose time arrives mid-window must not fire");
+
+            var task = await db.ServerTasks.IgnoreQueryFilters().AsNoTracking()
+                .FirstAsync(t => t.Id == id);
+            task.Status.Should().Be(DeploymentStatus.Queued);
+            task.ScheduledFor.Should().NotBeNull(
+                "a refused claim must not clear ScheduledFor — only a winning claim does");
+            task.StartedUtc.Should().BeNull();
+        });
+    }
+
+    [Fact]
+    public async Task Maintenance_mode_blocks_runbook_runs_too()
+    {
+        // RunbookRun is exempt from F1 serialization (operational tooling), but NOT
+        // from the maintenance gate: a runbook run mid-migration races the schema
+        // exactly as hard as a deployment does.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var key = await SeedSharedKeyAsync(harness);
+        var run = await harness.SeedRunbookRunAsync(key.ProjectId, key.EnvId);
+
+        await using var db = postgres.CreateContext();
+        await WithMaintenanceAsync("Patching the host", async () =>
+        {
+            (await ServerTaskLease.TryClaimAsync(db, run, TimeProvider.System))
+                .Should().Be(ServerTaskClaimResult.MaintenanceBlocked,
+                    "the maintenance gate is kind-agnostic — it sits ahead of the kind branch");
+        });
+    }
+
+    [Fact]
+    public async Task Child_task_still_claims_during_maintenance_so_its_parent_cannot_strand()
+    {
+        // A child spawned by an Octopus.DeployRelease step is the continuation of an
+        // already-claimed parent, not new work. Blocking it would hang the parent's
+        // WaitForChildAsync forever — and the parent keeps renewing its lease, so the
+        // reconciler would never reap it either. Same exemption shape as the E3
+        // NodeTaskGate bypass.
+        var parentId = await SeedQueuedDeploymentAsync();
+        var childId  = await SeedQueuedDeploymentAsync();
+
+        await using var db = postgres.CreateContext();
+        await db.ServerTasks.IgnoreQueryFilters().Where(t => t.Id == childId)
+            .ExecuteUpdateAsync(s => s.SetProperty(t => t.ParentTaskId, parentId));
+
+        await WithMaintenanceAsync("Upgrading", async () =>
+        {
+            (await ServerTaskLease.TryClaimAsync(db, childId, TimeProvider.System))
+                .Should().Be(ServerTaskClaimResult.Claimed,
+                    "a child must claim during maintenance or its parent strands");
+
+            (await ServerTaskLease.TryClaimAsync(db, parentId, TimeProvider.System))
+                .Should().Be(ServerTaskClaimResult.MaintenanceBlocked,
+                    "the exemption is for children only — a top-level task is still gated");
+        });
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
+
+    /// <summary>Runs <paramref name="body"/> with instance-wide maintenance mode ON,
+    /// then always turns it back off — the class shares one cloned database, so a
+    /// leaked flag would block every later test's claim. Goes through the real
+    /// <see cref="MaintenanceModeService"/> (not a hand-written settings row) so the
+    /// test exercises the same write path the operator's toggle uses.</summary>
+    private async Task WithMaintenanceAsync(string reason, Func<Task> body)
+    {
+        var maintenance = new MaintenanceModeService(
+            new SettingsService(postgres.ScopeFactory, TimeProvider.System), TimeProvider.System);
+        await maintenance.EnableAsync(reason, userId: null);
+        try
+        {
+            await body();
+        }
+        finally
+        {
+            await maintenance.DisableAsync();
+        }
+    }
 
     private static async Task SetCreatedUtc(KrakenDbContext db, Guid id, DateTimeOffset createdUtc)
         => await db.ServerTasks.IgnoreQueryFilters().Where(t => t.Id == id)
