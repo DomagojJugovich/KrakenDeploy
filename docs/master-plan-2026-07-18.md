@@ -187,7 +187,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 4 | BG1 | Topology split + on-prem blue-green (`Deployment:Topology` enum, platform release registry in KrakenDb, onprem `bluegreen` compose profile, marker-aware stop-the-world guard, maintenance-mode queue gate) | ⬜ | L | D1; land before D4 and WP-BASELINE |
 | 4 | BG2 | Windows-service slot delivery + on-prem front tier (per-slot services, Router service, PowerShell scripts with `-WhatIf`, Caddy front config, axis-B node-maintenance runbook) | ⬜ | L | BG1 |
 | 5 — product features | WP3 | Real manual intervention (pause/approve/reject) | ⬜ | XL | D1 |
-| 5 | WP4 | Reachability + edit affordances (rescoped: 4 items) | ⬜ | S | — |
+| 5 | WP4 | Reachability + edit affordances (rescoped: 4 items) | ✅ e39b7e5 | S | — |
 | 5 | WP5 | Missing CRUD end-to-end (target/release/group delete + user profile edit) | ✅ 5c23420·5d0d1b6 | M | — |
 | 5 | WP6 | Finish project tabs (variables trio + runbooks tab) | ⬜ | L | — |
 | 5 | WP9 | Retention expansion (rescoped: releases, packages, files, log age-cap) | ⬜ | L | D1 |
