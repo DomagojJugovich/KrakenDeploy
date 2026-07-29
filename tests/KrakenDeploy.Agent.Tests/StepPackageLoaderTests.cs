@@ -240,6 +240,39 @@ public sealed class StepPackageLoaderTests : IDisposable
             "temp extraction dirs are moved into place or cleaned up");
     }
 
+    // ── F7/5a: DataPath key ────────────────────────────────────────────────
+
+    [Fact]
+    public void TryLoad_reads_cache_from_Agent_DataPath_not_bare_DataPath()
+    {
+        var agentDataDir = Path.Combine(_root, "agent-data");
+        var bareDataDir  = Path.Combine(_root, "bare-data");
+        Directory.CreateDirectory(bareDataDir);
+
+        var dir = Path.Combine(agentDataDir, "step-packages-cache", "kraken.sample", "1.0.0");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(
+            Path.Combine(dir, StepPackageFiles.ManifestFileName),
+            StepPackageManifestJson.Serialize(BuildManifest()));
+        var executorDir = Path.Combine(dir, StepPackageFiles.ExecutorDirectory);
+        Directory.CreateDirectory(executorDir);
+        File.Copy(typeof(SamplePluginStepHandler).Assembly.Location,
+            Path.Combine(executorDir, Path.GetFileName(typeof(SamplePluginStepHandler).Assembly.Location)));
+
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Agent:DataPath"]                  = agentDataDir,
+                ["DataPath"]                        = bareDataDir,
+                ["StepPackages:AllowUnsignedLoads"] = "true",
+            })
+            .Build();
+
+        var loader = new StepPackageLoader(config, NullLogger<StepPackageLoader>.Instance);
+        loader.TryLoad("kraken.sample", "1.0.0").Should().NotBeNull(
+            "the loader must resolve the cache under Agent:DataPath, not the bare DataPath key");
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────
 
     private StepPackageLoader NewLoader(bool allowUnsignedLoads = true)
@@ -249,7 +282,7 @@ public sealed class StepPackageLoaderTests : IDisposable
         new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["DataPath"]                              = _root,
+                ["Agent:DataPath"]                        = _root,
                 ["StepPackages:AllowUnsignedLoads"]       = allowUnsignedLoads.ToString(),
             })
             .Build();

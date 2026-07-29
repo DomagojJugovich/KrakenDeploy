@@ -115,6 +115,77 @@ public sealed class DeploymentExecutorStagingTests
         }
     }
 
+    [Fact]
+    public void SweepOrphanedStagingOnBoot_skips_when_lock_holds_a_live_pid()
+    {
+        var dataDir = Directory.CreateTempSubdirectory("kraken-agent-staging-lock-");
+        try
+        {
+            var root = DeploymentExecutor.StagingRoot(dataDir.FullName);
+            Directory.CreateDirectory(Path.Combine(root, Guid.NewGuid().ToString("N")));
+
+            var lockFile = Path.Combine(dataDir.FullName, "staging.lock");
+            File.WriteAllText(lockFile,
+                Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+            var executor = BuildExecutor(new NoopLink(), dataDir.FullName);
+            executor.SweepOrphanedStagingOnBoot();
+
+            Directory.Exists(root).Should().BeTrue(
+                "sweep must be skipped when the lock file holds a PID that is still running");
+        }
+        finally
+        {
+            TryDelete(dataDir.FullName);
+        }
+    }
+
+    [Fact]
+    public void SweepOrphanedStagingOnBoot_sweeps_when_lock_holds_a_dead_pid()
+    {
+        var dataDir = Directory.CreateTempSubdirectory("kraken-agent-staging-deadpid-");
+        try
+        {
+            var root = DeploymentExecutor.StagingRoot(dataDir.FullName);
+            Directory.CreateDirectory(Path.Combine(root, Guid.NewGuid().ToString("N")));
+
+            var lockFile = Path.Combine(dataDir.FullName, "staging.lock");
+            File.WriteAllText(lockFile, "999999999");
+
+            var executor = BuildExecutor(new NoopLink(), dataDir.FullName);
+            executor.SweepOrphanedStagingOnBoot();
+
+            Directory.Exists(root).Should().BeFalse(
+                "a dead PID in the lock file must not block the sweep");
+            File.Exists(lockFile).Should().BeTrue(
+                "the lock file must be rewritten with the current PID after a sweep");
+        }
+        finally
+        {
+            TryDelete(dataDir.FullName);
+        }
+    }
+
+    [Fact]
+    public void SweepOrphanedStagingOnBoot_writes_lock_file_after_sweep()
+    {
+        var dataDir = Directory.CreateTempSubdirectory("kraken-agent-staging-writelock-");
+        try
+        {
+            var executor = BuildExecutor(new NoopLink(), dataDir.FullName);
+            executor.SweepOrphanedStagingOnBoot();
+
+            var lockFile = Path.Combine(dataDir.FullName, "staging.lock");
+            File.Exists(lockFile).Should().BeTrue();
+            int.Parse(File.ReadAllText(lockFile).Trim(), System.Globalization.CultureInfo.InvariantCulture).Should()
+                .Be(Environment.ProcessId);
+        }
+        finally
+        {
+            TryDelete(dataDir.FullName);
+        }
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private static DeploymentExecutor BuildExecutor(IServerLink link, string dataPath) => new(

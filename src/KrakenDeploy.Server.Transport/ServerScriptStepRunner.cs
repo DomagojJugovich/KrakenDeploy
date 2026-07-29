@@ -105,6 +105,7 @@ public sealed class ServerScriptStepRunner(
             : scriptBody;
 
         var scriptFile = WriteScriptFile(fullScript, syntax);
+        var workDir = Path.GetDirectoryName(scriptFile)!;
         try
         {
             var (exe, args) = BuildCommand(
@@ -118,7 +119,7 @@ public sealed class ServerScriptStepRunner(
             {
                 FileName               = exe,
                 Arguments              = args,
-                WorkingDirectory       = Path.GetTempPath(),
+                WorkingDirectory       = workDir,
                 UseShellExecute        = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError  = true,
@@ -295,7 +296,7 @@ public sealed class ServerScriptStepRunner(
         }
         finally
         {
-            try { File.Delete(scriptFile); } catch { /* best effort */ }
+            try { Directory.Delete(workDir, recursive: true); } catch { /* best effort */ }
         }
     }
 
@@ -322,7 +323,8 @@ public sealed class ServerScriptStepRunner(
             "python" => ".py",
             _        => ".ps1",
         };
-        var path = Path.Combine(Path.GetTempPath(), $"kraken-server-{Guid.NewGuid():N}{ext}");
+        var workDir = Directory.CreateTempSubdirectory("kraken-server-script-").FullName;
+        var path = Path.Combine(workDir, $"script{ext}");
         File.WriteAllText(path, body, EncodingForSyntax(syntax));
         return path;
     }

@@ -93,7 +93,7 @@ public sealed class StepPackageLoaderDownloadTests : IDisposable
         new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["DataPath"]                        = _root,
+                ["Agent:DataPath"]                  = _root,
                 ["StepPackages:AllowUnsignedLoads"] = "true",
             })
             .Build();

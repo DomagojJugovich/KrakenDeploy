@@ -227,11 +227,10 @@ public sealed class AdhocDispatcher(
         try
         {
             var ids = JsonSerializer.Deserialize<List<Guid>>(session.FrozenTargetSetJson);
-            return ids ?? [];
+            return ids?.Distinct().ToList() ?? [];
         }
         catch (JsonException)
         {
-            // Corrupt frozen set — refuse to dispatch rather than guess.
             throw new InvalidOperationException(
                 $"AdhocDispatcher: session {session.Id} has malformed " +
                 $"FrozenTargetSetJson: '{session.FrozenTargetSetJson}'.");

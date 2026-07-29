@@ -123,6 +123,28 @@ public sealed class AgentIdentityStoreTests : IDisposable
             "a legacy plaintext agent.json must be migrated to DPAPI-protected form on read");
     }
 
+    [Fact]
+    public async Task SaveAsync_is_atomic_no_tmp_file_survives()
+    {
+        var identity = new AgentIdentity
+        {
+            AgentId = Guid.NewGuid(),
+            AgentToken = "atomic-token",
+            ServerUrl = "https://localhost:5443",
+        };
+
+        var store = CreateStore();
+        await store.SaveAsync(identity, CancellationToken.None);
+
+        var tmpPath = Path.Combine(_dataDir, "agent.json.tmp");
+        File.Exists(tmpPath).Should().BeFalse(
+            "the tmp file must be renamed into place, never left behind");
+        File.Exists(Path.Combine(_dataDir, "agent.json")).Should().BeTrue();
+
+        var loaded = await store.TryLoadAsync(CancellationToken.None);
+        loaded!.AgentToken.Should().Be("atomic-token");
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_dataDir))
