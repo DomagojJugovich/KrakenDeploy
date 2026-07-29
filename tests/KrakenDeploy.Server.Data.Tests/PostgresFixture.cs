@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Interceptors;
 using KrakenDeploy.Server.Data.Spaces;
@@ -58,11 +59,18 @@ internal static class SharedPostgres
 
             // Migrate the template with pooling OFF so no connection lingers to it —
             // CREATE DATABASE ... TEMPLATE requires the source to have no sessions.
-            var templateConn = ConnStringFor(TemplateDb, pooling: false);
-            await using (var ctx = BuildContext(templateConn))
+            // Same port-forwarder race as ExecAdminAsync — and EF's
+            // EnableRetryOnFailure does NOT cover the migrator's initial
+            // GetAppliedMigrations connection — so wrap MigrateAsync in our own
+            // retry. Fresh context per attempt: a context whose open failed must
+            // not be reused. Short connect timeout so a doomed attempt fails fast.
+            var templateConn = new NpgsqlConnectionStringBuilder(
+                ConnStringFor(TemplateDb, pooling: false)) { Timeout = 3 }.ConnectionString;
+            await WithSetupRetryAsync(async () =>
             {
+                await using var ctx = BuildContext(templateConn);
                 await ctx.Database.MigrateAsync().ConfigureAwait(false);
-            }
+            }).ConfigureAwait(false);
             NpgsqlConnection.ClearAllPools();
 
             _ready = true;
@@ -84,6 +92,17 @@ internal static class SharedPostgres
         return (name, ConnStringFor(name, pooling: true));
     }
 
+    /// <summary>Opens one connection to <paramref name="pooledConnString"/> and
+    /// returns it to the pool, so the first test on this database rents a warm
+    /// connector instead of opening a new one under the port-forwarder race.
+    /// Retried like the other setup connections.</summary>
+    public static Task WarmConnectionAsync(string pooledConnString) =>
+        WithSetupRetryAsync(async () =>
+        {
+            await using var conn = new NpgsqlConnection(pooledConnString);
+            await conn.OpenAsync().ConfigureAwait(false);
+        });
+
     /// <summary>Drops a cloned database. WITH (FORCE) terminates any pooled
     /// connections still open to it (PostgreSQL 13+).</summary>
     public static async Task DropDatabaseAsync(string name)
@@ -96,10 +115,54 @@ internal static class SharedPostgres
     {
         // Non-pooled admin connection to the maintenance DB. CREATE/DROP DATABASE
         // cannot run inside a transaction, so use a raw command (no EF wrapping).
-        await using var conn = new NpgsqlConnection(ConnStringFor("postgres", pooling: false));
-        await conn.OpenAsync().ConfigureAwait(false);
-        await using var cmd = new NpgsqlCommand(sql, conn);
-        await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+        // Short connect timeout so a doomed attempt fails fast under the retry.
+        var connString = new NpgsqlConnectionStringBuilder(
+            ConnStringFor("postgres", pooling: false)) { Timeout = 3 }.ConnectionString;
+        await WithSetupRetryAsync(async () =>
+        {
+            await using var conn = new NpgsqlConnection(connString);
+            await conn.OpenAsync().ConfigureAwait(false);
+            await using var cmd = new NpgsqlCommand(sql, conn);
+            await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }).ConfigureAwait(false);
+    }
+
+    // On Windows + Docker Desktop the WSL2 port-forwarder routinely lags behind
+    // container readiness: pg_isready passes INSIDE the container (so
+    // Container.StartAsync returns), yet host->container connections intermittently
+    // time out or abort (WSAECONNABORTED) for a second or two afterwards — the very
+    // fragility the class summary above documents. Retry the whole SETUP operation
+    // a bounded number of times; combined with a short per-attempt connect timeout
+    // the proxy gets a moment to settle. Setup/admin + the one-time template
+    // migration only — the per-test KrakenDbContext connections stay unretried so
+    // tests observe real database behavior.
+    private const int MaxConnectAttempts = 15;
+    private static readonly TimeSpan ConnectRetryDelay = TimeSpan.FromMilliseconds(500);
+
+    private static async Task WithSetupRetryAsync(Func<Task> action)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                await action().ConfigureAwait(false);
+                return;
+            }
+            catch (Exception ex) when (attempt < MaxConnectAttempts && IsTransientConnectionFailure(ex))
+            {
+                await Task.Delay(ConnectRetryDelay).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static bool IsTransientConnectionFailure(Exception ex)
+    {
+        for (Exception? e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is TimeoutException or SocketException) { return true; }
+            if (e is NpgsqlException { IsTransient: true }) { return true; }
+        }
+        return false;
     }
 
     private static string ConnStringFor(string database, bool pooling)
@@ -108,6 +171,14 @@ internal static class SharedPostgres
         {
             Database = database,
             Pooling = pooling,
+            // Generous connect timeout: the WSL2 port-forwarder can stall a fresh
+            // host->container connection for several seconds. The setup paths
+            // override this to a short value and retry instead (ExecAdminAsync /
+            // the template migration); per-test connections take the patience here
+            // so a single attempt rides out the stall without changing query or
+            // transaction semantics (blanket EnableRetryOnFailure would break the
+            // explicit-transaction tests — see BuildContext).
+            Timeout = 30,
         };
         return builder.ConnectionString;
     }
@@ -199,6 +270,12 @@ public sealed class PostgresFixture : IAsyncLifetime, IDbContextFactory<KrakenDb
     public async Task InitializeAsync()
     {
         (_dbName, _connectionString) = await SharedPostgres.CreateFreshDatabaseAsync();
+
+        // Prime the pool for this fresh DB so the first test rents a warm connector
+        // instead of opening a new one under the WSL2 port-forwarder race (Npgsql
+        // OpenNewConnector). Retried on the setup path so a blip during priming
+        // doesn't take down the whole class at init.
+        await SharedPostgres.WarmConnectionAsync(_connectionString);
     }
 
     public async Task DisposeAsync()
