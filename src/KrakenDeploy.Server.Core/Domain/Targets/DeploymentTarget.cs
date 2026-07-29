@@ -53,15 +53,22 @@ public class DeploymentTarget : AuditableEntity, ISpaceScoped
     public bool AutoUpdateEnabled { get; set; } = true;
 
     /// <summary>
-    /// F2 — Octopus "Allow parallel task execution" parity. When <c>false</c> (the
-    /// default, and the safe one) every task dispatched to this machine —
-    /// deployment, runbook run or ad-hoc script — takes the agent's single machine
-    /// execution slot, so tasks serialize FIFO instead of interleaving file / IIS /
-    /// service operations. When <c>true</c> the agent runs them concurrently.
+    /// F2/F5 — Octopus "Allow parallel task execution" parity. Selects which side of
+    /// the agent's reader-writer machine execution gate work dispatched to this
+    /// machine takes. When <c>false</c> (the default, and the safe one) it takes the
+    /// EXCLUSIVE side, so tasks serialize instead of interleaving file / IIS / service
+    /// operations. When <c>true</c> they take the SHARED side and co-run — but only
+    /// with other SHARED work. Consent is MUTUAL: opting this target in does NOT let
+    /// its work interleave with a task that did not opt in (F5 — under F2 the flag
+    /// skipped the gate outright, which removed protection against every task on the
+    /// box).
     /// <para>
-    /// Stamped into <c>DeploymentPlan.AllowParallelTaskExecution</c> /
-    /// <c>AdhocScriptCommand.AllowParallelTaskExecution</c> at dispatch time, so a
-    /// flip applies to the next dispatch, not to work already queued on the agent.
+    /// Stamped into <c>DeploymentPlan.AllowParallelTaskExecution</c> at plan-build
+    /// time, so a flip applies to the next dispatch, not to work already queued on the
+    /// agent. It no longer governs AD-HOC scripts: F5 made that mode per-RUN (the AI
+    /// session flow is read-always, WP16's console carries a per-run checkbox), because
+    /// a serial target would otherwise promote a read-only diagnostic into an
+    /// exclusive holder blocking live deployments.
     /// </para>
     /// <para>
     /// This does NOT relax the F1 same-(project, environment, tenant) deployment

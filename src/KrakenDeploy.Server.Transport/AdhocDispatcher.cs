@@ -40,7 +40,7 @@ public interface IAdhocDispatcher
     /// belongs to a different account.</summary>
     Task<IReadOnlyList<AdhocPerTargetResult>> DispatchAsync(
         AdhocSession session, AdhocIteration iteration, Guid dispatchAccountId,
-        IReadOnlyDictionary<Guid, bool> allowParallelByTarget,
+        bool allowParallelTaskExecution,
         CancellationToken ct, TimeSpan? timeout = null);
 }
 
@@ -75,25 +75,27 @@ public sealed class AdhocDispatcher(
     /// <see cref="AdhocIteration.ScriptSignature"/> via the signing service —
     /// the dispatcher only routes; it does not sign.
     /// <para>
-    /// F2 — <paramref name="allowParallelByTarget"/> maps
-    /// <c>targetId → DeploymentTarget.AllowParallelTaskExecution</c>. The caller
-    /// supplies it because it already holds the DbContext that resolved the session;
-    /// an absent target (deleted since the set was frozen, or outside the caller's
-    /// query-filter scope) means <c>false</c> = take the machine gate, the safe
-    /// default. The dispatcher itself stays database-free.
+    /// F5 — <paramref name="allowParallelTaskExecution"/> selects which SIDE of every
+    /// receiving agent's machine execution gate the script takes: <c>true</c> →
+    /// SHARED, <c>false</c> → EXCLUSIVE. It is per-RUN, not per-target: F2 stamped it
+    /// from each <c>DeploymentTarget.AllowParallelTaskExecution</c>, but once the flag
+    /// stopped meaning "bypass" that mapping was wrong in both directions — a serial
+    /// target would have made an approved read-only diagnostic exclude live work, and
+    /// the decision genuinely belongs to whoever authored the script. Locked decision
+    /// P5: the AI session flow passes <c>true</c> (read-always); WP16's console passes
+    /// its per-run checkbox. The dispatcher itself stays database-free.
     /// </para>
     /// </summary>
     public async Task<IReadOnlyList<AdhocPerTargetResult>> DispatchAsync(
         AdhocSession session,
         AdhocIteration iteration,
         Guid dispatchAccountId,
-        IReadOnlyDictionary<Guid, bool> allowParallelByTarget,
+        bool allowParallelTaskExecution,
         CancellationToken ct,
         TimeSpan? timeout = null)
     {
         ArgumentNullException.ThrowIfNull(session);
         ArgumentNullException.ThrowIfNull(iteration);
-        ArgumentNullException.ThrowIfNull(allowParallelByTarget);
         if (string.IsNullOrEmpty(iteration.ScriptSignature))
         {
             throw new InvalidOperationException(
@@ -113,25 +115,21 @@ public sealed class AdhocDispatcher(
             return [];
         }
 
+        // F5 — the gate mode is per RUN, so one command shape fans out to the whole
+        // frozen set (F2 rebuilt it per target to stamp the target's own flag).
         var command = new AdhocScriptCommand(
             SessionId:  session.Id,
             IterNumber: iteration.IterNumber,
             Script:     iteration.GeneratedScript,
-            Signature:  iteration.ScriptSignature!);
+            Signature:  iteration.ScriptSignature!,
+            AllowParallelTaskExecution: allowParallelTaskExecution);
 
         var effectiveTimeout = timeout ?? DefaultTimeout;
         var tasks = new List<Task<AdhocPerTargetResult>>(targetIds.Count);
         foreach (var targetId in targetIds)
         {
-            // F2 — "Allow parallel task execution" is PER TARGET, so the command is
-            // stamped per target even though the signed script text is shared.
-            var perTargetCommand = command with
-            {
-                AllowParallelTaskExecution =
-                    allowParallelByTarget.TryGetValue(targetId, out var allow) && allow,
-            };
             tasks.Add(DispatchToTargetAsync(
-                session.Id, iteration.IterNumber, targetId, dispatchAccountId, perTargetCommand,
+                session.Id, iteration.IterNumber, targetId, dispatchAccountId, command,
                 effectiveTimeout, ct));
         }
 

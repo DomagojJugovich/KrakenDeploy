@@ -63,9 +63,10 @@ public interface IAgentHubServer
     /// <summary>
     /// F2 CONTRACT CHANGE — reports that the dispatched sub-plan has ACQUIRED the
     /// agent's machine execution gate and is now executing. Sent exactly once per
-    /// dispatch attempt, immediately before the first step runs; for a target with
-    /// <see cref="DeploymentPlan.AllowParallelTaskExecution"/> the gate is bypassed
-    /// and the report goes out immediately on receipt.
+    /// dispatch attempt, immediately before the first step runs. F5: a target with
+    /// <see cref="DeploymentPlan.AllowParallelTaskExecution"/> no longer bypasses the
+    /// gate — it takes the SHARED side — so such a plan reports once its shared lease
+    /// is granted, which is immediate unless an exclusive holder is in the way.
     /// <para>
     /// The server arms the wave deadline from THIS point instead of from dispatch,
     /// so a sub-plan queued behind a long-running task on the same machine does not

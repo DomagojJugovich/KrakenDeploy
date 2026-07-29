@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.1 |
-| **Date** | 2026-07-25 |
+| **Version** | 1.2 |
+| **Date** | 2026-07-29 |
 | **Authors** | Domagoj Jugović, Claude (Opus 4.8), Claude (Opus 5) |
 | **Status** | Approved |
 | **Technologies** | .NET 10, SignalR, gRPC (proto3), PowerShell/Bash |
@@ -13,7 +13,7 @@ Production-readiness fix **B6** (audit items T2-5, T1-3): the last breaking pass
 over the agent wire before external agents exist. Everything here is a
 **CONTRACT CHANGE**; `AgentContract.CurrentVersion = 1` names the resulting
 surface. Later passes append to it — the current version and what each pass
-added are tabulated below.
+added are tabulated below. **The contract is at v3** (F5).
 
 ## Version history
 
@@ -21,6 +21,7 @@ added are tabulated below.
 |---|---|---|
 | 1 | B6 (this document) | `DispatchId` on plan + completion + step + log reports, `CancelDeploymentAsync` push, `AgentRegistrationResult`, `Roles` removed from registration. |
 | 2 | F2 (2026-07-25) | `DeploymentPlan.AllowParallelTaskExecution` + `AdhocScriptCommand.AllowParallelTaskExecution` (per-target machine-concurrency policy, appended + defaulted `false`); new `IAgentHubServer.ReportExecutionStartedAsync(deploymentId, dispatchId)`. |
+| 3 | F5 (2026-07-29) | **No shape change.** Both `AllowParallelTaskExecution` fields are RETAINED and re-interpreted: they now select which SIDE of the agent's reader-writer machine gate the work takes (`true` → SHARED, `false` → EXCLUSIVE) instead of whether to take it at all. `AdhocScriptCommand.AllowParallelTaskExecution` also changes provenance: per-RUN, not per-target — the AI session flow always sends `true`. |
 
 **Why F2 bumps the version rather than riding v1.** Both new plan fields are
 appended and default to the safe value, so a v1 agent would deserialize them
@@ -30,6 +31,21 @@ dispatch-time backstop ceiling (`budget + Engine:MaxTargetQueueWait`, default
 2 h) instead of its real budget, and would silently keep bypassing the machine
 gate for ad-hoc scripts. That is a semantic divergence the refusal must catch,
 not a wire-shape one.
+
+**Why F5 bumps the version with no shape change at all.** This is the sharpest case
+for versioning MEANING rather than structure. A v2 agent deserializes every field a v3
+server sends and looks perfectly healthy — but it reads
+`AllowParallelTaskExecution = true` as "skip the machine execution gate entirely", no
+lock whatsoever, which is precisely the behaviour F5 removes. Two consequences make the
+skew unacceptable rather than merely suboptimal: the AI ad-hoc flow now sends `true`
+unconditionally, so on a v2 agent **every** approved diagnostic script would run
+ungated, straight into a running deployment's file / IIS / service operations; and the
+server would believe the gate had been honoured. Nothing on the wire distinguishes the
+two readings, so the registration refusal is the only place it can be caught.
+Pinned by `AgentHubRegisterTests.RegisterAsync_refuses_the_previous_contract_version`.
+
+The rule this establishes: bump on a change to how the agent must INTERPRET an existing
+field, not only on a change to the shapes.
 
 ## The contract, versioned
 

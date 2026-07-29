@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.10 |
-| **Date** | 2026-07-25 |
+| **Version** | 1.11 |
+| **Date** | 2026-07-29 |
 | **Authors** | Domagoj Jugovic, Claude (Fable 5), Claude (Opus 4.8), Claude (Opus 5) |
 | **Status** | Draft |
 | **Technologies** | .NET 10, EF Core 10, PostgreSQL, SignalR, Octostache, Hangfire |
@@ -290,15 +290,21 @@ Two properties to be aware of:
   loop (`ServerLinkHostedService`) has no broad catch — an unexpected
   supervisor crash stops the host so service-manager recovery restarts the
   agent (a visible crash-loop beats a silent zombie).
-- **Machine execution gate** (`MachineExecutionGate`, F2): one dispatched sub-plan
-  (i.e. one WAVE) at a time per agent PROCESS — deployments, runbook runs and (F2)
-  ad-hoc scripts share the same slot, FIFO. It is only reachable because the agent's
-  push handlers are detached (F2-followup 1); returning the work task made the
-  SignalR client serialize every server→agent push, so the transport rather than the
-  gate did the serializing. `DeploymentTarget.AllowParallelTaskExecution`
-  (default off, stamped into the plan / adhoc command at dispatch) opts a target
-  out; it never relaxes F1's `(project, environment, tenant)` serialization,
-  which is server-side. Ad-hoc gets ONE bound covering queue wait AND execution
+- **Machine execution gate** (`MachineExecutionGate`, F2/F5): a fair async
+  READER-WRITER lock per agent PROCESS, whose unit is one dispatched sub-plan (i.e.
+  one WAVE). Deployments, runbook runs, ad-hoc scripts (F2) and the self-upgrade swap
+  window (F5) all take the same gate. EXCLUSIVE is the default; SHARED when the work
+  declares `AllowParallelTaskExecution`, and co-running requires that no writer is
+  present in either direction — so consent is MUTUAL and the flag is a downgrade, not
+  a bypass (Octopus `ScriptIsolationMutex` parity: their `NoIsolation` takes the READ
+  side of the same lock). Writers are never starved: acquisition does not barge past a
+  queued waiter. It is only reachable because the agent's push handlers are detached
+  (F2-followup 1); returning the work task made the SignalR client serialize every
+  server→agent push, so the transport rather than the gate did the serializing.
+  `DeploymentTarget.AllowParallelTaskExecution` (default off, stamped into the plan at
+  plan-build time) picks a deployment's side; for ad-hoc the same wire field is
+  per-RUN (F5). Neither ever relaxes F1's `(project, environment, tenant)`
+  serialization, which is server-side. Ad-hoc gets ONE bound covering queue wait AND execution
   (`Adhoc:MaxTotalDuration`, default 5 min, matching the server's per-target
   ad-hoc wait): REFUSE if it expires while queued, kill the process tree if it
   expires while running. A script the dispatcher already gave up on must not run
@@ -430,14 +436,20 @@ Two properties to be aware of:
   `BlockConcurrentDeployments` on the manual-intervention step remains
   informational only. The only other concurrency guards are the per-task claim
   and xmin.
-- **Per-machine serialization — F2.** Orthogonal to F1 and enforced
-  **agent-side**: `MachineExecutionGate` gives each box one execution slot, so
-  different tasks (including ad-hoc scripts) landing on the same machine
-  serialize FIFO. `DeploymentTarget.AllowParallelTaskExecution` (default off)
-  opts a target out. The two rules compose and neither substitutes for the
-  other: F1 stops two deployments of one `(project, environment, tenant)` from
-  overlapping ANYWHERE; F2's gate stops two unrelated tasks from interleaving on
-  ONE box. Turning the flag on cannot loosen F1.
+- **Per-machine serialization — F2/F5.** Orthogonal to F1 and enforced
+  **agent-side**: `MachineExecutionGate` is each box's reader-writer gate, so
+  different tasks (including ad-hoc scripts and the agent's own self-upgrade)
+  landing on the same machine either serialize or co-run by MUTUAL consent.
+  `DeploymentTarget.AllowParallelTaskExecution` (default off) moves a target's
+  deployments to the SHARED side; F5 made that a downgrade rather than a bypass, so
+  a shared plan still queues behind any exclusive holder — under F2 the same flag
+  removed same-machine protection outright, including against tasks that had not
+  opted in. The two rules compose and neither substitutes for the other: F1 stops
+  two deployments of one `(project, environment, tenant)` from overlapping
+  ANYWHERE; the machine gate stops two unrelated units of work from interleaving on
+  ONE box. Turning the flag on cannot loosen F1. What the gate still does NOT give
+  you is whole-plan exclusion — its unit is one WAVE, because the server dispatches
+  per wave (see §9); **F6** closes that server-side at claim time.
 
 ## 8. The deployment/runbook unification (D1 — execution-deep)
 
@@ -537,6 +549,17 @@ runbook block, behavior-identical).
   of the same release to the same targets and stretching the parent's slot
   hold to `(MaxRetries+1)×` the ceiling. The child deployment carries its own
   retry/failure semantics; the parent step does not re-drive it.
+- The machine gate's unit is **one WAVE**, not one plan: the server dispatches per
+  wave, so the agent releases and re-takes its lease at every wave boundary and other
+  work (notably an ad-hoc script) can still slot into the gap against a half-applied
+  box. F5 deliberately did NOT fix this in `MachineExecutionGate` — holding an
+  agent-side lease across a server round-trip means holding it with no dispatch
+  guaranteed to follow, so a cancelled or failed wave would strand it until process
+  restart. **F6** closes it server-side at claim time, where whole plans are visible.
+  The ad-hoc wave-gap specifically is an ACCEPTED risk (locked decision P5).
+- The machine gate is per agent PROCESS, not per physical machine: two targets
+  modelled on one box are two processes, two gates, and no serialization between
+  them. Nothing enforces `MachineName` uniqueness.
 - Rolling `MaxParallelism` never short-circuits (§4) — not a canary.
 - Wave retries re-run whole sub-plans — step idempotency is on the author.
 - `ServerTask.FormValues` is inert (reserved for prompted variables).
@@ -578,6 +601,7 @@ runbook block, behavior-identical).
 
 | Version | Date | Change |
 |---|---|---|
+| 1.11 | 2026-07-29 | **F5 — machine gate reader-writer rework + updater participation** (§6, §7, §9). `MachineExecutionGate` is now a fair async reader-writer lock instead of a `SemaphoreSlim(1,1)`: EXCLUSIVE is the default plan mode, SHARED when the work declares `AllowParallelTaskExecution`, and co-running requires no writer in either direction — so the flag is a DOWNGRADE to shared, never a bypass (Octopus `ScriptIsolationMutex` parity, verified from Tentacle source: `NoIsolation` takes the READ side of the same lock). Under F2 that flag removed same-machine protection outright, including against tasks that had not opted in. Writers cannot be starved: acquisition never barges past a queued waiter, and the primitive is hand-built because `ReaderWriterLockSlim` has no async surface while the `SemaphoreSlim` recipes either barge or need a second lock. `AgentUpdateService`'s extract+swap+`Environment.Exit` window now takes the EXCLUSIVE side (locked decision P8), fixing the 2026-07-25 audit CLASH — `IsExecuting` was blind to ad-hoc work so a swap killed running scripts, and the check-to-swap gap was a TOCTOU; the wait is bounded by the new `Agent:Update:SwapGateTimeout` (default 5 min) because a queued writer also blocks new work. Ad-hoc gate mode became per-RUN, not per-target: the AI session flow dispatches `true` unconditionally (locked decision P5), and `AdhocDispatcher.DispatchAsync` takes a single `bool` in place of the per-target map. CONTRACT CHANGE: `AgentContract.CurrentVersion` 2 → 3 with NO shape change — a v2 agent reads `true` as a full bypass, which on the new read-always AI path would leave every approved script ungated, so the skew is refused at registration. Still DEFERRED: the gate's unit is one WAVE (F6 closes whole-plan exclusion server-side). Branch `feat/eng-machine-gate-rw`. |
 | 1.10 | 2026-07-25 | **F2 followups 1-10** (§6, §7). Agent SignalR push handlers detached: `RunDeploymentAsync` / `RunAdhocScriptAsync` return `Task.CompletedTask` instead of the work task, because `HubConnection`'s single-reader receive loop AWAITS each handler — so returning the work serialized every server→agent push and the transport, not the gate, was doing the serializing (F2's gate was therefore untested end-to-end; proved with a real loopback hub). Handlers are tracked and drained on shutdown. A parallel-enabled target now REFUSES a re-dispatch whose predecessor was force-detached — a bypassing predecessor holds no slot to serialize the two attempts against. Ad-hoc moved from a queue-only bound to ONE `Adhoc:MaxTotalDuration` spanning queue wait plus execution (separate bounds still let a script outlive the dispatcher's verdict). The execution-budget re-arm is CLAMPED to the dispatch backstop, so a late gate report can shorten an attempt but never push it past the configured ceiling, and every `CancelAfter` arm is capped at the timer limit (an explicit `TimeoutSeconds` near `int.MaxValue` previously threw at dispatch and failed the wave before anything reached the agent). All `Engine` durations validated at startup (`EngineOptionsValidator` + `ValidateOnStart`) — a bare number binds as DAYS. `ITargetConcurrencyPolicy` / `DbTargetConcurrencyPolicy` deleted; the ad-hoc flag map is read on the caller's existing DbContext. KNOWN, DEFERRED: the machine gate is acquired per WAVE, not per plan, so another task can interleave between a plan's waves. |
 | 1.8 | 2026-07-25 | **F2 — per-target parallelism + execution-started deadline arming** (§6, §7, timer table). New `DeploymentTarget.AllowParallelTaskExecution` (default off) stamped into the dispatched plan / adhoc command; the agent's machine execution slot moved out of `DeploymentExecutor` into the shared `MachineExecutionGate` singleton and ad-hoc scripts now take it too (bounded, refusing rather than running late). The wave deadline arms in two stages: dispatch-time backstop (`budget + Engine:MaxTargetQueueWait`) then re-armed to the pure execution budget on `ReportExecutionStartedAsync`, so queueing behind a busy machine no longer burns the budget while B3's always-armed invariant survives a wedged agent. CONTRACT CHANGE: `DeploymentPlan` + `AdhocScriptCommand` gain `AllowParallelTaskExecution`, new `IAgentHubServer.ReportExecutionStartedAsync`, `AgentContract.CurrentVersion` 1 → 2. EF: migration `AddTargetAllowParallelTaskExecution`. Branch `feat/eng-per-target-parallelism`. |
 | 1.7 | 2026-07-22 | **D1 engine merge (Phases 2+3)** — Phase 2 trigger surface: `RunbookService.TriggerAsync` / `IRunbookTrigger` / REST / RunbookDetail UI gain multi-target (`additionalTargetIds`, primary-first microsecond-ordered assignments) + `ScheduledFor` (future-only, one dispatch path) + a `failureMode` knob (BestEffort/Atomic; UI shows it for rolling runs) with `DeploymentService.CreateAsync` semantics. Run read surface: new `RunbookRunDetail.razor` page + `/api/runbook-runs/{id}/logs\|step-outcomes\|output-variables\|artifacts(/download)`; shared task detail components (`TaskStatusBanner`, `TaskLogView`, `TaskStepOutcomesGrid`, `TaskOutputVariablesView`, `TaskArtifactsGrid`) extracted from `DeploymentDetail` and rendered by both pages. Dedupes: `ServerTaskCanceller` (one guarded cancel core), `OctopusSystemVariablesBuilder.AddTaskScoped` + nullable-release `AddReleaseScoped`. Phase 3 legacy deletion (§6/§8/§9): AgentHub runbook fallback finalize → post-registry warn-and-drop for either kind (+ hub `PruneRetentionAsync` deleted); reconciler arm 4 + `Engine:MaxRunbookRunDuration` removed; arm 3 orphan predicate now "expired OR null lease" for BOTH kinds; dead `ServerTaskLease.ReleaseAsync` removed; stale pre-D1 hand-off claims corrected across XML docs. `RunbookRun.TimedOut` audit constant retained as historical. No soak needed pre-production (no deployed instance). CONTRACT CHANGE: none on the agent wire; REST `TriggerRunbookRunRequest` gains optional `ScheduledFor` + `AdditionalTargetIds` + `FailureMode`. |

@@ -8,7 +8,8 @@ namespace KrakenDeploy.Contracts;
 /// (silently dropped log/step reports after an unnegotiated signature change).
 /// Bump on every breaking change to the SignalR agent surface
 /// (<see cref="IAgentHubServer"/> / <see cref="IAgentHubClient"/>) or to
-/// <see cref="DeploymentPlan"/>.
+/// <see cref="DeploymentPlan"/> — including a change to how the agent must
+/// INTERPRET an existing field, not only to the shapes themselves (see <c>3</c>).
 /// </summary>
 public static class AgentContract
 {
@@ -23,9 +24,18 @@ public static class AgentContract
     ///     the new <see cref="IAgentHubServer.ReportExecutionStartedAsync"/> report
     ///     (the server arms the wave deadline from it, so a v1 agent would leave
     ///     every wave on the dispatch-time backstop).</item>
+    ///   <item><c>3</c> — F5: no shape change, a MEANING change. Both
+    ///     <c>AllowParallelTaskExecution</c> fields are retained but now select which
+    ///     SIDE of the agent's reader-writer machine gate the work takes
+    ///     (<c>true</c> → SHARED, <c>false</c> → EXCLUSIVE) instead of whether to
+    ///     take it at all. A v2 agent reads <c>true</c> as a full bypass — no lock
+    ///     whatsoever — which is precisely the behaviour F5 removes, so the skew is
+    ///     invisible on the wire and MUST be refused at registration rather than
+    ///     negotiated. The ad-hoc dispatch path also changed which value it sends:
+    ///     the AI-session flow is now read-always.</item>
     /// </list>
     /// </summary>
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
 }
 
 /// <summary>

@@ -4,6 +4,7 @@ using FluentAssertions;
 using KrakenDeploy.Agent.Adhoc;
 using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.Deployment;
+using KrakenDeploy.Agent.Services;
 using KrakenDeploy.Agent.StepPackages;
 using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
@@ -15,15 +16,20 @@ using Microsoft.Extensions.Options;
 namespace KrakenDeploy.Agent.Tests;
 
 /// <summary>
-/// F2 — ad-hoc scripts share the deployment path's machine execution slot.
+/// F2/F5 — every kind of work on one machine shares ONE execution gate.
 /// <para>
-/// Pre-F2 the gate lived inside <see cref="DeploymentExecutor"/> and ad-hoc
-/// scripts bypassed it entirely (an audited defect): an operator-approved
-/// diagnostic script could run straight into a deployment's file / IIS / service
-/// operations on the same box. The slot now lives in the shared
-/// <see cref="MachineExecutionGate"/> singleton, and these tests wire BOTH
-/// executors from one instance exactly as <c>Program.cs</c> and
-/// <c>ServerLinkHostedService</c> do.
+/// Pre-F2 the gate lived inside <see cref="DeploymentExecutor"/> and ad-hoc scripts
+/// bypassed it entirely (an audited defect): an operator-approved diagnostic script
+/// could run straight into a deployment's file / IIS / service operations on the same
+/// box. F2 moved it into the shared <see cref="MachineExecutionGate"/> singleton, but
+/// left <c>AllowParallelTaskExecution</c> meaning "skip the gate", which reopened the
+/// same hole for any opted-in target. F5 made the gate a reader-writer lock, so the
+/// flag only chooses a SIDE — and put the self-upgrade under the same gate, closing
+/// the audit CLASH where a binary swap killed running ad-hoc work.
+/// </para>
+/// <para>
+/// These tests wire the deployment, ad-hoc and updater paths from ONE gate instance,
+/// exactly as <c>Program.cs</c> and <c>ServerLinkHostedService</c> do.
 /// </para>
 /// </summary>
 public sealed class MachineExecutionGateSharingTests
@@ -101,8 +107,12 @@ public sealed class MachineExecutionGateSharingTests
     }
 
     [Fact]
-    public async Task Adhoc_script_bypasses_the_gate_when_the_target_allows_parallel_execution()
+    public async Task Adhoc_script_with_the_shared_flag_still_waits_behind_an_exclusive_deployment()
     {
+        // F5 — AllowParallelTaskExecution chooses the gate's SIDE, it is not a bypass.
+        // Pre-F5 this exact command ran immediately, straight into the deployment's
+        // file / IIS / service operations. Consent is mutual: the deployment did not
+        // opt in, so the script waits.
         using var gate = new MachineExecutionGate();
         var link = new SharedLink();
         var deployments = BuildDeploymentExecutor(link, gate);
@@ -116,15 +126,168 @@ public sealed class MachineExecutionGateSharingTests
             "the deployment must hold the machine — its execution-started report is "
             + "emitted right after acquisition, whereas IsExecuting flips at registration");
 
-        await adhoc.HandleAsync(Command(Guid.NewGuid(), priv, allowParallel: true))
-            .WaitAsync(TestTimeout);
+        var adhocTask = Task.Run(() =>
+            adhoc.HandleAsync(Command(Guid.NewGuid(), priv, allowParallel: true)));
 
-        runner.Invocations.Should().Be(1,
-            "the target opted into parallel task execution, so the script does not queue");
-        link.AdhocResults.Should().ContainSingle().Which.AgentError.Should().BeNull();
+        await Task.Delay(300);
+        runner.Invocations.Should().Be(0,
+            "a SHARED ad-hoc script is still excluded by an EXCLUSIVE deployment");
+        link.AdhocResults.Should().BeEmpty();
 
         link.ReleaseFirstCompletion.Release();
-        await deployTask.WaitAsync(TestTimeout);
+        await Task.WhenAll(deployTask, adhocTask).WaitAsync(TestTimeout);
+
+        runner.Invocations.Should().Be(1, "it runs once the deployment lets go");
+        link.AdhocResults.Should().ContainSingle().Which.AgentError.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Two_shared_adhoc_scripts_co_run()
+    {
+        // The AI ad-hoc flow is READ-always (locked decision P5), so two approved
+        // diagnostics on one box must not serialize against each other — that was the
+        // motivation for a reader-writer gate rather than a plain mutex.
+        using var gate = new MachineExecutionGate();
+        var link = new SharedLink();
+        var (priv, pem) = NewKeyPair();
+        using var _ = priv;
+
+        var blocking = new SignallingRunner { BlockUntilReleased = true };
+        var firstAdhoc = BuildAdhocExecutor(link, gate, pem, blocking);
+        var firstTask = Task.Run(() =>
+            firstAdhoc.HandleAsync(Command(Guid.NewGuid(), priv, allowParallel: true)));
+        await WaitUntilAsync(() => blocking.Invocations == 1,
+            "the first script must be running (holding a shared lease)");
+
+        var second = new SignallingRunner();
+        var secondAdhoc = BuildAdhocExecutor(link, gate, pem, second);
+        await secondAdhoc.HandleAsync(Command(Guid.NewGuid(), priv, allowParallel: true))
+            .WaitAsync(TestTimeout);
+
+        second.Invocations.Should().Be(1,
+            "both scripts hold the SHARED side, so the second does not queue");
+        gate.ReaderCount.Should().Be(1, "the first script is still executing");
+
+        blocking.Release.Release();
+        await firstTask.WaitAsync(TestTimeout);
+        gate.IsHeld.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task An_exclusive_adhoc_script_excludes_a_shared_one()
+    {
+        // WP16's script console default: the per-run "allow running concurrently"
+        // checkbox unchecked → false → EXCLUSIVE. A hand-written script has no mode
+        // gate, so exclusive-by-default is the safe default and it must exclude even
+        // the read-always AI flow.
+        using var gate = new MachineExecutionGate();
+        var link = new SharedLink();
+        var (priv, pem) = NewKeyPair();
+        using var _ = priv;
+
+        var exclusiveRunner = new SignallingRunner { BlockUntilReleased = true };
+        var exclusiveAdhoc = BuildAdhocExecutor(link, gate, pem, exclusiveRunner);
+        var exclusiveTask = Task.Run(() =>
+            exclusiveAdhoc.HandleAsync(Command(Guid.NewGuid(), priv)));
+        await WaitUntilAsync(() => exclusiveRunner.Invocations == 1,
+            "the console-style script must be running (holding the exclusive side)");
+        gate.IsWriteHeld.Should().BeTrue();
+
+        var sharedRunner = new SignallingRunner();
+        var sharedAdhoc = BuildAdhocExecutor(link, gate, pem, sharedRunner);
+        var sharedTask = Task.Run(() =>
+            sharedAdhoc.HandleAsync(Command(Guid.NewGuid(), priv, allowParallel: true)));
+
+        await Task.Delay(300);
+        sharedRunner.Invocations.Should().Be(0,
+            "an exclusive ad-hoc script excludes a shared one just as a deployment would");
+
+        exclusiveRunner.Release.Release();
+        await Task.WhenAll(exclusiveTask, sharedTask).WaitAsync(TestTimeout);
+        sharedRunner.Invocations.Should().Be(1);
+    }
+
+    // ── F5 / P8: the self-upgrade participates in the same gate ─────────────
+
+    [Fact]
+    public async Task The_updater_waits_for_adhoc_work_that_IsExecuting_cannot_see()
+    {
+        // The 2026-07-25 parallel-safety audit CLASH. AgentUpdateService gated the
+        // binary swap on DeploymentExecutor.IsExecuting, which only ever reflects
+        // deployments and runbook runs — an operator's ad-hoc script was invisible, so
+        // a maintenance-window swap killed it mid-run. The swap now takes the gate's
+        // EXCLUSIVE side, which every kind of work participates in.
+        using var gate = new MachineExecutionGate();
+        var link = new SharedLink();
+        var deployments = BuildDeploymentExecutor(link, gate);
+        var (priv, pem) = NewKeyPair();
+        using var _ = priv;
+
+        var runner = new SignallingRunner { BlockUntilReleased = true };
+        var adhoc = BuildAdhocExecutor(link, gate, pem, runner);
+        var adhocTask = Task.Run(() =>
+            adhoc.HandleAsync(Command(Guid.NewGuid(), priv, allowParallel: true)));
+        await WaitUntilAsync(() => runner.Invocations == 1, "the script must be running");
+
+        deployments.IsExecuting.Should().BeFalse(
+            "this is the blind spot: the ad-hoc script is invisible to the old guard");
+
+        var (busyLease, busyOutcome) = await AgentUpdateService.AcquireSwapGateAsync(
+            gate, TimeSpan.FromMilliseconds(200), default);
+        busyOutcome.Should().Be(AgentUpdateService.SwapGate.Busy,
+            "the swap must NOT proceed while an ad-hoc script is running");
+        busyLease.Should().BeNull();
+
+        runner.Release.Release();
+        await adhocTask.WaitAsync(TestTimeout);
+
+        var (freeLease, freeOutcome) = await AgentUpdateService.AcquireSwapGateAsync(
+            gate, TimeSpan.FromSeconds(5), default);
+        freeOutcome.Should().Be(AgentUpdateService.SwapGate.Acquired,
+            "once the machine is idle the swap window opens");
+        freeLease.Should().NotBeNull();
+        freeLease!.Dispose();
+    }
+
+    [Fact]
+    public async Task The_updater_blocks_new_work_while_it_holds_the_swap_window()
+    {
+        // The other half of P8: the pre-F5 check-to-swap gap was a TOCTOU — work could
+        // start between reading IsExecuting and moving the directory. Holding the
+        // EXCLUSIVE side closes it, and because the gate is writer-fair a QUEUED
+        // updater already blocks new work from starting.
+        using var gate = new MachineExecutionGate();
+        var link = new SharedLink();
+        var deployments = BuildDeploymentExecutor(link, gate);
+        var (priv, pem) = NewKeyPair();
+        using var _ = priv;
+        var runner = new SignallingRunner();
+        var adhoc = BuildAdhocExecutor(link, gate, pem, runner);
+
+        var (lease, outcome) = await AgentUpdateService.AcquireSwapGateAsync(
+            gate, TimeSpan.FromSeconds(5), default);
+        outcome.Should().Be(AgentUpdateService.SwapGate.Acquired);
+
+        using (lease)
+        {
+            var taskId = Guid.NewGuid();
+            var deployTask = Task.Run(() => deployments.ExecuteAsync(Plan(taskId)));
+            var adhocTask = Task.Run(() =>
+                adhoc.HandleAsync(Command(Guid.NewGuid(), priv, allowParallel: true)));
+
+            await Task.Delay(300);
+            link.ExecutionStarted.Should().BeEmpty(
+                "no deployment may start inside the swap window");
+            runner.Invocations.Should().Be(0,
+                "no ad-hoc script may start inside the swap window either");
+
+            lease!.Dispose(); // the real updater exits the process instead
+            link.ReleaseFirstCompletion.Release();
+            await Task.WhenAll(deployTask, adhocTask).WaitAsync(TestTimeout);
+        }
+
+        link.ExecutionStarted.Should().ContainSingle("the deployment resumed after the swap");
+        runner.Invocations.Should().Be(1);
     }
 
     [Fact]

@@ -38,19 +38,31 @@ public sealed record AdhocScriptCommand(
     /// <c>Adhoc:SigningKey</c>.</summary>
     string Signature,
     /// <summary>
-    /// F2 CONTRACT CHANGE — the receiving target's
-    /// <c>DeploymentTarget.AllowParallelTaskExecution</c>. Stamped per target by
-    /// the dispatcher (the same command text fans out to the frozen set, but this
-    /// flag is per-machine). <c>false</c> (the default) makes the script take the
-    /// agent's machine execution gate, so it waits its turn behind a running
-    /// deployment / runbook run instead of interleaving with it; <c>true</c>
-    /// bypasses the gate.
+    /// F5 CONTRACT CHANGE (v2 → v3; was F2) — which SIDE of the agent's
+    /// reader-writer machine execution gate this script takes. <c>false</c> (the
+    /// default) → EXCLUSIVE: the script excludes, and is excluded by, every other
+    /// unit of work on that box. <c>true</c> → SHARED: it co-runs with other shared
+    /// work but still queues behind an exclusive holder.
+    /// <para>
+    /// It is NOT a bypass. Under F2 <c>true</c> meant "skip the gate entirely", and a
+    /// v2 agent still reads it that way — which is why the wire contract had to bump
+    /// even though the shape did not change: the skew is invisible on the wire and
+    /// must be refused at registration.
+    /// </para>
+    /// <para>
+    /// Who sets it: the AI ad-hoc session flow always sends <c>true</c> (locked
+    /// decision P5 — an LLM-generated, gate-checked, operator-approved script is
+    /// read-always and never excludes). WP16's script console maps its per-run "allow
+    /// running concurrently with other scripts" checkbox onto it, unchecked (the
+    /// default) → <c>false</c> → EXCLUSIVE, because a hand-written script has no mode
+    /// gate. It is therefore per-RUN, not per-target.
+    /// </para>
     /// <para>
     /// Deliberately OUTSIDE the signature binding
     /// (<see cref="AdhocScriptSigner"/> binds <c>(SessionId, IterNumber,
     /// Script)</c>): it is a local execution-serialization hint, not an
     /// authorization input — flipping it cannot make a script run that the
-    /// operator did not approve, only change whether it interleaves. Server
+    /// operator did not approve, only change what it may co-run with. Server
     /// configuration, not agent state, is the source of truth.
     /// </para>
     /// </summary>

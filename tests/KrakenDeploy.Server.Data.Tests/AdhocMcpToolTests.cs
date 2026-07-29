@@ -277,7 +277,7 @@ public sealed class AdhocMcpToolTests(PostgresFixture postgres)
     {
         public Task<IReadOnlyList<AdhocPerTargetResult>> DispatchAsync(
             AdhocSession session, AdhocIteration iteration, Guid dispatchAccountId,
-            IReadOnlyDictionary<Guid, bool> allowParallelByTarget,
+            bool allowParallelTaskExecution,
             CancellationToken ct, TimeSpan? timeout = null)
             => Task.FromResult<IReadOnlyList<AdhocPerTargetResult>>([]);
     }

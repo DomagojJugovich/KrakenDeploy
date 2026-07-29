@@ -2,17 +2,25 @@
 
 | | |
 |---|---|
-| **Version** | 1.2 |
-| **Date** | 2026-07-25 |
-| **Authors** | Domagoj Jugović, Claude (Opus 4.8) |
+| **Version** | 1.3 |
+| **Date** | 2026-07-29 |
+| **Authors** | Domagoj Jugović, Claude (Opus 4.8), Claude (Opus 5) |
 | **Status** | Approved |
-| **Technologies** | .NET 10, SignalR, SemaphoreSlim, NTFS/ext4 atomic rename |
+| **Technologies** | .NET 10, SignalR, async reader-writer lock, NTFS/ext4 atomic rename |
 | **Projects** | KrakenDeploy.Server.Transport, KrakenDeploy.Agent, KrakenDeploy.Agent.Transport |
 
 Production-readiness fix **B7** (audit items T1-3 remainder, T1-4): bounded
 concurrency on both sides of the wire, and caches that survive crashes and
 concurrent access. No contract change; one new config key.
 
+> v1.3 (2026-07-29, **F5**): the agent's machine gate is now a fair async
+> READER-WRITER lock, not a binary mutex. `AllowParallelTaskExecution` selects a
+> SIDE instead of granting a bypass (mutual consent — locked decision P2), for
+> ad-hoc it became per-RUN rather than per-target, and the agent self-upgrade
+> takes the WRITE side (locked decision P8). CONTRACT CHANGE:
+> `AgentContract.CurrentVersion` 2 → 3 with no shape change. See "Agent: the
+> machine execution gate" and "The self-upgrade participates too".
+>
 > v1.2 (2026-07-25, F2-followup 3): the ad-hoc bound is now ONE
 > `Adhoc:MaxTotalDuration` covering queue wait **plus** execution, replacing the
 > queue-only `Adhoc:MaxQueueWait` — see "Ad-hoc scripts take the slot too".
@@ -41,20 +49,42 @@ Runbook-run dispatch is **not** counted: the server-side hand-off is
 milliseconds (the run executes on the agent, where the machine queue below
 bounds it).
 
-## Agent: one task at a time per machine
+## Agent: the machine execution gate
 
 Chosen fork (confirmed): the machine queue lives **agent-side**, not as
 server-side target locks — server locks are per-process, so a blue-green
 overlap would bypass them, and multi-target deployments would need ordered
 multi-lock acquisition. The agent is the single authority for its own box.
 
-The slot itself is `MachineExecutionGate`, a process-wide agent singleton (F2
+The gate itself is `MachineExecutionGate`, a process-wide agent singleton (F2
 extracted it out of `DeploymentExecutor` so more than one caller can share it).
-A holder keeps it for one dispatched sub-plan — i.e. one WAVE (see Residuals):
-concurrent deployments, runbook runs **and ad-hoc scripts** to the same box
-serialize FIFO instead of interleaving file/IIS/service mutations; waves
-*within* a plan keep their parallelism. A queued plan writes
-`--- Waiting for another task to finish on this machine ---` to its task log.
+Since **F5** it is a fair asynchronous **reader-writer** lock with two modes, not a
+binary mutex — Octopus `ScriptIsolationMutex` parity, verified from Tentacle source:
+theirs is an in-process `AsyncReaderWriterLock` acquired per script, and its
+`NoIsolation` option takes the READ side of that same lock. "Bypass" is a downgrade
+to shared, never an actual bypass.
+
+| Mode | Who takes it | Co-runs with |
+| --- | --- | --- |
+| **EXCLUSIVE** (write) | default for a dispatched sub-plan; an ad-hoc command with `AllowParallelTaskExecution = false` (WP16 console default); the self-upgrade swap window | nothing |
+| **SHARED** (read) | a sub-plan whose target sets `AllowParallelTaskExecution`; an ad-hoc command with the flag `true` (the AI session flow, always) | other SHARED holders only |
+
+Co-running requires that **no writer is present**, in either direction, so consent is
+MUTUAL (locked decision P2): one side opting into sharing cannot force the other to.
+A holder keeps its lease for one dispatched sub-plan — i.e. one WAVE (see Residuals);
+waves *within* a plan keep their parallelism. A queued plan writes
+`--- Waiting for other work to finish on this machine ---` to its task log
+(`--- Waiting for exclusive work … ---` when it is itself shared).
+
+**Fairness is load-bearing.** Acquisition never barges past a queued waiter even when
+the gate's current state would permit it: without that rule a steady stream of shared
+ad-hoc scripts would keep the reader count above zero indefinitely and a queued
+deployment — or the self-upgrade — would never be granted. This is why the primitive is
+hand-built: `ReaderWriterLockSlim` has no async surface at all, and the usual
+`SemaphoreSlim` recipes either barge or need a second lock to stay consistent. A
+bounded wait that expires, or a cancel while queued, leaves the queue clean and holds
+nothing — the classic hand-rolled-lock bug is a timed-out waiter still in the queue
+being "granted" a lease nobody then releases.
 
 The gate is only reachable because the agent's SignalR push handlers are
 **detached** (`ServerLinkHostedService` returns `Task.CompletedTask`, not the work
@@ -68,22 +98,42 @@ and three real-hub tests in `TransportRoundTripTests`.
 Registration in the B6 single-flight registry happens **before** queueing, so
 a queued plan stays cancellable and supersedable — the wait observes the run's
 token, and a cancel lands in the aborted-completion path with nothing
-executed. `AgentUpdateService`'s is-it-safe-to-swap gate covers queued plans
-too (registry-derived since B6). It does **not** cover a running ad-hoc script
-(pre-existing gap; ad-hoc runs are not in `_running`).
+executed.
 
 A plan QUEUED on the gate also observes the host's shutdown token, so it unwinds
-its registry entry and staging at shutdown instead of parking on a disposed
-semaphore (`SemaphoreSlim.Dispose` does not signal pending waiters). Step
-execution is deliberately NOT linked to shutdown — a disconnect or shutdown must
-never abort a step that is already running.
+its registry entry and staging at shutdown instead of parking forever. Since F5 the
+gate additionally fails every queued waiter on its own `Dispose` (the old
+`SemaphoreSlim` did not signal pending waiters at all, which is why the linked token
+was mandatory rather than belt-and-braces). Step execution is deliberately NOT linked
+to shutdown — a disconnect or shutdown must never abort a step that is already
+running.
 
-### Ad-hoc scripts take the slot too (F2)
+### The self-upgrade participates too (F5, locked decision P8)
+
+`AgentUpdateService` used to gate the binary swap on `DeploymentExecutor.IsExecuting`
+alone. The 2026-07-25 parallel-safety audit found two defects in that: `IsExecuting` is
+derived from the deployment registry and is **blind to ad-hoc scripts**, so a
+maintenance-window swap killed an operator's running diagnostic; and the gap between
+reading it and moving the directory was a **TOCTOU** that work could start inside.
+
+The swap window (extract + directory swap + `Environment.Exit`) now runs under the
+gate's EXCLUSIVE side, which every kind of work participates in. Because the gate is
+writer-fair, a *queued* updater already blocks new work from starting — that is the
+guarantee wanted, and precisely why the wait is **bounded** by
+`Agent:Update:SwapGateTimeout` (default 5 min): an unbounded one would let a wedged
+holder stop the agent from accepting work for the rest of the process's life. On expiry
+nothing is swapped and the next tick retries. `IsExecuting` is kept purely as a cheap
+early-out, so the agent does not pay the block-new-work cost when a deployment is
+already known to be running. The lease is deliberately **not** released on the success
+path — the process exits holding it.
+
+### Ad-hoc scripts take the gate too (F2/F5)
 
 Before F2 ad-hoc scripts bypassed the gate outright — "deliberate: they are
 operator-interactive diagnostics" — which meant an approved diagnostic script
 could run straight into a deployment's file / IIS / service operations. They now
-queue like everything else, with one difference: the whole thing is **bounded**
+take it like everything else, on the side `AdhocScriptCommand.AllowParallelTaskExecution`
+selects, with one difference: the whole thing is **bounded**
 by a single `Adhoc:MaxTotalDuration` budget (default 5 min) measured from the
 moment the command arrives. Expire while queued and the agent REFUSES with an
 `AgentError`; expire while running and it kills the process tree and reports the
@@ -100,16 +150,34 @@ ends are coupled by intent, not by the wire: raise the config knob if you raise
 the dispatcher timeout. Values that are unparseable, non-positive, or over 24 h
 warn and fall back to the default — note a bare number parses as DAYS.
 
-### Per-target opt-out (F2)
+### The parallel flag selects a side, it is not an opt-out (F2 → F5)
 
 `DeploymentTarget.AllowParallelTaskExecution` (Octopus "Allow parallel task
-execution", default **off**) is stamped into `DeploymentPlan` /
-`AdhocScriptCommand` at dispatch time; the agent bypasses the gate for that unit
-of work. It is per **target**, so one machine's opt-in cannot leak onto another
-in the same fan-out, and a flip applies to the next dispatch, not to work already
-queued on the agent. It never relaxes the F1 same-`(project, environment,
-tenant)` deployment serialization — that is enforced server-side at claim time
-and has no per-target opt-out.
+execution", default **off**) is stamped into `DeploymentPlan` at plan-build time. Under
+F2 the agent **bypassed** the gate for that unit of work; under F5 it takes the SHARED
+side instead. The difference matters: a bypass removed same-machine protection against
+*every* task on the box, including ones that had not opted in, whereas a shared lease
+still queues behind any exclusive holder. Mutual consent, in both directions. It is per
+**target**, so one machine's opt-in cannot leak onto another in the same fan-out, and a
+flip applies to the next dispatch, not to work already queued on the agent. It never
+relaxes the F1 same-`(project, environment, tenant)` deployment serialization — that is
+enforced server-side at claim time and has no per-target opt-out.
+
+For ad-hoc work the same wire field is **per-run, not per-target** (F5). F2 stamped each
+target's own flag onto `AdhocScriptCommand`, which was right while the flag meant
+"bypass" — a machine-local policy — and inverts the intent once it means "which side":
+a serial target would have promoted an LLM-generated, gate-checked, operator-approved
+read-only diagnostic into an EXCLUSIVE holder blocking live deployments. So:
+
+- the **AI ad-hoc session flow always sends `true`** (locked decision P5 — read-always,
+  never excludes);
+- **WP16's script console** maps its per-run "allow running concurrently with other
+  scripts" checkbox onto it, unchecked (the default) → `false` → EXCLUSIVE, because a
+  hand-written script has no mode gate and its author is exactly the person not thinking
+  about cross-task clashes.
+
+The flag still rides OUTSIDE the ad-hoc signature binding — it is an
+execution-serialization hint, not an authorization input.
 
 ### Queueing no longer burns the wave deadline (F2)
 
@@ -166,9 +234,19 @@ the agent's B6 `ScriptRunner` kill and closes the residual B4/B6 both noted.
 ## Tests
 
 `NodeTaskGateTests` (hard bound under 12 workers, default fallback,
-idempotent releaser, cancellable wait); `DeploymentExecutorCancelTests`
-(different tasks serialize FIFO; cancel-while-queued aborts without
-executing); `LocalPackageCacheTests` (concurrent store+read never torn,
+idempotent releaser, cancellable wait); `MachineExecutionGateTests` (F5 — the gate
+primitive: shared∥shared co-run, exclusion in BOTH directions, a queued writer not
+starved by ten late readers, `TryAcquireNowAsync` not barging, expired/cancelled
+waiters leaving nothing held, disposal unblocking queued waiters);
+`MachineExecutionGateSharingTests` (F2/F5 — the three call sites over ONE gate:
+ad-hoc∥ad-hoc, exclusive ad-hoc excluding a shared one, a shared ad-hoc still waiting
+behind an exclusive deployment, and the updater both waiting for ad-hoc work
+`IsExecuting` cannot see and blocking new work while it holds the swap window);
+`DeploymentExecutorCancelTests` (different tasks serialize FIFO; cancel-while-queued
+aborts without executing; parallel-flagged tasks co-run but still wait behind an
+exclusive one); `TransportRoundTripTests` (the same two over a REAL hub);
+`AgentHubRegisterTests` (a v2 agent is refused — the F5 skew is invisible on the wire);
+`LocalPackageCacheTests` (concurrent store+read never torn,
 tmp-* invisible, keep-on-restore); `StepPackageLoaderTests` (6 concurrent
 extractions → one complete dir, no temp survivors);
 `ServerScriptStepTimeoutTests` (the timed-out script's PID actually dies).
@@ -183,12 +261,21 @@ extractions → one complete dir, no temp survivors);
   Nothing enforces `MachineName` uniqueness. The offline runner likewise builds
   its own gate (deliberately uncoordinated with a live agent).
 - The gate's unit is the dispatched sub-plan, i.e. one WAVE — the server
-  dispatches per wave, so the slot is released and re-taken at each wave
+  dispatches per wave, so the lease is released and re-taken at each wave
   boundary. An ad-hoc script can therefore still slot in between two waves of
-  one deployment.
+  one deployment. F5 does **not** close this (`MachineExecutionGate` is deliberately
+  not the place to hold a lease across a server round-trip); **F6** does, with
+  server-side per-plan target exclusion at claim time. The wave-gap for ad-hoc work
+  specifically is an ACCEPTED risk — locked decision P5, no dispatch-time check.
 - No per-target fairness across agents: the cap is node-global, FIFO.
+- The reader-writer modes are **type-blind**, exactly as Octopus's are: nothing on the
+  wire says "this is a deployment" vs "this is a script". Mode comes only from the
+  consent flags, so two mutually-consenting SHARED units co-run even if one is a
+  full deployment.
 
 ## References
 
 - `docs/production-fix-prompts-2026-07-13.md` — B7 work package
-- `docs/disconnect-reconciliation.md` (B3), `docs/agent-wire-contract.md` (B6)
+- `docs/master-plan-2026-07-18.md` §5 — locked decisions P2 (mutual-consent
+  reader-writer), P5 (ad-hoc), P8 (updater); F5/F6 work packages
+- `docs/disconnect-reconciliation.md` (B3), `docs/agent-wire-contract.md` (B6/F5)

@@ -217,7 +217,7 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
             await using var db = seeder.CreateContext();
             var quickLog = await TaskLogService.ReadAllAsync(db, quick);
             quickLog.Should().Contain(
-                l => l.Message.Contains("Waiting for another task to finish on this machine"),
+                l => l.Message.Contains("Waiting for other work to finish on this machine"),
                 "the second plan must have been DELIVERED and queued on the machine gate — "
                 + "pre-fix it was never dispatched to the agent at all");
         }
@@ -229,7 +229,7 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task Parallel_flag_lets_a_second_deployment_run_while_the_first_blocks()
+    public async Task Parallel_flag_lets_a_second_deployment_co_run_while_the_first_blocks()
     {
         await using var seeder = new OrchestratorTestHarness(postgres);
         await using var host = await RoundTripHost.StartAsync(postgres, new EngineOptions
@@ -248,19 +248,27 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
         {
             await WaitUntilAsync(() => agent.Executor.IsExecuting,
                 "the blocking deployment must be executing");
+            await WaitUntilAsync(() => agent.Gate.ReaderCount == 1,
+                "F5 — the flag takes the SHARED side of the gate, it does not skip it");
 
-            // With the flag the second plan bypasses the gate, so it completes WHILE
-            // the first is still blocked mid-step. This is F2's headline behaviour and
-            // it is impossible unless the agent accepts a second push concurrently.
+            // Both plans hit a target that opted in, so both hold SHARED leases and the
+            // second completes WHILE the first is still blocked mid-step. Impossible
+            // unless the agent accepts a second push concurrently (F2-followup 1).
             await host.RunDeploymentAsync(quick).WaitAsync(TestTimeout);
 
             (await seeder.GetDeploymentAsync(quick)).Status
                 .Should().Be(DeploymentStatus.Succeeded);
             blockingRun.IsCompleted.Should().BeFalse(
-                "the first deployment is still blocked — the second overtook it");
-            agent.Gate.IsHeld.Should().BeFalse(
-                "a bypassing plan must not have taken the slot, and must not have "
-                + "released one it never held");
+                "the first deployment is still blocked — the second co-ran past it");
+
+            // F5 — pre-F5 this asserted IsHeld == false, because a flagged plan took no
+            // lease at all. It now holds a real reader, and the co-runner's release must
+            // have decremented to exactly that one rather than zeroing the count.
+            agent.Gate.ReaderCount.Should().Be(1,
+                "the blocking plan still holds its shared lease; the co-runner released "
+                + "only its own");
+            agent.Gate.IsWriteHeld.Should().BeFalse(
+                "neither plan is exclusive, so no writer may be recorded");
         }
         finally
         {

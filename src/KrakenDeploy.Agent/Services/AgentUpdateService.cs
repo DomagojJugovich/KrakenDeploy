@@ -30,6 +30,14 @@ namespace KrakenDeploy.Agent.Services;
 /// <see cref="AgentUpgradeMarker"/>.
 /// </para>
 /// <para>
+/// F5 (locked decision P8) — the extract + swap + exit window runs under the
+/// EXCLUSIVE side of <see cref="MachineExecutionGate"/>, the same gate deployments
+/// and ad-hoc scripts take. That closes the 2026-07-25 parallel-safety audit CLASH:
+/// <see cref="DeploymentExecutor.IsExecuting"/> is blind to ad-hoc work, so a swap
+/// during an operator's diagnostic script killed it mid-run, and the gap between
+/// that check and the swap was a TOCTOU that work could start inside.
+/// </para>
+/// <para>
 /// Residual limitation (documented, out of this WP's reach): an in-process
 /// self-updater cannot recover from a hard process kill in the sub-millisecond
 /// window between two directory-content moves, nor from a new build so broken its
@@ -42,6 +50,7 @@ public sealed class AgentUpdateService(
     AgentContext context,
     MachineInfoCollector machineCollector,
     DeploymentExecutor deploymentExecutor,
+    MachineExecutionGate executionGate,
     IServerLink serverLink,
     IOptions<AgentConfig> agentConfig,
     IOptions<AgentUpdateConfig> updateConfig,
@@ -213,7 +222,11 @@ public sealed class AgentUpdateService(
 
         // 4. Only swap during the maintenance window, when idle and connected.
         //    C6/E-B: DeploymentExecutor is now a real singleton, so IsExecuting
-        //    reads the LIVE in-flight registry — the swap is refused mid-deployment.
+        //    reads the LIVE in-flight registry.
+        //    F5: IsExecuting is now only a cheap PRE-check — it sees deployments and
+        //    runbook runs but never ad-hoc scripts, and it was a TOCTOU besides (work
+        //    could start between the check and the swap). The real guarantee is the
+        //    machine gate's EXCLUSIVE side, taken below.
         var inWindow = InMaintenanceWindow(cfg);
         var deploymentInFlight = deploymentExecutor.IsExecuting;
         var connected = serverLink.IsConnected;
@@ -238,8 +251,80 @@ public sealed class AgentUpdateService(
             return;
         }
 
-        await ApplyUpdateAsync(downloadPath, ext, versionDir, markerPath, cfg,
-            currentVersion, info, ct).ConfigureAwait(false);
+        // 5. F5 (locked decision P8) — the swap window (extract + swap + exit) runs
+        //    under the machine gate's EXCLUSIVE side. Because the gate is writer-fair
+        //    this both WAITS for every kind of in-flight work (ad-hoc scripts
+        //    included, which IsExecuting cannot see) and BLOCKS new work from starting
+        //    while we hold it, closing the check-to-swap TOCTOU. Bounded: on expiry we
+        //    swap nothing and let the next tick retry, rather than parking a writer
+        //    that starves the agent of work indefinitely.
+        //    NOTE the lease is deliberately NOT released on the success path —
+        //    ApplyUpdateAsync ends in Environment.Exit, and holding the gate until the
+        //    process dies is exactly the guarantee wanted. Every failure path inside
+        //    returns, and the `using` releases it then.
+        var (gate, gateOutcome) = await AcquireSwapGateAsync(
+            executionGate, cfg.SwapGateTimeout, ct).ConfigureAwait(false);
+        if (gateOutcome != SwapGate.Acquired)
+        {
+            if (gateOutcome == SwapGate.Busy)
+            {
+                logger.LogInformation(
+                    "Skipping agent update swap — work on this machine did not finish " +
+                    "within {Timeout}; retrying on the next check.", cfg.SwapGateTimeout);
+            }
+            else
+            {
+                logger.LogDebug("Skipping agent update swap — the agent is shutting down.");
+            }
+            return;
+        }
+
+        using (gate)
+        {
+            await ApplyUpdateAsync(downloadPath, ext, versionDir, markerPath, cfg,
+                currentVersion, info, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Outcome of the F5 swap-gate acquisition.</summary>
+    internal enum SwapGate
+    {
+        /// <summary>The EXCLUSIVE side is held; the swap may proceed.</summary>
+        Acquired,
+
+        /// <summary>Other work outlasted the bounded wait — swap nothing, retry next tick.</summary>
+        Busy,
+
+        /// <summary>The gate was disposed under us: the agent is shutting down.</summary>
+        Stopping,
+    }
+
+    /// <summary>
+    /// F5 (locked decision P8) — takes the machine gate's EXCLUSIVE side for the swap
+    /// window. <c>internal static</c> for the same reason as <see cref="CanSwapNow"/>
+    /// and <see cref="EvaluateOffer"/>: the interesting behaviour is testable without
+    /// standing up the whole hosted service.
+    /// <para>
+    /// Bounded on purpose. Because the gate is writer-fair, a queued writer also stops
+    /// NEW work from starting — which is exactly the guarantee wanted while swapping,
+    /// and exactly why the wait must not be unbounded: a wedged holder would otherwise
+    /// keep the agent from accepting work for the rest of the process's life.
+    /// </para>
+    /// </summary>
+    internal static async Task<(MachineExecutionGate.Releaser? Lease, SwapGate Outcome)>
+        AcquireSwapGateAsync(MachineExecutionGate gate, TimeSpan timeout, CancellationToken ct)
+    {
+        try
+        {
+            var lease = await gate
+                .AcquireAsync(MachineExecutionGate.Mode.Exclusive, timeout, ct)
+                .ConfigureAwait(false);
+            return lease is null ? (null, SwapGate.Busy) : (lease, SwapGate.Acquired);
+        }
+        catch (ObjectDisposedException)
+        {
+            return (null, SwapGate.Stopping);
+        }
     }
 
     /// <summary>
@@ -269,8 +354,16 @@ public sealed class AgentUpdateService(
 
     /// <summary>
     /// C6 — a swap may proceed only inside the maintenance window, with no
-    /// deployment in flight (acceptance: no swap while a deployment runs), and
-    /// while connected to the server. Pure so the gate is unit-testable.
+    /// deployment in flight, and while connected to the server. Pure so it is
+    /// unit-testable.
+    /// <para>
+    /// F5: <paramref name="deploymentInFlight"/> is now a cheap EARLY-OUT, not the
+    /// guarantee. It stays because queueing an exclusive waiter on the machine gate
+    /// blocks new work while it waits, so there is no point paying that cost when we
+    /// already know a deployment is running. The actual mutual exclusion — over
+    /// ad-hoc scripts too, and without a check-to-swap gap — is the gate acquisition
+    /// in <see cref="CheckAndApplyUpdateAsync"/>.
+    /// </para>
     /// </summary>
     internal static bool CanSwapNow(bool inMaintenanceWindow, bool deploymentInFlight, bool connected)
         => inMaintenanceWindow && !deploymentInFlight && connected;

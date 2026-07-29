@@ -174,30 +174,32 @@ public sealed class DeploymentExecutorCancelTests
         link.Completions.Last().Success.Should().BeTrue();
     }
 
-    // ── F2: per-target "Allow parallel task execution" ─────────────────────
+    // ── F2/F5: per-target "Allow parallel task execution" = the SHARED side ──
 
     [Fact]
-    public async Task Parallel_flag_lets_two_tasks_interleave_on_one_machine()
+    public async Task Parallel_flagged_tasks_co_run_on_one_machine()
     {
-        // Same shape as Plans_for_different_tasks_serialize_FIFO, but task B's
-        // target opted into parallel execution: it must NOT wait for A.
+        // Same shape as Plans_for_different_tasks_serialize_FIFO, but BOTH targets
+        // opted into parallel execution, so both take the gate's SHARED side and
+        // co-run. Mutual consent (locked decision P2) is what makes this legal.
         var link = new GateLink();
         var executor = BuildExecutor(link);
         var taskA = Guid.NewGuid();
         var taskB = Guid.NewGuid();
 
-        var runA = Task.Run(() => executor.ExecuteAsync(Plan(taskA, Guid.NewGuid())));
+        var runA = Task.Run(() => executor.ExecuteAsync(
+            Plan(taskA, Guid.NewGuid(), allowParallel: true)));
         await WaitUntilAsync(() => link.ExecutionStarted.Count == 1,
-            "the first task must hold the machine — its execution-started report is "
+            "the first task must hold a shared lease — its execution-started report is "
             + "emitted right after acquisition, whereas IsExecuting flips at registration");
 
         var runB = Task.Run(() => executor.ExecuteAsync(
             Plan(taskB, Guid.NewGuid(), allowParallel: true)));
         await runB.WaitAsync(TestTimeout);
 
-        // B completed while A still holds the slot — the gate was bypassed.
+        // B completed while A is still executing — two readers, no exclusion.
         var completion = link.Completions.Should().ContainSingle(
-            "only task B has reported; task A is still blocked holding the machine").Subject;
+            "only task B has reported; task A is still blocked holding a shared lease").Subject;
         completion.Dep.Should().Be(taskB);
         completion.Success.Should().BeTrue();
 
@@ -207,34 +209,70 @@ public sealed class DeploymentExecutorCancelTests
     }
 
     [Fact]
-    public async Task Parallel_flag_does_not_release_a_gate_it_never_took()
+    public async Task A_parallel_flagged_task_still_waits_behind_an_exclusive_one()
     {
-        // Regression guard: a bypassing plan must not Release() the semaphore on
-        // its way out — that would hand a phantom permit to the next waiter and
-        // silently break serialization for every later task on this machine.
+        // F5 — the flag is NOT a bypass. Under F2 it skipped the gate outright, so a
+        // single opted-in target removed same-machine protection against every task on
+        // the box, including ones that had NOT opted in. Consent is mutual: an
+        // exclusive holder excludes a shared waiter (Octopus ScriptIsolationMutex
+        // parity — NoIsolation takes the READ side of the same lock).
+        var link = new GateLink();
+        var executor = BuildExecutor(link);
+        var exclusive = Guid.NewGuid();
+        var shared = Guid.NewGuid();
+
+        var runExclusive = Task.Run(() => executor.ExecuteAsync(Plan(exclusive, Guid.NewGuid())));
+        await WaitUntilAsync(() => link.ExecutionStarted.Count == 1,
+            "the exclusive task must hold the machine");
+
+        var runShared = Task.Run(() => executor.ExecuteAsync(
+            Plan(shared, Guid.NewGuid(), allowParallel: true)));
+        await Task.Delay(300);
+
+        link.ExecutionStarted.Should().HaveCount(1,
+            "the parallel-flagged task is QUEUED behind the exclusive holder — it takes " +
+            "the shared side of the gate, it does not skip it");
+        link.Completions.Should().BeEmpty();
+
+        link.ReleaseFirstCompletion.Release();
+        await Task.WhenAll(runExclusive, runShared).WaitAsync(TestTimeout);
+        link.ExecutionStarted.Select(e => e.Dep).Should().Equal([exclusive, shared]);
+    }
+
+    [Fact]
+    public async Task A_shared_release_does_not_free_the_machine_for_an_exclusive_plan()
+    {
+        // Regression guard, restated for F5. Pre-F5 the risk was a BYPASSING plan
+        // calling Release() on a semaphore it never took, handing a phantom permit to
+        // the next waiter. Post-F5 every plan holds a real lease, and the equivalent
+        // corruption is a shared release that drops the reader count to zero while a
+        // sibling reader is still executing — which would let an exclusive plan in
+        // beside it.
         var link = new GateLink();
         var executor = BuildExecutor(link);
         var holder = Guid.NewGuid();
 
-        var runHolder = Task.Run(() => executor.ExecuteAsync(Plan(holder, Guid.NewGuid())));
+        // A shared plan takes a reader and blocks in its completion.
+        var runHolder = Task.Run(() => executor.ExecuteAsync(
+            Plan(holder, Guid.NewGuid(), allowParallel: true)));
         await WaitUntilAsync(() => link.ExecutionStarted.Count == 1,
-            "the first task must hold the machine — its execution-started report is "
-            + "emitted right after acquisition, whereas IsExecuting flips at registration");
+            "the shared holder must hold a reader");
 
-        // A bypassing plan runs to completion while the holder keeps the slot.
+        // A second shared plan co-runs and runs all the way out, releasing ITS reader.
         await executor.ExecuteAsync(Plan(Guid.NewGuid(), Guid.NewGuid(), allowParallel: true))
             .WaitAsync(TestTimeout);
 
-        // A SERIAL plan must still be blocked behind the holder.
-        var serial = Guid.NewGuid();
-        var runSerial = Task.Run(() => executor.ExecuteAsync(Plan(serial, Guid.NewGuid())));
+        // The exclusive plan must STILL be blocked: one reader is left.
+        var exclusive = Guid.NewGuid();
+        var runExclusive = Task.Run(() => executor.ExecuteAsync(Plan(exclusive, Guid.NewGuid())));
         await Task.Delay(300);
-        link.Completions.Select(c => c.Dep).Should().NotContain(serial,
-            "the bypassing plan must not have leaked a permit to the serial queue");
+        link.Completions.Select(c => c.Dep).Should().NotContain(exclusive,
+            "the co-runner's release must not have zeroed the reader count while the " +
+            "shared holder is still executing");
 
         link.ReleaseFirstCompletion.Release();
-        await Task.WhenAll(runHolder, runSerial).WaitAsync(TestTimeout);
-        link.Completions.Select(c => c.Dep).Should().Contain(serial);
+        await Task.WhenAll(runHolder, runExclusive).WaitAsync(TestTimeout);
+        link.Completions.Select(c => c.Dep).Should().Contain(exclusive);
     }
 
     // ── F2: the execution-started report drives the server's deadline arming ──

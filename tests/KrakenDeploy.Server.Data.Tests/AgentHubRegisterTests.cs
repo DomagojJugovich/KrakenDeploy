@@ -124,6 +124,48 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
             .Should().Be(1, "the refusal is audited");
     }
 
+    [Fact]
+    public async Task RegisterAsync_refuses_the_previous_contract_version()
+    {
+        // F5 — the v2 → v3 bump carries NO shape change, so a v2 agent deserializes
+        // every field this server sends and looks perfectly healthy. What differs is
+        // MEANING: a v2 agent reads AllowParallelTaskExecution = true as "skip the
+        // machine execution gate entirely" — no lock at all — which is exactly the
+        // behaviour F5 removes. Left unrefused it would run an ad-hoc script straight
+        // into a deployment's file / IIS / service operations, silently, with the
+        // server believing the gate was honoured. Hence: refuse the skew, do not
+        // negotiate it.
+        await using var db = postgres.CreateContext();
+
+        var target = new DeploymentTarget
+        {
+            Name = "hub-test-contract-v2-refusal",
+            Roles = ["web"],
+            TransportMode = TransportMode.Reverse,
+            Status = TargetStatus.Online,
+        };
+        db.DeploymentTargets.Add(target);
+        await db.SaveChangesAsync();
+
+        var registry = new InMemoryAgentConnectionRegistry();
+        registry.Add("test-connection", target.Id);
+
+        var previousVersion = AgentContract.CurrentVersion - 1;
+        var result = await BuildHub(postgres, target.Id, registry).RegisterAsync(
+            new AgentRegistrationRequest(target.Id, "m", "o", "f2-era", 0L, 0L,
+                ContractVersion: previousVersion));
+
+        result.Accepted.Should().BeFalse(
+            "a one-version skew is still a skew — the fields line up but the semantics do not");
+        result.ServerContractVersion.Should().Be(AgentContract.CurrentVersion);
+
+        registry.GetConnectionId(target.Id).Should().BeNull(
+            "a refused agent must be undispatchable immediately");
+
+        await db.Entry(target).ReloadAsync();
+        target.Status.Should().Be(TargetStatus.Offline);
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private static AgentHub BuildHub(

@@ -35,4 +35,19 @@ public sealed class AgentUpdateConfig
     /// never trip the timeout). Default 3.
     /// </summary>
     public int MaxHealthAttempts { get; set; } = 3;
+
+    /// <summary>
+    /// F5 (locked decision P8) — how long the swap may wait for the machine
+    /// execution gate's EXCLUSIVE side before giving up and retrying next tick.
+    /// <para>
+    /// The gate is writer-fair, so queueing here also BLOCKS new work from starting.
+    /// That is the point — the swap must not begin while anything is running, and the
+    /// old <c>IsExecuting</c> pre-check was both blind to ad-hoc work and a TOCTOU —
+    /// but it is why the wait must be BOUNDED: an unbounded one would let a wedged
+    /// holder stop the agent from accepting work for the rest of the process's life.
+    /// On expiry nothing is swapped, the queued writer leaves, work resumes, and the
+    /// next tick tries again. Default 5 minutes.
+    /// </para>
+    /// </summary>
+    public TimeSpan SwapGateTimeout { get; set; } = TimeSpan.FromMinutes(5);
 }
