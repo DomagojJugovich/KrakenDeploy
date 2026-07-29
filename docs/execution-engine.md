@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 1.11 |
+| **Version** | 1.12 |
 | **Date** | 2026-07-29 |
 | **Authors** | Domagoj Jugovic, Claude (Fable 5), Claude (Opus 4.8), Claude (Opus 5) |
 | **Status** | Draft |
@@ -291,9 +291,11 @@ Two properties to be aware of:
   supervisor crash stops the host so service-manager recovery restarts the
   agent (a visible crash-loop beats a silent zombie).
 - **Machine execution gate** (`MachineExecutionGate`, F2/F5): a fair async
-  READER-WRITER lock per agent PROCESS, whose unit is one dispatched sub-plan (i.e.
-  one WAVE). Deployments, runbook runs, ad-hoc scripts (F2) and the self-upgrade swap
-  window (F5) all take the same gate. EXCLUSIVE is the default; SHARED when the work
+  READER-WRITER lock per agent PROCESS. Deployments, runbook runs, ad-hoc scripts (F2)
+  and the self-upgrade swap window (F5) all take the same gate. Lease scope differs by
+  holder: a dispatched sub-plan holds it for one WAVE (see §9), an ad-hoc script for one
+  script run bounded by `Adhoc:MaxTotalDuration`, and the self-upgrade holds it until the
+  process exits. EXCLUSIVE is the default; SHARED when the work
   declares `AllowParallelTaskExecution`, and co-running requires that no writer is
   present in either direction — so consent is MUTUAL and the flag is a downgrade, not
   a bypass (Octopus `ScriptIsolationMutex` parity: their `NoIsolation` takes the READ
@@ -557,6 +559,14 @@ runbook block, behavior-identical).
   guaranteed to follow, so a cancelled or failed wave would strand it until process
   restart. **F6** closes it server-side at claim time, where whole plans are visible.
   The ad-hoc wave-gap specifically is an ACCEPTED risk (locked decision P5).
+  The one participant for which the gap was NOT acceptable is the agent's own
+  self-upgrade, because it ends in `Environment.Exit` rather than merely interleaving —
+  a swap landing between two waves kills the plan. Note a SERVER wave (manual
+  intervention, `DeployRelease` cascade) can occupy that gap for minutes or hours, and
+  writer fairness makes a queued updater win the boundary deterministically. F5 closes
+  that case specifically, by asking the server: `GET /api/agents/task-in-flight`,
+  consumed fail-closed. That is agent-scoped, not general — it does not help any other
+  gate participant, and it is not a substitute for F6.
 - The machine gate is per agent PROCESS, not per physical machine: two targets
   modelled on one box are two processes, two gates, and no serialization between
   them. Nothing enforces `MachineName` uniqueness.
@@ -601,6 +611,7 @@ runbook block, behavior-identical).
 
 | Version | Date | Change |
 |---|---|---|
+| 1.12 | 2026-07-29 | **F5 review follow-up** (§6, §9). Shared co-running is now BOUNDED (`Agent:MaxConcurrentSharedWork`, default 8) — the rework had dropped the old one-at-a-time cap with nothing in its place. The self-upgrade no longer trusts local state alone: it asks `GET /api/agents/task-in-flight` (fail-closed) before extracting, because the gate's per-wave unit means an idle gate does not mean an idle plan and a SERVER wave can hold that gap for hours; it also decides permanent refusals before taking the gate, re-checks the maintenance window after queueing, reports `swap-deferred`, and puts the ROLLBACK swap under the same lock. A gate unwind at shutdown no longer reports a never-executed wave as a hard deployment failure. The force-detach refusal now keys on the PAIR of modes rather than the successor's alone. `AgentHub` marks a connection dispatchable only after `RegisterAsync` passes, so a version-skewed agent cannot be handed work in the connect→register window. |
 | 1.11 | 2026-07-29 | **F5 — machine gate reader-writer rework + updater participation** (§6, §7, §9). `MachineExecutionGate` is now a fair async reader-writer lock instead of a `SemaphoreSlim(1,1)`: EXCLUSIVE is the default plan mode, SHARED when the work declares `AllowParallelTaskExecution`, and co-running requires no writer in either direction — so the flag is a DOWNGRADE to shared, never a bypass (Octopus `ScriptIsolationMutex` parity, verified from Tentacle source: `NoIsolation` takes the READ side of the same lock). Under F2 that flag removed same-machine protection outright, including against tasks that had not opted in. Writers cannot be starved: acquisition never barges past a queued waiter, and the primitive is hand-built because `ReaderWriterLockSlim` has no async surface while the `SemaphoreSlim` recipes either barge or need a second lock. `AgentUpdateService`'s extract+swap+`Environment.Exit` window now takes the EXCLUSIVE side (locked decision P8), fixing the 2026-07-25 audit CLASH — `IsExecuting` was blind to ad-hoc work so a swap killed running scripts, and the check-to-swap gap was a TOCTOU; the wait is bounded by the new `Agent:Update:SwapGateTimeout` (default 5 min) because a queued writer also blocks new work. Ad-hoc gate mode became per-RUN, not per-target: the AI session flow dispatches `true` unconditionally (locked decision P5), and `AdhocDispatcher.DispatchAsync` takes a single `bool` in place of the per-target map. CONTRACT CHANGE: `AgentContract.CurrentVersion` 2 → 3 with NO shape change — a v2 agent reads `true` as a full bypass, which on the new read-always AI path would leave every approved script ungated, so the skew is refused at registration. Still DEFERRED: the gate's unit is one WAVE (F6 closes whole-plan exclusion server-side). Branch `feat/eng-machine-gate-rw`. |
 | 1.10 | 2026-07-25 | **F2 followups 1-10** (§6, §7). Agent SignalR push handlers detached: `RunDeploymentAsync` / `RunAdhocScriptAsync` return `Task.CompletedTask` instead of the work task, because `HubConnection`'s single-reader receive loop AWAITS each handler — so returning the work serialized every server→agent push and the transport, not the gate, was doing the serializing (F2's gate was therefore untested end-to-end; proved with a real loopback hub). Handlers are tracked and drained on shutdown. A parallel-enabled target now REFUSES a re-dispatch whose predecessor was force-detached — a bypassing predecessor holds no slot to serialize the two attempts against. Ad-hoc moved from a queue-only bound to ONE `Adhoc:MaxTotalDuration` spanning queue wait plus execution (separate bounds still let a script outlive the dispatcher's verdict). The execution-budget re-arm is CLAMPED to the dispatch backstop, so a late gate report can shorten an attempt but never push it past the configured ceiling, and every `CancelAfter` arm is capped at the timer limit (an explicit `TimeoutSeconds` near `int.MaxValue` previously threw at dispatch and failed the wave before anything reached the agent). All `Engine` durations validated at startup (`EngineOptionsValidator` + `ValidateOnStart`) — a bare number binds as DAYS. `ITargetConcurrencyPolicy` / `DbTargetConcurrencyPolicy` deleted; the ad-hoc flag map is read on the caller's existing DbContext. KNOWN, DEFERRED: the machine gate is acquired per WAVE, not per plan, so another task can interleave between a plan's waves. |
 | 1.8 | 2026-07-25 | **F2 — per-target parallelism + execution-started deadline arming** (§6, §7, timer table). New `DeploymentTarget.AllowParallelTaskExecution` (default off) stamped into the dispatched plan / adhoc command; the agent's machine execution slot moved out of `DeploymentExecutor` into the shared `MachineExecutionGate` singleton and ad-hoc scripts now take it too (bounded, refusing rather than running late). The wave deadline arms in two stages: dispatch-time backstop (`budget + Engine:MaxTargetQueueWait`) then re-armed to the pure execution budget on `ReportExecutionStartedAsync`, so queueing behind a busy machine no longer burns the budget while B3's always-armed invariant survives a wedged agent. CONTRACT CHANGE: `DeploymentPlan` + `AdhocScriptCommand` gain `AllowParallelTaskExecution`, new `IAgentHubServer.ReportExecutionStartedAsync`, `AgentContract.CurrentVersion` 1 → 2. EF: migration `AddTargetAllowParallelTaskExecution`. Branch `feat/eng-per-target-parallelism`. |

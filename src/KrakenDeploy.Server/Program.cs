@@ -1227,6 +1227,51 @@ public static class Program
                 return Results.Ok(updateSvc.GetUpdateInfo(rid, currentVersion));
             }).RequireAuthorization(agentUpdateAuthPolicy);
 
+        // F5 — "does the server still have work for me?", asked by the agent
+        // immediately before a self-upgrade swap. The agent's machine gate is released
+        // at every WAVE boundary, so local state cannot see that a multi-wave
+        // deployment is still mid-plan; only the server sees whole plans. The target id
+        // comes from the agent JWT, never a parameter, so an agent can only ask about
+        // itself, and the answer carries no project/environment/variable detail.
+        // Deliberately says IN FLIGHT when the target cannot be resolved: this is
+        // consumed fail-closed, and refusing to swap is always the safe answer.
+        app.MapGet("/api/agents/task-in-flight",
+            async (HttpContext http, CancellationToken ct) =>
+            {
+                var targetIdClaim = http.User.FindFirst(
+                    System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+                if (targetIdClaim is null || !Guid.TryParse(targetIdClaim, out var targetId))
+                {
+                    return Results.Json(new AgentTaskInFlightResponse(
+                        true, "the agent identity could not be resolved"));
+                }
+
+                var db = http.RequestServices.GetRequiredService<KrakenDbContext>();
+
+                // Queued counts as in flight: an unclaimed task can be dispatched here
+                // at any moment, so a swap started now would race its first wave.
+                // IgnoreQueryFilters: this runs on an agent-authenticated request with
+                // no user or Space context, and the question is machine-scoped — a
+                // Space filter would silently answer "idle" for work in a Space the
+                // request cannot see, which is exactly the fail-OPEN we must avoid.
+                var inFlight = await db.Set<TaskTargetAssignment>()
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .Where(a => a.TargetId == targetId
+                                && a.Task.Status != DeploymentStatus.Succeeded
+                                && a.Task.Status != DeploymentStatus.SucceededWithWarnings
+                                && a.Task.Status != DeploymentStatus.Failed
+                                && a.Task.Status != DeploymentStatus.Cancelled)
+                    .CountAsync(ct)
+                    .ConfigureAwait(false);
+
+                return Results.Ok(new AgentTaskInFlightResponse(
+                    inFlight > 0,
+                    inFlight > 0
+                        ? $"{inFlight.ToString(CultureInfo.InvariantCulture)} non-terminal task(s) assigned"
+                        : null));
+            }).RequireAuthorization(agentUpdateAuthPolicy);
+
         // C6 — agent self-upgrade outcome report. The agent POSTs the result of
         // an upgrade attempt (committed / rolled-back / refused) so it is visible
         // server-side as a Space-scoped audit entry on the target. Authenticated

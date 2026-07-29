@@ -32,7 +32,11 @@ public static class AgentContract
     ///     whatsoever — which is precisely the behaviour F5 removes, so the skew is
     ///     invisible on the wire and MUST be refused at registration rather than
     ///     negotiated. The ad-hoc dispatch path also changed which value it sends:
-    ///     the AI-session flow is now read-always.</item>
+    ///     the AI-session flow is now read-always. Also adds
+    ///     <c>GET /api/agents/task-in-flight</c>, which the agent MUST consult
+    ///     (fail-closed) immediately before a self-upgrade swap: the machine gate is
+    ///     released at every wave boundary, so a gate-only check cannot see that a
+    ///     multi-wave deployment is still mid-flight.</item>
     /// </list>
     /// </summary>
     public const int CurrentVersion = 3;
@@ -120,6 +124,39 @@ public sealed record AgentUpdateStatusReport(
     string? Detail);
 
 /// <summary>
+/// F5 — response of <c>GET /api/agents/task-in-flight</c>. Answers the one question
+/// the agent cannot answer locally: does the SERVER still have a non-terminal task
+/// assigned to this target?
+/// <para>
+/// The agent's machine execution gate is released and re-taken at every WAVE
+/// boundary (the server dispatches per wave), so between two waves of a live
+/// multi-wave deployment the gate is free and the in-flight registry is empty. A
+/// self-upgrade that trusted only local state would pass its checks there, swap the
+/// binaries and <c>Environment.Exit</c>, killing the deployment mid-plan — and the
+/// window is not small, because a SERVER wave (a manual intervention, a
+/// <c>DeployRelease</c> cascade) can sit between two target waves for minutes or
+/// hours. Only the server sees whole plans, so only the server can answer.
+/// </para>
+/// <para>
+/// The target id comes from the agent JWT, never a parameter, so an agent can only
+/// ask about itself. Consumed fail-closed: an unreachable or unparseable answer
+/// means "assume in flight" and defer the swap.
+/// </para>
+/// </summary>
+/// <param name="InFlight">
+/// <c>true</c> when at least one non-terminal <c>ServerTask</c> (deployment or
+/// runbook run, of any wave) is assigned to this target. <c>Queued</c> counts:
+/// a task that has not been claimed yet can be dispatched here at any moment, and
+/// a swap started now would race its first wave.
+/// </param>
+/// <param name="Detail">
+/// Short, non-sensitive description for the agent's log (e.g. a task count). Never
+/// carries project, environment, tenant or variable data — an agent is not
+/// authorized to learn about work it has not been dispatched.
+/// </param>
+public sealed record AgentTaskInFlightResponse(bool InFlight, string? Detail);
+
+/// <summary>
 /// C6 — the discrete outcomes an agent reports for a self-upgrade attempt.
 /// String constants (not an enum) so the wire form is unambiguous regardless of
 /// the server's JSON enum-serialisation settings.
@@ -149,6 +186,15 @@ public static class AgentUpdateOutcome
     /// <summary>The swap itself failed and was rolled back in-process (the agent
     /// keeps running the previous binary).</summary>
     public const string SwapFailed = "swap-failed";
+
+    /// <summary>
+    /// F5 — the swap was DEFERRED (not failed): the machine stayed busy for the whole
+    /// swap window, so nothing was touched and the next check will retry. Reported so
+    /// a machine that keeps deferring is visible server-side; a gate held by a wedged
+    /// step is otherwise indistinguishable from a healthy busy agent, and the agent's
+    /// own logs are local-only.
+    /// </summary>
+    public const string SwapDeferred = "swap-deferred";
 }
 
 /// <summary>Body for POST /api/deployments/{id}/logs.</summary>

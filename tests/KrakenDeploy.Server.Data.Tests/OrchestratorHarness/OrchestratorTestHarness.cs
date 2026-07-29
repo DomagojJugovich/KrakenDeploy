@@ -454,6 +454,11 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         var agent = new FakeAgent { TargetId = target.Id, ConnectionId = connectionId };
         _agentsByTargetId[target.Id] = agent;
         _connectionRegistry.Add(connectionId, target.Id);
+        // F5 — dispatch eligibility requires a PASSED RegisterAsync, which a fake agent
+        // never performs. Mark it here so the harness models a fully-registered agent;
+        // the connect→register window itself is covered by
+        // AgentConnectionRegistryReconnectTests and AgentHubRegisterTests.
+        _connectionRegistry.MarkRegistered(connectionId);
         return agent;
     }
 

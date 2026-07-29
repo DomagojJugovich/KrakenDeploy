@@ -51,8 +51,16 @@ static async Task<int> RunAsync(string[] args)
     // ── Options ─────────────────────────────────────────────────────────
     builder.Services.Configure<ServerOptions>(builder.Configuration.GetSection("Server"));
     builder.Services.Configure<AgentConfig>(builder.Configuration.GetSection("Agent"));
-    builder.Services.Configure<AgentUpdateConfig>(
-        builder.Configuration.GetSection("Agent:Update"));
+    // F5: validated at STARTUP (ValidateOnStart) rather than trusted at use. The agent
+    // had no options validation at all, and SwapGateTimeout is the knob that most needs
+    // it — every malformed value silently defeats the machine-blocking bound it exists
+    // to provide, up to and including an unbounded wait that stops the agent accepting
+    // work for the life of the process. Mirrors EngineOptionsValidator server-side.
+    builder.Services.AddOptions<AgentUpdateConfig>()
+        .Bind(builder.Configuration.GetSection(AgentUpdateConfigValidator.SectionName))
+        .ValidateOnStart();
+    builder.Services.AddSingleton<IValidateOptions<AgentUpdateConfig>,
+        AgentUpdateConfigValidator>();
 
     // ── Serilog ─────────────────────────────────────────────────────────
     // Resolve the data path early so the rolling log file goes to the right place.
@@ -173,12 +181,17 @@ static async Task<int> RunAsync(string[] args)
     // docs/architecture.md "Pre-production policy" and TASKS.md D-8.9.
 
     // ── Scoped/Transient services ────────────────────────────────────────
-    // B7/F2: the machine execution gate — this box's single execution slot —
-    // MUST be a process-wide singleton, and is now shared by the deployment and
-    // ad-hoc paths (F2 brought ad-hoc scripts under it). A non-singleton
-    // registration would hand each consumer its own semaphore and silently
-    // disable serialization altogether.
-    builder.Services.AddSingleton<MachineExecutionGate>();
+    // B7/F2/F5: the machine execution gate — this box's reader-writer execution
+    // gate — MUST be a process-wide singleton, and is shared by the deployment
+    // path (F2), the ad-hoc path (F2) and the self-upgrade swap window (F5). A
+    // non-singleton registration would hand each consumer its own gate and
+    // silently disable serialization altogether, so the lifetime is pinned by
+    // MachineExecutionGateSharingTests.
+    builder.Services.AddSingleton(sp => new MachineExecutionGate
+    {
+        MaxSharedHolders = sp.GetRequiredService<IOptions<AgentConfig>>()
+            .Value.MaxConcurrentSharedWork,
+    });
     // E5: DeploymentExecutor is a process-wide SINGLETON — it holds the in-flight
     // registry (_running) that AgentUpdateService.IsExecuting reads to refuse a
     // binary swap mid-deployment. Registered Transient, ServerLinkHostedService

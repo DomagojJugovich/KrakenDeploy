@@ -91,9 +91,19 @@ public sealed class DeploymentExecutor(
             ? MachineExecutionGate.Mode.Shared
             : MachineExecutionGate.Mode.Exclusive;
 
-    private sealed class RunningDeployment(Guid dispatchId)
+    private sealed class RunningDeployment(Guid dispatchId, MachineExecutionGate.Mode mode)
     {
         public Guid DispatchId { get; } = dispatchId;
+
+        /// <summary>
+        /// F5 — which side of the machine gate this attempt takes. Recorded at
+        /// registration so a SUPERSEDING attempt can reason about the predecessor's
+        /// actual isolation rather than guessing from its own mode: the per-target flag
+        /// can be flipped between two attempts of one task, and the question that
+        /// matters ("would the gate let these two co-run?") is about the pair.
+        /// </summary>
+        public MachineExecutionGate.Mode Mode { get; } = mode;
+
         public CancellationTokenSource Cts { get; } = new();
         public TaskCompletionSource Completed { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -179,11 +189,20 @@ public sealed class DeploymentExecutor(
         // awaited before the new one starts — two attempts must never touch
         // the same extract dirs / IIS handles concurrently. The old attempt's
         // late reports carry the old DispatchId and are swallowed server-side.
-        var run = new RunningDeployment(plan.DispatchId);
+        var mode = ModeFor(plan);
+        var run = new RunningDeployment(plan.DispatchId, mode);
         // Set when a stuck old attempt is force-detached below: it may still hold
         // the machine execution gate, so this attempt's gate acquisition must be
         // BOUNDED rather than wait forever behind it (see the gate block below).
         var forceDetachedStuck = false;
+        // F5 — which side the force-detached predecessor holds, when there is one. The
+        // refusal below turns on whether the GATE would keep the two attempts apart,
+        // which is a property of the PAIR: an exclusive predecessor excludes a shared
+        // successor perfectly well, so keying the refusal on the successor's own mode
+        // (as the first cut did) abandons attempts the gate would have serialized
+        // correctly. The two can genuinely differ — the per-target flag is stamped at
+        // plan-build time, so an operator toggling it between attempts changes it.
+        MachineExecutionGate.Mode? detachedPredecessorMode = null;
         while (true)
         {
             var existing = _running.GetOrAdd(plan.DeploymentId, run);
@@ -228,6 +247,7 @@ public sealed class DeploymentExecutor(
                 ((ICollection<KeyValuePair<Guid, RunningDeployment>>)_running)
                     .Remove(new(plan.DeploymentId, existing));
                 forceDetachedStuck = true;
+                detachedPredecessorMode = existing.Mode;
             }
         }
 
@@ -271,7 +291,8 @@ public sealed class DeploymentExecutor(
             // either way. NOTE the unit is the dispatched sub-plan, i.e. one WAVE —
             // the server dispatches per wave, so the gate is released and re-taken
             // at every wave boundary (F6 closes that gap server-side).
-            var slot = await AcquireMachineSlotAsync(plan, forceDetachedStuck, ct, hostStopping)
+            var slot = await AcquireMachineSlotAsync(
+                    plan, mode, forceDetachedStuck, detachedPredecessorMode, ct, hostStopping)
                 .ConfigureAwait(false);
             if (slot.Abandoned)
             {
@@ -463,19 +484,52 @@ public sealed class DeploymentExecutor(
     }
 
     /// <summary>
-    /// Outcome of <see cref="AcquireMachineSlotAsync"/>. The third state is why a
-    /// plain <c>bool</c> would not do: "did not acquire" also means "the escalation
-    /// has ALREADY been logged and reported", so the caller must return silently
-    /// rather than report again.
+    /// What <see cref="AcquireMachineSlotAsync"/> decided. Three states, because "did
+    /// not acquire" splits two ways that the caller must treat differently: an
+    /// escalation that has ALREADY been logged and reported (report again and the server
+    /// sees two completions for one attempt) versus a silent unwind that must NOT be
+    /// reported at all (nothing executed and the server will re-dispatch).
+    /// <para>
+    /// <see cref="AbandonedQuietly"/> is deliberately the ZERO value, so
+    /// <c>default(MachineSlot)</c> — an unassigned field, a stray <c>return default</c>
+    /// — means "do not execute" rather than "no lease, carry on", which is the ungated
+    /// run F5 exists to make unrepresentable.
+    /// </para>
     /// </summary>
+    private enum SlotOutcome
+    {
+        /// <summary>Nothing executed and nothing was reported; unwind silently.</summary>
+        AbandonedQuietly = 0,
+
+        /// <summary>The gate is held.</summary>
+        Held,
+
+        /// <summary>Abandoned; the failed completion has already been sent.</summary>
+        AbandonedAfterReporting,
+    }
+
     private readonly record struct MachineSlot(
-        MachineExecutionGate.Releaser? Lease, bool Abandoned)
+        MachineExecutionGate.Releaser? Lease, SlotOutcome Outcome)
     {
         /// <summary>The gate is held; dispose <see cref="Lease"/> to release it.</summary>
-        internal static MachineSlot Held(MachineExecutionGate.Releaser lease) => new(lease, false);
+        internal static MachineSlot Held(MachineExecutionGate.Releaser lease)
+            => new(
+                lease ?? throw new ArgumentNullException(nameof(lease)),
+                SlotOutcome.Held);
 
-        /// <summary>Wedged gate: this attempt is abandoned, already reported.</summary>
-        internal static MachineSlot AbandonedWedged { get; } = new(null, true);
+        /// <summary>Abandoned and already reported (wedged gate, or two attempts of one
+        /// task that the gate cannot serialize).</summary>
+        internal static MachineSlot AbandonedWedged { get; }
+            = new(null, SlotOutcome.AbandonedAfterReporting);
+
+        /// <summary>Abandoned with nothing to report: the agent or host is shutting down
+        /// while this attempt was still QUEUED, so it never executed and the server's
+        /// disconnect reconciliation owns the re-dispatch.</summary>
+        internal static MachineSlot AbandonedQuietly { get; }
+            = new(null, SlotOutcome.AbandonedQuietly);
+
+        /// <summary>Whether the caller must skip the execution body.</summary>
+        internal bool Abandoned => Outcome != SlotOutcome.Held;
     }
 
     /// <summary>
@@ -488,15 +542,17 @@ public sealed class DeploymentExecutor(
     /// server-side at claim time.
     /// <para>
     /// Returns <see cref="MachineSlot.AbandonedWedged"/> ONLY on the two
-    /// force-detached-predecessor escalations, both reported before returning:
+    /// force-detached-predecessor escalations, both reported before returning. Which one
+    /// applies turns on whether the gate can keep the two attempts apart, i.e. on the
+    /// PAIR of modes — not on this attempt's mode alone:
     /// <list type="bullet">
-    ///   <item>SHARED mode — the gate would let both attempts co-run as readers, so
-    ///         it cannot serialize them; refuse outright, BEFORE acquiring.</item>
-    ///   <item>EXCLUSIVE mode — the predecessor's non-cooperative step still holds
-    ///         the gate, so the wait is BOUNDED by
-    ///         <see cref="WedgedGateAcquireTimeout"/> and expiry abandons this
-    ///         attempt rather than wedging the agent forever behind the stuck step
-    ///         (a zombie heartbeating Online while silently never executing again).</item>
+    ///   <item>BOTH shared — the gate would admit both as readers, so it cannot
+    ///         serialize them; refuse outright, BEFORE acquiring.</item>
+    ///   <item>Otherwise — one side is exclusive, so the gate DOES exclude them. The
+    ///         wait is BOUNDED by <see cref="WedgedGateAcquireTimeout"/> and expiry
+    ///         abandons this attempt rather than wedging the agent forever behind the
+    ///         stuck step (a zombie heartbeating Online while silently never executing
+    ///         again).</item>
     /// </list>
     /// </para>
     /// <para>
@@ -507,24 +563,31 @@ public sealed class DeploymentExecutor(
     /// </para>
     /// </summary>
     private async Task<MachineSlot> AcquireMachineSlotAsync(
-        DeploymentPlan plan, bool forceDetachedStuck, CancellationToken ct,
+        DeploymentPlan plan, MachineExecutionGate.Mode mode, bool forceDetachedStuck,
+        MachineExecutionGate.Mode? detachedPredecessorMode, CancellationToken ct,
         CancellationToken hostStopping)
     {
-        var mode = ModeFor(plan);
-
         // F2-followup 2, still load-bearing after F5 — the flag opts out of
         // serializing against OTHER tasks. It must NOT opt out of the SAME-task
         // guarantee ("two attempts must never touch the same extract dirs / IIS
         // handles concurrently", above). Normally the supersede block upholds that by
         // cancelling and awaiting the old attempt; when that attempt is
         // non-cooperative it is force-detached and the machine gate is what keeps the
-        // two apart. In SHARED mode the gate cannot: the detached attempt holds a READ
-        // lease and this one would be granted a second READ lease immediately, so both
-        // attempts of ONE task would run over the same app pool, physical site path
-        // and services. Refuse instead — BEFORE acquiring, so no lease is taken — with
-        // the same shape as the wedged-gate escalation: the server re-dispatches, and
-        // the stuck machine surfaces for an operator.
-        if (mode == MachineExecutionGate.Mode.Shared && forceDetachedStuck)
+        // two apart. It can only do that if at least ONE of the pair is exclusive: if
+        // both are shared the detached attempt holds a READ lease and this one would be
+        // granted a second READ lease immediately, so both attempts of ONE task would
+        // run over the same app pool, physical site path and services. Refuse then —
+        // BEFORE acquiring, so no lease is taken — with the same shape as the
+        // wedged-gate escalation: the server re-dispatches, and the stuck machine
+        // surfaces for an operator.
+        // Keyed on the PAIR, deliberately: an earlier cut tested only this attempt's
+        // mode, which abandoned a shared successor to an EXCLUSIVE predecessor that the
+        // gate would have excluded perfectly well — and, because the next re-dispatch
+        // arrives with forceDetachedStuck false, sent it into the unbounded wait with no
+        // escalation at all.
+        if (forceDetachedStuck
+            && mode == MachineExecutionGate.Mode.Shared
+            && detachedPredecessorMode == MachineExecutionGate.Mode.Shared)
         {
             logger.LogError(
                 "Task {DeploymentId} attempt {DispatchId} abandoned: a previous attempt " +
@@ -554,22 +617,57 @@ public sealed class DeploymentExecutor(
         using var queueWait = CancellationTokenSource.CreateLinkedTokenSource(ct, hostStopping);
         var queueToken = queueWait.Token;
 
-        if (await executionGate.TryAcquireNowAsync(mode, queueToken).ConfigureAwait(false)
-                is { } uncontended)
+        try
         {
-            return MachineSlot.Held(uncontended);
+            if (await executionGate.TryAcquireNowAsync(mode, queueToken).ConfigureAwait(false)
+                    is { } uncontended)
+            {
+                return MachineSlot.Held(uncontended);
+            }
+
+            await LogAsync(plan.DeploymentId, "info",
+                mode == MachineExecutionGate.Mode.Shared
+                    ? "--- Waiting for exclusive work to finish on this machine ---"
+                    : "--- Waiting for other work to finish on this machine ---", ct)
+                .ConfigureAwait(false);
+
+            if (!forceDetachedStuck)
+            {
+                return MachineSlot.Held(
+                    await executionGate.AcquireAsync(mode, queueToken).ConfigureAwait(false));
+            }
         }
-
-        await LogAsync(plan.DeploymentId, "info",
-            mode == MachineExecutionGate.Mode.Shared
-                ? "--- Waiting for exclusive work to finish on this machine ---"
-                : "--- Waiting for other work to finish on this machine ---", ct)
-            .ConfigureAwait(false);
-
-        if (!forceDetachedStuck)
+        catch (ObjectDisposedException)
         {
-            return MachineSlot.Held(
-                await executionGate.AcquireAsync(mode, queueToken).ConfigureAwait(false));
+            // F5: the gate now completes its queued waiters on Dispose, where the old
+            // SemaphoreSlim left them parked forever. That is the better failure, but it
+            // must not be reported as a DEPLOYMENT failure: nothing executed, and letting
+            // it reach ExecuteAsync's blanket catch would send the server
+            // success: false with "Cannot access a disposed object. Object name:
+            // 'KrakenDeploy.Agent.Deployment.MachineExecutionGate'" — an internal type
+            // name in the operator's task log for a wave that never started. Unwind
+            // silently instead and let B3's disconnect reconciliation re-dispatch, which
+            // is what an agent going away mid-queue is supposed to look like.
+            logger.LogInformation(
+                "Task {DeploymentId} attempt {DispatchId} unwound while queued on the " +
+                "machine execution gate: the agent is shutting down. Nothing executed; " +
+                "the server will re-dispatch.",
+                plan.DeploymentId, plan.DispatchId);
+            return MachineSlot.AbandonedQuietly;
+        }
+        catch (OperationCanceledException) when (
+            hostStopping.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            // Same shape via the other route: the host stopped while we were queued, so
+            // the linked token fired but the RUN was never cancelled. ExecuteAsync's
+            // cancellation catch filters on run.Cts, so this would otherwise land in the
+            // blanket catch and be reported as a hard failure too.
+            logger.LogInformation(
+                "Task {DeploymentId} attempt {DispatchId} unwound while queued on the " +
+                "machine execution gate: the host is stopping. Nothing executed; " +
+                "the server will re-dispatch.",
+                plan.DeploymentId, plan.DispatchId);
+            return MachineSlot.AbandonedQuietly;
         }
 
         if (await executionGate.AcquireAsync(mode, WedgedGateAcquireTimeout, queueToken)

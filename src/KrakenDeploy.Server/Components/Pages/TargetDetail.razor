@@ -155,8 +155,9 @@ else
                     <div class="kraken-def">
                         <div class="kraken-def-label">Allow parallel task execution
                             <div class="kraken-def-sub">
-                                By default this machine runs one task at a time — deployments,
-                                runbook runs and ad-hoc scripts queue behind each other.
+                                By default this machine runs one <em>deployment or runbook
+                                run</em> at a time — they queue behind each other, and
+                                behind any script already running here.
                             </div>
                         </div>
                         <div class="kraken-def-value">
@@ -165,7 +166,7 @@ else
                                                 Name="allowParallel"
                                                 aria-label="Allow parallel task execution" />
                                 <RadzenLabel Component="allowParallel"
-                                             Text="Run multiple tasks on this machine at the same time" />
+                                             Text="Run multiple deployments on this machine at the same time" />
                             </RadzenStack>
                             @if (_allowParallelTaskExecution)
                             {
@@ -181,16 +182,13 @@ else
                                 </div>
                             }
                             <div class="kraken-def-sub rz-mt-2">
-                                Both sides must agree before anything actually overlaps: work from a
-                                target that has <em>not</em> enabled this still runs alone, and this
-                                target's deployments wait for it. So enabling this can only let this
-                                machine's work co-run with <em>other</em> work that also allows it —
-                                it never turns the protection off.
-                            </div>
-                            <div class="kraken-def-sub rz-mt-2">
-                                It also never bypasses deployment serialization: two deployments of
-                                the same project, environment and tenant still run one after the
-                                other, whatever this setting says. Changes apply to the next
+                                This setting covers <strong>deployments and runbook runs only</strong>.
+                                Ad-hoc scripts (AI actions, and the script console when it ships)
+                                choose their own isolation per run and are not affected by it — an
+                                approved read-only script can co-run with other scripts here whether
+                                this box is ticked or not. It also never bypasses deployment
+                                serialization: two deployments of the same project, environment and
+                                tenant still run one after the other. Changes apply to the next
                                 dispatch, not to work already queued on the agent.
                             </div>
                         </div>

@@ -1,6 +1,8 @@
 using FluentAssertions;
 using KrakenDeploy.Agent.Services;
 using KrakenDeploy.Contracts;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 
 namespace KrakenDeploy.Agent.Tests;
 
@@ -88,4 +90,71 @@ public sealed class AgentUpdateDecisionTests
     [InlineData(null, false)]
     public void IsAgentApphost_classifies_launch(string? processPath, bool expected)
         => AgentUpdateService.IsAgentApphost(processPath).Should().Be(expected);
+
+    // ── F5: SwapGateTimeout validation ──────────────────────────────────────
+    //
+    // The knob bounds how long a QUEUED exclusive writer may block every new deployment
+    // and ad-hoc script on the box. Every malformed value defeats exactly that bound,
+    // and the agent had no options validation at all before F5.
+
+    [Theory]
+    // A bare number binds as DAYS — five days of whole-machine blockage, and small
+    // enough to slip under the gate's own ~24.8-day CancelAfter clamp.
+    [InlineData("5")]
+    [InlineData("30")]
+    // -1 ms IS Timeout.InfiniteTimeSpan: the wait is never bounded, so the writer parks
+    // forever and the agent silently accepts no work until it is restarted.
+    [InlineData("-00:00:00.001")]
+    [InlineData("-00:05:00")]
+    // Zero degrades the acquisition to a non-blocking probe, so the block-new-work
+    // guarantee never engages at all.
+    [InlineData("00:00:00")]
+    // Above the ceiling: a swap window measured in hours has already failed its purpose.
+    [InlineData("06:00:00")]
+    public void SwapGateTimeout_rejects_values_that_defeat_the_bound(string configured)
+        => ValidateSwapGateTimeout(configured).Succeeded.Should().BeFalse(
+            $"'{configured}' must not reach the machine gate");
+
+    [Theory]
+    [InlineData("00:02:00")]
+    [InlineData("00:00:30")]
+    public void SwapGateTimeout_accepts_a_sane_duration(string configured)
+        => ValidateSwapGateTimeout(configured).Succeeded.Should().BeTrue();
+
+    [Fact]
+    public void SwapGateTimeout_must_be_shorter_than_the_check_interval()
+    {
+        // At equal values PeriodicTimer has a coalesced tick ready the instant the wait
+        // expires, so the updater re-queues a machine-blocking writer back-to-back for
+        // the whole maintenance window without ever completing a swap. The originally
+        // shipped defaults were both 5 min.
+        var result = Validate(new Dictionary<string, string?>
+        {
+            ["Agent:Update:SwapGateTimeout"] = "00:05:00",
+            ["Agent:Update:CheckInterval"] = "00:05:00",
+        });
+
+        result.Succeeded.Should().BeFalse();
+        result.FailureMessage.Should().Contain("shorter than");
+    }
+
+    [Fact]
+    public void The_shipped_defaults_validate()
+        => Validate([]).Succeeded.Should().BeTrue(
+            "a fresh agent with no Agent:Update configuration at all must boot");
+
+    private static ValidateOptionsResult ValidateSwapGateTimeout(string configured)
+        => Validate(new Dictionary<string, string?>
+        {
+            ["Agent:Update:SwapGateTimeout"] = configured,
+        });
+
+    private static ValidateOptionsResult Validate(
+        IEnumerable<KeyValuePair<string, string?>> settings)
+    {
+        var config = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
+        var options = new AgentUpdateConfig();
+        config.GetSection(AgentUpdateConfigValidator.SectionName).Bind(options);
+        return new AgentUpdateConfigValidator(config).Validate(name: null, options);
+    }
 }

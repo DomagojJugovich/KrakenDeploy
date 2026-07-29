@@ -62,8 +62,11 @@ public sealed record AdhocScriptCommand(
     /// (<see cref="AdhocScriptSigner"/> binds <c>(SessionId, IterNumber,
     /// Script)</c>): it is a local execution-serialization hint, not an
     /// authorization input — flipping it cannot make a script run that the
-    /// operator did not approve, only change what it may co-run with. Server
-    /// configuration, not agent state, is the source of truth.
+    /// operator did not approve, only change what it may co-run with. The blast radius
+    /// is also strictly smaller than under F2: the worst a flip to <c>true</c> can buy
+    /// is the SHARED side, which still queues behind any exclusive holder, whereas F2's
+    /// <c>true</c> meant no lock at all. There is no configuration knob behind this —
+    /// the dispatching flow decides it per run.
     /// </para>
     /// </summary>
     bool AllowParallelTaskExecution = false);

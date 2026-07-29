@@ -17,6 +17,9 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
     private readonly ConcurrentDictionary<Guid, Guid> _accountByTarget = new();
     // Abort delegate (the hub's Context.Abort) per target, for A8/T1-12 revocation.
     private readonly ConcurrentDictionary<Guid, Action> _abortByTarget = new();
+    // F5 — connections that have PASSED RegisterAsync, including its wire-contract
+    // version check. Membership is the DISPATCH gate; see MarkRegistered.
+    private readonly ConcurrentDictionary<string, bool> _registered = new();
 
     public void Add(string connectionId, Guid targetId, Guid accountId = default, Action? abort = null)
     {
@@ -27,6 +30,18 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
         {
             _abortByTarget[targetId] = abort;
         }
+        // Deliberately NOT registered yet: OnConnectedAsync calls this, and the
+        // contract-version check does not run until RegisterAsync.
+    }
+
+    public void MarkRegistered(string connectionId)
+    {
+        // Only for a connection we still track — a refusal path that already removed
+        // it must never be resurrected as dispatchable.
+        if (_byConnection.ContainsKey(connectionId))
+        {
+            _registered[connectionId] = true;
+        }
     }
 
     public bool TryRemove(string connectionId, out Guid targetId)
@@ -35,6 +50,7 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
         {
             return false;
         }
+        _registered.TryRemove(connectionId, out _);
 
         // E4 — compare-and-remove the target mapping: wipe it (and its account /
         // abort side-tables) ONLY if it still points at THIS connection. On an
@@ -89,7 +105,7 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
         return false;
     }
 
-    public bool HasConnectionFor(Guid targetId) => _byTarget.ContainsKey(targetId);
+    public bool HasConnectionFor(Guid targetId) => GetConnectionId(targetId) is not null;
 
     public bool AbortConnectionFor(Guid targetId)
     {
@@ -105,8 +121,25 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
     public Guid? GetTargetId(string connectionId)
         => _byConnection.TryGetValue(connectionId, out var id) ? id : null;
 
+    /// <summary>
+    /// F5 — the target's DISPATCHABLE connection, or <c>null</c>. A connection that has
+    /// not yet passed <c>RegisterAsync</c> is deliberately invisible here.
+    /// <para>
+    /// <c>OnConnectedAsync</c> calls <see cref="Add"/> before the agent has invoked
+    /// <c>RegisterAsync</c>, so the wire-contract version has not been checked yet. This
+    /// used to be the ONLY dispatch predicate, which meant a version-skewed agent could
+    /// be sent work in that window — and permanently, if its <c>RegisterAsync</c> invoke
+    /// failed, because that failure is swallowed as retryable and re-sent only on the
+    /// next reconnect. A v2 agent reads the v3 <c>AllowParallelTaskExecution = true</c>
+    /// as "skip the machine gate entirely", so it would run an approved script with no
+    /// lock at all while the server believed the gate was honoured. Gating the lookup
+    /// fixes every dispatch consumer at once rather than each remembering to ask.
+    /// </para>
+    /// </summary>
     public string? GetConnectionId(Guid targetId)
-        => _byTarget.TryGetValue(targetId, out var connId) ? connId : null;
+        => _byTarget.TryGetValue(targetId, out var connId) && _registered.ContainsKey(connId)
+            ? connId
+            : null;
 
     public Guid? GetAccountForTarget(Guid targetId)
         => _accountByTarget.TryGetValue(targetId, out var accountId) ? accountId : null;

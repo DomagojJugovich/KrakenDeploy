@@ -17,6 +17,17 @@ public sealed class AgentConfig
     /// </summary>
     public IReadOnlyList<string> Roles { get; set; } = [];
 
+    /// <summary>
+    /// F5 — how many units of work may hold the SHARED side of
+    /// <c>MachineExecutionGate</c> at once. In practice that means co-running ad-hoc
+    /// scripts, plus deployments to a target with <c>AllowParallelTaskExecution</c>.
+    /// A backstop against pathological fan-out, not a throughput knob: work beyond the
+    /// cap QUEUES, it is never refused. Read once at startup. Values below 1 are
+    /// treated as 1 — a zero would make every shared acquisition unsatisfiable.
+    /// Default <c>8</c>.
+    /// </summary>
+    public int MaxConcurrentSharedWork { get; set; } = 8;
+
     /// <summary>Resolved data directory, falling back to the OS default when not configured.</summary>
     public string ResolvedDataPath =>
         !string.IsNullOrWhiteSpace(DataPath) ? DataPath : DefaultDataPath();

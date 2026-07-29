@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 1.2 |
+| **Version** | 1.3 |
 | **Date** | 2026-07-29 |
 | **Authors** | Domagoj Jugović, Claude (Opus 4.8), Claude (Opus 5) |
 | **Status** | Approved |
@@ -21,7 +21,7 @@ added are tabulated below. **The contract is at v3** (F5).
 |---|---|---|
 | 1 | B6 (this document) | `DispatchId` on plan + completion + step + log reports, `CancelDeploymentAsync` push, `AgentRegistrationResult`, `Roles` removed from registration. |
 | 2 | F2 (2026-07-25) | `DeploymentPlan.AllowParallelTaskExecution` + `AdhocScriptCommand.AllowParallelTaskExecution` (per-target machine-concurrency policy, appended + defaulted `false`); new `IAgentHubServer.ReportExecutionStartedAsync(deploymentId, dispatchId)`. |
-| 3 | F5 (2026-07-29) | **No shape change.** Both `AllowParallelTaskExecution` fields are RETAINED and re-interpreted: they now select which SIDE of the agent's reader-writer machine gate the work takes (`true` → SHARED, `false` → EXCLUSIVE) instead of whether to take it at all. `AdhocScriptCommand.AllowParallelTaskExecution` also changes provenance: per-RUN, not per-target — the AI session flow always sends `true`. |
+| 3 | F5 (2026-07-29) | **No shape change on the SignalR surface.** Both `AllowParallelTaskExecution` fields are RETAINED and re-interpreted: they now select which SIDE of the agent's reader-writer machine gate the work takes (`true` → SHARED, `false` → EXCLUSIVE) instead of whether to take it at all. `AdhocScriptCommand.AllowParallelTaskExecution` also changes provenance: per-RUN, not per-target — the AI session flow always sends `true`. Adds one REST endpoint the agent MUST consult fail-closed before a self-upgrade swap: `GET /api/agents/task-in-flight` → `AgentTaskInFlightResponse`. Adds the `swap-deferred` `AgentUpdateOutcome`. |
 
 **Why F2 bumps the version rather than riding v1.** Both new plan fields are
 appended and default to the safe value, so a v1 agent would deserialize them
@@ -46,6 +46,32 @@ Pinned by `AgentHubRegisterTests.RegisterAsync_refuses_the_previous_contract_ver
 
 The rule this establishes: bump on a change to how the agent must INTERPRET an existing
 field, not only on a change to the shapes.
+
+> **OPERATOR ACTION on every bump — the update manifest must be bumped with it.**
+> Nothing in the repo declares a build's contract version: the only source is the
+> operator-authored `version.json` behind `AgentRidInfo.ContractVersion`, which
+> `ServerAgentUpdateService` serves as `TargetContractVersion`. A v3 server refuses every
+> v2 agent at registration (intended), but if the manifest still says `2` the agent's own
+> `EvaluateOffer` returns `ContractSkew` and refuses to apply the upgrade — so the fleet
+> cannot self-heal out of the refusal, and every target stays Offline until an operator
+> fixes the manifest by hand. Recovery then still waits for the maintenance window.
+> Bump `version.json` in the same change as `AgentContract.CurrentVersion`.
+
+## Dispatch eligibility (F5)
+
+`OnConnectedAsync` has to register a connection before the agent can invoke anything, so
+"connected" and "contract-verified" are different states — and dispatch keys on the
+second. `IAgentConnectionRegistry.MarkRegistered` is called only after `RegisterAsync`
+passes, and `GetConnectionId` / `HasConnectionFor` ignore anything unmarked.
+
+Before F5 the registry entry alone made a connection dispatchable, so a skewed agent
+could be handed work in the connect→register window — and *permanently* if its
+`RegisterAsync` invoke threw, because that failure is swallowed as retryable and only
+re-sent on the next reconnect. Combined with the AI ad-hoc path now sending `true`
+unconditionally, a v2 agent in that state would run **every** approved script with no
+machine gate at all while the server believed the gate was honoured. Gating the lookup
+fixes every dispatch consumer at once rather than each remembering to ask.
+Pinned by `AgentConnectionRegistryReconnectTests`.
 
 ## The contract, versioned
 

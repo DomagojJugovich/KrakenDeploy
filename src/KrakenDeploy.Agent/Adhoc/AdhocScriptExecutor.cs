@@ -239,10 +239,15 @@ public sealed class AdhocScriptExecutor(
     /// <summary>
     /// F5 — which side of the machine gate an ad-hoc command takes. The AI-session
     /// dispatch path always sends <c>true</c> (locked decision P5: gated AI scripts
-    /// are read-always); the WP16 script console maps its per-run "allow running
+    /// are read-always); the WP16 script console will map its per-run "allow running
     /// concurrently" checkbox onto the same field, unchecked → <c>false</c> →
-    /// EXCLUSIVE, which is also what an absent / deleted target degrades to. Either
-    /// way the gate IS taken — the flag never buys a bypass.
+    /// EXCLUSIVE. Either way the gate IS taken — the flag never buys a bypass.
+    /// <para>
+    /// NOTE there is no longer any per-target fallback on this path: F5 deleted the
+    /// dispatcher's target lookup, so a frozen target that has since been deleted or
+    /// fallen outside query-filter scope gets whatever the RUN chose, not a
+    /// conservative EXCLUSIVE default. Do not read a fail-safe into it.
+    /// </para>
     /// </summary>
     private static MachineExecutionGate.Mode ModeFor(AdhocScriptCommand command)
         => command.AllowParallelTaskExecution
@@ -280,20 +285,31 @@ public sealed class AdhocScriptExecutor(
                 .ConfigureAwait(false);
             return new AdhocMachineSlot(queued, false);
         }
-        catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
+        catch (Exception ex)
         {
-            // Either the total budget expired while QUEUED, or the host is shutting
-            // down (the token is linked to both), or DI disposed the gate first. All
-            // three mean the script was NOT executed — report rather than let it
-            // escape, because the dispatcher's slot is waiting and this class's
-            // contract is that every path closes it.
-            logger.LogWarning(
+            // Catch-ALL, deliberately. The expected shapes are a budget that expired
+            // while QUEUED, a host shutdown (the token is linked to both) or DI
+            // disposing the gate — but the filter used to name only those two types,
+            // and anything else (the gate's own invariant guards throw
+            // InvalidOperationException and ArgumentOutOfRangeException) escaped
+            // HandleAsync entirely. That breaks this class's stated contract: the
+            // handler is invoked as a detached Task, so an escaping exception is
+            // unobserved, ReportFailureAsync never runs, and the dispatcher's TCS is
+            // never completed — the operator's session hangs for the full server-side
+            // timeout with no error text at all. Every path must close the slot.
+            logger.LogWarning(ex,
                 "Adhoc session {SessionId} iter {Iter} refused: never acquired the machine " +
                 "execution gate ({Mode}) within its {Budget} budget (or the agent is stopping).",
                 command.SessionId, command.IterNumber, mode, budget);
+            // Deliberately does NOT claim another task "held" the machine. Under F5 the
+            // gate is writer-fair, so an acquisition also waits behind a merely QUEUED
+            // writer — including the agent's own self-upgrade — with no holder present
+            // at all. Blaming a holder sent operators looking for a task that was never
+            // there.
             await ReportFailureAsync(command,
-                $"Another task held this machine for the whole {budget} budget (or the agent " +
-                "is stopping); the script was NOT executed. Re-run it once the machine is free.")
+                $"This machine did not become available within the script's {budget} budget " +
+                "(another task was running or queued here, or the agent is stopping); the " +
+                "script was NOT executed. Check the target's task history, then re-run it.")
                 .ConfigureAwait(false);
             return new AdhocMachineSlot(null, true);
         }

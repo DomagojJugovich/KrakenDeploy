@@ -66,7 +66,9 @@ public interface IAgentHubServer
     /// dispatch attempt, immediately before the first step runs. F5: a target with
     /// <see cref="DeploymentPlan.AllowParallelTaskExecution"/> no longer bypasses the
     /// gate — it takes the SHARED side — so such a plan reports once its shared lease
-    /// is granted, which is immediate unless an exclusive holder is in the way.
+    /// is granted. That is usually immediate, but NOT guaranteed: the gate is
+    /// writer-fair, so a shared plan is also delayed by a merely QUEUED writer (another
+    /// deployment, or the agent's own self-upgrade) even when no holder is present.
     /// <para>
     /// The server arms the wave deadline from THIS point instead of from dispatch,
     /// so a sub-plan queued behind a long-running task on the same machine does not

@@ -63,10 +63,31 @@ public sealed class MachineExecutionGateTests
     }
 
     [Fact]
-    public async Task Releasing_a_lease_twice_is_a_no_op()
+    public async Task Releasing_a_shared_lease_twice_does_not_admit_a_writer()
     {
-        // The idempotency B7 relied on: every call site disposes inside a `using`,
-        // and some paths could otherwise release a lease the gate already handed on.
+        // The idempotency B7 relied on: every call site disposes inside a `using`, and
+        // some paths could otherwise release a lease the gate already handed on.
+        // Deliberately the SHARED side: exclusive state is a bool, so a phantom release
+        // there is unrepresentable and the test would prove nothing. `_readers` is an
+        // int, so a double-release drops 2 → 1 → 0 and DrainNoLock would then admit an
+        // EXCLUSIVE waiter ALONGSIDE a still-running reader — the core F5 invariant.
+        using var gate = new MachineExecutionGate();
+
+        var first = await Take(gate, Mode.Shared);
+        using var sibling = await Take(gate, Mode.Shared);
+        gate.ReaderCount.Should().Be(2);
+
+        first.Dispose();
+        first.Dispose();
+
+        gate.ReaderCount.Should().Be(1, "the sibling reader is still executing");
+        (await gate.TryAcquireNowAsync(Mode.Exclusive, default)).Should().BeNull(
+            "a writer must NOT be admitted beside the surviving reader");
+    }
+
+    [Fact]
+    public async Task Releasing_an_exclusive_lease_twice_is_a_no_op()
+    {
         using var gate = new MachineExecutionGate();
 
         var lease = await Take(gate, Mode.Exclusive);
@@ -74,7 +95,6 @@ public sealed class MachineExecutionGateTests
         lease.Dispose();
 
         gate.IsHeld.Should().BeFalse();
-        // A phantom release would have left the gate grantable to TWO writers.
         using var next = await Take(gate, Mode.Exclusive);
         gate.IsWriteHeld.Should().BeTrue();
     }
@@ -146,7 +166,10 @@ public sealed class MachineExecutionGateTests
         // reader could barge — legal on the raw state, since a reader IS compatible
         // with the current reader — ReaderCount would never reach 0 and the writer
         // would wait forever.
-        using var gate = new MachineExecutionGate();
+        // The cap is raised above the convoy size on purpose: this test is about
+        // FAIRNESS, and leaving it at the default 8 would make the eleven readers queue
+        // for two unrelated reasons at once.
+        using var gate = new MachineExecutionGate { MaxSharedHolders = 16 };
         var reader = await Take(gate, Mode.Shared);
 
         var writer = gate.AcquireAsync(Mode.Exclusive, default);
@@ -297,6 +320,66 @@ public sealed class MachineExecutionGateTests
 
         await FluentActions.Awaiting(() => gate.TryAcquireNowAsync(Mode.Shared, default))
             .Should().ThrowAsync<ObjectDisposedException>();
+    }
+
+    // ── Bounded shared concurrency ──────────────────────────────────────────
+
+    [Fact]
+    public async Task Shared_holders_are_capped_and_the_overflow_queues()
+    {
+        // The pre-F5 primitive was SemaphoreSlim(1,1) — a hard cap of ONE unit of work
+        // per machine. Reader-writer semantics removed that bound and nothing else
+        // replaces it: ad-hoc is shared-always, the agent's push handlers are detached
+        // with no limiter, and no server-side cap covers ad-hoc dispatch. Unbounded,
+        // N approvals spawn N PowerShell processes on one box.
+        using var gate = new MachineExecutionGate { MaxSharedHolders = 2 };
+
+        var first = await Take(gate, Mode.Shared);
+        var second = await Take(gate, Mode.Shared);
+        gate.ReaderCount.Should().Be(2);
+
+        (await gate.TryAcquireNowAsync(Mode.Shared, default)).Should().BeNull(
+            "the third shared holder is over the cap");
+
+        // Over-cap work QUEUES; it is never refused.
+        var queued = gate.AcquireAsync(Mode.Shared, default);
+        await WaitUntilAsync(() => gate.QueuedCount == 1, "the third holder must queue");
+        queued.IsCompleted.Should().BeFalse();
+
+        first.Dispose();
+        using var third = await queued.WaitAsync(TestTimeout);
+        gate.ReaderCount.Should().Be(2, "still at the cap, with a different pair inside");
+
+        second.Dispose();
+    }
+
+    [Fact]
+    public void A_non_positive_cap_is_floored_at_one()
+    {
+        // A zero would make every shared acquisition permanently unsatisfiable, so a
+        // config typo would deadlock the whole ad-hoc path rather than narrow it.
+        new MachineExecutionGate { MaxSharedHolders = 0 }.MaxSharedHolders.Should().Be(1);
+        new MachineExecutionGate { MaxSharedHolders = -5 }.MaxSharedHolders.Should().Be(1);
+    }
+
+    // ── Give-up paths must not corrupt the gate ─────────────────────────────
+
+    [Fact]
+    public async Task An_expired_wait_still_reports_expiry_when_disposal_follows()
+    {
+        // Relabelling a genuine expiry as a disposal would skip the callers' escalation
+        // paths — DeploymentExecutor's operator-actionable "the agent is wedged" report,
+        // and AgentUpdateService's SwapGate.Busy retry — replacing them with a raw
+        // "Cannot access a disposed object" in the operator's task log.
+        var gate = new MachineExecutionGate();
+        using var holder = await Take(gate, Mode.Exclusive);
+
+        var expired = gate.AcquireAsync(Mode.Shared, ShortWait, default);
+        await Task.Delay(400); // let the bounded wait lapse
+        gate.Dispose();        // ...then tear the gate down underneath it
+
+        (await expired.WaitAsync(TestTimeout)).Should().BeNull(
+            "the wait expired on its own terms before disposal was ever involved");
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

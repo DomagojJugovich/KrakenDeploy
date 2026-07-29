@@ -83,9 +83,9 @@ public sealed class AdhocDispatcherTests
         var outOfSet = Guid.NewGuid();
 
         var connections = new InMemoryAgentConnectionRegistry();
-        connections.Add("conn-a", inSetA);
-        connections.Add("conn-b", inSetB);
-        connections.Add("conn-extra", outOfSet); // intentionally NOT in the frozen set
+        connections.AddRegistered("conn-a", inSetA);
+        connections.AddRegistered("conn-b", inSetB);
+        connections.AddRegistered("conn-extra", outOfSet); // intentionally NOT in the frozen set
 
         var pending = new PendingAdhocRegistry();
         var pusher = new RecordingPusher(connections, pending);
@@ -109,7 +109,7 @@ public sealed class AdhocDispatcherTests
         var offline = Guid.NewGuid();
 
         var connections = new InMemoryAgentConnectionRegistry();
-        connections.Add("conn-online", online); // offline has no connection
+        connections.AddRegistered("conn-online", online); // offline has no connection
 
         var pending = new PendingAdhocRegistry();
         var pusher = new RecordingPusher(connections, pending);
@@ -132,8 +132,8 @@ public sealed class AdhocDispatcherTests
         var a = Guid.NewGuid();
         var b = Guid.NewGuid();
         var connections = new InMemoryAgentConnectionRegistry();
-        connections.Add("ca", a);
-        connections.Add("cb", b);
+        connections.AddRegistered("ca", a);
+        connections.AddRegistered("cb", b);
 
         var pending = new PendingAdhocRegistry();
         var pusher = new RecordingPusher(connections, pending,
@@ -163,7 +163,7 @@ public sealed class AdhocDispatcherTests
     {
         var t = Guid.NewGuid();
         var connections = new InMemoryAgentConnectionRegistry();
-        connections.Add("c", t);
+        connections.AddRegistered("c", t);
 
         var dispatcher = new AdhocDispatcher(connections, new PendingAdhocRegistry(),
             new ThrowingPusher(),
@@ -211,7 +211,7 @@ public sealed class AdhocDispatcherTests
         var target   = Guid.NewGuid();
 
         var connections = new InMemoryAgentConnectionRegistry();
-        connections.Add("conn-a", target, accountA); // connection belongs to account A
+        connections.AddRegistered("conn-a", target, accountA); // connection belongs to account A
 
         var pending = new PendingAdhocRegistry();
         var pusher = new RecordingPusher(connections, pending);
@@ -235,7 +235,7 @@ public sealed class AdhocDispatcherTests
         var target  = Guid.NewGuid();
 
         var connections = new InMemoryAgentConnectionRegistry();
-        connections.Add("conn-a", target, account);
+        connections.AddRegistered("conn-a", target, account);
 
         var pending = new PendingAdhocRegistry();
         var pusher = new RecordingPusher(connections, pending);
@@ -265,8 +265,8 @@ public sealed class AdhocDispatcherTests
         var targetB = Guid.NewGuid();
 
         var connections = new InMemoryAgentConnectionRegistry();
-        connections.Add("conn-a", targetA);
-        connections.Add("conn-b", targetB);
+        connections.AddRegistered("conn-a", targetA);
+        connections.AddRegistered("conn-b", targetB);
 
         var pending = new PendingAdhocRegistry();
         var pusher = new RecordingPusher(connections, pending);
@@ -293,7 +293,7 @@ public sealed class AdhocDispatcherTests
         // "allow running concurrently" checkbox unchecked by default and lands here.
         var target = Guid.NewGuid();
         var connections = new InMemoryAgentConnectionRegistry();
-        connections.Add("conn", target);
+        connections.AddRegistered("conn", target);
 
         var pending = new PendingAdhocRegistry();
         var pusher = new RecordingPusher(connections, pending);
@@ -346,7 +346,7 @@ public sealed class AdhocDispatcherTests
             var targetId = connections.GetTargetId(connectionId)
                 ?? throw new InvalidOperationException(
                     $"Test fake: connection '{connectionId}' was pushed to but has no " +
-                    "target id registered — register via connections.Add(conn, target).");
+                    "target id registered — register via connections.AddRegistered(conn, target).");
 
             _commandsByTarget[targetId] = command;
 

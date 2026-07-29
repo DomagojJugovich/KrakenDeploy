@@ -672,20 +672,13 @@ internal sealed class RoundTripHost : IAsyncDisposable
         await link.StartAsync(_serverUrl, () => token, releaseId: null, CancellationToken.None)
             .ConfigureAwait(false);
 
-        // The hub's OnConnectedAsync must have registered the connection before
-        // any dispatch can route to it.
-        var registry = _app.Services.GetRequiredService<IAgentConnectionRegistry>();
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
-        while (registry.GetConnectionId(target.Id) is null)
-        {
-            if (DateTime.UtcNow > deadline)
-            {
-                throw new TimeoutException("agent connection never registered with the hub");
-            }
-            await Task.Delay(25).ConfigureAwait(false);
-        }
-
-        // Exercise the real B6 registration leg too — must be accepted.
+        // Exercise the real B6 registration leg — must be accepted. This has to come
+        // BEFORE waiting on dispatch eligibility: F5 made the two states distinct, so
+        // GetConnectionId stays null until RegisterAsync has passed (a connection whose
+        // wire-contract version is unverified must never be handed work). Waiting first
+        // and registering second — the pre-F5 order — can now never converge.
+        // SignalR processes client invocations only after OnConnectedAsync returns, so
+        // the connection is already tracked by the time this lands.
         var registration = await link.RegisterAsync(
             new AgentRegistrationRequest(
                 target.Id, "roundtrip-machine", "TestOS", "0.0-test", 0L, 0L,
@@ -695,6 +688,22 @@ internal sealed class RoundTripHost : IAsyncDisposable
         {
             throw new InvalidOperationException(
                 $"Real registration refused: {registration?.Message ?? "null result"}");
+        }
+
+        // Now the connection must be DISPATCHABLE. Still polled rather than assumed:
+        // the hub marks eligibility at the end of RegisterAsync, and the client's
+        // completion can observe the RPC's return before that write is visible here.
+        var registry = _app.Services.GetRequiredService<IAgentConnectionRegistry>();
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+        while (registry.GetConnectionId(target.Id) is null)
+        {
+            if (DateTime.UtcNow > deadline)
+            {
+                throw new TimeoutException(
+                    "agent connection never became dispatchable after a successful " +
+                    "RegisterAsync (F5: eligibility requires MarkRegistered)");
+            }
+            await Task.Delay(25).ConfigureAwait(false);
         }
 
         var agent = new RealAgent(link, executor, executionGate);

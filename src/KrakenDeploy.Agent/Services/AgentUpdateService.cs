@@ -59,6 +59,16 @@ public sealed class AgentUpdateService(
 {
     private static readonly string AgentRid = RuntimeInformation.RuntimeIdentifier;
 
+    /// <summary>
+    /// F5 — how long a ROLLBACK waits for the machine execution gate. Much shorter than
+    /// the forward swap's <c>SwapGateTimeout</c> and deliberately not configurable:
+    /// unlike the forward swap, expiry does not abandon the operation — the agent is
+    /// running a binary that failed its health gate, so restoring takes precedence over
+    /// exclusivity. The wait only buys the common case where the box happens to be busy
+    /// for a moment.
+    /// </summary>
+    private static readonly TimeSpan RollbackGateTimeout = TimeSpan.FromSeconds(30);
+
     private readonly HttpClient _http = new();
 
     /// <summary>Outcome of evaluating an update the server offered.</summary>
@@ -251,7 +261,24 @@ public sealed class AgentUpdateService(
             return;
         }
 
-        // 5. F5 (locked decision P8) — the swap window (extract + swap + exit) runs
+        // 5. Deterministic refusals BEFORE the gate. These outcomes do not depend on
+        //    what is running, so acquiring the machine gate first would be pure harm:
+        //    a queued EXCLUSIVE writer blocks every new deployment and ad-hoc script on
+        //    this box while it waits, and an agent that can NEVER swap (the
+        //    framework-dependent `dotnet KrakenDeploy.Agent.dll` launch that
+        //    Dockerfile.agent and scripts/run-agent.ps1 both use, so IsAgentApphost is
+        //    permanently false) would otherwise freeze the machine on every tick of
+        //    every maintenance window, forever, for an update it will always refuse.
+        var installDir = ResolveInstallDir();
+        if (installDir is null)
+        {
+            await ReportAsync(AgentUpdateOutcome.SwapFailed, currentVersion,
+                info.LatestVersion, "not running as the agent apphost", ct)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        // 6. F5 (locked decision P8) — the swap window (extract + swap + exit) runs
         //    under the machine gate's EXCLUSIVE side. Because the gate is writer-fair
         //    this both WAITS for every kind of in-flight work (ad-hoc scripts
         //    included, which IsExecuting cannot see) and BLOCKS new work from starting
@@ -271,6 +298,13 @@ public sealed class AgentUpdateService(
                 logger.LogInformation(
                     "Skipping agent update swap — work on this machine did not finish " +
                     "within {Timeout}; retrying on the next check.", cfg.SwapGateTimeout);
+                // The server must be able to see a machine that keeps deferring: a gate
+                // held by a wedged step looks identical to a healthy busy agent from
+                // the outside, and without this the only signal is a local log line.
+                await ReportAsync(AgentUpdateOutcome.SwapDeferred, currentVersion,
+                    info.LatestVersion,
+                    $"machine busy for the whole {cfg.SwapGateTimeout} swap window", ct)
+                    .ConfigureAwait(false);
             }
             else
             {
@@ -281,8 +315,129 @@ public sealed class AgentUpdateService(
 
         using (gate)
         {
-            await ApplyUpdateAsync(downloadPath, ext, versionDir, markerPath, cfg,
-                currentVersion, info, ct).ConfigureAwait(false);
+            // 7. Re-check the window we may have queued out of. C6's invariant is that a
+            //    swap only happens inside the operator-approved window; step 4 checked it
+            //    up to SwapGateTimeout ago, and an operator with a narrow window (02:00–
+            //    02:05 is legal) would otherwise get the swap, the restart and the whole
+            //    health-probation cycle outside their change window.
+            if (!InMaintenanceWindow(cfg))
+            {
+                logger.LogInformation(
+                    "Skipping agent update swap — the maintenance window " +
+                    "({Start:HH\\:mm}–{End:HH\\:mm}) closed while waiting for the machine.",
+                    cfg.MaintenanceWindowStart, cfg.MaintenanceWindowEnd);
+                return;
+            }
+
+            // 8. Ask the SERVER whether it still has work for us. Holding the gate is
+            //    not enough: its unit is one WAVE, so between two waves of a live
+            //    multi-wave deployment the gate is free and _running is empty, and a
+            //    server wave (manual intervention, DeployRelease cascade) can sit in
+            //    that gap for minutes or hours. Only the server sees whole plans.
+            //    Fail-closed — an unreachable server defers the swap.
+            if (!await ServerReportsIdleAsync(ct).ConfigureAwait(false))
+            {
+                return;
+            }
+
+            await ApplyUpdateAsync(downloadPath, installDir, ext, versionDir,
+                markerPath, cfg, currentVersion, info, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// C6 — the agent's own install directory, or <c>null</c> when a whole-directory
+    /// swap would target the wrong files. Hoisted out of <c>ApplyUpdateAsync</c> by F5
+    /// so this permanent refusal is decided BEFORE the machine gate is taken.
+    /// <para>
+    /// Refuses unless THIS process is the agent's own apphost: launched
+    /// framework-dependent (<c>dotnet KrakenDeploy.Agent.dll</c>),
+    /// <see cref="Environment.ProcessPath"/> is the shared dotnet muxer and the install
+    /// directory is the shared .NET runtime, so swapping it would clobber the runtime.
+    /// </para>
+    /// </summary>
+    private string? ResolveInstallDir()
+    {
+        var currentExe = Environment.ProcessPath;
+        var installDir = string.IsNullOrEmpty(currentExe) ? null : Path.GetDirectoryName(currentExe);
+        if (string.IsNullOrEmpty(installDir))
+        {
+            logger.LogError("Cannot determine the agent install directory for auto-update.");
+            return null;
+        }
+
+        if (!IsAgentApphost(currentExe))
+        {
+            logger.LogError(
+                "Refusing self-upgrade: the running process '{Exe}' is not the agent apphost " +
+                "(framework-dependent / muxer launch?). Swapping '{Dir}' would target the wrong files.",
+                currentExe, installDir);
+            return null;
+        }
+
+        return installDir;
+    }
+
+    /// <summary>
+    /// F5 — asks the server whether any non-terminal task is still assigned to this
+    /// target. FAIL-CLOSED by contract: any failure to get a clear "idle" answer
+    /// (transport error, non-success status, unparseable body, identity not ready)
+    /// defers the swap. A deferred upgrade costs one check interval; a swap that
+    /// <c>Environment.Exit</c>s into the gap between two waves kills a live deployment.
+    /// </summary>
+    private async Task<bool> ServerReportsIdleAsync(CancellationToken ct)
+    {
+        var identity = context.Identity;
+        if (identity is null || string.IsNullOrEmpty(identity.ServerUrl))
+        {
+            logger.LogDebug("Deferring agent update swap — identity is not resolved yet.");
+            return false;
+        }
+
+        try
+        {
+            var url = $"{identity.ServerUrl.TrimEnd('/')}/api/agents/task-in-flight";
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", identity.AgentToken);
+
+            using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode)
+            {
+                logger.LogInformation(
+                    "Deferring agent update swap — the server returned {Status} for the " +
+                    "task-in-flight check.", (int)resp.StatusCode);
+                return false;
+            }
+
+            var answer = await resp.Content
+                .ReadFromJsonAsync<AgentTaskInFlightResponse>(ct).ConfigureAwait(false);
+            if (answer is null)
+            {
+                logger.LogInformation(
+                    "Deferring agent update swap — the task-in-flight check returned no body.");
+                return false;
+            }
+            if (answer.InFlight)
+            {
+                logger.LogInformation(
+                    "Deferring agent update swap — the server still has work for this " +
+                    "target ({Detail}). The machine gate is per WAVE, so an idle gate " +
+                    "does not mean an idle plan.", answer.Detail ?? "no detail");
+                return false;
+            }
+
+            return true;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Deferring agent update swap — the task-in-flight check failed. " +
+                "Refusing to swap without a clear answer.");
+            return false;
         }
     }
 
@@ -407,34 +562,12 @@ public sealed class AgentUpdateService(
     /// pre-exit failure leaves the current binary running (no exit).
     /// </summary>
     private async Task ApplyUpdateAsync(
-        string downloadPath, string archiveExt, string versionDir, string markerPath,
-        AgentUpdateConfig cfg, string currentVersion, AgentUpdateInfo info, CancellationToken ct)
+        string downloadPath, string installDir, string archiveExt, string versionDir,
+        string markerPath, AgentUpdateConfig cfg, string currentVersion,
+        AgentUpdateInfo info, CancellationToken ct)
     {
-        var currentExe = Environment.ProcessPath;
-        var installDir = string.IsNullOrEmpty(currentExe) ? null : Path.GetDirectoryName(currentExe);
-        if (string.IsNullOrEmpty(installDir))
-        {
-            logger.LogError("Cannot determine the agent install directory for auto-update.");
-            return;
-        }
-
-        // C6: refuse to swap unless THIS process is the agent's own apphost. When
-        // the agent is launched framework-dependent (`dotnet KrakenDeploy.Agent.dll`),
-        // Environment.ProcessPath is the dotnet muxer and installDir is the shared
-        // .NET runtime directory — a whole-directory swap would clobber the runtime.
-        // A self-contained agent (the only shape the update archive ships) always
-        // runs as its apphost, so this only blocks the unsupported muxer launch.
-        if (!IsAgentApphost(currentExe))
-        {
-            logger.LogError(
-                "Refusing self-upgrade: the running process '{Exe}' is not the agent apphost " +
-                "(framework-dependent / muxer launch?). Swapping '{Dir}' would target the wrong files.",
-                currentExe, installDir);
-            await ReportAsync(AgentUpdateOutcome.SwapFailed,
-                currentVersion, info.LatestVersion, "not running as the agent apphost", ct)
-                .ConfigureAwait(false);
-            return;
-        }
+        // installDir was resolved and validated by ResolveInstallDir BEFORE the machine
+        // gate was taken (F5) — a permanent refusal must not first freeze the box.
 
         // Extract to a fresh staging directory.
         var stagingDir = Path.Combine(versionDir, "staging");
@@ -614,6 +747,16 @@ public sealed class AgentUpdateService(
     /// Restores the backed-up previous version over the (unhealthy) new install and
     /// exits non-zero so the supervisor relaunches the restored binary. On rollback
     /// failure the marker is retained so the next boot retries.
+    /// <para>
+    /// F5 — this is the SECOND swap window, and it runs under the machine gate's
+    /// EXCLUSIVE side for the same reason as the forward swap: it replaces the whole
+    /// install directory and ends in <c>Environment.Exit</c>. Hardening only the
+    /// forward path would have left the rollback able to pull the directory out from
+    /// under a script that started in the window between a failed health check and this
+    /// call. Best-effort by design: the gate wait is short and a timeout does NOT
+    /// abandon the rollback — an unhealthy binary must be restored even if the box is
+    /// busy, so we proceed ungated rather than leave the agent running a bad build.
+    /// </para>
     /// </summary>
     private async Task RollBackAsync(
         AgentUpgradeMarker marker, string markerPath, string reason, CancellationToken ct)
@@ -622,7 +765,19 @@ public sealed class AgentUpdateService(
             "Rolling back self-upgrade to {To}: {Reason}. Restoring {From}.",
             marker.ToVersion, reason, marker.FromVersion);
 
+        var (gate, gateOutcome) = await AcquireSwapGateAsync(
+            executionGate, RollbackGateTimeout, ct).ConfigureAwait(false);
+        if (gateOutcome == SwapGate.Busy)
+        {
+            logger.LogWarning(
+                "Rolling back WITHOUT the machine execution gate — work on this machine " +
+                "did not finish within {Timeout}. Restoring an unhealthy binary takes " +
+                "precedence over waiting.", RollbackGateTimeout);
+        }
+
         string? rollbackError = null;
+        using (gate)
+        {
         try
         {
             SelfUpdateFileOps.RestoreFromBackup(
@@ -639,6 +794,7 @@ public sealed class AgentUpdateService(
             logger.LogCritical(ex,
                 "Rollback FAILED. Manual intervention may be required: restore '{Backup}' " +
                 "over '{Install}'.", marker.BackupDir, marker.InstallDir);
+        }
         }
 
         await ReportAsync(AgentUpdateOutcome.RolledBack,

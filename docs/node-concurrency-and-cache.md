@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 1.3 |
+| **Version** | 1.4 |
 | **Date** | 2026-07-29 |
 | **Authors** | Domagoj Jugović, Claude (Opus 4.8), Claude (Opus 5) |
 | **Status** | Approved |
@@ -21,9 +21,19 @@ concurrent access. No contract change; one new config key.
 > `AgentContract.CurrentVersion` 2 → 3 with no shape change. See "Agent: the
 > machine execution gate" and "The self-upgrade participates too".
 >
+> v1.4 (2026-07-29, F5 review follow-up): shared co-running is BOUNDED by
+> `Agent:MaxConcurrentSharedWork` (default 8) — the reader-writer rework had removed
+> the old hard cap of one with nothing in its place. The self-upgrade now asks the
+> SERVER whether a task is still assigned to this target before swapping (the gate's
+> unit is one wave, so an idle gate does not mean an idle plan), re-checks the
+> maintenance window after queueing, decides its permanent refusals BEFORE taking the
+> gate, reports a deferred swap, and puts the ROLLBACK swap under the write lock too.
+> `Agent:Update:*` durations are validated at startup and `SwapGateTimeout` now
+> defaults to 2 min so it stays below both `CheckInterval` and `Adhoc:MaxTotalDuration`.
+>
 > v1.2 (2026-07-25, F2-followup 3): the ad-hoc bound is now ONE
 > `Adhoc:MaxTotalDuration` covering queue wait **plus** execution, replacing the
-> queue-only `Adhoc:MaxQueueWait` — see "Ad-hoc scripts take the slot too".
+> queue-only `Adhoc:MaxQueueWait` — see "Ad-hoc scripts take the gate too".
 >
 > v1.1 (2026-07-25, F2): the agent's execution slot moved out of
 > `DeploymentExecutor` into the shared `MachineExecutionGate`, ad-hoc scripts
@@ -86,6 +96,20 @@ bounded wait that expires, or a cancel while queued, leaves the queue clean and 
 nothing — the classic hand-rolled-lock bug is a timed-out waiter still in the queue
 being "granted" a lease nobody then releases.
 
+Fairness has a consequence worth knowing when reading logs: **a queued writer blocks
+acquisition even with no holder present.** So "the machine was not available" does not
+imply "something was running" — it may have been the agent's own self-upgrade waiting
+its turn. The ad-hoc refusal message says exactly that, deliberately.
+
+**Shared co-running is bounded** by `Agent:MaxConcurrentSharedWork` (default 8). The
+pre-F5 primitive was a `SemaphoreSlim(1, 1)`, i.e. a hard cap of ONE unit of work per
+machine; reader-writer semantics removed that bound and nothing else replaced it — the
+ad-hoc path is shared-always, the agent's SignalR push handlers are detached with no
+limiter, and no server-side cap covers ad-hoc dispatch, so N concurrent approvals meant
+N PowerShell processes. Octopus's own reader-writer lock is uncapped, so this is a
+deliberate divergence, and a soft one: work beyond the cap QUEUES like any other
+waiter, so a pathological burst serializes rather than exhausting the box.
+
 The gate is only reachable because the agent's SignalR push handlers are
 **detached** (`ServerLinkHostedService` returns `Task.CompletedTask`, not the work
 task). The client awaits each client-method handler, so returning the work task
@@ -120,12 +144,44 @@ The swap window (extract + directory swap + `Environment.Exit`) now runs under t
 gate's EXCLUSIVE side, which every kind of work participates in. Because the gate is
 writer-fair, a *queued* updater already blocks new work from starting — that is the
 guarantee wanted, and precisely why the wait is **bounded** by
-`Agent:Update:SwapGateTimeout` (default 5 min): an unbounded one would let a wedged
+`Agent:Update:SwapGateTimeout` (default 2 min): an unbounded one would let a wedged
 holder stop the agent from accepting work for the rest of the process's life. On expiry
-nothing is swapped and the next tick retries. `IsExecuting` is kept purely as a cheap
-early-out, so the agent does not pay the block-new-work cost when a deployment is
-already known to be running. The lease is deliberately **not** released on the success
-path — the process exits holding it.
+nothing is swapped, the outcome is reported as `swap-deferred` so a machine that keeps
+deferring is visible server-side, and the next tick retries. `IsExecuting` is kept purely
+as a cheap early-out, so the agent does not pay the block-new-work cost when a deployment
+is already known to be running. The lease is deliberately **not** released on the success
+path — the process exits holding it. The **rollback** swap takes the same lock, with a
+short fixed wait that does *not* abandon on expiry: restoring a binary that failed its
+health gate outranks exclusivity.
+
+Holding the gate is **not sufficient on its own**, and this is the sharpest thing to
+understand about the updater. The gate's unit is one WAVE, so between two waves of a live
+multi-wave deployment the gate is free *and* the in-flight registry is empty — and a
+SERVER wave (a manual intervention, a `DeployRelease` cascade) can sit in that gap for
+minutes or hours. A swap there would `Environment.Exit(0)` into a half-applied box, and
+writer fairness makes it *win* that boundary deterministically once the check lands in a
+gap. So immediately before extracting, the agent asks the server
+`GET /api/agents/task-in-flight` — the only party that sees whole plans — and defers
+unless the answer is a clear "idle". **Fail-closed:** an unreachable server, a non-success
+status or an unparseable body all defer. Two other ordering rules follow from the same
+window: permanent refusals (not the apphost, no resolvable install dir) are decided
+BEFORE the gate is taken, because an agent that can never swap must not freeze the
+machine on every tick forever; and the maintenance window is re-checked AFTER the queue
+wait, because C6's invariant is that a swap happens inside the approved window, not
+merely that it was inside one when the tick began.
+
+`Agent:Update:*` durations are validated at startup (`AgentUpdateConfigValidator`,
+`ValidateOnStart`), mirroring `EngineOptionsValidator`. This is not ceremony:
+`SwapGateTimeout` is the bound that stops a wedged holder from starving the agent, and
+every malformed value defeats it — `"5"` binds as five DAYS, `"-00:00:00.001"` IS
+`Timeout.InfiniteTimeSpan` so the wait is never bounded at all, and `"00:00:00"` degrades
+the acquisition to a non-blocking probe. The validator also enforces
+`SwapGateTimeout < CheckInterval`, because at equal values (the original 5/5 pair)
+`PeriodicTimer` has a coalesced tick ready the instant the wait expires, so the updater
+re-queues a machine-blocking writer back-to-back for the whole window without ever
+completing a swap. The default is 2 min, which also keeps it below
+`Adhoc:MaxTotalDuration` so a script queued behind the updater is not guaranteed to lose
+its budget.
 
 ### Ad-hoc scripts take the gate too (F2/F5)
 
@@ -272,6 +328,15 @@ extractions → one complete dir, no temp survivors);
   wire says "this is a deployment" vs "this is a script". Mode comes only from the
   consent flags, so two mutually-consenting SHARED units co-run even if one is a
   full deployment.
+- Because a gate serves ONE target, every deployment through it carries the same
+  `AllowParallelTaskExecution`, so mutual consent between two *deployments* is
+  degenerate — the mixed-mode pairs that actually occur are ad-hoc-vs-deployment and
+  updater-vs-anything. Ad-hoc-vs-ad-hoc is the only pair F5 newly lets co-run on a
+  default box, and it includes **mutating vs mutating**: an ACCEPTED RISK, see
+  `docs/adhoc-actions.md` §2.
+- The updater's server-side idle check closes the wave-boundary hole for the SELF-UPGRADE
+  only. Other work can still slot between two waves of one plan (P5 accepts this for
+  ad-hoc); **F6** closes it generally, server-side at claim time.
 
 ## References
 

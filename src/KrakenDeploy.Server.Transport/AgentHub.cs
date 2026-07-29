@@ -305,6 +305,14 @@ public sealed class AgentHub(
         await ReconcileTerminalTasksForReconnectAsync(targetId.Value, Context.ConnectionId)
             .ConfigureAwait(false);
 
+        // F5 — the connection becomes DISPATCHABLE only here, past the wire-contract
+        // version check above. OnConnectedAsync had to add it to the registry before the
+        // agent could invoke anything, so until this line it is tracked-but-not-eligible.
+        // Without the split, a version-skewed agent could be handed work in the
+        // connect→register window — and permanently if its RegisterAsync invoke failed,
+        // since that is swallowed as retryable and only re-sent on the next reconnect.
+        registry.MarkRegistered(Context.ConnectionId);
+
         return new AgentRegistrationResult(Accepted: true, AgentContract.CurrentVersion);
     }
 

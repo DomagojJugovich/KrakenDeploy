@@ -183,7 +183,8 @@ public sealed class DeploymentExecutorCancelTests
         // opted into parallel execution, so both take the gate's SHARED side and
         // co-run. Mutual consent (locked decision P2) is what makes this legal.
         var link = new GateLink();
-        var executor = BuildExecutor(link);
+        using var gate = new MachineExecutionGate();
+        var executor = BuildExecutor(link, gate);
         var taskA = Guid.NewGuid();
         var taskB = Guid.NewGuid();
 
@@ -192,6 +193,8 @@ public sealed class DeploymentExecutorCancelTests
         await WaitUntilAsync(() => link.ExecutionStarted.Count == 1,
             "the first task must hold a shared lease — its execution-started report is "
             + "emitted right after acquisition, whereas IsExecuting flips at registration");
+        gate.ReaderCount.Should().Be(1, "the flagged plan takes the SHARED side");
+        gate.IsWriteHeld.Should().BeFalse();
 
         var runB = Task.Run(() => executor.ExecuteAsync(
             Plan(taskB, Guid.NewGuid(), allowParallel: true)));
@@ -217,7 +220,8 @@ public sealed class DeploymentExecutorCancelTests
         // exclusive holder excludes a shared waiter (Octopus ScriptIsolationMutex
         // parity — NoIsolation takes the READ side of the same lock).
         var link = new GateLink();
-        var executor = BuildExecutor(link);
+        using var gate = new MachineExecutionGate();
+        var executor = BuildExecutor(link, gate);
         var exclusive = Guid.NewGuid();
         var shared = Guid.NewGuid();
 
@@ -225,9 +229,18 @@ public sealed class DeploymentExecutorCancelTests
         await WaitUntilAsync(() => link.ExecutionStarted.Count == 1,
             "the exclusive task must hold the machine");
 
+        // Pin the MODES, not just the ordering. Exclusive-excludes-shared and
+        // shared-excludes-exclusive are symmetric, so an ordering-only assertion holds
+        // even if ModeFor is inverted — which is exactly the mutation this test is
+        // named after and must therefore kill.
+        gate.IsWriteHeld.Should().BeTrue("the unflagged plan takes the EXCLUSIVE side");
+        gate.ReaderCount.Should().Be(0);
+
         var runShared = Task.Run(() => executor.ExecuteAsync(
             Plan(shared, Guid.NewGuid(), allowParallel: true)));
-        await Task.Delay(300);
+        await WaitUntilAsync(() => gate.QueuedCount == 1,
+            "the parallel-flagged plan must be QUEUED on the gate — deterministic, "
+            + "unlike a fixed delay plus 'has not started yet'");
 
         link.ExecutionStarted.Should().HaveCount(1,
             "the parallel-flagged task is QUEUED behind the exclusive holder — it takes " +
@@ -431,13 +444,19 @@ public sealed class DeploymentExecutorCancelTests
     [Fact]
     public async Task Parallel_flag_still_refuses_to_run_two_attempts_of_the_same_task()
     {
-        // F2-followup 2. AllowParallelTaskExecution opts out of serializing against
-        // OTHER tasks; it must NOT opt out of B6's same-task guarantee. A stuck
-        // predecessor that ignores cancellation gets force-detached, and on a
-        // parallel-enabled target there is no machine slot keeping the two apart —
-        // so the new attempt must be ABANDONED, not started. Pre-fix the flag
-        // short-circuited before forceDetachedStuck was ever consulted, and both
-        // attempts ran over the same app pool / site path / services.
+        // F2-followup 2, restated for F5. AllowParallelTaskExecution opts out of
+        // serializing against OTHER tasks; it must NOT opt out of B6's same-task
+        // guarantee. A stuck predecessor that ignores cancellation gets force-detached,
+        // and the machine gate is then the only thing keeping the two apart — which it
+        // can only do if at least ONE of the pair is exclusive. Here BOTH attempts are
+        // shared, so the gate would hand the successor a second READ lease immediately
+        // and both would run over the same app pool / site path / services. The new
+        // attempt must therefore be ABANDONED, not started.
+        // NOTE the F5 reason differs from F2's: under F2 a flagged plan took NO lease
+        // (the flag was a bypass), so the refusal was "there is no slot to serialize
+        // against". Now the predecessor holds a real READ lease and the refusal is "the
+        // gate would admit both as readers". Same outcome, different mechanism — do not
+        // simplify this away on the strength of the old rationale.
         var link = new WedgeLink();
         var executor = new DeploymentExecutor(
             link,
@@ -460,7 +479,8 @@ public sealed class DeploymentExecutorCancelTests
         var oldRun = Task.Run(() => executor.ExecuteAsync(
             Plan(taskId, oldDispatch, allowParallel: true)));
         await WaitUntilAsync(() => executor.IsExecuting,
-            "the old attempt must be in flight (it holds no gate — it bypassed)");
+            "the old attempt must be in flight, holding a SHARED lease (F5: the flag is "
+            + "no longer a bypass, so it does hold one)");
 
         await executor.ExecuteAsync(Plan(taskId, newDispatch, allowParallel: true))
             .WaitAsync(TestTimeout);
@@ -470,10 +490,10 @@ public sealed class DeploymentExecutorCancelTests
         refusal.Dispatch.Should().Be(newDispatch);
         refusal.Success.Should().BeFalse();
         refusal.Error.Should().Contain("could not be serialized",
-            "the refusal must name the real reason — no machine slot exists on a "
-            + "parallel-enabled target — not the wedged-gate reason");
-        // The stuck predecessor legitimately reported one (it bypassed the gate and
-        // entered the body); the ABANDONED attempt must not, because that report sits
+            "the refusal must name the real reason — the gate would admit both attempts "
+            + "as readers — not the wedged-gate reason");
+        // The stuck predecessor legitimately reported one (it acquired its shared lease
+        // and entered the body); the ABANDONED attempt must not, because that report sits
         // inside the execution body it never reached.
         link.ExecutionStarted.Select(e => e.Dispatch).Should().Equal([oldDispatch],
             "only the predecessor executed — the second attempt was abandoned before "
@@ -483,7 +503,72 @@ public sealed class DeploymentExecutorCancelTests
         await oldRun.WaitAsync(TestTimeout);
     }
 
+    [Fact]
+    public async Task A_shared_retry_of_an_exclusive_stuck_attempt_escalates_rather_than_refusing()
+    {
+        // F5 — the refusal above must key on the PAIR of modes, not on the successor's
+        // mode alone. Here the predecessor took the EXCLUSIVE side (the flag was off
+        // when it was dispatched) and an operator then enabled parallel execution, so
+        // the retry arrives SHARED. The gate excludes a shared waiter from an exclusive
+        // holder perfectly well, so refusing outright would abandon an attempt that was
+        // never at risk — and, because the NEXT re-dispatch arrives with
+        // forceDetachedStuck false, would send it into the unbounded wait with no
+        // escalation at all. It must take the bounded wedged-gate path instead, which is
+        // distinguishable by its error text.
+        var link = new WedgeLink();
+        var executor = new DeploymentExecutor(
+            link,
+            new NullPackageSource(),
+            new NullArtifactSink(),
+            new StepPackageLoader(
+                new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance),
+            new MachineExecutionGate(),
+            Options.Create(new AgentConfig()),
+            NullLogger<DeploymentExecutor>.Instance)
+        {
+            SupersedeUnwindTimeout = TimeSpan.FromMilliseconds(150),
+            WedgedGateAcquireTimeout = TimeSpan.FromMilliseconds(150),
+        };
+
+        var taskId = Guid.NewGuid();
+        var oldDispatch = Guid.NewGuid();
+        var newDispatch = Guid.NewGuid();
+
+        // Predecessor: flag OFF → EXCLUSIVE, and stuck.
+        var oldRun = Task.Run(() => executor.ExecuteAsync(Plan(taskId, oldDispatch)));
+        await WaitUntilAsync(() => executor.IsExecuting,
+            "the old attempt must hold the EXCLUSIVE side");
+
+        // Retry: flag ON → SHARED.
+        await executor.ExecuteAsync(Plan(taskId, newDispatch, allowParallel: true))
+            .WaitAsync(TestTimeout);
+
+        var escalation = link.Completions.Should().ContainSingle().Subject;
+        escalation.Dispatch.Should().Be(newDispatch);
+        escalation.Success.Should().BeFalse();
+        escalation.Error.Should().Contain("wedged",
+            "an exclusive predecessor DOES exclude a shared successor, so this is the "
+            + "bounded wedged-gate escalation, not the 'could not be serialized' refusal");
+        escalation.Error.Should().NotContain("could not be serialized");
+
+        link.ReleaseStuck.Release();
+        await oldRun.WaitAsync(TestTimeout);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
+
+    /// <summary>Builds an executor over a caller-supplied gate, so a test can assert
+    /// which SIDE of it a plan took. Without that, mode assertions reduce to ordering
+    /// assertions, which hold under an inverted mapping too.</summary>
+    private static DeploymentExecutor BuildExecutor(GateLink link, MachineExecutionGate gate) => new(
+        link,
+        new NullPackageSource(),
+        new NullArtifactSink(),
+        new StepPackageLoader(
+            new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance),
+        gate,
+        Options.Create(new AgentConfig()),
+        NullLogger<DeploymentExecutor>.Instance);
 
     private static DeploymentExecutor BuildExecutor(GateLink link) => new(
         link,

@@ -78,9 +78,15 @@ public sealed class MultiAccountAgentTransportE2ETests(MultiAccountAgentTranspor
 
         // The host-derived account is recorded on the registry — this is exactly the
         // value the cross-account dispatch guard (DeploymentWorker / AdhocDispatcher)
-        // compares the dispatch account against.
-        registry.HasConnectionFor(targetId).Should().BeTrue();
+        // compares the dispatch account against. A non-null account proves Add ran with
+        // the host-derived value, which is what this test is about.
         registry.GetAccountForTarget(targetId).Should().Be(fixture.Alpha.AccountId);
+
+        // Deliberately NOT dispatchable: F5 gates eligibility on a PASSED RegisterAsync,
+        // and this raw SignalR connection never performs one, so its wire-contract
+        // version is unverified. Connected != dispatchable.
+        registry.HasConnectionFor(targetId).Should().BeFalse(
+            "eligibility requires MarkRegistered, which only a real RegisterAsync sets");
     }
 
     [Fact]

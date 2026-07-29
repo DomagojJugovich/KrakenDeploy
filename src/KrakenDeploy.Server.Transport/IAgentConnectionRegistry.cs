@@ -19,6 +19,21 @@ public interface IAgentConnectionRegistry
     void Add(string connectionId, Guid targetId, Guid accountId = default, Action? abort = null);
 
     /// <summary>
+    /// F5 — marks <paramref name="connectionId"/> as having PASSED <c>RegisterAsync</c>,
+    /// wire-contract version check included. Until this is called the connection is
+    /// tracked but NOT dispatchable: <see cref="GetConnectionId"/> and
+    /// <see cref="HasConnectionFor"/> both ignore it.
+    /// <para>
+    /// The split exists because <c>OnConnectedAsync</c> has to register the connection
+    /// before the agent can invoke anything, so "connected" and "version-verified" are
+    /// genuinely different states, and dispatch must key on the second. A no-op for a
+    /// connection that is no longer tracked, so a refusal path that already removed it
+    /// cannot resurrect it.
+    /// </para>
+    /// </summary>
+    void MarkRegistered(string connectionId);
+
+    /// <summary>
     /// Removes the connection and returns the associated target ID.
     /// Returns <c>false</c> if the connection was not tracked.
     /// <para>

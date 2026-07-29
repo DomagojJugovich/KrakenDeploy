@@ -99,7 +99,11 @@ public sealed class MachineExecutionGateSharingTests
         runner.Invocations.Should().Be(0, "the script MUST NOT run after the wait expired");
         var result = link.AdhocResults.Should().ContainSingle().Subject;
         result.ExitCode.Should().Be(-1);
-        result.AgentError.Should().Contain("held this machine for the whole");
+        result.AgentError.Should().Contain("did not become available within");
+        result.AgentError.Should().NotContain("held this machine",
+            "F5 made the gate writer-fair, so an acquisition can also be blocked by a " +
+            "merely QUEUED writer with no holder present — the message must not send " +
+            "the operator hunting for a task that was never there");
 
         // The refusal must not have released a slot it never held.
         link.ReleaseFirstCompletion.Release();
@@ -126,10 +130,20 @@ public sealed class MachineExecutionGateSharingTests
             "the deployment must hold the machine — its execution-started report is "
             + "emitted right after acquisition, whereas IsExecuting flips at registration");
 
+        // Pin the MODE, not just the ordering. Without this the test survives inverting
+        // ModeFor: exclusive-excludes-shared and shared-excludes-exclusive are
+        // symmetric, so "these two serialize" holds under either mapping and the
+        // assertion proves nothing about which side each one took.
+        gate.IsWriteHeld.Should().BeTrue(
+            "the unflagged deployment must hold the EXCLUSIVE side");
+        gate.ReaderCount.Should().Be(0);
+
         var adhocTask = Task.Run(() =>
             adhoc.HandleAsync(Command(Guid.NewGuid(), priv, allowParallel: true)));
 
-        await Task.Delay(300);
+        await WaitUntilAsync(() => gate.QueuedCount == 1,
+            "the shared script must be QUEUED on the gate — a deterministic signal, "
+            + "unlike 'has not started yet', which a slow thread pool also satisfies");
         runner.Invocations.Should().Be(0,
             "a SHARED ad-hoc script is still excluded by an EXCLUSIVE deployment");
         link.AdhocResults.Should().BeEmpty();
@@ -247,6 +261,21 @@ public sealed class MachineExecutionGateSharingTests
             "once the machine is idle the swap window opens");
         freeLease.Should().NotBeNull();
         freeLease!.Dispose();
+    }
+
+    [Fact]
+    public async Task The_updater_reports_stopping_when_the_gate_is_disposed()
+    {
+        // Distinguishing Stopping from Busy matters: Busy retries next tick and now
+        // reports swap-deferred to the server, whereas a shutdown must do neither.
+        var gate = new MachineExecutionGate();
+        gate.Dispose();
+
+        var (lease, outcome) = await AgentUpdateService.AcquireSwapGateAsync(
+            gate, TimeSpan.FromSeconds(5), default);
+
+        outcome.Should().Be(AgentUpdateService.SwapGate.Stopping);
+        lease.Should().BeNull();
     }
 
     [Fact]
