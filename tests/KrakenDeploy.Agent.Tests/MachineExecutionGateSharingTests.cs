@@ -10,6 +10,7 @@ using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Contracts.Adhoc;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -261,6 +262,33 @@ public sealed class MachineExecutionGateSharingTests
             "once the machine is idle the swap window opens");
         freeLease.Should().NotBeNull();
         freeLease!.Dispose();
+    }
+
+    [Fact]
+    public void The_gate_is_a_singleton_and_takes_its_cap_from_configuration()
+    {
+        // Two claims Program.cs relies on and nothing verified. The lifetime matters for
+        // the same reason as E5's DeploymentExecutor test — a Transient registration hands
+        // each of the three consumers its OWN gate, so deployments, ad-hoc scripts and the
+        // self-upgrade stop excluding each other while every existing test (which wires one
+        // instance by hand) stays green. The cap binding matters because a typo or a
+        // reordering silently ships the default while the operator believes their value
+        // applies. Program.cs's comment previously cited a test that never touched DI.
+        var services = new ServiceCollection();
+        services.AddSingleton(Options.Create(new AgentConfig { MaxConcurrentSharedWork = 3 }));
+        services.AddSingleton(sp => new MachineExecutionGate
+        {
+            MaxSharedHolders = sp.GetRequiredService<IOptions<AgentConfig>>()
+                .Value.MaxConcurrentSharedWork,
+        });
+
+        using var sp = services.BuildServiceProvider();
+        var first = sp.GetRequiredService<MachineExecutionGate>();
+        var second = sp.GetRequiredService<MachineExecutionGate>();
+
+        second.Should().BeSameAs(first,
+            "a non-singleton gate silently disables serialization between the three consumers");
+        first.MaxSharedHolders.Should().Be(3, "Agent:MaxConcurrentSharedWork must reach the gate");
     }
 
     [Fact]

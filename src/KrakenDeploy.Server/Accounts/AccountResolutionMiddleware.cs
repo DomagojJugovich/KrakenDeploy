@@ -96,14 +96,17 @@ public sealed class AccountResolutionMiddleware(
     /// agent hub, the gRPC delivery services (proto package <c>krakendeploy.v1</c>),
     /// anonymous agent enrollment, and agent auto-update <c>update-info</c> (which reads
     /// the per-target <c>AutoUpdateEnabled</c> flag from the tenant DB, so it too needs a
-    /// resolved account). Deliberately EXCLUDES the platform-global binary download
-    /// (<c>/api/agents/download</c>), which serves shared binaries and touches no tenant
-    /// DB. New gRPC packages / tenant-scoped agent routes must be reviewed here.
+    /// resolved account), and agent auto-update <c>task-in-flight</c> (F5 — it queries the
+    /// tenant DB for non-terminal tasks assigned to the calling target). Deliberately
+    /// EXCLUDES the platform-global binary download (<c>/api/agents/download</c>), which
+    /// serves shared binaries and touches no tenant DB. New gRPC packages / tenant-scoped
+    /// agent routes must be reviewed here.
     /// </summary>
     private static bool IsTenantScopedAgentPath(PathString path) =>
         path.StartsWithSegments("/hubs/agent", StringComparison.OrdinalIgnoreCase)
         || path.StartsWithSegments("/api/agents/register", StringComparison.OrdinalIgnoreCase)
         || path.StartsWithSegments("/api/agents/update-info", StringComparison.OrdinalIgnoreCase)
+        || path.StartsWithSegments("/api/agents/task-in-flight", StringComparison.OrdinalIgnoreCase)
         || (path.HasValue
             && path.Value.StartsWith("/krakendeploy.v1.", StringComparison.OrdinalIgnoreCase));
 

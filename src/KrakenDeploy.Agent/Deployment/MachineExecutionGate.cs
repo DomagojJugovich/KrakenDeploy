@@ -76,14 +76,27 @@ public sealed class MachineExecutionGate : IDisposable
     /// waiter rather than being refused, so the only visible effect is that a
     /// pathological burst serializes instead of exhausting the box.
     /// </summary>
-    /// <remarks>Floored at 1: a zero or negative cap would make every shared
-    /// acquisition permanently unsatisfiable, i.e. a config typo would deadlock the
-    /// whole ad-hoc path rather than merely narrow it.</remarks>
+    /// <remarks>
+    /// CLAMPED to <c>[1, <see cref="MaxAllowedSharedHolders"/>]</c> rather than trusted.
+    /// A zero or negative cap would make every shared acquisition permanently
+    /// unsatisfiable — a config typo deadlocking the whole ad-hoc path rather than
+    /// narrowing it. An absurdly LARGE one is the mirror-image mistake and was the
+    /// dangerous direction: it silently reinstates the unbounded fan-out this cap exists
+    /// to prevent, so `9999` would put 9999 PowerShell processes on one target while a
+    /// too-long check interval merely refuses to boot. Both ends now clamp with a log-free
+    /// guarantee, and the config layer warns.
+    /// </remarks>
     public int MaxSharedHolders
     {
         get => _maxSharedHolders;
-        init => _maxSharedHolders = Math.Max(1, value);
+        init => _maxSharedHolders = Math.Clamp(value, 1, MaxAllowedSharedHolders);
     }
+
+    /// <summary>
+    /// Hard ceiling on co-running shared work. Well above any realistic number of
+    /// simultaneous scripts on one box, and far below a fork bomb.
+    /// </summary>
+    internal const int MaxAllowedSharedHolders = 64;
 
     private readonly int _maxSharedHolders = DefaultMaxSharedHolders;
 
@@ -124,6 +137,24 @@ public sealed class MachineExecutionGate : IDisposable
     {
         get { lock (_sync) { return _queue.Count; } }
     }
+
+    /// <summary>
+    /// Whether this gate would admit two holders in <paramref name="first"/> and
+    /// <paramref name="second"/> mode AT THE SAME TIME, on an otherwise empty gate.
+    /// A pure predicate over the admission rule — it reads no live state.
+    /// <para>
+    /// Exists so callers that must reason about co-running (notably
+    /// <see cref="DeploymentExecutor"/>'s refusal to run two attempts of ONE task) ask the
+    /// gate instead of restating its rule. Mode compatibility is no longer the whole rule:
+    /// <see cref="MaxSharedHolders"/> can exclude two SHARED holders as well, so a caller
+    /// that hardcoded "both shared means both admitted" would be wrong on any box
+    /// configured with a cap of 1.
+    /// </para>
+    /// </summary>
+    public bool WouldAdmitConcurrently(Mode first, Mode second)
+        => first == Mode.Shared
+           && second == Mode.Shared
+           && MaxSharedHolders >= 2;
 
     /// <summary>
     /// Non-blocking probe + take. Returns the lease, or <c>null</c> when the gate
@@ -215,32 +246,33 @@ public sealed class MachineExecutionGate : IDisposable
                 expiry.CancelAfter(timeout);
             }
 
-            // The callback only COMPLETES the waiter; leaving the queue happens below
-            // under _sync, where it is ordered against a racing grant. Disposing the
-            // registration before awaiting the lock keeps the callback out of it.
+            // The callback stamps the REASON before completing the waiter, so the
+            // continuation below always observes a settled reason (see Waiter.Reason);
+            // leaving the queue happens under _sync, ordered against a racing grant.
             using var registration = expiry.Token.Register(
-                static state => ((Waiter)state!).Tcs.TrySetResult(false), waiter);
+                static state =>
+                {
+                    var w = (Waiter)state!;
+                    w.ClaimGiveUpReason(GiveUpReason.Expired);
+                    w.Tcs.TrySetResult(false);
+                },
+                waiter);
 
             granted = await waiter.Tcs.Task.ConfigureAwait(false);
         }
         catch
         {
-            // Defence in depth, deliberately unreachable today. A waiter left in the
-            // queue with an uncompleted TCS is FATAL: DrainNoLock would later dequeue
-            // it, take the slot on its behalf, succeed at TrySetResult(true) because
-            // nobody had completed it, then find no continuation to hand the lease to.
-            // The gate would be held by NOBODY, forever — an Exclusive phantom wedges
-            // every later deployment and ad-hoc script behind the unbounded wait, a
-            // Shared one makes Exclusive permanently ungrantable, and neither survives
-            // without restarting the agent.
-            // Nothing between the enqueue and the await currently throws: the timeout is
-            // validated and clamped BEFORE the enqueue, and a token whose
-            // CancellationTokenSource has been disposed is verified (.NET 10) NOT to
-            // throw from CreateLinkedTokenSource, CancelAfter or Register — it simply
-            // never fires. So this catch exists for the next edit, not for today: any
-            // statement added in this window inherits an unrecoverable failure mode,
-            // and that is too sharp an edge to leave unguarded.
-            LeaveQueue(waiter);
+            // A waiter left in the queue with an uncompleted TCS is FATAL: DrainNoLock
+            // would later dequeue it, take the slot on its behalf, succeed at
+            // TrySetResult(true) because nobody had completed it, then find no
+            // continuation to hand the lease to. The gate would be held by NOBODY,
+            // forever — an Exclusive phantom wedges every later deployment and ad-hoc
+            // script behind the unbounded wait, a Shared one makes Exclusive permanently
+            // ungrantable, and neither survives without restarting the agent.
+            // Dequeueing is NOT sufficient: by the time we get here the waiter may
+            // ALREADY have been granted, in which case its Node is null and the slot is
+            // taken on our behalf. So claim it and release what we own.
+            AbandonAfterThrow(waiter, mode);
             throw;
         }
 
@@ -266,14 +298,43 @@ public sealed class MachineExecutionGate : IDisposable
         // cancelled wants OperationCanceledException rather than a null "expired".
         ct.ThrowIfCancellationRequested();
 
-        // Disposal is only the reason when the waiter was still QUEUED at the moment
-        // Dispose() ran — Dispose() nulls Node for everything it strands, so a waiter
-        // whose bounded wait had ALREADY expired keeps Node null for its own reason and
-        // must still report expiry. Distinguishing them matters: relabelling a genuine
-        // expiry as a disposal skips the callers' escalation paths (the wedged-gate
-        // report in DeploymentExecutor, SwapGate.Busy in AgentUpdateService).
-        ObjectDisposedException.ThrowIf(waiter.StrandedByDispose, this);
+        // Whoever stamped the reason FIRST owns it, and always stamped it before
+        // completing the TCS — so this read is settled and truthful even when disposal
+        // and expiry race. It must be: relabelling a genuine expiry as a disposal skips
+        // the callers' escalation paths (the wedged-gate report in DeploymentExecutor,
+        // SwapGate.Busy — and hence the swap-deferred report — in AgentUpdateService),
+        // and relabelling a disposal as an expiry reports a wedged agent during a clean
+        // shutdown.
+        ObjectDisposedException.ThrowIf(waiter.Reason == GiveUpReason.Disposed, this);
         return null; // the bounded wait expired
+    }
+
+    /// <summary>
+    /// Unwinds a waiter when something between its enqueue and its await threw. Claims
+    /// the waiter first: if we win the race the gate never granted it and dequeueing is
+    /// enough, but if we LOSE to a grant we now own a lease no <see cref="Releaser"/>
+    /// will ever dispose, and must give the slot back by hand. Losing to the expiry
+    /// callback or to <see cref="Dispose"/> means nothing is held, so the queue exit is
+    /// all that is left to do.
+    /// </summary>
+    private void AbandonAfterThrow(Waiter waiter, Mode mode)
+    {
+        waiter.ClaimGiveUpReason(GiveUpReason.Abandoned);
+        if (waiter.Tcs.TrySetResult(false))
+        {
+            LeaveQueue(waiter);
+            return;
+        }
+
+        // Someone else completed it. Only a GRANT leaves state to undo.
+        if (waiter.Tcs.Task.IsCompletedSuccessfully && waiter.Tcs.Task.Result)
+        {
+            Release(mode);
+        }
+        else
+        {
+            LeaveQueue(waiter);
+        }
     }
 
     /// <summary>
@@ -377,8 +438,19 @@ public sealed class MachineExecutionGate : IDisposable
         }
     }
 
-    private void Release(Mode mode)
+    private void Release(Mode mode) => Release(mode, out _);
+
+    /// <summary>
+    /// Gives the mode's slot back and hands the gate on.
+    /// <paramref name="slotReturned"/> is set the instant the slot is actually back, so
+    /// a caller unwinding an exception can tell whether it still owns anything — the
+    /// distinction matters because <see cref="ReleaseNoLock"/> validates BEFORE it
+    /// mutates (so a throw there means nothing changed) while anything after it throws
+    /// with the slot already returned.
+    /// </summary>
+    private void Release(Mode mode, out bool slotReturned)
     {
+        slotReturned = false;
         lock (_sync)
         {
             // After disposal the accounting no longer matters (nothing can be granted
@@ -388,9 +460,11 @@ public sealed class MachineExecutionGate : IDisposable
             // abandoned, which would otherwise trip ReleaseNoLock's invariant throw.
             if (_disposed)
             {
+                slotReturned = true;
                 return;
             }
             ReleaseNoLock(mode);
+            slotReturned = true;
             DrainNoLock();
         }
     }
@@ -425,7 +499,10 @@ public sealed class MachineExecutionGate : IDisposable
                 foreach (var waiter in stranded)
                 {
                     waiter.Node = null;
-                    waiter.StrandedByDispose = true;
+                    // Stamp BEFORE completing (below), and first-writer-wins, so a
+                    // waiter whose bounded wait had already lapsed keeps "Expired" and
+                    // is not relabelled a disposal.
+                    waiter.ClaimGiveUpReason(GiveUpReason.Disposed);
                 }
             }
         }
@@ -455,12 +532,48 @@ public sealed class MachineExecutionGate : IDisposable
         /// dequeued. Read and written under <c>_sync</c> only.</summary>
         public LinkedListNode<Waiter>? Node { get; set; }
 
-        /// <summary>Set by <see cref="Dispose"/> when it strands this waiter, so the
-        /// waiter reports disposal rather than expiry. Written and read under
-        /// <c>_sync</c> only — a plain <c>_disposed</c> check could not tell the two
-        /// apart, because a waiter whose bounded wait expired FIRST also unwinds after
-        /// disposal has been observed.</summary>
-        public bool StrandedByDispose { get; set; }
+        private int _reason = (int)GiveUpReason.None;
+
+        /// <summary>
+        /// Why this waiter stopped waiting, or <see cref="GiveUpReason.None"/> while it
+        /// is still waiting or was granted.
+        /// </summary>
+        public GiveUpReason Reason => (GiveUpReason)Volatile.Read(ref _reason);
+
+        /// <summary>
+        /// First-writer-wins stamp of the give-up reason. EVERY path that completes this
+        /// waiter with <c>false</c> must call this BEFORE <c>Tcs.TrySetResult(false)</c>,
+        /// which is what makes <see cref="Reason"/> settled by the time the awaiting
+        /// continuation runs — the continuation is only scheduled by that completion.
+        /// <para>
+        /// First-writer-wins is also the correct SEMANTIC, not just a tie-break: if the
+        /// bounded wait lapsed before disposal reached the waiter, the wait genuinely
+        /// expired on its own terms and must be reported as expiry even though disposal
+        /// happens to win the TCS race. An earlier cut inferred the reason from a bool
+        /// set inside <c>Dispose</c>, which mislabelled exactly that case, because the
+        /// expiry callback deliberately leaves the waiter queued for the continuation to
+        /// dequeue.
+        /// </para>
+        /// </summary>
+        public void ClaimGiveUpReason(GiveUpReason reason)
+            => Interlocked.CompareExchange(
+                ref _reason, (int)reason, (int)GiveUpReason.None);
+    }
+
+    /// <summary>Why a waiter stopped waiting without being granted.</summary>
+    private enum GiveUpReason
+    {
+        /// <summary>Still waiting, or granted.</summary>
+        None = 0,
+
+        /// <summary>The bounded wait lapsed, or the caller's token fired.</summary>
+        Expired,
+
+        /// <summary>The gate was disposed while this waiter was queued.</summary>
+        Disposed,
+
+        /// <summary>Something threw between the enqueue and the await.</summary>
+        Abandoned,
     }
 
     /// <summary>
@@ -490,19 +603,27 @@ public sealed class MachineExecutionGate : IDisposable
                 return; // already released — idempotent by contract
             }
 
+            var slotReturned = false;
             try
             {
-                _gate.Release(Mode);
+                _gate.Release(Mode, out slotReturned);
             }
             catch
             {
-                // Restore the flag so the slot can still be handed back by a later
-                // Dispose. Marking the lease consumed BEFORE the release succeeded
-                // would make a throwing release permanent: the slot is never returned
-                // and the idempotency guard turns every retry into a no-op, so the gate
-                // silently loses a reader slot (or stays write-held) for the life of
-                // the process.
-                Interlocked.Exchange(ref _released, 0);
+                // Re-arm ONLY when the slot genuinely did not go back, so a later
+                // Dispose can retry. Marking the lease consumed before a failed release
+                // would make that failure permanent — the slot is never returned and the
+                // idempotency guard turns every retry into a no-op, so the gate silently
+                // loses a reader slot (or stays write-held) for the process's life.
+                // Re-arming UNCONDITIONALLY is the opposite error and worse: if the slot
+                // was already back and the throw came from the hand-off, a second
+                // Dispose would release it TWICE, under-counting a live reader until an
+                // exclusive writer is admitted beside it — the whole-directory swap
+                // running under a live script, which is the clash P8 exists to prevent.
+                if (!slotReturned)
+                {
+                    Interlocked.Exchange(ref _released, 0);
+                }
                 throw;
             }
         }

@@ -34,6 +34,16 @@ public interface IAgentConnectionRegistry
     void MarkRegistered(string connectionId);
 
     /// <summary>
+    /// F5 — whether <paramref name="targetId"/>'s connection has passed
+    /// <c>RegisterAsync</c>, i.e. whether <see cref="GetConnectionId"/> will return it.
+    /// Distinct from <see cref="HasConnectionFor"/>, which answers liveness. Exists so
+    /// the hub can detect the pathological "connected, tracked, but never registered"
+    /// state and abort the connection rather than leave the target permanently
+    /// undispatchable while it heartbeats Online.
+    /// </summary>
+    bool IsRegistered(Guid targetId);
+
+    /// <summary>
     /// Removes the connection and returns the associated target ID.
     /// Returns <c>false</c> if the connection was not tracked.
     /// <para>

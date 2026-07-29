@@ -165,6 +165,36 @@ public sealed class AgentHub(
 
     public async Task<AgentRegistrationResult> RegisterAsync(AgentRegistrationRequest request)
     {
+        try
+        {
+            return await RegisterCoreAsync(request).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // F5 — a connection that never reaches MarkRegistered is tracked but NOT
+            // dispatchable, and the agent will not retry: its own supervision loop
+            // classifies a hub-method throw as "sent or retryable" and re-sends only on
+            // the NEXT reconnect, which never comes because the link is still healthy.
+            // The target would therefore sit Online, heartbeating, with every deployment
+            // dropping "Target agent offline at dispatch time." and every operator cancel
+            // silently discarded — permanently, and invisibly. The E4 heartbeat backstop
+            // cannot repair it either: Reaffirm restores the target mapping and has no
+            // knowledge of registration.
+            // So force the retry the agent cannot ask for: abort the connection. The
+            // agent's reconnect policy re-establishes it and re-sends RegisterAsync.
+            logger.LogError(ex,
+                "Agent registration failed for connection {ConnectionId}; aborting the " +
+                "connection so the agent reconnects and re-registers. Leaving it open " +
+                "would keep the target undispatchable while it appears Online.",
+                Context.ConnectionId);
+            registry.TryRemove(Context.ConnectionId, out _);
+            Context.Abort();
+            throw;
+        }
+    }
+
+    private async Task<AgentRegistrationResult> RegisterCoreAsync(AgentRegistrationRequest request)
+    {
         ArgumentNullException.ThrowIfNull(request);
 
         var targetId = GetTargetId();
@@ -302,16 +332,22 @@ public sealed class AgentHub(
         // the push is issued before we return and no detached task lingers, which
         // is safe: the server→client cancel send does not block on the agent's
         // pending RegisterAsync round-trip.
+        // F5 — the connection becomes DISPATCHABLE here, past the wire-contract version
+        // check above. OnConnectedAsync had to add it to the registry before the agent
+        // could invoke anything, so until this line it is tracked-but-not-eligible.
+        // Without the split, a version-skewed agent could be handed work in the
+        // connect→register window, and would read AllowParallelTaskExecution = true as
+        // "no machine gate at all".
+        // Placed BEFORE the reconcile below on purpose: everything eligibility depends on
+        // (the version check and its SaveChanges) is already done, whereas the reconcile
+        // is a best-effort side-quest with a query and up to 100 pushes. Marking after it
+        // made the connect→register window scale with fleet size — long enough for the
+        // hub's 30 s offline grace to flap a healthy target — and let a throw in a path
+        // outside E7's own try/catch skip eligibility altogether.
+        registry.MarkRegistered(Context.ConnectionId);
+
         await ReconcileTerminalTasksForReconnectAsync(targetId.Value, Context.ConnectionId)
             .ConfigureAwait(false);
-
-        // F5 — the connection becomes DISPATCHABLE only here, past the wire-contract
-        // version check above. OnConnectedAsync had to add it to the registry before the
-        // agent could invoke anything, so until this line it is tracked-but-not-eligible.
-        // Without the split, a version-skewed agent could be handed work in the
-        // connect→register window — and permanently if its RegisterAsync invoke failed,
-        // since that is swallowed as retryable and only re-sent on the next reconnect.
-        registry.MarkRegistered(Context.ConnectionId);
 
         return new AgentRegistrationResult(Accepted: true, AgentContract.CurrentVersion);
     }

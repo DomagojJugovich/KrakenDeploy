@@ -295,7 +295,9 @@ Two properties to be aware of:
   and the self-upgrade swap window (F5) all take the same gate. Lease scope differs by
   holder: a dispatched sub-plan holds it for one WAVE (see §9), an ad-hoc script for one
   script run bounded by `Adhoc:MaxTotalDuration`, and the self-upgrade holds it until the
-  process exits. EXCLUSIVE is the default; SHARED when the work
+  process exits — on the paths that DO exit (the forward swap's success path and the
+  rollback); a forward swap that fails a pre-exit check releases it and the agent keeps
+  running. EXCLUSIVE is the default; SHARED when the work
   declares `AllowParallelTaskExecution`, and co-running requires that no writer is
   present in either direction — so consent is MUTUAL and the flag is a downgrade, not
   a bypass (Octopus `ScriptIsolationMutex` parity: their `NoIsolation` takes the READ

@@ -69,6 +69,15 @@ public sealed class AgentUpdateService(
     /// </summary>
     private static readonly TimeSpan RollbackGateTimeout = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// F5 — bound on the pre-swap "does the server still have work for me?" call. Short
+    /// and deliberately not configurable: it runs while the EXCLUSIVE machine lease is
+    /// HELD, so it is whole-machine blocking time, and the request is one indexed
+    /// existence check against a server this agent is already connected to. Anything
+    /// slower is a sick path, and the right answer to a sick path is to defer.
+    /// </summary>
+    private static readonly TimeSpan TaskInFlightCheckTimeout = TimeSpan.FromSeconds(10);
+
     private readonly HttpClient _http = new();
 
     /// <summary>Outcome of evaluating an update the server offered.</summary>
@@ -264,11 +273,12 @@ public sealed class AgentUpdateService(
         // 5. Deterministic refusals BEFORE the gate. These outcomes do not depend on
         //    what is running, so acquiring the machine gate first would be pure harm:
         //    a queued EXCLUSIVE writer blocks every new deployment and ad-hoc script on
-        //    this box while it waits, and an agent that can NEVER swap (the
-        //    framework-dependent `dotnet KrakenDeploy.Agent.dll` launch that
-        //    Dockerfile.agent and scripts/run-agent.ps1 both use, so IsAgentApphost is
-        //    permanently false) would otherwise freeze the machine on every tick of
-        //    every maintenance window, forever, for an update it will always refuse.
+        //    this box while it waits, and an agent that can NEVER swap would otherwise
+        //    freeze the machine on every tick of every maintenance window, forever, for
+        //    an update it will always refuse. The live case is the CONTAINER image:
+        //    Dockerfile.agent's ENTRYPOINT is `dotnet KrakenDeploy.Agent.dll`, a muxer
+        //    launch, so IsAgentApphost is permanently false there. (`dotnet run` is NOT
+        //    such a case — it starts the apphost, so ProcessPath is the .exe.)
         var installDir = ResolveInstallDir();
         if (installDir is null)
         {
@@ -337,6 +347,15 @@ public sealed class AgentUpdateService(
             //    Fail-closed — an unreachable server defers the swap.
             if (!await ServerReportsIdleAsync(ct).ConfigureAwait(false))
             {
+                // Reported, not just logged. This is the refusal that can be PERMANENT —
+                // a task parked Queued (scheduled for later, held by maintenance mode, or
+                // deferred by F1 serialization) or parked at PendingOfflineResult keeps
+                // the answer at "in flight" indefinitely — so it is the one an operator
+                // most needs to see. Agent logs are local-only.
+                await ReportAsync(AgentUpdateOutcome.SwapDeferred, currentVersion,
+                    info.LatestVersion,
+                    "the server still has a non-terminal task assigned to this target", ct)
+                    .ConfigureAwait(false);
                 return;
             }
 
@@ -394,13 +413,25 @@ public sealed class AgentUpdateService(
             return false;
         }
 
+        // BOUNDED, and tightly. This runs while the EXCLUSIVE machine lease is HELD, so
+        // every second here is a second in which no deployment, runbook wave or ad-hoc
+        // script can start on this box. The default HttpClient timeout is 100 s, which a
+        // server that accepts the connection and then stalls (overloaded, mid-restart, or
+        // a proxy rule that passes /agenthub but not /api/agents/*) would spend blocking
+        // the machine on every tick — a cost none of the validated knobs bound, since
+        // SwapGateTimeout bounds only the WAIT for the gate. The check cannot move before
+        // the gate without reopening the wave-boundary race it exists to close, so it is
+        // bounded instead.
+        using var callTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        callTimeout.CancelAfter(TaskInFlightCheckTimeout);
+
         try
         {
             var url = $"{identity.ServerUrl.TrimEnd('/')}/api/agents/task-in-flight";
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", identity.AgentToken);
 
-            using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+            using var resp = await _http.SendAsync(req, callTimeout.Token).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
                 logger.LogInformation(
@@ -410,14 +441,22 @@ public sealed class AgentUpdateService(
             }
 
             var answer = await resp.Content
-                .ReadFromJsonAsync<AgentTaskInFlightResponse>(ct).ConfigureAwait(false);
-            if (answer is null)
+                .ReadFromJsonAsync<AgentTaskInFlightResponse>(callTimeout.Token)
+                .ConfigureAwait(false);
+
+            // A missing or null InFlight is NOT "idle". A positional record with a
+            // non-nullable bool bound an absent property to false, so a 200 from a proxy
+            // or gateway carrying {} or a JSON error envelope read as a clear "idle" and
+            // this fail-closed check failed OPEN — swapping and exiting mid-plan.
+            if (answer?.InFlight is not { } inFlight)
             {
                 logger.LogInformation(
-                    "Deferring agent update swap — the task-in-flight check returned no body.");
+                    "Deferring agent update swap — the task-in-flight check returned no " +
+                    "usable answer (empty body, or a response that did not come from this " +
+                    "server). Treating that as work in flight.");
                 return false;
             }
-            if (answer.InFlight)
+            if (inFlight)
             {
                 logger.LogInformation(
                     "Deferring agent update swap — the server still has work for this " +
@@ -427,6 +466,15 @@ public sealed class AgentUpdateService(
             }
 
             return true;
+        }
+        catch (OperationCanceledException) when (
+            !ct.IsCancellationRequested && callTimeout.IsCancellationRequested)
+        {
+            logger.LogInformation(
+                "Deferring agent update swap — the task-in-flight check did not answer " +
+                "within {Timeout}. Refusing to swap without a clear answer.",
+                TaskInFlightCheckTimeout);
+            return false;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -476,8 +524,14 @@ public sealed class AgentUpdateService(
                 .ConfigureAwait(false);
             return lease is null ? (null, SwapGate.Busy) : (lease, SwapGate.Acquired);
         }
-        catch (ObjectDisposedException)
+        catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
         {
+            // Both mean "no lease, and not because the machine is busy". OCE is the
+            // REACHABLE one: AcquireCoreAsync checks the token before it enqueues, so a
+            // host that is already stopping throws immediately. Letting it escape made
+            // the caller's decision for it — and for RollBackAsync that meant skipping
+            // RestoreFromBackup entirely and leaving the agent on a binary that had
+            // failed its health gate, the exact opposite of that method's contract.
             return (null, SwapGate.Stopping);
         }
     }
@@ -775,9 +829,14 @@ public sealed class AgentUpdateService(
                 "precedence over waiting.", RollbackGateTimeout);
         }
 
+        // The lease is deliberately NOT scoped to the restore alone: it is held to the
+        // process exit, exactly as the forward swap holds it. Releasing after
+        // RestoreFromBackup would hand the machine to a queued deployment or ad-hoc
+        // script that then starts extracting, stopping app pools and spawning pwsh
+        // against a directory whose assemblies have just been replaced — and be
+        // hard-killed mid-step (and its process tree orphaned) by the Exit below.
+        // No `using`, therefore, and no release on any path here.
         string? rollbackError = null;
-        using (gate)
-        {
         try
         {
             SelfUpdateFileOps.RestoreFromBackup(
@@ -795,14 +854,18 @@ public sealed class AgentUpdateService(
                 "Rollback FAILED. Manual intervention may be required: restore '{Backup}' " +
                 "over '{Install}'.", marker.BackupDir, marker.InstallDir);
         }
-        }
 
+        // CancellationToken.None: the report must outlive a stopping host, and the exit
+        // below happens either way — a cancelled report would leave the server with no
+        // record of the rollback at all.
         await ReportAsync(AgentUpdateOutcome.RolledBack,
             marker.FromVersion, marker.ToVersion,
             rollbackError is null ? reason : $"rollback FAILED: {rollbackError}",
-            ct).ConfigureAwait(false);
+            CancellationToken.None).ConfigureAwait(false);
 
-        // Exit so the supervisor relaunches the (restored) previous binary.
+        // Exit so the supervisor relaunches the (restored) previous binary. The lease
+        // (when we got one) dies with the process, undisposed by design — see above.
+        _ = gate;
         await Task.Delay(500, CancellationToken.None).ConfigureAwait(false);
         Environment.Exit(70); // non-zero: this run failed its health gate
     }

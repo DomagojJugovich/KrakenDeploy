@@ -181,10 +181,26 @@ the explicit refusal instead of a silent protocol mismatch.
 flight: cancel / duplicate / supersede / unknown), `ScriptRunnerKillTests`
 (REAL PowerShell process publishes its PID; cancellation must terminate it),
 `AgentHubRegisterTests` (contract refusal: result + registry removal + Offline
-+ audit), `AgentHubOwnershipTests` (retired-dispatch log drop; negative
++ audit; and F5's "a v2 agent is refused"), `AgentConnectionRegistryReconnectTests`
+(F5 dispatch eligibility: connected-but-unregistered is not dispatchable while
+liveness stays true; a removed connection cannot be marked; re-adding starts
+unregistered), `AgentHubOwnershipTests` (retired-dispatch log drop; negative
 stepIndex reject), `OrchestratorCancellationTests` (cancel pushes to connected
 agents, skips offline ones), `RunbookRunCancelTests` (flip + push, terminal
 refusal, unknown id).
+
+## Document history
+
+Distinct from the wire-contract version table above — these are revisions of this
+DOCUMENT, and conflating the two axes is exactly the trap the operator callout warns
+about.
+
+| Version | Date | Change |
+|---|---|---|
+| 1.3 | 2026-07-29 | F5 review follow-up: amended the v3 row (the REST additions it also covers), added the OPERATOR ACTION callout about bumping `version.json` in the same change, and added the "Dispatch eligibility (F5)" section. |
+| 1.2 | 2026-07-29 | F5: added the v3 contract row and the "why a meaning change bumps the version" rationale. |
+| 1.1 | 2026-07-25 | F2: added the v2 contract row. |
+| 1.0 | — | Initial B6 freeze pass. |
 
 ## References
 

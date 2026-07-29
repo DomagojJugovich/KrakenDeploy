@@ -148,13 +148,21 @@ public sealed record AgentUpdateStatusReport(
 /// runbook run, of any wave) is assigned to this target. <c>Queued</c> counts:
 /// a task that has not been claimed yet can be dispatched here at any moment, and
 /// a swap started now would race its first wave.
+/// <para>
+/// NULLABLE on purpose. As a non-nullable <c>bool</c> on a positional record, an
+/// absent <c>inFlight</c> property bound to <c>default</c> — so any HTTP 200 whose
+/// body did not come from this server (a reverse proxy or auth gateway returning
+/// <c>{}</c> or a JSON error envelope) deserialized to "idle" and the agent's
+/// fail-CLOSED check silently failed OPEN, swapping mid-plan. <c>null</c> now means
+/// "no answer", which the agent treats as in-flight.
+/// </para>
 /// </param>
 /// <param name="Detail">
 /// Short, non-sensitive description for the agent's log (e.g. a task count). Never
 /// carries project, environment, tenant or variable data — an agent is not
 /// authorized to learn about work it has not been dispatched.
 /// </param>
-public sealed record AgentTaskInFlightResponse(bool InFlight, string? Detail);
+public sealed record AgentTaskInFlightResponse(bool? InFlight, string? Detail);
 
 /// <summary>
 /// C6 — the discrete outcomes an agent reports for a self-upgrade attempt.

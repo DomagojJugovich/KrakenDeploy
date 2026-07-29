@@ -1242,34 +1242,60 @@ public static class Program
                     System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
                 if (targetIdClaim is null || !Guid.TryParse(targetIdClaim, out var targetId))
                 {
-                    return Results.Json(new AgentTaskInFlightResponse(
+                    return Results.Ok(new AgentTaskInFlightResponse(
                         true, "the agent identity could not be resolved"));
                 }
 
                 var db = http.RequestServices.GetRequiredService<KrakenDbContext>();
 
-                // Queued counts as in flight: an unclaimed task can be dispatched here
-                // at any moment, so a swap started now would race its first wave.
+                // The agent JWT signing key is platform-global and the ACCOUNT is
+                // resolved from the request Host, so the two are not bound to each other
+                // on the REST surface (the filter that reconciles them is hub-only). An
+                // agent enrolled in account A that reaches account B's subdomain — a
+                // re-pointed Server:Url, a Host rewrite, a shared CNAME — would otherwise
+                // find 0 rows in B's database and be told a confident "idle" about a
+                // target whose plan is live in A. Confirm the target exists HERE first,
+                // and treat an unresolvable one as in flight.
+                var targetExists = await db.DeploymentTargets
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .AnyAsync(t => t.Id == targetId, ct)
+                    .ConfigureAwait(false);
+                if (!targetExists)
+                {
+                    return Results.Ok(new AgentTaskInFlightResponse(
+                        true, "this target is not known to the account serving this request"));
+                }
+
+                // Non-terminal == in flight, expressed through the SINGLE AUTHORITY for
+                // that classification rather than re-inlined here: DeploymentStatusExtensions
+                // documents itself as such precisely because the terminal set "had already
+                // diverged between call sites". IsTerminal() itself cannot be translated by
+                // EF, so this mirrors the house pattern from ServerTaskLease — the
+                // InFlightAfterClaim array plus Queued, which is the complement by
+                // definition. If a terminal status is ever added, this query follows.
+                // Queued counts on purpose: an unclaimed task can be dispatched here at
+                // any moment, so a swap started now would race its first wave.
                 // IgnoreQueryFilters: this runs on an agent-authenticated request with
                 // no user or Space context, and the question is machine-scoped — a
                 // Space filter would silently answer "idle" for work in a Space the
                 // request cannot see, which is exactly the fail-OPEN we must avoid.
+                // AnyAsync, not CountAsync: only the boolean is consumed, and a target
+                // accumulates one assignment row per task that ever touched it, so
+                // counting them all scans an unbounded history to learn one bit.
                 var inFlight = await db.Set<TaskTargetAssignment>()
                     .IgnoreQueryFilters()
                     .AsNoTracking()
-                    .Where(a => a.TargetId == targetId
-                                && a.Task.Status != DeploymentStatus.Succeeded
-                                && a.Task.Status != DeploymentStatus.SucceededWithWarnings
-                                && a.Task.Status != DeploymentStatus.Failed
-                                && a.Task.Status != DeploymentStatus.Cancelled)
-                    .CountAsync(ct)
+                    .AnyAsync(
+                        a => a.TargetId == targetId
+                             && (DeploymentStatusExtensions.InFlightAfterClaim.Contains(a.Task.Status)
+                                 || a.Task.Status == DeploymentStatus.Queued),
+                        ct)
                     .ConfigureAwait(false);
 
                 return Results.Ok(new AgentTaskInFlightResponse(
-                    inFlight > 0,
-                    inFlight > 0
-                        ? $"{inFlight.ToString(CultureInfo.InvariantCulture)} non-terminal task(s) assigned"
-                        : null));
+                    inFlight,
+                    inFlight ? "a non-terminal task is assigned to this target" : null));
             }).RequireAuthorization(agentUpdateAuthPolicy);
 
         // C6 — agent self-upgrade outcome report. The agent POSTs the result of
@@ -1302,9 +1328,14 @@ public static class Program
 
                 var eventType = report.Outcome switch
                 {
-                    AgentUpdateOutcome.Succeeded  => AuditEventType.AgentUpdateApplied,
-                    AgentUpdateOutcome.RolledBack => AuditEventType.AgentUpdateRolledBack,
-                    _                             => AuditEventType.AgentUpdateFailed,
+                    AgentUpdateOutcome.Succeeded    => AuditEventType.AgentUpdateApplied,
+                    AgentUpdateOutcome.RolledBack   => AuditEventType.AgentUpdateRolledBack,
+                    // F5 — a deferral is NOT a failure: nothing was touched and the next
+                    // check retries. It recurs once per check interval on a busy box, so
+                    // the default arm filed up to ~24 bogus "update failed" audit rows,
+                    // Warning logs and subscription deliveries per target per night.
+                    AgentUpdateOutcome.SwapDeferred => AuditEventType.AgentUpdateDeferred,
+                    _                               => AuditEventType.AgentUpdateFailed,
                 };
 
                 var detail =
@@ -1332,7 +1363,11 @@ public static class Program
                 await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
                 loggerFactory.CreateLogger("AgentUpdate").Log(
+                    // A deferral is routine on a busy box and recurs per check interval,
+                    // so it logs at Information alongside success; only real refusals and
+                    // rollbacks warrant Warning.
                     report.Outcome is AgentUpdateOutcome.Succeeded
+                                   or AgentUpdateOutcome.SwapDeferred
                         ? LogLevel.Information : LogLevel.Warning,
                     "Agent {TargetId} ({Name}) reported self-upgrade outcome {Outcome} " +
                     "({From} -> {To}).",

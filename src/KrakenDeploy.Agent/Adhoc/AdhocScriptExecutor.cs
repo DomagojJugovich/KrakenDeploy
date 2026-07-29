@@ -301,15 +301,26 @@ public sealed class AdhocScriptExecutor(
                 "Adhoc session {SessionId} iter {Iter} refused: never acquired the machine " +
                 "execution gate ({Mode}) within its {Budget} budget (or the agent is stopping).",
                 command.SessionId, command.IterNumber, mode, budget);
-            // Deliberately does NOT claim another task "held" the machine. Under F5 the
-            // gate is writer-fair, so an acquisition also waits behind a merely QUEUED
-            // writer — including the agent's own self-upgrade — with no holder present
-            // at all. Blaming a holder sent operators looking for a task that was never
-            // there.
-            await ReportFailureAsync(command,
-                $"This machine did not become available within the script's {budget} budget " +
-                "(another task was running or queued here, or the agent is stopping); the " +
-                "script was NOT executed. Check the target's task history, then re-run it.")
+            // Two distinct stories, and conflating them was actively harmful: the busy
+            // narrative told the operator to re-run, which walks straight back into a
+            // corrupted gate. Expected shapes (budget expired while queued, host
+            // stopping, gate disposed) get the busy message; anything else is an agent
+            // fault that a re-run cannot clear.
+            var expected = ex is OperationCanceledException or ObjectDisposedException;
+            await ReportFailureAsync(command, expected
+                // Deliberately does NOT claim another task "held" the machine. The gate is
+                // writer-fair, so an acquisition also waits behind a merely QUEUED writer
+                // — including the agent's own self-upgrade — with no holder present at
+                // all, and it waits behind the shared-holder cap. Blaming a holder sent
+                // operators looking for a task that was never there.
+                ? $"This machine did not become available within the script's {budget} " +
+                  "budget (other work was running or queued here, this machine's " +
+                  "concurrent-script limit was reached, or the agent is stopping); the " +
+                  "script was NOT executed. Check the target's task history, then re-run it."
+                : "The agent could not acquire its machine execution slot because of an " +
+                  $"internal fault ({ex.GetType().Name}); the script was NOT executed. " +
+                  "Re-running is unlikely to help — this agent probably needs restarting. " +
+                  "See the agent's local log for details.")
                 .ConfigureAwait(false);
             return new AdhocMachineSlot(null, true);
         }

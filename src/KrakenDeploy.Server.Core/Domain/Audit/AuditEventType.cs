@@ -479,4 +479,19 @@ public static class AuditEventType
     /// it (missing/mismatched hash, contract skew, or an in-process swap failure
     /// that left the previous binary running). Details: outcome + versions.</summary>
     public const string AgentUpdateFailed = "Agent.UpdateFailed";
+
+    /// <summary>
+    /// F5 — an agent DEFERRED a self-upgrade: nothing was touched and the next check
+    /// will retry. Either the machine stayed busy for the whole swap window, or the
+    /// server still had a non-terminal task assigned to that target.
+    /// <para>
+    /// Distinct from <see cref="AgentUpdateFailed"/> on purpose. A deferral is the
+    /// expected outcome on a busy box and recurs once per check interval, so filing it
+    /// as a failure produced a nightly alert storm — which trains operators to mute the
+    /// channel that also carries the real <see cref="AgentUpdateRolledBack"/> and
+    /// swap-failure rows. A RUN of these on one target is still worth attention: it can
+    /// mean a wedged gate, or a task parked non-terminal forever.
+    /// </para>
+    /// </summary>
+    public const string AgentUpdateDeferred = "Agent.UpdateDeferred";
 }

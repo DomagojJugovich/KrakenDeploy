@@ -365,7 +365,14 @@ public sealed class DeploymentExecutorCancelTests
         services.AddSingleton<IArtifactSink>(new NullArtifactSink());
         services.AddSingleton(new StepPackageLoader(
             new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance));
-        services.AddSingleton<MachineExecutionGate>();
+        // Mirrors Program.cs's factory registration, cap included — see
+        // The_gate_is_a_singleton_and_takes_its_cap_from_configuration for the assertion
+        // that the binding actually happens.
+        services.AddSingleton(sp => new MachineExecutionGate
+        {
+            MaxSharedHolders = sp.GetRequiredService<IOptions<AgentConfig>>()
+                .Value.MaxConcurrentSharedWork,
+        });
         services.AddSingleton(Options.Create(new AgentConfig()));
         services.AddSingleton<ILogger<DeploymentExecutor>>(NullLogger<DeploymentExecutor>.Instance);
         services.AddSingleton<DeploymentExecutor>();   // ← the lifetime under test

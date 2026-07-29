@@ -13,14 +13,6 @@ Production-readiness fix **B7** (audit items T1-3 remainder, T1-4): bounded
 concurrency on both sides of the wire, and caches that survive crashes and
 concurrent access. No contract change; one new config key.
 
-> v1.3 (2026-07-29, **F5**): the agent's machine gate is now a fair async
-> READER-WRITER lock, not a binary mutex. `AllowParallelTaskExecution` selects a
-> SIDE instead of granting a bypass (mutual consent — locked decision P2), for
-> ad-hoc it became per-RUN rather than per-target, and the agent self-upgrade
-> takes the WRITE side (locked decision P8). CONTRACT CHANGE:
-> `AgentContract.CurrentVersion` 2 → 3 with no shape change. See "Agent: the
-> machine execution gate" and "The self-upgrade participates too".
->
 > v1.4 (2026-07-29, F5 review follow-up): shared co-running is BOUNDED by
 > `Agent:MaxConcurrentSharedWork` (default 8) — the reader-writer rework had removed
 > the old hard cap of one with nothing in its place. The self-upgrade now asks the
@@ -28,8 +20,17 @@ concurrent access. No contract change; one new config key.
 > unit is one wave, so an idle gate does not mean an idle plan), re-checks the
 > maintenance window after queueing, decides its permanent refusals BEFORE taking the
 > gate, reports a deferred swap, and puts the ROLLBACK swap under the write lock too.
-> `Agent:Update:*` durations are validated at startup and `SwapGateTimeout` now
-> defaults to 2 min so it stays below both `CheckInterval` and `Adhoc:MaxTotalDuration`.
+> `Agent:Update:*` durations are validated at startup (`SwapGateTimeout < CheckInterval`
+> is ENFORCED; staying under `Adhoc:MaxTotalDuration` is a property of the DEFAULTS, not
+> a rule) and `SwapGateTimeout` now defaults to 2 min.
+>
+> v1.3 (2026-07-29, **F5**): the agent's machine gate is now a fair async
+> READER-WRITER lock, not a binary mutex. `AllowParallelTaskExecution` selects a
+> SIDE instead of granting a bypass (mutual consent — locked decision P2), for
+> ad-hoc it became per-RUN rather than per-target, and the agent self-upgrade
+> takes the WRITE side (locked decision P8). CONTRACT CHANGE:
+> `AgentContract.CurrentVersion` 2 → 3 with no shape change. See "Agent: the
+> machine execution gate" and "The self-upgrade participates too".
 >
 > v1.2 (2026-07-25, F2-followup 3): the ad-hoc bound is now ONE
 > `Adhoc:MaxTotalDuration` covering queue wait **plus** execution, replacing the
@@ -99,16 +100,29 @@ being "granted" a lease nobody then releases.
 Fairness has a consequence worth knowing when reading logs: **a queued writer blocks
 acquisition even with no holder present.** So "the machine was not available" does not
 imply "something was running" — it may have been the agent's own self-upgrade waiting
-its turn. The ad-hoc refusal message says exactly that, deliberately.
+its turn, or the shared-holder cap below. The ad-hoc refusal message is worded to
+avoid naming a holder for exactly that reason, but it does not name the self-upgrade
+either: if a script was refused on a box that looks idle in the task history, check
+that agent's own log for a queued swap.
 
-**Shared co-running is bounded** by `Agent:MaxConcurrentSharedWork` (default 8). The
-pre-F5 primitive was a `SemaphoreSlim(1, 1)`, i.e. a hard cap of ONE unit of work per
-machine; reader-writer semantics removed that bound and nothing else replaced it — the
-ad-hoc path is shared-always, the agent's SignalR push handlers are detached with no
-limiter, and no server-side cap covers ad-hoc dispatch, so N concurrent approvals meant
-N PowerShell processes. Octopus's own reader-writer lock is uncapped, so this is a
-deliberate divergence, and a soft one: work beyond the cap QUEUES like any other
-waiter, so a pathological burst serializes rather than exhausting the box.
+**Shared co-running is bounded** by `Agent:MaxConcurrentSharedWork` (default 8, clamped
+to `[1, 64]`). The pre-F5 primitive was a `SemaphoreSlim(1, 1)`, i.e. a hard cap of ONE
+unit of work per machine; reader-writer semantics removed that bound and nothing else
+replaced it — the ad-hoc path is shared-always, the agent's SignalR push handlers are
+detached with no limiter, and no server-side cap covers ad-hoc dispatch, so N concurrent
+approvals meant N PowerShell processes. Octopus's own reader-writer lock is uncapped, so
+this is a deliberate divergence.
+
+The cap is soft **at the gate** — over-cap work queues rather than being refused — but
+not end to end: an ad-hoc script's `Adhoc:MaxTotalDuration` budget spans its queue wait,
+so a script that queues behind the cap for its whole budget IS refused. The bound is
+placed at the gate rather than where work is spawned (the detached push handlers, or
+server-side ad-hoc dispatch) because the gate is the one chokepoint every kind of work
+already passes through; the honest cost is that the refusal reaches the operator late,
+from the agent, rather than at submit time. `MachineExecutionGate.WouldAdmitConcurrently`
+exists so callers reason about co-running by ASKING the gate — the cap means "both
+shared" no longer implies "both admitted", and `DeploymentExecutor`'s same-task refusal
+depends on getting that right.
 
 The gate is only reachable because the agent's SignalR push handlers are
 **detached** (`ServerLinkHostedService` returns `Task.CompletedTask`, not the work

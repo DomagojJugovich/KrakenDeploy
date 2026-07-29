@@ -35,11 +35,20 @@ public sealed class AgentConnectionRegistryReconnectTests
             "the connection IS tracked — the hub needs it to answer RegisterAsync");
         registry.GetConnectionId(targetId).Should().BeNull(
             "but it is NOT dispatchable until RegisterAsync has passed");
-        registry.HasConnectionFor(targetId).Should().BeFalse();
+        registry.IsRegistered(targetId).Should().BeFalse();
+
+        // LIVENESS must stay true throughout. This is the distinction that matters most:
+        // HasConnectionFor answers "did the agent reconnect / is it still there", and its
+        // consumers are the hub's 30 s offline grace and B3's mid-wave disconnect monitor.
+        // Gating it on registration flipped healthy targets Offline and let the monitor
+        // CANCEL a wave still executing on a connected agent.
+        registry.HasConnectionFor(targetId).Should().BeTrue(
+            "the agent is connected — liveness is not the same question as eligibility");
 
         registry.MarkRegistered("conn-1");
 
         registry.GetConnectionId(targetId).Should().Be("conn-1");
+        registry.IsRegistered(targetId).Should().BeTrue();
         registry.HasConnectionFor(targetId).Should().BeTrue();
     }
 

@@ -121,6 +121,62 @@ public sealed class AgentUpdateDecisionTests
     public void SwapGateTimeout_accepts_a_sane_duration(string configured)
         => ValidateSwapGateTimeout(configured).Succeeded.Should().BeTrue();
 
+    [Theory]
+    // A long poll interval is a legitimate operator choice on a metered or segmented
+    // link, and it is the SAFE direction for the SwapGateTimeout < CheckInterval rule.
+    // An earlier cut applied the swap window's 1-hour ceiling to this too, which turned
+    // a twice-daily poll into a fleet-wide boot failure on an unreachable agent.
+    [InlineData("Agent:Update:CheckInterval", "06:00:00")]
+    // A whole day must be written 1.00:00:00 — "24:00:00" is not a valid hh:mm:ss, so the
+    // binder rejects it. That is the same unit trap the bare-number rule guards.
+    [InlineData("Agent:Update:CheckInterval", "1.00:00:00")]
+    [InlineData("Agent:Update:HealthCheckTimeout", "02:00:00")]
+    public void Long_non_blocking_durations_are_accepted(string key, string configured)
+        => Validate(new Dictionary<string, string?> { [key] = configured })
+            .Succeeded.Should().BeTrue(
+                $"'{key}' does not block the machine, so the swap window's ceiling must not apply");
+
+    [Theory]
+    // The bare-number and non-positive rules DO apply to every duration.
+    [InlineData("Agent:Update:CheckInterval", "5")]
+    [InlineData("Agent:Update:CheckInterval", "00:00:00")]
+    [InlineData("Agent:Update:HealthCheckTimeout", "3")]
+    [InlineData("Agent:Update:HealthCheckTimeout", "-00:01:00")]
+    public void Malformed_non_blocking_durations_are_still_rejected(string key, string configured)
+        => Validate(new Dictionary<string, string?> { [key] = configured })
+            .Succeeded.Should().BeFalse();
+
+    [Fact]
+    public void A_disabled_updater_is_not_validated()
+    {
+        // ValidateOnStart makes every failure a BOOT failure, and an agent that will not
+        // boot cannot be reached or self-upgrade out of the problem. None of these knobs
+        // is read when the updater is off, so a legacy value must not brick that agent.
+        var result = Validate(new Dictionary<string, string?>
+        {
+            ["Agent:Update:Enabled"] = "false",
+            ["Agent:Update:SwapGateTimeout"] = "5",     // five DAYS
+            ["Agent:Update:CheckInterval"] = "00:00:00",
+        });
+
+        result.Succeeded.Should().BeTrue();
+    }
+
+    [Fact]
+    public void The_cross_field_failure_names_both_keys()
+    {
+        // The operator may have set only CheckInterval — with SwapGateTimeout defaulting
+        // to 2 min, tightening the interval to 2 min trips this. An error naming only
+        // SwapGateTimeout would send them to a key they never touched.
+        var message = Validate(new Dictionary<string, string?>
+        {
+            ["Agent:Update:CheckInterval"] = "00:02:00",
+        }).FailureMessage;
+
+        message.Should().Contain(nameof(AgentUpdateConfig.SwapGateTimeout));
+        message.Should().Contain(nameof(AgentUpdateConfig.CheckInterval));
+    }
+
     [Fact]
     public void SwapGateTimeout_must_be_shorter_than_the_check_interval()
     {

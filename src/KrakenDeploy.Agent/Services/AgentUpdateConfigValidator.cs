@@ -43,22 +43,48 @@ public sealed class AgentUpdateConfigValidator(IConfiguration configuration)
     public const string SectionName = "Agent:Update";
 
     /// <summary>
-    /// Largest accepted value for any of these durations. A swap window measured in
-    /// days is never intentional: the wait exists so a wedged holder cannot stop the
-    /// agent from accepting work, and anything beyond an hour has already failed that
-    /// purpose.
+    /// Largest accepted value for the SWAP WINDOW specifically. That wait exists so a
+    /// wedged holder cannot stop the agent from accepting work, and because the gate is
+    /// writer-fair the wait itself blocks the machine — so anything beyond an hour has
+    /// already failed its own purpose.
+    /// <para>
+    /// Deliberately NOT applied to <see cref="AgentUpdateConfig.CheckInterval"/> or
+    /// <see cref="AgentUpdateConfig.HealthCheckTimeout"/>: neither blocks the machine,
+    /// and a long poll interval is a legitimate choice on a metered or segmented link
+    /// (it is also the SAFE direction for the cross-field rule below). An earlier cut
+    /// applied one hour to all three, which turned a sensible twice-daily poll into a
+    /// fleet-wide boot failure.
+    /// </para>
     /// </summary>
-    public static readonly TimeSpan MaxAcceptedDuration = TimeSpan.FromHours(1);
+    public static readonly TimeSpan MaxAcceptedSwapWindow = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// Ceiling for the remaining durations — generous, and only there to catch a value
+    /// so large it cannot be deliberate.
+    /// </summary>
+    public static readonly TimeSpan MaxAcceptedDuration = TimeSpan.FromDays(7);
 
     public ValidateOptionsResult Validate(string? name, AgentUpdateConfig options)
     {
         ArgumentNullException.ThrowIfNull(options);
+
+        // Nothing here governs a disabled updater, and `ValidateOnStart` makes every
+        // failure a boot failure — so a legacy value must not brick an agent whose
+        // auto-update is switched off and which therefore never reads these knobs.
+        if (!options.Enabled)
+        {
+            return ValidateOptionsResult.Success;
+        }
+
         var section = configuration.GetSection(SectionName);
         var failures = new List<string>();
 
-        Check(nameof(AgentUpdateConfig.SwapGateTimeout), options.SwapGateTimeout);
-        Check(nameof(AgentUpdateConfig.CheckInterval), options.CheckInterval);
-        Check(nameof(AgentUpdateConfig.HealthCheckTimeout), options.HealthCheckTimeout);
+        Check(nameof(AgentUpdateConfig.SwapGateTimeout), options.SwapGateTimeout,
+            MaxAcceptedSwapWindow);
+        Check(nameof(AgentUpdateConfig.CheckInterval), options.CheckInterval,
+            MaxAcceptedDuration);
+        Check(nameof(AgentUpdateConfig.HealthCheckTimeout), options.HealthCheckTimeout,
+            MaxAcceptedDuration);
 
         if (options.MaxHealthAttempts <= 0)
         {
@@ -68,24 +94,30 @@ public sealed class AgentUpdateConfigValidator(IConfiguration configuration)
         }
 
         // The swap wait must be shorter than the interval that re-arms it. Equal values
-        // (the shipped defaults were both 5 min) let the updater re-queue a blocking
-        // writer back-to-back: PeriodicTimer coalesces the tick that elapsed during the
-        // wait, so the next iteration starts immediately and the machine is blocked for
-        // essentially the whole maintenance window while never completing a swap.
+        // (the originally shipped 5/5 pair) let the updater re-queue a blocking writer
+        // back-to-back: PeriodicTimer coalesces the tick that elapsed during the wait, so
+        // the next iteration starts immediately and the machine is blocked for essentially
+        // the whole maintenance window while never completing a swap.
+        // Reported against BOTH keys, because the operator may have set only the other
+        // one: with SwapGateTimeout defaulting to 2 min, tightening CheckInterval to
+        // 2 min trips this, and an error naming only SwapGateTimeout would send them to
+        // a key they never touched.
         if (options.SwapGateTimeout >= options.CheckInterval)
         {
             failures.Add(
                 $"{SectionName}:{nameof(AgentUpdateConfig.SwapGateTimeout)} " +
                 $"({options.SwapGateTimeout}) must be shorter than " +
-                $"{nameof(AgentUpdateConfig.CheckInterval)} ({options.CheckInterval}), " +
-                "or the updater re-queues a machine-blocking writer on every tick.");
+                $"{SectionName}:{nameof(AgentUpdateConfig.CheckInterval)} " +
+                $"({options.CheckInterval}), or the updater re-queues a machine-blocking " +
+                "writer on every tick. Raise CheckInterval or lower SwapGateTimeout — " +
+                "either resolves it, and only one of them may be a value you set.");
         }
 
         return failures.Count == 0
             ? ValidateOptionsResult.Success
             : ValidateOptionsResult.Fail(failures);
 
-        void Check(string key, TimeSpan value)
+        void Check(string key, TimeSpan value, TimeSpan max)
         {
             var raw = section[key];
             if (raw is not null && IsBareNumber(raw))
@@ -104,10 +136,9 @@ public sealed class AgentUpdateConfigValidator(IConfiguration configuration)
                     "Note -00:00:00.001 is Timeout.InfiniteTimeSpan, which would make " +
                     "the wait unbounded.");
             }
-            else if (value > MaxAcceptedDuration)
+            else if (value > max)
             {
-                failures.Add(
-                    $"{SectionName}:{key} is {value}, above the {MaxAcceptedDuration} ceiling.");
+                failures.Add($"{SectionName}:{key} is {value}, above the {max} ceiling.");
             }
         }
     }

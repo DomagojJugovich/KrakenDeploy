@@ -105,7 +105,17 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
         return false;
     }
 
-    public bool HasConnectionFor(Guid targetId) => GetConnectionId(targetId) is not null;
+    /// <summary>
+    /// LIVENESS, not eligibility — deliberately NOT gated on <see cref="MarkRegistered"/>.
+    /// Its consumers ask "did the agent reconnect?" (the hub's offline grace) and "is the
+    /// agent still there?" (B3's mid-wave disconnect monitor). Answering those with
+    /// dispatch eligibility flips a healthy target Offline during the connect→register
+    /// window and, worse, lets the disconnect monitor CANCEL a wave that is still
+    /// executing on a connected agent — a false "agent disconnected mid-wave" diagnosis
+    /// that under Atomic failure mode triggers farm-wide cleanup. Dispatchability is
+    /// <see cref="GetConnectionId"/>'s question, and only that one.
+    /// </summary>
+    public bool HasConnectionFor(Guid targetId) => _byTarget.ContainsKey(targetId);
 
     public bool AbortConnectionFor(Guid targetId)
     {
@@ -140,6 +150,9 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
         => _byTarget.TryGetValue(targetId, out var connId) && _registered.ContainsKey(connId)
             ? connId
             : null;
+
+    public bool IsRegistered(Guid targetId)
+        => _byTarget.TryGetValue(targetId, out var connId) && _registered.ContainsKey(connId);
 
     public Guid? GetAccountForTarget(Guid targetId)
         => _accountByTarget.TryGetValue(targetId, out var accountId) ? accountId : null;

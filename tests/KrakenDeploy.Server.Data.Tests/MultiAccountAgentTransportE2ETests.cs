@@ -78,14 +78,17 @@ public sealed class MultiAccountAgentTransportE2ETests(MultiAccountAgentTranspor
 
         // The host-derived account is recorded on the registry — this is exactly the
         // value the cross-account dispatch guard (DeploymentWorker / AdhocDispatcher)
-        // compares the dispatch account against. A non-null account proves Add ran with
-        // the host-derived value, which is what this test is about.
+        // compares the dispatch account against.
         registry.GetAccountForTarget(targetId).Should().Be(fixture.Alpha.AccountId);
 
-        // Deliberately NOT dispatchable: F5 gates eligibility on a PASSED RegisterAsync,
-        // and this raw SignalR connection never performs one, so its wire-contract
-        // version is unverified. Connected != dispatchable.
-        registry.HasConnectionFor(targetId).Should().BeFalse(
+        // CONNECTED (liveness) — the hub accepted the socket and tracked it.
+        registry.HasConnectionFor(targetId).Should().BeTrue();
+
+        // ...but NOT yet dispatchable: F5 gates eligibility on a PASSED RegisterAsync,
+        // and this raw SignalR connection never performs one, so its wire-contract version
+        // is unverified. The two predicates are deliberately different questions — reading
+        // liveness as eligibility is what let the disconnect monitor cancel live waves.
+        registry.GetConnectionId(targetId).Should().BeNull(
             "eligibility requires MarkRegistered, which only a real RegisterAsync sets");
     }
 
@@ -131,7 +134,13 @@ public sealed class MultiAccountAgentTransportE2ETests(MultiAccountAgentTranspor
 
         await AssertConnectionRejectedAsync(connection);
 
-        registry.HasConnectionFor(betaTarget).Should().BeFalse("a foreign target must not be registered");
+        // Deliberately GetAccountForTarget, not HasConnectionFor: `Add` writes the account
+        // side-table, so a null account is the assertion that discriminates a rejected
+        // connection from an accepted one. (HasConnectionFor would also read false here,
+        // but only because this fixture's raw connections never register — a tautology
+        // that would pass even if the hub had added the foreign target to the registry.)
+        registry.GetConnectionId(betaTarget).Should().BeNull(
+            "a foreign target must never be dispatchable");
         registry.GetAccountForTarget(betaTarget).Should().BeNull();
 
         // Beta's own target was never touched (its agent never reached beta's account).

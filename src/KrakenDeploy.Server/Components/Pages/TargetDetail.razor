@@ -183,13 +183,21 @@ else
                             }
                             <div class="kraken-def-sub rz-mt-2">
                                 This setting covers <strong>deployments and runbook runs only</strong>.
-                                Ad-hoc scripts (AI actions, and the script console when it ships)
-                                choose their own isolation per run and are not affected by it — an
-                                approved read-only script can co-run with other scripts here whether
-                                this box is ticked or not. It also never bypasses deployment
-                                serialization: two deployments of the same project, environment and
-                                tenant still run one after the other. Changes apply to the next
-                                dispatch, not to work already queued on the agent.
+                                It also never bypasses deployment serialization: two deployments of
+                                the same project, environment and tenant still run one after the
+                                other. Changes apply to the next dispatch, not to work already
+                                queued on the agent.
+                            </div>
+                            <div class="kraken-health kraken-health--warn kraken-health--inline rz-mt-2">
+                                <RadzenIcon Icon="info" />
+                                <div>
+                                    Ad-hoc scripts are <strong>not</strong> covered by this setting,
+                                    whichever way it is set. Approved AI actions always run
+                                    concurrently with each other on this machine — including
+                                    state-changing ones — so two of them can touch the same service
+                                    or file at the same time. There is no setting for that yet; if
+                                    you need them serialized, run them one at a time.
+                                </div>
                             </div>
                         </div>
                     </div>

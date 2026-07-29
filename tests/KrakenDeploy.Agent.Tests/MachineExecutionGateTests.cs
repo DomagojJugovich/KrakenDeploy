@@ -365,21 +365,88 @@ public sealed class MachineExecutionGateTests
     // ── Give-up paths must not corrupt the gate ─────────────────────────────
 
     [Fact]
-    public async Task An_expired_wait_still_reports_expiry_when_disposal_follows()
+    public async Task An_expired_wait_reports_expiry_even_when_disposal_wins_the_race()
     {
-        // Relabelling a genuine expiry as a disposal would skip the callers' escalation
-        // paths — DeploymentExecutor's operator-actionable "the agent is wedged" report,
-        // and AgentUpdateService's SwapGate.Busy retry — replacing them with a raw
-        // "Cannot access a disposed object" in the operator's task log.
+        // Relabelling a genuine expiry as a disposal skips the callers' escalation paths
+        // — DeploymentExecutor's operator-actionable "the agent is wedged" report, and
+        // AgentUpdateService's SwapGate.Busy retry (and hence its swap-deferred report) —
+        // replacing them with a raw "Cannot access a disposed object" in the task log.
+        //
+        // The RACE is the interesting case, and an earlier version of this test missed it:
+        // it slept past the timeout so the continuation had already finished, which the
+        // pre-fix code also passed. The expiry callback deliberately leaves the waiter
+        // QUEUED for the continuation to dequeue, so there is a real window in which the
+        // waiter is expiry-completed and still linked — and disposal used to stamp every
+        // queued waiter as disposed. Here we dispose with essentially no delay, so we land
+        // in that window rather than after it.
+        var gate = new MachineExecutionGate();
+        using var holder = await Take(gate, Mode.Exclusive);
+
+        var expired = gate.AcquireAsync(Mode.Shared, TimeSpan.FromMilliseconds(1), default);
+        gate.Dispose();
+
+        // Either outcome is legitimate ordering-wise, but ONLY these two: null when the
+        // wait lapsed first, ODE when disposal genuinely got there first. What must never
+        // happen is a lapsed wait reported as a disposal, which is what the first-writer
+        // -wins reason stamp guarantees.
+        //
+        // COVERAGE LIMIT, stated rather than implied: because both outcomes are accepted,
+        // this test does NOT distinguish first-writer-wins from last-writer-wins — I
+        // mutation-checked `ClaimGiveUpReason` to a last-writer-wins write and the whole
+        // gate suite stayed green. Hitting the discriminating interleaving deterministically
+        // needs the waiter expiry-completed but STILL QUEUED when Dispose runs, and the
+        // continuation is scheduled by that very completion (RunContinuationsAsynchronously),
+        // so there is no way to hold it without a mutable test hook inside the primitive —
+        // a worse trade than documenting the gap. The property is enforced by construction:
+        // every path that completes a waiter with `false` stamps the reason first, and
+        // `Interlocked.CompareExchange` from None makes the first stamp final.
+        var outcome = await Record.ExceptionAsync(async () =>
+            (await expired.WaitAsync(TestTimeout)).Should().BeNull());
+        outcome?.Should().BeOfType<ObjectDisposedException>(
+            "the only alternative to 'expired' is a disposal that truly won the race");
+    }
+
+    [Fact]
+    public async Task A_lapsed_wait_reports_expiry_not_disposal()
+    {
+        // The deterministic half: the wait is given time to lapse fully, so the reason is
+        // settled as Expired before disposal is anywhere near it. This must be null, never
+        // ObjectDisposedException.
         var gate = new MachineExecutionGate();
         using var holder = await Take(gate, Mode.Exclusive);
 
         var expired = gate.AcquireAsync(Mode.Shared, ShortWait, default);
-        await Task.Delay(400); // let the bounded wait lapse
-        gate.Dispose();        // ...then tear the gate down underneath it
-
         (await expired.WaitAsync(TestTimeout)).Should().BeNull(
-            "the wait expired on its own terms before disposal was ever involved");
+            "the bounded wait lapsed on its own terms");
+
+        gate.Dispose(); // after the fact — must not retroactively change the story
+    }
+
+    [Fact]
+    public void WouldAdmitConcurrently_follows_the_cap_not_just_the_modes()
+    {
+        // DeploymentExecutor asks this to decide whether the gate can keep two attempts of
+        // ONE task apart. Mode compatibility is not the whole admission rule — the cap can
+        // exclude two readers too — so a caller that hardcoded "both shared co-run" would
+        // wrongly abandon a retry on a box configured with a cap of 1.
+        using var normal = new MachineExecutionGate { MaxSharedHolders = 8 };
+        normal.WouldAdmitConcurrently(Mode.Shared, Mode.Shared).Should().BeTrue();
+        normal.WouldAdmitConcurrently(Mode.Shared, Mode.Exclusive).Should().BeFalse();
+        normal.WouldAdmitConcurrently(Mode.Exclusive, Mode.Shared).Should().BeFalse();
+        normal.WouldAdmitConcurrently(Mode.Exclusive, Mode.Exclusive).Should().BeFalse();
+
+        using var serialized = new MachineExecutionGate { MaxSharedHolders = 1 };
+        serialized.WouldAdmitConcurrently(Mode.Shared, Mode.Shared).Should().BeFalse(
+            "a cap of 1 means even two readers are mutually exclusive");
+    }
+
+    [Fact]
+    public void An_oversized_cap_is_clamped()
+    {
+        // The dangerous direction: a large value silently reinstates the unbounded fan-out
+        // the cap exists to prevent, whereas a too-small one merely over-serializes.
+        new MachineExecutionGate { MaxSharedHolders = 9999 }.MaxSharedHolders
+            .Should().Be(MachineExecutionGate.MaxAllowedSharedHolders);
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────

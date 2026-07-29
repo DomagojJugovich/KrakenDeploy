@@ -585,9 +585,15 @@ public sealed class DeploymentExecutor(
         // gate would have excluded perfectly well — and, because the next re-dispatch
         // arrives with forceDetachedStuck false, sent it into the unbounded wait with no
         // escalation at all.
+        // Asked of the GATE rather than inferred here: "would two holders in these modes
+        // be admitted together?" is a property of the gate's admission rule, and that rule
+        // is no longer just mode compatibility — the shared-holder cap can exclude two
+        // readers too, so a hardcoded "both shared means both admitted" would abandon a
+        // retry the gate would have serialized correctly on a box configured with a cap
+        // of 1.
         if (forceDetachedStuck
-            && mode == MachineExecutionGate.Mode.Shared
-            && detachedPredecessorMode == MachineExecutionGate.Mode.Shared)
+            && detachedPredecessorMode is { } predecessorMode
+            && executionGate.WouldAdmitConcurrently(predecessorMode, mode))
         {
             logger.LogError(
                 "Task {DeploymentId} attempt {DispatchId} abandoned: a previous attempt " +
@@ -636,6 +642,17 @@ public sealed class DeploymentExecutor(
                 return MachineSlot.Held(
                     await executionGate.AcquireAsync(mode, queueToken).ConfigureAwait(false));
             }
+
+            // Force-detached predecessor: bounded, so a non-cooperative step holding the
+            // gate cannot wedge this attempt forever. INSIDE the try deliberately — an
+            // earlier cut left this acquisition outside it, so the shutdown unwind on
+            // this path still reported the hard failure the catches below exist to
+            // suppress.
+            if (await executionGate.AcquireAsync(mode, WedgedGateAcquireTimeout, queueToken)
+                    .ConfigureAwait(false) is { } bounded)
+            {
+                return MachineSlot.Held(bounded);
+            }
         }
         catch (ObjectDisposedException)
         {
@@ -668,12 +685,6 @@ public sealed class DeploymentExecutor(
                 "the server will re-dispatch.",
                 plan.DeploymentId, plan.DispatchId);
             return MachineSlot.AbandonedQuietly;
-        }
-
-        if (await executionGate.AcquireAsync(mode, WedgedGateAcquireTimeout, queueToken)
-                .ConfigureAwait(false) is { } bounded)
-        {
-            return MachineSlot.Held(bounded);
         }
 
         logger.LogError(
