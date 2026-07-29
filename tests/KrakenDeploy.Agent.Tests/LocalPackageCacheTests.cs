@@ -142,6 +142,21 @@ public sealed class LocalPackageCacheTests : IDisposable
             because: "the cached file must remain within the cache root directory");
     }
 
+    [Fact]
+    public async Task GetCachedVersions_returns_versions_sorted_highest_last()
+    {
+        var cache = CreateCache();
+
+        await cache.StoreAsync("Sort.Pkg", "2.0.0", CreateTempFile("v2"));
+        await cache.StoreAsync("Sort.Pkg", "1.0.0", CreateTempFile("v1"));
+        await cache.StoreAsync("Sort.Pkg", "10.0.0", CreateTempFile("v10"));
+        await cache.StoreAsync("Sort.Pkg", "1.5.0", CreateTempFile("v1.5"));
+
+        var versions = cache.GetCachedVersions("Sort.Pkg");
+        versions.Should().Equal(["1.0.0", "1.5.0", "2.0.0", "10.0.0"],
+            "versions must be sorted ascending so the consumer's [^1] picks the highest");
+    }
+
     // ── Private helper ────────────────────────────────────────────────────────
 
     // ── B7: crash/concurrency safety ──────────────────────────────────────────

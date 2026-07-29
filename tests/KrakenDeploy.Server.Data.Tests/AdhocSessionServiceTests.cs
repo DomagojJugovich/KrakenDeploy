@@ -535,6 +535,24 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
             .Should().Be(TargetRiskLevel.Production);
     }
 
+    [Fact]
+    public async Task CreateSessionAsync_deduplicates_frozen_target_set()
+    {
+        var target = await SeedTargetAsync("dedup-01");
+        var harness = NewHarness();
+
+        var sessionId = await harness.Service.CreateSessionAsync(
+            "dedup test", AdhocMode.Readonly,
+            [target.Id, target.Id, target.Id], Guid.NewGuid(), "ops@laus.hr", default);
+
+        await using var db = postgres.CreateContext();
+        var session = await db.AdhocSessions.SingleAsync(s => s.Id == sessionId);
+        var frozen = JsonSerializer.Deserialize<List<Guid>>(session.FrozenTargetSetJson)!;
+        frozen.Should().ContainSingle(
+            "duplicate target ids must be collapsed at freeze time");
+        frozen[0].Should().Be(target.Id);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private async Task<DeploymentTarget> SeedTargetAsync(

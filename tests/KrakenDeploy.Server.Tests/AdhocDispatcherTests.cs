@@ -296,6 +296,35 @@ public sealed class AdhocDispatcherTests
             .Should().ContainSingle();
     }
 
+    [Fact]
+    public async Task Dispatch_deduplicates_frozen_target_set_defensively()
+    {
+        var target = Guid.NewGuid();
+
+        var connections = new InMemoryAgentConnectionRegistry();
+        connections.Add("conn-a", target);
+
+        var pending = new PendingAdhocRegistry();
+        var pusher = new RecordingPusher(connections, pending);
+        var dispatcher = new AdhocDispatcher(connections, pending, pusher,
+            NullLogger<AdhocDispatcher>.Instance);
+
+        var session = new AdhocSession
+        {
+            Id                  = Guid.NewGuid(),
+            Prompt              = "test",
+            FrozenTargetSetJson = $"[\"{target}\",\"{target}\",\"{target}\"]",
+            CreatedByDisplay    = "ops@test",
+        };
+
+        var results = await dispatcher.DispatchAsync(
+            session, SignedIteration(), Guid.Empty, NoParallelTargets, CancellationToken.None);
+
+        results.Should().ContainSingle(
+            "duplicate target ids in the frozen set must be collapsed to one dispatch");
+        pusher.PushedConnections.Should().ContainSingle();
+    }
+
     // ── Fakes ───────────────────────────────────────────────────────────────
 
     /// <summary>F2 — the default flag map: nothing opts into parallel execution, so

@@ -78,10 +78,10 @@ services:
       # The bundled step packages carry the unsigned-dev-build sentinel; the
       # smoke deployment's script step loads one on the agent (CI/dev only).
       StepPackages__AllowUnsignedLoads: "true"
-      # The step-package loader/caches key off top-level DataPath; the image's
+      # The step-package loader/caches key off Agent:DataPath; the image's
       # pre-chowned writable dir (non-root `kraken` user, same reasoning as
       # the server's) — the relative default would land in root-owned /app.
-      DataPath: /var/lib/krakendeploy-agent
+      Agent__DataPath: /var/lib/krakendeploy-agent
       # SMOKE_TOKEN is injected by scripts/smoke-test.sh after calling /api/dev/smoke-register.
       Server__RegistrationToken: ${SMOKE_TOKEN:-}
     depends_on:

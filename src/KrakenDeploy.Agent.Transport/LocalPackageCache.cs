@@ -62,6 +62,7 @@ public sealed class LocalPackageCache(string cacheRoot) : IPackageCache
             }
         }
 
+        versions.Sort(VersionComparer.Instance);
         return versions;
     }
 
@@ -139,4 +140,21 @@ public sealed class LocalPackageCache(string cacheRoot) : IPackageCache
             .Replace('/', '_').Replace('\\', '_').Replace(':', '_')
             .Replace('*', '_').Replace('?', '_').Replace('"', '_')
             .Replace('<', '_').Replace('>', '_').Replace('|', '_');
+
+    private sealed class VersionComparer : IComparer<string>
+    {
+        public static readonly VersionComparer Instance = new();
+
+        public int Compare(string? x, string? y)
+        {
+            if (x is null && y is null) { return 0; }
+            if (x is null) { return -1; }
+            if (y is null) { return 1; }
+            if (Version.TryParse(x, out var vx) && Version.TryParse(y, out var vy))
+            {
+                return vx.CompareTo(vy);
+            }
+            return string.CompareOrdinal(x, y);
+        }
+    }
 }

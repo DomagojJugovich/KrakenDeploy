@@ -120,6 +120,27 @@ public sealed class ScriptPackageTests
             .And.Contain("let newOctopusArtifact");
     }
 
+    // ── F7/1: script file written to working directory, not shared temp ────
+
+    [Fact]
+    public void ScriptRunner_writes_script_into_working_directory_not_temp()
+    {
+        var workDir = Directory.CreateTempSubdirectory("kraken-f7-script-").FullName;
+        try
+        {
+            var path = KrakenDeploy.Steps.Common.ScriptRunner.WriteScriptFile(
+                "Write-Host 'hi'", "PowerShell", workDir);
+
+            Path.GetDirectoryName(path).Should().Be(workDir,
+                "the script must land in the per-dispatch staging dir, not the shared %TEMP%");
+            File.Exists(path).Should().BeTrue();
+        }
+        finally
+        {
+            try { Directory.Delete(workDir, recursive: true); } catch { }
+        }
+    }
+
     // ── Built archive ──────────────────────────────────────────────────────
 
     [Fact]

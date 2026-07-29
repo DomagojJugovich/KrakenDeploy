@@ -107,19 +107,19 @@ public sealed class AgentIdentityStore(
 
         var path = IdentityFilePath;
         var json = JsonSerializer.Serialize(identity, JsonOptions);
+        var tmp = path + ".tmp";
 
         if (OperatingSystem.IsWindows())
         {
-            // ACL first, then write — the ACL is the confidentiality control under
-            // LocalMachine DPAPI (which any local process can decrypt).
             HardenWindowsDirectory(dir);
-            await File.WriteAllBytesAsync(path, Protect(json), ct).ConfigureAwait(false);
+            await File.WriteAllBytesAsync(tmp, Protect(json), ct).ConfigureAwait(false);
+            File.Move(tmp, path, overwrite: true);
             return;
         }
 
-        await File.WriteAllTextAsync(path, json, ct).ConfigureAwait(false);
+        await File.WriteAllTextAsync(tmp, json, ct).ConfigureAwait(false);
+        File.Move(tmp, path, overwrite: true);
 
-        // Protect the bearer token: owner read/write only (chmod 600) on Unix.
         if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
         {
             File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
