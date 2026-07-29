@@ -1,0 +1,85 @@
+@using KrakenDeploy.Server.Core.Domain.StepTemplates
+@using KrakenDeploy.Server.Data.Services
+@inject StepTemplateService TemplateSvc
+@inject DialogService DialogService
+@inject UiActionGuard Guard
+
+<RadzenStack Gap="1rem">
+    <RadzenFormField Text="Name" Variant="Variant.Outlined" style="width:100%">
+        <RadzenTextBox @bind-Value="_name" style="width:100%" />
+    </RadzenFormField>
+
+    <RadzenFormField Text="Description" Variant="Variant.Outlined" style="width:100%">
+        <RadzenTextArea @bind-Value="_description" Rows="3" style="width:100%" />
+    </RadzenFormField>
+
+    @if (!string.IsNullOrWhiteSpace(_error))
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" Shade="Shade.Lighter">@_error</RadzenAlert>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.End" Gap="0.5rem">
+        <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                      Click="@(() => DialogService.Close(false))" />
+        <RadzenButton Text="Save" ButtonStyle="ButtonStyle.Primary" Icon="save"
+                      IsBusy="@_busy" Click="@SaveAsync" />
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    [Parameter] public StepTemplate Template { get; set; } = null!;
+
+    private string _name = string.Empty;
+    private string _description = string.Empty;
+    private string _error = string.Empty;
+    private bool _busy;
+
+    protected override void OnInitialized()
+    {
+        _name = Template.Name;
+        _description = Template.Description ?? string.Empty;
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = string.Empty;
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            _error = "Name is required.";
+            return;
+        }
+
+        if (!await Guard.AllowAsync(Permission.StepTemplateEdit))
+        {
+            _error = "You no longer have permission to edit step templates.";
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            var updated = await TemplateSvc.UpdateAsync(
+                Template.Id, _name, _description,
+                Template.Properties, Template.Parameters,
+                await Guard.CurrentCallerAsync());
+            if (updated is null)
+            {
+                _error = "This step template no longer exists.";
+                return;
+            }
+            DialogService.Close(true);
+        }
+        catch (AuthorizationException)
+        {
+            _error = "You don't have permission to edit this step template.";
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

@@ -37,12 +37,34 @@
     <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1">@_runbook.Name</RadzenText>
     <RadzenBadge Text="@(_runbook.Project?.Name ?? "?")" BadgeStyle="BadgeStyle.Light" />
     <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem" style="margin-left:auto">
+        <RequirePermission Permission="Permission.RunbookEdit">
+            <RadzenButton Icon="edit" Variant="Variant.Text" Size="ButtonSize.Small"
+                          title="Edit runbook" Click="@OpenEditRunbook" />
+        </RequirePermission>
         <RequirePermission Permission="Permission.RunbookRunCreate">
             <RadzenButton Text="Run Now" Icon="play_arrow" ButtonStyle="ButtonStyle.Success"
                           Click="@(() => _triggerOpen = !_triggerOpen)" />
         </RequirePermission>
     </RadzenStack>
 </div>
+
+@if (_editOpen)
+{
+    <RadzenCard class="rz-mb-4" style="max-width: 720px;">
+        <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">Edit Runbook</RadzenText>
+        <RadzenFormField Text="Name" class="rz-mb-3" style="width:100%">
+            <RadzenTextBox @bind-Value="_editName" style="width:100%" />
+        </RadzenFormField>
+        <RadzenFormField Text="Description (optional)" class="rz-mb-3" style="width:100%">
+            <RadzenTextArea @bind-Value="_editDescription" Rows="3" style="width:100%" />
+        </RadzenFormField>
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+            <RadzenButton Text="Save" ButtonStyle="ButtonStyle.Primary" Click="@SaveEditRunbookAsync" />
+            <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                          Click="@(() => _editOpen = false)" />
+        </RadzenStack>
+    </RadzenCard>
+}
 
 @if (!string.IsNullOrEmpty(_runbook.Description))
 {
@@ -368,6 +390,55 @@
         new(DeploymentFailureMode.BestEffort, "Best effort — drop failed target, continue"),
         new(DeploymentFailureMode.Atomic, "Atomic — fail all on any target failure"),
     ];
+
+    // WP4 — runbook rename / description edit (RunbookService.UpdateAsync).
+    private bool _editOpen;
+    private string _editName = "";
+    private string? _editDescription;
+
+    private void OpenEditRunbook()
+    {
+        if (_runbook is null) return;
+        _editName = _runbook.Name;
+        _editDescription = _runbook.Description;
+        _editOpen = true;
+    }
+
+    private async Task SaveEditRunbookAsync()
+    {
+        if (!await Guard.AllowAsync(Permission.RunbookEdit)) return;
+        if (string.IsNullOrWhiteSpace(_editName)) return;
+
+        try
+        {
+            var updated = await RunbookSvc.UpdateAsync(
+                Id, _editName.Trim(), _editDescription?.Trim(),
+                await Guard.CurrentCallerAsync());
+            if (updated is not null && _runbook is not null)
+            {
+                _runbook.Name = updated.Name;
+                _runbook.Description = updated.Description;
+                _editOpen = false;
+                Notify.Notify(new NotificationMessage
+                {
+                    Severity = NotificationSeverity.Success,
+                    Summary  = "Runbook updated",
+                    Detail   = updated.Name,
+                    Duration = 3000,
+                });
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or AuthorizationException)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary  = "Error",
+                Detail   = ex.Message,
+                Duration = 5000,
+            });
+        }
+    }
 
     // M15 follow-up — step editing migrated to the shared StepFormDialog
     // flow. The inline form / _stepName / _stepType / _stepPackageId /

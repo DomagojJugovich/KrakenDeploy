@@ -97,7 +97,7 @@ public sealed class CrossSpaceParentScopingTests(PostgresFixture postgres)
     public async Task StepTemplateService_does_not_read_or_delete_other_space()
     {
         var g = await SeedAsync();
-        var svc = new StepTemplateService(postgres);
+        var svc = new StepTemplateService(postgres, new AllowAllPermissionEvaluator());
 
         (await svc.GetAsync(g.StepTemplateId)).Should().BeNull();
         (await svc.DeleteAsync(g.StepTemplateId)).Should().BeFalse();

@@ -89,12 +89,18 @@
                 }
             </Template>
         </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="StepTemplate" Sortable="false" Filterable="false" Width="140px" TextAlign="TextAlign.End">
+        <RadzenDataGridColumn TItem="StepTemplate" Sortable="false" Filterable="false" Width="180px" TextAlign="TextAlign.End">
             <Template Context="t">
                 <RadzenButton Icon="download" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
                               Variant="Variant.Flat" class="rz-mr-1"
                               Click="@(() => Nav.NavigateTo($"/api/step-templates/{t.Id}/export", forceLoad: true))"
                               title="Export as Octopus Library JSON" />
+                <RequirePermission Permission="Permission.StepTemplateEdit">
+                    <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                                  Variant="Variant.Flat" class="rz-mr-1"
+                                  Click="@(() => ShowEditDialog(t))"
+                                  title="Edit template" />
+                </RequirePermission>
                 <RequirePermission Permission="Permission.StepTemplateDelete">
                     <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger" Size="ButtonSize.Small"
                                   Variant="Variant.Flat"
@@ -203,6 +209,28 @@
             await LoadAsync();
             NotificationService.Notify(NotificationSeverity.Success,
                 "Template created", "The step template was created successfully.");
+        }
+    }
+
+    // ── Edit dialog ────────────────────────────────────────────────────────
+
+    private async Task ShowEditDialog(StepTemplate template)
+    {
+        if (!await Guard.AllowAsync(Permission.StepTemplateEdit)) return;
+        var result = await DialogService.OpenAsync<Dialogs.EditStepTemplateDialog>(
+            $"Edit — {template.Name}",
+            new Dictionary<string, object?> { [nameof(Dialogs.EditStepTemplateDialog.Template)] = template },
+            options: new DialogOptions
+            {
+                Width = "600px",
+                CloseDialogOnOverlayClick = false,
+            });
+
+        if (result is true)
+        {
+            await LoadAsync();
+            NotificationService.Notify(NotificationSeverity.Success,
+                "Template updated", $"'{template.Name}' has been saved.");
         }
     }
 

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using KrakenDeploy.Server.Core.Domain.Security;
 using KrakenDeploy.Server.Core.Domain.StepTemplates;
 using Microsoft.EntityFrameworkCore;
 
@@ -8,8 +9,27 @@ namespace KrakenDeploy.Server.Data.Services;
 /// <summary>
 /// CRUD and Octopus Library import for <see cref="StepTemplate"/> entities.
 /// </summary>
-public class StepTemplateService(IDbContextFactory<KrakenDbContext> dbFactory)
+public class StepTemplateService(
+    IDbContextFactory<KrakenDbContext> dbFactory,
+    IPermissionEvaluator permissions)
 {
+    private async Task EnsureStepTemplateScopeAsync(
+        KrakenDbContext db, CallerAuthorization caller, Guid templateId,
+        Permission permission, CancellationToken ct)
+    {
+        if (caller.IsSystem)
+        {
+            return;
+        }
+        var spaceId = await db.StepTemplates.IgnoreQueryFilters()
+            .Where(t => t.Id == templateId)
+            .Select(t => (Guid?)t.SpaceId)
+            .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        await permissions.EnsureScopedAsync(
+            caller, permission,
+            new PermissionScope(SpaceId: spaceId), ct).ConfigureAwait(false);
+    }
+
     // ── Queries ────────────────────────────────────────────────────────────────
 
     public async Task<List<StepTemplate>> GetAllAsync(CancellationToken ct = default)
@@ -61,9 +81,13 @@ public class StepTemplateService(IDbContextFactory<KrakenDbContext> dbFactory)
         string? description,
         Dictionary<string, string>? properties,
         List<StepTemplateParameter>? parameters,
+        CallerAuthorization caller,
         CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        await EnsureStepTemplateScopeAsync(db, caller, id, Permission.StepTemplateEdit, ct).ConfigureAwait(false);
+
         var template = await db.StepTemplates.FindAsync([id], ct).ConfigureAwait(false);
         if (template is null)
         {

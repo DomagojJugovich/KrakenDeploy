@@ -8,6 +8,8 @@ using KrakenDeploy.Server.Core.Domain.Projects;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
 using KrakenDeploy.Server.Core.Domain.Security;
+using KrakenDeploy.Server.Core.Domain.Spaces;
+using KrakenDeploy.Server.Core.Domain.StepTemplates;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Variables;
@@ -253,6 +255,32 @@ public sealed class SubSpaceRbacExecuteTests(PostgresFixture postgres) : IClassF
         (await svc.DeleteAsync(rbA.Id, caller)).Should().BeTrue();
     }
 
+    // ── Step-template edit (cross-Space IDOR) ────────────────────────────────
+    //
+    // WP4 item 3: StepTemplateService.UpdateAsync now takes a CallerAuthorization
+    // and re-checks StepTemplateEdit at the template's owning Space (the A4
+    // pattern). A grant scoped to Space A must NOT edit a template living in
+    // Space B — the service resolves the template's real SpaceId filter-free, so
+    // the route/parent is never trusted.
+
+    [Fact]
+    public async Task StepTemplate_edit_is_rejected_on_a_space_outside_the_users_scope()
+    {
+        var g = await SeedSpaceScopedGrantAsync(Permission.StepTemplateEdit);
+        var svc = NewStepTemplateService();
+
+        // A template exists in Space B (created by a system caller).
+        var templateB = await SeedStepTemplateAsync(g.SpaceB);
+
+        // The A-scoped user cannot edit B's template by its id (IDOR: authz
+        // resolves the template's REAL owning Space, not the caller's).
+        var editB = () => svc.UpdateAsync(
+            templateB, "hacked", null, null, null,
+            CallerAuthorization.ForUser(User(g.UserId)));
+        await editB.Should().ThrowAsync<AuthorizationException>(
+            "a StepTemplateEdit grant scoped to Space A must not edit a template in Space B");
+    }
+
     // ── Deployment / runbook-run cancel (cross-environment) ──────────────────
 
     [Fact]
@@ -375,6 +403,9 @@ public sealed class SubSpaceRbacExecuteTests(PostgresFixture postgres) : IClassF
     private RunbookService NewRunbookService() =>
         new(postgres, Channel.CreateUnbounded<TenantWorkItem>(), TimeProvider.System,
             new DisabledAccountContext(), new PermissionEvaluator(postgres, TimeProvider.System));
+
+    private StepTemplateService NewStepTemplateService() =>
+        new(postgres, new PermissionEvaluator(postgres, TimeProvider.System));
 
     // ── Seeding ──────────────────────────────────────────────────────────────
 
@@ -532,6 +563,56 @@ public sealed class SubSpaceRbacExecuteTests(PostgresFixture postgres) : IClassF
 
     private Task<ProcessGraph> SeedProjectScopedProcessEditAsync()
         => SeedTwoProjectsScopedGrantAsync(Permission.ProcessEdit);
+
+    private sealed record SpaceGraph(Guid UserId, Guid SpaceA, Guid SpaceB);
+
+    // Two Spaces (A, B); the user gets <paramref name="permission"/> scoped to
+    // Space A only (a whole-Space grant — no Project/Environment/Tenant scope
+    // rows). Mirrors SeedTwoProjectsScopedGrantAsync but at the Space dimension,
+    // which is what StepTemplate (a top-level, Space-owned aggregate) checks.
+    private async Task<SpaceGraph> SeedSpaceScopedGrantAsync(Permission permission)
+    {
+        var userId = Guid.NewGuid();
+        await using var db = postgres.CreateContext();
+
+        var spaceA = Guid.NewGuid();
+        var spaceB = Guid.NewGuid();
+        db.Spaces.AddRange(
+            new Space { Id = spaceA, Slug = $"space-a-{Guid.NewGuid():N}", Name = "Space A" },
+            new Space { Id = spaceB, Slug = $"space-b-{Guid.NewGuid():N}", Name = "Space B" });
+        await db.SaveChangesAsync();
+
+        var role = new Role { Name = $"space-scoped-{Guid.NewGuid():N}", GrantedPermissions = [permission] };
+        var team = new Team { Name = $"team-{Guid.NewGuid():N}", SpaceId = spaceA };
+        db.Roles.Add(role);
+        db.Teams.Add(team);
+        await db.SaveChangesAsync();
+        db.RoleAssignments.Add(new RoleAssignment
+        {
+            TeamId = team.Id, RoleId = role.Id, SpaceId = spaceA,
+            Scopes = [],
+        });
+        await TestData.EnsureUserAsync(db, userId);
+        db.Add(new TeamMember { TeamId = team.Id, UserId = userId, AddedUtc = DateTimeOffset.UtcNow });
+        await db.SaveChangesAsync();
+
+        return new SpaceGraph(userId, spaceA, spaceB);
+    }
+
+    // Inserts a bare step template into <paramref name="spaceId"/> (stamped
+    // explicitly so it lands in the intended Space regardless of the ambient
+    // Default Space) and returns its id.
+    private async Task<Guid> SeedStepTemplateAsync(Guid spaceId)
+    {
+        await using var db = postgres.CreateContext();
+        var template = new StepTemplate
+        {
+            SpaceId = spaceId, Name = $"st-{Guid.NewGuid():N}", ActionType = "Kraken.Script",
+        };
+        db.StepTemplates.Add(template);
+        await db.SaveChangesAsync();
+        return template.Id;
+    }
 
     // Two projects (A, B) in the default Space; the user gets <paramref name="permission"/>
     // scoped to Project A only.

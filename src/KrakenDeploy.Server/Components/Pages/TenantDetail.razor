@@ -8,6 +8,8 @@
 @inject TenantService TenantSvc
 @inject VariableService VariableSvc
 @inject NavigationManager Nav
+@inject NotificationService Notify
+@inject UiActionGuard Guard
 
 <PageTitle>@(_tenant?.Name ?? "Tenant") - KrakenDeploy</PageTitle>
 
@@ -21,7 +23,38 @@
     <RadzenButton Icon="arrow_back" Variant="Variant.Text" Click="@(() => Nav.NavigateTo(Sp("/tenants")))" />
     <RadzenText TextStyle="TextStyle.H5" TagName="TagName.H1">@_tenant.Name</RadzenText>
     <RadzenBadge Text="@_tenant.Slug" BadgeStyle="BadgeStyle.Light" />
+    <RequirePermission Permission="Permission.TenantEdit">
+        <RadzenButton Icon="edit" Variant="Variant.Text" Size="ButtonSize.Small"
+                      title="Edit tenant" Click="@OpenEdit" />
+    </RequirePermission>
 </div>
+
+@if (_editOpen)
+{
+    <RadzenCard class="rz-mb-4" style="max-width: 720px;">
+        <RadzenText TextStyle="TextStyle.H6" class="rz-mb-3">Edit Tenant</RadzenText>
+        <RadzenRow Gap="1rem" class="rz-mb-3">
+            <RadzenColumn Size="6">
+                <RadzenFormField Text="Name" style="width:100%">
+                    <RadzenTextBox @bind-Value="_editName" style="width:100%" />
+                </RadzenFormField>
+            </RadzenColumn>
+            <RadzenColumn Size="6">
+                <RadzenFormField Text="Slug" style="width:100%">
+                    <RadzenTextBox @bind-Value="_editSlug" style="width:100%" />
+                </RadzenFormField>
+            </RadzenColumn>
+        </RadzenRow>
+        <RadzenFormField Text="Description (optional)" class="rz-mb-3" style="width:100%">
+            <RadzenTextBox @bind-Value="_editDescription" style="width:100%" />
+        </RadzenFormField>
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+            <RadzenButton Text="Save" ButtonStyle="ButtonStyle.Primary" Click="@SaveEditAsync" />
+            <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                          Click="@(() => _editOpen = false)" />
+        </RadzenStack>
+    </RadzenCard>
+}
 
 @if (!string.IsNullOrEmpty(_tenant.Description))
 {
@@ -108,12 +141,61 @@
     private Tenant? _tenant;
     private List<VariableDto> _tenantVars = [];
 
+    private bool _editOpen;
+    private string _editName = "";
+    private string _editSlug = "";
+    private string? _editDescription;
+
     protected override async Task OnInitializedAsync()
     {
         _tenant = await TenantSvc.GetAsync(Id);
         if (_tenant?.VariableSetId is { } setId)
         {
             _tenantVars = await VariableSvc.GetVariablesInSetAsync(setId);
+        }
+    }
+
+    private void OpenEdit()
+    {
+        if (_tenant is null) return;
+        _editName = _tenant.Name;
+        _editSlug = _tenant.Slug;
+        _editDescription = _tenant.Description;
+        _editOpen = true;
+    }
+
+    private async Task SaveEditAsync()
+    {
+        if (!await Guard.AllowAsync(Permission.TenantEdit)) return;
+        if (string.IsNullOrWhiteSpace(_editName) || string.IsNullOrWhiteSpace(_editSlug)) return;
+
+        try
+        {
+            var updated = await TenantSvc.UpdateAsync(
+                Id, _editName.Trim(), _editSlug.Trim(), _editDescription?.Trim(),
+                await Guard.CurrentCallerAsync());
+            if (updated is not null)
+            {
+                _tenant = updated;
+                _editOpen = false;
+                Notify.Notify(new NotificationMessage
+                {
+                    Severity = NotificationSeverity.Success,
+                    Summary = "Tenant updated",
+                    Detail = updated.Name,
+                    Duration = 3000,
+                });
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or AuthorizationException)
+        {
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Error,
+                Summary = "Error",
+                Detail = ex.Message,
+                Duration = 5000,
+            });
         }
     }
 }

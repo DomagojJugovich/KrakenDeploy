@@ -1948,7 +1948,7 @@ public static class Program
 
         app.MapPut("/api/step-templates/{id:guid}",
             async (Guid id, UpdateStepTemplateRequest req, StepTemplateService svc,
-                CancellationToken ct) =>
+                ClaimsPrincipal user, CancellationToken ct) =>
             {
                 var parameters = req.Parameters?.Select(p =>
                     new StepTemplateParameter
@@ -1961,11 +1961,19 @@ public static class Program
                         SelectOptions = p.SelectOptions ?? [],
                     }).ToList();
 
-                var template = await svc.UpdateAsync(
-                    id, req.Name, req.Description, req.Properties, parameters, ct)
-                    .ConfigureAwait(false);
+                try
+                {
+                    var template = await svc.UpdateAsync(
+                        id, req.Name, req.Description, req.Properties, parameters,
+                        CallerAuthorization.ForUser(user), ct)
+                        .ConfigureAwait(false);
 
-                return template is null ? Results.NotFound() : Results.Ok(template);
+                    return template is null ? Results.NotFound() : Results.Ok(template);
+                }
+                catch (AuthorizationException ex)
+                {
+                    return Results.Json(new { error = ex.Message }, statusCode: StatusCodes.Status403Forbidden);
+                }
             }).RequirePermission(Permission.StepTemplateEdit);
 
         app.MapDelete("/api/step-templates/{id:guid}",
