@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 2.1 |
+| **Version** | 2.2 |
 | **Date** | 2026-07-28 |
 | **Authors** | Domagoj Jugović, Claude (Fable 5; 10-agent verification workflow) |
 | **Status** | Review |
@@ -178,7 +178,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 4 | F6 | Server-side per-plan target exclusion at claim time (project/runbook consent flags, FIFO by overlap, reason string, /tasks?target filter) | ⬜ | M | F1, F5 |
 | 4 | F7 | Shared-state hardening riders (parallel-safety audit 2026-07-25: secrets in %TEMP%, server script CWD, boot-sweep guard, ad-hoc dedup, hygiene) | ⬜ | M | — |
 | 4 | BG1 | Topology split + on-prem blue-green (`Deployment:Topology` enum, platform release registry in KrakenDb, onprem `bluegreen` compose profile, marker-aware stop-the-world guard, maintenance-mode queue gate) | ⬜ | L | D1; land before D4 and WP-BASELINE |
-| 4 | BG2 | Windows-service slot delivery (per-slot services + Router service + PowerShell install/upgrade scripts with `-WhatIf`) | ⬜ | M | BG1 |
+| 4 | BG2 | Windows-service slot delivery + on-prem front tier (per-slot services, Router service, PowerShell scripts with `-WhatIf`, Caddy front config, axis-B node-maintenance runbook) | ⬜ | L | BG1 |
 | 5 — product features | WP3 | Real manual intervention (pause/approve/reject) | ⬜ | XL | D1 |
 | 5 | WP4 | Reachability + edit affordances (rescoped: 4 items) | ⬜ | S | — |
 | 5 | WP5 | Missing CRUD end-to-end (target/release/group delete + user profile edit) | ✅ 5c23420·5d0d1b6 | M | — |
@@ -195,7 +195,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 7 — final pre-freeze | WP-BASELINE | Migration-history squash + C4 data-correctness tests + expand/contract lint (**MANDATORY — T4: BG topologies depend on additive-only migrations between live releases; the lint verifies `[StopTheWorld]` markers by operation analysis, unmarked destructive op = CI failure**) + v1 freeze checklist. The squash covers KrakenDbContext only; BG1's `PlatformReleaseDbContext` has its own history table and stays out of it. | ⬜ | M | every schema-touching WP above (D1, D3, F2, F6, BG1, WP3, WP5, WP7, WP8, WP9, WP15) |
 | | | **GO-LIVE (~mid-Oct 2026; scope fixed, date flexes — drift from mid-Sept accepted 2026-07-18)** | | | |
 | post | WP13 | Invites, signing-keys UI, AiCostOverride, authorized live log tail | ⬜ | L | — |
-| post | D5-FOLD | "SaaS revival" package: D5 quarantine + D6 pooled factory + WP12 per-account DEK + blue-green stranding fixes + boundary tests. Part 1's blue-green decoupling ABSORBED by BG1 (pre-go-live, T7 2026-07-28). **WP12 acceptance: remove the multi-account smoke's `continue-on-error` AND add SaaS-mode blue-green coverage (flip/drain under multi-account — intentional per Domagoj 2026-07-27)** — the blue-green smoke itself goes green+blocking in BG1. | ⬜ | XL | D1, D4, BG1 |
+| post | D5-FOLD | "SaaS revival" package: D5 quarantine + D6 pooled factory + WP12 per-account DEK + blue-green stranding fixes + boundary tests. Part 1's blue-green decoupling ABSORBED by BG1 (pre-go-live, T7 2026-07-28). **WP12 acceptance: remove the multi-account smoke's `continue-on-error`, add SaaS-mode blue-green coverage (flip/drain under multi-account — intentional per Domagoj 2026-07-27), AND the platform-level maintenance switch (T14: catalog `platform_settings` row, claim gate consults it under Saas as a 15 s-cached FAIL-OPEN read)** — the blue-green smoke itself goes green+blocking in BG1. | ⬜ | XL | D1, D4, BG1 |
 | post | WP14 | Documentation reconciliation (expanded scope) | ⬜ | L | C1 (caddy rider) |
 | post | WP16 | Script Console — hand-written ad-hoc runs (Tasks-page entry, signed, budgeted; placement movable pre-go-live if wanted) | ⬜ | L | F5, F7 |
 
@@ -296,13 +296,17 @@ coupling of blue-green to `MultiAccount:Enabled`. This block supersedes **D-bg-5
 | T2 | Topology selection | New `Deployment:Topology` enum: `OnPrem` (default) / `OnPremBlueGreen` / `Saas`, chosen at INSTALLER level (kraken-init prompt). Ends `MultiAccount:Enabled`'s triple duty (tenancy / control-plane / blue-green): tenancy+control-plane consumers re-key to `Topology == Saas`, blue-green consumers to `Topology != OnPrem`. A config still carrying the old key fails boot with a named migration message (breaking allowed, pre-prod). |
 | T3 | Registry home | The release registry stays TWO TABLES + the same `pg_advisory_xact_lock` transitions, extracted into a tiny `PlatformReleaseDbContext`: `Saas` → catalog connection (same tables it has today); `OnPremBlueGreen` → KrakenDb under a dedicated `platform` schema with its OWN migrations-history table (keeps WP-BASELINE's squash clean and expand/contract rules able to treat it as never-changing infrastructure). **Text file REJECTED**: transitions are check-then-act across two tables from separate PROCESSES (CLI invocations, drain-watcher on any node, router reads) — a file has no cross-process transaction; the failure mode is two Active releases or a Retired default = fleet-wide 503, and flock does not span nodes. **Main-DB-without-schema-separation rejected** for Domagoj's stated reason (confusing later) — the `platform` schema is the naming fix. |
 | T4 | Non-additive migrations | BG topologies commit to expand/contract: ADDITIVE-ONLY while more than one release is live; a non-additive change ⇒ documented stop-the-world upgrade (drain all slots → stop → migrate → start) — exactly Octopus's only mode, as our worst case instead of our every case. **Enforcement is MARKER-AWARE** (refined 2026-07-28 v2.1 — the v2.0 wording refused ANY migration while a second release was live, which would have blocked every rolling upgrade and defeated expand/contract): non-additive EF migrations carry an explicit `[StopTheWorld]` marker; `database --upgrade`/`setup` refuses a MARKED pending migration while another non-Retired release exists (`--stop-the-world` override) and lets purely-additive pending sets through — that IS the rolling upgrade. WP-BASELINE's lint (MANDATORY) verifies markers by operation analysis: Drop*/Rename*/narrowing Alter ⇒ marker required, CI fails on an unmarked destructive op. Hangfire: auto schema migration DISABLED in BG topologies (PrepareSchemaIfNecessary=false at slot boot); its schema migrates only inside `database --upgrade`, version-checked, always treated as marked. |
-| T5 | Front tier | D-bg-6 (separate HA Caddy front tier, 2+ nodes) is scoped to Saas. On-prem BG: the per-node Router IS the entry point; a single box running 3 slots + router is the supported minimum. |
+| T5 | Front tier (CORRECTED 2026-07-28 v2.2, Domagoj) | Caddy is the TLS front in EVERY on-prem install; the YARP Router never terminates TLS and exists ONLY where blue-green does. Stack matrix: `OnPrem` single box — Caddy → server, NO router (`deploy/caddy` is exactly this reference stack); `OnPremBlueGreen` single box — Caddy → router → slots; `OnPremBlueGreen` multi-node — Caddy front (TLS + node distribution + health-check node drain) → per-node routers → slots; `Saas` — Caddy HA front per D-bg-6. The Router is the entry point of a NODE, never of the installation. Topology enum unchanged — node count is orthogonal. |
 | T6 | Delivery form (RESOLVED 2026-07-28) | v1 on-prem BG ships BOTH forms: Docker (`deploy/onprem` `bluegreen` compose profile — BG1) AND bare-metal Windows-service slots (**BG2**: per-slot Windows services + Router service + PowerShell install/upgrade scripts with mandatory `-WhatIf`). Split into two WPs so BG1 lands and re-greens CI early; BG2 depends on BG1. |
 | T7 | D5-FOLD rescope | BG1 absorbs D5 Part 1's blue-green decoupling. D5-FOLD keeps: `IPlatformControlPlane` quarantine, D6 pooled factory, WP12 per-account DEK, blue-green stranding fixes, boundary tests. WP12 acceptance now: remove the multi-account smoke's `continue-on-error` + add SaaS-mode blue-green smoke coverage (blue-green under multi-account is intentional). |
 | T8 | CI | BG1 re-points `docker-compose.smoke-bluegreen.yml` at `Topology=OnPremBlueGreen` (no multi-account, registry in KrakenDb) and REMOVES that step's `continue-on-error` — the blue-green smoke becomes green AND blocking pre-go-live. The multi-account smoke stays advisory-red until WP12. |
 | T9 | Ordering refresh | Pre-go-live execution order: F5 → F6 → F7 → **BG1** → **BG2** → F3 → phase 5 (WP4 first — smallest — then WP3, WP6, WP9, WP8, WP7, WP15, WP10, WP11) → D2 → D4 (must account for the new Platform pieces) → D7 → WP-BASELINE → go-live. Scope fixed, date flexes (reaffirmed — BG1+BG2 accepted as pre-go-live scope). |
 | T10 | Non-additive DETECTION (Domagoj: "how will we know that is about to happen?") | Three layers, and the operator needs NO foresight: (1) dev-time — the WP-BASELINE lint analyses every migration's operations and forces the `[StopTheWorld]` marker onto destructive ones, so the knowledge is captured when the migration is WRITTEN; (2) build-time — CI watch on `Directory.Packages.props` bumps of storage-schema-owning packages (Hangfire.PostgreSql, Npgsql/EF major) ⇒ release notes must declare stop-the-world; (3) upgrade-time — `database --upgrade` refuses BY NAME ("migration X is marked stop-the-world") and points at the runbook. The operator finds out exactly when it matters, from the tool, not from memory. |
 | T11 | Maintenance mode gates the queue (Domagoj 2026-07-28) | During maintenance: NO scheduled deployment starts, NO new task accepted (creation endpoints refuse with a banner); queued + scheduled work fires at FIRST re-signal after maintenance ends (the F1 stays-Queued machinery already provides this); in-flight tasks run to COMPLETION (drain semantics — maintenance never kills work). Gate lives at the CLAIM path (`ServerTaskLease.TryClaimAsync`) — the single choke point — not at dispatch or per-endpoint. Rationale: no deployment should run into a mid-upgrade environment; Octopus's maintenance mode documentedly lets queued AND scheduled deployments start, which is the hole we refuse to copy. Scope: BG1 item 9 (the stop-the-world runbook depends on it). |
+| T12 | Maintenance gate LANDED (2026-07-28, `e27c89a` on main) | T11 parts (a) claim gate + (c) in-flight-completes are implemented and merged: gate at the top of `TryClaimAsync` ahead of the kind branch (runbook runs gated), cache-free `SettingsService.ReadOrDefaultAsync` on the claim's own context, `ParentTaskId` continuation exemption, `MaintenanceBlocked` handled at both worker claim sites, false UI copy corrected, hold surfaced as the queue-wait reason, 4 pinning tests incl. the exact Octopus hole (due-scheduled refused with `ScheduledFor` preserved). `ScheduledDeploymentDispatchJob` deliberately NOT paused (orphan-reconciliation arm must survive restart-heavy windows; the claim gate covers what it signals). Part (b) creation refusal = BG1 item 9. NOTE (gap G1): the continuation predicate is INLINE today (`ServerTaskLease` + the E3 bypass at `DeploymentWorker`:166 + the blocked-row query at :244) — BG1 item 10 EXTRACTS it as `IsContinuationOfClaimedParent`; the plan must not reference it as already existing. |
+| T13 | Creation refusal + ad-hoc mechanism (AMENDS T11's "ad-hoc approve-dispatch refuses") | Service-layer refusal is the AUTHORITATIVE creation gate (`DeploymentService.CreateAsync`, `RunbookService.TriggerAsync`) — unconditional and it IGNORES `Permission.BypassMaintenance` (gap G2 reconciliation): an admin-created task would only sit Queued-stuck behind the claim gate, so refusal-naming-the-switch beats a dead bypass. The middleware's `BypassMaintenance` pass-through REMAINS for non-creation writes (settings/config, incl. turning maintenance off via `/api/maintenance`) but does NOT exempt task creation. Creation carrying `ParentTaskId` (DeployRelease child) is allowed. AD-HOC IS ALLOWED during maintenance — mechanism named (gap G3): `AdhocSessionService` performs no maintenance check and the interactive UI rides the `/_blazor` middleware exemption; REST/MCP ad-hoc dispatch REMAINS middleware-gated (503, `/mcp` is not exempt) unless the caller holds `BypassMaintenance` — mid-window diagnostics are a human-at-the-console affordance, and wholesale-exempting `/mcp` would reopen the middleware for every MCP mutation. Runbooks stay gated, ZERO escape hatch (T-B2); per-runbook opt-out deferred as a future additive change; UI guidance: run preparation runbooks BEFORE enabling maintenance. Layout banner incl. the ad-hoc pages. |
+| T14 | Two-level maintenance (SaaS) | The T11/T12 gate reads the settings row in the TENANT DB — under SaaS that is per-account self-service quiesce; one account quiescing does NOTHING platform-wide, and no tenant-admin synchronization exists or is needed. Platform upgrades get a PLATFORM-level switch: one catalog `platform_settings` row, flipped by the platform operator, consulted by the claim gate IN ADDITION when `Topology == Saas` — as a CACHED read on the catalog connection (SlotDrainGuard-style 15 s TTL; the tenant-row read stays cache-free), FAIL-OPEN with a warning when the catalog is unreachable (gap G4: a quiesce feature must not let a catalog blip stop every tenant queue; the residual equals the already-tolerated enable race). Non-additive SaaS upgrade: platform maintenance on → fleet drains → stop → `migrate-fleet --stop-the-world` → start → off. → WP12/D5-FOLD acceptance, beside the migrate-fleet wiring. |
+| T15 | Node drain = self-upgrade-ha.md axis B | `docs/self-upgrade-ha.md` v0.2 ALREADY designs node-by-node drain for host maintenance: axis (A) = release drain (blue-green flip, one release across all nodes); axis (B) = drain every slot on ONE node via Caddy health checks. BUT it drains circuits/HTTP only — nothing stops that node's WORKERS from claiming (same gap as BG1 item 10, one level up), so its "never abandon an in-flight deployment" promise does not currently hold. Decisions: BG2 documents axis B (Caddy health-drain + MANUAL "verify zero in-flight claimed by this node" step); the AUTOMATED node-level claim gate is DEFERRED (needs node identity as a first-class concept — additive later on the `platform` schema); self-upgrade-ha.md gets the claim-loop caveat correction so the doc stops overpromising (the Octopus `--wait=0` lesson). |
 
 ## 6. Work-package prompts
 
@@ -1161,15 +1165,34 @@ Scope:
 8. Docs: blue-green-slot-deployment.md vNext (supersede D-bg-5, on-prem chapter,
    expand/contract contract), on-prem-guide.md BG chapter, saas-multi-account-architecture.md
    D7 note, execution-engine.md pointer.
-9. Maintenance mode gates the queue (T11): while maintenance is ON — the claim path
-   (`ServerTaskLease.TryClaimAsync`, single choke point) refuses to claim, so queued AND
-   scheduled tasks stay Queued and fire on the first re-signal after maintenance ends;
-   task-creating endpoints (deploy/runbook trigger, ad-hoc approve-dispatch) refuse with a
-   clear message + UI banner; in-flight tasks run to completion. First verify current
-   behaviour (there is a pending investigation chip); Octopus's maintenance mode lets queued
-   and scheduled deployments START — do not copy that hole. Tests: scheduled deployment due
-   during maintenance does not start and starts after; new deploy refused; running deployment
-   finishes.
+9. Maintenance CREATION refusal (T11 as amended by T13; the claim gate + in-flight-completes
+   already LANDED — `e27c89a`): service-layer refusal in `DeploymentService.CreateAsync` +
+   `RunbookService.TriggerAsync` — the authoritative gate, covering UI (Blazor rides the
+   `/_blazor` middleware exemption), REST, MCP and CLI in one place; UNCONDITIONAL — it
+   ignores `Permission.BypassMaintenance` (the middleware bypass stays for non-creation
+   writes only); creation carrying `ParentTaskId` is allowed (DeployRelease children).
+   AD-HOC DISPATCH STAYS ALLOWED — no maintenance check in `AdhocSessionService`; REST/MCP
+   ad-hoc remains middleware-gated — document both. Layout banner incl. ad-hoc pages;
+   MaintenanceSection guidance sentence: "run preparation runbooks before enabling
+   maintenance." Tests: new deploy refused via the service path AND via REST; child creation
+   by an in-flight parent allowed; runbook trigger refused; banner renders.
+10. Drain gates the claim loop (grill B1, 2026-07-28): a Draining release must stop
+   CLAIMING — today `SlotDrainGuard`'s only consumer is `DrainModeHangfireStopper`, so a
+   draining slot's worker keeps claiming (cookie-pinned users create work there, the
+   create-time enqueue wakes THAT process, the drain gauge refills — a busy instance never
+   retires, and new deployments execute on OLD code post-flip). Fix: worker-level pre-check
+   before `TryClaimAsync`, gated on `SlotDrainGuard` (its 15 s TTL is acceptable here —
+   drain, unlike maintenance, is not a correctness switch), new `DrainBlocked` outcome
+   logged like `MaintenanceBlocked`; refused tasks stay Queued and the ACTIVE release's
+   minutely re-signal picks them up (its Hangfire is alive while the draining slot's is
+   stopped). EXTRACT the inline continuation predicate as `IsContinuationOfClaimedParent`
+   (today inline at `ServerTaskLease`, `DeploymentWorker`:166 and :244) and use it at every
+   gate incl. this one — children of a parent already running on the draining slot MUST
+   still claim there. Placement deliberately differs from maintenance: drain is per-process
+   identity (registry via `SlotDrainGuard`), maintenance is instance-wide DB state
+   (`ServerTaskLease`). Tests: draining slot refuses new claims while an in-flight family
+   completes there; the active release claims the refused task; child claims on the
+   draining slot.
 
 Acceptance: the onprem bluegreen profile boots 2 live slots + router with NO multi-account
 config; `releases register|flip|retire|status` round-trips against the KrakenDb registry; a
@@ -1177,8 +1200,9 @@ cookie-pinned session survives a flip; a drain lets an in-flight deployment fini
 release while new sessions land on the new one; `database --upgrade` refuses a [StopTheWorld]-marked
 pending migration while a second release is live (naming it), lets a purely-additive pending
 set through in the same situation, and proceeds with --stop-the-world; a scheduled deployment
-due during maintenance stays Queued and fires after; OnPrem default topology behaves exactly
-as today (regression suites green); Saas topology unchanged (DEK fail-fast intact); stale
+due during maintenance stays Queued and fires after; a Draining slot refuses new claims while
+its in-flight family finishes and the Active release picks the refused tasks up via the
+re-signal; OnPrem default topology behaves exactly as today (regression suites green); Saas topology unchanged (DEK fail-fast intact); stale
 MultiAccount:Enabled config → named error; blue-green smoke GREEN and BLOCKING in CI.
 BREAKING: config key replaced; new EF context + `platform` schema.
 Branch: feat/topology-onprem-bluegreen
@@ -1208,11 +1232,24 @@ Scope:
    account; firewall notes (only the Router port exposed); per-slot dirs make the
    .backup/.failed sibling-collision (F7 hygiene) impossible — verify, don't assume.
 4. Docs: on-prem-guide Windows chapter mirroring the Docker runbooks 1:1.
+5. Front tier (T5 matrix, T15): Caddy config for on-prem, derived from deploy/caddy + the
+   self-upgrade-ha.md Caddyfile fragments — single box: TLS → router (or TLS → server when
+   Topology=OnPrem, no BG); multi-node: Caddy front with active health checks against the
+   router /kd-router/healthz, cookie affinity, WebSocket. Document bring-your-own-LB
+   equivalence (the health-endpoint contract is the interface).
+6. Node/host maintenance runbook (axis B, T15): drain one node's slots via Caddy
+   health-drain + the MANUAL zero-in-flight verification ("check the Tasks page / CLI for
+   tasks claimed by this node before stopping its services") — the automated node-level
+   claim gate is deferred. CORRECT docs/self-upgrade-ha.md with the claim-loop caveat so it
+   stops overpromising — the Octopus --wait=0 lesson.
 
 Acceptance: two slot services + router service on one Windows box; rolling upgrade executed
 end-to-end via the scripts with an in-flight deployment surviving on the draining slot;
 stop-the-world script honours the maintenance gate and the marker guard; every state-changing
-script demonstrates -WhatIf; DataPath ACL verified. Size M.
+script demonstrates -WhatIf; DataPath ACL verified; front-tier config verified on a single box
+AND a two-node rig (health-drain pulls a node); the axis-B node-maintenance runbook executed
+end-to-end on the two-node rig. Size L (grew from M: Caddy front tier + node-maintenance
+runbook, 2026-07-28).
 Branch: feat/bluegreen-windows-services
 ```
 
@@ -1932,6 +1969,12 @@ Part 3 — WP12: per-account DEK, unblocking multi-account boot.
 - Fleet migrations: FleetMigrationOrchestrator.MigrateAllAsync has NO caller — wire a
   `database migrate-fleet` CLI verb (advisory lock + per-account FleetMigrationReport); the
   post-baseline migrations must reach existing tenant DBs.
+- Platform-level maintenance (T14, 2026-07-28): one catalog `platform_settings` row flipped
+  by the platform operator; the claim gate consults it IN ADDITION to the tenant row when
+  Topology == Saas — cached read on the catalog connection (15 s TTL, SlotDrainGuard shape),
+  FAIL-OPEN with a warning on catalog unreachability. Platform stop-the-world runbook:
+  platform maintenance on → fleet drain → stop → migrate-fleet --stop-the-world → start →
+  off. Tenant rows stay untouched — per-account maintenance remains tenant self-service.
 Note: WP12's original prerequisite flags (A8 agent-JWT, FileSecretStore plaintext) — A8 is done;
 assess FileSecretStore inside this package before any real tenant.
 
@@ -2092,6 +2135,7 @@ Branch: feat/script-console
 
 | Version | Date | Change |
 |---|---|---|
+| 2.2 | 2026-07-28 | **Maintenance/drain grill (B1–B5) + gap reconciliation.** T12: claim gate LANDED (`e27c89a`) — T11 parts (a)+(c) done, part (b) = BG1 item 9. T13 amends T11: ad-hoc ALLOWED during maintenance (mechanism named: no service check + `/_blazor` exemption; REST/MCP stays gated); service-layer creation refusal ignores `Permission.BypassMaintenance` (middleware bypass = non-creation writes only); runbooks gated with zero escape hatch. T14: two-level maintenance for SaaS (platform catalog switch, 15 s cached, fail-open) → WP12. T15: node drain = self-upgrade-ha.md axis B, documented-manual in BG2, automated node claim gate deferred, doc gets the claim-loop caveat. T5 CORRECTED (Domagoj): Caddy = TLS front in every on-prem install; router only where blue-green is, never TLS. BG1 gains item 10 (Draining release must stop claiming — `SlotDrainGuard` has one consumer today, the gauge refills, busy instances never retire) + extraction of `IsContinuationOfClaimedParent` (inline at 3 sites today — gap G1). BG2 grows to L (Caddy front + axis-B runbook). |
 | 2.1 | 2026-07-28 | T6 resolved (Windows-service slots ARE v1 — new **BG2**, M, after BG1); T4 refined to MARKER-AWARE guard — v2.0's wording refused any migration while a second release lived, which would have blocked every rolling upgrade (caught via Domagoj's "how will we know" question); new T10 (three-layer non-additive detection: lint forces markers at write time, CI package-bump watch, upgrade-time refusal by name) and T11 (maintenance mode gates the queue at the claim path — no scheduled starts, no new tasks, in-flight finishes, queued fires on first re-signal after; Octopus's documented hole not copied) — BG1 gains item 9 + acceptance lines. |
 | 2.0 | 2026-07-28 | **Topology & on-prem blue-green.** New §5 block "Resolved 2026-07-28" (T1–T9; supersedes D-bg-5): `Deployment:Topology` enum (OnPrem default / OnPremBlueGreen / Saas, installer-level), blue-green available on-prem (3 slots, 1..N servers, router = entry point), release registry → `PlatformReleaseDbContext` (KrakenDb `platform` schema on-prem / catalog on SaaS — text file rejected: no cross-process transactions), non-additive migrations = stop-the-world with a `database --upgrade` guard, expand/contract lint now MANDATORY. New WP **BG1** (L, pre-go-live, after F7); D5-FOLD Part 1 rescoped (BG decoupling absorbed); WP-BASELINE deps + lint scope updated; execution order refreshed (T9). Origin-sync banner retired. Motivated by Octopus research: their HA upgrade is a full-cluster outage, mixed versions forbidden, no server blue-green exists — this is a differentiator. |
 | 1.5 | 2026-07-27 | CI: both SaaS-path smokes (multi-account, blue-green) marked `continue-on-error` — both fail solely on the M13.D.2 "envelope encryption does not support MultiAccount" boot fail-fast, and blue-green cannot be reconfigured around it (multi-account-only by D-bg-5). Removing both flags added to WP12/D5-FOLD acceptance. Corrects an earlier claim in `d140993` that blue-green ships in v1 — it does not; single-node on-prem upgrades stop → migrate → start. |
