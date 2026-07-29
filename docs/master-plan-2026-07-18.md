@@ -183,7 +183,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 4 | F4 | Remove the `ApiKey:Key` config auth path | ✅ fix/sec-remove-config-apikey | S | — |
 | 4 | F5 | Machine gate reader-writer rework (mutual-consent shared mode + updater write-lock) | ⬜ | M | F2 |
 | 4 | F6 | Server-side per-plan target exclusion at claim time (project/runbook consent flags, FIFO by overlap, reason string, /tasks?target filter) | ⬜ | M | F1, F5 |
-| 4 | F7 | Shared-state hardening riders (parallel-safety audit 2026-07-25: secrets in %TEMP%, server script CWD, boot-sweep guard, ad-hoc dedup, hygiene) | ⬜ | M | — |
+| 4 | F7 | Shared-state hardening riders (parallel-safety audit 2026-07-25: secrets in %TEMP%, server script CWD, boot-sweep guard, ad-hoc dedup, hygiene) | ✅ fix/agent-shared-state-hardening `431d58e`·`990e5d5` (merged `91b2345`) | M | — |
 | 4 | BG1 | Topology split + on-prem blue-green (`Deployment:Topology` enum, platform release registry in KrakenDb, onprem `bluegreen` compose profile, marker-aware stop-the-world guard, maintenance-mode queue gate) | ⬜ | L | D1; land before D4 and WP-BASELINE |
 | 4 | BG2 | Windows-service slot delivery + on-prem front tier (per-slot services, Router service, PowerShell scripts with `-WhatIf`, Caddy front config, axis-B node-maintenance runbook) | ⬜ | L | BG1 |
 | 5 — product features | WP3 | Real manual intervention (pause/approve/reject) | ⬜ | XL | D1 |
