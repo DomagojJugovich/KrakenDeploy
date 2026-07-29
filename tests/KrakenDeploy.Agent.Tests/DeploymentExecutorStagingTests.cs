@@ -186,6 +186,30 @@ public sealed class DeploymentExecutorStagingTests
         }
     }
 
+    [Fact]
+    public void SweepOrphanedStagingOnBoot_sweeps_when_lock_content_is_corrupt()
+    {
+        var dataDir = Directory.CreateTempSubdirectory("kraken-agent-staging-corrupt-");
+        try
+        {
+            var root = DeploymentExecutor.StagingRoot(dataDir.FullName);
+            Directory.CreateDirectory(Path.Combine(root, Guid.NewGuid().ToString("N")));
+
+            var lockFile = Path.Combine(dataDir.FullName, "staging.lock");
+            File.WriteAllText(lockFile, "not-a-pid");
+
+            var executor = BuildExecutor(new NoopLink(), dataDir.FullName);
+            executor.SweepOrphanedStagingOnBoot();
+
+            Directory.Exists(root).Should().BeFalse(
+                "a corrupt (non-integer) lock file must not block the sweep");
+        }
+        finally
+        {
+            TryDelete(dataDir.FullName);
+        }
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private static DeploymentExecutor BuildExecutor(IServerLink link, string dataPath) => new(

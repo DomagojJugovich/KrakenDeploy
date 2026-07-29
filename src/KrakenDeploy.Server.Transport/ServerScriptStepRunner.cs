@@ -313,7 +313,7 @@ public sealed class ServerScriptStepRunner(
         syntax.ToLowerInvariant() is "bash" or "csharp" or "fsharp" or "python"
             ? Utf8NoBom : Utf8Bom;
 
-    private static string WriteScriptFile(string body, string syntax)
+    internal static string WriteScriptFile(string body, string syntax)
     {
         var ext = syntax.ToLowerInvariant() switch
         {
