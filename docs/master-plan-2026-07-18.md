@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | 2.2 |
-| **Date** | 2026-07-28 |
+| **Version** | 2.3 |
+| **Date** | 2026-07-29 |
 | **Authors** | Domagoj Jugović, Claude (Fable 5; 10-agent verification workflow) |
 | **Status** | Review |
 | **Technologies** | .NET 10, Blazor Server, Radzen, EF Core 10, PostgreSQL, SignalR, gRPC, Hangfire |
@@ -34,7 +34,7 @@ Also folded in: the **2026-07-16 execution-engine adversarial audit** (E-series 
 
 ## 2. Completed work
 
-Reference only — no prompts. All of this is on **local** `main` (unpushed; see the warning above).
+Reference only — no prompts. All of this is on `main` (pushed — origin current since 2026-07-27).
 
 | ID | Title | Findings closed | Evidence / date |
 |---|---|---|---|
@@ -76,7 +76,7 @@ Reference only — no prompts. All of this is on **local** `main` (unpushed; see
 
 ## 3. How to use
 
-Same protocol as before: **one WP per session, on its own branch, `/code-review` before every merge.** Each §6 prompt is self-contained for a fresh Claude Code session on **Opus 4.8** (or the current best model). Paste, in order:
+Same protocol as before: **one WP per session, on its own branch, `/code-review` before every merge.** Each §6 prompt is self-contained for a fresh Claude Code session on **Claude Opus 5** (or the current best model). Paste, in order:
 
 1. The **Common preamble** (below) — always.
 2. The **Audit addendum** (below) — for prompts marked *(preamble + addendum)*.
@@ -134,6 +134,13 @@ House rules (each has bitten us before — do not skip):
     values remain fallback/seed).
 12. The execution engine is documented in docs/execution-engine.md — read it before touching
     DeploymentWorker, AgentHub, or the agent transport.
+13. Scope: deliver what the WP asks for, at the scope intended. Make routine judgment calls
+    yourself; if the ask seems mistaken or a better approach exists, say so in a sentence and
+    continue as asked — do not quietly narrow, widen, or transform the task. Report completion
+    only when the whole WP is done.
+14. Written deliverables (docs, runbooks) cover the substance without filler sections or
+    boilerplate summaries. Delegate to subagents only for genuinely independent, sizeable
+    tracks of work — never to verify or double-check your own work.
 ```
 
 ### Audit addendum (paste after the preamble for prompts marked "+ addendum")
