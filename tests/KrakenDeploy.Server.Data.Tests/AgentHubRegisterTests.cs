@@ -77,69 +77,25 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
     }
 
     [Fact]
-    public async Task RegisterAsync_refuses_a_contract_version_mismatch()
+    public async Task RegisterAsync_does_not_re_check_the_contract_version()
     {
-        // B6: a pre-B6 agent deserializes ContractVersion=0 and must be refused
-        // LOUDLY — pre-B6 such an agent connected fine and every report it sent
-        // was silently dropped by signature mismatch. The refusal must make the
-        // connection undispatchable (registry removal), mark the target Offline
-        // immediately, audit, and tell the agent why.
+        // The contract check does NOT live here any more — it moved onto the SignalR
+        // handshake, where AgentContractHandshakeGate refuses a skew with 426 before the
+        // connection is admitted. This test pins that the hub does not re-check it: a
+        // second, later gate would reintroduce the connected-but-unverified window whose
+        // removal is the whole point of the move, and it would fail closed on a connection
+        // the handshake had already cleared.
+        //
+        // The skew itself is refused end to end by
+        // MultiAccountAgentTransportE2ETests.Agent_with_a_skewed_contract_version_is_refused,
+        // which drives a real SignalR client through the real middleware. That is the only
+        // honest place to assert it: a hub method never sees the handshake, so a unit test
+        // here could only ever re-assert a check that should no longer exist.
         await using var db = postgres.CreateContext();
 
         var target = new DeploymentTarget
         {
-            Name = "hub-test-contract-refusal",
-            Roles = ["web"],
-            TransportMode = TransportMode.Reverse,
-            Status = TargetStatus.Online,
-        };
-        db.DeploymentTargets.Add(target);
-        await db.SaveChangesAsync();
-
-        var registry = new InMemoryAgentConnectionRegistry();
-        // FakeHubCallerContext's connection id — pre-registered like OnConnectedAsync would.
-        registry.Add("test-connection", target.Id);
-
-        var result = await BuildHub(postgres, target.Id, registry).RegisterAsync(
-            new AgentRegistrationRequest(target.Id, "m", "o", "0.9-old", 0L, 0L,
-                ContractVersion: 0));
-
-        result.Accepted.Should().BeFalse();
-        result.ServerContractVersion.Should().Be(AgentContract.CurrentVersion);
-        result.Message.Should().Contain("Update the agent");
-
-        registry.GetConnectionId(target.Id).Should().BeNull(
-            "a refused agent must be undispatchable immediately");
-
-        await db.Entry(target).ReloadAsync();
-        target.Status.Should().Be(TargetStatus.Offline,
-            "the refusal marks the target Offline without the flicker grace");
-        target.AgentVersion.Should().Be("0.9-old",
-            "the outdated version is recorded so operators can see what to upgrade");
-
-        (await db.Set<KrakenDeploy.Server.Core.Domain.Audit.AuditEntry>()
-            .Where(a => a.EventType == "Agent.ContractVersionRejected"
-                        && a.SubjectId == target.Id.ToString())
-            .CountAsync())
-            .Should().Be(1, "the refusal is audited");
-    }
-
-    [Fact]
-    public async Task RegisterAsync_refuses_the_previous_contract_version()
-    {
-        // F5 — the v2 → v3 bump carries NO shape change, so a v2 agent deserializes
-        // every field this server sends and looks perfectly healthy. What differs is
-        // MEANING: a v2 agent reads AllowParallelTaskExecution = true as "skip the
-        // machine execution gate entirely" — no lock at all — which is exactly the
-        // behaviour F5 removes. Left unrefused it would run an ad-hoc script straight
-        // into a deployment's file / IIS / service operations, silently, with the
-        // server believing the gate was honoured. Hence: refuse the skew, do not
-        // negotiate it.
-        await using var db = postgres.CreateContext();
-
-        var target = new DeploymentTarget
-        {
-            Name = "hub-test-contract-v2-refusal",
+            Name = "hub-test-contract-not-rechecked",
             Roles = ["web"],
             TransportMode = TransportMode.Reverse,
             Status = TargetStatus.Online,
@@ -155,15 +111,13 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
             new AgentRegistrationRequest(target.Id, "m", "o", "f2-era", 0L, 0L,
                 ContractVersion: previousVersion));
 
-        result.Accepted.Should().BeFalse(
-            "a one-version skew is still a skew — the fields line up but the semantics do not");
-        result.ServerContractVersion.Should().Be(AgentContract.CurrentVersion);
-
-        registry.GetConnectionId(target.Id).Should().BeNull(
-            "a refused agent must be undispatchable immediately");
+        result.Accepted.Should().BeTrue(
+            "the hub trusts the handshake gate and must not gate on the version a second time");
+        registry.GetConnectionId(target.Id).Should().Be("test-connection",
+            "a tracked connection is dispatchable — there is no separate registration step");
 
         await db.Entry(target).ReloadAsync();
-        target.Status.Should().Be(TargetStatus.Offline);
+        target.Status.Should().Be(TargetStatus.Online);
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────

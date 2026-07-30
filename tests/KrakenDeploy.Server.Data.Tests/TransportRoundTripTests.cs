@@ -589,6 +589,10 @@ internal sealed class RoundTripHost : IAsyncDisposable
         var app = builder.Build();
         app.UseAuthentication();
         app.UseAuthorization();
+        // Mirrors the production pipeline order. This suite drives a REAL SignalRServerLink,
+        // so the gate is exercised end to end: the agent's own handshake header has to match
+        // or none of these tests can connect at all.
+        app.UseMiddleware<AgentContractHandshakeGate>();
         app.MapHub<AgentHub>("/hubs/agent");
         await app.StartAsync().ConfigureAwait(false);
 
@@ -702,8 +706,8 @@ internal sealed class RoundTripHost : IAsyncDisposable
             if (DateTime.UtcNow > deadline)
             {
                 throw new TimeoutException(
-                    "agent connection never became dispatchable after a successful " +
-                    "RegisterAsync (F5: eligibility requires MarkRegistered)");
+                    "agent connection never became dispatchable — OnConnectedAsync should " +
+                    "make a tracked connection immediately eligible");
             }
             await Task.Delay(25).ConfigureAwait(false);
         }

@@ -17,9 +17,6 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
     private readonly ConcurrentDictionary<Guid, Guid> _accountByTarget = new();
     // Abort delegate (the hub's Context.Abort) per target, for A8/T1-12 revocation.
     private readonly ConcurrentDictionary<Guid, Action> _abortByTarget = new();
-    // F5 — connections that have PASSED RegisterAsync, including its wire-contract
-    // version check. Membership is the DISPATCH gate; see MarkRegistered.
-    private readonly ConcurrentDictionary<string, bool> _registered = new();
 
     public void Add(string connectionId, Guid targetId, Guid accountId = default, Action? abort = null)
     {
@@ -30,18 +27,6 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
         {
             _abortByTarget[targetId] = abort;
         }
-        // Deliberately NOT registered yet: OnConnectedAsync calls this, and the
-        // contract-version check does not run until RegisterAsync.
-    }
-
-    public void MarkRegistered(string connectionId)
-    {
-        // Only for a connection we still track — a refusal path that already removed
-        // it must never be resurrected as dispatchable.
-        if (_byConnection.ContainsKey(connectionId))
-        {
-            _registered[connectionId] = true;
-        }
     }
 
     public bool TryRemove(string connectionId, out Guid targetId)
@@ -50,7 +35,6 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
         {
             return false;
         }
-        _registered.TryRemove(connectionId, out _);
 
         // E4 — compare-and-remove the target mapping: wipe it (and its account /
         // abort side-tables) ONLY if it still points at THIS connection. On an
@@ -106,14 +90,10 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
     }
 
     /// <summary>
-    /// LIVENESS, not eligibility — deliberately NOT gated on <see cref="MarkRegistered"/>.
-    /// Its consumers ask "did the agent reconnect?" (the hub's offline grace) and "is the
-    /// agent still there?" (B3's mid-wave disconnect monitor). Answering those with
-    /// dispatch eligibility flips a healthy target Offline during the connect→register
-    /// window and, worse, lets the disconnect monitor CANCEL a wave that is still
-    /// executing on a connected agent — a false "agent disconnected mid-wave" diagnosis
-    /// that under Atomic failure mode triggers farm-wide cleanup. Dispatchability is
-    /// <see cref="GetConnectionId"/>'s question, and only that one.
+    /// Whether the target has a live connection. Since the wire-contract check moved onto
+    /// the handshake there is no longer a second, narrower notion of "eligible": a tracked
+    /// connection IS a dispatchable one, so this and <see cref="GetConnectionId"/> answer
+    /// the same question and cannot drift apart.
     /// </summary>
     public bool HasConnectionFor(Guid targetId) => _byTarget.ContainsKey(targetId);
 
@@ -132,24 +112,21 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
         => _byConnection.TryGetValue(connectionId, out var id) ? id : null;
 
     /// <summary>
-    /// F5 — the target's DISPATCHABLE connection, or <c>null</c>. A connection that has
-    /// not yet passed <c>RegisterAsync</c> is deliberately invisible here.
+    /// The target's dispatchable connection, or <c>null</c>. Every tracked connection is
+    /// dispatchable: <c>OnConnectedAsync</c> only calls <see cref="Add"/> once the target
+    /// is positively resolved in the right account, and a wire-contract skew never reaches
+    /// the hub at all because <c>AgentContractHandshakeGate</c> refuses it with 426 during
+    /// the handshake.
     /// <para>
-    /// <c>OnConnectedAsync</c> calls <see cref="Add"/> before the agent has invoked
-    /// <c>RegisterAsync</c>, so the wire-contract version has not been checked yet. This
-    /// used to be the ONLY dispatch predicate, which meant a version-skewed agent could
-    /// be sent work in that window — and permanently, if its <c>RegisterAsync</c> invoke
-    /// failed, because that failure is swallowed as retryable and re-sent only on the
-    /// next reconnect. A v2 agent reads the v3 <c>AllowParallelTaskExecution = true</c>
-    /// as "skip the machine gate entirely", so it would run an approved script with no
-    /// lock at all while the server believed the gate was honoured. Gating the lookup
-    /// fixes every dispatch consumer at once rather than each remembering to ask.
+    /// This briefly carried a second predicate — a "has completed RegisterAsync" flag — to
+    /// keep work away from an agent whose version was still unknown, which was necessary
+    /// only because the version check lived in a hub method. Moving that check earlier
+    /// removed the reason for the flag, and with it a split that had to be explained to the
+    /// offline grace and the mid-wave disconnect monitor separately.
     /// </para>
     /// </summary>
     public string? GetConnectionId(Guid targetId)
-        => _byTarget.TryGetValue(targetId, out var connId) && _registered.ContainsKey(connId)
-            ? connId
-            : null;
+        => _byTarget.TryGetValue(targetId, out var connId) ? connId : null;
 
     public Guid? GetAccountForTarget(Guid targetId)
         => _accountByTarget.TryGetValue(targetId, out var accountId) ? accountId : null;

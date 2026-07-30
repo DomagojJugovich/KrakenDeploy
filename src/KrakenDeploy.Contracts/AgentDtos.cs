@@ -1,18 +1,39 @@
 namespace KrakenDeploy.Contracts;
 
 /// <summary>
-/// The agent wire-contract version this assembly speaks. Sent by the agent in
-/// <see cref="AgentRegistrationRequest.ContractVersion"/> and enforced by the
-/// server at registration: a mismatch is REFUSED with an explicit
-/// <see cref="AgentRegistrationResult"/> instead of the pre-B6 failure mode
-/// (silently dropped log/step reports after an unnegotiated signature change).
+/// The agent wire-contract version this assembly speaks, carried on the SignalR
+/// HANDSHAKE in the <see cref="VersionHeader"/> request header and enforced before the
+/// connection exists: a mismatch is refused with HTTP 426 by the server's handshake
+/// gate, so a skewed agent never becomes a tracked connection at all.
 /// Bump on every breaking change to the SignalR agent surface
 /// (<see cref="IAgentHubServer"/> / <see cref="IAgentHubClient"/>) or to
 /// <see cref="DeploymentPlan"/> — including a change to how the agent must
 /// INTERPRET an existing field, not only to the shapes themselves (see <c>3</c>).
+/// <para>
+/// The check used to live in <c>RegisterAsync</c>, a hub METHOD, which forced the
+/// server to admit a connection before it could learn the version. That created a
+/// "connected, tracked, but not yet verified" state, and dispatch then had to be gated
+/// on a separate registration flag — a split that leaked into the registry, the offline
+/// mark, the mid-wave disconnect monitor, and an abort-and-retry dance whenever
+/// registration failed. Refusing at the handshake deletes the state instead of guarding
+/// it: past the gate, connected == verified == dispatchable.
+/// </para>
 /// </summary>
 public static class AgentContract
 {
+    /// <summary>
+    /// Request header carrying <see cref="CurrentVersion"/> on the SignalR handshake.
+    /// Rides both the negotiate request and the WebSocket upgrade, and persists across
+    /// automatic reconnects — the same mechanism the blue-green release pin
+    /// (<c>X-KD-Release</c>) already depends on.
+    /// </summary>
+    public const string VersionHeader = "X-KD-Contract";
+
+    /// <summary>
+    /// Response header on a 426 refusal, naming the version the server requires, so an
+    /// operator reading the agent log learns both numbers rather than only its own.
+    /// </summary>
+    public const string ServerVersionHeader = "X-KD-Contract-Server";
     /// <summary>
     /// Version history:
     /// <list type="bullet">
@@ -36,7 +57,13 @@ public static class AgentContract
     ///     <c>GET /api/agents/task-in-flight</c>, which the agent MUST consult
     ///     (fail-closed) immediately before a self-upgrade swap: the machine gate is
     ///     released at every wave boundary, so a gate-only check cannot see that a
-    ///     multi-wave deployment is still mid-flight.</item>
+    ///     multi-wave deployment is still mid-flight. Finally, the version moved from
+    ///     <see cref="AgentRegistrationRequest.ContractVersion"/> onto the handshake
+    ///     header <see cref="VersionHeader"/> so it is checked BEFORE the connection is
+    ///     admitted; the request field is retained for diagnostics only and is no longer
+    ///     a gate. This is folded into v3 rather than bumped to v4 because v3 has never
+    ///     shipped — once it has, the same change costs a version bump plus a
+    ///     mixed-fleet compatibility window.</item>
     /// </list>
     /// </summary>
     public const int CurrentVersion = 3;

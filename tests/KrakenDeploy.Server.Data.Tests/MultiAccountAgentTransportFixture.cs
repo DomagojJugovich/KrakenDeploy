@@ -1,6 +1,8 @@
+using System.Globalization;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Targets;
@@ -161,6 +163,9 @@ public sealed class MultiAccountAgentTransportFixture : IAsyncLifetime
         var app = builder.Build();
         app.UseAuthentication();
         app.UseAuthorization();
+        // Mirrors the production pipeline order: the handshake contract gate sits after
+        // authentication (so its audit row can name the target) and before the hub.
+        app.UseMiddleware<AgentContractHandshakeGate>();
         app.MapHub<AgentHub>("/hubs/agent");
         await app.StartAsync();
         return app;
@@ -173,7 +178,12 @@ public sealed class MultiAccountAgentTransportFixture : IAsyncLifetime
     /// the connection routes through the TestServer's in-memory handler.
     /// </summary>
     public HubConnection BuildConnection(
-        WebApplication host, AccountInfo account, Guid tokenTargetId, string? hostOverride = null)
+        WebApplication host,
+        AccountInfo account,
+        Guid tokenTargetId,
+        string? hostOverride = null,
+        int? contractVersion = null,
+        bool omitContractHeader = false)
     {
         var server = (TestServer)host.Services.GetRequiredService<IServer>();
         var requestHost = hostOverride ?? account.Host;
@@ -185,6 +195,19 @@ public sealed class MultiAccountAgentTransportFixture : IAsyncLifetime
                 options.Transports = HttpTransportType.LongPolling;
                 options.HttpMessageHandlerFactory = _ => server.CreateHandler();
                 options.AccessTokenProvider = () => Task.FromResult<string?>(token);
+
+                // The handshake contract gate refuses a connection whose declared wire
+                // version is absent or wrong, so a fixture standing in for a real agent
+                // must declare it exactly as SignalRServerLink does. `contractVersion`
+                // presents a SKEWED version; `omitContractHeader` presents none at all,
+                // which is a distinct path in the gate (a pre-header agent) and must not be
+                // simulated by sending a zero.
+                if (!omitContractHeader)
+                {
+                    options.Headers[AgentContract.VersionHeader] =
+                        (contractVersion ?? AgentContract.CurrentVersion)
+                            .ToString(CultureInfo.InvariantCulture);
+                }
             })
             .Build();
     }

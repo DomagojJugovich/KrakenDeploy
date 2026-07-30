@@ -15,77 +15,66 @@ namespace KrakenDeploy.Server.Tests;
 /// </summary>
 public sealed class AgentConnectionRegistryReconnectTests
 {
-    // ── F5: dispatch eligibility requires a PASSED registration ─────────────
+    // ── A tracked connection IS a dispatchable one ───────────────────────────
 
     [Fact]
-    public void A_connected_but_unregistered_connection_is_not_dispatchable()
+    public void A_tracked_connection_is_immediately_dispatchable()
     {
-        // OnConnectedAsync must add the connection before the agent can invoke
-        // anything, so the wire-contract version is unchecked at that point. Dispatch
-        // therefore keys on MarkRegistered, not on Add: a v2 agent reads v3's
-        // AllowParallelTaskExecution = true as "skip the machine gate entirely", so
-        // handing it work in this window would run an approved script with no lock at
-        // all while the server believed the gate was honoured.
+        // Liveness and eligibility are the same question again, and that is the point.
+        // There used to be a second predicate here — a "has completed RegisterAsync" flag —
+        // because the wire-contract check lived in a hub METHOD, so the server had to admit
+        // a connection before it could learn the version. That check now runs on the
+        // handshake (AgentContractHandshakeGate refuses a skew with 426), and
+        // OnConnectedAsync only calls Add once the target is positively resolved in the
+        // right account. So there is no window left to guard: past Add, the connection is
+        // verified.
+        //
+        // Keeping the two predicates in agreement matters in both directions. Gating
+        // eligibility flipped healthy targets Offline inside the old window; gating LIVENESS
+        // let B3's mid-wave disconnect monitor diagnose "agent disconnected" against an
+        // agent that was still executing, which under Atomic failure mode triggers
+        // farm-wide cleanup.
         var registry = new InMemoryAgentConnectionRegistry();
         var targetId = Guid.NewGuid();
 
         registry.Add("conn-1", targetId);
 
-        registry.GetTargetId("conn-1").Should().Be(targetId,
-            "the connection IS tracked — the hub needs it to answer RegisterAsync");
-        registry.GetConnectionId(targetId).Should().BeNull(
-            "but it is NOT dispatchable until RegisterAsync has passed");
-
-        // LIVENESS must stay true throughout. This is the distinction that matters most:
-        // HasConnectionFor answers "did the agent reconnect / is it still there", and its
-        // consumers are the hub's 30 s offline grace and B3's mid-wave disconnect monitor.
-        // Gating it on registration flipped healthy targets Offline and let the monitor
-        // CANCEL a wave still executing on a connected agent.
-        registry.HasConnectionFor(targetId).Should().BeTrue(
-            "the agent is connected — liveness is not the same question as eligibility");
-
-        registry.MarkRegistered("conn-1");
-
-        registry.GetConnectionId(targetId).Should().Be("conn-1");
+        registry.GetTargetId("conn-1").Should().Be(targetId);
+        registry.GetConnectionId(targetId).Should().Be("conn-1",
+            "a connection the hub accepted has already passed the handshake contract gate");
         registry.HasConnectionFor(targetId).Should().BeTrue();
     }
 
     [Fact]
-    public void A_removed_connection_cannot_be_marked_registered()
+    public void A_removed_connection_is_not_dispatchable()
     {
-        // The contract refusal removes the connection and THEN the agent could, in
-        // principle, still complete an in-flight RegisterAsync. Marking a removed
-        // connection registered would resurrect a deliberately-refused agent as
-        // dispatchable.
+        // Removal is how a revoked token (A8/T1-12) and a retired target take a live tunnel
+        // out of service, so it must be immediate and must not be recoverable by anything
+        // other than a fresh connection.
         var registry = new InMemoryAgentConnectionRegistry();
         var targetId = Guid.NewGuid();
 
         registry.Add("conn-1", targetId);
         registry.TryRemove("conn-1", out _).Should().BeTrue();
 
-        registry.MarkRegistered("conn-1");
-
-        registry.GetConnectionId(targetId).Should().BeNull(
-            "a refused connection must stay undispatchable");
+        registry.GetConnectionId(targetId).Should().BeNull();
+        registry.HasConnectionFor(targetId).Should().BeFalse();
     }
 
     [Fact]
-    public void Re_adding_a_connection_id_starts_unregistered_again()
+    public void A_reconnect_restores_dispatchability()
     {
-        // A refused agent reconnects on the auth-failure lane and OnConnectedAsync
-        // re-Adds it. That must reopen the unregistered state, or the second cycle
-        // would inherit the first cycle's eligibility.
+        // The ordinary reconnect: the old connection is removed, OnConnectedAsync adds the
+        // new one, and work flows again with no second step required.
         var registry = new InMemoryAgentConnectionRegistry();
         var targetId = Guid.NewGuid();
 
         registry.Add("conn-1", targetId);
-        registry.MarkRegistered("conn-1");
         registry.TryRemove("conn-1", out _);
 
-        registry.Add("conn-1", targetId);
+        registry.Add("conn-2", targetId);
 
-        registry.GetConnectionId(targetId).Should().BeNull(
-            "the new connection cycle must prove its contract version again");
+        registry.GetConnectionId(targetId).Should().Be("conn-2");
     }
 
     [Fact]
@@ -94,10 +83,10 @@ public sealed class AgentConnectionRegistryReconnectTests
         var registry = new InMemoryAgentConnectionRegistry();
         var targetId = Guid.NewGuid();
 
-        registry.AddRegistered("old-conn", targetId);
+        registry.Add("old-conn", targetId);
         // Agent reconnects: the new connection registers under the SAME target
         // before the old connection's late OnDisconnected fires.
-        registry.AddRegistered("new-conn", targetId);
+        registry.Add("new-conn", targetId);
 
         // Late, out-of-order disconnect of the OLD connection.
         registry.TryRemove("old-conn", out var removed).Should().BeTrue();
@@ -120,8 +109,8 @@ public sealed class AgentConnectionRegistryReconnectTests
         var oldAborts = 0;
         var newAborts = 0;
 
-        registry.AddRegistered("old-conn", targetId, Guid.Empty, abort: () => oldAborts++);
-        registry.AddRegistered("new-conn", targetId, Guid.Empty, abort: () => newAborts++);
+        registry.Add("old-conn", targetId, Guid.Empty, abort: () => oldAborts++);
+        registry.Add("new-conn", targetId, Guid.Empty, abort: () => newAborts++);
 
         // Late disconnect of the superseded connection must not strip the live
         // connection's abort delegate (A8/T1-12 token revocation depends on it).
@@ -140,8 +129,8 @@ public sealed class AgentConnectionRegistryReconnectTests
         var oldAccount = Guid.NewGuid();
         var newAccount = Guid.NewGuid();
 
-        registry.AddRegistered("old-conn", targetId, oldAccount);
-        registry.AddRegistered("new-conn", targetId, newAccount);
+        registry.Add("old-conn", targetId, oldAccount);
+        registry.Add("new-conn", targetId, newAccount);
 
         registry.TryRemove("old-conn", out _).Should().BeTrue();
 
@@ -155,7 +144,7 @@ public sealed class AgentConnectionRegistryReconnectTests
         // must clear it (the compare-and-remove matches).
         var registry = new InMemoryAgentConnectionRegistry();
         var targetId = Guid.NewGuid();
-        registry.AddRegistered("conn-1", targetId);
+        registry.Add("conn-1", targetId);
 
         registry.TryRemove("conn-1", out _).Should().BeTrue();
 
@@ -169,11 +158,11 @@ public sealed class AgentConnectionRegistryReconnectTests
         var registry = new InMemoryAgentConnectionRegistry();
         var targetId = Guid.NewGuid();
 
-        registry.AddRegistered("conn-1", targetId);
+        registry.Add("conn-1", targetId);
         // conn-2 briefly becomes the target's mapping, then is removed — its
         // compare-and-remove wipes the shared target entry, but conn-1 is still
         // registered (a wiped mapping for a live connection).
-        registry.AddRegistered("conn-2", targetId);
+        registry.Add("conn-2", targetId);
         registry.TryRemove("conn-2", out _).Should().BeTrue();
         registry.HasConnectionFor(targetId).Should().BeFalse();
         registry.GetTargetId("conn-1").Should().Be(targetId);
@@ -189,7 +178,7 @@ public sealed class AgentConnectionRegistryReconnectTests
     {
         var registry = new InMemoryAgentConnectionRegistry();
         var targetId = Guid.NewGuid();
-        registry.AddRegistered("conn-1", targetId);
+        registry.Add("conn-1", targetId);
 
         registry.Reaffirm("conn-1", targetId).Should().BeFalse(
             "an intact mapping needs no healing");
@@ -208,8 +197,8 @@ public sealed class AgentConnectionRegistryReconnectTests
         var oldAborts = 0;
         var newAborts = 0;
 
-        registry.AddRegistered("old-conn", targetId, Guid.Empty, abort: () => oldAborts++);
-        registry.AddRegistered("new-conn", targetId, Guid.Empty, abort: () => newAborts++);
+        registry.Add("old-conn", targetId, Guid.Empty, abort: () => oldAborts++);
+        registry.Add("new-conn", targetId, Guid.Empty, abort: () => newAborts++);
 
         registry.Reaffirm("old-conn", targetId).Should().BeFalse(
             "the mapping already points at the newer live connection");
@@ -227,7 +216,7 @@ public sealed class AgentConnectionRegistryReconnectTests
         // must not be brought back by a straggling heartbeat.
         var registry = new InMemoryAgentConnectionRegistry();
         var targetId = Guid.NewGuid();
-        registry.AddRegistered("conn-1", targetId);
+        registry.Add("conn-1", targetId);
         registry.TryRemove("conn-1", out _).Should().BeTrue();
 
         registry.Reaffirm("conn-1", targetId).Should().BeFalse();

@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.4 |
-| **Date** | 2026-07-30 |
+| **Version** | 1.5 |
+| **Date** | 2026-07-31 |
 | **Authors** | Domagoj Jugović, Claude (Opus 4.8), Claude (Opus 5) |
 | **Status** | Approved |
 | **Technologies** | .NET 10, SignalR, gRPC (proto3), PowerShell/Bash |
@@ -21,7 +21,7 @@ added are tabulated below. **The contract is at v3** (F5).
 |---|---|---|
 | 1 | B6 (this document) | `DispatchId` on plan + completion + step + log reports, `CancelDeploymentAsync` push, `AgentRegistrationResult`, `Roles` removed from registration. |
 | 2 | F2 (2026-07-25) | `DeploymentPlan.AllowParallelTaskExecution` + `AdhocScriptCommand.AllowParallelTaskExecution` (per-target machine-concurrency policy, appended + defaulted `false`); new `IAgentHubServer.ReportExecutionStartedAsync(deploymentId, dispatchId)`. |
-| 3 | F5 (2026-07-29) | **No shape change on the SignalR surface.** Both `AllowParallelTaskExecution` fields are RETAINED and re-interpreted: they now select which SIDE of the agent's reader-writer machine gate the work takes (`true` → SHARED, `false` → EXCLUSIVE) instead of whether to take it at all. `AdhocScriptCommand.AllowParallelTaskExecution` also changes provenance: per-RUN, not per-target — the AI session flow always sends `true`. Adds one REST endpoint the agent MUST consult fail-closed before a self-upgrade swap: `GET /api/agents/task-in-flight` → `AgentTaskInFlightResponse`. Adds the `swap-deferred` `AgentUpdateOutcome`. |
+| 3 | F5 (2026-07-29) | **No shape change on the SignalR surface.** Both `AllowParallelTaskExecution` fields are RETAINED and re-interpreted: they now select which SIDE of the agent's reader-writer machine gate the work takes (`true` → SHARED, `false` → EXCLUSIVE) instead of whether to take it at all. `AdhocScriptCommand.AllowParallelTaskExecution` also changes provenance: per-RUN, not per-target — the AI session flow always sends `true`. Adds one REST endpoint the agent MUST consult fail-closed before a self-upgrade swap: `GET /api/agents/task-in-flight` → `AgentTaskInFlightResponse`. Adds the `swap-deferred` `AgentUpdateOutcome`. Finally, the version itself MOVED onto the handshake: the agent sends `X-KD-Contract` and the server refuses a mismatch with 426 before the connection is admitted. `AgentRegistrationRequest.ContractVersion` is retained for diagnostics and is no longer a gate. Folded into v3 rather than bumped to v4 because v3 has never shipped. |
 
 **Why F2 bumps the version rather than riding v1.** Both new plan fields are
 appended and default to the safe value, so a v1 agent would deserialize them
@@ -57,47 +57,55 @@ field, not only on a change to the shapes.
 > fixes the manifest by hand. Recovery then still waits for the maintenance window.
 > Bump `version.json` in the same change as `AgentContract.CurrentVersion`.
 
-## Dispatch eligibility (F5)
+## Where the version is checked (F5)
 
-`OnConnectedAsync` has to register a connection before the agent can invoke anything, so
-"connected" and "contract-verified" are different states — and dispatch keys on the
-second. `IAgentConnectionRegistry.MarkRegistered` is called only after `RegisterAsync`
-passes, and **`GetConnectionId` ignores anything unmarked**.
+**On the HANDSHAKE, before the connection is admitted.** The agent sends its version in the
+`X-KD-Contract` request header (`AgentContract.VersionHeader`), which rides both the
+negotiate request and the WebSocket upgrade and persists across automatic reconnects — the
+same mechanism the blue-green release pin `X-KD-Release` already relies on.
+`AgentContractHandshakeGate`, mounted after authentication so its audit row can name the
+target, compares it and answers **426 Upgrade Required** on any mismatch. Absent and
+unparseable are refused too: an agent old enough to predate the header is precisely the case
+that must not be read as compatible.
 
-Before F5 the registry entry alone made a connection dispatchable, so a skewed agent
-could be handed work in the connect→register window — and *permanently* if its
-`RegisterAsync` invoke threw, because that failure is swallowed as retryable and only
-re-sent on the next reconnect. Combined with the AI ad-hoc path now sending `true`
-unconditionally, a v2 agent in that state would run **every** approved script with no
-machine gate at all while the server believed the gate was honoured. Gating the lookup
-fixes every dispatch consumer at once rather than each remembering to ask.
+Past that gate, **connected == verified == dispatchable**. `IAgentConnectionRegistry` has one
+predicate for it, `GetConnectionId`, and `HasConnectionFor` answers the same question rather
+than a narrower one.
 
-**`HasConnectionFor` is deliberately NOT gated on registration.** It answers LIVENESS
-("did the agent reconnect, is it still there"), and its consumers are the hub's 30 s
-offline grace and B3's mid-wave disconnect monitor. Answering those with dispatch
-eligibility flips a healthy target Offline during the connect→register window and, worse,
-lets the disconnect monitor cancel a wave still executing on a connected agent — which
-under `Atomic` failure mode triggers farm-wide cleanup. The two predicates are different
-questions on purpose, and any other `IAgentConnectionRegistry` implementation (a
-Redis-backed one for multi-node scale-out, say) must preserve the split in both
-directions. Pinned by `AgentConnectionRegistryReconnectTests`, which asserts liveness
-`true` and eligibility `false` for the same connection.
+The check previously lived in `RegisterAsync`, a hub METHOD, and that single ordering choice
+generated a family of defects across three review rounds. Because a hub method cannot run
+until the connection exists, the server had to admit a connection whose version it did not
+yet know — so it needed a second predicate ("has completed registration") to keep work away
+from it, which then had to be explained separately to the offline grace and to B3's mid-wave
+disconnect monitor (gating LIVENESS on registration let the monitor diagnose "agent
+disconnected" against an agent that was still executing, and under `Atomic` failure mode that
+triggers farm-wide cleanup). A registration that threw left the connection permanently
+undispatchable, so the hub aborted it to force a retry the agent would not ask for — and that
+abort was itself harmful twice over: `Context.Abort()` drops the transport rather than closing
+it, so the client's automatic reconnect retried it at round-trip cadence forever, and removing
+the registry entry alongside it suppressed the target's offline mark entirely.
 
-Because an unmarked connection is undispatchable and invisible, `RegisterAsync` aborts it
-when `RegisterCoreAsync` throws, forcing the reconnect the agent's own retry classifier
-will not ask for. Two constraints on that abort, each of which was violated first:
+None of that machinery exists now. `RegisterAsync` records the machine's self-reported details
+and re-pushes cooperative cancels for tasks that went terminal while the agent was away; both
+are best-effort, and a throw means only that this cycle did not record machine info. Pinned by
+`AgentContractHandshakeGateTests` (the middleware's own contract, including 426 and the audit
+row) and `MultiAccountAgentTransportE2ETests.Agent_with_a_skewed_contract_version_is_refused`
+(a real SignalR client, both the skewed and absent shapes).
 
-- The agent **paces** those cycles. Only an ACCEPTED registration resets its supervision
-  backoff, because a cycle that connects cleanly and then fails registration is still a
-  failed cycle. Resetting on a successful `StartAsync` instead pinned the retry count at 0
-  — where the policy's delay is deliberately `TimeSpan.Zero` — so a server aborting
-  registration (an unhealthy tenant DB, say) got reconnected at RTT cadence by every agent
-  in the fleet, against the database that was already failing.
-- The abort must **not** remove the registry entry. `OnDisconnectedAsync` gates all of its
-  bookkeeping on winning that same removal, so doing it in the catch silently suppressed
-  the target's offline mark: the row kept the `Online` status `OnConnectedAsync` wrote,
-  with a fresh `LastSeenUtc` on every loop. It also stripped the `_registered` entry, which
-  cancelled out the reason `MarkRegistered` runs before the reconnect reconcile.
+**One thing the move costs.** The refused connection never sends a registration payload, so
+the audit row can no longer carry the agent's BUILD version — only the contract version and
+the target identity. That is enough to act on ("upgrade the agent on this target"), and
+`SignalRServerLink` lives in a different assembly from the version it would have to report, so
+adding a second header was not worth the churn.
+
+**Reconnect pacing lives in `AgentReconnectPolicy`, not in the supervision loop.**
+`RetryContext.PreviousRetryCount` restarts at zero for every reconnect episode and attempt
+zero is deliberately immediate, so a connection that keeps dying moments after it is
+established never backs off. The policy therefore also counts consecutive SHORT-LIVED
+connections and paces on whichever count is higher; one connection that lasts
+`MinUsefulConnection` clears it. This is what bounds the remaining `OnConnectedAsync` aborts
+(deleted target, retired target, missing claim), which are otherwise the same unpaced loop.
+
 
 ## The contract, versioned
 
@@ -223,6 +231,7 @@ about.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.5 | 2026-07-31 | F5 review round 4: the wire-contract check moved from `RegisterAsync` onto the SignalR handshake (`X-KD-Contract` → 426), which deletes the connected-but-unverified state and with it `MarkRegistered`, `IsRegistered` and the liveness-vs-eligibility split. Rewrote "Dispatch eligibility" as "Where the version is checked", recorded the one thing the move costs (the audit row can no longer name the agent BUILD version), and documented that reconnect pacing lives in `AgentReconnectPolicy`'s churn lane rather than the supervision loop — round 3 had put it on a path `Context.Abort()` never wakes. |
 | 1.4 | 2026-07-30 | F5 review round 3: corrected "Dispatch eligibility" — `HasConnectionFor` answers LIVENESS and is NOT gated on registration (the earlier text described a behaviour that was reverted), and documented the two constraints on the registration-failure abort (agent-side backoff paced on ACCEPTED registration; the abort must not remove the registry entry). |
 | 1.3 | 2026-07-29 | F5 review follow-up: amended the v3 row (the REST additions it also covers), added the OPERATOR ACTION callout about bumping `version.json` in the same change, and added the "Dispatch eligibility (F5)" section. |
 | 1.2 | 2026-07-29 | F5: added the v3 contract row and the "why a meaning change bumps the version" rationale. |

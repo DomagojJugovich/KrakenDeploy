@@ -165,50 +165,25 @@ public sealed class AgentHub(
 
     public async Task<AgentRegistrationResult> RegisterAsync(AgentRegistrationRequest request)
     {
-        try
-        {
-            return await RegisterCoreAsync(request).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            // F5 — a connection that never reaches MarkRegistered is tracked but NOT
-            // dispatchable, and the agent will not retry: its own supervision loop
-            // classifies a hub-method throw as retryable and re-sends only on the NEXT
-            // reconnect, which never comes because the link is still healthy. The target
-            // would therefore sit Online, heartbeating, with every deployment dropping
-            // "Target agent offline at dispatch time." and every operator cancel silently
-            // discarded — permanently, and invisibly. The E4 heartbeat backstop cannot
-            // repair it either: Reaffirm restores the target mapping and has no knowledge
-            // of registration.
-            // So force the retry the agent cannot ask for: abort the connection. The
-            // agent's reconnect policy re-establishes it and re-sends RegisterAsync, and
-            // its supervision loop now paces those cycles (only an ACCEPTED registration
-            // resets its backoff), so a repeating failure here escalates to MaxDelay
-            // instead of spinning at RTT cadence.
-            //
-            // Deliberately NOT registry.TryRemove: OnDisconnectedAsync gates ALL of its
-            // bookkeeping on winning that same call, so removing here silently disabled
-            // the offline mark — the target kept the Online row OnConnectedAsync wrote,
-            // with a fresh LastSeenUtc on every loop, which is precisely the
-            // appears-Online-but-undispatchable state this block exists to end. The abort
-            // triggers OnDisconnectedAsync, which removes the connection AND its
-            // _registered entry AND schedules the offline mark. It also un-did the
-            // MarkRegistered reordering below, since TryRemove drops _registered too.
-            //
-            // The exception is logged in full: a registration failure is a server-side
-            // fault an operator must be able to diagnose, and this matches how
-            // OnDisconnectedAsync already reports its own. Npgsql leaves
-            // PostgresException.Detail unpopulated unless Include Error Detail is turned
-            // on (it is not), so a constraint violation here does not echo row values.
-            logger.LogError(ex,
-                "Agent registration failed for connection {ConnectionId}; aborting the " +
-                "connection so the agent reconnects and re-registers. Leaving it open " +
-                "would keep the target undispatchable while it appears Online.",
-                Context.ConnectionId);
-            Context.Abort();
-            throw;
-        }
+        // No try/catch, no abort. Registration is no longer a GATE on anything: the wire
+        // contract is verified on the handshake and the target is resolved in
+        // OnConnectedAsync, so a connection that reaches this method is already
+        // dispatchable. All this method still does is record the machine's self-reported
+        // details and re-push cooperative cancels for tasks that went terminal while the
+        // agent was away — both best-effort, neither load-bearing for eligibility.
+        //
+        // A throw therefore means "we did not record machine info this cycle", which the
+        // next reconnect or heartbeat corrects. SignalR faults the invocation, the agent
+        // logs it, and the connection stays up and usable. The previous version aborted
+        // the connection to force a retry, which was necessary only because a failed
+        // registration used to leave the connection permanently undispatchable — and that
+        // abort was itself harmful: Context.Abort() drops the transport rather than
+        // closing it, so the client's automatic reconnect retried it immediately and
+        // forever, and removing the registry entry alongside it suppressed the target's
+        // offline mark entirely.
+        return await RegisterCoreAsync(request).ConfigureAwait(false);
     }
+
 
     private async Task<AgentRegistrationResult> RegisterCoreAsync(AgentRegistrationRequest request)
     {
@@ -274,48 +249,14 @@ public sealed class AgentHub(
                 Accepted: false, AgentContract.CurrentVersion, message);
         }
 
-        // B6: contract-version gate. An agent speaking a different wire version
-        // must not receive work — before this gate an old agent connected fine
-        // and every report it sent was silently dropped by signature mismatch
-        // (the stepIndex-on-AppendLog change did exactly that). Refuse loudly:
-        // remove the connection from the dispatch registry (undispatchable NOW),
-        // mark the target Offline immediately (no 30 s flicker grace — this is a
-        // deterministic refusal, not a blip), audit, and tell the agent why. A
-        // pre-B6 agent deserializes ContractVersion=0 and lands here; it ignores
-        // the result payload, but the server-side removal is what protects it
-        // from being dispatched to.
-        if (request.ContractVersion != AgentContract.CurrentVersion)
-        {
-            registry.TryRemove(Context.ConnectionId, out _);
-            target.Status = TargetStatus.Offline;
-            target.AgentVersion = request.AgentVersion;
-            await db.SaveChangesAsync().ConfigureAwait(false);
-
-            var message =
-                $"This server requires agent contract v{AgentContract.CurrentVersion}; " +
-                $"this agent registered with v{request.ContractVersion}. Update the agent binary.";
-            logger.LogWarning(
-                "Target {TargetId} (agent {AgentVersion}) REFUSED: contract v{Sent} != server v{Required}.",
-                targetId.Value, request.AgentVersion,
-                request.ContractVersion, AgentContract.CurrentVersion);
-            await auditLog.RecordAsync(
-                KrakenDeploy.Server.Core.Domain.Audit.AuditEventType.AgentContractVersionRejected,
-                subjectType: "DeploymentTarget",
-                subjectId:   targetId.Value.ToString(),
-                subjectName: target.Name,
-                details:     $"AgentVersion={request.AgentVersion}, " +
-                             $"SentContract={request.ContractVersion}, " +
-                             $"RequiredContract={AgentContract.CurrentVersion}").ConfigureAwait(false);
-
-            var accountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;
-            await statusPublisher
-                .PublishAsync(targetId.Value, TargetStatus.Offline, target.LastSeenUtc, accountId)
-                .ConfigureAwait(false);
-
-            return new AgentRegistrationResult(
-                Accepted: false, AgentContract.CurrentVersion, message);
-        }
-
+        // NO contract-version gate here. It moved onto the SignalR handshake
+        // (AgentContractHandshakeGate), which refuses a skewed agent with 426 before the
+        // connection is admitted — so by the time any hub method runs, the version is
+        // already verified. request.ContractVersion is retained on the wire for
+        // diagnostics (it appears in the registration log below) and is deliberately NOT
+        // re-checked: a second, later gate would reintroduce the connected-but-unverified
+        // window this change exists to delete.
+        //
         // T1-7 / B6: an agent reports machine capabilities only. Authorization
         // roles drive secret scoping (VariableScope.Matches resolves against the
         // target's CURRENT roles at dispatch), so they are OPERATOR-assigned via
@@ -349,20 +290,6 @@ public sealed class AgentHub(
         // the push is issued before we return and no detached task lingers, which
         // is safe: the server→client cancel send does not block on the agent's
         // pending RegisterAsync round-trip.
-        // F5 — the connection becomes DISPATCHABLE here, past the wire-contract version
-        // check above. OnConnectedAsync had to add it to the registry before the agent
-        // could invoke anything, so until this line it is tracked-but-not-eligible.
-        // Without the split, a version-skewed agent could be handed work in the
-        // connect→register window, and would read AllowParallelTaskExecution = true as
-        // "no machine gate at all".
-        // Placed BEFORE the reconcile below on purpose: everything eligibility depends on
-        // (the version check and its SaveChanges) is already done, whereas the reconcile
-        // is a best-effort side-quest with a query and up to 100 pushes. Marking after it
-        // made the connect→register window scale with fleet size — long enough for the
-        // hub's 30 s offline grace to flap a healthy target — and let a throw in a path
-        // outside E7's own try/catch skip eligibility altogether.
-        registry.MarkRegistered(Context.ConnectionId);
-
         await ReconcileTerminalTasksForReconnectAsync(targetId.Value, Context.ConnectionId)
             .ConfigureAwait(false);
 

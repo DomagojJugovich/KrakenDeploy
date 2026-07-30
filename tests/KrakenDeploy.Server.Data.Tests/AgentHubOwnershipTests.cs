@@ -454,7 +454,6 @@ public sealed class AgentHubOwnershipTests(PostgresFixture postgres)
     {
         var registry = new InMemoryAgentConnectionRegistry();
         registry.Add(connectionId, targetId);
-        registry.MarkRegistered(connectionId); // F5: dispatch needs a passed registration
         var agent = new FakeAgent { TargetId = targetId, ConnectionId = connectionId };
         var agents = new ConcurrentDictionary<Guid, FakeAgent>();
         agents[targetId] = agent;

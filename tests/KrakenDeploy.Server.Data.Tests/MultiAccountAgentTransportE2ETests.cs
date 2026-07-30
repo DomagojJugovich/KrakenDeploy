@@ -2,7 +2,9 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 using FluentAssertions;
+using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Core.Domain.Accounts;
+using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.Targets;
@@ -84,12 +86,13 @@ public sealed class MultiAccountAgentTransportE2ETests(MultiAccountAgentTranspor
         // CONNECTED (liveness) — the hub accepted the socket and tracked it.
         registry.HasConnectionFor(targetId).Should().BeTrue();
 
-        // ...but NOT yet dispatchable: F5 gates eligibility on a PASSED RegisterAsync,
-        // and this raw SignalR connection never performs one, so its wire-contract version
-        // is unverified. The two predicates are deliberately different questions — reading
-        // liveness as eligibility is what let the disconnect monitor cancel live waves.
-        registry.GetConnectionId(targetId).Should().BeNull(
-            "eligibility requires MarkRegistered, which only a real RegisterAsync sets");
+        // ...and therefore dispatchable, with nothing further required. The hub only Adds a
+        // connection whose target resolved in this account, and the wire-contract version was
+        // already verified on the handshake, so there is no second step and no window in
+        // which a tracked connection is not yet eligible.
+        registry.GetConnectionId(targetId).Should().NotBeNull(
+            "the handshake contract gate ran before the connection was admitted, so a " +
+            "tracked connection is a dispatchable one");
     }
 
     [Fact]
@@ -116,6 +119,52 @@ public sealed class MultiAccountAgentTransportE2ETests(MultiAccountAgentTranspor
         // Each connection is pinned to its own host-derived account on the registry.
         registry.GetAccountForTarget(alphaTarget).Should().Be(fixture.Alpha.AccountId);
         registry.GetAccountForTarget(betaTarget).Should().Be(fixture.Beta.AccountId);
+    }
+
+    [Theory]
+    [InlineData(true)]   // declares an older wire version
+    [InlineData(false)]  // declares nothing at all
+    public async Task Agent_with_a_skewed_contract_version_is_refused(bool declaresAVersion)
+    {
+        // The property that justifies deleting the registration gate: a version-skewed
+        // agent never becomes a connection. Both shapes must be refused — an older
+        // declared version AND an absent header, because an agent old enough to predate
+        // the header is exactly the case that must not be read as compatible.
+        //
+        // Refusing on the handshake rather than in RegisterAsync is what makes "tracked"
+        // mean "dispatchable". While the check lived in a hub method the server had to
+        // admit a connection it could not yet trust, and a v2 agent reads v3's
+        // AllowParallelTaskExecution = true as "skip the machine gate entirely" — so any
+        // window at all meant an approved script could run with no lock while the server
+        // believed the gate was honoured.
+        var target = await fixture.Alpha.SeedTargetAsync();
+
+        await using var host = await fixture.BuildHostAsync();
+        var registry = host.Services.GetRequiredService<IAgentConnectionRegistry>();
+
+        await using var connection = fixture.BuildConnection(
+            host, fixture.Alpha, target,
+            contractVersion: declaresAVersion ? AgentContract.CurrentVersion - 1 : null,
+            omitContractHeader: !declaresAVersion);
+
+        await AssertConnectionRejectedAsync(connection);
+
+        registry.HasConnectionFor(target).Should().BeFalse(
+            "a skewed agent must never enter the registry — the refusal precedes OnConnectedAsync");
+        registry.GetConnectionId(target).Should().BeNull();
+
+        // And it never looked healthy: OnConnectedAsync is what writes Online, and it did
+        // not run. The seeded target keeps the status it was created with.
+        await using var db = fixture.Alpha.OpenContext();
+        (await db.DeploymentTargets.IgnoreQueryFilters().FirstAsync(t => t.Id == target))
+            .Status.Should().NotBe(TargetStatus.Online);
+
+        // The audit row is asserted in AgentContractHandshakeGateTests instead, not here:
+        // this fixture has no AccountResolutionMiddleware, so no tenant database is resolved
+        // at gate time and the (best-effort) audit write cannot succeed. That is a property
+        // of the fixture, not of production — AccountResolutionMiddleware whitelists
+        // /hubs/agent, so the account is pinned from the host before the gate runs. Asserting
+        // the row here would only ever have tested the fixture's wiring.
     }
 
     [Fact]

@@ -1002,6 +1002,15 @@ public static class Program
         app.UseAuthentication();
         app.UseAuthorization();
 
+        // B6/F5 — agent wire-contract gate on the SignalR handshake. Mounted AFTER
+        // UseAuthentication/UseAuthorization on purpose: the refusal is audited against
+        // the target named by the agent JWT, and an operator needs to know WHICH agent is
+        // skewed rather than which address connected. Refusing here rather than in
+        // AgentHub.RegisterAsync is what lets "connected" mean "verified and dispatchable"
+        // — see AgentContractHandshakeGate for the family of defects the old ordering
+        // caused.
+        app.UseMiddleware<KrakenDeploy.Server.Transport.AgentContractHandshakeGate>();
+
         // Enforces the per-endpoint "agent-register" policy below. No global
         // limiter is configured, so this only affects endpoints that opt in.
         app.UseRateLimiter();

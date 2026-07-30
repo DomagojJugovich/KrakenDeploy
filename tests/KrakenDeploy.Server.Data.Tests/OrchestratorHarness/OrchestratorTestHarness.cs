@@ -458,7 +458,6 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         // never performs. Mark it here so the harness models a fully-registered agent;
         // the connect→register window itself is covered by
         // AgentConnectionRegistryReconnectTests and AgentHubRegisterTests.
-        _connectionRegistry.MarkRegistered(connectionId);
         return agent;
     }
 
