@@ -35,7 +35,12 @@ internal sealed record TaskAuditVocabulary(
     string ParallelOutputCollision,
     string RollingBatchStarted,
     string RollingBatchCompleted,
-    string RollingBatchingDisabled)
+    string RollingBatchingDisabled,
+    // WP3 — the task paused at a manual-intervention gate. The RESOLUTION events
+    // are not here: they are emitted at decision time by InterruptionService /
+    // the timeout sweeper (Server.Data), which maps them through
+    // InterruptionAuditEvents.For(kind, status).
+    string Paused)
 {
     /// <summary>Vocabulary for <see cref="Core.Domain.Deployments.Deployment"/> tasks.</summary>
     public static readonly TaskAuditVocabulary Deployment = new(
@@ -56,7 +61,8 @@ internal sealed record TaskAuditVocabulary(
         ParallelOutputCollision:     AuditEventType.DeploymentParallelOutputCollision,
         RollingBatchStarted:         AuditEventType.DeploymentRollingBatchStarted,
         RollingBatchCompleted:       AuditEventType.DeploymentRollingBatchCompleted,
-        RollingBatchingDisabled:     AuditEventType.DeploymentRollingBatchingDisabled);
+        RollingBatchingDisabled:     AuditEventType.DeploymentRollingBatchingDisabled,
+        Paused:                      AuditEventType.DeploymentPaused);
 
     /// <summary>Vocabulary for <see cref="Core.Domain.Runbooks.RunbookRun"/> tasks.</summary>
     public static readonly TaskAuditVocabulary RunbookRun = new(
@@ -77,5 +83,6 @@ internal sealed record TaskAuditVocabulary(
         ParallelOutputCollision:     AuditEventType.RunbookRunParallelOutputCollision,
         RollingBatchStarted:         AuditEventType.RunbookRunRollingBatchStarted,
         RollingBatchCompleted:       AuditEventType.RunbookRunRollingBatchCompleted,
-        RollingBatchingDisabled:     AuditEventType.RunbookRunRollingBatchingDisabled);
+        RollingBatchingDisabled:     AuditEventType.RunbookRunRollingBatchingDisabled,
+        Paused:                      AuditEventType.RunbookRunPaused);
 }

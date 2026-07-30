@@ -81,15 +81,24 @@ public sealed class AuditRetentionJob(
             return;
         }
 
+        // Change-control entries get their own, longer window (WP3-b). Zero — the
+        // shipped default — keeps them indefinitely, so this arm normally deletes
+        // nothing and the day-count above applies only to ordinary entries.
+        var changeControlDays = settings.ChangeControlAuditRetentionDays;
+
         var deleted = await auditLog
-            .PurgeOldEntriesAsync(days, ct)
+            .PurgeOldEntriesAsync(days, changeControlDays, ct)
             .ConfigureAwait(false);
 
         if (deleted > 0)
         {
             logger.LogInformation(
-                "AuditRetention: deleted {Count} entries older than {Days} days.",
-                deleted, days);
+                "AuditRetention: deleted {Count} entries older than {Days} days " +
+                "(change-control window: {ChangeControlDays}).",
+                deleted, days,
+                changeControlDays > 0
+                    ? changeControlDays.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    : "never purge");
         }
     }
 

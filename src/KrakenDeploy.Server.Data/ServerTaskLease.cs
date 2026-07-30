@@ -219,17 +219,163 @@ public static class ServerTaskLease
     }
 
     /// <summary>
+    /// WP3 — resumes a task parked at a manual-intervention gate:
+    /// <c>Paused → Running</c> with a fresh lease. One conditional
+    /// <c>UPDATE … WHERE status = Paused</c>, so a duplicate wake-up (approve +
+    /// reconciler arm 3 both signalling) resolves to exactly one resumer, and a task
+    /// cancelled while paused can never be resumed — the same TOCTOU closure
+    /// <see cref="TryClaimAsync"/> gets from its <c>Queued</c> guard.
+    /// <para>
+    /// <b>No F1 re-check, deliberately.</b> A <c>Paused</c> task is in
+    /// <see cref="DeploymentStatusExtensions.InFlightAfterClaim"/>, so it never
+    /// released its <c>(project, environment, tenant)</c> key and no peer can be
+    /// holding it. Re-running the deferral predicate would only let a task lose a
+    /// slot it already owns — to a peer that, by construction, cannot exist.
+    /// </para>
+    /// <para>
+    /// <c>StartedUtc</c> is NOT restamped: the run started before it paused, and the
+    /// slow-task audits + the AI-diagnosis gate read it as the true start.
+    /// </para>
+    /// <para>
+    /// The maintenance gate DOES apply, with the SAME parent-task exemption
+    /// <see cref="TryClaimAsync"/> makes: while maintenance mode is on nothing new may
+    /// reach an agent, and a paused root task whose gate is already answered simply stays
+    /// <c>Paused</c> — reconciler arm 3 (the resolved-gate arm; arm 4 is the orphan
+    /// reaper and only sees <c>Running</c> rows) re-signals it once the operator disables
+    /// maintenance, exactly as the stale-<c>Queued</c> arm does for a blocked claim. A
+    /// CHILD task is exempt, because blocking it strands the parent that is waiting on
+    /// it. Returns
+    /// <see cref="ServerTaskClaimResult.NotQueued"/> when the row was no longer
+    /// <c>Paused</c> (cancelled, or resumed by another wake-up), OR its gate is still
+    /// <c>Pending</c> — a duplicate wake-up must not resume an unanswered gate.
+    /// <see cref="ServerTaskClaimResult.SerializationBlocked"/> is never returned.
+    /// </para>
+    /// </summary>
+    public static async Task<ServerTaskClaimResult> TryResumeAsync(
+        KrakenDbContext db, Guid taskId, TimeProvider time, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(time);
+
+        // Cheap pre-read of just the two fields the maintenance gate needs, and it
+        // doubles as the "is this row even resumable" check — so the ordinary case (a
+        // minutely re-signal of a row that has already resumed) costs one small SELECT
+        // instead of a settings read it cannot act on.
+        var meta = await db.ServerTasks
+            .IgnoreQueryFilters()
+            .Where(t => t.Id == taskId)
+            .Select(t => new { t.Status, t.ParentTaskId })
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false);
+        if (meta is null || meta.Status != DeploymentStatus.Paused)
+        {
+            return ServerTaskClaimResult.NotQueued;
+        }
+
+        // Maintenance mode blocks a resume, but NOT a child task — the same exemption
+        // TryClaimAsync makes, for the same reason (WP3-b restored it here). Blocking a
+        // child strands the parent's WaitForChildAsync behind a child that can never
+        // resume, while the parent keeps renewing its lease so the reconciler never reaps
+        // it either: the parent burns its whole child-wait ceiling holding the F1 key
+        // while a human's approval sits recorded and unusable.
+        if (meta.ParentTaskId is null)
+        {
+            var maintenance = await SettingsService
+                .ReadOrDefaultAsync<MaintenanceSettings>(db, ct: ct)
+                .ConfigureAwait(false);
+            if (maintenance.Enabled)
+            {
+                return ServerTaskClaimResult.MaintenanceBlocked;
+            }
+        }
+
+        var now = time.GetUtcNow();
+        var rows = await db.ServerTasks
+            .IgnoreQueryFilters()
+            .Where(t => t.Id == taskId && t.Status == DeploymentStatus.Paused
+                     // The gate must be ANSWERED, not merely present. Status alone is
+                     // not enough: wake-ups are at-least-once, so a gated task that
+                     // waited past the stale-Queued grace accumulates duplicate channel
+                     // items. Dispatch #1 claims, pauses and frees its slot; parked
+                     // dispatch #2 then found the row Paused, resumed it, and the
+                     // orchestrator hard-failed the task for the "impossible" state of
+                     // Running with a Pending gate — killing the deployment seconds
+                     // after it paused, before any human could answer. The old
+                     // Queued-only claim ate duplicates for free; this restores that
+                     // property for the pause path.
+                     // The inner IgnoreQueryFilters is redundant with the root one (the
+                     // flag is per-statement in EF Core 10, subqueries included); kept
+                     // so this guard stays correct if it is ever split out on its own.
+                     && !db.Interruptions
+                         .IgnoreQueryFilters()
+                         .Any(i => i.TaskId == taskId
+                                && i.Status == InterruptionStatus.Pending))
+            .ExecuteUpdateAsync(s => s
+                    .SetProperty(t => t.Status, DeploymentStatus.Running)
+                    .SetProperty(t => t.ClaimedBy, ProcessOwner)
+                    .SetProperty(t => t.LeaseUntil, now + LeaseDuration)
+                    // The checkpoint is consumed by this resume: clearing it in the SAME
+                    // statement keeps "non-null iff Paused" a true invariant with no
+                    // window, and — crucially — avoids the caller clearing it on the
+                    // TRACKED entity, which would leave that entity dirty with a stale
+                    // xmin and make the next SaveChanges throw (the B5 trap
+                    // ServerTaskStatusWriter exists to avoid). The caller reads the
+                    // payload off the entity it loaded BEFORE this call, so nothing is
+                    // lost.
+                    .SetProperty(t => t.PauseCheckpointEncrypted, (string?)null),
+                ct)
+            .ConfigureAwait(false);
+        return rows == 1 ? ServerTaskClaimResult.Claimed : ServerTaskClaimResult.NotQueued;
+    }
+
+    /// <summary>
+    /// Mirrors a successful <see cref="TryResumeAsync"/> onto the TRACKED entity,
+    /// with the same not-modified reset <see cref="MirrorClaim"/> applies and for the
+    /// same reason: the resume is an <c>ExecuteUpdate</c>, so without the mirror the
+    /// tracked entity still reads <c>Paused</c>, and without the reset a later
+    /// <c>SaveChanges</c> would re-assert <c>Running</c> over a <c>Cancelled</c> that
+    /// landed in between.
+    /// </summary>
+    public static void MirrorResume(KrakenDbContext db, ServerTask task, TimeProvider time)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(task);
+        ArgumentNullException.ThrowIfNull(time);
+
+        var now = time.GetUtcNow();
+        var entry = db.Entry(task);
+
+        Mirror(entry.Property(t => t.Status), DeploymentStatus.Running);
+        Mirror(entry.Property(t => t.ClaimedBy), ProcessOwner);
+        Mirror(entry.Property(t => t.LeaseUntil), now + LeaseDuration);
+        // Mirror the cleared checkpoint too — otherwise the tracked entity still holds
+        // the old ciphertext and a later SaveChanges would write it BACK onto a Running
+        // row, resurrecting a checkpoint the resume already consumed.
+        Mirror(entry.Property(t => t.PauseCheckpointEncrypted), null);
+
+        static void Mirror<T>(
+            Microsoft.EntityFrameworkCore.ChangeTracking.PropertyEntry<ServerTask, T> property,
+            T value)
+        {
+            property.CurrentValue  = value;
+            property.OriginalValue = value;
+            property.IsModified    = false;
+        }
+    }
+
+    /// <summary>
     /// The F1 serialization predicate: another <c>Deployment</c> (kind-scoped —
     /// a runbook run never blocks a deployment) of the same
     /// <c>(ProjectId, EnvironmentId, TenantId)</c> that is currently IN-FLIGHT —
     /// claimed but not yet terminal
-    /// (<see cref="DeploymentStatusExtensions.InFlightAfterClaim"/>: <c>Running</c>
-    /// or <c>PendingOfflineResult</c>) — excluding <paramref name="excludingTaskId"/>
-    /// (a task never blocks itself). A parked offline-drop deployment
-    /// (<c>PendingOfflineResult</c>) still holds the key: it is a non-terminal
-    /// deployment of that (project,env,tenant), so a new one must wait until it
-    /// resolves or is cancelled (Octopus parity — "starts only after the first
-    /// goes terminal"). <c>t.TenantId == tenantId</c> uses EF's null-safe
+    /// (<see cref="DeploymentStatusExtensions.InFlightAfterClaim"/>: <c>Running</c>,
+    /// a parked <c>PendingOfflineResult</c>, or a <c>Paused</c> approval gate) —
+    /// excluding <paramref name="excludingTaskId"/> (a task never blocks itself). A
+    /// parked offline-drop deployment (<c>PendingOfflineResult</c>) or one paused at a
+    /// manual-intervention gate (<c>Paused</c>, WP3) still holds the key: it is a
+    /// non-terminal deployment of that (project,env,tenant), so a new one must wait
+    /// until it resolves or is cancelled (Octopus parity — "starts only after the
+    /// first goes terminal"). <c>t.TenantId == tenantId</c> uses EF's null-safe
     /// comparison, so a NULL tenant matches only other NULL-tenant rows —
     /// untenanted deployments serialize among themselves. Shared by the claim's
     /// in-lock check, the worker's pre-gate skip and the UI queue-reason read so

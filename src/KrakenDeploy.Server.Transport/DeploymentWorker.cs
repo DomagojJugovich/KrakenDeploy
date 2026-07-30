@@ -1,8 +1,10 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading.Channels;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Contracts.Logging;
+using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Execution;
 using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Audit;
@@ -229,6 +231,7 @@ public sealed class DeploymentWorker(
             .Select(t => new
             {
                 t.ParentTaskId, t.Kind, t.ProjectId, t.EnvironmentId, t.TenantId, t.CreatedUtc,
+                t.Status,
             })
             .FirstOrDefaultAsync(ct)
             .ConfigureAwait(false);
@@ -241,8 +244,18 @@ public sealed class DeploymentWorker(
         // advisory-locked claim. Uses the SAME deferral predicate as the claim so
         // an earlier-queued (FIFO) sibling also skips the slot, not only in-flight
         // peers.
+        //
+        // A RESUME is exempt (WP3). A Paused task is already in
+        // InFlightAfterClaim — it OWNS the (project, environment, tenant) key and has
+        // never released it — so deferring it to a queued sibling is a category error,
+        // and a deadlocking one: an earlier-created, now-due scheduled sibling matches
+        // the FIFO arm, so the resume returned here without dispatching, while the
+        // sibling could never claim because the paused task holds the key. Reconciler
+        // arm 3 then re-signalled it every minute forever. TryResumeAsync skips the F1
+        // re-check for exactly this reason; this is the other half of that decision.
         var blocked = row.ParentTaskId is null
             && row.Kind == ServerTaskKind.Deployment
+            && row.Status != DeploymentStatus.Paused
             && await db.ServerTasks
                 .IgnoreQueryFilters()
                 .AnyAsync(
@@ -400,7 +413,24 @@ public sealed class DeploymentWorker(
             // freeze match. Uses the denormalized ServerTask.SpaceId/ProjectId
             // (== Release.Project.SpaceId / Release.ProjectId) so no Release
             // dereference is needed.
-            if (source.AppliesFreezeGate)
+            //
+            // WP3 — a RESUME skips this pre-dispatch arm and is re-checked further down,
+            // after the checkpoint is read, because the correct answer depends on whether
+            // the task has actually executed anything (WP3-b, decision 2026-07-30):
+            //   • nothing executed yet  → the freeze BLOCKS it. A gate authored as an
+            //     early step parks a deployment that has touched no target, so approving
+            //     it three days into a window is new work entering the window, not a
+            //     running deployment finishing. Blanket-exempting a resume let an
+            //     operator without DeploymentFreezeOverride park a deployment before a
+            //     window and walk it straight through the middle of one.
+            //   • already part-deployed → it CONTINUES. Its remaining waves are what
+            //     bring the targets to a consistent version, and failing mid-way leaves
+            //     production split-version. That is the same "let running deployments
+            //     finish" policy this gate has always had.
+            // Re-firing it HERE (before the checkpoint is even read) cannot make that
+            // distinction, and failed the task from Paused without running any
+            // Failure/Always cleanup wave.
+            if (source.AppliesFreezeGate && deployment.Status != DeploymentStatus.Paused)
             {
                 var freezeService = scope.ServiceProvider.GetRequiredService<DeploymentFreezeService>();
                 var blockingFreeze = await freezeService.FindBlockingFreezeAsync(
@@ -607,7 +637,15 @@ public sealed class DeploymentWorker(
             // array variable, not a machine variable, so warnings are
             // identical across all per-target flatten results — emit once
             // from the canonical context.
-            foreach (var w in canonicalCtx.Flatten.Warnings)
+            //
+            // WP3-b — and once per TASK, not once per dispatch. A pause/resume cycle is by
+            // construction a second dispatch of the same task, so a process with one
+            // unresolved ForEach group plus N gates emitted its ForEachEmpty audit event
+            // N+1 times and an M13.B subscription notified that many times for a single
+            // deployment (plus a duplicate banner in the task log). Pre-WP3 this needed a
+            // duplicate Queued wake-up; gates make it deterministic.
+            var isResumeDispatch = deployment.Status == DeploymentStatus.Paused;
+            foreach (var w in isResumeDispatch ? [] : canonicalCtx.Flatten.Warnings)
             {
                 var eventType = w.Kind switch
                 {
@@ -693,6 +731,146 @@ public sealed class DeploymentWorker(
                 return;
             }
 
+            // ── WP3: resume a task parked at a manual-intervention gate ─────
+            // A Paused task has already been claimed once and never released its F1
+            // key, so it takes TryResumeAsync (Paused→Running, no serialization
+            // re-check) instead of the Queued claim below. The checkpoint written at
+            // pause time is read straight off the loaded entity.
+            var resumeCheckpoint = (TaskPauseCheckpoint?)null;
+            if (deployment.Status == DeploymentStatus.Paused)
+            {
+                var resume = await ServerTaskLease
+                    .TryResumeAsync(db, deployment.Id, timeProvider, ct).ConfigureAwait(false);
+                if (resume != ServerTaskClaimResult.Claimed)
+                {
+                    if (resume == ServerTaskClaimResult.MaintenanceBlocked)
+                    {
+                        logger.LogInformation(
+                            "DeploymentWorker: task {Id} not resumed — the instance is in " +
+                            "maintenance mode; staying Paused until maintenance is disabled.",
+                            deploymentId);
+                    }
+                    else
+                    {
+                        logger.LogInformation(
+                            "DeploymentWorker: task {Id} was not resumable (cancelled, or " +
+                            "resumed by another wake-up); skipping dispatch.",
+                            deploymentId);
+                    }
+                    return;
+                }
+
+                // A Paused task WITHOUT a checkpoint cannot be resumed correctly: its
+                // failure/alive/output state is gone, and continuing would silently run
+                // cleanup steps as if nothing had failed and re-run nothing it already
+                // did. Fail loudly (pre-production policy) rather than guess.
+                if (string.IsNullOrEmpty(deployment.PauseCheckpointEncrypted))
+                {
+                    ServerTaskLease.MirrorResume(db, deployment, timeProvider);
+                    await FailAsync(db, deployment,
+                        "Task was Paused at a manual-intervention gate but carries no resume " +
+                        "checkpoint, so its orchestration state (which waves ran, which " +
+                        "targets survived, captured output variables) is unrecoverable. " +
+                        "Re-deploy the release instead of resuming this task.", ct)
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                try
+                {
+                    resumeCheckpoint = TaskPauseCheckpointCodec.Read(
+                        deployment.PauseCheckpointEncrypted, encryption);
+                }
+                // FormatException matters: AesGcmCipher.Decrypt starts with
+                // Convert.FromBase64String, so a truncated or garbled column throws it
+                // rather than CryptographicException, and it used to escape to the
+                // generic dispatch catch with a raw ".NET: not a valid Base-64 string"
+                // instead of the operator-readable diagnosis below.
+                catch (Exception ex) when (ex is CryptographicException or JsonException
+                                               or FormatException
+                                               or InvalidOperationException)
+                {
+                    ServerTaskLease.MirrorResume(db, deployment, timeProvider);
+                    await FailAsync(db, deployment,
+                        "Task was Paused at a manual-intervention gate but its resume " +
+                        $"checkpoint could not be read ({ex.GetType().Name}). The payload is " +
+                        "encrypted with the current DEK — if the key was rotated by a build " +
+                        "that predates WP3's rotation step, the checkpoint is unrecoverable. " +
+                        "Re-deploy the release instead of resuming this task.", ct)
+                        .ConfigureAwait(false);
+                    return;
+                }
+
+                ServerTaskLease.MirrorResume(db, deployment, timeProvider);
+
+                // WP3-b — freeze re-check, deferred to here so it can tell "not yet
+                // started" from "mid work". A gate can sit anywhere in a process: as an
+                // early step it parks a deployment that has touched NOTHING, and letting
+                // an approval three days into a freeze window walk it through is exactly
+                // the bypass this gate exists to prevent. Once any step has actually
+                // executed, the opposite is true — the remaining waves are what bring
+                // targets to a consistent version, so it continues, matching the
+                // long-standing "let running deployments finish" policy.
+                //
+                // StartedUtc is the discriminator rather than the wave index: a skipped
+                // step records a NULL StartedUtc (see RecordSkippedStepsAsync), so this
+                // is "did anything run", not "how far did we get" — a run whose earlier
+                // waves were all condition-skipped correctly counts as not started.
+                if (source.AppliesFreezeGate)
+                {
+                    var executedAnything = await db.TaskStepOutcomes
+                        .IgnoreQueryFilters()
+                        .AnyAsync(o => o.TaskId == deployment.Id && o.StartedUtc != null, ct)
+                        .ConfigureAwait(false);
+                    if (!executedAnything)
+                    {
+                        var freezeService = scope.ServiceProvider
+                            .GetRequiredService<DeploymentFreezeService>();
+                        var resumeFreeze = await freezeService.FindBlockingFreezeAsync(
+                            spaceId:       deployment.SpaceId,
+                            projectId:     deployment.ProjectId,
+                            environmentId: deployment.EnvironmentId,
+                            ct:            ct).ConfigureAwait(false);
+                        if (resumeFreeze is not null)
+                        {
+                            var frozenMsg =
+                                $"Approved, but blocked by freeze '{resumeFreeze.Name}' until " +
+                                $"{resumeFreeze.EndUtc:O}. This deployment had not started " +
+                                "executing when it paused, so resuming it now would be new " +
+                                "work entering the freeze window rather than a running " +
+                                "deployment finishing. No target was touched. Wait for the " +
+                                "window to end, or have an operator with " +
+                                "DeploymentFreezeOverride re-issue the deployment.";
+                            logger.LogWarning(
+                                "Deployment {DeploymentId} approved but blocked on resume by " +
+                                "freeze {FreezeId} ({FreezeName}); window ends {EndUtc}.",
+                                deployment.Id, resumeFreeze.Id, resumeFreeze.Name,
+                                resumeFreeze.EndUtc);
+                            await logSeq.AppendAsync(-1, null, "error", frozenMsg, ct)
+                                .ConfigureAwait(false);
+                            var freezeAudit = scope.ServiceProvider
+                                .GetRequiredService<IAuditLog>();
+                            await freezeAudit.RecordAsync(
+                                KrakenDeploy.Server.Core.Domain.Audit.AuditEventType
+                                    .DeploymentBlockedByFreeze,
+                                subjectType: "Deployment",
+                                subjectId:   deployment.Id.ToString(),
+                                details:     $"FreezeId={resumeFreeze.Id}, " +
+                                             $"Freeze={resumeFreeze.Name}, " +
+                                             $"EndUtc={resumeFreeze.EndUtc:O}, " +
+                                             "BlockedAt=ResumeAfterApproval",
+                                ct: ct).ConfigureAwait(false);
+                            await FailAsync(db, deployment, frozenMsg, ct).ConfigureAwait(false);
+                            return;
+                        }
+                    }
+                }
+
+                logger.LogInformation(
+                    "DeploymentWorker: resuming task {Id} from wave {Wave} after a manual " +
+                    "intervention.", deploymentId, resumeCheckpoint.ResumeWaveIndex);
+            }
+
             // ── B1: atomic claim (Queued→Running) ──────────────────────────
             // One conditional UPDATE replaces the old cancel-re-read + blind
             // Running write. Exactly one wake-up wins the row: a duplicate
@@ -703,8 +881,10 @@ public sealed class DeploymentWorker(
             // clears ScheduledFor so the scheduled job never re-matches it.
             // Pass the loaded entity (not just the id) so the claim reads the
             // serialization key off it — no redundant meta re-read.
-            var claim = await ServerTaskLease.TryClaimAsync(db, deployment, timeProvider, ct)
-                .ConfigureAwait(false);
+            var claim = resumeCheckpoint is not null
+                ? ServerTaskClaimResult.Claimed // already transitioned by TryResumeAsync
+                : await ServerTaskLease.TryClaimAsync(db, deployment, timeProvider, ct)
+                    .ConfigureAwait(false);
             if (claim != ServerTaskClaimResult.Claimed)
             {
                 // Two calls (not a ternary template) — the log message template
@@ -740,8 +920,12 @@ public sealed class DeploymentWorker(
             // CRITICAL: mark the mirrored properties NOT-modified — the DB already
             // holds these values, and leaving them dirty would make any later
             // SaveChanges (step outcomes, etc.) blindly re-assert Running over a
-            // Cancelled that landed in between.
-            ServerTaskLease.MirrorClaim(db, deployment, timeProvider);
+            // Cancelled that landed in between. A resume already mirrored its own
+            // transition (MirrorResume) and must NOT restamp StartedUtc.
+            if (resumeCheckpoint is null)
+            {
+                ServerTaskLease.MirrorClaim(db, deployment, timeProvider);
+            }
 
             // Renew the lease for as long as this dispatch is in flight — stops on
             // dispose at every exit path of this method. While the process is
@@ -799,6 +983,14 @@ public sealed class DeploymentWorker(
             // on target X skips only X's later Condition=Success steps, never a
             // sibling's. (Atomic mode uses the global hasFailed flag instead.)
             var softFailedTargets = new HashSet<Guid>();
+            // WP3 — a rejected/expired approval gate. Distinct from hasFailed: the run
+            // continues past the gate so cleanup steps execute, but the verdict is a
+            // hard Failed whatever the failure mode (see
+            // DeploymentTerminalStatusResolver).
+            var interventionRejected = false;
+            // WP3 — the wave to start at. 0 for a fresh dispatch; the checkpoint's
+            // resume point when continuing past an approved gate.
+            var startWaveIndex = 0;
 
             // T0-6: value-based log redactor for server-side steps. Built once
             // from the canonical plan's sensitive values (identical across
@@ -816,8 +1008,35 @@ public sealed class DeploymentWorker(
             var outputAccumulator = new DeploymentOutputAccumulator(
                 contexts, canonicalCtx.VarDict, serverRedactor);
 
-            foreach (var wave in waves)
+            // ── WP3: rehydrate the orchestration state a pause checkpointed ──
+            // Everything above was REBUILT from the frozen snapshot (targets,
+            // contexts, flatten, waves) — deterministic for a deployment. What
+            // follows cannot be rebuilt and comes from the checkpoint.
+            if (resumeCheckpoint is { } cp)
             {
+                var restoreFailure = RestoreFromCheckpoint(
+                    cp, waves, targets, aliveTargets, droppedTargets, softFailedTargets,
+                    outputAccumulator);
+                if (restoreFailure is not null)
+                {
+                    await logSeq.AppendAsync(-1, null, "error", restoreFailure, ct)
+                        .ConfigureAwait(false);
+                    await FailAsync(db, deployment, restoreFailure, ct).ConfigureAwait(false);
+                    return;
+                }
+                hasFailed            = cp.HasFailed;
+                interventionRejected = cp.InterventionRejected;
+                startWaveIndex       = cp.ResumeWaveIndex;
+                // NOTE: the checkpoint column was already cleared by TryResumeAsync's
+                // conditional UPDATE (and mirrored onto the tracked entity). Clearing it
+                // HERE instead would leave the tracked entity dirty with a stale xmin —
+                // the resume's ExecuteUpdate bumped the row — and the wave loop's next
+                // SaveChanges would throw DbUpdateConcurrencyException.
+            }
+
+            for (var waveIndex = startWaveIndex; waveIndex < waves.Count; waveIndex++)
+            {
+                var wave = waves[waveIndex];
                 // ── Ownership boundary: stop unless still Running in the DB ──
                 // E2 — ONE ownership predicate evaluated at every wave boundary:
                 // the task must still be Running. This catches an operator cancel
@@ -843,6 +1062,122 @@ public sealed class DeploymentWorker(
                         "Deployment {Id} no longer Running — halting before the remaining wave(s).",
                         deployment.Id);
                     return;
+                }
+
+                // ── WP3: manual-intervention gate ───────────────────────────
+                // Evaluated BEFORE the wave dispatches, so the pause is task-global:
+                // nothing in this wave has run yet and no target has been touched.
+                var gateSteps = ManualInterventionGate.GateStepsIn(wave);
+                if (gateSteps.Count > 0)
+                {
+                    var decision = await ManualInterventionGate.EvaluateAsync(
+                        db, deployment, gateSteps, canonicalCtx.SnapshotByPlanIndex,
+                        outputAccumulator.ServerConditionVarDict,
+                        // Instructions render against a bag whose SENSITIVE VALUES are
+                        // masked. They are persisted in cleartext and shown to holders of
+                        // InterruptionView, who do not need VariableView — and redacting
+                        // the rendered output cannot help, because any Octostache filter
+                        // (| ToBase64, | Md5, …) yields a string the substring redactor
+                        // no longer recognises. A filter cannot launder what was never in
+                        // the bag. Conditions still see REAL values, on the line above.
+                        outputAccumulator.MaskedServerConditionVarDict(
+                            canonicalCtx.SensitiveVariableNames),
+                        hasFailedAtWaveStart: hasFailed,
+                        // Same role filter every other server step gets. A gate is a
+                        // step, so a role-filtered one must skip, not pause.
+                        appliesToTask: step => StepAppliesToTarget(deployment, step),
+                        redactor: serverRedactor,
+                        engineOptions.Value.DefaultInterventionTimeout,
+                        timeProvider, orchestrationCt).ConfigureAwait(false);
+
+                    // Gates their own run condition or role filter excluded, recorded on
+                    // EVERY branch below — the whole gate set leaves the wave whichever
+                    // branch fires, so an excluded gate sharing a wave with an applicable
+                    // one used to vanish: no log line, no TaskStepOutcome, absent from
+                    // the Steps tab, unlike every other skipped step type.
+                    if (decision.SkippedSteps is { Count: > 0 } excludedGates)
+                    {
+                        await RecordSkippedStepsAsync(
+                            db, logSeq, deployment, excludedGates,
+                            canonicalCtx.SnapshotByPlanIndex,
+                            what: "manual intervention",
+                            decision.SkipReason ?? "Run condition excluded this gate.",
+                            timeProvider, ct).ConfigureAwait(false);
+                    }
+
+                    if (decision.Action == ManualGateAction.Fail)
+                    {
+                        await logSeq.AppendAsync(-1, null, "error", decision.FailureReason!, ct)
+                            .ConfigureAwait(false);
+                        await FailAsync(db, deployment, decision.FailureReason!, ct)
+                            .ConfigureAwait(false);
+                        return;
+                    }
+
+                    if (decision.Action == ManualGateAction.Pause)
+                    {
+                        await PauseForInterventionAsync(
+                            db, deployment, source.Audit, auditLog, logSeq,
+                            decision.Pending!, decision.ResponsibleTeamNames,
+                            waveIndex, hasFailed, interventionRejected, aliveTargets,
+                            droppedTargets, softFailedTargets, outputAccumulator,
+                            encryption, ct).ConfigureAwait(false);
+                        return;
+                    }
+
+                    // Resolved gates: log line + step outcome from the rows EvaluateAsync
+                    // already loaded (no second query). The RESOLUTION audit is not
+                    // written here — InterruptionService / the timeout sweeper emit it at
+                    // decision time, which is when the change-control event actually
+                    // happened and what subscriptions notify on; auditing again here
+                    // would double-notify.
+                    if (decision.Resolved is { Count: > 0 } answeredGates)
+                    {
+                        await RecordResolvedGatesAsync(
+                            db, deployment, logSeq, answeredGates,
+                            canonicalCtx.SnapshotByPlanIndex, timeProvider, ct)
+                            .ConfigureAwait(false);
+                    }
+
+                    // Drop the whole gate set and run whatever else shared the wave.
+                    // Because Octopus.Manual is server-only and a mixed server+target
+                    // wave is refused upstream, the only possible companions are other
+                    // SERVER steps (e.g. a RunOnServer script marked StartWithPrevious).
+                    // The gate itself executes nothing.
+                    var remainingSteps = wave.Steps.Except(gateSteps).ToList();
+
+                    if (decision.Action == ManualGateAction.Rejected)
+                    {
+                        // Do NOT run this wave — the gate refused the work behind it.
+                        // hasFailed makes later waves' Condition=Failure/Always cleanup
+                        // steps run (and their Condition=Success steps skip);
+                        // interventionRejected makes the terminal verdict Failed rather
+                        // than SucceededWithWarnings. Deliberately NOT FailAsync here:
+                        // that would return immediately and skip the cleanup.
+                        //
+                        // The companions are abandoned with the wave, so they need their
+                        // Skipped outcome recorded explicitly — jumping straight to the
+                        // next wave left them with no outcome row at all, while the same
+                        // step one wave later would have run under Condition=Always.
+                        if (remainingSteps.Count > 0)
+                        {
+                            await RecordSkippedStepsAsync(
+                                db, logSeq, deployment, remainingSteps,
+                                canonicalCtx.SnapshotByPlanIndex,
+                                what: "step",
+                                "Manual intervention was refused, so this wave did not run.",
+                                timeProvider, ct).ConfigureAwait(false);
+                        }
+                        hasFailed = true;
+                        interventionRejected = true;
+                        continue;
+                    }
+
+                    if (remainingSteps.Count == 0)
+                    {
+                        continue;
+                    }
+                    wave = new WavePartitioner.Wave(wave.Kind, remainingSteps);
                 }
 
                 if (wave.Kind == WavePartitioner.WaveKind.Server)
@@ -1007,7 +1342,10 @@ public sealed class DeploymentWorker(
                 hasFailed,
                 requiredStepDropped: droppedTargets.Any(d => d.Reason == DropReason.RequiredStepFailed),
                 droppedTargetCount:  droppedTargets.Count,
-                softFailedCount:     softFailedTargets.Count);
+                softFailedCount:     softFailedTargets.Count,
+                // WP3 — a rejected/expired gate is Failed in every mode, but only
+                // AFTER the cleanup waves above have run.
+                interventionRejected: interventionRejected);
             var didSucceed = false;
             DateTimeOffset finalCompletedUtc;
             await using (var finalDb = await scope.ServiceProvider
@@ -1034,6 +1372,8 @@ public sealed class DeploymentWorker(
                             // B1: terminal — release the dispatch lease.
                             dep.ClaimedBy    = null;
                             dep.LeaseUntil   = null;
+                            // WP3: a terminal task never carries a resume checkpoint.
+                            dep.PauseCheckpointEncrypted = null;
                         }, ct: ct).ConfigureAwait(false);
                     didSucceed = wrote && terminalStatus is DeploymentStatus.Succeeded
                         or DeploymentStatus.SucceededWithWarnings;
@@ -1347,6 +1687,18 @@ public sealed class DeploymentWorker(
         SecretRedactor redactor,
         CancellationToken ct)
     {
+        // WP3 — a manual-intervention gate is decided at the wave boundary and its
+        // steps are stripped from the wave before it runs, so reaching here means the
+        // gate was bypassed. Throw rather than fall through to ServerScriptStepRunner,
+        // which would try to execute an approval step as a script.
+        if (step.StepType.Equals(
+                ManualInterventionConfigKeys.StepType, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Manual-intervention step '{step.Name}' reached the server step runner. " +
+                "Gate steps are resolved at the wave boundary and must never be executed.");
+        }
+
         // Overlay this step's per-step variable delta (step/action scope) onto
         // the deployment-wide vars — the server-side counterpart of the agent's
         // ApplyStepVariables. No-op when the step carries no delta.
@@ -1483,6 +1835,8 @@ public sealed class DeploymentWorker(
                 // B1: terminal — release the dispatch lease.
                 t.ClaimedBy = null;
                 t.LeaseUntil = null;
+                // WP3: a terminal task never carries a resume checkpoint.
+                t.PauseCheckpointEncrypted = null;
             }, ct: ct).ConfigureAwait(false);
         if (!failed)
         {
@@ -1507,6 +1861,300 @@ public sealed class DeploymentWorker(
         {
             diagnosisChannel.Writer.TryWrite(new TenantWorkItem(_dispatchAccountId.Value, task.Id));
         }
+    }
+
+    // ── WP3 manual-intervention helpers ──────────────────────────────────
+
+    /// <summary>
+    /// Parks the task at a manual-intervention gate: writes the resume checkpoint and
+    /// flips <c>Running → Paused</c> in ONE transaction together with the staged
+    /// <see cref="Interruption"/> row, then returns so the caller's <c>using</c> scopes
+    /// release the <c>NodeTaskGate</c> slot, the in-flight gauge and the lease renewal.
+    /// <para>
+    /// The lease is CLEARED, not left to expire: a paused task has no owner, and B1's
+    /// reconciler must not see a stale live lease on it. That is safe only because the
+    /// reconciler's orphan predicate is scoped to <c>Running</c> — a <c>Paused</c> row
+    /// with a null lease is invisible to it, where a <c>Running</c> one would be reaped
+    /// within the minute.
+    /// </para>
+    /// </summary>
+    private async Task PauseForInterventionAsync(
+        KrakenDbContext db,
+        ServerTask task,
+        TaskAuditVocabulary vocab,
+        IAuditLog auditLog,
+        LogSequencer logSeq,
+        Interruption interruption,
+        IReadOnlyList<string>? responsibleTeamNames,
+        int waveIndex,
+        bool hasFailed,
+        bool interventionRejected,
+        IReadOnlyList<DeploymentTarget> aliveTargets,
+        IReadOnlyList<DroppedTargetInfo> droppedTargets,
+        IReadOnlySet<Guid> softFailedTargets,
+        DeploymentOutputAccumulator outputAccumulator,
+        KrakenDeploy.Server.Core.Domain.Variables.IEncryptionService encryption,
+        CancellationToken ct)
+    {
+        var (targetOutputs, serverOutputs) = outputAccumulator.Export();
+        var checkpoint = new TaskPauseCheckpoint
+        {
+            ResumeWaveIndex      = waveIndex,
+            HasFailed            = hasFailed,
+            // Without this a rejection recorded on an EARLIER wave is lost across this
+            // pause, and the run finalises SucceededWithWarnings after the next gate is
+            // approved — a refused change reported as a warning-level success.
+            InterventionRejected = interventionRejected,
+            AliveTargetIds      = [.. aliveTargets.Select(t => t.Id)],
+            DroppedTargets      = [.. droppedTargets.Select(d => new CheckpointDroppedTarget(
+                                      d.Target.Id, d.Reason.ToString(), d.StepName, d.Error))],
+            SoftFailedTargetIds = [.. softFailedTargets],
+            TargetOutputs       = [.. targetOutputs],
+            ServerOutputs       = [.. serverOutputs],
+        };
+        var payload = TaskPauseCheckpointCodec.Write(checkpoint, encryption);
+
+        // The operator-facing banner goes in BEFORE the status flip so a UI that
+        // reacts to Paused already finds the explanation in the log.
+        await logSeq.AppendAsync(-1, null, "info",
+            ManualInterventionGate.DescribePause(interruption, responsibleTeamNames),
+            ct).ConfigureAwait(false);
+
+        // Guard on Running specifically (not merely "not terminal"): a concurrent
+        // cancel must win, and a task that is somehow already Paused must not be
+        // re-paused over its existing gate.
+        var paused = await ServerTaskStatusWriter.TryTransitionAsync(
+            db, task,
+            t =>
+            {
+                t.Status = DeploymentStatus.Paused;
+                // No owner while parked — see the remarks above.
+                t.ClaimedBy  = null;
+                t.LeaseUntil = null;
+                t.PauseCheckpointEncrypted = payload;
+            },
+            canTransitionFrom: static s => s == DeploymentStatus.Running,
+            ct: ct).ConfigureAwait(false);
+
+        if (!paused)
+        {
+            // A cancel (or a reconciler interrupt) landed first; its verdict stands and
+            // the staged interruption row is discarded unsaved with this scope.
+            logger.LogInformation(
+                "Task {Id}: manual-intervention pause refused — status is {Status}; the " +
+                "recorded verdict stands.", task.Id, task.Status);
+            return;
+        }
+
+        logger.LogInformation(
+            "Task {Id} paused at wave {Wave} for manual intervention '{Step}' " +
+            "(interruption {InterruptionId}); node slot released.",
+            task.Id, waveIndex, interruption.StepName, interruption.Id);
+
+        await auditLog.RecordAsync(
+            vocab.Paused,
+            subjectType: vocab.SubjectType,
+            subjectId:   task.Id.ToString(),
+            details:     $"InterruptionId={interruption.Id}, Step={interruption.StepName}, " +
+                         $"StepIndex={interruption.StepIndex.ToString(CultureInfo.InvariantCulture)}, " +
+                         $"ResponsibleTeams=[{(responsibleTeamNames is { Count: > 0 }
+                             ? string.Join(", ", responsibleTeamNames)
+                             : "anyone with the approve permission")}], " +
+                         $"ExpiresUtc={interruption.ExpiresUtc?.ToString("O") ?? "<none>"}",
+            ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Records the task-log line + step outcome for each gate on a wave whose decision
+    /// is already in. Runs for approvals AND rejections — the Steps tab must show what
+    /// the human decided either way, which is the point of the change-control trail.
+    /// The resolution AUDIT is emitted at decision time by the interruption service /
+    /// timeout sweeper, not here, so subscriptions fire once.
+    /// </summary>
+    private static async Task RecordResolvedGatesAsync(
+        KrakenDbContext db,
+        ServerTask task,
+        LogSequencer logSeq,
+        IReadOnlyList<Interruption> resolved,
+        StepSnapshot[] snapshotSteps,
+        TimeProvider time,
+        CancellationToken ct)
+    {
+        // The rows come from ManualInterventionGate.EvaluateAsync, which already
+        // loaded them on this same context — re-querying here bought nothing but a
+        // round trip and handed back the same tracked instances.
+        var now = time.GetUtcNow();
+        foreach (var interruption in resolved.OrderBy(i => i.StepIndex))
+        {
+            // StepIndex comes from the DB and indexes an array REBUILT at resume, so it
+            // is not self-evidently in range: RestoreFromCheckpoint accepts that the
+            // process may no longer partition the way it did at pause time. Refuse with
+            // an operator-readable failure rather than throwing IndexOutOfRangeException
+            // out of the wave loop into the generic dispatch catch.
+            if (interruption.StepIndex < 0 || interruption.StepIndex >= snapshotSteps.Length)
+            {
+                throw new InvalidOperationException(
+                    $"Manual intervention '{interruption.StepName}' was recorded at step " +
+                    $"index {interruption.StepIndex}, which no longer exists in this task's " +
+                    $"process ({snapshotSteps.Length} step(s)). The process changed while the " +
+                    "task was paused — re-deploy the release instead of resuming it.");
+            }
+            var snap = snapshotSteps[interruption.StepIndex];
+            var verdict = interruption.Status switch
+            {
+                InterruptionStatus.Approved => "APPROVED",
+                InterruptionStatus.Rejected => "REJECTED",
+                InterruptionStatus.TimedOut => "TIMED OUT",
+                // Unreachable: the gate's allow-list refuses Pending and Cancelled before
+                // any outcome is recorded. Named rather than defaulted so a status added
+                // later cannot silently be logged as a timeout.
+                var other                   => other.ToString().ToUpperInvariant(),
+            };
+            var by = interruption.ActedByDisplay ?? "<no responder>";
+            var notes = string.IsNullOrWhiteSpace(interruption.Notes)
+                ? "" : $" Notes: {interruption.Notes}";
+
+            await logSeq.AppendAsync(interruption.StepIndex, null,
+                interruption.Status == InterruptionStatus.Approved ? "info" : "error",
+                $"--- Manual intervention '{interruption.StepName}' {verdict} by {by}." +
+                $"{notes} ---", ct).ConfigureAwait(false);
+
+            await UpsertStepOutcomeAsync(
+                db, task.Id, interruption.StepIndex, snap.Name,
+                ManualInterventionGate.OutcomeFor(interruption.Status),
+                attemptCount: 1,
+                errorMessage: interruption.Status == InterruptionStatus.Approved
+                    ? null
+                    : $"Manual intervention {verdict.ToLowerInvariant()}" +
+                      (string.IsNullOrWhiteSpace(interruption.Notes)
+                          ? "." : $": {interruption.Notes}"),
+                startedUtc:   interruption.CreatedUtc,
+                completedUtc: interruption.ActedUtc ?? now,
+                isServerSide: true,
+                required:     snap.Required, ct).ConfigureAwait(false);
+        }
+
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Records a <c>Skipped</c> outcome + log line for steps the gate block removed
+    /// from a wave without running them, so they behave like every other skipped step
+    /// instead of silently vanishing from the Steps tab. Two callers, both in the gate
+    /// block: gates their own run condition or role filter excluded
+    /// (<paramref name="what"/> = "manual intervention"), and the non-gate companions of
+    /// a wave abandoned because a gate was refused (<paramref name="what"/> = "step").
+    /// <para>
+    /// No <see cref="Interruption"/> row is created and nothing is audited: a step that
+    /// did not run was never a change-control question, so putting it in front of a
+    /// reviewer would be noise.
+    /// </para>
+    /// <para>
+    /// Idempotent — <c>UpsertStepOutcomeAsync</c> overwrites in place, which matters
+    /// because a pause/resume cycle re-evaluates the wave and re-reports the same
+    /// excluded set.
+    /// </para>
+    /// </summary>
+    private static async Task RecordSkippedStepsAsync(
+        KrakenDbContext db,
+        LogSequencer logSeq,
+        ServerTask task,
+        IReadOnlyList<DeploymentStepPlan> skippedSteps,
+        StepSnapshot[] snapshotSteps,
+        string what,
+        string reason,
+        TimeProvider time,
+        CancellationToken ct)
+    {
+        var now = time.GetUtcNow();
+        foreach (var step in skippedSteps)
+        {
+            var snap = snapshotSteps[step.Index];
+            await logSeq.AppendAsync(step.Index, null, "info",
+                $"--- Skipped {what} '{snap.Name}': {reason} ---", ct)
+                .ConfigureAwait(false);
+            await UpsertStepOutcomeAsync(
+                db, task.Id, step.Index, snap.Name,
+                StepOutcomeKind.Skipped, attemptCount: 0,
+                errorMessage: reason,
+                startedUtc:   null,
+                completedUtc: now,
+                isServerSide: true,
+                required:     snap.Required, ct).ConfigureAwait(false);
+        }
+
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Re-seeds the wave loop's mutable state from a pause checkpoint. Returns
+    /// <c>null</c> on success, or an operator-readable reason the resume must FAIL.
+    /// <para>
+    /// Both invariant checks matter. A <c>ResumeWaveIndex</c> outside the rebuilt wave
+    /// list means the process snapshot no longer partitions the way it did at pause
+    /// time, so "continue from wave N" is meaningless. An alive target id that is no
+    /// longer assigned means the target set changed under the pause. Either way,
+    /// continuing would deploy something other than what was approved — so it fails
+    /// loudly instead (pre-production policy: no soft-fallback for stale state).
+    /// </para>
+    /// </summary>
+    private static string? RestoreFromCheckpoint(
+        TaskPauseCheckpoint checkpoint,
+        List<WavePartitioner.Wave> waves,
+        IReadOnlyList<DeploymentTarget> targets,
+        List<DeploymentTarget> aliveTargets,
+        List<DroppedTargetInfo> droppedTargets,
+        HashSet<Guid> softFailedTargets,
+        DeploymentOutputAccumulator outputAccumulator)
+    {
+        if (checkpoint.ResumeWaveIndex < 0 || checkpoint.ResumeWaveIndex >= waves.Count)
+        {
+            return $"Resume checkpoint points at wave " +
+                   $"{checkpoint.ResumeWaveIndex.ToString(CultureInfo.InvariantCulture)}, but the " +
+                   $"process now partitions into " +
+                   $"{waves.Count.ToString(CultureInfo.InvariantCulture)} wave(s). The approved " +
+                   "process no longer matches this task — re-deploy the release.";
+        }
+
+        var byId = targets.ToDictionary(t => t.Id);
+
+        aliveTargets.Clear();
+        foreach (var id in checkpoint.AliveTargetIds)
+        {
+            if (!byId.TryGetValue(id, out var target))
+            {
+                return $"Resume checkpoint lists target {id} as still deploying, but it is no " +
+                       "longer assigned to this task. The target set changed while the task was " +
+                       "paused — re-deploy the release.";
+            }
+            aliveTargets.Add(target);
+        }
+
+        droppedTargets.Clear();
+        foreach (var dropped in checkpoint.DroppedTargets)
+        {
+            // A dropped target stays ASSIGNED (drop-out is orchestration state, not an
+            // assignment change), so a missing row here is the same corruption as above.
+            if (!byId.TryGetValue(dropped.TargetId, out var target))
+            {
+                return $"Resume checkpoint records target {dropped.TargetId} as dropped, but it " +
+                       "is no longer assigned to this task. The target set changed while the " +
+                       "task was paused — re-deploy the release.";
+            }
+            if (!Enum.TryParse<DropReason>(dropped.Reason, out var reason))
+            {
+                return $"Resume checkpoint records an unknown drop reason " +
+                       $"'{dropped.Reason}' for target {dropped.TargetId}.";
+            }
+            droppedTargets.Add(new DroppedTargetInfo(
+                target, reason, dropped.StepName, dropped.Error));
+        }
+
+        softFailedTargets.Clear();
+        softFailedTargets.UnionWith(checkpoint.SoftFailedTargetIds);
+
+        outputAccumulator.RestoreFrom(checkpoint.TargetOutputs, checkpoint.ServerOutputs);
+        return null;
     }
 
     // ── M14.2 + M14.3 helpers ────────────────────────────────────────────
@@ -1565,7 +2213,8 @@ public sealed class DeploymentWorker(
         // EffectiveServerStepTimeoutSeconds); StepRetryRunner's own timeout then
         // fires and classifies the step TimedOut, so no separate ceiling logic is
         // needed inside WaitForChildAsync.
-        var effectiveTimeoutSeconds = EffectiveServerStepTimeoutSeconds(step, snapshot.TimeoutSeconds);
+        var effectiveTimeoutSeconds = await EffectiveServerStepTimeoutSecondsAsync(
+            step, snapshot.TimeoutSeconds, deployment.SpaceId, ct).ConfigureAwait(false);
 
         // E3 — a DeployRelease step runs at most ONCE (see
         // EffectiveServerStepMaxRetries): a step-level retry would trigger a fresh
@@ -1626,8 +2275,11 @@ public sealed class DeploymentWorker(
     /// deployment in <c>WaitForChildAsync</c>; left unbounded it would pin the
     /// parent's <see cref="NodeTaskGate"/> slot forever if the child never
     /// terminates. So a DeployRelease step with NO explicit timeout
-    /// (<c>TimeoutSeconds &lt;= 0</c>) is bounded by the Engine ceiling
-    /// (<see cref="EngineOptions.MaxDeployReleaseWaitDuration"/>). An explicit
+    /// (<c>TimeoutSeconds &lt;= 0</c>) is bounded by the Engine BACKSTOP
+    /// (<see cref="EngineOptions.MaxDeployReleaseGatedWaitDuration"/>, 7 d), while the
+    /// tighter working bound (<see cref="EngineOptions.MaxDeployReleaseWaitDuration"/>,
+    /// 1 h) is enforced inside <c>WaitForChildAsync</c> against NON-paused time only —
+    /// see WP3-b. An explicit
     /// per-step timeout is honoured as-is (even above the ceiling — operator
     /// intent, same rule as <see cref="EngineOptions.MaxTargetWaveDuration"/>).
     /// Every other server step keeps its raw <c>TimeoutSeconds</c> (0 = unlimited
@@ -1635,28 +2287,106 @@ public sealed class DeploymentWorker(
     /// bound fires is classified <c>TimedOut</c> by <see cref="StepRetryRunner"/>,
     /// preserving the OCE-propagation contract.
     /// </summary>
-    private int EffectiveServerStepTimeoutSeconds(DeploymentStepPlan step, int configuredTimeoutSeconds)
+    private async Task<int> EffectiveServerStepTimeoutSecondsAsync(
+        DeploymentStepPlan step,
+        int configuredTimeoutSeconds,
+        Guid spaceId,
+        CancellationToken ct)
     {
         if (configuredTimeoutSeconds > 0
             || !step.StepType.Equals(DeployReleaseStepRunner.StepType, StringComparison.OrdinalIgnoreCase))
         {
             return configuredTimeoutSeconds;
         }
-        // Unconfigured DeployRelease wait → apply the ceiling. A non-positive
-        // (misconfigured) ceiling falls back to the shipped 1 h default rather
-        // than reintroducing an unbounded wait. Round up so a sub-second test
-        // ceiling still yields a positive whole second (StepRetryRunner treats
-        // <= 0 as unlimited). Clamp to a max safely within CancellationTokenSource
-        // .CancelAfter's bound: StepRetryRunner passes this to CancelAfter, which
-        // throws for a duration whose milliseconds exceed ~Int32.MaxValue — an
-        // absurd (>24 day) MaxDeployReleaseWaitDuration must degrade to a long
-        // ceiling, not an ArgumentOutOfRangeException that fails every DeployRelease
-        // step as a generic error.
-        var ceiling = engineOptions.Value.MaxDeployReleaseWaitDuration;
+
+        // WP3-b — the budget depends on whether the CHILD can pause. A child with no
+        // manual-intervention gate keeps the tight 1 h ceiling, so a hung child is still
+        // classified TimedOut at exactly the same moment as before. Only a child that
+        // actually contains a gate gets the far larger backstop, because its wait is
+        // legitimately bounded by a human's approval window (72 h by default) rather than
+        // by execution time. Deciding it HERE rather than inside WaitForChildAsync is what
+        // preserves the TimedOut classification: StepRetryRunner infers a timeout from its
+        // own token firing, and nothing inside the wait loop can reach that.
+        var childHasGate = await ChildProjectHasGateAsync(step, spaceId, ct)
+            .ConfigureAwait(false);
+        if (!childHasGate)
+        {
+            var working = engineOptions.Value.MaxDeployReleaseWaitDuration;
+            var workingSeconds = working > TimeSpan.Zero
+                ? working.TotalSeconds
+                : TimeSpan.FromHours(1).TotalSeconds;
+            return Math.Clamp(
+                (int)Math.Ceiling(Math.Min(workingSeconds, MaxServerStepTimeoutSeconds)),
+                1, MaxServerStepTimeoutSeconds);
+        }
+        // Unconfigured DeployRelease wait → apply the HARD backstop
+        // (MaxDeployReleaseGatedWaitDuration, 7 d). The working bound —
+        // MaxDeployReleaseWaitDuration, 1 h — is enforced inside WaitForChildAsync
+        // instead, because only that loop can tell "the child is working" from "the child
+        // is parked at a manual-intervention gate" and charge just the former against the
+        // budget (WP3-b). Before this split, a child with an approval gate always failed
+        // its parent at 1 h against a 72 h approval window, and when the human eventually
+        // approved, the child resumed and deployed for real AFTER the parent had already
+        // reported failure. Simply raising the ceiling was the alternative, but it would
+        // also stop catching a genuinely hung child for days.
+        //
+        // A non-positive (misconfigured) backstop falls back to 7 d rather than
+        // reintroducing an unbounded wait. Round up so a sub-second test value still
+        // yields a positive whole second (StepRetryRunner treats <= 0 as unlimited).
+        // Clamp to a max safely within CancellationTokenSource.CancelAfter's bound:
+        // StepRetryRunner passes this to CancelAfter, which throws for a duration whose
+        // milliseconds exceed ~Int32.MaxValue — an absurd (>24 day) configured value must
+        // degrade to a long ceiling, not an ArgumentOutOfRangeException that fails every
+        // DeployRelease step as a generic error.
+        var ceiling = engineOptions.Value.MaxDeployReleaseGatedWaitDuration;
         var seconds = ceiling > TimeSpan.Zero
             ? ceiling.TotalSeconds
-            : TimeSpan.FromHours(1).TotalSeconds;
+            : TimeSpan.FromDays(7).TotalSeconds;
         return Math.Clamp((int)Math.Ceiling(Math.Min(seconds, MaxServerStepTimeoutSeconds)), 1, MaxServerStepTimeoutSeconds);
+    }
+
+    /// <summary>
+    /// Whether the child project a <c>Octopus.DeployRelease</c> step targets has any
+    /// manual-intervention gate in its process — i.e. whether this step can legitimately
+    /// wait on a human.
+    /// <para>
+    /// Best-effort and fail-SAFE: anything unresolvable (a slug or name rather than a GUID,
+    /// a missing project, a DB hiccup) answers <c>false</c>, which keeps the TIGHTER
+    /// ceiling. Guessing "gated" on uncertainty would quietly let a hung child hold the
+    /// parent's node slot for days.
+    /// </para>
+    /// </summary>
+    private async Task<bool> ChildProjectHasGateAsync(
+        DeploymentStepPlan step, Guid spaceId, CancellationToken ct)
+    {
+        try
+        {
+            var raw = ManualInterventionConfigKeys.Read(
+                step.Config, KrakenDeploy.Contracts.Steps.DeployReleaseConfigKeys.ProjectId);
+            if (!Guid.TryParse(raw, out var childProjectId))
+            {
+                return false;
+            }
+            await using var scope = scopeFactory.CreateAsyncScope();
+            await using var db = await scope.ServiceProvider
+                .GetRequiredService<IDbContextFactory<KrakenDbContext>>()
+                .CreateDbContextAsync(ct).ConfigureAwait(false);
+            return await db.Processes
+                .IgnoreQueryFilters()
+                .Where(p => p.OwnerKind == ProcessOwnerKind.Project
+                            && p.OwnerId == childProjectId)
+                .SelectMany(p => p.Steps)
+                .AnyAsync(s => EF.Functions.ILike(
+                    s.StepType, ManualInterventionConfigKeys.StepType), ct)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogDebug(ex,
+                "Could not determine whether the DeployRelease child of step '{Step}' has a " +
+                "manual-intervention gate; applying the tighter wait ceiling.", step.Name);
+            return false;
+        }
     }
 
     // 24 days in seconds — 24d * 86_400 * 1000 ms stays under Int32.MaxValue ms,
@@ -1776,7 +2506,22 @@ public sealed class DeploymentWorker(
                 return;
             }
 
-            var elapsed = completedUtc - deployment.StartedUtc.Value;
+            // WP3 — discount time spent parked at manual-intervention gates.
+            // TryResumeAsync deliberately does not restamp StartedUtc (the slow audits
+            // want the true start), so a raw completed-minus-started span bills the
+            // human approval window as execution time: with a 30 min default threshold
+            // and a 72 h approval default, EVERY approved deployment would emit a
+            // *.Slow audit — an M13.B subscription event — drowning the real signal.
+            // Cheap pre-filter: the discount can only ever REDUCE the span, so a task
+            // already under the threshold cannot cross it and needs no gate query at all
+            // — which is every task that never paused.
+            if ((completedUtc - deployment.StartedUtc.Value).TotalMinutes < threshold)
+            {
+                return;
+            }
+            var pausedSpans = await PausedSpansAsync(sp, deployment.Id, ct)
+                .ConfigureAwait(false);
+            var elapsed = completedUtc - deployment.StartedUtc.Value - TotalPaused(pausedSpans);
             if (elapsed.TotalMinutes < threshold)
             {
                 return;
@@ -1798,6 +2543,76 @@ public sealed class DeploymentWorker(
             // Audit emission is best-effort — never bubble the failure
             // up into deployment finalisation.
         }
+    }
+
+    /// <summary>
+    /// WP3 — total wall time this task spent parked at manual-intervention gates, so
+    /// the slow-task audits can discount it. Summed from each gate's
+    /// <c>CreatedUtc → ActedUtc</c> span; an unanswered gate contributes nothing
+    /// (the task is still paused, so nothing is being finalised).
+    /// <para>
+    /// Gates are sequential by construction — the task is parked while one is open —
+    /// so summing spans cannot double-count.
+    /// </para>
+    /// </summary>
+    /// <summary>Overload for a caller that has no context open yet.</summary>
+    private static async Task<List<PausedSpan>> PausedSpansAsync(
+        IServiceProvider sp, Guid taskId, CancellationToken ct)
+    {
+        await using var db = await sp
+            .GetRequiredService<IDbContextFactory<KrakenDbContext>>()
+            .CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await PausedSpansAsync(db, taskId, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<List<PausedSpan>> PausedSpansAsync(
+        KrakenDbContext db, Guid taskId, CancellationToken ct)
+    {
+        var rows = await db.Interruptions
+            .IgnoreQueryFilters()
+            .Where(i => i.TaskId == taskId && i.ActedUtc != null)
+            .Select(i => new { i.CreatedUtc, i.ActedUtc })
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        // Clamp each span at zero. CreatedUtc is stamped by the orchestrating worker and
+        // ActedUtc by whichever node served the decision (web, /api, or the sweeper), so
+        // under HA clock skew a fast approval can produce a NEGATIVE span — which would
+        // INFLATE the elapsed time these spans are subtracted from and fire the very
+        // slow-task audit the discount exists to suppress.
+        return [.. rows
+            .Select(r => new PausedSpan(
+                r.CreatedUtc,
+                r.ActedUtc!.Value < r.CreatedUtc ? r.CreatedUtc : r.ActedUtc!.Value))];
+    }
+
+    /// <summary>
+    /// One interval a task spent parked at a gate, used to discount waiting-for-a-human
+    /// time out of the "slow" audits. Kept as intervals rather than one total because
+    /// the total is only valid for the TASK: a per-target span must subtract just the
+    /// part of the pause that actually overlaps that target's own window.
+    /// </summary>
+    private readonly record struct PausedSpan(DateTimeOffset From, DateTimeOffset To)
+    {
+        public TimeSpan Duration => To - From;
+
+        /// <summary>How much of this pause falls inside <c>[start, end]</c>.</summary>
+        public TimeSpan OverlapWith(DateTimeOffset start, DateTimeOffset end)
+        {
+            var from = From > start ? From : start;
+            var to = To < end ? To : end;
+            return to > from ? to - from : TimeSpan.Zero;
+        }
+    }
+
+    private static TimeSpan TotalPaused(List<PausedSpan> spans)
+    {
+        var total = TimeSpan.Zero;
+        foreach (var s in spans)
+        {
+            total += s.Duration;
+        }
+        return total;
     }
 
     /// <summary>
@@ -1846,15 +2661,44 @@ public sealed class DeploymentWorker(
                 return;
             }
 
+            // WP3 — discount time parked at a manual-intervention gate, for the same
+            // reason the task-level audit does. Gate outcomes carry a NULL TargetId, so
+            // they are already excluded from `rows`; it is the SPAN that has to shrink.
+            //
+            // WP3-b — per target, subtract only the OVERLAP with that target's own
+            // window, not the task-wide total. The earlier version subtracted the whole
+            // total from every target, so a target that finished before the gate ever
+            // opened had ~72 h taken off a span that never contained the pause: its
+            // effective duration went deeply negative and a genuinely slow machine was
+            // silently never audited. With the shipped defaults that blinded the
+            // DeploymentTargetSlow signal for any task with one answered gate.
+            // Shares the context already open above — this used to open a second one from
+            // the factory for a query the caller could just as well issue itself.
+            var pausedSpans = await PausedSpansAsync(db, deployment.Id, ct)
+                .ConfigureAwait(false);
+
             var perTarget = rows
                 .GroupBy(r => r.TargetId!.Value)
-                .Select(g => new
+                .Select(g =>
                 {
-                    TargetId = g.Key,
-                    Start    = g.Min(r => r.StartedUtc!.Value),
-                    End      = g.Max(r => r.CompletedUtc),
+                    var start = g.Min(r => r.StartedUtc!.Value);
+                    var end = g.Max(r => r.CompletedUtc);
+                    var parked = TimeSpan.Zero;
+                    foreach (var span in pausedSpans)
+                    {
+                        parked += span.OverlapWith(start, end);
+                    }
+                    return new
+                    {
+                        TargetId = g.Key,
+                        // The ONE duration used for both the threshold test and the audit
+                        // payload. They used to disagree — filtered on the discounted span
+                        // but reported the raw one — so an operator got a notification
+                        // claiming a target took 72 hours against a 30-minute threshold.
+                        Duration = end - start - parked,
+                    };
                 })
-                .Where(t => (t.End - t.Start).TotalMinutes >= threshold)
+                .Where(t => t.Duration.TotalMinutes >= threshold)
                 .ToList();
             if (perTarget.Count == 0)
             {
@@ -1871,7 +2715,7 @@ public sealed class DeploymentWorker(
             var audit = sp.GetRequiredService<IAuditLog>();
             foreach (var t in perTarget)
             {
-                var duration = (t.End - t.Start).TotalMinutes;
+                var duration = t.Duration.TotalMinutes;
                 var name = nameById.GetValueOrDefault(t.TargetId, t.TargetId.ToString());
                 await audit.RecordAsync(
                     vocab.TargetSlow,
@@ -1920,8 +2764,17 @@ public sealed class DeploymentWorker(
                 .GetRequiredService<IDbContextFactory<KrakenDbContext>>()
                 .CreateDbContextAsync(ct).ConfigureAwait(false);
 
+            // WP3 — exclude manual-intervention outcomes. Their "duration" is the human
+            // approval window (72 h by default), so every approved gate would emit a
+            // *.StepSlow audit — an M13.B subscription event — turning a normal
+            // change-control wait into a permanent stream of false "slow step"
+            // notifications. A gate's own deadline is its intervention timeout, which
+            // is the meaningful bound.
             var slowSteps = await db.TaskStepOutcomes
-                .Where(o => o.TaskId == deployment.Id && o.StartedUtc != null)
+                .Where(o => o.TaskId == deployment.Id && o.StartedUtc != null
+                         && o.Outcome != StepOutcomeKind.ManualInterventionApproved
+                         && o.Outcome != StepOutcomeKind.ManualInterventionRejected
+                         && o.Outcome != StepOutcomeKind.ManualInterventionTimedOut)
                 .Select(o => new { o.StepIndex, o.StepName, o.TargetId, o.StartedUtc, o.CompletedUtc })
                 .ToListAsync(ct).ConfigureAwait(false);
 

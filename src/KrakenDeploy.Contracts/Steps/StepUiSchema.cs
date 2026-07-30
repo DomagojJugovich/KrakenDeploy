@@ -269,6 +269,23 @@ public static class StepUiWidgets
     /// <summary>Multi-select chip widget over the project's defined target roles.</summary>
     public const string TargetRoles    = "target-roles";
 
+    /// <summary>
+    /// WP3 — multi-select over the TEAMS visible in the active Space, serialised back to
+    /// the config as a comma-separated list of team GUIDs. Used for a
+    /// manual-intervention step's responsible teams, where the previous free-text GUID
+    /// field made a typo indistinguishable from "no restriction" until a deployment
+    /// actually reached the gate.
+    /// <para>
+    /// NOTE this is the FIRST widget in this catalog backed by server data — the
+    /// picker-style entries above are declared but still fall through to a plain text
+    /// box in <c>StepUiSchemaForm</c>. It is implemented narrowly (one case, one
+    /// injected service, no change to any other widget) rather than by introducing a
+    /// general options-provider mechanism, which is a design decision for whoever
+    /// implements the remaining pickers.
+    /// </para>
+    /// </summary>
+    public const string ResponsibleTeams = "responsible-teams";
+
     /// <summary>Raw JSON text area with syntax highlighting / validation.</summary>
     public const string JsonEditor     = "json-editor";
 

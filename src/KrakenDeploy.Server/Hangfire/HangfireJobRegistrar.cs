@@ -58,6 +58,16 @@ public static class HangfireJobRegistrar
             Cron.Minutely(),
             new RecurringJobOptions { TimeZone = utc });
 
+        // WP3 — auto-fail manual-intervention gates nobody answered before their
+        // expiry — every minute. Minutely because a paused task HOLDS its
+        // (project, environment, tenant) slot, so a stale gate blocks that project's
+        // whole environment until it is cleared.
+        RecurringJob.AddOrUpdate<InterruptionTimeoutJob>(
+            "kraken.interruption-timeout",
+            job => job.ExecuteAsync(CancellationToken.None),
+            Cron.Minutely(),
+            new RecurringJobOptions { TimeZone = utc });
+
         // Refresh the community step-template catalog from the
         // OctopusDeploy/Library GitHub repo — hourly.
         // Uses the Git Trees API (single request) + raw URLs (off-limit), so
@@ -133,6 +143,7 @@ public static class HangfireJobRegistrar
         Fanout<AgentLastSeenOfflineJob>("kraken.agent-last-seen-offline", "*/5 * * * *");
         Fanout<RegistrationTokenExpiryJob>("kraken.registration-token-expiry", Cron.Daily(2, 0));
         Fanout<ScheduledDeploymentDispatchJob>("kraken.scheduled-deployment-dispatch", Cron.Minutely());
+        Fanout<InterruptionTimeoutJob>("kraken.interruption-timeout", Cron.Minutely());
         Fanout<StepTemplateCatalogPollJob>("kraken.step-template-catalog-poll", Cron.Hourly());
         Fanout<StepPackageCatalogPollJob>("kraken.step-package-catalog-poll", Cron.Hourly());
         Fanout<SubscriptionPollerJob>(SubscriptionPollerJob.RecurringJobId, Cron.Minutely());

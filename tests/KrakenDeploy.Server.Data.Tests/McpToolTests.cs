@@ -303,6 +303,10 @@ public sealed class McpToolTests(PostgresFixture postgres)
         public Task<IReadOnlySet<Guid>> GetAccessibleSpaceIdsAsync(
             ClaimsPrincipal user, CancellationToken ct = default)
             => Task.FromResult<IReadOnlySet<Guid>>(new HashSet<Guid>());
+
+    public Task<IReadOnlySet<Guid>> GetUserTeamIdsAsync(
+        ClaimsPrincipal user, CancellationToken ct = default)
+        => Task.FromResult<IReadOnlySet<Guid>>(new HashSet<Guid>());
     }
 
     private sealed class DenyAllEvaluator : IPermissionEvaluator
@@ -319,6 +323,10 @@ public sealed class McpToolTests(PostgresFixture postgres)
         public Task<IReadOnlySet<Guid>> GetAccessibleSpaceIdsAsync(
             ClaimsPrincipal user, CancellationToken ct = default)
             => Task.FromResult<IReadOnlySet<Guid>>(new HashSet<Guid>());
+
+    public Task<IReadOnlySet<Guid>> GetUserTeamIdsAsync(
+        ClaimsPrincipal user, CancellationToken ct = default)
+        => Task.FromResult<IReadOnlySet<Guid>>(new HashSet<Guid>());
     }
 
     // ── Seeding ──────────────────────────────────────────────────────────

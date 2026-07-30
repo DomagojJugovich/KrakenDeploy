@@ -1,4 +1,5 @@
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Execution;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Releases;
@@ -195,5 +196,13 @@ public static class WavePartitioner
         new(StringComparer.OrdinalIgnoreCase)
         {
             DeployReleaseStepRunner.StepType,
+            // WP3 — a manual-intervention gate is TASK-GLOBAL: the whole task pauses
+            // before this wave dispatches, and one human decision resumes or fails
+            // it. That is only expressible server-side; as a per-target agent step it
+            // would need N approvals for N targets and could not pause the
+            // orchestration at all. This also aligns the online path with the offline
+            // one, which has always classified Octopus.Manual as server-orchestrated
+            // (OfflineDropBundleBuilder refuses a bundle containing one).
+            ManualInterventionConfigKeys.StepType,
         };
 }

@@ -7,6 +7,7 @@ using KrakenDeploy.Server.Data.Settings;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using KrakenDeploy.Server.Core.Domain.Security;
 
 namespace KrakenDeploy.Server.Data.Interceptors;
 
@@ -260,20 +261,12 @@ public sealed class AuditLogInterceptor(
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    /// <summary>WP3-b — delegates to the one shared extraction in Core. This was one of
+    /// FIVE private copies whose unknown-sentinels disagreed, so the same principal could
+    /// be stamped under two different labels in two different tables.</summary>
     private static (Guid? userId, string userDisplay) ResolveUser(HttpContext? http)
-    {
-        if (http?.User?.Identity?.IsAuthenticated != true)
-        {
-            return (null, "System");
-        }
-
-        var idStr   = http.User.FindFirstValue(ClaimTypes.NameIdentifier);
-        var userId  = Guid.TryParse(idStr, out var id) ? id : (Guid?)null;
-        var display = http.User.Identity?.Name
-                   ?? http.User.FindFirstValue(ClaimTypes.Email)
-                   ?? "Unknown";
-        return (userId, display);
-    }
+        => http?.User.ResolveProvenance()
+           ?? (null, ClaimsPrincipalExtensions.SystemLabel);
 
     private static object? TryGetPropertyValue(
         Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry entry,

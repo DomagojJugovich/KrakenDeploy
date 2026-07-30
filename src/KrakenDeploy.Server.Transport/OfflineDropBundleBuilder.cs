@@ -1,4 +1,5 @@
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Security;
@@ -34,6 +35,39 @@ namespace KrakenDeploy.Server.Transport;
 /// </summary>
 public sealed class OfflineDropBundleBuilder(ILogger<OfflineDropBundleBuilder> logger)
 {
+    /// <summary>
+    /// Step types a drop bundle must REFUSE to carry, because they are orchestrated by the
+    /// server and an air-gapped runner has nothing to orchestrate them with: a
+    /// <c>DeployRelease</c> cascade has no server to trigger the child, and a
+    /// manual-intervention gate has no way to reach an approver.
+    /// <para>
+    /// WP3-b — this replaced a <c>StepType is "…" or "…"</c> constant pattern, which C#
+    /// compiles to ORDINAL, case-SENSITIVE equality, while every other WP3 comparison
+    /// (<c>WavePartitioner.ServerOnlyStepTypes</c>,
+    /// <c>ManualInterventionGate.GateStepsIn</c>, the server-step guard, the step package's
+    /// <c>CanHandle</c>) is <see cref="StringComparison.OrdinalIgnoreCase"/>. Since
+    /// <c>ProcessService</c> stores <c>StepType</c> verbatim with no allow-list or
+    /// normalisation, a step added as <c>"octopus.manual"</c> by REST, MCP or an import
+    /// still gated ONLINE — nothing looked wrong — yet slipped past this refusal into a
+    /// bundle, where the offline handler logs "APPROVAL NOT ENFORCED" and returns success.
+    /// The deployment then completed with no <c>Interruption</c> row, no audit event and no
+    /// step outcome: a complete change-control bypass whose only trace was one warning line
+    /// in the task log.
+    /// </para>
+    /// <para>
+    /// Named and internal-visible so a test can assert the casing directly rather than
+    /// having to build a whole plan.
+    /// </para>
+    /// </summary>
+    public static bool IsOnlineOnlyStepType(string? stepType)
+        => stepType is not null
+           && (stepType.Equals(
+                   KrakenDeploy.Contracts.Steps.DeployReleaseConfigKeys.StepType,
+                   StringComparison.OrdinalIgnoreCase)
+               || stepType.Equals(
+                   ManualInterventionConfigKeys.StepType,
+                   StringComparison.OrdinalIgnoreCase));
+
     /// <summary>
     /// Builds (or rebuilds) the drop bundle for an already-loaded offline-drop
     /// <paramref name="deployment"/> and returns the relative bundle path.
@@ -120,8 +154,20 @@ public sealed class OfflineDropBundleBuilder(ILogger<OfflineDropBundleBuilder> l
         // Server-orchestrated step types can't run on an air-gapped box (no
         // server to drive the cascade / approval). Refuse rather than ship a
         // bundle that fails mid-run.
+        //
+        // WP3 keeps this refusal for Octopus.Manual deliberately, and it is the
+        // STRONGER behaviour: a bundle cannot reach an approver, so the only
+        // alternatives are to refuse or to pass the gate with no human decision.
+        // Since WP3 exists precisely because silently auto-approving a
+        // change-control gate is a compliance defect, refusing is the correct end
+        // state for an air-gapped target. (The step package's handler still carries
+        // a loud "APPROVAL NOT ENFORCED" warning for any runner that reaches it via
+        // a hand-built plan.)
+        //
+        // WP3-b — the comparison is now CASE-INSENSITIVE, via a named predicate a test
+        // can reach. See IsOnlineOnlyStepType for why that was a gate bypass.
         var onlineOnly = plan.Steps
-            .Where(s => s.StepType is "Octopus.DeployRelease" or "Octopus.Manual")
+            .Where(s => IsOnlineOnlyStepType(s.StepType))
             .Select(s => s.Name)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -129,7 +175,9 @@ public sealed class OfflineDropBundleBuilder(ILogger<OfflineDropBundleBuilder> l
         {
             throw new InvalidOperationException(
                 "Offline drop cannot run server-orchestrated steps: " +
-                $"{string.Join(", ", onlineOnly)}. Remove them from the process or " +
+                $"{string.Join(", ", onlineOnly)}. An air-gapped target has no way to " +
+                "reach an approver for a manual-intervention gate, and passing one " +
+                "unapproved would defeat its purpose. Remove them from the process or " +
                 "deploy this project to an online target.");
         }
 

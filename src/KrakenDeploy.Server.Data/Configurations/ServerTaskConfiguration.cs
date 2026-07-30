@@ -79,18 +79,24 @@ public sealed class ServerTaskConfiguration : IEntityTypeConfiguration<ServerTas
         // pre-gate skip and the UI queue-reason read all probe for ANOTHER
         // IN-FLIGHT deployment of the same key, and the claim path runs on every
         // dispatch. Partial index on the IN-FLIGHT-DEPLOYMENT set only (status IN
-        // (1 Running, 5 PendingOfflineResult) AND kind 0 = Deployment — the same
-        // literal-enum filter idiom as the scheduled_for index above, and it MUST
-        // match DeploymentStatusExtensions.InFlightAfterClaim or Postgres won't
-        // use it for the IN (...) predicate) keeps it tiny: that set is bounded by
-        // the node concurrency cap × node count plus any parked offline drops, so
-        // the index stays a handful of rows however long the history grows.
+        // (1 Running, 5 PendingOfflineResult, 7 Paused) AND kind 0 = Deployment —
+        // the same literal-enum filter idiom as the scheduled_for index above, and
+        // it MUST match DeploymentStatusExtensions.InFlightAfterClaim or Postgres
+        // won't use it for the IN (...) predicate) keeps it tiny: that set is
+        // bounded by the node concurrency cap × node count plus any parked offline
+        // drops and paused approval gates, so the index stays a handful of rows
+        // however long the history grows. WP3 added 7 (Paused) — a paused task
+        // still holds its (project, environment, tenant) key.
         builder.HasIndex(x => new { x.ProjectId, x.EnvironmentId, x.TenantId })
             .HasDatabaseName("ix_server_tasks_running_deployment_peer")
-            .HasFilter("status IN (1, 5) AND kind = 0");
+            .HasFilter("status IN (1, 5, 7) AND kind = 0");
 
         // Inert future prompted-variable values.
         builder.Property(x => x.FormValues).HasColumnType("jsonb");
+
+        // WP3 — encrypted resume checkpoint, non-null only while Paused. jsonb-free
+        // (the payload is a DEK-encrypted opaque string, not queryable JSON).
+        builder.Property(x => x.PauseCheckpointEncrypted);
 
         builder.Property(x => x.DropBundlePath).HasMaxLength(500);
 

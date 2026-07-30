@@ -82,6 +82,9 @@
         DeploymentStatus.Running               => ("run", "autorenew", "Running"),
         DeploymentStatus.Queued                => ("queue", "schedule", "Queued"),
         DeploymentStatus.PendingOfflineResult  => ("offline", "cloud_off", "Pending offline result"),
+        // WP3 — a real, operator-actionable state, so it gets the attention-grabbing
+        // "warn" family rather than the muted idle one: somebody has to do something.
+        DeploymentStatus.Paused                => ("warn", "pause_circle", "Awaiting approval"),
         DeploymentStatus.Cancelled             => ("idle", "block", "Cancelled"),
         _                                      => ("idle", "help", s.ToString()),
     };
@@ -106,6 +109,14 @@
         StepOutcomeKind.Failed    => ("fail", "cancel", "Failed"),
         StepOutcomeKind.Skipped   => ("idle", "do_not_disturb_on", "Skipped"),
         StepOutcomeKind.TimedOut  => ("fail", "timer_off", "Timed out"),
+        // WP3 — a human decision on a manual-intervention gate. Without these three
+        // arms they fell to the `_` default and the Steps tab rendered the row that
+        // CAUSED a failure as a muted grey "help" pill labelled with the raw enum name
+        // `ManualInterventionRejected`. This is the only place the UI shows what the
+        // approver decided per step, so it must not read as "unknown".
+        StepOutcomeKind.ManualInterventionApproved => ("ok", "how_to_reg", "Approved"),
+        StepOutcomeKind.ManualInterventionRejected => ("fail", "block", "Rejected"),
+        StepOutcomeKind.ManualInterventionTimedOut => ("warn", "timer_off", "Approval timed out"),
         _                         => ("idle", "help", s.ToString()),
     };
 

@@ -142,6 +142,13 @@ public sealed class DeployReleaseStepTimeoutTests(PostgresFixture postgres)
             provider.GetRequiredService<IServiceScopeFactory>(),
             new NullUiHubContext(),
             TimeProvider.System,
+            // WP3-b — the runner now enforces the WORKING budget itself (charged only for
+            // non-Paused polling). Generous here so this test still exercises the OUTER
+            // per-attempt token it was written for, not the new inner bound.
+            Microsoft.Extensions.Options.Options.Create(new EngineOptions
+            {
+                MaxDeployReleaseWaitDuration = TimeSpan.FromMinutes(30),
+            }),
             NullLogger<DeployReleaseStepRunner>.Instance);
 
         var config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)

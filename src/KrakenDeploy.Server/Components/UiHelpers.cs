@@ -1,4 +1,5 @@
 using KrakenDeploy.Server.Core.Domain.Deployments;
+using Radzen;
 
 namespace KrakenDeploy.Server.Components;
 
@@ -27,6 +28,43 @@ public static class KrakenText
     }
 }
 
+/// <summary>
+/// Maps an <see cref="InterruptionStatus"/> to its label and badge style.
+/// <para>
+/// Shared rather than private to a component (WP3-b) because the previous private copy
+/// used a <c>_ =&gt;</c> default that silently absorbed the newly added
+/// <see cref="InterruptionStatus.Cancelled"/>: a gate closed because its deployment was
+/// cancelled rendered in the approval history labelled "Pending" with a neutral badge —
+/// telling a reviewer the change was still awaiting a decision, which is the exact
+/// misreading the Cancelled state was introduced to remove. Every arm is explicit here, so
+/// a status added later throws instead of being quietly mislabelled.
+/// </para>
+/// </summary>
+public static class InterruptionStatusVisuals
+{
+    public static string Label(InterruptionStatus s) => s switch
+    {
+        InterruptionStatus.Pending   => "Pending",
+        InterruptionStatus.Approved  => "Approved",
+        InterruptionStatus.Rejected  => "Rejected",
+        InterruptionStatus.TimedOut  => "Timed out",
+        InterruptionStatus.Cancelled => "Closed (task cancelled)",
+        _ => throw new ArgumentOutOfRangeException(nameof(s), s, "Unmapped gate status."),
+    };
+
+    public static BadgeStyle Badge(InterruptionStatus s) => s switch
+    {
+        InterruptionStatus.Pending   => BadgeStyle.Light,
+        InterruptionStatus.Approved  => BadgeStyle.Success,
+        InterruptionStatus.Rejected  => BadgeStyle.Danger,
+        InterruptionStatus.TimedOut  => BadgeStyle.Warning,
+        // Not Danger: nobody refused anything. The task went terminal underneath the gate,
+        // so the question became moot — visually neutral, matching the wording.
+        InterruptionStatus.Cancelled => BadgeStyle.Secondary,
+        _ => throw new ArgumentOutOfRangeException(nameof(s), s, "Unmapped gate status."),
+    };
+}
+
 /// <summary>Maps a <see cref="DeploymentStatus"/> to the icon and CSS class used by the
 /// dashboard / project deployment-status matrix cells.</summary>
 public static class DeploymentStatusVisuals
@@ -40,6 +78,7 @@ public static class DeploymentStatusVisuals
         DeploymentStatus.Running               => "autorenew",
         DeploymentStatus.Queued                => "schedule",
         DeploymentStatus.PendingOfflineResult  => "cloud_off",
+        DeploymentStatus.Paused                => "pause_circle",
         _                                      => "help",
     };
 
@@ -51,6 +90,7 @@ public static class DeploymentStatusVisuals
         DeploymentStatus.Cancelled             => "kraken-matrix-status kraken-matrix-status--cancelled",
         DeploymentStatus.Running               => "kraken-matrix-status kraken-matrix-status--running",
         DeploymentStatus.PendingOfflineResult  => "kraken-matrix-status kraken-matrix-status--offline",
+        DeploymentStatus.Paused                => "kraken-matrix-status kraken-matrix-status--warn",
         _                                      => "kraken-matrix-status kraken-matrix-status--pending",
     };
 }

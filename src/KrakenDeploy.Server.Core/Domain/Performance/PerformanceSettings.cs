@@ -104,6 +104,36 @@ public class PerformanceSettings : ISettingsDocument
     public const int DefaultAuditLogRetentionDays = 365;
 
     /// <summary>
+    /// How many days of CHANGE-CONTROL audit entries to keep — the
+    /// manual-intervention approve / reject / timeout events listed in
+    /// <c>InterruptionAuditEvents.ChangeControlEventTypes</c>. Zero (the default) keeps
+    /// them INDEFINITELY.
+    /// <para>
+    /// A separate, longer window because these entries are the durable record of who
+    /// approved a production change, and the ordinary
+    /// <see cref="AuditLogRetentionDays"/> window is far too short for it (WP3-b). The
+    /// <c>interruptions</c> row itself is CASCADE-deleted with its task and
+    /// <c>RetentionService</c> hard-deletes tasks after
+    /// <c>RetentionKeepDeployments</c> newer runs, so once the audit entry is purged the
+    /// answer to "who approved release 2.3.0 to Prod, when, and what did they write" is
+    /// gone from the system entirely. RH state-sector change-control obligations
+    /// routinely exceed 365 days, so the shipped default is "never purge" and an
+    /// operator must opt in to deleting them.
+    /// </para>
+    /// <para>
+    /// Ordinary audit entries are unaffected: the purge applies this window ONLY to the
+    /// change-control event types and the <see cref="AuditLogRetentionDays"/> window to
+    /// everything else.
+    /// </para>
+    /// </summary>
+    public int ChangeControlAuditRetentionDays { get; set; }
+        = DefaultChangeControlAuditRetentionDays;
+
+    /// <summary>Zero — change-control entries are kept indefinitely unless an operator
+    /// deliberately sets a window.</summary>
+    public const int DefaultChangeControlAuditRetentionDays = 0;
+
+    /// <summary>
     /// How many days of <c>ai_call_logs</c> to keep. Same precedence as
     /// <see cref="AuditLogRetentionDays"/>: DB wins, then
     /// <c>Retention:AiCallLogDays</c> appsettings, then 90.

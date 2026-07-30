@@ -71,4 +71,26 @@ public interface IPermissionEvaluator
     Task<IReadOnlySet<Guid>> GetAccessibleSpaceIdsAsync(
         ClaimsPrincipal user,
         CancellationToken ct = default);
+
+    /// <summary>
+    /// The set of <see cref="Team"/> ids <paramref name="user"/> belongs to, merging all
+    /// three membership sources exactly as permission evaluation does: explicit
+    /// <c>TeamMember</c> rows, <c>TeamExternalGroup</c> matches against the user's
+    /// persisted IdP groups, and the applicable "Everyone" teams (the system-level one
+    /// always; a per-Space one only for Spaces the user really belongs to).
+    /// <para>
+    /// Exposed for authorization that turns on team membership DIRECTLY rather than on a
+    /// permission — currently WP3's manual-intervention gate, whose responsible-team
+    /// list is per-step data chosen by the process author and so cannot be modelled as a
+    /// <see cref="Permission"/>. It lives on this interface, rather than being
+    /// reimplemented by the caller, because the three sources have non-obvious rules
+    /// (external groups come from the DB, not from cookie claims, so a team's group list
+    /// can change between sign-ins; a per-Space Everyone team must NOT be virtual for
+    /// everybody) and a second copy would drift from the RBAC one.
+    /// </para>
+    /// <para>Returns an empty set for an anonymous or unknown principal.</para>
+    /// </summary>
+    Task<IReadOnlySet<Guid>> GetUserTeamIdsAsync(
+        ClaimsPrincipal user,
+        CancellationToken ct = default);
 }

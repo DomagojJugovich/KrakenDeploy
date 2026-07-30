@@ -204,5 +204,9 @@ public sealed class AuditExportEndpointTests
         public Task<IReadOnlySet<Guid>> GetAccessibleSpaceIdsAsync(
             ClaimsPrincipal user, CancellationToken ct = default)
             => Task.FromResult(accessible);
+
+    public Task<IReadOnlySet<Guid>> GetUserTeamIdsAsync(
+        ClaimsPrincipal user, CancellationToken ct = default)
+        => Task.FromResult<IReadOnlySet<Guid>>(new HashSet<Guid>());
     }
 }

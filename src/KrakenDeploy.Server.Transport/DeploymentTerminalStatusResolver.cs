@@ -24,13 +24,30 @@ public static class DeploymentTerminalStatusResolver
     /// <param name="requiredStepDropped">A target dropped because a <em>Required</em> step failed.</param>
     /// <param name="droppedTargetCount">How many targets dropped out (any reason).</param>
     /// <param name="softFailedCount">How many surviving targets had a non-required failure.</param>
+    /// <param name="interventionRejected">
+    /// WP3 — a manual-intervention gate was rejected (or timed out). Unconditionally
+    /// <see cref="DeploymentStatus.Failed"/>, in EVERY failure mode: a human said no,
+    /// so however cleanly the cleanup steps ran afterwards, the task did not do what
+    /// it was asked to. This cannot be folded into <paramref name="hasFailed"/> —
+    /// that resolves to <see cref="DeploymentStatus.SucceededWithWarnings"/>, exactly
+    /// the wrong verdict for a refused change. It is a separate input rather than an
+    /// early <c>FailAsync</c> at the gate because the run must CONTINUE past the gate
+    /// to execute its <c>Failure</c>/<c>Always</c> cleanup steps.
+    /// </param>
     public static DeploymentStatus Resolve(
         DeploymentFailureMode mode,
         bool hasFailed,
         bool requiredStepDropped,
         int droppedTargetCount,
-        int softFailedCount)
+        int softFailedCount,
+        bool interventionRejected = false)
     {
+        // WP3: a rejected approval gate is a hard failure regardless of mode.
+        if (interventionRejected)
+        {
+            return DeploymentStatus.Failed;
+        }
+
         // Atomic: a Required failure anywhere is a hard, masking-free failure.
         if (mode == DeploymentFailureMode.Atomic && requiredStepDropped)
         {

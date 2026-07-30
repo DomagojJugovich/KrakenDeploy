@@ -154,6 +154,16 @@ public sealed record TriggerRunbookRunRequest(
     Core.Domain.Deployments.DeploymentFailureMode FailureMode
         = Core.Domain.Deployments.DeploymentFailureMode.BestEffort);
 
+// ── Manual intervention API (WP3) ──────────────────────────────────────────────
+
+/// <summary>
+/// Answer to a manual-intervention gate. <c>Approve = false</c> means reject, and then
+/// <c>Notes</c> is REQUIRED — the service refuses the call without it (400), so a REST
+/// or CLI caller cannot refuse a change without recording why. Notes are optional on
+/// approve.
+/// </summary>
+public sealed record RespondToInterruptionRequest(bool Approve, string? Notes = null);
+
 // ── Tenant API ─────────────────────────────────────────────────────────────────
 
 public sealed record CreateTenantRequest(string Name, string Slug, string? Description);

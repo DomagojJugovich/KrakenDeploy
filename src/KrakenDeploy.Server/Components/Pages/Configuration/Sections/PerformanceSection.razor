@@ -116,7 +116,24 @@ else
                                        Min="0" Max="3650" Step="30"
                                        TValue="int" />
                     </RadzenFormField>
+                    <RadzenFormField Text="Change-control record (days)"
+                                     Variant="Variant.Outlined" Style="flex:1;">
+                        <RadzenNumeric @bind-Value="_settings.ChangeControlAuditRetentionDays"
+                                       Min="0" Max="3650" Step="365"
+                                       TValue="int" />
+                    </RadzenFormField>
                 </RadzenStack>
+                <RadzenAlert AlertStyle="AlertStyle.Warning" Variant="Variant.Flat"
+                             Shade="Shade.Lighter" AllowClose="false" Icon="gavel">
+                    <strong>Change-control record</strong> covers the manual-intervention
+                    approve / reject / timeout entries — who authorised a production change,
+                    when, and what they wrote. It defaults to <strong>0</strong> (kept
+                    indefinitely) and is deliberately separate from the audit-log window,
+                    because once these entries are purged the answer is gone from the system
+                    entirely: the gate row itself is deleted with its deployment when
+                    deployment retention catches up. Do not shorten it below your
+                    change-control obligation.
+                </RadzenAlert>
                 <RadzenAlert AlertStyle="AlertStyle.Info" Variant="Variant.Flat"
                              Shade="Shade.Lighter" AllowClose="false" Icon="tune">
                     The master kill-switch for audit-log retention lives on the
@@ -184,6 +201,8 @@ else
             || _settings.SlowStepThresholdMinutes       != _baseline.SlowStepThresholdMinutes
             || _settings.AuditLogRetentionDays          != _baseline.AuditLogRetentionDays
             || _settings.AiCallLogRetentionDays         != _baseline.AiCallLogRetentionDays
+            || _settings.ChangeControlAuditRetentionDays
+                   != _baseline.ChangeControlAuditRetentionDays
             || _settings.EmbedOfflineRunner             != _baseline.EmbedOfflineRunner);
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
@@ -238,6 +257,7 @@ else
         SlowStepThresholdMinutes       = src.SlowStepThresholdMinutes,
         AuditLogRetentionDays          = src.AuditLogRetentionDays,
         AiCallLogRetentionDays         = src.AiCallLogRetentionDays,
+        ChangeControlAuditRetentionDays = src.ChangeControlAuditRetentionDays,
         EmbedOfflineRunner             = src.EmbedOfflineRunner,
     };
 
@@ -270,6 +290,12 @@ else
         if (before.AiCallLogRetentionDays != after.AiCallLogRetentionDays)
         {
             diffs.Add($"AiCallLogRetentionDays={before.AiCallLogRetentionDays}→{after.AiCallLogRetentionDays}");
+        }
+        if (before.ChangeControlAuditRetentionDays != after.ChangeControlAuditRetentionDays)
+        {
+            diffs.Add(
+                $"ChangeControlAuditRetentionDays={before.ChangeControlAuditRetentionDays}" +
+                $"→{after.ChangeControlAuditRetentionDays}");
         }
         if (before.EmbedOfflineRunner != after.EmbedOfflineRunner)
         {
