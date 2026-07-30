@@ -151,9 +151,6 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
             ? connId
             : null;
 
-    public bool IsRegistered(Guid targetId)
-        => _byTarget.TryGetValue(targetId, out var connId) && _registered.ContainsKey(connId);
-
     public Guid? GetAccountForTarget(Guid targetId)
         => _accountByTarget.TryGetValue(targetId, out var accountId) ? accountId : null;
 

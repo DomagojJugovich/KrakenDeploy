@@ -189,8 +189,18 @@ public sealed class ServerLinkHostedService(
         // ── Supervision loop ──────────────────────────────────────────────
         // Same pacing as the in-connection retry policy so operators see one
         // consistent backoff story (incl. the slow 401/403 re-enroll lane).
+        //
+        // F5 — the counter spans the WHOLE cycle (connect + register + park), not just
+        // StartAsync, and only an ACCEPTED registration resets it. A connection that
+        // establishes and then dies before it is dispatchable is a failed cycle no matter
+        // which half failed; counting only StartAsync meant such a cycle reset the
+        // backoff, so `PreviousRetryCount` was permanently 0 and the policy's first delay
+        // — deliberately TimeSpan.Zero, for a fast recovery from a clean drop — was the
+        // only one that ever applied. The server aborts a connection whose registration
+        // throws, so an unhealthy tenant DB turned into a fleet-wide unthrottled
+        // connect/register/abort loop against the database that was already failing.
         var startBackoff = new AgentReconnectPolicy(logger);
-        var failedStartAttempts = 0L;
+        var failedCycles = 0L;
 
         try
         {
@@ -222,10 +232,10 @@ public sealed class ServerLinkHostedService(
                 {
                     // WithAutomaticReconnect never covers INITIAL start failures
                     // (see AgentReconnectPolicy docs) — this loop is the retry.
-                    failedStartAttempts++;
+                    failedCycles++;
                     var delay = startBackoff.NextRetryDelay(new RetryContext
                     {
-                        PreviousRetryCount = failedStartAttempts - 1,
+                        PreviousRetryCount = failedCycles - 1,
                         ElapsedTime = TimeSpan.Zero,
                         RetryReason = ex,
                     }) ?? AgentReconnectPolicy.MaxDelay;
@@ -233,7 +243,7 @@ public sealed class ServerLinkHostedService(
                     logger.LogWarning(ex,
                         "Could not connect to server {ServerUrl} (attempt {Attempt}); " +
                         "retrying in {Delay}.",
-                        serverUrl, failedStartAttempts, delay);
+                        serverUrl, failedCycles, delay);
                     try
                     {
                         await Task.Delay(delay, timeProvider, stoppingToken).ConfigureAwait(false);
@@ -245,10 +255,14 @@ public sealed class ServerLinkHostedService(
                     continue;
                 }
 
-                failedStartAttempts = 0;
                 logger.LogInformation("Connected to server {ServerUrl}.", serverUrl);
 
                 var registration = await TrySendRegistrationAsync(stoppingToken).ConfigureAwait(false);
+                if (registration == RegistrationOutcome.Accepted)
+                {
+                    // Dispatchable. THIS is the successful cycle — see failedCycles.
+                    failedCycles = 0;
+                }
                 if (registration == RegistrationOutcome.Refused)
                 {
                     // B6: contract-version refusal. The server has already
@@ -293,9 +307,37 @@ public sealed class ServerLinkHostedService(
                     break;
                 }
 
+                // F5 — pace the reconnect. A cycle that never became dispatchable leaves
+                // failedCycles non-zero, so the policy escalates 0 → 1 s → … → MaxDelay
+                // and a repeating server-side abort can no longer spin at RTT cadence. A
+                // cycle that DID register accepted reset the counter, so the common case
+                // (a clean drop on a healthy link) still reconnects with no delay at all,
+                // which is what the policy's TimeSpan.Zero first attempt is for.
+                failedCycles++;
+                var reconnectDelay = startBackoff.NextRetryDelay(new RetryContext
+                {
+                    PreviousRetryCount = failedCycles - 1,
+                    ElapsedTime = TimeSpan.Zero,
+                    RetryReason = closeReason ?? new IOException("server link closed"),
+                }) ?? AgentReconnectPolicy.MaxDelay;
+
                 logger.LogWarning(closeReason,
-                    "Server link closed permanently; restarting the connection cycle.");
-                // Loop immediately — StartAsync failures pace any retries.
+                    "Server link closed permanently; reconnecting in {Delay} " +
+                    "(cycle {Cycle} without an accepted registration).",
+                    reconnectDelay, failedCycles);
+
+                if (reconnectDelay > TimeSpan.Zero)
+                {
+                    try
+                    {
+                        await Task.Delay(reconnectDelay, timeProvider, stoppingToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
             }
         }
         // No broad catch: an unexpected supervisor crash must NOT leave the
@@ -376,8 +418,18 @@ public sealed class ServerLinkHostedService(
 
     private enum RegistrationOutcome
     {
-        /// <summary>Accepted, or failed transiently (re-sent on next (re)connect).</summary>
-        SentOrRetryable,
+        /// <summary>
+        /// The server accepted the registration. This — not a successful
+        /// <c>StartAsync</c> — is what makes a connection USEFUL, so it is what resets
+        /// the supervision loop's backoff. F5: the two used to be one value, which meant
+        /// a connection that connected cleanly and then failed registration reset the
+        /// backoff on every cycle, so a server that aborts registration (a tenant-DB
+        /// blip) got reconnected at RTT cadence forever, by every agent at once.
+        /// </summary>
+        Accepted,
+
+        /// <summary>Failed transiently — re-sent on the next (re)connect.</summary>
+        Retryable,
 
         /// <summary>B6: the server refused the contract version — the connection
         /// is dispatch-dead until the agent is upgraded; pace on the slow lane.</summary>
@@ -413,6 +465,7 @@ public sealed class ServerLinkHostedService(
             // self-upgrade probation gate waits on. Fires once; harmless on
             // re-registration after a reconnect.
             context.SignalRegistrationAccepted();
+            return RegistrationOutcome.Accepted;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -423,7 +476,7 @@ public sealed class ServerLinkHostedService(
             logger.LogWarning(ex,
                 "Sending registration failed — will re-send on the next (re)connect.");
         }
-        return RegistrationOutcome.SentOrRetryable;
+        return RegistrationOutcome.Retryable;
     }
 
     private async Task<AgentRegistrationResult> SendRegistrationAsync(CancellationToken ct)

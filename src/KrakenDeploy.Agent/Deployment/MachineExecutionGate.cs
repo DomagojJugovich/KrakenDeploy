@@ -83,8 +83,11 @@ public sealed class MachineExecutionGate : IDisposable
     /// narrowing it. An absurdly LARGE one is the mirror-image mistake and was the
     /// dangerous direction: it silently reinstates the unbounded fan-out this cap exists
     /// to prevent, so `9999` would put 9999 PowerShell processes on one target while a
-    /// too-long check interval merely refuses to boot. Both ends now clamp with a log-free
-    /// guarantee, and the config layer warns.
+    /// too-long check interval merely refuses to boot. Both ends therefore clamp here
+    /// unconditionally, and <see cref="MachineExecutionGateRegistration"/> logs a warning
+    /// when the configured value had to be clamped — silently substituting a different cap
+    /// than the operator asked for is a capacity plan wrong by a factor of three with
+    /// nothing in any log to say so.
     /// </remarks>
     public int MaxSharedHolders
     {
@@ -260,7 +263,7 @@ public sealed class MachineExecutionGate : IDisposable
 
             granted = await waiter.Tcs.Task.ConfigureAwait(false);
         }
-        catch
+        catch (Exception unwinding)
         {
             // A waiter left in the queue with an uncompleted TCS is FATAL: DrainNoLock
             // would later dequeue it, take the slot on its behalf, succeed at
@@ -272,7 +275,14 @@ public sealed class MachineExecutionGate : IDisposable
             // Dequeueing is NOT sufficient: by the time we get here the waiter may
             // ALREADY have been granted, in which case its Node is null and the slot is
             // taken on our behalf. So claim it and release what we own.
-            AbandonAfterThrow(waiter, mode);
+            //
+            // The original exception is rethrown unchanged — callers dispatch on its type —
+            // with any holder-accounting failure recorded alongside it, because every
+            // caller logs the exception it receives and the gate has no logger of its own.
+            if (AbandonAfterThrow(waiter, mode) is { } releaseFault)
+            {
+                unwinding.Data["MachineExecutionGate.ReleaseFault"] = releaseFault.Message;
+            }
             throw;
         }
 
@@ -316,24 +326,46 @@ public sealed class MachineExecutionGate : IDisposable
     /// will ever dispose, and must give the slot back by hand. Losing to the expiry
     /// callback or to <see cref="Dispose"/> means nothing is held, so the queue exit is
     /// all that is left to do.
+    /// <para>
+    /// Returns the holder-accounting failure if giving the slot back threw, so the caller
+    /// can attach it to the exception it is already unwinding. It must NOT be thrown from
+    /// here: that would replace the original, and callers dispatch on the original's type
+    /// (<see cref="ObjectDisposedException"/> means "abandon quietly", anything else is
+    /// reported to the server as a hard task failure).
+    /// </para>
     /// </summary>
-    private void AbandonAfterThrow(Waiter waiter, Mode mode)
+    private InvalidOperationException? AbandonAfterThrow(Waiter waiter, Mode mode)
     {
         waiter.ClaimGiveUpReason(GiveUpReason.Abandoned);
         if (waiter.Tcs.TrySetResult(false))
         {
             LeaveQueue(waiter);
-            return;
+            return null;
         }
 
         // Someone else completed it. Only a GRANT leaves state to undo.
-        if (waiter.Tcs.Task.IsCompletedSuccessfully && waiter.Tcs.Task.Result)
-        {
-            Release(mode);
-        }
-        else
+        //
+        // Read through Task.Result, not IsCompletedSuccessfully: TrySetResult reserves
+        // completion before it publishes the result, so a status check can observe
+        // "not completed" on a task whose grant is already committed — and the else branch
+        // would then leak the slot forever, which is the exact failure this method exists
+        // to prevent. Result blocks through that window by contract instead of relying on
+        // TrySetResult's internal spin-until-published, and it cannot deadlock here: the
+        // task IS completed (our TrySetResult lost), and no lock is held on this path.
+        if (!waiter.Tcs.Task.Result)
         {
             LeaveQueue(waiter);
+            return null;
+        }
+
+        try
+        {
+            Release(mode);
+            return null;
+        }
+        catch (InvalidOperationException ex)
+        {
+            return ex;
         }
     }
 
@@ -438,19 +470,11 @@ public sealed class MachineExecutionGate : IDisposable
         }
     }
 
-    private void Release(Mode mode) => Release(mode, out _);
-
     /// <summary>
     /// Gives the mode's slot back and hands the gate on.
-    /// <paramref name="slotReturned"/> is set the instant the slot is actually back, so
-    /// a caller unwinding an exception can tell whether it still owns anything — the
-    /// distinction matters because <see cref="ReleaseNoLock"/> validates BEFORE it
-    /// mutates (so a throw there means nothing changed) while anything after it throws
-    /// with the slot already returned.
     /// </summary>
-    private void Release(Mode mode, out bool slotReturned)
+    private void Release(Mode mode)
     {
-        slotReturned = false;
         lock (_sync)
         {
             // After disposal the accounting no longer matters (nothing can be granted
@@ -460,11 +484,9 @@ public sealed class MachineExecutionGate : IDisposable
             // abandoned, which would otherwise trip ReleaseNoLock's invariant throw.
             if (_disposed)
             {
-                slotReturned = true;
                 return;
             }
             ReleaseNoLock(mode);
-            slotReturned = true;
             DrainNoLock();
         }
     }
@@ -516,7 +538,17 @@ public sealed class MachineExecutionGate : IDisposable
         }
     }
 
-    private sealed class Waiter(Mode mode)
+    /// <summary>
+    /// <c>internal</c>, not <c>private</c>, purely so the first-writer-wins reason stamp
+    /// can be asserted DIRECTLY. It is the one invariant here that survived an inverted
+    /// implementation with the whole suite green: the interleaving that discriminates it
+    /// end-to-end (expiry-completed but still queued when <see cref="Dispose"/> runs) is
+    /// not reachable deterministically, because the continuation is scheduled by the very
+    /// completion that would have to be paused. Widening visibility costs nothing —
+    /// no mutable hook, no behaviour change, and the assembly already grants
+    /// <c>InternalsVisibleTo</c> to its test project.
+    /// </summary>
+    internal sealed class Waiter(Mode mode)
     {
         public Mode Mode { get; } = mode;
 
@@ -561,7 +593,7 @@ public sealed class MachineExecutionGate : IDisposable
     }
 
     /// <summary>Why a waiter stopped waiting without being granted.</summary>
-    private enum GiveUpReason
+    internal enum GiveUpReason
     {
         /// <summary>Still waiting, or granted.</summary>
         None = 0,
@@ -596,6 +628,23 @@ public sealed class MachineExecutionGate : IDisposable
         /// <summary>Which side of the gate this lease holds.</summary>
         public Mode Mode { get; }
 
+        /// <summary>
+        /// Returns the slot exactly once. A failure to do so is DELIBERATELY permanent:
+        /// the lease stays consumed and the exception propagates.
+        /// <para>
+        /// There was a re-arm here ("so a later Dispose can retry"), and it was wrong in
+        /// both halves. Unreachable, first: <see cref="MachineExecutionGate.Release"/>
+        /// validates before it mutates and its hand-off cannot throw, so the only way to
+        /// throw without returning the slot is the unheld-release invariant — and a release
+        /// that was never owed does not become owed later. Harmful, second: re-arming let a
+        /// LATER dispose of that same stale lease run a release that now succeeds, silently
+        /// decrementing a slot belonging to somebody else. A reader under-count admits an
+        /// exclusive writer beside a live holder, i.e. the whole-directory swap running
+        /// under a live script — the P8 clash the gate exists to prevent. A loud, contained
+        /// invariant failure is strictly better than a silent miscount, so the throw is
+        /// left to propagate to the caller that owns the bug.
+        /// </para>
+        /// </summary>
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _released, 1) != 0)
@@ -603,29 +652,7 @@ public sealed class MachineExecutionGate : IDisposable
                 return; // already released — idempotent by contract
             }
 
-            var slotReturned = false;
-            try
-            {
-                _gate.Release(Mode, out slotReturned);
-            }
-            catch
-            {
-                // Re-arm ONLY when the slot genuinely did not go back, so a later
-                // Dispose can retry. Marking the lease consumed before a failed release
-                // would make that failure permanent — the slot is never returned and the
-                // idempotency guard turns every retry into a no-op, so the gate silently
-                // loses a reader slot (or stays write-held) for the process's life.
-                // Re-arming UNCONDITIONALLY is the opposite error and worse: if the slot
-                // was already back and the throw came from the hand-off, a second
-                // Dispose would release it TWICE, under-counting a live reader until an
-                // exclusive writer is admitted beside it — the whole-directory swap
-                // running under a live script, which is the clash P8 exists to prevent.
-                if (!slotReturned)
-                {
-                    Interlocked.Exchange(ref _released, 0);
-                }
-                throw;
-            }
+            _gate.Release(Mode);
         }
     }
 }

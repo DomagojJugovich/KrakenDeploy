@@ -3,6 +3,7 @@ using System.Threading.Channels;
 using FluentAssertions;
 using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.Deployment;
+using KrakenDeploy.Agent.Services;
 using KrakenDeploy.Agent.StepPackages;
 using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
@@ -647,6 +648,7 @@ internal sealed class RoundTripHost : IAsyncDisposable
             // UnauthorizedAccessException on ubuntu-latest while passing on Windows
             // (path resolves onto C:\) and in a root container.
             Options.Create(new AgentConfig { DataPath = _agentDataPath }),
+            Options.Create(new AgentUpdateConfig()),
             NullLogger<DeploymentExecutor>.Instance);
 
         // Mirrors ServerLinkHostedService's wiring EXACTLY, including the thing that

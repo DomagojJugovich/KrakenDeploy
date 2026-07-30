@@ -78,7 +78,28 @@ public sealed class AgentUpdateService(
     /// </summary>
     private static readonly TimeSpan TaskInFlightCheckTimeout = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// F5 — bound on a best-effort outcome report. See <see cref="ReportAsync"/>: the
+    /// reports either run on the way to <see cref="Environment.Exit"/> or (before this
+    /// bound existed) inside the machine lease, and <see cref="HttpClient.Timeout"/>'s
+    /// 100 s default is far too long for either.
+    /// </summary>
+    private static readonly TimeSpan ReportTimeout = TimeSpan.FromSeconds(10);
+
     private readonly HttpClient _http = new();
+
+    /// <summary>
+    /// F5 — the staged version we have already filed a <c>SwapDeferred</c> report for.
+    /// A deferral recurs on EVERY check while the cause persists, and the cause can be
+    /// indefinite (a task parked <c>Queued</c> by maintenance mode, or at
+    /// <c>PendingOfflineResult</c>). Reporting each tick filed ~24 audit rows per target
+    /// per night — and, because <c>SubscriptionMatcher</c> treats an empty pattern list
+    /// as match-anything, ~24 webhook/Slack deliveries with it. The signal an operator
+    /// needs is "this target is stuck on version X", which is worth exactly one row per
+    /// staged version. Only ever touched from the single <see cref="PeriodicTimer"/>
+    /// loop, so it needs no synchronisation.
+    /// </summary>
+    private string? _deferralReportedFor;
 
     /// <summary>Outcome of evaluating an update the server offered.</summary>
     internal enum UpdateDecision
@@ -182,6 +203,9 @@ public sealed class AgentUpdateService(
         switch (EvaluateOffer(info))
         {
             case UpdateDecision.NoUpdate:
+                // The offer is gone (withdrawn, or we already run it), so a later re-offer
+                // of the same version is a NEW situation and may report its deferral again.
+                _deferralReportedFor = null;
                 return;
 
             case UpdateDecision.HashMissing:
@@ -311,8 +335,7 @@ public sealed class AgentUpdateService(
                 // The server must be able to see a machine that keeps deferring: a gate
                 // held by a wedged step looks identical to a healthy busy agent from
                 // the outside, and without this the only signal is a local log line.
-                await ReportAsync(AgentUpdateOutcome.SwapDeferred, currentVersion,
-                    info.LatestVersion,
+                await ReportDeferralOnceAsync(currentVersion, info.LatestVersion,
                     $"machine busy for the whole {cfg.SwapGateTimeout} swap window", ct)
                     .ConfigureAwait(false);
             }
@@ -323,6 +346,12 @@ public sealed class AgentUpdateService(
             return;
         }
 
+        // Why the deferral reason is carried OUT of the lease rather than reported inside
+        // it: the report is an HTTP round trip to a server that, on this branch, has just
+        // proven slow or unhealthy — and whatever it costs would be whole-machine blocking
+        // time, which is the very cost TaskInFlightCheckTimeout exists to bound. So the
+        // lease is released first and the report goes out after it.
+        string? deferralReason;
         using (gate)
         {
             // 7. Re-check the window we may have queued out of. C6's invariant is that a
@@ -344,24 +373,51 @@ public sealed class AgentUpdateService(
             //    multi-wave deployment the gate is free and _running is empty, and a
             //    server wave (manual intervention, DeployRelease cascade) can sit in
             //    that gap for minutes or hours. Only the server sees whole plans.
-            //    Fail-closed — an unreachable server defers the swap.
-            if (!await ServerReportsIdleAsync(ct).ConfigureAwait(false))
+            //    Fail-closed — anything short of a clear "idle" defers the swap.
+            deferralReason = await ServerBusyReasonAsync(ct).ConfigureAwait(false);
+            if (deferralReason is null)
             {
-                // Reported, not just logged. This is the refusal that can be PERMANENT —
-                // a task parked Queued (scheduled for later, held by maintenance mode, or
-                // deferred by F1 serialization) or parked at PendingOfflineResult keeps
-                // the answer at "in flight" indefinitely — so it is the one an operator
-                // most needs to see. Agent logs are local-only.
-                await ReportAsync(AgentUpdateOutcome.SwapDeferred, currentVersion,
-                    info.LatestVersion,
-                    "the server still has a non-terminal task assigned to this target", ct)
-                    .ConfigureAwait(false);
+                await ApplyUpdateAsync(downloadPath, installDir, ext, versionDir,
+                    markerPath, cfg, currentVersion, info, ct).ConfigureAwait(false);
                 return;
             }
-
-            await ApplyUpdateAsync(downloadPath, installDir, ext, versionDir,
-                markerPath, cfg, currentVersion, info, ct).ConfigureAwait(false);
         }
+
+        // Reported, not just logged. This is the refusal that can be PERMANENT — a task
+        // parked Queued (scheduled for later, held by maintenance mode, or deferred by F1
+        // serialization) or parked at PendingOfflineResult keeps the answer at "in flight"
+        // indefinitely — so it is the one an operator most needs to see. Agent logs are
+        // local-only. The reason comes FROM the check rather than being assumed: it fails
+        // closed on a 5xx, an unparseable body, a transport error and its own timeout, and
+        // an audit row claiming "a task is assigned" when the truth was "the server did
+        // not answer" is worse than no row.
+        await ReportDeferralOnceAsync(currentVersion, info.LatestVersion, deferralReason, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// F5 — files a <c>SwapDeferred</c> report at most once per staged version. See
+    /// <see cref="_deferralReportedFor"/> for why the per-tick report had to go: the
+    /// deferral causes are indefinite, so an unsuppressed report is an unbounded audit and
+    /// notification stream rather than a signal.
+    /// </summary>
+    private async Task ReportDeferralOnceAsync(
+        string currentVersion, string? latestVersion, string reason, CancellationToken ct)
+    {
+        if (_deferralReportedFor == latestVersion)
+        {
+            logger.LogDebug(
+                "Swap still deferred for {Version} ({Reason}) — already reported.",
+                latestVersion, reason);
+            return;
+        }
+
+        // Stamped BEFORE the call: ReportAsync is best-effort and swallows its failures,
+        // so retrying it every 5 minutes for an indefinite deferral would reproduce the
+        // stream this suppressor exists to stop. One attempt per staged version.
+        _deferralReportedFor = latestVersion;
+        await ReportAsync(AgentUpdateOutcome.SwapDeferred, currentVersion, latestVersion,
+            reason, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -399,18 +455,26 @@ public sealed class AgentUpdateService(
 
     /// <summary>
     /// F5 — asks the server whether any non-terminal task is still assigned to this
-    /// target. FAIL-CLOSED by contract: any failure to get a clear "idle" answer
-    /// (transport error, non-success status, unparseable body, identity not ready)
-    /// defers the swap. A deferred upgrade costs one check interval; a swap that
-    /// <c>Environment.Exit</c>s into the gap between two waves kills a live deployment.
+    /// target. Returns <c>null</c> when the server gave a clear "idle", otherwise the
+    /// reason to defer. FAIL-CLOSED by contract: any failure to get a clear "idle"
+    /// (transport error, non-success status, unparseable body, identity not ready, or this
+    /// call's own timeout) defers the swap. A deferred upgrade costs one check interval; a
+    /// swap that <c>Environment.Exit</c>s into the gap between two waves kills a live
+    /// deployment.
+    /// <para>
+    /// Returning the REASON rather than a bool is what lets the caller's audit row say
+    /// what actually happened. Four distinct causes reach the same "defer" decision, and
+    /// a row that names the wrong one sends an operator looking for a task that does not
+    /// exist.
+    /// </para>
     /// </summary>
-    private async Task<bool> ServerReportsIdleAsync(CancellationToken ct)
+    private async Task<string?> ServerBusyReasonAsync(CancellationToken ct)
     {
         var identity = context.Identity;
         if (identity is null || string.IsNullOrEmpty(identity.ServerUrl))
         {
             logger.LogDebug("Deferring agent update swap — identity is not resolved yet.");
-            return false;
+            return "the agent's server identity was not resolved";
         }
 
         // BOUNDED, and tightly. This runs while the EXCLUSIVE machine lease is HELD, so
@@ -437,7 +501,7 @@ public sealed class AgentUpdateService(
                 logger.LogInformation(
                     "Deferring agent update swap — the server returned {Status} for the " +
                     "task-in-flight check.", (int)resp.StatusCode);
-                return false;
+                return $"the server returned {(int)resp.StatusCode} for the task-in-flight check";
             }
 
             var answer = await resp.Content
@@ -454,7 +518,7 @@ public sealed class AgentUpdateService(
                     "Deferring agent update swap — the task-in-flight check returned no " +
                     "usable answer (empty body, or a response that did not come from this " +
                     "server). Treating that as work in flight.");
-                return false;
+                return "the task-in-flight check returned no usable answer";
             }
             if (inFlight)
             {
@@ -462,10 +526,12 @@ public sealed class AgentUpdateService(
                     "Deferring agent update swap — the server still has work for this " +
                     "target ({Detail}). The machine gate is per WAVE, so an idle gate " +
                     "does not mean an idle plan.", answer.Detail ?? "no detail");
-                return false;
+                return answer.Detail is { Length: > 0 } detail
+                    ? $"the server still has work for this target: {detail}"
+                    : "the server still has a non-terminal task assigned to this target";
             }
 
-            return true;
+            return null;
         }
         catch (OperationCanceledException) when (
             !ct.IsCancellationRequested && callTimeout.IsCancellationRequested)
@@ -474,7 +540,7 @@ public sealed class AgentUpdateService(
                 "Deferring agent update swap — the task-in-flight check did not answer " +
                 "within {Timeout}. Refusing to swap without a clear answer.",
                 TaskInFlightCheckTimeout);
-            return false;
+            return $"the task-in-flight check did not answer within {TaskInFlightCheckTimeout}";
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -485,7 +551,9 @@ public sealed class AgentUpdateService(
             logger.LogWarning(ex,
                 "Deferring agent update swap — the task-in-flight check failed. " +
                 "Refusing to swap without a clear answer.");
-            return false;
+            // Type name only: the exception message on this path can carry the server URL
+            // and, for a DNS/socket failure, the resolved address.
+            return $"the task-in-flight check failed ({ex.GetType().Name})";
         }
     }
 
@@ -528,10 +596,12 @@ public sealed class AgentUpdateService(
         {
             // Both mean "no lease, and not because the machine is busy". OCE is the
             // REACHABLE one: AcquireCoreAsync checks the token before it enqueues, so a
-            // host that is already stopping throws immediately. Letting it escape made
-            // the caller's decision for it — and for RollBackAsync that meant skipping
-            // RestoreFromBackup entirely and leaving the agent on a binary that had
-            // failed its health gate, the exact opposite of that method's contract.
+            // host that is already stopping throws immediately. Returning it as a distinct
+            // outcome rather than letting it escape is what lets each caller decide: the
+            // forward swap skips this tick, and RollBackAsync defers the restore to the
+            // next boot instead of replacing the install directory with no lease. Both
+            // callers MUST branch on Stopping — treating it as "not Busy, carry on" is how
+            // an ungated restore and an Exit(70) during a graceful stop got in.
             return (null, SwapGate.Stopping);
         }
     }
@@ -810,6 +880,9 @@ public sealed class AgentUpdateService(
     /// call. Best-effort by design: the gate wait is short and a timeout does NOT
     /// abandon the rollback — an unhealthy binary must be restored even if the box is
     /// busy, so we proceed ungated rather than leave the agent running a bad build.
+    /// A SHUTTING-DOWN host is the one exception, and it defers instead: there the lease
+    /// is guaranteed absent rather than merely contended, and the marker survives to make
+    /// the next boot retry.
     /// </para>
     /// </summary>
     private async Task RollBackAsync(
@@ -819,8 +892,28 @@ public sealed class AgentUpdateService(
             "Rolling back self-upgrade to {To}: {Reason}. Restoring {From}.",
             marker.ToVersion, reason, marker.FromVersion);
 
-        var (gate, gateOutcome) = await AcquireSwapGateAsync(
+        // The lease is discarded, not bound: nothing here ever releases it (see below), and
+        // a named local would only imply otherwise.
+        var (_, gateOutcome) = await AcquireSwapGateAsync(
             executionGate, RollbackGateTimeout, ct).ConfigureAwait(false);
+
+        if (gateOutcome == SwapGate.Stopping)
+        {
+            // The host is shutting down. Do NOT restore here, and do NOT exit: the marker
+            // is retained, so the next boot runs the whole probation again with a live
+            // gate. Both halves matter. A restore now would replace the install directory
+            // with NO lease — a shutdown deliberately does not abort a running step, so
+            // one may still be extracting or holding an app pool — and it is the only path
+            // where the lease is guaranteed absent. And Exit(70) during an intentional
+            // stop reports failure to the supervisor, so a Windows service with
+            // FailureActions, a systemd unit with Restart=on-failure or a container with
+            // restart=on-failure relaunches the agent the operator just stopped.
+            logger.LogWarning(
+                "Deferring rollback of {To} to the next boot — the agent is shutting down. " +
+                "The upgrade marker is retained.", marker.ToVersion);
+            return;
+        }
+
         if (gateOutcome == SwapGate.Busy)
         {
             logger.LogWarning(
@@ -835,39 +928,53 @@ public sealed class AgentUpdateService(
         // script that then starts extracting, stopping app pools and spawning pwsh
         // against a directory whose assemblies have just been replaced — and be
         // hard-killed mid-step (and its process tree orphaned) by the Exit below.
-        // No `using`, therefore, and no release on any path here.
-        string? rollbackError = null;
+        //
+        // That makes the exit the ONLY thing that ends the lease, so it is in a `finally`.
+        // It was not, and the lease leaked for the life of the process: ReportAsync's old
+        // catch filter let an HttpClient timeout (a TaskCanceledException, raised even on
+        // CancellationToken.None) escape past the exit, where ExecuteAsync's probation
+        // handler swallowed it as "shutting down". The gate then had a writer held by
+        // nobody — every later wave parked on it forever while the target heartbeated
+        // Online. ReportAsync is fixed at the source too; this is the structural guarantee
+        // that no future statement added here can reopen the same hole.
         try
         {
-            SelfUpdateFileOps.RestoreFromBackup(
-                marker.InstallDir, marker.BackupDir, marker.InstallDir + ".failed");
-            AgentUpgradeMarker.Delete(markerPath);
-            logger.LogWarning(
-                "Rollback complete. Exiting so the supervisor relaunches {From}.",
-                marker.FromVersion);
+            string? rollbackError = null;
+            try
+            {
+                SelfUpdateFileOps.RestoreFromBackup(
+                    marker.InstallDir, marker.BackupDir, marker.InstallDir + ".failed");
+                AgentUpgradeMarker.Delete(markerPath);
+                logger.LogWarning(
+                    "Rollback complete. Exiting so the supervisor relaunches {From}.",
+                    marker.FromVersion);
+            }
+            catch (Exception ex)
+            {
+                // Leave the marker in place so the next boot retries the rollback.
+                rollbackError = ex.Message;
+                logger.LogCritical(ex,
+                    "Rollback FAILED. Manual intervention may be required: restore '{Backup}' " +
+                    "over '{Install}'.", marker.BackupDir, marker.InstallDir);
+            }
+
+            // CancellationToken.None: the report must outlive a stopping host — a cancelled
+            // report would leave the server with no record of the rollback at all.
+            await ReportAsync(AgentUpdateOutcome.RolledBack,
+                marker.FromVersion, marker.ToVersion,
+                rollbackError is null ? reason : $"rollback FAILED: {rollbackError}",
+                CancellationToken.None).ConfigureAwait(false);
         }
-        catch (Exception ex)
+        finally
         {
-            // Leave the marker in place so the next boot retries the rollback.
-            rollbackError = ex.Message;
-            logger.LogCritical(ex,
-                "Rollback FAILED. Manual intervention may be required: restore '{Backup}' " +
-                "over '{Install}'.", marker.BackupDir, marker.InstallDir);
+            // Exit so the supervisor relaunches the (restored) previous binary. The lease
+            // (when we got one) dies with the process, undisposed by design — see above.
+            // No `_ = gate` pin: a discard of a local read emits no IL, so it pinned
+            // nothing; the lease survives because Releaser has no finalizer and
+            // Environment.Exit runs none anyway.
+            await Task.Delay(500, CancellationToken.None).ConfigureAwait(false);
+            Environment.Exit(70); // non-zero: this run failed its health gate
         }
-
-        // CancellationToken.None: the report must outlive a stopping host, and the exit
-        // below happens either way — a cancelled report would leave the server with no
-        // record of the rollback at all.
-        await ReportAsync(AgentUpdateOutcome.RolledBack,
-            marker.FromVersion, marker.ToVersion,
-            rollbackError is null ? reason : $"rollback FAILED: {rollbackError}",
-            CancellationToken.None).ConfigureAwait(false);
-
-        // Exit so the supervisor relaunches the (restored) previous binary. The lease
-        // (when we got one) dies with the process, undisposed by design — see above.
-        _ = gate;
-        await Task.Delay(500, CancellationToken.None).ConfigureAwait(false);
-        Environment.Exit(70); // non-zero: this run failed its health gate
     }
 
     /// <summary>
@@ -933,11 +1040,29 @@ public sealed class AgentUpdateService(
 
     /// <summary>
     /// C6 — best-effort report of a self-upgrade outcome to the server so it is
-    /// visible as an audit entry on the target. Never throws.
+    /// visible as an audit entry on the target.
+    /// <para>
+    /// NEVER THROWS unless <paramref name="ct"/> itself is cancelled, and callers rely on
+    /// that literally: <see cref="RollBackAsync"/> reports on the way to
+    /// <c>Environment.Exit</c> while holding the machine lease. The filter used to be
+    /// <c>when (ex is not OperationCanceledException)</c>, which looked equivalent but was
+    /// not — <see cref="HttpClient"/> raises its OWN <see cref="TaskCanceledException"/>
+    /// (an OCE) when <see cref="HttpClient.Timeout"/> elapses, regardless of the token
+    /// passed, so a server that accepted the connection and then stalled made this method
+    /// throw even on <see cref="CancellationToken.None"/>. Discriminating on the CALLER's
+    /// token instead is what makes the contract true: a genuine host shutdown still
+    /// propagates, a stalled server never does.
+    /// </para>
     /// </summary>
     private async Task ReportAsync(
         string outcome, string? from, string? to, string? detail, CancellationToken ct)
     {
+        // Bounded independently of HttpClient.Timeout (100 s). A report is best-effort
+        // telemetry, and every caller is either on the machine-lease path or on the way to
+        // process exit, so a stalled server must cost seconds, not a minute and a half.
+        using var callTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        callTimeout.CancelAfter(ReportTimeout);
+
         try
         {
             var identity = context.Identity;
@@ -955,7 +1080,7 @@ public sealed class AgentUpdateService(
             };
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", identity.AgentToken);
 
-            using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+            using var resp = await _http.SendAsync(req, callTimeout.Token).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
                 logger.LogWarning(
@@ -963,7 +1088,13 @@ public sealed class AgentUpdateService(
                     outcome, (int)resp.StatusCode);
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The CALLER asked to stop. Only this may escape, and only for callers that
+            // passed a real token — RollBackAsync deliberately passes None.
+            throw;
+        }
+        catch (Exception ex)
         {
             logger.LogWarning(ex,
                 "Failed to report update outcome {Outcome} to server (best-effort).", outcome);

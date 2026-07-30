@@ -1212,8 +1212,18 @@ public static class Program
                 }
 
                 var db = http.RequestServices.GetRequiredService<KrakenDbContext>();
+                // IgnoreQueryFilters, and therefore a query rather than FindAsync:
+                // DeploymentTarget is ISpaceScoped, an untracked FindAsync APPLIES the
+                // global Space filter, and on an agent-authenticated request no page has
+                // resolved a Space so HttpSpaceContext falls back to the Default one. Every
+                // target outside that Space therefore resolved to null and this endpoint
+                // answered a confident "no update available" — self-upgrade was silently
+                // dead for the whole install, with no error anywhere, and the operator's
+                // per-target AutoUpdateEnabled switch had no effect.
                 var target = await db.DeploymentTargets
-                    .FindAsync(new object[] { targetId }, ct)
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(t => t.Id == targetId, ct)
                     .ConfigureAwait(false);
 
                 if (target is null || !target.AutoUpdateEnabled)
@@ -1271,11 +1281,16 @@ public static class Program
                 // that classification rather than re-inlined here: DeploymentStatusExtensions
                 // documents itself as such precisely because the terminal set "had already
                 // diverged between call sites". IsTerminal() itself cannot be translated by
-                // EF, so this mirrors the house pattern from ServerTaskLease — the
-                // InFlightAfterClaim array plus Queued, which is the complement by
-                // definition. If a terminal status is ever added, this query follows.
-                // Queued counts on purpose: an unclaimed task can be dispatched here at
-                // any moment, so a swap started now would race its first wave.
+                // EF, so the authority exposes the same set as DATA and this NEGATES it.
+                // Negation, not enumeration: listing the in-flight states is equivalent
+                // for today's seven statuses but answers a confident "idle" for any
+                // non-terminal status added later — and the agent takes "idle" as licence
+                // to replace its whole install directory and Exit(0). Fail-closed means
+                // the UNKNOWN case must count as in flight, so the closed set has to be
+                // the terminal one. (InFlightAfterClaim is deliberately NOT usable here:
+                // it is the narrower F1 slot-holding set and excludes Queued. Queued
+                // counts on purpose — an unclaimed task can be dispatched at any moment,
+                // so a swap started now would race its first wave.)
                 // IgnoreQueryFilters: this runs on an agent-authenticated request with
                 // no user or Space context, and the question is machine-scoped — a
                 // Space filter would silently answer "idle" for work in a Space the
@@ -1288,8 +1303,7 @@ public static class Program
                     .AsNoTracking()
                     .AnyAsync(
                         a => a.TargetId == targetId
-                             && (DeploymentStatusExtensions.InFlightAfterClaim.Contains(a.Task.Status)
-                                 || a.Task.Status == DeploymentStatus.Queued),
+                             && !DeploymentStatusExtensions.Terminal.Contains(a.Task.Status),
                         ct)
                     .ConfigureAwait(false);
 
@@ -1318,8 +1332,19 @@ public static class Program
                 }
 
                 var db = http.RequestServices.GetRequiredService<KrakenDbContext>();
+                // IgnoreQueryFilters, and therefore a query rather than FindAsync — same
+                // reason as update-info above: an untracked FindAsync on an ISpaceScoped
+                // entity applies the global Space filter, which on an agent request is the
+                // Default Space, so every target outside it answered 404 and the whole
+                // self-upgrade audit trail (applied / rolled back / failed / deferred) was
+                // discarded for multi-Space installs. The row's Space is stamped explicitly
+                // below from the target itself, so reading past the filter does not change
+                // where it lands. AsNoTracking: only SpaceId and Name are read, and the
+                // audit row is Added explicitly rather than derived from the tracker.
                 var target = await db.DeploymentTargets
-                    .FindAsync(new object[] { targetId }, ct)
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(t => t.Id == targetId, ct)
                     .ConfigureAwait(false);
                 if (target is null)
                 {

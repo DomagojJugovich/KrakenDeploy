@@ -11,6 +11,7 @@ using KrakenDeploy.Contracts;
 using KrakenDeploy.Contracts.Adhoc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -273,14 +274,19 @@ public sealed class MachineExecutionGateSharingTests
         // self-upgrade stop excluding each other while every existing test (which wires one
         // instance by hand) stays green. The cap binding matters because a typo or a
         // reordering silently ships the default while the operator believes their value
-        // applies. Program.cs's comment previously cited a test that never touched DI.
+        // applies.
+        //
+        // Calls the PRODUCTION registration, which is the whole point. An earlier cut of
+        // this test hand-copied the AddSingleton lambda out of Program.cs and therefore
+        // asserted its own replica: switching the real registration to AddTransient, or
+        // deleting the line that feeds MaxConcurrentSharedWork into the gate, left it green.
+        // Program.cs claimed all along that "the lifetime is pinned by
+        // MachineExecutionGateSharingTests" — only true now that the registration lives in
+        // an extension method both sides call.
         var services = new ServiceCollection();
+        services.AddLogging();
         services.AddSingleton(Options.Create(new AgentConfig { MaxConcurrentSharedWork = 3 }));
-        services.AddSingleton(sp => new MachineExecutionGate
-        {
-            MaxSharedHolders = sp.GetRequiredService<IOptions<AgentConfig>>()
-                .Value.MaxConcurrentSharedWork,
-        });
+        services.AddMachineExecutionGate();
 
         using var sp = services.BuildServiceProvider();
         var first = sp.GetRequiredService<MachineExecutionGate>();
@@ -289,6 +295,46 @@ public sealed class MachineExecutionGateSharingTests
         second.Should().BeSameAs(first,
             "a non-singleton gate silently disables serialization between the three consumers");
         first.MaxSharedHolders.Should().Be(3, "Agent:MaxConcurrentSharedWork must reach the gate");
+    }
+
+    [Fact]
+    public void An_out_of_range_shared_cap_is_clamped_and_reported()
+    {
+        // The clamp is deliberate (a 0 would make every shared acquisition unsatisfiable, an
+        // absurdly large value reinstates the unbounded fan-out the cap exists to stop) but
+        // it must not be SILENT: the gate's own remarks claimed "the config layer warns"
+        // while nothing anywhere did, so an operator who sized a box for 200 co-running
+        // scripts ran at 64 with no log line, no validator and no surface reporting the
+        // effective value.
+        var services = new ServiceCollection();
+        var logs = new ListLoggerProvider();
+        services.AddLogging(b => b.AddProvider(logs).SetMinimumLevel(LogLevel.Trace));
+        services.AddSingleton(Options.Create(new AgentConfig { MaxConcurrentSharedWork = 200 }));
+        services.AddMachineExecutionGate();
+
+        using var sp = services.BuildServiceProvider();
+        var gate = sp.GetRequiredService<MachineExecutionGate>();
+
+        gate.MaxSharedHolders.Should().Be(MachineExecutionGate.MaxAllowedSharedHolders);
+        logs.Entries.Should().ContainSingle(e =>
+                e.Level == LogLevel.Warning && e.Message.Contains("MaxConcurrentSharedWork"),
+            "an operator whose configured cap was not honoured must be told");
+    }
+
+    [Fact]
+    public void An_in_range_shared_cap_is_not_reported()
+    {
+        // The other half — a warning on every boot would train operators to ignore it.
+        var services = new ServiceCollection();
+        var logs = new ListLoggerProvider();
+        services.AddLogging(b => b.AddProvider(logs).SetMinimumLevel(LogLevel.Trace));
+        services.AddSingleton(Options.Create(new AgentConfig { MaxConcurrentSharedWork = 4 }));
+        services.AddMachineExecutionGate();
+
+        using var sp = services.BuildServiceProvider();
+        sp.GetRequiredService<MachineExecutionGate>().MaxSharedHolders.Should().Be(4);
+
+        logs.Entries.Should().NotContain(e => e.Level == LogLevel.Warning);
     }
 
     [Fact]
@@ -427,6 +473,7 @@ public sealed class MachineExecutionGateSharingTests
             new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance),
         gate,
         Options.Create(new AgentConfig()),
+        Options.Create(new AgentUpdateConfig()),
         NullLogger<DeploymentExecutor>.Instance);
 
     private static AdhocScriptExecutor BuildAdhocExecutor(

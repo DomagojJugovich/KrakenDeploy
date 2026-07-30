@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using FluentAssertions;
 using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.Deployment;
+using KrakenDeploy.Agent.Services;
 using KrakenDeploy.Agent.StepPackages;
 using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
@@ -365,15 +366,12 @@ public sealed class DeploymentExecutorCancelTests
         services.AddSingleton<IArtifactSink>(new NullArtifactSink());
         services.AddSingleton(new StepPackageLoader(
             new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance));
-        // Mirrors Program.cs's factory registration, cap included — see
-        // The_gate_is_a_singleton_and_takes_its_cap_from_configuration for the assertion
-        // that the binding actually happens.
-        services.AddSingleton(sp => new MachineExecutionGate
-        {
-            MaxSharedHolders = sp.GetRequiredService<IOptions<AgentConfig>>()
-                .Value.MaxConcurrentSharedWork,
-        });
+        // The PRODUCTION registration, not a copy of it — this used to mirror Program.cs's
+        // factory by hand, which meant two replicas drifting together.
+        services.AddLogging();
+        services.AddMachineExecutionGate();
         services.AddSingleton(Options.Create(new AgentConfig()));
+        services.AddSingleton(Options.Create(new AgentUpdateConfig()));
         services.AddSingleton<ILogger<DeploymentExecutor>>(NullLogger<DeploymentExecutor>.Instance);
         services.AddSingleton<DeploymentExecutor>();   // ← the lifetime under test
 
@@ -416,6 +414,7 @@ public sealed class DeploymentExecutorCancelTests
                 new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance),
             new MachineExecutionGate(),
             Options.Create(new AgentConfig()),
+            Options.Create(new AgentUpdateConfig()),
             NullLogger<DeploymentExecutor>.Instance)
         {
             SupersedeUnwindTimeout = TimeSpan.FromMilliseconds(150),
@@ -439,8 +438,14 @@ public sealed class DeploymentExecutorCancelTests
         var escalation = link.Completions.Should().ContainSingle(
             "only the new attempt's wedged-gate escalation is recorded").Subject;
         escalation.Dispatch.Should().Be(newDispatch);
-        escalation.Success.Should().BeFalse("a wedged attempt cannot report success");
-        escalation.Error.Should().Contain("wedged");
+        escalation.Success.Should().BeFalse("an abandoned attempt cannot report success");
+        // Asserts the observation, not a diagnosis. The message deliberately no longer
+        // claims the agent is "wedged" or that a previous task failed to release: the slot
+        // can equally be held — or, on a writer-fair gate, merely headed — by the agent's
+        // own self-upgrade swap window, and telling an operator to restart a healthy agent
+        // is worse than saying less.
+        escalation.Error.Should().Contain("machine execution slot")
+            .And.Contain("force-detached");
         executor.IsExecuting.Should().BeFalse();
 
         // Let the stuck old attempt unwind so the test does not leak it.
@@ -473,6 +478,7 @@ public sealed class DeploymentExecutorCancelTests
                 new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance),
             new MachineExecutionGate(),
             Options.Create(new AgentConfig()),
+            Options.Create(new AgentUpdateConfig()),
             NullLogger<DeploymentExecutor>.Instance)
         {
             SupersedeUnwindTimeout = TimeSpan.FromMilliseconds(150),
@@ -511,6 +517,63 @@ public sealed class DeploymentExecutorCancelTests
     }
 
     [Fact]
+    public async Task Two_shared_attempts_take_the_bounded_wait_when_the_cap_is_one()
+    {
+        // The cap-of-1 box, which is the whole reason the refusal asks the GATE
+        // (WouldAdmitConcurrently) instead of hardcoding "both shared means both admitted".
+        // With Agent:MaxConcurrentSharedWork = 1 the gate DOES serialize two readers, so the
+        // same-task guarantee holds without refusing — the successor must take the bounded
+        // wedged wait and escalate on expiry, exactly as it would against an exclusive
+        // predecessor. Refusing here would abandon a retry the gate would have kept apart
+        // correctly; admitting both would be the F2-followup-2 violation.
+        //
+        // Previously untested end to end: WouldAdmitConcurrently had a pure predicate test,
+        // but both executor tests built a default cap-8 gate, so the only behaviour the cap
+        // term actually changes had no coverage at all.
+        var link = new WedgeLink();
+        var executor = new DeploymentExecutor(
+            link,
+            new NullPackageSource(),
+            new NullArtifactSink(),
+            new StepPackageLoader(
+                new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance),
+            new MachineExecutionGate { MaxSharedHolders = 1 },
+            Options.Create(new AgentConfig { MaxConcurrentSharedWork = 1 }),
+            Options.Create(new AgentUpdateConfig()),
+            NullLogger<DeploymentExecutor>.Instance)
+        {
+            SupersedeUnwindTimeout = TimeSpan.FromMilliseconds(150),
+            WedgedGateAcquireTimeout = TimeSpan.FromMilliseconds(150),
+        };
+
+        var taskId = Guid.NewGuid();
+        var oldDispatch = Guid.NewGuid();
+        var newDispatch = Guid.NewGuid();
+
+        var oldRun = Task.Run(() => executor.ExecuteAsync(
+            Plan(taskId, oldDispatch, allowParallel: true)));
+        await WaitUntilAsync(() => executor.IsExecuting,
+            "the old attempt must be in flight holding the single SHARED slot");
+
+        await executor.ExecuteAsync(Plan(taskId, newDispatch, allowParallel: true))
+            .WaitAsync(TestTimeout);
+
+        var escalation = link.Completions.Should().ContainSingle().Subject;
+        escalation.Dispatch.Should().Be(newDispatch);
+        escalation.Success.Should().BeFalse();
+        escalation.Error.Should().Contain("machine execution slot",
+            "with a cap of 1 the gate excludes the two readers, so the successor takes the "
+            + "bounded wait and times out")
+            .And.NotContain("could not be serialized",
+                "the gate CAN serialize them at this cap, so the outright refusal is wrong");
+        link.ExecutionStarted.Select(e => e.Dispatch).Should().Equal([oldDispatch],
+            "the successor never entered the execution body");
+
+        link.ReleaseStuck.Release();
+        await oldRun.WaitAsync(TestTimeout);
+    }
+
+    [Fact]
     public async Task A_shared_retry_of_an_exclusive_stuck_attempt_escalates_rather_than_refusing()
     {
         // F5 — the refusal above must key on the PAIR of modes, not on the successor's
@@ -531,6 +594,7 @@ public sealed class DeploymentExecutorCancelTests
                 new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance),
             new MachineExecutionGate(),
             Options.Create(new AgentConfig()),
+            Options.Create(new AgentUpdateConfig()),
             NullLogger<DeploymentExecutor>.Instance)
         {
             SupersedeUnwindTimeout = TimeSpan.FromMilliseconds(150),
@@ -553,9 +617,9 @@ public sealed class DeploymentExecutorCancelTests
         var escalation = link.Completions.Should().ContainSingle().Subject;
         escalation.Dispatch.Should().Be(newDispatch);
         escalation.Success.Should().BeFalse();
-        escalation.Error.Should().Contain("wedged",
+        escalation.Error.Should().Contain("machine execution slot",
             "an exclusive predecessor DOES exclude a shared successor, so this is the "
-            + "bounded wedged-gate escalation, not the 'could not be serialized' refusal");
+            + "bounded acquire-timeout escalation, not the 'could not be serialized' refusal");
         escalation.Error.Should().NotContain("could not be serialized");
 
         link.ReleaseStuck.Release();
@@ -575,6 +639,7 @@ public sealed class DeploymentExecutorCancelTests
             new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance),
         gate,
         Options.Create(new AgentConfig()),
+        Options.Create(new AgentUpdateConfig()),
         NullLogger<DeploymentExecutor>.Instance);
 
     private static DeploymentExecutor BuildExecutor(GateLink link) => new(
@@ -585,6 +650,7 @@ public sealed class DeploymentExecutorCancelTests
             new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance),
         new MachineExecutionGate(),
         Options.Create(new AgentConfig()),
+        Options.Create(new AgentUpdateConfig()),
         NullLogger<DeploymentExecutor>.Instance);
 
     private static DeploymentPlan Plan(

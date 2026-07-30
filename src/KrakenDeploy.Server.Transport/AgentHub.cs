@@ -169,25 +169,42 @@ public sealed class AgentHub(
         {
             return await RegisterCoreAsync(request).ConfigureAwait(false);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // F5 — a connection that never reaches MarkRegistered is tracked but NOT
             // dispatchable, and the agent will not retry: its own supervision loop
-            // classifies a hub-method throw as "sent or retryable" and re-sends only on
-            // the NEXT reconnect, which never comes because the link is still healthy.
-            // The target would therefore sit Online, heartbeating, with every deployment
-            // dropping "Target agent offline at dispatch time." and every operator cancel
-            // silently discarded — permanently, and invisibly. The E4 heartbeat backstop
-            // cannot repair it either: Reaffirm restores the target mapping and has no
-            // knowledge of registration.
+            // classifies a hub-method throw as retryable and re-sends only on the NEXT
+            // reconnect, which never comes because the link is still healthy. The target
+            // would therefore sit Online, heartbeating, with every deployment dropping
+            // "Target agent offline at dispatch time." and every operator cancel silently
+            // discarded — permanently, and invisibly. The E4 heartbeat backstop cannot
+            // repair it either: Reaffirm restores the target mapping and has no knowledge
+            // of registration.
             // So force the retry the agent cannot ask for: abort the connection. The
-            // agent's reconnect policy re-establishes it and re-sends RegisterAsync.
+            // agent's reconnect policy re-establishes it and re-sends RegisterAsync, and
+            // its supervision loop now paces those cycles (only an ACCEPTED registration
+            // resets its backoff), so a repeating failure here escalates to MaxDelay
+            // instead of spinning at RTT cadence.
+            //
+            // Deliberately NOT registry.TryRemove: OnDisconnectedAsync gates ALL of its
+            // bookkeeping on winning that same call, so removing here silently disabled
+            // the offline mark — the target kept the Online row OnConnectedAsync wrote,
+            // with a fresh LastSeenUtc on every loop, which is precisely the
+            // appears-Online-but-undispatchable state this block exists to end. The abort
+            // triggers OnDisconnectedAsync, which removes the connection AND its
+            // _registered entry AND schedules the offline mark. It also un-did the
+            // MarkRegistered reordering below, since TryRemove drops _registered too.
+            //
+            // The exception is logged in full: a registration failure is a server-side
+            // fault an operator must be able to diagnose, and this matches how
+            // OnDisconnectedAsync already reports its own. Npgsql leaves
+            // PostgresException.Detail unpopulated unless Include Error Detail is turned
+            // on (it is not), so a constraint violation here does not echo row values.
             logger.LogError(ex,
                 "Agent registration failed for connection {ConnectionId}; aborting the " +
                 "connection so the agent reconnects and re-registers. Leaving it open " +
                 "would keep the target undispatchable while it appears Online.",
                 Context.ConnectionId);
-            registry.TryRemove(Context.ConnectionId, out _);
             Context.Abort();
             throw;
         }

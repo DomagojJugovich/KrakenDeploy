@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.3 |
-| **Date** | 2026-07-29 |
+| **Version** | 1.4 |
+| **Date** | 2026-07-30 |
 | **Authors** | Domagoj Jugović, Claude (Opus 4.8), Claude (Opus 5) |
 | **Status** | Approved |
 | **Technologies** | .NET 10, SignalR, gRPC (proto3), PowerShell/Bash |
@@ -62,7 +62,7 @@ field, not only on a change to the shapes.
 `OnConnectedAsync` has to register a connection before the agent can invoke anything, so
 "connected" and "contract-verified" are different states — and dispatch keys on the
 second. `IAgentConnectionRegistry.MarkRegistered` is called only after `RegisterAsync`
-passes, and `GetConnectionId` / `HasConnectionFor` ignore anything unmarked.
+passes, and **`GetConnectionId` ignores anything unmarked**.
 
 Before F5 the registry entry alone made a connection dispatchable, so a skewed agent
 could be handed work in the connect→register window — and *permanently* if its
@@ -71,7 +71,33 @@ re-sent on the next reconnect. Combined with the AI ad-hoc path now sending `tru
 unconditionally, a v2 agent in that state would run **every** approved script with no
 machine gate at all while the server believed the gate was honoured. Gating the lookup
 fixes every dispatch consumer at once rather than each remembering to ask.
-Pinned by `AgentConnectionRegistryReconnectTests`.
+
+**`HasConnectionFor` is deliberately NOT gated on registration.** It answers LIVENESS
+("did the agent reconnect, is it still there"), and its consumers are the hub's 30 s
+offline grace and B3's mid-wave disconnect monitor. Answering those with dispatch
+eligibility flips a healthy target Offline during the connect→register window and, worse,
+lets the disconnect monitor cancel a wave still executing on a connected agent — which
+under `Atomic` failure mode triggers farm-wide cleanup. The two predicates are different
+questions on purpose, and any other `IAgentConnectionRegistry` implementation (a
+Redis-backed one for multi-node scale-out, say) must preserve the split in both
+directions. Pinned by `AgentConnectionRegistryReconnectTests`, which asserts liveness
+`true` and eligibility `false` for the same connection.
+
+Because an unmarked connection is undispatchable and invisible, `RegisterAsync` aborts it
+when `RegisterCoreAsync` throws, forcing the reconnect the agent's own retry classifier
+will not ask for. Two constraints on that abort, each of which was violated first:
+
+- The agent **paces** those cycles. Only an ACCEPTED registration resets its supervision
+  backoff, because a cycle that connects cleanly and then fails registration is still a
+  failed cycle. Resetting on a successful `StartAsync` instead pinned the retry count at 0
+  — where the policy's delay is deliberately `TimeSpan.Zero` — so a server aborting
+  registration (an unhealthy tenant DB, say) got reconnected at RTT cadence by every agent
+  in the fleet, against the database that was already failing.
+- The abort must **not** remove the registry entry. `OnDisconnectedAsync` gates all of its
+  bookkeeping on winning that same removal, so doing it in the catch silently suppressed
+  the target's offline mark: the row kept the `Online` status `OnConnectedAsync` wrote,
+  with a fresh `LastSeenUtc` on every loop. It also stripped the `_registered` entry, which
+  cancelled out the reason `MarkRegistered` runs before the reconnect reconcile.
 
 ## The contract, versioned
 
@@ -197,6 +223,7 @@ about.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.4 | 2026-07-30 | F5 review round 3: corrected "Dispatch eligibility" — `HasConnectionFor` answers LIVENESS and is NOT gated on registration (the earlier text described a behaviour that was reverted), and documented the two constraints on the registration-failure abort (agent-side backoff paced on ACCEPTED registration; the abort must not remove the registry entry). |
 | 1.3 | 2026-07-29 | F5 review follow-up: amended the v3 row (the REST additions it also covers), added the OPERATOR ACTION callout about bumping `version.json` in the same change, and added the "Dispatch eligibility (F5)" section. |
 | 1.2 | 2026-07-29 | F5: added the v3 contract row and the "why a meaning change bumps the version" rationale. |
 | 1.1 | 2026-07-25 | F2: added the v2 contract row. |

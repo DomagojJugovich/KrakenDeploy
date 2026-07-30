@@ -63,6 +63,7 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
                 configuration, NullLogger<StepPackageLoader>.Instance, new StubStepPackageSource()),
             executionGate,
             agentConfig,
+            Options.Create(new AgentUpdateConfig()),
             NullLogger<DeploymentExecutor>.Instance);
 
         var adhocExecutor = new AdhocScriptExecutor(

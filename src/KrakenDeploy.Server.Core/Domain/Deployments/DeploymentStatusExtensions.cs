@@ -31,4 +31,25 @@ public static class DeploymentStatusExtensions
         DeploymentStatus.Running,
         DeploymentStatus.PendingOfflineResult,
     ];
+
+    /// <summary>
+    /// <see cref="IsTerminal"/> as data, for the query provider. EF cannot translate the
+    /// method, so a fail-CLOSED predicate ("anything not finished counts") must be
+    /// expressed as <c>!Terminal.Contains(status)</c> rather than by enumerating the
+    /// non-terminal states — the two are equivalent today and diverge the moment a
+    /// non-terminal status is added, in the dangerous direction. F5's swap gate is the
+    /// motivating case: an enumeration answered "idle" for a status it had never heard
+    /// of, and the agent takes "idle" as licence to replace its own binary and exit.
+    /// <para>
+    /// This is NOT the complement of <see cref="InFlightAfterClaim"/>: that set is
+    /// deliberately narrower (post-claim, slot-holding) and excludes <c>Queued</c>.
+    /// </para>
+    /// </summary>
+    public static readonly DeploymentStatus[] Terminal =
+    [
+        DeploymentStatus.Succeeded,
+        DeploymentStatus.SucceededWithWarnings,
+        DeploymentStatus.Failed,
+        DeploymentStatus.Cancelled,
+    ];
 }

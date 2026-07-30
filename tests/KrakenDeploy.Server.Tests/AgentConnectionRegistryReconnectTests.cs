@@ -35,7 +35,6 @@ public sealed class AgentConnectionRegistryReconnectTests
             "the connection IS tracked — the hub needs it to answer RegisterAsync");
         registry.GetConnectionId(targetId).Should().BeNull(
             "but it is NOT dispatchable until RegisterAsync has passed");
-        registry.IsRegistered(targetId).Should().BeFalse();
 
         // LIVENESS must stay true throughout. This is the distinction that matters most:
         // HasConnectionFor answers "did the agent reconnect / is it still there", and its
@@ -48,7 +47,6 @@ public sealed class AgentConnectionRegistryReconnectTests
         registry.MarkRegistered("conn-1");
 
         registry.GetConnectionId(targetId).Should().Be("conn-1");
-        registry.IsRegistered(targetId).Should().BeTrue();
         registry.HasConnectionFor(targetId).Should().BeTrue();
     }
 

@@ -185,13 +185,10 @@ static async Task<int> RunAsync(string[] args)
     // gate — MUST be a process-wide singleton, and is shared by the deployment
     // path (F2), the ad-hoc path (F2) and the self-upgrade swap window (F5). A
     // non-singleton registration would hand each consumer its own gate and
-    // silently disable serialization altogether, so the lifetime is pinned by
-    // MachineExecutionGateSharingTests.
-    builder.Services.AddSingleton(sp => new MachineExecutionGate
-    {
-        MaxSharedHolders = sp.GetRequiredService<IOptions<AgentConfig>>()
-            .Value.MaxConcurrentSharedWork,
-    });
+    // silently disable serialization altogether. The registration lives in an
+    // extension method so MachineExecutionGateSharingTests can pin THIS code
+    // rather than a copy of it.
+    builder.Services.AddMachineExecutionGate();
     // E5: DeploymentExecutor is a process-wide SINGLETON — it holds the in-flight
     // registry (_running) that AgentUpdateService.IsExecuting reads to refuse a
     // binary swap mid-deployment. Registered Transient, ServerLinkHostedService

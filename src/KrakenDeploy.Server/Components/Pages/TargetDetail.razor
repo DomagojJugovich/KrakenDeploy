@@ -192,11 +192,14 @@ else
                                 <RadzenIcon Icon="info" />
                                 <div>
                                     Ad-hoc scripts are <strong>not</strong> covered by this setting,
-                                    whichever way it is set. Approved AI actions always run
-                                    concurrently with each other on this machine — including
-                                    state-changing ones — so two of them can touch the same service
-                                    or file at the same time. There is no setting for that yet; if
-                                    you need them serialized, run them one at a time.
+                                    whichever way it is set. Approved AI actions run
+                                    <strong>concurrently with each other</strong> on this machine —
+                                    including state-changing ones — so two of them can touch the same
+                                    service or file at the same time. How many may co-run is capped by
+                                    <code>Agent:MaxConcurrentSharedWork</code> in the agent's own
+                                    configuration (default 8); beyond that they queue. Setting it to
+                                    <code>1</code> serializes them, at the cost of making every
+                                    approved action wait for the one before it.
                                 </div>
                             </div>
                         </div>

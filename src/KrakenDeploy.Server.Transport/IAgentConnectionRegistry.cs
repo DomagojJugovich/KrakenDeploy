@@ -21,8 +21,14 @@ public interface IAgentConnectionRegistry
     /// <summary>
     /// F5 — marks <paramref name="connectionId"/> as having PASSED <c>RegisterAsync</c>,
     /// wire-contract version check included. Until this is called the connection is
-    /// tracked but NOT dispatchable: <see cref="GetConnectionId"/> and
-    /// <see cref="HasConnectionFor"/> both ignore it.
+    /// tracked but NOT DISPATCHABLE: <see cref="GetConnectionId"/> ignores it.
+    /// <para>
+    /// <see cref="HasConnectionFor"/> deliberately does NOT — it answers LIVENESS, a
+    /// different question, and conflating the two lets the mid-wave disconnect monitor
+    /// diagnose "agent disconnected" against a healthy agent still inside its
+    /// connect→register window. See its own remarks; that distinction is load-bearing in
+    /// both directions and any other implementation of this interface must preserve it.
+    /// </para>
     /// <para>
     /// The split exists because <c>OnConnectedAsync</c> has to register the connection
     /// before the agent can invoke anything, so "connected" and "version-verified" are
@@ -32,16 +38,6 @@ public interface IAgentConnectionRegistry
     /// </para>
     /// </summary>
     void MarkRegistered(string connectionId);
-
-    /// <summary>
-    /// F5 — whether <paramref name="targetId"/>'s connection has passed
-    /// <c>RegisterAsync</c>, i.e. whether <see cref="GetConnectionId"/> will return it.
-    /// Distinct from <see cref="HasConnectionFor"/>, which answers liveness. Exists so
-    /// the hub can detect the pathological "connected, tracked, but never registered"
-    /// state and abort the connection rather than leave the target permanently
-    /// undispatchable while it heartbeats Online.
-    /// </summary>
-    bool IsRegistered(Guid targetId);
 
     /// <summary>
     /// Removes the connection and returns the associated target ID.

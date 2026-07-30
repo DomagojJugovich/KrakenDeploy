@@ -1,6 +1,7 @@
 using FluentAssertions;
 using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.Deployment;
+using KrakenDeploy.Agent.Services;
 using KrakenDeploy.Agent.StepPackages;
 using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
@@ -125,6 +126,7 @@ public sealed class DeploymentExecutorStagingTests
             new ConfigurationBuilder().Build(), NullLogger<StepPackageLoader>.Instance),
         new MachineExecutionGate(),
         Options.Create(new AgentConfig { DataPath = dataPath }),
+        Options.Create(new AgentUpdateConfig()),
         NullLogger<DeploymentExecutor>.Instance);
 
     private static DeploymentPlan Plan(Guid taskId, Guid dispatchId) => new(

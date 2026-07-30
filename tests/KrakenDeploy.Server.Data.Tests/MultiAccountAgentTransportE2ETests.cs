@@ -134,13 +134,19 @@ public sealed class MultiAccountAgentTransportE2ETests(MultiAccountAgentTranspor
 
         await AssertConnectionRejectedAsync(connection);
 
-        // Deliberately GetAccountForTarget, not HasConnectionFor: `Add` writes the account
-        // side-table, so a null account is the assertion that discriminates a rejected
-        // connection from an accepted one. (HasConnectionFor would also read false here,
-        // but only because this fixture's raw connections never register — a tautology
-        // that would pass even if the hub had added the foreign target to the registry.)
-        registry.GetConnectionId(betaTarget).Should().BeNull(
-            "a foreign target must never be dispatchable");
+        // HasConnectionFor and GetAccountForTarget are the two assertions that can actually
+        // FAIL here, and both are kept: `Add` is what writes the target mapping AND the
+        // account side-table, so if the hub ever admitted a foreign account's target to the
+        // registry (adding before the account check), these catch it.
+        //
+        // GetConnectionId is deliberately NOT the guard. It requires MarkRegistered, and no
+        // raw connection in this fixture ever registers, so it returns null for a LEGITIMATE
+        // target too (asserted directly a few tests above) — it would pass even with the
+        // foreign target fully in the registry. An earlier cut had this backwards: it
+        // replaced the HasConnectionFor assertion with the GetConnectionId one and recorded
+        // the tautology argument against the wrong method.
+        registry.HasConnectionFor(betaTarget).Should().BeFalse(
+            "a foreign account's target must never enter the registry at all");
         registry.GetAccountForTarget(betaTarget).Should().BeNull();
 
         // Beta's own target was never touched (its agent never reached beta's account).

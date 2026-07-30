@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Status** | Approved |
-| **Version** | 1.7 (M11.E + F2 + followups + F5) |
-| **Last updated** | 2026-07-29 |
+| **Version** | 1.8 (M11.E + F2 + followups + F5) |
+| **Last updated** | 2026-07-30 |
 | **Applies to** | KrakenDeploy server `/adhoc` page + `/mcp` `run_adhoc_action` tool, agent verify-then-run pipeline |
 | **Technologies** | .NET 10, `System.Management.Automation` 7.6 (PowerShell AST parser), `RSA-SHA256` signing, SignalR control plane, Radzen Blazor UI |
 | **Projects** | `KrakenDeploy.Contracts.Adhoc`, `KrakenDeploy.Server.Data.Services.Ai.Adhoc`, `KrakenDeploy.Server.Transport` (`AdhocDispatcher`, `AdhocSessionService`), `KrakenDeploy.Agent.Adhoc`, `KrakenDeploy.Mcp.Tools.AdhocTools` |
@@ -127,14 +127,18 @@ Two things make this narrower than it first looks, and one makes it sharper:
   precisely the pair that includes mutating ∥ mutating.
 - Concurrency is bounded: `Agent:MaxConcurrentSharedWork` (default 8) caps co-running
   shared holders, so this is interleaving, not unbounded fan-out.
-- There is currently **no operator control** over it. `DeploymentTarget.AllowParallelTaskExecution`
-  no longer governs ad-hoc, and the per-run choice does not exist until WP16.
+- There is no PER-RUN operator control until WP16: `DeploymentTarget.AllowParallelTaskExecution`
+  no longer governs ad-hoc, and the per-run choice does not exist yet. There is, however,
+  a whole-agent one — `Agent:MaxConcurrentSharedWork = 1` clamps the cap to a single shared
+  holder, which serializes ad-hoc against ad-hoc on that box. It is blunt (it applies to
+  every approved action on the agent, and a queued script's `Adhoc:MaxTotalDuration` budget
+  spans the wait) but it is the available mitigation for a fragile box today.
 
 **Rider for WP16:** its per-run "allow running concurrently" checkbox (unchecked →
 EXCLUSIVE) is the intended fix, and it should apply to AI sessions too — either by
 deriving the mode from `AdhocMode` (Readonly → SHARED, Mutating → EXCLUSIVE) or by
-surfacing the same checkbox on the approval dialog. Until then, operators running
-Mutating sessions on fragile boxes should serialize them by hand.
+surfacing the same checkbox on the approval dialog. Until then, `MaxConcurrentSharedWork = 1`
+on the agents that need it is the per-machine substitute.
 
 ### What the gate explicitly does NOT guarantee
 
@@ -351,4 +355,5 @@ behind STOP-AND-ASK.
 | 1.4 | 2026-07-25 | **F2** — ad-hoc scripts now take the agent's machine execution slot instead of bypassing it (an approved diagnostic could previously run straight into a deployment's file / IIS / service operations). Per-target opt-out via `DeploymentTarget.AllowParallelTaskExecution`, stamped onto each command. CONTRACT CHANGE: `AdhocScriptCommand` gains `AllowParallelTaskExecution` (outside the signature binding — it is an execution-serialization hint, not an authorization input); `AgentContract.CurrentVersion` 1 → 2. |
 | 1.5 | 2026-07-25 | **F2-followup 3** — the gate wait and the run share ONE `Adhoc:MaxTotalDuration` budget measured from receipt, replacing the queue-only `Adhoc:MaxQueueWait`. Separate bounds did not deliver the property they claimed: a 3:59 queue plus a 5:00 run still outlived the dispatcher's 5 min verdict, so a script could execute — and mutate a box — after the operator had been told it timed out. Expiry while queued REFUSES; expiry while running kills the process tree. |
 | 1.6 | 2026-07-29 | **F5** — the machine gate is now a reader-writer lock and ad-hoc scripts ALWAYS take it; `AllowParallelTaskExecution` selects the side rather than granting a bypass, and becomes per-RUN instead of per-target. The AI session flow dispatches `true` unconditionally (locked decision P5 — read-always, so two approved diagnostics on one box co-run, and neither blocks a deployment's wave any more than the F2 queue did). `AdhocDispatcher.DispatchAsync` takes a single `bool allowParallelTaskExecution` in place of the per-target map, and `AdhocSessionService` no longer queries `deployment_targets` for it. Budget semantics unchanged. CONTRACT CHANGE: `AgentContract.CurrentVersion` 2 → 3 — no shape change, but a v2 agent reads `true` as a full bypass, which on the new read-always AI path would leave EVERY approved script ungated. See `docs/agent-wire-contract.md`. |
+| 1.8 | 2026-07-30 | **F5 review round 3.** Corrected the ACCEPTED RISK section: it said there was "no operator control" over ad-hoc co-running, but `Agent:MaxConcurrentSharedWork = 1` serializes it per agent — blunt, but available today, and the target page had been claiming no such setting exists. The clamp on that key now logs the effective cap instead of substituting it silently. |
 | 1.7 | 2026-07-29 | **F5 review follow-up.** Documented the ACCEPTED RISK that two `AdhocMode.Mutating` sessions now co-run on one box (P5 kept literal; WP16 rider recorded). Shared co-running is now BOUNDED by `Agent:MaxConcurrentSharedWork` (default 8) — the reader-writer rework had removed the old `SemaphoreSlim(1,1)` cap with nothing in its place, so N approvals could spawn N PowerShell processes. The gate-refusal message no longer claims "another task held this machine": writer fairness means a merely QUEUED writer blocks acquisition with no holder present. Corrected the `ModeFor` doc, which described a per-target fail-safe this WP deleted. |

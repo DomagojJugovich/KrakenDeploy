@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using KrakenDeploy.Agent.Config;
+using KrakenDeploy.Agent.Services;
 using KrakenDeploy.Agent.StepPackages;
 using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
@@ -31,6 +32,11 @@ public sealed class DeploymentExecutor(
     StepPackageLoader stepPackageLoader,
     MachineExecutionGate executionGate,
     IOptions<AgentConfig> agentConfig,
+    // Config, not a service: WedgedGateAcquireTimeout is derived from SwapGateTimeout
+    // because the self-upgrade is a legitimate holder of the same gate for that long.
+    // Taking the updater itself as a dependency would be a DI cycle (it already depends
+    // on this executor for IsExecuting).
+    IOptions<AgentUpdateConfig> updateConfig,
     ILogger<DeploymentExecutor> logger)
 {
     /// <summary>
@@ -55,20 +61,37 @@ public sealed class DeploymentExecutor(
     /// only guards a pathologically stuck reap).</summary>
     internal static readonly TimeSpan DefaultSupersedeUnwindTimeout = TimeSpan.FromSeconds(30);
 
-    /// <summary>Default for <see cref="WedgedGateAcquireTimeout"/>: bounded wait
-    /// for the machine execution gate when a new attempt has force-detached a
-    /// stuck predecessor that may still hold it.</summary>
-    internal static readonly TimeSpan DefaultWedgedGateAcquireTimeout = TimeSpan.FromSeconds(30);
+    /// <summary>
+    /// How much patience <see cref="WedgedGateAcquireTimeout"/> adds ON TOP of the longest
+    /// legitimate hold, i.e. how long a force-detached predecessor gets to let go before
+    /// the machine is called wedged.
+    /// </summary>
+    internal static readonly TimeSpan WedgedGateAcquireGrace = TimeSpan.FromSeconds(30);
 
     /// <summary>How long a superseding dispatch waits for the cancelled old
     /// attempt to unwind before force-detaching it. Overridable for tests.</summary>
     internal TimeSpan SupersedeUnwindTimeout { get; init; } = DefaultSupersedeUnwindTimeout;
 
-    /// <summary>Bounded wait for the machine execution gate after force-detaching
-    /// a stuck superseded predecessor that may still hold it: on expiry the new
-    /// attempt escalates (logs + reports a failed completion) instead of wedging
-    /// the agent forever behind the stuck step. Overridable for tests.</summary>
-    internal TimeSpan WedgedGateAcquireTimeout { get; init; } = DefaultWedgedGateAcquireTimeout;
+    /// <summary>
+    /// Bounded wait for the machine execution gate after force-detaching a stuck
+    /// superseded predecessor that may still hold it: on expiry the new attempt escalates
+    /// (logs + reports a failed completion) instead of wedging the agent forever behind
+    /// the stuck step. Overridable for tests.
+    /// <para>
+    /// DERIVED from <c>Agent:Update:SwapGateTimeout</c>, because the self-upgrade is a
+    /// legitimate EXCLUSIVE holder of this same gate for exactly that long — and the gate
+    /// is writer-fair, so a queued swap also stops this acquisition from being granted
+    /// even while the predecessor is releasing. A flat 30 s was shorter than the DEFAULT
+    /// 2-minute swap window, so a perfectly healthy box could be declared wedged and its
+    /// deployment failed with "the machine likely needs the agent restarted" while the
+    /// only thing holding the slot was the agent's own upgrade. Nothing recorded that
+    /// ordering constraint; deriving the value is what makes it impossible to violate,
+    /// including when an operator widens the swap window (the validator's ceiling is a
+    /// full hour).
+    /// </para>
+    /// </summary>
+    internal TimeSpan WedgedGateAcquireTimeout { get; init; } =
+        updateConfig.Value.SwapGateTimeout + WedgedGateAcquireGrace;
 
     // B7/F2/F5 — the machine's execution gate. Registration in _running happens
     // BEFORE queueing, so a queued plan is still cancellable / supersedable; the
@@ -543,12 +566,15 @@ public sealed class DeploymentExecutor(
     /// <para>
     /// Returns <see cref="MachineSlot.AbandonedWedged"/> ONLY on the two
     /// force-detached-predecessor escalations, both reported before returning. Which one
-    /// applies turns on whether the gate can keep the two attempts apart, i.e. on the
-    /// PAIR of modes — not on this attempt's mode alone:
+    /// applies turns on whether the gate would ADMIT the two attempts together — which is
+    /// the gate's own admission rule (<see cref="MachineExecutionGate.WouldAdmitConcurrently"/>),
+    /// not this attempt's mode alone, and not mode compatibility alone either:
     /// <list type="bullet">
-    ///   <item>BOTH shared — the gate would admit both as readers, so it cannot
-    ///         serialize them; refuse outright, BEFORE acquiring.</item>
-    ///   <item>Otherwise — one side is exclusive, so the gate DOES exclude them. The
+    ///   <item>The gate would admit both (in practice: both shared, on a box whose
+    ///         shared-holder cap is at least 2) — it cannot serialize them, so refuse
+    ///         outright, BEFORE acquiring.</item>
+    ///   <item>Otherwise the gate DOES exclude them — because one side is exclusive, or
+    ///         because the shared cap is 1 and a second reader would queue anyway. The
     ///         wait is BOUNDED by <see cref="WedgedGateAcquireTimeout"/> and expiry
     ///         abandons this attempt rather than wedging the agent forever behind the
     ///         stuck step (a zombie heartbeating Online while silently never executing
@@ -687,18 +713,30 @@ public sealed class DeploymentExecutor(
             return MachineSlot.AbandonedQuietly;
         }
 
+        // Reports what was OBSERVED, not a diagnosis. The old copy asserted "a previous
+        // task is not releasing the machine execution slot" and told the operator the agent
+        // needed restarting — neither of which this code can know. The slot may equally be
+        // held, or merely headed in the writer-fair queue, by the agent's own self-upgrade
+        // swap window, which is legitimate and self-clearing. Sending an operator to
+        // restart a healthy agent is worse than saying less.
         logger.LogError(
             "Task {DeploymentId} attempt {DispatchId} could not acquire the machine " +
             "execution gate ({Mode}) within {Timeout} after force-detaching a stuck " +
-            "predecessor; the agent appears wedged. Abandoning this attempt.",
-            plan.DeploymentId, plan.DispatchId, mode, WedgedGateAcquireTimeout);
+            "predecessor (write-held: {WriteHeld}, readers: {Readers}, queued: {Queued}). " +
+            "Abandoning this attempt.",
+            plan.DeploymentId, plan.DispatchId, mode, WedgedGateAcquireTimeout,
+            executionGate.IsWriteHeld, executionGate.ReaderCount, executionGate.QueuedCount);
         await LogAsync(plan.DeploymentId, "error",
-            "--- The agent is wedged: a previous task is not releasing the machine " +
-            "execution slot. Abandoning this attempt; the machine likely needs the " +
-            "agent restarted. ---", CancellationToken.None)
+            $"--- Could not get this machine's execution slot within {WedgedGateAcquireTimeout}. " +
+            "A previous attempt of this task did not stop when asked and was detached, and " +
+            "the slot has not come free since — usually that detached step, occasionally an " +
+            "agent self-upgrade window. Abandoning this attempt; the server will " +
+            "re-dispatch. If it keeps happening, the agent on this machine needs " +
+            "attention. ---", CancellationToken.None)
             .ConfigureAwait(false);
         await ReportAbandonedAttemptAsync(plan,
-            "Agent wedged: a previous task did not release the machine execution slot.")
+            $"Timed out after {WedgedGateAcquireTimeout} waiting for the machine execution " +
+            "slot, following a force-detached previous attempt.")
             .ConfigureAwait(false);
         return MachineSlot.AbandonedWedged;
     }

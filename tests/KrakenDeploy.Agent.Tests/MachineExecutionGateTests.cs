@@ -390,20 +390,53 @@ public sealed class MachineExecutionGateTests
         // happen is a lapsed wait reported as a disposal, which is what the first-writer
         // -wins reason stamp guarantees.
         //
-        // COVERAGE LIMIT, stated rather than implied: because both outcomes are accepted,
-        // this test does NOT distinguish first-writer-wins from last-writer-wins — I
-        // mutation-checked `ClaimGiveUpReason` to a last-writer-wins write and the whole
-        // gate suite stayed green. Hitting the discriminating interleaving deterministically
-        // needs the waiter expiry-completed but STILL QUEUED when Dispose runs, and the
-        // continuation is scheduled by that very completion (RunContinuationsAsynchronously),
-        // so there is no way to hold it without a mutable test hook inside the primitive —
-        // a worse trade than documenting the gap. The property is enforced by construction:
-        // every path that completes a waiter with `false` stamps the reason first, and
-        // `Interlocked.CompareExchange` from None makes the first stamp final.
+        // This test alone cannot tell first-writer-wins from last-writer-wins, because it
+        // accepts both outcomes — the discriminating interleaving (expiry-completed but
+        // still QUEUED when Dispose runs) is not reachable from out here, since the
+        // continuation is scheduled by the very completion that would have to be paused.
+        // The invariant itself is pinned directly instead, by
+        // The_give_up_reason_is_first_writer_wins below. That split is deliberate: this
+        // test covers the end-to-end outcomes, that one covers the rule.
         var outcome = await Record.ExceptionAsync(async () =>
             (await expired.WaitAsync(TestTimeout)).Should().BeNull());
         outcome?.Should().BeOfType<ObjectDisposedException>(
             "the only alternative to 'expired' is a disposal that truly won the race");
+    }
+
+    [Fact]
+    public void The_give_up_reason_is_first_writer_wins()
+    {
+        // The rule the whole expiry-vs-disposal discrimination rests on, asserted on the
+        // primitive rather than through an interleaving that cannot be forced. It earns a
+        // direct test because it is the one invariant here that SURVIVED an inverted
+        // implementation: rewriting ClaimGiveUpReason as a last-writer-wins store left the
+        // entire gate suite green, so nothing was enforcing it.
+        //
+        // Why it matters in production: AcquireCoreAsync reports ObjectDisposedException iff
+        // the reason is Disposed. Last-writer-wins means a wait that genuinely lapsed gets
+        // relabelled when a shutdown arrives just after, and both consumers then take the
+        // quiet path instead of escalating — DeploymentExecutor downgrades its
+        // operator-actionable wedged-gate report to AbandonedQuietly, and AgentUpdateService
+        // turns SwapGate.Busy into Stopping, so no swap-deferred report and no audit row.
+        // Silently, forever.
+        var waiter = new MachineExecutionGate.Waiter(Mode.Shared);
+        waiter.Reason.Should().Be(MachineExecutionGate.GiveUpReason.None,
+            "a waiter that is still waiting has no give-up reason");
+
+        waiter.ClaimGiveUpReason(MachineExecutionGate.GiveUpReason.Expired);
+        waiter.ClaimGiveUpReason(MachineExecutionGate.GiveUpReason.Disposed);
+
+        waiter.Reason.Should().Be(MachineExecutionGate.GiveUpReason.Expired,
+            "the bounded wait lapsed on its own terms before disposal reached this waiter, " +
+            "so it must be reported as an expiry no matter who wins the TCS race");
+
+        // And symmetrically, so the test cannot pass by simply preferring Expired.
+        var disposedFirst = new MachineExecutionGate.Waiter(Mode.Exclusive);
+        disposedFirst.ClaimGiveUpReason(MachineExecutionGate.GiveUpReason.Disposed);
+        disposedFirst.ClaimGiveUpReason(MachineExecutionGate.GiveUpReason.Expired);
+
+        disposedFirst.Reason.Should().Be(MachineExecutionGate.GiveUpReason.Disposed,
+            "disposal genuinely got there first, so the caller must see ObjectDisposedException");
     }
 
     [Fact]
@@ -412,7 +445,7 @@ public sealed class MachineExecutionGateTests
         // The deterministic half: the wait is given time to lapse fully, so the reason is
         // settled as Expired before disposal is anywhere near it. This must be null, never
         // ObjectDisposedException.
-        var gate = new MachineExecutionGate();
+        using var gate = new MachineExecutionGate();
         using var holder = await Take(gate, Mode.Exclusive);
 
         var expired = gate.AcquireAsync(Mode.Shared, ShortWait, default);

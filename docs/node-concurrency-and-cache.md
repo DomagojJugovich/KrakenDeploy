@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.4 |
-| **Date** | 2026-07-29 |
+| **Version** | 1.5 |
+| **Date** | 2026-07-30 |
 | **Authors** | Domagoj Jugović, Claude (Opus 4.8), Claude (Opus 5) |
 | **Status** | Approved |
 | **Technologies** | .NET 10, SignalR, async reader-writer lock, NTFS/ext4 atomic rename |
@@ -13,6 +13,15 @@ Production-readiness fix **B7** (audit items T1-3 remainder, T1-4): bounded
 concurrency on both sides of the wire, and caches that survive crashes and
 concurrent access. No contract change; one new config key.
 
+> v1.5 (2026-07-30, F5 review round 3): the shared-holder clamp now LOGS a warning
+> naming the effective cap (it was silent, while the code claimed otherwise). The
+> self-upgrade's deferral report moved OUT of the machine lease and carries the real
+> reason from the check rather than a fixed string, and it is filed once per staged
+> version instead of once per check interval. `DeploymentExecutor`'s wedged-gate wait is
+> now DERIVED from `Agent:Update:SwapGateTimeout` — a flat 30 s was shorter than the
+> default swap window, so a healthy box could be reported as wedged — and its escalation
+> states what was observed instead of diagnosing a stuck predecessor.
+>
 > v1.4 (2026-07-29, F5 review follow-up): shared co-running is BOUNDED by
 > `Agent:MaxConcurrentSharedWork` (default 8) — the reader-writer rework had removed
 > the old hard cap of one with nothing in its place. The self-upgrade now asks the
@@ -113,6 +122,16 @@ detached with no limiter, and no server-side cap covers ad-hoc dispatch, so N co
 approvals meant N PowerShell processes. Octopus's own reader-writer lock is uncapped, so
 this is a deliberate divergence.
 
+An out-of-range value is clamped rather than refused — a `0` would make every shared
+acquisition permanently unsatisfiable, which is a worse outcome for a config typo than
+narrowing the cap — but the clamp **logs a warning naming the effective value** at agent
+startup. It did not, and silence was the wrong answer in both directions: an operator who
+sized a box for 200 co-running scripts ran at 64 with nothing in any log, and a typo'd `0`
+silently serialized the entire ad-hoc path while the per-script refusal message blamed the
+machine rather than the cap. Setting it to `1` is a legitimate way to serialize approved
+AI actions, which the target page's callout now says instead of claiming no such setting
+exists.
+
 The cap is soft **at the gate** — over-cap work queues rather than being refused — but
 not end to end: an ad-hoc script's `Adhoc:MaxTotalDuration` budget spans its queue wait,
 so a script that queues behind the cap for its whole budget IS refused. The bound is
@@ -163,10 +182,35 @@ holder stop the agent from accepting work for the rest of the process's life. On
 nothing is swapped, the outcome is reported as `swap-deferred` so a machine that keeps
 deferring is visible server-side, and the next tick retries. `IsExecuting` is kept purely
 as a cheap early-out, so the agent does not pay the block-new-work cost when a deployment
-is already known to be running. The lease is deliberately **not** released on the success
-path — the process exits holding it. The **rollback** swap takes the same lock, with a
-short fixed wait that does *not* abandon on expiry: restoring a binary that failed its
-health gate outranks exclusivity.
+is already known to be running.
+
+The lease is deliberately **not** released on the success path — the process exits holding
+it, because releasing it after the directory has been replaced would hand the machine to a
+queued deployment that then gets hard-killed mid-step by the exit. That makes
+`Environment.Exit` the *only* thing that ends the lease, so it sits in a `finally`: the
+best-effort outcome report on the way out threw an `HttpClient` timeout (a
+`TaskCanceledException`, raised even on `CancellationToken.None`), the exit was skipped, and
+the gate was left with a writer held by nobody for the life of the process — every later
+wave parking on it forever while the target heartbeated Online.
+
+The **rollback** swap takes the same lock, with a short fixed wait that does *not* abandon
+on expiry: restoring a binary that failed its health gate outranks exclusivity, so it
+proceeds ungated (and says so in the log) rather than leaving a bad build running. A
+SHUTTING-DOWN host is the one case that defers instead — the marker is retained and the
+next boot retries the whole probation. Both halves of that matter: there the lease is
+guaranteed *absent* rather than merely contended, and a shutdown deliberately does not abort
+a running step; and `Environment.Exit(70)` during an intentional stop reports failure to the
+supervisor, so a service with `FailureActions`, a `Restart=on-failure` unit or a container
+with the same restart policy relaunches the agent the operator just stopped.
+
+Deferrals are reported **once per staged version**, not once per check. The causes are
+open-ended — a task parked `Queued` by maintenance mode, or sitting at
+`PendingOfflineResult` — and reporting each tick filed ~24 audit rows per target per night,
+each of which `SubscriptionMatcher` also delivers to any subscription with an empty pattern
+list. The reported reason comes from the check itself rather than a fixed string: it fails
+closed on a 5xx, an unparseable body, a transport error and its own timeout, and an audit
+row claiming "a task is assigned" when the truth was "the server did not answer" sends an
+operator looking for a task that does not exist.
 
 Holding the gate is **not sufficient on its own**, and this is the sharpest thing to
 understand about the updater. The gate's unit is one WAVE, so between two waves of a live

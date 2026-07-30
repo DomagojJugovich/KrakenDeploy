@@ -1,6 +1,7 @@
 using System.Text.Json;
 using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.Deployment;
+using KrakenDeploy.Agent.Services;
 using KrakenDeploy.Agent.StepPackages;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Contracts.Crypto;
@@ -97,6 +98,9 @@ public sealed class OfflineRunner(ILoggerFactory loggerFactory)
         using var executionGate = new MachineExecutionGate();
         var executor = new DeploymentExecutor(
             serverLink, packageSource, artifactSink, loader, executionGate, agentConfig,
+            // Defaults: an offline run has no self-upgrade to coordinate with, so the
+            // swap-window term of WedgedGateAcquireTimeout is irrelevant here.
+            Options.Create(new AgentUpdateConfig()),
             loggerFactory.CreateLogger<DeploymentExecutor>());
 
         log.LogInformation(
