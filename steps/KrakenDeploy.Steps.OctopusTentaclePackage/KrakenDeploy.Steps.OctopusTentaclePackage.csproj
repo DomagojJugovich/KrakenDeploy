@@ -8,7 +8,7 @@
     <KrakenStepPackageId>octopus.tentaclepackage</KrakenStepPackageId>
     <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>Deploy a Package</KrakenStepPackageDisplayName>
-    <KrakenStepPackageStepTypes>Octopus.TentaclePackage</KrakenStepPackageStepTypes>
+    <KrakenStepPackageStepTypes>Octopus.TentaclePackage, Kraken.DeployPackage</KrakenStepPackageStepTypes>
     <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.OctopusTentaclePackage.OctopusTentaclePackageStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>

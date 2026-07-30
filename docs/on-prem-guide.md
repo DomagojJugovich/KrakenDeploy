@@ -171,6 +171,127 @@ On Windows, use Task Scheduler to run the backup command nightly.
 For larger customers, two server nodes can share a single PostgreSQL instance.
 See `docs/ha-pair.md` for the full configuration guide.
 
+## Observability
+
+KrakenDeploy exports OpenTelemetry traces and metrics over OTLP, and can
+forward structured logs to a Seq instance. All export is **disabled by
+default** — an unconfigured server collects and drops telemetry with zero
+startup or runtime cost, exactly as before.
+
+> **Regulated-environment warning:** Enabling export sends operational data
+> (request URLs, durations, error messages, machine names) off the host to
+> whatever collector you configure. In GDPR / state-institution deployments,
+> confirm that your collector and its storage sit inside your data boundary
+> before setting `Otel:Enabled` to `true`.
+
+### What is exported
+
+| Signal | Source | Notes |
+|--------|--------|-------|
+| Traces | ASP.NET Core + HttpClient auto-instrumentation | One span per inbound request and outbound HTTP call |
+| Metrics | ASP.NET Core + HttpClient auto-instrumentation | Request counts, durations, active-request gauges |
+| Logs | Serilog pipeline | Console + rolling file always; Seq sink when configured |
+
+There is no custom domain instrumentation (no `ActivitySource`, no `Meter`).
+Resource attributes: `service.name`, `service.version`, `service.instance.id`
+(machine name), and — only on a slotted blue-green release — `kraken.release.id`
+and `kraken.release.slot` (stamped per instance via `Release:Id` /
+`Release:SlotNo` at deploy time; see `docs/blue-green-slot-deployment.md`).
+
+### Configuration
+
+All keys live under the `Otel` section (`appsettings.Production.json` or
+environment variables with `__` separators):
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `Otel:Enabled` | `false` | Master switch — `false` is a true no-op (no OTLP, no Seq) |
+| `Otel:OtlpEndpoint` | `""` | Collector OTLP endpoint, e.g. `http://otel-collector:4317` |
+| `Otel:Protocol` | `grpc` | `grpc` or `http/protobuf` (any other value fails startup) |
+| `Otel:Headers` | `""` | Optional OTLP auth headers, comma-separated `k=v` pairs |
+| `Otel:SeqServerUrl` | `""` | Seq ingest URL, e.g. `http://seq:5341` — enables the log sink (requires `Enabled`) |
+
+Environment-variable equivalents (no `appsettings` edit needed):
+
+```bash
+Otel__Enabled=true
+Otel__OtlpEndpoint=http://otel-collector:4317
+Otel__SeqServerUrl=http://seq:5341
+```
+
+### Logs: the Seq decision
+
+Logs stay on the Serilog pipeline — they are **not** routed through OTel.
+The export leg is `Serilog.Sinks.Seq`, which posts structured events directly
+to Seq's native ingest API. This was chosen over an OTLP-logs exporter because
+Seq (2024.1+) ingests Serilog events natively with full property fidelity,
+whereas its OTLP log ingest is comparatively recent and loses some Serilog
+structure. A local Seq container (`datalust/seq`) is the intended smoke-test
+target; point `Otel:SeqServerUrl` at it and logs appear immediately. The Seq
+sink is gated by the same `Otel:Enabled` master switch as OTLP, so with
+`Enabled=false` no telemetry of any kind leaves the host.
+
+### Example: local collector + Seq (Docker Compose)
+
+Add to your compose file alongside the KrakenDeploy server:
+
+```yaml
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP/protobuf
+
+  seq:
+    image: datalust/seq:latest
+    environment:
+      ACCEPT_EULA: "Y"
+    ports:
+      - "5341:80"     # Seq UI + ingest
+```
+
+Minimal `otel-collector.yaml`:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      exporters: [debug]
+```
+
+Then set `Otel__Enabled=true`, `Otel__OtlpEndpoint=http://otel-collector:4317`,
+and `Otel__SeqServerUrl=http://seq:80` on the KrakenDeploy server container.
+Spans and metrics print to the collector's stdout; logs appear in the Seq UI
+at `http://localhost:5341`.
+
+### Global log search
+
+In-app log viewing in KrakenDeploy is **per-task by design** — each deployment
+task shows its own execution log. There is no built-in cross-deployment log
+search. Operators who need to search logs across all deployments, all spaces,
+or all nodes should point the OTLP/Seq pipeline at their collector and query
+Seq (or whatever backend sits behind the collector) directly.
+
 ## Troubleshooting
 
 ### Database connection refused

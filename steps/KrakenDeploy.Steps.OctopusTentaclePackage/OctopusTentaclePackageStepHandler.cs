@@ -25,7 +25,8 @@ namespace KrakenDeploy.Steps.OctopusTentaclePackage;
 public sealed class OctopusTentaclePackageStepHandler : IStepHandler
 {
     public bool CanHandle(string stepType)
-        => stepType.Equals("Octopus.TentaclePackage", StringComparison.OrdinalIgnoreCase);
+        => stepType.Equals("Octopus.TentaclePackage", StringComparison.OrdinalIgnoreCase)
+        || stepType.Equals("Kraken.DeployPackage", StringComparison.OrdinalIgnoreCase);
 
     public bool RequiresPackage => true;
 
@@ -39,14 +40,15 @@ public sealed class OctopusTentaclePackageStepHandler : IStepHandler
             return false;
         }
 
-        var features   = ParseFeatures(context.Step.Config);
+        var config = NormalizeConfig(context);
+        var features   = ParseFeatures(config);
         var octostache = BuildOctostache(context.Plan.Variables);
         var workingDir = context.ExtractDir;
 
         // 1. CustomDirectory
         if (features.Contains("Octopus.Features.CustomDirectory"))
         {
-            var customDir = ResolveCustomDirectory(context.Step.Config, octostache);
+            var customDir = ResolveCustomDirectory(config, octostache);
 
             if (string.IsNullOrWhiteSpace(customDir))
             {
@@ -73,7 +75,7 @@ public sealed class OctopusTentaclePackageStepHandler : IStepHandler
                     return false;
                 }
 
-                var purge = ParseBool(context.Step.Config.GetValueOrDefault(
+                var purge = ParseBool(config.GetValueOrDefault(
                     "Octopus.Action.Package.CustomInstallationDirectoryShouldBePurgedBeforeDeployment"));
 
                 if (purge)
@@ -81,7 +83,7 @@ public sealed class OctopusTentaclePackageStepHandler : IStepHandler
                     if (IsKrakenManaged(fullCustomDir))
                     {
                         var exclusions = ParseExclusions(
-                            context.Step.Config.GetValueOrDefault(
+                            config.GetValueOrDefault(
                                 "Octopus.Action.Package.CustomInstallationDirectoryPurgeExclusions"));
                         await PurgeDirectoryAsync(fullCustomDir, exclusions, context.LogAsync, ct)
                             .ConfigureAwait(false);
@@ -119,7 +121,7 @@ public sealed class OctopusTentaclePackageStepHandler : IStepHandler
 
         // 2. ConfigurationVariables
         if (features.Contains("Octopus.Features.ConfigurationVariables") &&
-            ParseBool(context.Step.Config.GetValueOrDefault(
+            ParseBool(config.GetValueOrDefault(
                 "Octopus.Action.Package.AutomaticallyUpdateAppSettingsAndConnectionStrings")))
         {
             await ApplyConfigurationVariablesAsync(
@@ -128,7 +130,7 @@ public sealed class OctopusTentaclePackageStepHandler : IStepHandler
 
         // 3. ConfigurationTransforms (XDT)
         if (features.Contains("Octopus.Features.ConfigurationTransforms") &&
-            ParseBool(context.Step.Config.GetValueOrDefault(
+            ParseBool(config.GetValueOrDefault(
                 "Octopus.Action.Package.AutomaticallyRunConfigurationTransformationFiles")))
         {
             await ApplyConfigurationTransformsAsync(
@@ -139,6 +141,25 @@ public sealed class OctopusTentaclePackageStepHandler : IStepHandler
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
+
+    private static IReadOnlyDictionary<string, string> NormalizeConfig(StepHandlerContext context)
+    {
+        if (!context.Step.StepType.Equals("Kraken.DeployPackage", StringComparison.OrdinalIgnoreCase))
+        {
+            return context.Step.Config;
+        }
+
+        var config = new Dictionary<string, string>(context.Step.Config, StringComparer.OrdinalIgnoreCase);
+        var customDir = config.GetValueOrDefault("Octopus.Action.Package.CustomInstallationDirectory");
+        if (!string.IsNullOrWhiteSpace(customDir)
+            && (!config.TryGetValue("Octopus.Action.EnabledFeatures", out var ef)
+                || string.IsNullOrWhiteSpace(ef)))
+        {
+            config["Octopus.Action.EnabledFeatures"] = "Octopus.Features.CustomDirectory";
+        }
+
+        return config;
+    }
 
     private static HashSet<string> ParseFeatures(IReadOnlyDictionary<string, string> config)
     {

@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <KrakenStepPackageId>octopus.java</KrakenStepPackageId>
+    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageDisplayName>Java</KrakenStepPackageDisplayName>
+    <KrakenStepPackageStepTypes>Octopus.JavaArchive,Octopus.TomcatDeploy,Octopus.TomcatState,Octopus.TomcatDeployCertificate,Octopus.WildFlyDeploy,Octopus.WildFlyState,Octopus.WildFlyCertificateDeploy,Octopus.JavaDeployCertificate</KrakenStepPackageStepTypes>
+    <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.Java.JavaStepHandler</KrakenStepPackageExecutorTypeName>
+
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Octostache" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
+    <ProjectReference Include="..\KrakenDeploy.Steps.Common\KrakenDeploy.Steps.Common.csproj" />
+  </ItemGroup>
+
+  <Import Project="..\KrakenStepPackage.targets" />
+
+</Project>

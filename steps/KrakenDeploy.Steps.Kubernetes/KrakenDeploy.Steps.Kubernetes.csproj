@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <KrakenStepPackageId>octopus.kubernetes</KrakenStepPackageId>
+    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageDisplayName>Kubernetes</KrakenStepPackageDisplayName>
+    <KrakenStepPackageStepTypes>Octopus.KubernetesDeployRawYaml,Octopus.KubernetesDeployContainers,Octopus.KubernetesDeployService,Octopus.KubernetesDeployIngress,Octopus.KubernetesDeployConfigMap,Octopus.KubernetesDeploySecret,Octopus.Kubernetes.Kustomize,Octopus.HelmChartUpgrade,Octopus.KubernetesRunScript</KrakenStepPackageStepTypes>
+    <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.Kubernetes.KubernetesStepHandler</KrakenStepPackageExecutorTypeName>
+
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Octostache" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
+    <ProjectReference Include="..\KrakenDeploy.Steps.Common\KrakenDeploy.Steps.Common.csproj" />
+  </ItemGroup>
+
+  <Import Project="..\KrakenStepPackage.targets" />
+
+</Project>

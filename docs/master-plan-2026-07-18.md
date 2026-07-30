@@ -196,7 +196,7 @@ Statuses: ⬜ open · ✅ done · ⏸ parked. Sizes: XS < ½ day, S ≈ ½–1 d
 | 5 | WP8 | Prompted variables | ⬜ | L | WP1 (done) |
 | 5 | WP7 | Triggers — all three kinds | ⬜ | XL | D1 |
 | 5 | WP15 | Certificates library — full v1 | ⬜ | XL | — |
-| 5 | WP10 | OpenTelemetry export (Server-only, rescoped) | ⬜ | M | — |
+| 5 | WP10 | OpenTelemetry export (Server-only, rescoped) | ✅ 73c640f | M | — |
 | 5 | WP11 | Latent bug batch (rescoped: 6 items) | ⬜ | M | E-D |
 | 6 — structurals pre-freeze | D2 | Rename Deployment→Task wire/enum surface | ⬜ | L | D1 |
 | 6 | D4 | Split Server.Data → Data + Application | ⬜ | L | — |

@@ -27,6 +27,102 @@ public class BuiltInStepTemplateSeeder(
     private const string KrakenIisTemplateName = "Kraken.IIS — Deploy Web Site";
     private const string KrakenScriptTemplateName = "Kraken.Script — Run a Script";
 
+    private static readonly (string Name, string ActionType, string Category, string Description)[] CatalogSteps =
+    [
+        ("Health Check", "Octopus.HealthCheck", "other",
+            "Probe an HTTP endpoint or TCP port with retries."),
+        ("Transfer a Package", "Octopus.TransferPackage", "package",
+            "Copy or upload the deployed package to a file share or HTTP feed endpoint."),
+        ("Deploy a Package", "Kraken.DeployPackage", "package",
+            "Extract a package to a target directory. Simplified deploy step."),
+        ("Run a Docker Container", "Octopus.DockerRun", "docker",
+            "Pull and run a container from a registry."),
+        ("Stop a Docker Resource", "Octopus.DockerStop", "docker",
+            "Stop or remove a container or network created by a previous deployment."),
+        ("Create a Docker Network", "Octopus.DockerNetwork", "docker",
+            "Create a Docker network for use by containers."),
+        ("Deploy Kubernetes YAML", "Octopus.KubernetesDeployRawYaml", "kubernetes",
+            "Apply raw YAML manifests to a Kubernetes cluster."),
+        ("Deploy Kubernetes Containers", "Octopus.KubernetesDeployContainers", "kubernetes",
+            "Create or update a Kubernetes Deployment from a container image."),
+        ("Deploy Kubernetes Service", "Octopus.KubernetesDeployService", "kubernetes",
+            "Create or update a Kubernetes Service."),
+        ("Deploy Kubernetes Ingress", "Octopus.KubernetesDeployIngress", "kubernetes",
+            "Create or update a Kubernetes Ingress."),
+        ("Deploy Kubernetes ConfigMap", "Octopus.KubernetesDeployConfigMap", "kubernetes",
+            "Create or update a Kubernetes ConfigMap."),
+        ("Deploy Kubernetes Secret", "Octopus.KubernetesDeploySecret", "kubernetes",
+            "Create or update a Kubernetes Secret."),
+        ("Deploy with Kustomize", "Octopus.Kubernetes.Kustomize", "kubernetes",
+            "Apply a kustomization directory to a Kubernetes cluster."),
+        ("Deploy a Helm Chart", "Octopus.HelmChartUpgrade", "kubernetes",
+            "Install or upgrade a Helm release on a Kubernetes cluster."),
+        ("Run a kubectl Script", "Octopus.KubernetesRunScript", "kubernetes",
+            "Run a script with kubectl context authenticated to a Kubernetes cluster."),
+        ("Upload to Amazon S3", "Octopus.AwsUploadS3", "aws",
+            "Upload files to an Amazon S3 bucket."),
+        ("Create an S3 Bucket", "Octopus.AwsCreateS3", "aws",
+            "Create a new Amazon S3 bucket."),
+        ("Deploy AWS CloudFormation", "Octopus.AwsRunCloudFormation", "aws",
+            "Create or update an AWS CloudFormation stack via change sets."),
+        ("Apply CloudFormation Change Set", "Octopus.AwsApplyCloudFormationChangeSet", "aws",
+            "Execute a previously created CloudFormation change set."),
+        ("Delete AWS CloudFormation Stack", "Octopus.AwsDeleteCloudFormation", "aws",
+            "Delete an AWS CloudFormation stack and wait for completion."),
+        ("Deploy Amazon ECS Service", "aws-ecs", "aws",
+            "Update an Amazon ECS service with a new task definition or desired count."),
+        ("Update Amazon ECS Service", "aws-ecs-update-service", "aws",
+            "Update an Amazon ECS service (alias for aws-ecs)."),
+        ("Run an AWS Script", "Octopus.AwsRunScript", "aws",
+            "Run a script with AWS credentials set as environment variables."),
+        ("Deploy to Azure Web App", "Octopus.AzureWebApp", "azure",
+            "Deploy a package to an Azure App Service (Web App)."),
+        ("Deploy to Azure App Service", "Octopus.AzureAppService", "azure",
+            "Deploy a package to an Azure App Service (alias for AzureWebApp)."),
+        ("Run an Azure PowerShell Script", "Octopus.AzurePowerShell", "azure",
+            "Run a PowerShell script with Azure credentials set as environment variables."),
+        ("Deploy an Azure ARM Template", "Octopus.AzureResourceGroup", "azure",
+            "Deploy an Azure Resource Manager (ARM) template to a resource group."),
+        ("Deploy a Bicep Template", "deploy-a-bicep-template", "azure",
+            "Deploy an Azure Bicep template to a resource group."),
+        ("Deploy a Java Archive", "Octopus.JavaArchive", "java",
+            "Deploy a WAR, JAR, or EAR file to a target directory."),
+        ("Deploy to Tomcat", "Octopus.TomcatDeploy", "java",
+            "Deploy a WAR file to an Apache Tomcat instance."),
+        ("Manage Tomcat State", "Octopus.TomcatState", "java",
+            "Start, stop, or restart an Apache Tomcat instance."),
+        ("Deploy Certificate to Tomcat", "Octopus.TomcatDeployCertificate", "java",
+            "Import a certificate into a Tomcat Java keystore."),
+        ("Deploy to WildFly", "Octopus.WildFlyDeploy", "java",
+            "Deploy a WAR or EAR to a WildFly/JBoss instance via CLI."),
+        ("Manage WildFly State", "Octopus.WildFlyState", "java",
+            "Start, stop, restart, or reload a WildFly/JBoss instance."),
+        ("Deploy Certificate to WildFly", "Octopus.WildFlyCertificateDeploy", "java",
+            "Import a certificate into a WildFly keystore."),
+        ("Deploy a Java Certificate", "Octopus.JavaDeployCertificate", "java",
+            "Import a certificate into a generic Java keystore via keytool."),
+        ("Apply a Terraform Template", "Octopus.TerraformApply", "terraform",
+            "Run terraform init and apply to provision infrastructure."),
+        ("Plan a Terraform Deployment", "Octopus.TerraformPlan", "terraform",
+            "Run terraform init and plan to preview infrastructure changes."),
+        ("Destroy Terraform Resources", "Octopus.TerraformDestroy", "terraform",
+            "Run terraform init and destroy to tear down infrastructure."),
+        ("Plan a Terraform Destroy", "Octopus.TerraformPlanDestroy", "terraform",
+            "Run terraform plan -destroy to preview resource teardown."),
+        ("Send an Email", "Octopus.Email", "other",
+            "Send an email notification via SMTP."),
+        ("Manage Nginx", "Octopus.Nginx", "nginx",
+            "Write an nginx config and reload/restart the service."),
+        ("Import a Certificate", "Octopus.Certificate.Import", "certificate",
+            "Import a certificate into the Windows certificate store."),
+        ("Transfer a VHD", "Octopus.Vhd", "other",
+            "Copy or expand a VHD/VHDX disk image."),
+        ("Run a Package Executable", "Kraken.RunPackageExecutable", "script",
+            "Run an executable or binary shipped inside the deployment package."),
+        ("Run a .NET Assembly Step", "Kraken.RunPackageAssembly", "script",
+            "Load a .NET DLL from the package and invoke its IKrakenStep implementation."),
+    ];
+
     public async Task SeedAsync(CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
@@ -55,6 +151,42 @@ public class BuiltInStepTemplateSeeder(
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
             logger.LogInformation(
                 "Seeded built-in step template '{Name}'.", KrakenScriptTemplateName);
+        }
+
+        var existingActionTypes = await db.StepTemplates
+            .Where(t => t.Source == StepTemplateSource.BuiltIn)
+            .Select(t => t.ActionType)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        var existingSet = new HashSet<string>(existingActionTypes, StringComparer.OrdinalIgnoreCase);
+
+        var seeded = 0;
+        foreach (var (name, actionType, category, description) in CatalogSteps)
+        {
+            if (existingSet.Contains(actionType))
+            {
+                continue;
+            }
+
+            db.StepTemplates.Add(new StepTemplate
+            {
+                Name = name,
+                ActionType = actionType,
+                Source = StepTemplateSource.BuiltIn,
+                Category = category,
+                Author = "KrakenDeploy",
+                Description = description,
+                Properties = [],
+                Parameters = [],
+            });
+            existingSet.Add(actionType);
+            seeded++;
+        }
+
+        if (seeded > 0)
+        {
+            await db.SaveChangesAsync(ct).ConfigureAwait(false);
+            logger.LogInformation("Seeded {Count} built-in step template(s) from catalog.", seeded);
         }
     }
 
