@@ -135,6 +135,42 @@ public class RunbookService(
     // Runbook step editing is scoped to the runbook's owning project (permission
     // RunbookEdit). Resolve filter-free so a foreign-Space id fails closed.
 
+    /// <summary>
+    /// WP3-b — refuses a manual-intervention step whose configuration would be unusable at
+    /// run time. Runbook runs pause at gates exactly as deployments do, but this guard
+    /// existed only on <c>ProcessService</c>, so the SAME step editor refused a bad gate on
+    /// a project process and silently accepted it on a runbook — which then hard-failed
+    /// when the run reached the gate, with somebody waiting on an approval.
+    /// <para>
+    /// Rules live in <see cref="ResponsibleTeamResolver"/> and are shared with the
+    /// orchestrator's gate, so save-time and run-time cannot drift. The Space is read as
+    /// <c>Guid?</c> so a missing runbook refuses rather than falling through as
+    /// <c>Guid.Empty</c>, which matches only system teams.
+    /// </para>
+    /// </summary>
+    private static async Task EnsureManualGateConfigAsync(
+        KrakenDbContext db,
+        Guid runbookId,
+        string stepType,
+        string name,
+        IReadOnlyDictionary<string, string> config,
+        CancellationToken ct)
+    {
+        // Skip the extra read entirely for the overwhelming majority of steps.
+        if (!ResponsibleTeamResolver.IsGateStep(stepType))
+        {
+            return;
+        }
+        var spaceId = await db.Runbooks.IgnoreQueryFilters()
+            .Where(r => r.Id == runbookId)
+            .Select(r => (Guid?)r.SpaceId)
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false);
+        await ResponsibleTeamResolver
+            .EnsureStepConfigValidAsync(db, spaceId, stepType, name, config, ct)
+            .ConfigureAwait(false);
+    }
+
     private async Task EnsureRunbookScopeAsync(
         KrakenDbContext db, CallerAuthorization caller, Guid runbookId, CancellationToken ct)
     {
@@ -340,6 +376,8 @@ public class RunbookService(
         ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         await EnsureRunbookScopeAsync(db, caller, runbookId, ct).ConfigureAwait(false);
+        await EnsureManualGateConfigAsync(db, runbookId, stepType, name, config, ct)
+            .ConfigureAwait(false);
         var process = await GetOrCreateProcessAsync(db, runbookId, ct).ConfigureAwait(false);
 
         var siblings = process.Steps.Where(s => s.ParentStepId == parentStepId).ToList();
@@ -405,6 +443,9 @@ public class RunbookService(
         }
 
         await EnsureStepScopeAsync(db, caller, step, ct).ConfigureAwait(false);
+        // The step carries its own SpaceId, so no runbook lookup is needed here.
+        await ResponsibleTeamResolver.EnsureStepConfigValidAsync(
+            db, step.SpaceId, step.StepType, name, config, ct).ConfigureAwait(false);
 
         step.Name        = name;
         step.PackageId   = packageId;

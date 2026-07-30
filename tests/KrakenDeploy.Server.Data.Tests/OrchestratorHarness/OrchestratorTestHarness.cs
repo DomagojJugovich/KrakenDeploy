@@ -262,6 +262,36 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         return list;
     }
 
+    /// <summary>
+    /// WP3-b — rewrites a target's roles. The engine reads these LIVE on every dispatch
+    /// (<c>StepAppliesToTarget</c>), not from the release snapshot, so this is how a test
+    /// makes a step stop applying to a task WHILE it is parked at an approval gate — the
+    /// realistic version of that being an operator retagging a machine during the window.
+    /// </summary>
+    public async Task SetTargetRolesAsync(Guid targetId, params string[] roles)
+    {
+        await using var db = _postgres.CreateContext();
+        var target = await db.DeploymentTargets.FirstAsync(t => t.Id == targetId);
+        target.Roles = [.. roles];
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// WP3-b — forces a gate's status directly, bypassing <c>InterruptionService</c>.
+    /// Used to construct states the service refuses to produce, so a guard can be tested
+    /// on its own terms rather than on the current writer's happening to be careful:
+    /// <c>Cancelled</c> on a still-<c>Paused</c> task, for instance.
+    /// </summary>
+    public async Task ForceInterruptionStatusAsync(Guid interruptionId, InterruptionStatus status)
+    {
+        await using var db = _postgres.CreateContext();
+        var row = await db.Interruptions.IgnoreQueryFilters()
+            .FirstAsync(i => i.Id == interruptionId);
+        row.Status = status;
+        row.ActedUtc = DateTimeOffset.UtcNow;
+        await db.SaveChangesAsync();
+    }
+
     /// <summary>F2 — flips a seeded target's "Allow parallel task execution" flag,
     /// which the plan builder stamps into every sub-plan dispatched to it.</summary>
     public async Task SetAllowParallelTaskExecutionAsync(Guid targetId, bool allow)
@@ -316,7 +346,10 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         Guid? parentTaskId = null,
         // F1 serialization-key tests: the tenant component of (project, env, tenant).
         // The tenant must already exist (composite FK) — seed via SeedTenantAsync.
-        Guid? tenantId = null)
+        Guid? tenantId = null,
+        // WP3 — a future ScheduledFor makes this a not-yet-due sibling, which is how the
+        // F1 pre-gate FIFO arm is reached (and how the resume deadlock was reproduced).
+        DateTimeOffset? scheduledFor = null)
     {
         ArgumentNullException.ThrowIfNull(targets);
         if (targets.Count == 0)
@@ -336,6 +369,7 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
             Status        = DeploymentStatus.Queued,
             FailureMode   = failureMode,
             ParentTaskId  = parentTaskId,
+            ScheduledFor  = scheduledFor,
         };
         db.Deployments.Add(deployment);
         await db.SaveChangesAsync();
@@ -589,6 +623,244 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
 
     // ── Query helpers ───────────────────────────────────────────────────────
 
+    /// <summary>
+    /// WP3 — polls until the task reaches <c>Paused</c> (parked at a
+    /// manual-intervention gate). Distinct from the terminal waiters: Paused is
+    /// deliberately NON-terminal, so <see cref="WaitForTerminalAsync"/> would spin
+    /// past it until the timeout.
+    /// </summary>
+    public async Task<ServerTask> WaitForPausedAsync(Guid taskId, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            await using (var db = _postgres.CreateContext())
+            {
+                var t = await db.ServerTasks.IgnoreQueryFilters()
+                    .FirstOrDefaultAsync(x => x.Id == taskId);
+                if (t is { Status: DeploymentStatus.Paused })
+                {
+                    return t;
+                }
+                if (t is not null && t.Status.IsTerminal())
+                {
+                    throw new InvalidOperationException(
+                        $"Task {taskId} went terminal ({t.Status}) instead of pausing.");
+                }
+            }
+            if (DateTime.UtcNow >= deadline)
+            {
+                throw new TimeoutException(
+                    $"Task {taskId} did not pause within {timeout}.");
+            }
+            await Task.Delay(50);
+        }
+    }
+
+    /// <summary>WP3 — the task's manual-intervention gates, oldest first.</summary>
+    public async Task<List<Interruption>> GetInterruptionsAsync(Guid taskId)
+    {
+        await using var db = _postgres.CreateContext();
+        return await db.Interruptions.IgnoreQueryFilters()
+            .Where(i => i.TaskId == taskId)
+            .OrderBy(i => i.StepIndex)
+            .ToListAsync();
+    }
+
+    /// <summary>
+    /// WP3 — resolves a gate directly in the DB, standing in for a human response
+    /// without the service's authorization layer (that is covered by its own tests).
+    /// <para>
+    /// Does NOT enqueue a wake-up — the caller decides how to resume, which matters:
+    /// <see cref="RunDeploymentAsync"/> bypasses the production gate path, so a test
+    /// that wants the REAL resume (ProbeGateAsync, the NodeTaskGate, the F1 pre-gate
+    /// skip) must go through <see cref="StartWorkerAsync"/> +
+    /// <see cref="EnqueueAsync"/>. An earlier version of this comment claimed it
+    /// enqueued, which is why no test exercised that path.
+    /// </para>
+    /// </summary>
+    public async Task ResolveInterruptionAsync(
+        Guid interruptionId, InterruptionStatus resolution, string? notes = null,
+        string actedBy = "test-user")
+    {
+        await using (var db = _postgres.CreateContext())
+        {
+            var i = await db.Interruptions.IgnoreQueryFilters()
+                .FirstAsync(x => x.Id == interruptionId);
+            i.Status         = resolution;
+            i.Notes          = notes;
+            i.ActedByDisplay = actedBy;
+            i.ActedUtc       = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+        }
+    }
+
+    /// <summary>
+    /// WP3 — seeds a SENSITIVE project variable, so a test can prove the gate's
+    /// instructions are redacted rather than storing the decrypted value.
+    /// </summary>
+    /// <summary>
+    /// WP3-b — stamps a variable into a RELEASE's variable snapshot, which is what a
+    /// deployment actually resolves against.
+    /// <para>
+    /// <see cref="SeedSensitiveVariableAsync"/> creates a project variable, but
+    /// <see cref="SeedReleaseAsync"/> seeds <c>VariableSnapshot = []</c> — so a project
+    /// variable alone NEVER reaches a deployment and every <c>#{Name}</c> in a step's config
+    /// stays literal. That silently made assertions of the form "the rendered text does not
+    /// contain the secret" pass for the wrong reason: nothing was rendered. Any test about
+    /// substitution or masking must use this.
+    /// </para>
+    /// </summary>
+    public async Task SnapshotVariableAsync(
+        Guid releaseId, Guid projectId, string name, string value, bool sensitive = false)
+    {
+        await using var scope = _services.GetRequiredService<IServiceScopeFactory>()
+            .CreateAsyncScope();
+        var vars = scope.ServiceProvider
+            .GetRequiredService<KrakenDeploy.Server.Data.Services.VariableService>();
+        var releases = scope.ServiceProvider
+            .GetRequiredService<KrakenDeploy.Server.Data.Services.ReleaseService>();
+
+        // Both halves through the REAL services. A hand-built VariableSnapshot is not a
+        // shortcut here: ReleaseService.ToSnapshot copies Variable.Value verbatim, and for a
+        // Sensitive variable that value is CIPHERTEXT (encrypted at rest by
+        // VariableService). Writing the plaintext into the snapshot makes the planner's
+        // decrypt throw and the deployment fail before it ever reaches the gate.
+        await vars.CreateVariableAsync(
+            projectId, name, value,
+            sensitive
+                ? KrakenDeploy.Server.Core.Domain.Variables.VariableType.Sensitive
+                : KrakenDeploy.Server.Core.Domain.Variables.VariableType.Text,
+            scope: new KrakenDeploy.Server.Core.Domain.Variables.VariableScope(),
+            caller: CallerAuthorization.System);
+        await releases.UpdateVariablesAsync(releaseId, CallerAuthorization.System);
+    }
+
+    public async Task SeedSensitiveVariableAsync(Guid projectId, string name, string value)
+    {
+        // Through the real service, so the value is encrypted exactly as production
+        // stores it and the project's variable set is created/resolved the same way.
+        await using var scope = _services.GetRequiredService<IServiceScopeFactory>()
+            .CreateAsyncScope();
+        var vars = scope.ServiceProvider
+            .GetRequiredService<KrakenDeploy.Server.Data.Services.VariableService>();
+        await vars.CreateVariableAsync(
+            projectId, name, value,
+            KrakenDeploy.Server.Core.Domain.Variables.VariableType.Sensitive,
+            scope: new KrakenDeploy.Server.Core.Domain.Variables.VariableScope(),
+            caller: CallerAuthorization.System);
+    }
+
+    /// <summary>WP3-a — seeds an ordinary named team, Space-scoped, so a test can prove
+    /// an approver list resolves (and that a team of ANOTHER Space does not).</summary>
+    public async Task<Guid> SeedTeamAsync(string name, Guid spaceId)
+    {
+        await using var db = _postgres.CreateContext();
+        var team = new KrakenDeploy.Server.Core.Domain.Security.Team
+        {
+            SpaceId = spaceId,
+            Name    = name,
+        };
+        db.Add(team);
+        await db.SaveChangesAsync();
+        return team.Id;
+    }
+
+    /// <summary>WP3 — seeds an "Everyone" team, which every authenticated user belongs
+    /// to and which the gate must therefore REFUSE as a vacuous restriction.</summary>
+    public async Task<Guid> SeedEveryoneTeamAsync()
+    {
+        await using var db = _postgres.CreateContext();
+        var team = new KrakenDeploy.Server.Core.Domain.Security.Team
+        {
+            SpaceId        = null,
+            Name           = $"Everyone-{Guid.NewGuid():N}"[..20],
+            IsEveryoneTeam = true,
+        };
+        db.Add(team);
+        await db.SaveChangesAsync();
+        return team.Id;
+    }
+
+    /// <summary>WP3 — seeds an ACTIVE deployment freeze over (project, environment), to
+    /// prove a resume is exempt from it.</summary>
+    /// <summary>
+    /// Creates a currently-active freeze covering one project + environment.
+    /// <para>
+    /// WP3-b — goes through <c>DeploymentFreezeService</c> rather than inserting the row
+    /// directly, because the service keeps a 30 s per-Space TTL cache that only its own
+    /// CRUD invalidates. Inserting directly left the cache holding the "no freezes" answer
+    /// the FIRST dispatch had already populated, so any test that seeded a freeze and then
+    /// re-dispatched within 30 s exercised a stale cache instead of the freeze gate — and
+    /// passed whichever way the gate behaved.
+    /// </para>
+    /// </summary>
+    public async Task SeedFreezeAsync(Guid projectId, Guid environmentId)
+    {
+        await using var scope = _services.GetRequiredService<IServiceScopeFactory>()
+            .CreateAsyncScope();
+        var freezes = scope.ServiceProvider
+            .GetRequiredService<KrakenDeploy.Server.Data.Services.DeploymentFreezeService>();
+        await freezes.CreateAsync(new KrakenDeploy.Server.Core.Domain.Freezes.DeploymentFreeze
+        {
+            SpaceId        = WellKnown.DefaultSpaceId,
+            Name           = $"freeze-{Guid.NewGuid():N}"[..14],
+            StartUtc       = DateTimeOffset.UtcNow.AddMinutes(-5),
+            EndUtc         = DateTimeOffset.UtcNow.AddHours(4),
+            ProjectIds     = [projectId],
+            EnvironmentIds = [environmentId],
+        });
+    }
+
+    /// <summary>
+    /// WP3 — resolves a gate and resumes through the REAL dispatch path: enqueue onto
+    /// the shared channel so the started worker runs
+    /// <c>GateThenDispatchCoreAsync</c> → <c>ProbeGateAsync</c> → <c>NodeTaskGate</c> →
+    /// <c>DispatchCoreAsync</c>, exactly as <c>InterruptionService.SignalResumeAsync</c>
+    /// does in production. <see cref="RunDeploymentAsync"/> skips all of that, which is
+    /// why the pre-gate deadlock and the duplicate-wake-up hard-fail were invisible.
+    /// Requires <see cref="StartWorkerAsync"/>.
+    /// </summary>
+    public async Task ResolveAndSignalAsync(
+        Guid interruptionId, InterruptionStatus resolution, string? notes = null,
+        string actedBy = "test-user")
+    {
+        Guid taskId;
+        await using (var db = _postgres.CreateContext())
+        {
+            var i = await db.Interruptions.IgnoreQueryFilters()
+                .FirstAsync(x => x.Id == interruptionId);
+            i.Status         = resolution;
+            i.Notes          = notes;
+            i.ActedByDisplay = actedBy;
+            i.ActedUtc       = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+            taskId = i.TaskId;
+        }
+        await EnqueueAsync(taskId);
+    }
+
+    /// <summary>WP3 — the task's output variables, to prove the pause checkpoint really
+    /// carried them across a resume.</summary>
+    public async Task<List<TaskOutputVariable>> GetOutputVariablesAsync(Guid taskId)
+    {
+        await using var db = _postgres.CreateContext();
+        return await db.TaskOutputVariables.IgnoreQueryFilters()
+            .Where(v => v.TaskId == taskId)
+            .ToListAsync();
+    }
+
+    /// <summary>WP3 — the raw encrypted checkpoint, so a test can assert it is cleared
+    /// (or corrupt it deliberately).</summary>
+    public async Task<string?> GetPauseCheckpointAsync(Guid taskId)
+    {
+        await using var db = _postgres.CreateContext();
+        return await db.ServerTasks.IgnoreQueryFilters()
+            .Where(t => t.Id == taskId)
+            .Select(t => t.PauseCheckpointEncrypted)
+            .FirstAsync();
+    }
+
     public async Task<Deployment> GetDeploymentAsync(Guid id)
     {
         await using var db = _postgres.CreateContext();
@@ -673,13 +945,32 @@ public sealed class StepBuilder
     // D3 — control-flow flags are typed columns now (promoted from jsonb Config).
     // RunOnServer routes a leaf step server-side; MaxParallelism/ForEach* live on
     // a Kraken.StepGroup. ToSnapshot maps them onto the typed StepSnapshot columns.
+    /// <summary>
+    /// WP3-b — the step's role filter. Empty (the default) means "applies to every
+    /// target", which is why most tests can ignore it. Set it to exercise
+    /// <c>StepAppliesToTarget</c>, which reads the target's LIVE roles rather than the
+    /// frozen snapshot — the mechanism by which a step can stop applying between a pause
+    /// and its resume.
+    /// </summary>
+    public List<string>? TargetRoles { get; init; }
+
     public bool RunOnServer { get; init; }
     public int? MaxParallelism { get; init; }
     public string? ForEachCollection { get; init; }
     public bool ForEachParallel { get; init; }
 
-    public static StepBuilder Script(string name, bool required = true)
-        => new() { Name = name, StepType = "Octopus.Script", Required = required };
+    public static StepBuilder Script(
+        string name,
+        bool required = true,
+        KrakenDeploy.Execution.StepCondition condition
+            = KrakenDeploy.Execution.StepCondition.Success)
+        => new()
+        {
+            Name      = name,
+            StepType  = "Octopus.Script",
+            Required  = required,
+            Condition = condition,
+        };
 
     /// <summary>A "Run on Server" script step (typed <c>RunOnServer = true</c>,
     /// D3 — promoted from the <c>Octopus.Action.RunOnServer</c> Config key). The
@@ -717,6 +1008,53 @@ public sealed class StepBuilder
                     = childProjectId.ToString(),
             },
         };
+
+    /// <summary>
+    /// WP3 — a manual-intervention gate. <c>Octopus.Manual</c> is in
+    /// <c>WavePartitioner.ServerOnlyStepTypes</c>, so it is intrinsically server-side
+    /// (no <c>RunOnServer</c> flag needed) and the whole task pauses before its wave.
+    /// </summary>
+    public static StepBuilder Manual(
+        string name,
+        bool required = true,
+        string? instructions = "Approve this change.",
+        string? responsibleTeamIds = null,
+        double? timeoutHours = null,
+        KrakenDeploy.Execution.StepCondition condition
+            = KrakenDeploy.Execution.StepCondition.Success,
+        // Deliberately settable so a test can prove the CASE-INSENSITIVE read: a gate
+        // whose approver key is typed in the wrong case must not silently widen to
+        // "anyone".
+        string? responsibleTeamIdsKey = null,
+        // WP3-b — role filter, so a test can make the gate stop applying mid-pause.
+        List<string>? targetRoles = null)
+    {
+        var config = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (instructions is not null)
+        {
+            config[KrakenDeploy.Contracts.Steps.ManualInterventionConfigKeys.Instructions] = instructions;
+        }
+        if (responsibleTeamIds is not null)
+        {
+            config[responsibleTeamIdsKey
+                ?? KrakenDeploy.Contracts.Steps.ManualInterventionConfigKeys.ResponsibleTeamIds]
+                = responsibleTeamIds;
+        }
+        if (timeoutHours is { } hours)
+        {
+            config[KrakenDeploy.Contracts.Steps.ManualInterventionConfigKeys.TimeoutHours]
+                = hours.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        return new StepBuilder
+        {
+            Name        = name,
+            StepType    = KrakenDeploy.Contracts.Steps.ManualInterventionConfigKeys.StepType,
+            Required    = required,
+            Config      = config,
+            Condition   = condition,
+            TargetRoles = targetRoles,
+        };
+    }
 
     /// <summary>A Step Group. <paramref name="maxParallelism"/> flows to the
     /// typed column verbatim — pass a non-positive value to exercise the D3
@@ -760,6 +1098,7 @@ public sealed class StepBuilder
         TimeoutSeconds     = TimeoutSeconds,
         MaxRetries         = MaxRetries,
         Condition          = Condition,
+        TargetRoles        = TargetRoles ?? [],
         StepPackageName    = StepPackageName,
         StepPackageVersion = StepPackageVersion,
         // D3 — map the typed control-flow flags onto the snapshot columns the

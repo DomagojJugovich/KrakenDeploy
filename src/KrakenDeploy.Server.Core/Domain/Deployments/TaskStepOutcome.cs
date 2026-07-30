@@ -80,4 +80,19 @@ public enum StepOutcomeKind
 
     /// <summary>Step was killed for exceeding its configured timeout.</summary>
     TimedOut = 3,
+
+    /// <summary>WP3 — a manual-intervention gate an authorized user APPROVED; the
+    /// task resumed from the checkpoint and continued with the next wave.</summary>
+    ManualInterventionApproved = 4,
+
+    /// <summary>WP3 — a manual-intervention gate an authorized user REJECTED. The
+    /// task fails, but cleanly: <c>Condition=Failure</c>/<c>Always</c> cleanup steps
+    /// in later waves still run per the task's <see cref="DeploymentFailureMode"/>.</summary>
+    ManualInterventionRejected = 5,
+
+    /// <summary>WP3 — a manual-intervention gate nobody answered before its
+    /// auto-fail timeout elapsed. Treated exactly like
+    /// <see cref="ManualInterventionRejected"/>, with an audit entry noting the
+    /// timeout rather than an acting user.</summary>
+    ManualInterventionTimedOut = 6,
 }

@@ -175,6 +175,10 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ProcessService>();
         services.AddScoped<ReleaseService>();
         services.AddScoped<DeploymentService>();
+        // WP3 — manual-intervention gates. Scoped like every other mutating service;
+        // its Channel<TenantWorkItem> dependency is the same singleton the dispatch
+        // path already uses, so an approval enqueues onto the one task channel.
+        services.AddScoped<InterruptionService>();
         services.AddScoped<DashboardService>();
         services.AddScoped<PivotViewService>();
         services.AddScoped<ProjectDashboardViewService>();
@@ -351,6 +355,7 @@ public static class ServiceCollectionExtensions
         services.AddTransient<AgentLastSeenOfflineJob>();
         services.AddTransient<RegistrationTokenExpiryJob>();
         services.AddTransient<ScheduledDeploymentDispatchJob>();
+        services.AddTransient<InterruptionTimeoutJob>();
         services.AddTransient<StepTemplateCatalogPollJob>();
         services.AddTransient<StepPackageCatalogPollJob>();
         services.AddTransient<BackupJob>();

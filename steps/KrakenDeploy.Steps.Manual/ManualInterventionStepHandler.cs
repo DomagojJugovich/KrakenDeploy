@@ -4,61 +4,48 @@ using Octostache;
 namespace KrakenDeploy.Steps.Manual;
 
 /// <summary>
-/// Step config keys for an <c>Octopus.Manual</c> step, mirroring Octopus's
-/// <c>Octopus.Action.Manual.*</c> namespace exactly. Sourced from
-/// <a href="https://octopus.com/docs/projects/built-in-step-templates/manual-intervention-and-approvals">Octopus public docs</a>
-/// (clean-room — not from Calamari source; see docs/architecture.md#step-execution-model).
+/// Step config keys for an <c>Octopus.Manual</c> step. The canonical definitions
+/// live in <see cref="ManualInterventionConfigKeys"/> (shared with the server
+/// orchestrator and the step-schema UI); these aliases keep the step package's
+/// long-standing public surface stable.
 /// </summary>
 public static class OctopusManualConfigKeys
 {
-    private const string Prefix = "Octopus.Action.Manual.";
+    /// <inheritdoc cref="ManualInterventionConfigKeys.Instructions"/>
+    public const string Instructions = ManualInterventionConfigKeys.Instructions;
 
-    /// <summary>
-    /// Required (in Octopus UI). Markdown-formatted instructions shown to the
-    /// human approver. Octostache <c>#{...}</c> placeholders are resolved at
-    /// handler time so messages can reference deployment / environment / project
-    /// variables.
-    /// </summary>
-    public const string Instructions = Prefix + "Instructions";
+    /// <inheritdoc cref="ManualInterventionConfigKeys.ResponsibleTeamIds"/>
+    public const string ResponsibleTeamIds = ManualInterventionConfigKeys.ResponsibleTeamIds;
 
-    /// <summary>
-    /// Optional. Identifiers of the team(s) authorised to resolve the
-    /// intervention. Octopus's serialiser uses commas or semicolons; the
-    /// handler tolerates both on read. If empty, "anybody with permission
-    /// to deploy the project can perform the manual intervention" (per the
-    /// Octopus docs).
-    /// </summary>
-    public const string ResponsibleTeamIds = Prefix + "ResponsibleTeamIds";
+    /// <inheritdoc cref="ManualInterventionConfigKeys.BlockConcurrentDeployments"/>
+    public const string BlockConcurrentDeployments =
+        ManualInterventionConfigKeys.BlockConcurrentDeployments;
 
-    /// <summary>
-    /// Optional. When <c>True</c>, Octopus blocks other deployments of the
-    /// same project from progressing past this step until the intervention
-    /// is resolved. Kraken runs unattended and auto-approves, so this is
-    /// informational only — surfaced in the deploy log for audit.
-    /// </summary>
-    public const string BlockConcurrentDeployments = Prefix + "BlockConcurrentDeployments";
+    /// <inheritdoc cref="ManualInterventionConfigKeys.TimeoutHours"/>
+    public const string TimeoutHours = ManualInterventionConfigKeys.TimeoutHours;
 
-    /// <summary>
-    /// Legacy Kraken key used by an earlier internal step-template before
-    /// alignment with the Octopus contract. Honoured on read for back-compat
-    /// with any process already authored against the old shape.
-    /// </summary>
-    public const string LegacyInstructionsKey = "Instructions";
+    /// <inheritdoc cref="ManualInterventionConfigKeys.LegacyInstructionsKey"/>
+    public const string LegacyInstructionsKey = ManualInterventionConfigKeys.LegacyInstructionsKey;
 }
 
 /// <summary>
-/// Handles <c>Octopus.Manual</c> step type — the canonical step-package
-/// implementation (Phase D-8). Identical behaviour to the legacy in-DI
-/// <c>KrakenDeploy.Agent.Deployment.StepHandlers.ManualInterventionStepHandler</c>;
-/// once Phase D-8 wraps and every built-in is package-backed, the in-DI
-/// version is retired.
+/// Handles <c>Octopus.Manual</c> for runners that have NO server to ask.
 /// <para>
-/// In a fully automated pipeline, manual intervention steps are automatically
-/// approved after logging the step instructions, the responsible teams, and
-/// the BlockConcurrentDeployments flag (informational only — Kraken doesn't
-/// gate other deployments). This ensures that step templates imported from
-/// the Octopus Library or a real Octopus deploymentprocess that include a
-/// manual approval gate do not block an unattended deployment.
+/// <strong>This is not the approval gate.</strong> Since WP3, an online task pauses
+/// at a manual-intervention step and waits for a real human decision — that flow is
+/// entirely server-side (<c>Octopus.Manual</c> is in
+/// <c>WavePartitioner.ServerOnlyStepTypes</c>, so the step never reaches an agent
+/// online). Offline drop bundles are REFUSED at bundle-generation time when the
+/// process contains one (<c>OfflineDropBundleBuilder</c>), because an air-gapped box
+/// cannot ask anybody either.
+/// </para>
+/// <para>
+/// So this handler is only reachable by a runner executing a hand-built plan that
+/// bypassed both gates. It cannot block — there is no approver to reach — so it
+/// proceeds, but it logs a WARNING that the change-control gate was NOT enforced.
+/// That line is the audit trail's only signal that an approval step was passed
+/// without an approval, which for a state-sector deployment is exactly what a
+/// reviewer needs to see.
 /// </para>
 /// <para>
 /// Property contract is mirrored verbatim from
@@ -69,7 +56,7 @@ public static class OctopusManualConfigKeys
 public sealed class ManualInterventionStepHandler : IStepHandler
 {
     public bool CanHandle(string stepType)
-        => stepType.Equals("Octopus.Manual", StringComparison.OrdinalIgnoreCase);
+        => stepType.Equals(ManualInterventionConfigKeys.StepType, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Manual intervention steps do not require a package — they are purely informational.
@@ -80,11 +67,11 @@ public sealed class ManualInterventionStepHandler : IStepHandler
     {
         // Octopus contract first, legacy Kraken key second.
         var rawInstructions = context.Step.Config.GetValueOrDefault(
-            OctopusManualConfigKeys.Instructions);
+            ManualInterventionConfigKeys.Instructions);
         if (string.IsNullOrWhiteSpace(rawInstructions))
         {
             rawInstructions = context.Step.Config.GetValueOrDefault(
-                OctopusManualConfigKeys.LegacyInstructionsKey);
+                ManualInterventionConfigKeys.LegacyInstructionsKey);
         }
 
         // Resolve #{...} placeholders so messages referencing project /
@@ -106,9 +93,10 @@ public sealed class ManualInterventionStepHandler : IStepHandler
         }
 
         // Surface team scope + block-concurrent flag for audit-log clarity even
-        // though Kraken's auto-approve path ignores them at runtime.
-        var teamIds = ParseTeamIds(context.Step.Config.GetValueOrDefault(
-            OctopusManualConfigKeys.ResponsibleTeamIds));
+        // though this runner has no approver to route them to.
+        var teamIds = ManualInterventionConfigKeys.ParseTeamTokens(
+            context.Step.Config.GetValueOrDefault(
+                ManualInterventionConfigKeys.ResponsibleTeamIds));
         if (teamIds.Count > 0)
         {
             await context.LogAsync("info",
@@ -116,39 +104,29 @@ public sealed class ManualInterventionStepHandler : IStepHandler
                 .ConfigureAwait(false);
         }
 
-        if (ParseBool(context.Step.Config.GetValueOrDefault(
-                OctopusManualConfigKeys.BlockConcurrentDeployments)))
+        if (ManualInterventionConfigKeys.ParseBool(context.Step.Config.GetValueOrDefault(
+                ManualInterventionConfigKeys.BlockConcurrentDeployments)))
         {
             await context.LogAsync("info",
-                "Source process requested BlockConcurrentDeployments=True " +
-                "— Kraken runs unattended and does not gate concurrent deployments. "
-                + "Honoured by attended-mode Octopus only.")
+                "Source process requested BlockConcurrentDeployments=True — Kraken " +
+                "serializes deployments per (project, environment, tenant) " +
+                "unconditionally, so this flag adds nothing.")
                 .ConfigureAwait(false);
         }
 
-        await context.LogAsync("info",
-            "Step auto-approved (unattended deployment mode).").ConfigureAwait(false);
+        // The load-bearing line: an approval gate was passed with no approval.
+        await context.LogAsync("warning",
+            "APPROVAL NOT ENFORCED: this runner has no server to ask, so the manual " +
+            "intervention was passed without a human decision. Online tasks pause at " +
+            "this step and require an approver; offline drop bundles containing it are " +
+            "refused at generation time. If you are seeing this line in a production " +
+            "deployment log, the change-control gate did not run.")
+            .ConfigureAwait(false);
 
         return true;
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
-
-    private static List<string> ParseTeamIds(string? raw)
-    {
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return [];
-        }
-        // Octopus's serialiser uses commas / semicolons interchangeably depending
-        // on the surface (UI vs API); tolerate either on read.
-        return [.. raw.Split(
-            [',', ';'],
-            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
-    }
-
-    private static bool ParseBool(string? value)
-        => value is not null && value.Equals("True", StringComparison.OrdinalIgnoreCase);
 
     private static VariableDictionary BuildOctostache(IReadOnlyDictionary<string, string> variables)
     {

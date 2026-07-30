@@ -679,29 +679,35 @@ internal sealed class OctopusJsonConfigurationVariablesStepSchemaShape
 // ── Octopus.Manual ─────────────────────────────────────────────────────────
 
 /// <summary>
-/// Schema shape for manual-intervention steps. Kraken auto-approves in
-/// unattended mode but preserves the responsible-team + block-concurrent
-/// metadata for audit + round-trip back to Octopus.
+/// Schema shape for manual-intervention steps. WP3 made this a REAL gate: the task
+/// pauses before this step's wave runs and waits for a human to approve or reject.
+/// The help text below is operator-facing and load-bearing — it previously told
+/// operators Kraken auto-approves, which is no longer true.
 /// </summary>
 [StepUiSchemaRoot(Id = "octopus.manual", Title = "Manual intervention",
     Version = "1.0.0",
-    Description = "Pause for human approval. Kraken auto-approves unattended; the fields below drive Octopus's attended mode and the audit log.")]
+    Description = "Pause the task and wait for a human to approve or reject. The whole task pauses before this step's wave runs — no target is touched until somebody decides.")]
 internal sealed class OctopusManualStepSchemaShape
 {
-    [StepUiField(Key = "Octopus.Action.Manual.Instructions",
+    [StepUiField(Key = ManualInterventionConfigKeys.Instructions,
         Widget = StepUiWidgets.Textarea, Label = "Instructions (markdown)",
         Required = true,
-        HelpText = "Shown to the approver. Octostache #{...} placeholders are evaluated against the deployment variables.")]
+        HelpText = "Shown to the approver. Octostache #{...} placeholders are resolved when the task pauses, so the approver reads real values rather than the template.")]
     public string Instructions { get; set; } = "";
 
-    [StepUiField(Key = "Octopus.Action.Manual.ResponsibleTeamIds",
-        Widget = StepUiWidgets.Text, Label = "Responsible team ids",
-        HelpText = "Comma- or semicolon-separated. Optional in Kraken (unattended mode bypasses team scoping).")]
+    [StepUiField(Key = ManualInterventionConfigKeys.ResponsibleTeamIds,
+        Widget = StepUiWidgets.ResponsibleTeams, Label = "Responsible teams",
+        HelpText = "Leave EMPTY to let anyone in this Space holding the approve permission respond. Selections are stored as team ids, so a process imported from Octopus carries Octopus ids that resolve to nothing: the import reports them as a warning, saving the step here is refused until they are re-pointed at real teams, and a deployment that reaches the gate anyway FAILS rather than proceeding — because ignoring an unresolvable list would widen the approver set to everyone instead of narrowing it.")]
     public string ResponsibleTeamIds { get; set; } = "";
 
-    [StepUiField(Key = "Octopus.Action.Manual.BlockConcurrentDeployments",
+    [StepUiField(Key = ManualInterventionConfigKeys.TimeoutHours,
+        Widget = StepUiWidgets.Text, Label = "Auto-fail after (hours)",
+        HelpText = "Blank uses the server default (72 h). 0 waits indefinitely. On expiry the task fails exactly as if rejected, and its Failure/Always cleanup steps still run.")]
+    public string TimeoutHours { get; set; } = "";
+
+    [StepUiField(Key = ManualInterventionConfigKeys.BlockConcurrentDeployments,
         Widget = StepUiWidgets.Checkbox, Label = "Block concurrent deployments",
         Default = "false",
-        HelpText = "Honoured by Octopus attended mode only. Kraken always runs unattended and does not gate concurrent deployments.")]
+        HelpText = "Informational only. Kraken already serializes deployments per project + environment + tenant unconditionally, which is stronger — and a paused task keeps holding that slot until it is answered or times out.")]
     public bool BlockConcurrentDeployments { get; set; }
 }

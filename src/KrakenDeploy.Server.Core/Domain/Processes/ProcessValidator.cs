@@ -36,9 +36,19 @@ public static class ProcessValidator
     /// </summary>
     public sealed record ValidationError(Guid StepId, ValidationErrorCode Code, string Message);
 
-    public sealed record Result(IReadOnlyList<ValidationError> Errors)
+    public sealed record Result(
+        IReadOnlyList<ValidationError> Errors,
+        // WP3-b — advisory notes that do NOT block a save. The pure validator never
+        // produces any (it has no DB access); ProcessService appends the ones that need a
+        // lookup, such as "this DeployRelease step's child project contains a
+        // manual-intervention gate, so the parent will wait for a human". Separate from
+        // Errors because an operator must still be able to save a process that is merely
+        // worth a second look.
+        IReadOnlyList<string>? Warnings = null)
     {
         public bool IsValid => Errors.Count == 0;
+
+        public IReadOnlyList<string> WarningsOrEmpty => Warnings ?? [];
 
         public static Result Ok { get; } = new([]);
     }

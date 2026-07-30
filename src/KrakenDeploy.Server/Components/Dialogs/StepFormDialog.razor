@@ -13,6 +13,9 @@
 @inject StepPackageService StepPackageSvc
 @inject StepPackageResolver StepPackageRes
 @inject NotificationService Notifications
+@* WP3-b — only for the post-save gated-child advisory; step persistence still goes
+   through Host (IStepEditingHost), so this does not couple the dialog to processes. *@
+@inject ProcessService ProcessSvc
 @inject FeatureFlagService FeatureFlags
 @inject VariableService VariableSvc
 @inject KrakenDeploy.Server.Data.Services.Ai.SpaceAiSettingsService AiSettingsSvc
@@ -1541,6 +1544,24 @@
                     caller: await Guard.CurrentCallerAsync(),
                     ct: default);
             }
+
+            // WP3-b — advisory, raised AFTER the save so it can never block one: a
+            // DeployRelease step whose child project contains a manual-intervention gate
+            // makes this deployment wait on a human, and nothing else on the parent's
+            // process says so. The person who queues the parent is frequently not the
+            // person who can approve the child.
+            var gatedChild = await ProcessSvc.DescribeGatedChildAsync(_name, _stepType, config);
+            if (gatedChild is not null)
+            {
+                Notifications.Notify(new NotificationMessage
+                {
+                    Severity = NotificationSeverity.Info,
+                    Summary  = "This step waits for an approval",
+                    Detail   = gatedChild,
+                    Duration = 12_000,
+                });
+            }
+
             Dialog.Close(true);
         }
         catch (ProcessValidationException ex)

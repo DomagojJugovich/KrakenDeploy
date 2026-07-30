@@ -251,6 +251,10 @@ public sealed class AdhocMcpToolTests(PostgresFixture postgres)
         public Task<IReadOnlySet<Guid>> GetAccessibleSpaceIdsAsync(
             ClaimsPrincipal user, CancellationToken ct = default)
             => Task.FromResult<IReadOnlySet<Guid>>(new HashSet<Guid>());
+
+    public Task<IReadOnlySet<Guid>> GetUserTeamIdsAsync(
+        ClaimsPrincipal user, CancellationToken ct = default)
+        => Task.FromResult<IReadOnlySet<Guid>>(new HashSet<Guid>());
     }
 
     private sealed class SequencedKrakenAi(params object?[] responses) : IKrakenAi

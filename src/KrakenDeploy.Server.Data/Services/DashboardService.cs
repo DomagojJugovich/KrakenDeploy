@@ -66,8 +66,13 @@ public sealed class DashboardService(
             .ConfigureAwait(false);
 
         var attention = await WithNav(db)
+            // WP3 — a deployment awaiting approval is the single most actionable item
+            // the system can surface: it blocks its whole project+environment and hard
+            // fails at its timeout. It belongs on the landing page next to Failed, not
+            // only on grids the operator has to know to visit.
             .Where(d => d.Status == DeploymentStatus.Failed
-                     || d.Status == DeploymentStatus.PendingOfflineResult)
+                     || d.Status == DeploymentStatus.PendingOfflineResult
+                     || d.Status == DeploymentStatus.Paused)
             .OrderByDescending(d => d.CreatedUtc)
             .Take(5)
             .ToListAsync(ct)

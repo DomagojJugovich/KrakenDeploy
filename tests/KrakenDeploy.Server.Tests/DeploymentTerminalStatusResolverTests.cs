@@ -21,6 +21,33 @@ public sealed class DeploymentTerminalStatusResolverTests
     [Theory]
     [InlineData(DeploymentFailureMode.BestEffort)]
     [InlineData(DeploymentFailureMode.Atomic)]
+    public void A_rejected_intervention_is_Failed_in_every_mode(DeploymentFailureMode mode)
+        // WP3 — a human refused the change, so however cleanly the cleanup waves ran
+        // afterwards the verdict is Failed. hasFailed alone resolves
+        // SucceededWithWarnings, which is exactly the wrong verdict for a refusal, so
+        // this is a separate input rather than a fold into the existing flag.
+        => DeploymentTerminalStatusResolver.Resolve(
+                mode, hasFailed: true, requiredStepDropped: false,
+                droppedTargetCount: 0, softFailedCount: 0,
+                interventionRejected: true)
+            .Should().Be(DeploymentStatus.Failed);
+
+    [Theory]
+    [InlineData(DeploymentFailureMode.BestEffort)]
+    [InlineData(DeploymentFailureMode.Atomic)]
+    public void A_rejected_intervention_outranks_an_otherwise_clean_run(DeploymentFailureMode mode)
+        // Guards the ordering: the rejection arm must sit ABOVE the "no degradation ->
+        // Succeeded" fall-through, or a rejection with no other failure signal would
+        // report success.
+        => DeploymentTerminalStatusResolver.Resolve(
+                mode, hasFailed: false, requiredStepDropped: false,
+                droppedTargetCount: 0, softFailedCount: 0,
+                interventionRejected: true)
+            .Should().Be(DeploymentStatus.Failed);
+
+    [Theory]
+    [InlineData(DeploymentFailureMode.BestEffort)]
+    [InlineData(DeploymentFailureMode.Atomic)]
     public void Clean_run_is_Succeeded(DeploymentFailureMode mode)
         => Resolve(mode, hasFailed: false, requiredDropped: false,
                    droppedCount: 0, softFailedCount: 0)

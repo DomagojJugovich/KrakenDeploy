@@ -11,7 +11,8 @@ namespace KrakenDeploy.Steps.Manual.Tests;
 /// Two surfaces under test (Phase D-8):
 /// <list type="bullet">
 ///   <item>The handler class itself — <c>CanHandle</c>, <c>RequiresPackage</c>,
-///         the auto-approve path with various property bags.</item>
+///         the no-server fallback path with various property bags (WP3: the real
+///         gate is server-side; this handler only warns).</item>
 ///   <item>The produced <c>octopus.manual-1.0.0.kdeploy-step</c> archive —
 ///         layout matches what the loader + server-side validator expect.</item>
 /// </list>
@@ -40,8 +41,19 @@ public sealed class ManualStepPackageTests
             "manual intervention is purely informational — no package download.");
 
     [Fact]
-    public async Task HandleAsync_auto_approves_with_a_log_line()
+    public async Task HandleAsync_proceeds_but_warns_that_approval_was_not_enforced()
     {
+        // WP3 changed what this handler MEANS. It is no longer the approval flow —
+        // online tasks pause server-side (Octopus.Manual is in
+        // WavePartitioner.ServerOnlyStepTypes, so it never reaches an agent) and
+        // offline drop bundles containing one are refused at generation time. This
+        // handler is only reachable by a runner executing a hand-built plan that
+        // bypassed both gates, where there is no approver to reach.
+        //
+        // So it still proceeds — it cannot block — but the log line must be a WARNING
+        // that the change-control gate did not run, not a reassuring "auto-approved".
+        // That line is the only signal in a deployment log that an approval step was
+        // passed without an approval.
         var handler = new ManualInterventionStepHandler();
         var logs    = new List<(string Level, string Message)>();
 
@@ -54,9 +66,13 @@ public sealed class ManualStepPackageTests
 
         var success = await handler.HandleAsync(context, CancellationToken.None);
 
-        success.Should().BeTrue();
+        success.Should().BeTrue("the handler cannot block — there is nobody to ask");
         logs.Should().Contain(l => l.Message.Contains("Please verify backups completed."));
-        logs.Should().Contain(l => l.Message.Contains("auto-approved"));
+
+        var warning = logs.Should().ContainSingle(l => l.Level == "warning").Subject;
+        warning.Message.Should().Contain("APPROVAL NOT ENFORCED");
+        logs.Should().NotContain(l => l.Message.Contains("auto-approved"),
+            "'auto-approved' reads as a legitimate approval in an audit log");
     }
 
     [Fact]

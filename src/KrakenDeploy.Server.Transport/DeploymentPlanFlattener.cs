@@ -514,18 +514,24 @@ public static class DeploymentPlanFlattener
     }
 
     /// <summary>
-    /// Resolves a config key with optional default. Case-insensitive lookup.
+    /// Resolves a config key with an optional default, case-INSENSITIVELY.
+    /// <para>
+    /// WP3-b — the doc previously claimed case-insensitivity the code did not deliver: a
+    /// plain <c>TryGetValue</c> over a jsonb-deserialised dictionary uses the DEFAULT
+    /// ordinal comparer. A mis-cased <c>ForEach</c> iteration- or index-variable name
+    /// therefore fell back silently to <c>"item"</c>/<c>"index"</c>, and a step's
+    /// <c>#{MyVar}</c> references resolved to nothing with no warning anywhere. Same
+    /// fail-quietly class as the manual-intervention approver key, which is why
+    /// <c>ManualInterventionConfigKeys.Read</c> exists — so this delegates to it
+    /// rather than keeping a second implementation.
+    /// </para>
     /// </summary>
     private static string? ResolveConfigKey(
         Dictionary<string, string> config,
         string key,
         string? @default = null)
-    {
-        if (config.TryGetValue(key, out var value)
-            && !string.IsNullOrWhiteSpace(value))
-        {
-            return value;
-        }
-        return @default;
-    }
+        => KrakenDeploy.Contracts.Steps.ManualInterventionConfigKeys.Read(config, key) is { } value
+           && !string.IsNullOrWhiteSpace(value)
+            ? value
+            : @default;
 }

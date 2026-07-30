@@ -1,0 +1,226 @@
+@using KrakenDeploy.Server.Core.Domain.Deployments
+@using KrakenDeploy.Server.Components.Dialogs
+
+@inject InterruptionService Interruptions
+@inject DialogService Dialog
+@inject UiActionGuard Guard
+
+@*
+    WP3 — the manual-intervention surface on a task detail page, shared by
+    DeploymentDetail and RunbookRunDetail (post-D1 both kinds run the same
+    orchestrator, so both can pause).
+
+    Two things live here:
+      • the PENDING gate — instructions + Approve/Reject, the operator's call to action;
+      • the RESOLVED history — who decided what, and why. That history is the
+        change-control trail a state-sector reviewer asks for, so it stays visible long
+        after the task is terminal, not only while paused.
+
+    Read is gated on InterruptionView; responding additionally requires
+    InterruptionViewSubmitResponsible AND membership of the step's responsible team(s).
+    The team check cannot be a <RequirePermission> — it is per-step data — so the
+    service reports it via CanRespondAsync and enforces it on the mutation.
+*@
+
+@if (_interruptions.Count > 0)
+{
+    @if (_pending is { } pending)
+    {
+        <RadzenCard class="rz-mb-4" style="border-left:4px solid var(--rz-warning)">
+            <RadzenStack Gap="0.75rem">
+                <RadzenStack Orientation="Orientation.Horizontal" AlignItems="AlignItems.Center" Gap="0.5rem">
+                    <RadzenIcon Icon="pause_circle" />
+                    <RadzenText TextStyle="TextStyle.H6" class="rz-mb-0">
+                        Awaiting approval — @pending.StepName
+                    </RadzenText>
+                    @if (pending.ExpiresUtc is { } expiry)
+                    {
+                        <RadzenBadge BadgeStyle="BadgeStyle.Warning" Variant="Variant.Flat"
+                                     Text="@($"auto-fails {expiry.ToLocalTime():yyyy-MM-dd HH:mm}")" />
+                    }
+                </RadzenStack>
+
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+                    This @TaskNoun is paused before the step's wave runs. Nothing further has
+                    been dispatched to any target. Approving resumes it from exactly here;
+                    rejecting fails it after running its cleanup steps.
+                </RadzenText>
+
+                @if (!string.IsNullOrWhiteSpace(pending.Instructions))
+                {
+                    <div>
+                        <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-1">Instructions</RadzenText>
+                        @* Pre-wrapped TEXT, never markup — author-supplied content shown
+                           to another user. *@
+                        <pre class="kr-pre-wrap">@pending.Instructions</pre>
+                    </div>
+                }
+
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary">
+                    @if (pending.ResponsibleTeamIds.Length == 0)
+                    {
+                        <text>Anyone in this Space who may respond to interventions can decide.</text>
+                    }
+                    else
+                    {
+                        <text>Restricted to the step's responsible team(s).</text>
+                    }
+                </RadzenText>
+
+                <RequirePermission Permission="Permission.InterruptionViewSubmitResponsible">
+                    @if (_canRespond)
+                    {
+                        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+                            <RadzenButton Text="Approve or reject…" Icon="how_to_reg"
+                                          ButtonStyle="ButtonStyle.Primary" Variant="Variant.Flat"
+                                          Click="@(() => RespondAsync(pending))" />
+                        </RadzenStack>
+                    }
+                    else
+                    {
+                        <RadzenAlert AlertStyle="AlertStyle.Info" Shade="Shade.Lighter" AllowClose="false">
+                            You hold the approve permission, but this step restricts responses to
+                            its responsible team(s), which you are not a member of.
+                        </RadzenAlert>
+                    }
+                </RequirePermission>
+            </RadzenStack>
+        </RadzenCard>
+    }
+
+    @if (_resolved.Count > 0)
+    {
+        <RadzenCard class="rz-mb-4">
+            <RadzenText TextStyle="TextStyle.H6" class="rz-mb-2">Approval history</RadzenText>
+            <RadzenDataGrid Data="@_resolved" TItem="Interruption" AllowSorting="false"
+                            AllowPaging="false" Density="Density.Compact">
+                <Columns>
+                    <RadzenDataGridColumn TItem="Interruption" Title="Step" Property="StepName" Width="20%" />
+                    <RadzenDataGridColumn TItem="Interruption" Title="Decision" Width="14%">
+                        <Template Context="i">
+                            <RadzenBadge Variant="Variant.Flat"
+                                         BadgeStyle="@BadgeFor(i.Status)"
+                                         Text="@LabelFor(i.Status)" />
+                        </Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="Interruption" Title="By" Width="20%">
+                        <Template Context="i">@(i.ActedByDisplay ?? "—")</Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="Interruption" Title="When" Width="16%">
+                        <Template Context="i">
+                            <span class="mono">
+                                @(i.ActedUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")
+                            </span>
+                        </Template>
+                    </RadzenDataGridColumn>
+                    <RadzenDataGridColumn TItem="Interruption" Title="Notes">
+                        <Template Context="i">
+                            @(string.IsNullOrWhiteSpace(i.Notes) ? "—" : i.Notes)
+                        </Template>
+                    </RadzenDataGridColumn>
+                </Columns>
+            </RadzenDataGrid>
+        </RadzenCard>
+    }
+}
+
+@code {
+    /// <summary>Task whose gates to show — either kind.</summary>
+    [Parameter, EditorRequired] public Guid TaskId { get; set; }
+
+    /// <summary>Kind-flavoured noun for the body copy ("deployment" / "runbook run").</summary>
+    [Parameter] public string TaskNoun { get; set; } = "task";
+
+    /// <summary>Raised after a decision so the page can reload the task (its status
+    /// changes from Paused, and the log/steps tabs gain new rows).</summary>
+    [Parameter] public EventCallback OnResponded { get; set; }
+
+    private List<Interruption> _interruptions = [];
+    private Interruption? _pending;
+    private List<Interruption> _resolved = [];
+    private bool _canRespond;
+
+    // The parent recreates its OnResponded EventCallback on every render, so
+    // OnParametersSetAsync fires on every parent render — reload only when the task
+    // actually changes, or the panel would issue two queries per render. The parent's
+    // poll tick drives subsequent reloads through RefreshAsync (@ref), which is what
+    // keeps a gate resolved by SOMEONE ELSE (or by the timeout sweeper) from showing a
+    // live Approve button here forever.
+    private Guid _loadedTaskId;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedTaskId == TaskId)
+        {
+            return;
+        }
+        _loadedTaskId = TaskId;
+        await LoadAsync();
+    }
+
+    /// <summary>
+    /// Reload from the parent's poll tick so the panel never shows a stale gate. Both
+    /// detail pages hold an <c>@ref</c> to this component and call it from their timer;
+    /// this is a long-lived state (the approval window defaults to 72 h) whose exit is
+    /// triggered by ANOTHER user, so nothing else would ever refresh it.
+    /// </summary>
+    public async Task RefreshAsync()
+    {
+        await LoadAsync();
+        StateHasChanged();
+    }
+
+    private async Task LoadAsync()
+    {
+        var caller = await Guard.CurrentCallerAsync();
+        try
+        {
+            // No ConfigureAwait(false) anywhere in this component — lifecycle code must
+            // stay on the circuit's synchronization context (house rule 3).
+            _interruptions = [.. await Interruptions.ListForTaskAsync(TaskId, caller)];
+        }
+        catch (AuthorizationException)
+        {
+            // No InterruptionView on this task — render nothing at all rather than an
+            // empty card that hints the gate exists. Clearing the list IS the hide:
+            // the render guard is `_interruptions.Count > 0`, so a separate _visible
+            // flag was redundant state a reader had to trace to learn it meant nothing.
+            _interruptions = [];
+            return;
+        }
+
+        _pending = _interruptions.FirstOrDefault(i => i.Status == InterruptionStatus.Pending);
+        _resolved = [.. _interruptions
+            // IsResolved, not `!= Pending`: it is the named, Cancelled-INCLUSIVE
+            // predicate, so the history shows a gate closed by a cancel too.
+            .Where(i => i.Status.IsResolved())
+            .OrderByDescending(i => i.ActedUtc ?? i.CreatedUtc)];
+
+        _canRespond = _pending is not null
+            && await Interruptions.CanRespondAsync(_pending.Id, caller);
+    }
+
+    private async Task RespondAsync(Interruption pending)
+    {
+        var result = await Dialog.OpenAsync<RespondToInterventionDialog>(
+            $"Manual intervention — {pending.StepName}",
+            new Dictionary<string, object?> { [nameof(RespondToInterventionDialog.Interruption)] = pending },
+            new DialogOptions { Width = "700px", CloseDialogOnOverlayClick = false });
+
+        if (result is true)
+        {
+            await LoadAsync();
+            await OnResponded.InvokeAsync();
+        }
+    }
+
+    // WP3-b — delegates to one shared, EXHAUSTIVE map (Components/UiHelpers.cs). The
+    // private copies these replaced defaulted an unrecognised status to "Pending", so a
+    // gate closed because its deployment was cancelled rendered in the approval history as
+    // still awaiting a decision.
+    private static BadgeStyle BadgeFor(InterruptionStatus s)
+        => InterruptionStatusVisuals.Badge(s);
+
+    private static string LabelFor(InterruptionStatus s)
+        => InterruptionStatusVisuals.Label(s);
+}

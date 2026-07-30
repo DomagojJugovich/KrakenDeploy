@@ -86,7 +86,7 @@ Current handlers:
 | `KrakenIisStepHandler` | `Kraken.IIS`, `Octopus.IIS` | Generates a PowerShell deployment script, runs via `ScriptRunner`. |
 | `SubstituteVariablesStepHandler` | `Octopus.SubstituteVariables` | In-place file variable substitution. |
 | `JsonConfigurationVariablesStepHandler` (step package `octopus.jsonconfigurationvariables`) | `Octopus.JsonConfigurationVariables` | JSON config variable substitution by dotted path (mirrors Octopus's "JSON Configuration Variables" feature). XDT for XML lives on `Octopus.TentaclePackage`, not here. |
-| `ManualInterventionStepHandler` | `Octopus.Manual` | Auto-approves in unattended mode. |
+| `ManualInterventionStepHandler` | `Octopus.Manual` | **Not the approval gate** (WP3). Online, `Octopus.Manual` is server-only and the task PAUSES for a human decision; offline drop bundles containing one are refused at generation. This handler is only reachable by a runner on a hand-built plan, where it proceeds with a loud `APPROVAL NOT ENFORCED` warning. See `docs/design-manual-intervention.md`. |
 
 ### `ScriptRunner` dispatch
 

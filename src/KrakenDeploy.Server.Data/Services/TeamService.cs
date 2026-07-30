@@ -32,6 +32,36 @@ public class TeamService(IDbContextFactory<KrakenDbContext> dbFactory)
             .ToListAsync(ct);
     }
 
+    /// <summary>
+    /// WP3-b — teams offerable as manual-intervention approvers: visible from
+    /// <paramref name="spaceId"/>, not an "Everyone" team, projected to (Id, Name).
+    /// <para>
+    /// Deliberately separate from <see cref="GetAllAsync"/>, which <c>Include</c>s
+    /// <c>Members</c>, <c>ExternalGroups.IdentityProvider</c> and
+    /// <c>RoleAssignments.Role</c>/<c>.Scopes</c> — the whole RBAC graph. That is right
+    /// for the teams admin page and wrong for a step-editor dropdown needing two
+    /// columns: any user with process-edit rights can open that editor, and the previous
+    /// call site materialised every team's full membership and role assignments on their
+    /// behalf.
+    /// </para>
+    /// <para>
+    /// "Everyone" teams are excluded at the SOURCE rather than merely refused on save —
+    /// offering one invites an operator to pick a "restriction" that restricts nobody,
+    /// since every authenticated user belongs to it.
+    /// </para>
+    /// </summary>
+    public async Task<List<ApproverTeamOption>> GetSelectableApproverTeamsAsync(
+        Guid? spaceId, CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        return await db.Teams
+            .AsNoTracking()
+            .Where(t => (t.SpaceId == null || t.SpaceId == spaceId) && !t.IsEveryoneTeam)
+            .OrderBy(t => t.Name)
+            .Select(t => new ApproverTeamOption(t.Id, t.Name))
+            .ToListAsync(ct);
+    }
+
     public async Task<Team?> GetAsync(Guid id, CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
@@ -256,3 +286,10 @@ public class TeamService(IDbContextFactory<KrakenDbContext> dbFactory)
         return true;
     }
 }
+
+/// <summary>
+/// A team as offered in an approver picker — id plus display name, nothing else.
+/// WP3-b: a named type rather than a tuple so the Razor dropdown can bind
+/// <c>TextProperty</c>/<c>ValueProperty</c> by name.
+/// </summary>
+public sealed record ApproverTeamOption(Guid Id, string Name);

@@ -24,6 +24,11 @@ namespace KrakenDeploy.Server.Data.Jobs;
 ///   <c>ScheduledFor == null</c>, older than a short grace: their create-time
 ///   wake-up died with the channel (restart) or was never consumed → re-signal
 ///   to the shared task channel.</item>
+///   <item><b>Resolved paused tasks</b> (WP3, both kinds) — <c>Paused</c> at a
+///   manual-intervention gate that has since been answered → re-signal. The pause
+///   path's equivalent of arm 2: a paused task has no lease and is invisible to arm
+///   4, so without this arm a resume wake-up lost to a restart would strand the task
+///   forever — and a restart inside a multi-day approval window is likely.</item>
 ///   <item><b>Orphaned Running tasks</b> (both kinds) — a Running task whose
 ///   orchestrating process died: an EXPIRED lease, or a NULL lease (a Running
 ///   row that never got one — nothing owns it) → conditional flip to
@@ -64,6 +69,7 @@ public sealed class ScheduledDeploymentDispatchJob(
 
         await SignalDueScheduledAsync(db, now, accountId, ct).ConfigureAwait(false);
         await SignalStaleQueuedAsync(db, now, accountId, ct).ConfigureAwait(false);
+        await SignalResolvedPausedAsync(db, accountId, ct).ConfigureAwait(false);
         await ReconcileOrphanedRunningAsync(db, now, ct).ConfigureAwait(false);
     }
 
@@ -133,7 +139,64 @@ public sealed class ScheduledDeploymentDispatchJob(
         }
     }
 
-    // ── 3. Orphaned Running tasks (both kinds) ───────────────────────────────
+    // ── 3. Resolved manual-intervention gates (WP3, both kinds) ──────────────
+
+    private async Task SignalResolvedPausedAsync(
+        KrakenDbContext db, Guid accountId, CancellationToken ct)
+    {
+        // A task parked at an approval gate is Paused with NO lease, so arm 4 below
+        // cannot see it (its predicate is scoped to Running) — which is exactly the
+        // exemption that keeps a 72-hour approval window from being reaped as an
+        // orphan. The flip side is that nothing else would ever pick the task up
+        // again if its resume wake-up were lost: the approve/reject handler enqueues
+        // one, but that channel item dies with a server restart, and a restart is
+        // LIKELY inside a multi-day window.
+        //
+        // So this arm is the pause path's equivalent of the stale-Queued re-signal:
+        // any Paused task whose gate is already answered gets re-signalled. Read-only
+        // then enqueue, so it is crash-safe and idempotent — the conditional
+        // Paused→Running resume (ServerTaskLease.TryResumeAsync) makes duplicate
+        // wake-ups harmless. No grace period: unlike a fresh Queued row, a resolved
+        // gate has no in-flight wake-up we would be racing, and a paused deployment
+        // holds its (project, environment, tenant) slot while it waits.
+        // Two flat EXISTS subqueries rather than one nested pair: "has a gate at all"
+        // AND "has no gate still Pending". The first is not redundant — it excludes a
+        // Paused row with zero interruptions, which the pause path cannot produce (the
+        // gate row and the status flip share one transaction) but which would otherwise
+        // be re-signalled every minute forever, pausing itself again each time.
+        // The inner IgnoreQueryFilters calls ARE redundant with the root one (the flag
+        // is per-statement in EF Core 10 — ToQueryString-verified: it unfilters
+        // navigations and subqueries too). Kept so each subquery stays correct if it is
+        // ever split into its own query.
+        var resumableIds = await db.ServerTasks
+            .IgnoreQueryFilters()
+            .Where(t => t.Status == DeploymentStatus.Paused
+                     && db.Interruptions.IgnoreQueryFilters()
+                         .Any(i => i.TaskId == t.Id)
+                     && !db.Interruptions.IgnoreQueryFilters()
+                         .Any(i => i.TaskId == t.Id
+                                && i.Status == InterruptionStatus.Pending))
+            .Select(t => t.Id)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        foreach (var id in resumableIds)
+        {
+            await taskQueue.Writer
+                .WriteAsync(new TenantWorkItem(accountId, id), ct)
+                .ConfigureAwait(false);
+        }
+
+        if (resumableIds.Count > 0)
+        {
+            logger.LogInformation(
+                "Dispatch reconcile: re-signalled {Count} paused task(s) whose " +
+                "manual-intervention gate has been answered.",
+                resumableIds.Count);
+        }
+    }
+
+    // ── 4. Orphaned Running tasks (both kinds) ───────────────────────────────
 
     private async Task ReconcileOrphanedRunningAsync(
         KrakenDbContext db, DateTimeOffset now, CancellationToken ct)

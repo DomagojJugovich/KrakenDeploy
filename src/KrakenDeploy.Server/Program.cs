@@ -2402,8 +2402,8 @@ public static class Program
                         http.Request.Headers[KrakenHttpHeaders.ClientKind],
                         KrakenHttpHeaders.ClientKindCli, StringComparison.OrdinalIgnoreCase);
                     var initiator = isCli
-                        ? TaskInitiator.Cli(user.GetUserId(), user.GetDisplayName())
-                        : TaskInitiator.Api(user.GetUserId(), user.GetDisplayName());
+                        ? TaskInitiator.Cli(user.ResolveUserId(), user.ResolveDisplayName())
+                        : TaskInitiator.Api(user.ResolveUserId(), user.ResolveDisplayName());
                     var deployment = await deploymentSvc
                         .CreateAsync(
                             releaseId:     req.ReleaseId,
@@ -3332,8 +3332,8 @@ public static class Program
                         http.Request.Headers[KrakenHttpHeaders.ClientKind],
                         KrakenHttpHeaders.ClientKindCli, StringComparison.OrdinalIgnoreCase);
                     var initiator = isCli
-                        ? TaskInitiator.Cli(user.GetUserId(), user.GetDisplayName())
-                        : TaskInitiator.Api(user.GetUserId(), user.GetDisplayName());
+                        ? TaskInitiator.Cli(user.ResolveUserId(), user.ResolveDisplayName())
+                        : TaskInitiator.Api(user.ResolveUserId(), user.ResolveDisplayName());
                     var run = await runbookSvc.TriggerAsync(
                         runbookId, req.EnvironmentId, req.TargetId,
                         initiator: initiator, caller: CallerAuthorization.ForUser(user),
@@ -3383,6 +3383,103 @@ public static class Program
             async (Guid runId, RunbookService runbookSvc, CancellationToken ct) =>
                 Results.Ok(await runbookSvc.GetRunStepOutcomesAsync(runId, ct).ConfigureAwait(false)))
             .RequirePermission(Permission.RunbookRunView);
+
+        // ── WP3: manual-intervention gates (both task kinds) ────────────────
+        // Kind-agnostic by design: post-D1 both a deployment and a runbook run pause at
+        // an Octopus.Manual step, so one route pair serves both rather than duplicating
+        // under /api/deployments and /api/runbook-runs. InterruptionService does the
+        // authoritative per-task scope check (and, on respond, the responsible-team
+        // check the permission system cannot express) — the RequirePermission filter
+        // here is the coarse gate.
+        app.MapGet("/api/tasks/{taskId:guid}/interruptions",
+            async (Guid taskId, InterruptionService interruptions,
+                ClaimsPrincipal user, CancellationToken ct) =>
+            {
+                try
+                {
+                    var gates = await interruptions
+                        .ListForTaskAsync(taskId, CallerAuthorization.ForUser(user), ct)
+                        .ConfigureAwait(false);
+                    return Results.Ok(gates.Select(i => new
+                    {
+                        i.Id, i.TaskId, i.StepIndex, i.StepName, i.Instructions,
+                        i.ResponsibleTeamIds,
+                        // Enum NAME on the wire (the CLI/REST/MCP convention).
+                        Status = i.Status.ToString(),
+                        i.ExpiresUtc, i.ActedByDisplay, i.Notes, i.CreatedUtc, i.ActedUtc,
+                    }));
+                }
+                catch (AuthorizationException ex)
+                {
+                    // AuthorizationException is `sealed : Exception`, NOT a
+                    // UnauthorizedAccessException, and there is no global mapper — so
+                    // without this a cross-Space scope denial returned 500 plus the
+                    // Blazor HTML error page instead of a 403 JSON body, and a client
+                    // could not tell "not authorized" from "server broken". Every
+                    // sibling endpoint in this file hand-catches it the same way.
+                    return Results.Json(
+                        new { error = ex.Message },
+                        statusCode: StatusCodes.Status403Forbidden);
+                }
+            }).RequirePermission(Permission.InterruptionView);
+
+        app.MapPost("/api/interruptions/{interruptionId:guid}/respond",
+            async (Guid interruptionId, RespondToInterruptionRequest req,
+                InterruptionService interruptions, ClaimsPrincipal user, CancellationToken ct) =>
+            {
+                var caller = CallerAuthorization.ForUser(user);
+                try
+                {
+                    var gate = req.Approve
+                        ? await interruptions
+                            .ApproveAsync(interruptionId, req.Notes, caller, ct).ConfigureAwait(false)
+                        : await interruptions
+                            .RejectAsync(interruptionId, req.Notes ?? "", caller, ct).ConfigureAwait(false);
+                    return Results.Ok(new
+                    {
+                        gate.Id,
+                        Status = gate.Status.ToString(),
+                        gate.ActedByDisplay,
+                        gate.ActedUtc,
+                    });
+                }
+                catch (ArgumentException ex)
+                {
+                    // Missing rejection notes, or notes over the column limit.
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+                catch (AuthorizationException ex)
+                {
+                    // Scope denial (wrong Space / project / environment). Distinct type
+                    // from the team-membership refusal below, and not a
+                    // UnauthorizedAccessException, so it needs its own arm — see the
+                    // GET above.
+                    return Results.Json(
+                        new { error = ex.Message },
+                        statusCode: StatusCodes.Status403Forbidden);
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    // Holds the permission but is not on a responsible team.
+                    return Results.Json(
+                        new { error = ex.Message },
+                        statusCode: StatusCodes.Status403Forbidden);
+                }
+                catch (InterruptionNotFoundException)
+                {
+                    // 404, and deliberately AFTER the authz arms above: throwing this
+                    // before any check made the endpoint an existence oracle, letting a
+                    // Space-A caller tell "no such gate" (409 then) from "gate exists in
+                    // a Space you cannot reach" (500 then).
+                    return Results.NotFound();
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // Already answered — a human or the timeout sweeper won the race —
+                    // or the task itself is already terminal.
+                    return Results.Conflict(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.InterruptionViewSubmitResponsible);
 
         app.MapGet("/api/runbook-runs/{runId:guid}/output-variables",
             async (Guid runId, RunbookService runbookSvc, CancellationToken ct) =>

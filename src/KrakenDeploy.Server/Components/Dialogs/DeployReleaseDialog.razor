@@ -767,7 +767,7 @@
             // Provenance: resolve the acting user once for the whole batch — every
             // deployment queued by this dialog is Manual, initiated by this user.
             var actingUser = (await AuthState.GetAuthenticationStateAsync()).User;
-            var initiator = TaskInitiator.Manual(actingUser.GetUserId(), actingUser.GetDisplayName());
+            var initiator = TaskInitiator.Manual(actingUser.ResolveUserId(), actingUser.ResolveDisplayName());
 
             var created = new List<Deployment>();
             var failures = new List<string>();
