@@ -1,0 +1,77 @@
+{
+  "id": "octopus.kubernetesrunscript",
+  "title": "Run a kubectl Script",
+  "description": "Run a script with kubectl context authenticated to a Kubernetes cluster.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "cluster",
+      "title": "Cluster Connection",
+      "collapsed": false
+    },
+    {
+      "id": "script",
+      "title": "Script",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Kubernetes.ClusterUrl": {
+      "type": "string",
+      "widget": "text",
+      "label": "Cluster URL",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.Token": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Token",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.Namespace": {
+      "type": "string",
+      "widget": "text",
+      "label": "Namespace",
+      "group": "cluster",
+      "default": "default",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.KubeconfigPath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Kubeconfig path",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.ScriptBody": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Script body",
+      "helpText": "KUBECONFIG, KUBECTL_CONTEXT, and KUBECTL_NAMESPACE env vars are set.",
+      "group": "script",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Kubernetes.ScriptSyntax": {
+      "type": "string",
+      "widget": "select",
+      "label": "Language",
+      "group": "script",
+      "default": "Bash",
+      "enumValues": [
+        {
+          "value": "Bash",
+          "label": "Bash"
+        },
+        {
+          "value": "PowerShell",
+          "label": "PowerShell"
+        }
+      ]
+    }
+  }
+}

@@ -6,13 +6,20 @@
     <ImplicitUsings>enable</ImplicitUsings>
 
     <KrakenStepPackageId>octopus.misc</KrakenStepPackageId>
-    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageVersion>1.1.0</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>Miscellaneous</KrakenStepPackageDisplayName>
-    <KrakenStepPackageStepTypes>Octopus.Email,Octopus.Nginx,Octopus.Certificate.Import,Octopus.Vhd</KrakenStepPackageStepTypes>
     <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.Misc.MiscStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>
   </PropertyGroup>
+
+  <!-- SC1: claimed step types + per-type picker metadata → manifest stepTypes objects. -->
+  <ItemGroup>
+    <KrakenStepType Include="Octopus.Email" DisplayName="Send an Email" Category="other" Description="Send an email notification via SMTP." />
+    <KrakenStepType Include="Octopus.Nginx" DisplayName="Manage Nginx" Category="nginx" Description="Write an nginx config and reload/restart the service." />
+    <KrakenStepType Include="Octopus.Certificate.Import" DisplayName="Import a Certificate" Category="certificate" Description="Import a certificate into the Windows certificate store." />
+    <KrakenStepType Include="Octopus.Vhd" DisplayName="Transfer a VHD" Category="other" Description="Copy or expand a VHD/VHDX disk image." />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Octostache" />

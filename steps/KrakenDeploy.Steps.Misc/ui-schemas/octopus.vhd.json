@@ -1,0 +1,50 @@
+{
+  "id": "octopus.vhd",
+  "title": "Transfer a VHD",
+  "description": "Copy or expand a VHD/VHDX disk image.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "general",
+      "title": "General",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Vhd.Action": {
+      "type": "string",
+      "widget": "select",
+      "label": "Action",
+      "group": "general",
+      "default": "copy",
+      "enumValues": [
+        {
+          "value": "copy",
+          "label": "Copy"
+        },
+        {
+          "value": "expand",
+          "label": "Expand (Windows only)"
+        }
+      ]
+    },
+    "Octopus.Action.Vhd.SourcePath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Source path",
+      "helpText": "Path to the .vhd/.vhdx file. Auto-detected from package if empty.",
+      "group": "general",
+      "enumValues": []
+    },
+    "Octopus.Action.Vhd.DestinationPath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Destination path",
+      "group": "general",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    }
+  }
+}

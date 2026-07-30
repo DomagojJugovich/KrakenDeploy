@@ -1,0 +1,51 @@
+{
+  "id": "octopus.awscreates3",
+  "title": "Create an S3 Bucket",
+  "description": "Create a new Amazon S3 bucket.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "credentials",
+      "title": "AWS Credentials",
+      "collapsed": false
+    },
+    {
+      "id": "s3",
+      "title": "S3",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Aws.AccessKeyId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Access Key ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.SecretAccessKey": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Secret Access Key",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.Region": {
+      "type": "string",
+      "widget": "text",
+      "label": "Region",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Aws.BucketName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Bucket name",
+      "group": "s3",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    }
+  }
+}

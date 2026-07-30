@@ -6,13 +6,24 @@
     <ImplicitUsings>enable</ImplicitUsings>
 
     <KrakenStepPackageId>octopus.java</KrakenStepPackageId>
-    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageVersion>1.1.0</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>Java</KrakenStepPackageDisplayName>
-    <KrakenStepPackageStepTypes>Octopus.JavaArchive,Octopus.TomcatDeploy,Octopus.TomcatState,Octopus.TomcatDeployCertificate,Octopus.WildFlyDeploy,Octopus.WildFlyState,Octopus.WildFlyCertificateDeploy,Octopus.JavaDeployCertificate</KrakenStepPackageStepTypes>
     <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.Java.JavaStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>
   </PropertyGroup>
+
+  <!-- SC1: claimed step types + per-type picker metadata → manifest stepTypes objects. -->
+  <ItemGroup>
+    <KrakenStepType Include="Octopus.JavaArchive" DisplayName="Deploy a Java Archive" Category="java" Description="Deploy a WAR, JAR, or EAR file to a target directory." />
+    <KrakenStepType Include="Octopus.TomcatDeploy" DisplayName="Deploy to Tomcat" Category="java" Description="Deploy a WAR file to an Apache Tomcat instance." />
+    <KrakenStepType Include="Octopus.TomcatState" DisplayName="Manage Tomcat State" Category="java" Description="Start, stop, or restart an Apache Tomcat instance." />
+    <KrakenStepType Include="Octopus.TomcatDeployCertificate" DisplayName="Deploy Certificate to Tomcat" Category="java" Description="Import a certificate into a Tomcat Java keystore." />
+    <KrakenStepType Include="Octopus.WildFlyDeploy" DisplayName="Deploy to WildFly" Category="java" Description="Deploy a WAR or EAR to a WildFly/JBoss instance via CLI." />
+    <KrakenStepType Include="Octopus.WildFlyState" DisplayName="Manage WildFly State" Category="java" Description="Start, stop, restart, or reload a WildFly/JBoss instance." />
+    <KrakenStepType Include="Octopus.WildFlyCertificateDeploy" DisplayName="Deploy Certificate to WildFly" Category="java" Description="Import a certificate into a WildFly keystore." />
+    <KrakenStepType Include="Octopus.JavaDeployCertificate" DisplayName="Deploy a Java Certificate" Category="java" Description="Import a certificate into a generic Java keystore via keytool." />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Octostache" />

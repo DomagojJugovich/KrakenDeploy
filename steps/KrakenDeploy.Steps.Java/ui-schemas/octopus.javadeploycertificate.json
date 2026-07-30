@@ -1,0 +1,72 @@
+{
+  "id": "octopus.javadeploycertificate",
+  "title": "Deploy a Java Certificate",
+  "description": "Import a certificate into a generic Java keystore via keytool.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "keystore",
+      "title": "Keystore",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Java.KeystorePath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Keystore path",
+      "group": "keystore",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Java.KeystorePassword": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Keystore password",
+      "group": "keystore",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.KeystoreType": {
+      "type": "string",
+      "widget": "select",
+      "label": "Keystore type",
+      "group": "keystore",
+      "default": "PKCS12",
+      "enumValues": [
+        {
+          "value": "PKCS12",
+          "label": "PKCS12"
+        },
+        {
+          "value": "JKS",
+          "label": "JKS"
+        }
+      ]
+    },
+    "Octopus.Action.Java.CertificatePath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Certificate file path",
+      "helpText": "Path to a .cer/.crt/.pem file. Auto-detected from package if empty.",
+      "group": "keystore",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.KeystoreAlias": {
+      "type": "string",
+      "widget": "text",
+      "label": "Alias",
+      "group": "keystore",
+      "default": "kraken",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.JavaHome": {
+      "type": "string",
+      "widget": "text",
+      "label": "JAVA_HOME",
+      "group": "keystore",
+      "enumValues": []
+    }
+  }
+}

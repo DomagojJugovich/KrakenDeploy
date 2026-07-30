@@ -6,13 +6,18 @@
     <ImplicitUsings>enable</ImplicitUsings>
 
     <KrakenStepPackageId>kraken.packagerunner</KrakenStepPackageId>
-    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageVersion>1.1.0</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>Run Package Executable / Assembly</KrakenStepPackageDisplayName>
-    <KrakenStepPackageStepTypes>Kraken.RunPackageExecutable,Kraken.RunPackageAssembly</KrakenStepPackageStepTypes>
     <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.PackageRunner.PackageRunnerStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>
   </PropertyGroup>
+
+  <!-- SC1: claimed step types + per-type picker metadata → manifest stepTypes objects. -->
+  <ItemGroup>
+    <KrakenStepType Include="Kraken.RunPackageExecutable" DisplayName="Run a Package Executable" Category="script" Description="Run an executable or binary shipped inside the deployment package." />
+    <KrakenStepType Include="Kraken.RunPackageAssembly" DisplayName="Run a .NET Assembly Step" Category="script" Description="Load a .NET DLL from the package and invoke its IKrakenStep implementation." />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />

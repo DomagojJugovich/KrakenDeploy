@@ -6,13 +6,25 @@
     <ImplicitUsings>enable</ImplicitUsings>
 
     <KrakenStepPackageId>octopus.kubernetes</KrakenStepPackageId>
-    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageVersion>1.1.0</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>Kubernetes</KrakenStepPackageDisplayName>
-    <KrakenStepPackageStepTypes>Octopus.KubernetesDeployRawYaml,Octopus.KubernetesDeployContainers,Octopus.KubernetesDeployService,Octopus.KubernetesDeployIngress,Octopus.KubernetesDeployConfigMap,Octopus.KubernetesDeploySecret,Octopus.Kubernetes.Kustomize,Octopus.HelmChartUpgrade,Octopus.KubernetesRunScript</KrakenStepPackageStepTypes>
     <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.Kubernetes.KubernetesStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>
   </PropertyGroup>
+
+  <!-- SC1: claimed step types + per-type picker metadata → manifest stepTypes objects. -->
+  <ItemGroup>
+    <KrakenStepType Include="Octopus.KubernetesDeployRawYaml" DisplayName="Deploy Kubernetes YAML" Category="kubernetes" Description="Apply raw YAML manifests to a Kubernetes cluster." />
+    <KrakenStepType Include="Octopus.KubernetesDeployContainers" DisplayName="Deploy Kubernetes Containers" Category="kubernetes" Description="Create or update a Kubernetes Deployment from a container image." />
+    <KrakenStepType Include="Octopus.KubernetesDeployService" DisplayName="Deploy Kubernetes Service" Category="kubernetes" Description="Create or update a Kubernetes Service." />
+    <KrakenStepType Include="Octopus.KubernetesDeployIngress" DisplayName="Deploy Kubernetes Ingress" Category="kubernetes" Description="Create or update a Kubernetes Ingress." />
+    <KrakenStepType Include="Octopus.KubernetesDeployConfigMap" DisplayName="Deploy Kubernetes ConfigMap" Category="kubernetes" Description="Create or update a Kubernetes ConfigMap." />
+    <KrakenStepType Include="Octopus.KubernetesDeploySecret" DisplayName="Deploy Kubernetes Secret" Category="kubernetes" Description="Create or update a Kubernetes Secret." />
+    <KrakenStepType Include="Octopus.Kubernetes.Kustomize" DisplayName="Deploy with Kustomize" Category="kubernetes" Description="Apply a kustomization directory to a Kubernetes cluster." />
+    <KrakenStepType Include="Octopus.HelmChartUpgrade" DisplayName="Deploy a Helm Chart" Category="kubernetes" Description="Install or upgrade a Helm release on a Kubernetes cluster." />
+    <KrakenStepType Include="Octopus.KubernetesRunScript" DisplayName="Run a kubectl Script" Category="kubernetes" Description="Run a script with kubectl context authenticated to a Kubernetes cluster." />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Octostache" />

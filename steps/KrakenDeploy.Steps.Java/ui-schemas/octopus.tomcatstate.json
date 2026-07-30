@@ -1,0 +1,52 @@
+{
+  "id": "octopus.tomcatstate",
+  "title": "Manage Tomcat State",
+  "description": "Start, stop, or restart an Apache Tomcat instance.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "tomcat",
+      "title": "Tomcat",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Java.TomcatAction": {
+      "type": "string",
+      "widget": "select",
+      "label": "Action",
+      "group": "tomcat",
+      "default": "restart",
+      "enumValues": [
+        {
+          "value": "start",
+          "label": "Start"
+        },
+        {
+          "value": "stop",
+          "label": "Stop"
+        },
+        {
+          "value": "restart",
+          "label": "Restart"
+        }
+      ]
+    },
+    "Octopus.Action.Java.TomcatHome": {
+      "type": "string",
+      "widget": "text",
+      "label": "Tomcat home",
+      "helpText": "Path to the Tomcat installation. Uses catalina.sh/bat.",
+      "group": "tomcat",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.TomcatServiceName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Service name",
+      "helpText": "OS service name. Overrides TomcatHome when set.",
+      "group": "tomcat",
+      "enumValues": []
+    }
+  }
+}

@@ -1,0 +1,184 @@
+{
+  "id": "octopus.windowsservice",
+  "title": "Deploy a Windows Service",
+  "description": "Install or update a Windows service from the deployed package: sc.exe-compatible create/update, start mode, run-as account, dependencies, and desired post-deploy state.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "service",
+      "title": "Service",
+      "collapsed": false
+    },
+    {
+      "id": "account",
+      "title": "Service Account",
+      "collapsed": true
+    },
+    {
+      "id": "deployment",
+      "title": "Deployment",
+      "collapsed": true
+    }
+  ],
+  "properties": {
+    "Octopus.Action.WindowsService.ServiceName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Service name",
+      "helpText": "Short service name (what sc.exe and net start use). Required.",
+      "group": "service",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.WindowsService.DisplayName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Display name",
+      "helpText": "Name shown in services.msc. Defaults to the service name.",
+      "group": "service",
+      "enumValues": []
+    },
+    "Octopus.Action.WindowsService.Description": {
+      "type": "string",
+      "widget": "text",
+      "label": "Description",
+      "group": "service",
+      "enumValues": []
+    },
+    "Octopus.Action.WindowsService.ExecutablePath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Executable path",
+      "helpText": "Path to the service executable. A relative path resolves against the package installation directory.",
+      "placeholder": "MyService\\MyService.exe",
+      "group": "service",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.WindowsService.Arguments": {
+      "type": "string",
+      "widget": "text",
+      "label": "Arguments",
+      "helpText": "Command-line arguments passed to the executable.",
+      "group": "service",
+      "enumValues": []
+    },
+    "Octopus.Action.WindowsService.StartMode": {
+      "type": "string",
+      "widget": "select",
+      "label": "Start mode",
+      "group": "service",
+      "default": "auto",
+      "enumValues": [
+        {
+          "value": "auto",
+          "label": "Automatic"
+        },
+        {
+          "value": "delayed-auto",
+          "label": "Automatic (delayed)"
+        },
+        {
+          "value": "manual",
+          "label": "Manual"
+        },
+        {
+          "value": "disabled",
+          "label": "Disabled"
+        },
+        {
+          "value": "unchanged",
+          "label": "Unchanged (keep current)"
+        }
+      ]
+    },
+    "Octopus.Action.WindowsService.DesiredStatus": {
+      "type": "string",
+      "widget": "select",
+      "label": "Desired state after deployment",
+      "group": "service",
+      "default": "Running",
+      "enumValues": [
+        {
+          "value": "Running",
+          "label": "Running"
+        },
+        {
+          "value": "Stopped",
+          "label": "Stopped"
+        }
+      ]
+    },
+    "Octopus.Action.WindowsService.Dependencies": {
+      "type": "string",
+      "widget": "text",
+      "label": "Dependencies",
+      "helpText": "Service short names this service depends on, separated by forward slashes (e.g. LanmanWorkstation/TCPIP).",
+      "group": "service",
+      "enumValues": []
+    },
+    "Octopus.Action.WindowsService.ServiceAccount": {
+      "type": "string",
+      "widget": "select",
+      "label": "Run as",
+      "group": "account",
+      "default": "LocalSystem",
+      "enumValues": [
+        {
+          "value": "LocalSystem",
+          "label": "Local System"
+        },
+        {
+          "value": "LocalService",
+          "label": "Local Service"
+        },
+        {
+          "value": "NetworkService",
+          "label": "Network Service"
+        },
+        {
+          "value": "_CUSTOM",
+          "label": "Custom account…"
+        }
+      ]
+    },
+    "Octopus.Action.WindowsService.CustomAccountName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Custom account name",
+      "helpText": "DOMAIN\\user, .\\user for a local account, or DOMAIN\\user$ for a Managed Service Account.",
+      "group": "account",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.WindowsService.ServiceAccount",
+        "operator": "equals",
+        "value": "_CUSTOM"
+      }
+    },
+    "Octopus.Action.WindowsService.CustomAccountPassword": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Custom account password",
+      "helpText": "Leave blank for a Managed Service Account.",
+      "group": "account",
+      "enumValues": [],
+      "visibleWhen": {
+        "field": "Octopus.Action.WindowsService.ServiceAccount",
+        "operator": "equals",
+        "value": "_CUSTOM"
+      }
+    },
+    "Octopus.Action.Package.CustomInstallationDirectory": {
+      "type": "string",
+      "widget": "text",
+      "label": "Custom installation directory",
+      "helpText": "Optional. When set, package contents are taken from this directory instead of the default extraction directory. Variable expressions are substituted.",
+      "group": "deployment",
+      "enumValues": []
+    }
+  }
+}

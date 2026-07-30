@@ -7,14 +7,18 @@
 
     <!-- Step-package metadata. Pack target below reads these values. -->
     <KrakenStepPackageId>octopus.manual</KrakenStepPackageId>
-    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageVersion>1.1.0</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>Manual Intervention</KrakenStepPackageDisplayName>
-    <KrakenStepPackageStepTypes>Octopus.Manual</KrakenStepPackageStepTypes>
     <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.Manual.ManualInterventionStepHandler</KrakenStepPackageExecutorTypeName>
 
     <!-- Don't litter the install dir with NuGet symbols / docs. -->
     <IsPackable>false</IsPackable>
   </PropertyGroup>
+
+  <!-- SC1: claimed step types + per-type picker metadata → manifest stepTypes objects. -->
+  <ItemGroup>
+    <KrakenStepType Include="Octopus.Manual" DisplayName="Manual Intervention" Category="other" Description="Pause the deployment until a responsible team approves or rejects." />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Octostache" />

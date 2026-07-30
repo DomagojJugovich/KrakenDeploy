@@ -1,0 +1,77 @@
+{
+  "id": "octopus.nginx",
+  "title": "Manage Nginx",
+  "description": "Write an nginx config and reload/restart the service.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "config",
+      "title": "Configuration",
+      "collapsed": false
+    },
+    {
+      "id": "service",
+      "title": "Service",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Nginx.Action": {
+      "type": "string",
+      "widget": "select",
+      "label": "Action",
+      "group": "service",
+      "default": "reload",
+      "enumValues": [
+        {
+          "value": "reload",
+          "label": "Reload"
+        },
+        {
+          "value": "restart",
+          "label": "Restart"
+        },
+        {
+          "value": "start",
+          "label": "Start"
+        },
+        {
+          "value": "stop",
+          "label": "Stop"
+        }
+      ]
+    },
+    "Octopus.Action.Nginx.ServiceName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Service name",
+      "group": "service",
+      "default": "nginx",
+      "enumValues": []
+    },
+    "Octopus.Action.Nginx.TestConfig": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Test config before reload (nginx -t)",
+      "group": "service",
+      "default": "true",
+      "enumValues": []
+    },
+    "Octopus.Action.Nginx.ConfigPath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Config file path",
+      "helpText": "Where to write the config body (e.g. /etc/nginx/conf.d/app.conf).",
+      "group": "config",
+      "enumValues": []
+    },
+    "Octopus.Action.Nginx.ConfigBody": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Config body",
+      "helpText": "Nginx config content. Octostache #{...} placeholders are resolved.",
+      "group": "config",
+      "enumValues": []
+    }
+  }
+}

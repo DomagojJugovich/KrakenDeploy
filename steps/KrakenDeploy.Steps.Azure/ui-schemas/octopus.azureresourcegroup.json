@@ -1,0 +1,116 @@
+{
+  "id": "octopus.azureresourcegroup",
+  "title": "Deploy an Azure ARM Template",
+  "description": "Deploy an Azure Resource Manager (ARM) template to a resource group.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "credentials",
+      "title": "Azure Credentials",
+      "collapsed": false
+    },
+    {
+      "id": "deployment",
+      "title": "Deployment",
+      "collapsed": false
+    },
+    {
+      "id": "template",
+      "title": "Template",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Azure.ServicePrincipalAppId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Service Principal App ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.ServicePrincipalPassword": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Service Principal Password",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.TenantId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Tenant ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.SubscriptionId": {
+      "type": "string",
+      "widget": "text",
+      "label": "Subscription ID",
+      "group": "credentials",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.ResourceGroupName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Resource group",
+      "group": "deployment",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Azure.DeploymentName": {
+      "type": "string",
+      "widget": "text",
+      "label": "Deployment name",
+      "helpText": "Auto-generated if left empty.",
+      "group": "deployment",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.DeploymentMode": {
+      "type": "string",
+      "widget": "select",
+      "label": "Deployment mode",
+      "group": "deployment",
+      "default": "Incremental",
+      "enumValues": [
+        {
+          "value": "Incremental",
+          "label": "Incremental"
+        },
+        {
+          "value": "Complete",
+          "label": "Complete"
+        },
+        {
+          "value": "Validate",
+          "label": "Validate"
+        }
+      ]
+    },
+    "Octopus.Action.Azure.TemplateFile": {
+      "type": "string",
+      "widget": "text",
+      "label": "Template file path",
+      "helpText": "Path to an ARM template JSON file.",
+      "group": "template",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.TemplateBody": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Template body (JSON)",
+      "helpText": "Inline ARM template. Octostache #{...} variables are resolved.",
+      "group": "template",
+      "enumValues": []
+    },
+    "Octopus.Action.Azure.TemplateParameters": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Parameters",
+      "helpText": "One per line: Key=Value",
+      "group": "template",
+      "enumValues": []
+    }
+  }
+}

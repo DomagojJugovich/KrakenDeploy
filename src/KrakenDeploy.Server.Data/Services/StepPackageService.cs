@@ -174,7 +174,7 @@ public sealed class StepPackageService(
                 // "A, B") would otherwise be stored verbatim and never match
                 // StepPackageResolver's ",{type}," sentinel lookup.
                 StepTypes         = string.Join(',',
-                    manifest.StepTypes
+                    manifest.StepTypeIds
                         .Select(t => t.Trim().ToLowerInvariant())
                         .Where(t => t.Length > 0)),
             };
@@ -617,6 +617,10 @@ public sealed class StepPackageService(
         if (string.IsNullOrWhiteSpace(m.DisplayName))      { return "Manifest displayName is required."; }
         if (string.IsNullOrWhiteSpace(m.TargetFramework))  { return "Manifest targetFramework is required."; }
         if (m.StepTypes is null || m.StepTypes.Count == 0) { return "Manifest stepTypes must list at least one type."; }
+        if (m.StepTypes.Any(t => string.IsNullOrWhiteSpace(t.Id)))
+        {
+            return "Manifest stepTypes entries must each carry a non-empty id.";
+        }
         if (string.IsNullOrWhiteSpace(m.ExecutorAssembly)) { return "Manifest executorAssembly is required."; }
         if (string.IsNullOrWhiteSpace(m.ExecutorTypeName)) { return "Manifest executorTypeName is required."; }
 

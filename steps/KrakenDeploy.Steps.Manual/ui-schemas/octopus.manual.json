@@ -1,0 +1,41 @@
+{
+  "id": "octopus.manual",
+  "title": "Manual intervention",
+  "description": "Pause the task and wait for a human to approve or reject. The whole task pauses before this step\u0027s wave runs \u2014 no target is touched until somebody decides.",
+  "version": "1.0.0",
+  "groups": [],
+  "properties": {
+    "Octopus.Action.Manual.Instructions": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Instructions (markdown)",
+      "helpText": "Shown to the approver. Octostache #{...} placeholders are resolved when the task pauses, so the approver reads real values rather than the template.",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Manual.ResponsibleTeamIds": {
+      "type": "string",
+      "widget": "responsible-teams",
+      "label": "Responsible teams",
+      "helpText": "Leave EMPTY to let anyone in this Space holding the approve permission respond. Selections are stored as team ids, so a process imported from Octopus carries Octopus ids that resolve to nothing: the import reports them as a warning, saving the step here is refused until they are re-pointed at real teams, and a deployment that reaches the gate anyway FAILS rather than proceeding \u2014 because ignoring an unresolvable list would widen the approver set to everyone instead of narrowing it.",
+      "enumValues": []
+    },
+    "Kraken.Action.Manual.TimeoutHours": {
+      "type": "string",
+      "widget": "text",
+      "label": "Auto-fail after (hours)",
+      "helpText": "Blank uses the server default (72 h). 0 waits indefinitely. On expiry the task fails exactly as if rejected, and its Failure/Always cleanup steps still run.",
+      "enumValues": []
+    },
+    "Octopus.Action.Manual.BlockConcurrentDeployments": {
+      "type": "boolean",
+      "widget": "checkbox",
+      "label": "Block concurrent deployments",
+      "helpText": "Informational only. Kraken already serializes deployments per project \u002B environment \u002B tenant unconditionally, which is stronger \u2014 and a paused task keeps holding that slot until it is answered or times out.",
+      "default": "false",
+      "enumValues": []
+    }
+  }
+}

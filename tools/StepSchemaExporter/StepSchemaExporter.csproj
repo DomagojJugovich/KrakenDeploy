@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- SC1-c one-off: exports BuiltInStepSchemas into per-type
+       ui-schemas/{typeId}.json files inside each steps/ project, making the
+       package the schema source of truth. Not part of the solution; run
+       manually from the repo root:
+
+           dotnet run (with the project switch) on tools/StepSchemaExporter
+
+       Delete this tool together with BuiltInStepSchemas in SC4 — after the
+       hard cut the JSON files in steps/ ARE the source, and regeneration
+       would have nothing to regenerate from. -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\KrakenDeploy.Contracts\KrakenDeploy.Contracts.csproj" />
+  </ItemGroup>
+
+</Project>

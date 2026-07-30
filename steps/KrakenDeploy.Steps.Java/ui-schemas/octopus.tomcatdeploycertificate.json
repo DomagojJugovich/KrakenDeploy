@@ -1,0 +1,63 @@
+{
+  "id": "octopus.tomcatdeploycertificate",
+  "title": "Deploy Certificate to Tomcat",
+  "description": "Import a certificate into a Tomcat Java keystore.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "keystore",
+      "title": "Keystore",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Java.TomcatKeystorePath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Keystore path",
+      "group": "keystore",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    },
+    "Octopus.Action.Java.TomcatKeystorePassword": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Keystore password",
+      "group": "keystore",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.CertificatePath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Certificate file path",
+      "helpText": "Path to a .pfx/.p12/.jks file. Auto-detected from package if empty.",
+      "group": "keystore",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.CertificatePassword": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Certificate password",
+      "group": "keystore",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.KeystoreAlias": {
+      "type": "string",
+      "widget": "text",
+      "label": "Alias",
+      "group": "keystore",
+      "default": "tomcat",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.JavaHome": {
+      "type": "string",
+      "widget": "text",
+      "label": "JAVA_HOME",
+      "helpText": "Path to JDK. Defaults to keytool on PATH.",
+      "group": "keystore",
+      "enumValues": []
+    }
+  }
+}

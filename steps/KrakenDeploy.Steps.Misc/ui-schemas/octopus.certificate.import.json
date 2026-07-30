@@ -1,0 +1,77 @@
+{
+  "id": "octopus.certificate.import",
+  "title": "Import a Certificate",
+  "description": "Import a certificate into the Windows certificate store.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "certificate",
+      "title": "Certificate",
+      "collapsed": false
+    },
+    {
+      "id": "store",
+      "title": "Store",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Certificate.FilePath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Certificate file path",
+      "helpText": "Path to a .pfx/.p12/.cer file. Auto-detected from package if empty.",
+      "group": "certificate",
+      "enumValues": []
+    },
+    "Octopus.Action.Certificate.Password": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Certificate password",
+      "group": "certificate",
+      "enumValues": []
+    },
+    "Octopus.Action.Certificate.StoreName": {
+      "type": "string",
+      "widget": "select",
+      "label": "Store name",
+      "group": "store",
+      "default": "My",
+      "enumValues": [
+        {
+          "value": "My",
+          "label": "Personal (My)"
+        },
+        {
+          "value": "Root",
+          "label": "Trusted Root (Root)"
+        },
+        {
+          "value": "CA",
+          "label": "Intermediate CA (CA)"
+        },
+        {
+          "value": "TrustedPublisher",
+          "label": "Trusted Publishers"
+        }
+      ]
+    },
+    "Octopus.Action.Certificate.StoreLocation": {
+      "type": "string",
+      "widget": "select",
+      "label": "Store location",
+      "group": "store",
+      "default": "LocalMachine",
+      "enumValues": [
+        {
+          "value": "LocalMachine",
+          "label": "Local Machine"
+        },
+        {
+          "value": "CurrentUser",
+          "label": "Current User"
+        }
+      ]
+    }
+  }
+}

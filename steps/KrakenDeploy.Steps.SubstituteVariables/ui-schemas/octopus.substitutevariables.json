@@ -1,0 +1,20 @@
+{
+  "id": "octopus.substitutevariables",
+  "title": "Substitute variables in files",
+  "description": "Applies Octostache #{...} substitution to files in the extracted package.",
+  "version": "1.0.0",
+  "groups": [],
+  "properties": {
+    "Octopus.Action.SubstituteInFiles.TargetFiles": {
+      "type": "string",
+      "widget": "textarea",
+      "label": "Target files",
+      "helpText": "Newline- or comma-separated glob patterns relative to the package extract directory.",
+      "placeholder": "appsettings.json\nweb.config",
+      "enumValues": [],
+      "validation": {
+        "required": true
+      }
+    }
+  }
+}

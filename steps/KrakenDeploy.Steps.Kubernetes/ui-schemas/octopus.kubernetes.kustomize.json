@@ -1,0 +1,57 @@
+{
+  "id": "octopus.kubernetes.kustomize",
+  "title": "Deploy with Kustomize",
+  "description": "Apply a kustomization directory to a Kubernetes cluster.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "cluster",
+      "title": "Cluster Connection",
+      "collapsed": false
+    },
+    {
+      "id": "kustomize",
+      "title": "Kustomize",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Kubernetes.ClusterUrl": {
+      "type": "string",
+      "widget": "text",
+      "label": "Cluster URL",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.Token": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Token",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.Namespace": {
+      "type": "string",
+      "widget": "text",
+      "label": "Namespace",
+      "group": "cluster",
+      "default": "default",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.KubeconfigPath": {
+      "type": "string",
+      "widget": "text",
+      "label": "Kubeconfig path",
+      "group": "cluster",
+      "enumValues": []
+    },
+    "Octopus.Action.Kubernetes.KustomizationDir": {
+      "type": "string",
+      "widget": "text",
+      "label": "Kustomization directory",
+      "helpText": "Path to the directory containing kustomization.yaml. Defaults to the package extract dir.",
+      "group": "kustomize",
+      "enumValues": []
+    }
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "id": "octopus.wildflystate",
+  "title": "Manage WildFly State",
+  "description": "Start, stop, restart, or reload a WildFly/JBoss instance.",
+  "version": "1.0.0",
+  "groups": [
+    {
+      "id": "server",
+      "title": "Server",
+      "collapsed": false
+    }
+  ],
+  "properties": {
+    "Octopus.Action.Java.WildFlyAction": {
+      "type": "string",
+      "widget": "select",
+      "label": "Action",
+      "group": "server",
+      "default": "restart",
+      "enumValues": [
+        {
+          "value": "start",
+          "label": "Start"
+        },
+        {
+          "value": "stop",
+          "label": "Stop"
+        },
+        {
+          "value": "restart",
+          "label": "Restart"
+        },
+        {
+          "value": "reload",
+          "label": "Reload"
+        }
+      ]
+    },
+    "Octopus.Action.Java.WildFlyHome": {
+      "type": "string",
+      "widget": "text",
+      "label": "WildFly home",
+      "group": "server",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.WildFlyHost": {
+      "type": "string",
+      "widget": "text",
+      "label": "Host",
+      "group": "server",
+      "default": "localhost",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.WildFlyPort": {
+      "type": "string",
+      "widget": "text",
+      "label": "Management port",
+      "group": "server",
+      "default": "9990",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.WildFlyUser": {
+      "type": "string",
+      "widget": "text",
+      "label": "Management user",
+      "group": "server",
+      "enumValues": []
+    },
+    "Octopus.Action.Java.WildFlyPassword": {
+      "type": "string",
+      "widget": "sensitive",
+      "label": "Management password",
+      "group": "server",
+      "enumValues": []
+    }
+  }
+}

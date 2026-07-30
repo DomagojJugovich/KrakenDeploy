@@ -6,16 +6,21 @@
     <ImplicitUsings>enable</ImplicitUsings>
 
     <KrakenStepPackageId>kraken.iis</KrakenStepPackageId>
-    <KrakenStepPackageVersion>2.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageVersion>2.1.0</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>Deploy to IIS</KrakenStepPackageDisplayName>
-    <!-- One handler claims both step types: Kraken-native and the Octopus
-         property-bag shape (the handler dispatches internally via
-         OctopusIisConfig.IsOctopusShape). -->
-    <KrakenStepPackageStepTypes>Kraken.IIS,Octopus.IIS</KrakenStepPackageStepTypes>
     <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.KrakenIis.KrakenIisStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>
   </PropertyGroup>
+
+  <!-- SC1: claimed step types + per-type picker metadata → manifest stepTypes
+       objects. One handler claims both step types: Kraken-native and the
+       Octopus property-bag shape (the handler dispatches internally via
+       OctopusIisConfig.IsOctopusShape). -->
+  <ItemGroup>
+    <KrakenStepType Include="Kraken.IIS" DisplayName="Deploy Web Site" Category="iis" Description="Comprehensive IIS deployment: app pool, bindings, atomic swap, and health probe." Featured="true" />
+    <KrakenStepType Include="Octopus.IIS" DisplayName="IIS Web Site and Application Pool" Category="iis" Description="Octopus-compatible IIS site deployment. Alias of Kraken.IIS." />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Octostache" />

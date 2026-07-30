@@ -6,13 +6,24 @@
     <ImplicitUsings>enable</ImplicitUsings>
 
     <KrakenStepPackageId>octopus.aws</KrakenStepPackageId>
-    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageVersion>1.1.0</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>AWS</KrakenStepPackageDisplayName>
-    <KrakenStepPackageStepTypes>Octopus.AwsUploadS3,Octopus.AwsCreateS3,Octopus.AwsRunCloudFormation,Octopus.AwsApplyCloudFormationChangeSet,Octopus.AwsDeleteCloudFormation,aws-ecs,aws-ecs-update-service,Octopus.AwsRunScript</KrakenStepPackageStepTypes>
     <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.Aws.AwsStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>
   </PropertyGroup>
+
+  <!-- SC1: claimed step types + per-type picker metadata → manifest stepTypes objects. -->
+  <ItemGroup>
+    <KrakenStepType Include="Octopus.AwsUploadS3" DisplayName="Upload to Amazon S3" Category="aws" Description="Upload files to an Amazon S3 bucket." />
+    <KrakenStepType Include="Octopus.AwsCreateS3" DisplayName="Create an S3 Bucket" Category="aws" Description="Create a new Amazon S3 bucket." />
+    <KrakenStepType Include="Octopus.AwsRunCloudFormation" DisplayName="Deploy AWS CloudFormation" Category="aws" Description="Create or update an AWS CloudFormation stack via change sets." />
+    <KrakenStepType Include="Octopus.AwsApplyCloudFormationChangeSet" DisplayName="Apply CloudFormation Change Set" Category="aws" Description="Execute a previously created CloudFormation change set." />
+    <KrakenStepType Include="Octopus.AwsDeleteCloudFormation" DisplayName="Delete AWS CloudFormation Stack" Category="aws" Description="Delete an AWS CloudFormation stack and wait for completion." />
+    <KrakenStepType Include="aws-ecs" DisplayName="Deploy Amazon ECS Service" Category="aws" Description="Update an Amazon ECS service with a new task definition or desired count." />
+    <KrakenStepType Include="aws-ecs-update-service" DisplayName="Update Amazon ECS Service" Category="aws" Description="Update an Amazon ECS service (alias for aws-ecs)." />
+    <KrakenStepType Include="Octopus.AwsRunScript" DisplayName="Run an AWS Script" Category="aws" Description="Run a script with AWS credentials set as environment variables." />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Octostache" />
