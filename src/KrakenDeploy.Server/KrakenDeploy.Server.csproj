@@ -39,55 +39,72 @@
     <InternalsVisibleTo Include="KrakenDeploy.Server.Tests" />
   </ItemGroup>
 
-  <!-- Phase D-8: built-in step packages. Each Steps.* project produces a
-       {id}-{version}.kdeploy-step archive in its bin/. We take "no-link"
+  <!-- Phase D-8 (+ SC0): built-in step packages. Each Steps.* project produces
+       a {id}-{version}.kdeploy-step archive in its bin/. We take "no-link"
        project references so the Steps projects are built before Server,
        then a copy target gathers their archives into seed/step-packages/
        under the server's output dir. On first startup the
-       BuiltInStepPackageSeeder installs anything new from that directory. -->
+       BuiltInStepPackageSeeder installs anything new from that directory.
+       EVERY steps/ package project must be listed BOTH here and in
+       CollectKrakenSeedArchives below — the collection is deliberately
+       explicit (no steps/** glob) so a stray locally-built project can't
+       leak into the seed set and dev builds seed exactly what CI seeds. -->
   <ItemGroup>
-    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.Manual\KrakenDeploy.Steps.Manual.csproj">
-      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
-      <Private>false</Private>
-      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
-    </ProjectReference>
-    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.SubstituteVariables\KrakenDeploy.Steps.SubstituteVariables.csproj">
-      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
-      <Private>false</Private>
-      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
-    </ProjectReference>
-    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.JsonConfigurationVariables\KrakenDeploy.Steps.JsonConfigurationVariables.csproj">
-      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
-      <Private>false</Private>
-      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
-    </ProjectReference>
-    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.Script\KrakenDeploy.Steps.Script.csproj">
-      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
-      <Private>false</Private>
-      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
-    </ProjectReference>
-    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.OctopusTentaclePackage\KrakenDeploy.Steps.OctopusTentaclePackage.csproj">
-      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
-      <Private>false</Private>
-      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
-    </ProjectReference>
-    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.KrakenIis\KrakenDeploy.Steps.KrakenIis.csproj">
-      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
-      <Private>false</Private>
-      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
-    </ProjectReference>
-    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.OctopusWindowsService\KrakenDeploy.Steps.OctopusWindowsService.csproj">
-      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
-      <Private>false</Private>
-      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
-    </ProjectReference>
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.Aws\KrakenDeploy.Steps.Aws.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.Azure\KrakenDeploy.Steps.Azure.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.Docker\KrakenDeploy.Steps.Docker.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.HealthCheck\KrakenDeploy.Steps.HealthCheck.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.Java\KrakenDeploy.Steps.Java.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.JsonConfigurationVariables\KrakenDeploy.Steps.JsonConfigurationVariables.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.KrakenIis\KrakenDeploy.Steps.KrakenIis.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.Kubernetes\KrakenDeploy.Steps.Kubernetes.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.Manual\KrakenDeploy.Steps.Manual.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.Misc\KrakenDeploy.Steps.Misc.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.OctopusTentaclePackage\KrakenDeploy.Steps.OctopusTentaclePackage.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.OctopusWindowsService\KrakenDeploy.Steps.OctopusWindowsService.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.PackageRunner\KrakenDeploy.Steps.PackageRunner.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.Script\KrakenDeploy.Steps.Script.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.SubstituteVariables\KrakenDeploy.Steps.SubstituteVariables.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.Terraform\KrakenDeploy.Steps.Terraform.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\..\steps\KrakenDeploy.Steps.TransferPackage\KrakenDeploy.Steps.TransferPackage.csproj" ReferenceOutputAssembly="false" Private="false" SkipGetTargetFrameworkProperties="true" />
     <ProjectReference Include="..\KrakenDeploy.ControlPlane\KrakenDeploy.ControlPlane.csproj" />
   </ItemGroup>
 
-  <Target Name="CollectBuiltInStepPackages" AfterTargets="Build">
+  <!-- SC0: shared, explicit archive collection for the Build and Publish
+       copies below. One bin glob per referenced package project — NOT
+       steps/** — so whatever happens to sit in an unreferenced project's
+       bin/ (stale local builds) never reaches the seed directory. -->
+  <Target Name="CollectKrakenSeedArchives">
     <ItemGroup>
-      <_KrakenSeedPackages Include="..\..\steps\**\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenSeedPackages Include="..\..\steps\KrakenDeploy.Steps.Aws\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenSeedPackages Include="..\..\steps\KrakenDeploy.Steps.Azure\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenSeedPackages Include="..\..\steps\KrakenDeploy.Steps.Docker\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenSeedPackages Include="..\..\steps\KrakenDeploy.Steps.HealthCheck\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenSeedPackages Include="..\..\steps\KrakenDeploy.Steps.Java\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenSeedPackages Include="..\..\steps\KrakenDeploy.Steps.JsonConfigurationVariables\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenSeedPackages Include="..\..\steps\KrakenDeploy.Steps.KrakenIis\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenSeedPackages Include="..\..\steps\KrakenDeploy.Steps.Kubernetes\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenSeedPackages Include="..\..\steps\KrakenDeploy.Steps.Manual\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenSeedPackages Include="..\..\steps\KrakenDeploy.Steps.Misc\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenSeedPackages Include="..\..\steps\KrakenDeploy.Steps.OctopusTentaclePackage\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenSeedPackages Include="..\..\steps\KrakenDeploy.Steps.OctopusWindowsService\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenSeedPackages Include="..\..\steps\KrakenDeploy.Steps.PackageRunner\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenSeedPackages Include="..\..\steps\KrakenDeploy.Steps.Script\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenSeedPackages Include="..\..\steps\KrakenDeploy.Steps.SubstituteVariables\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenSeedPackages Include="..\..\steps\KrakenDeploy.Steps.Terraform\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenSeedPackages Include="..\..\steps\KrakenDeploy.Steps.TransferPackage\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
     </ItemGroup>
+  </Target>
+
+  <Target Name="CollectBuiltInStepPackages" AfterTargets="Build" DependsOnTargets="CollectKrakenSeedArchives">
+    <!-- Mirror, don't accrete: drop archives that are no longer collected
+         (superseded versions, removed packages) so the boot seeder never
+         re-installs something a clean checkout wouldn't ship. -->
+    <ItemGroup>
+      <_KrakenSeedStale Include="$(OutputPath)seed\step-packages\*.kdeploy-step"
+                        Exclude="@(_KrakenSeedPackages->'$(OutputPath)seed\step-packages\%(Filename)%(Extension)')" />
+    </ItemGroup>
+    <Delete Files="@(_KrakenSeedStale)" Condition="'@(_KrakenSeedStale)' != ''" />
     <Copy SourceFiles="@(_KrakenSeedPackages)" DestinationFolder="$(OutputPath)seed\step-packages\" SkipUnchangedFiles="true" Condition="'@(_KrakenSeedPackages)' != ''" />
     <Message Importance="high" Text="Seeded %(_KrakenSeedPackages.Filename)%(_KrakenSeedPackages.Extension) → $(OutputPath)seed\step-packages\" Condition="'@(_KrakenSeedPackages)' != ''" />
   </Target>
@@ -96,12 +113,14 @@
        every published/containerized server shipped WITHOUT the built-in step
        packages and the boot seeder found an empty (or missing) seed dir.
        Mirror the copy into $(PublishDir). -->
-  <Target Name="PublishBuiltInStepPackages" AfterTargets="Publish">
+  <Target Name="PublishBuiltInStepPackages" AfterTargets="Publish" DependsOnTargets="CollectKrakenSeedArchives">
     <ItemGroup>
-      <_KrakenPublishSeedPackages Include="..\..\steps\**\bin\$(Configuration)\$(TargetFramework)\*.kdeploy-step" />
+      <_KrakenPublishSeedStale Include="$(PublishDir)seed\step-packages\*.kdeploy-step"
+                               Exclude="@(_KrakenSeedPackages->'$(PublishDir)seed\step-packages\%(Filename)%(Extension)')" />
     </ItemGroup>
-    <Copy SourceFiles="@(_KrakenPublishSeedPackages)" DestinationFolder="$(PublishDir)seed\step-packages\" SkipUnchangedFiles="true" Condition="'@(_KrakenPublishSeedPackages)' != ''" />
-    <Message Importance="high" Text="Published seed %(_KrakenPublishSeedPackages.Filename)%(_KrakenPublishSeedPackages.Extension) → $(PublishDir)seed\step-packages\" Condition="'@(_KrakenPublishSeedPackages)' != ''" />
+    <Delete Files="@(_KrakenPublishSeedStale)" Condition="'@(_KrakenPublishSeedStale)' != ''" />
+    <Copy SourceFiles="@(_KrakenSeedPackages)" DestinationFolder="$(PublishDir)seed\step-packages\" SkipUnchangedFiles="true" Condition="'@(_KrakenSeedPackages)' != ''" />
+    <Message Importance="high" Text="Published seed %(_KrakenSeedPackages.Filename)%(_KrakenSeedPackages.Extension) → $(PublishDir)seed\step-packages\" Condition="'@(_KrakenSeedPackages)' != ''" />
   </Target>
 
 </Project>
