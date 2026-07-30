@@ -52,6 +52,8 @@ public class StepTemplateService(
         string? description,
         Dictionary<string, string>? properties,
         List<StepTemplateParameter>? parameters,
+        string? category = null,
+        string? author = null,
         CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -66,6 +68,8 @@ public class StepTemplateService(
             Description = description?.Trim(),
             Properties = properties ?? [],
             Parameters  = parameters ?? [],
+            Category   = category?.Trim(),
+            Author     = author?.Trim(),
         };
 
         db.StepTemplates.Add(template);
@@ -82,6 +86,8 @@ public class StepTemplateService(
         Dictionary<string, string>? properties,
         List<StepTemplateParameter>? parameters,
         CallerAuthorization caller,
+        string? category = null,
+        string? author = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(caller);
@@ -98,6 +104,8 @@ public class StepTemplateService(
         template.Description = description?.Trim();
         template.Properties  = properties ?? [];
         template.Parameters  = parameters ?? [];
+        template.Category    = category?.Trim();
+        template.Author      = author?.Trim();
         template.Version++;
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);

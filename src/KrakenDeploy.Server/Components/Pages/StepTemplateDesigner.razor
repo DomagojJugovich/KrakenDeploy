@@ -1,0 +1,508 @@
+@page "/s/{SpaceSlug}/step-templates/designer"
+@page "/s/{SpaceSlug}/step-templates/designer/{TemplateId:guid}"
+@inherits SpaceScopedComponentBase
+@implements IAsyncDisposable
+@attribute [Authorize]
+@using System.Text.Json
+@using KrakenDeploy.Server.Core.Domain.StepTemplates
+@using KrakenDeploy.Server.Core.Domain.Security
+@using KrakenDeploy.Server.Data.Services
+@inject StepTemplateService TemplateSvc
+@inject AuthenticationStateProvider AuthState
+@inject IJSRuntime JS
+@inject NotificationService Notification
+@inject NavigationManager Nav
+@inject UiActionGuard Guard
+
+<PageTitle>Step Template Designer - KrakenDeploy</PageTitle>
+
+<div class="page-head">
+    <div>
+        <h1 class="page-title">@(_isEdit ? "Edit Template" : "New Step Template")</h1>
+        <p class="page-sub">Design a reusable step template with a script body and parameters</p>
+    </div>
+    <div class="page-head-actions">
+        <RadzenButton Icon="arrow_back" ButtonStyle="ButtonStyle.Light" Text="Back"
+                      Click="@(() => Nav.NavigateTo(Sp("/step-templates")))" />
+        <RadzenButton Icon="download" ButtonStyle="ButtonStyle.Light" Text="Export JSON"
+                      Click="@ExportJson" />
+        <RequirePermission Permission="Permission.StepTemplateCreate">
+            <RadzenButton Icon="save" ButtonStyle="ButtonStyle.Primary" Text="Save Template"
+                          IsBusy="@_saving" Click="@SaveAsync" />
+        </RequirePermission>
+    </div>
+</div>
+
+<div class="designer-layout">
+    <div class="designer-main">
+        <RadzenFieldset Text="Metadata">
+            <div class="designer-meta-grid">
+                <RadzenFormField Text="Name" Variant="Variant.Outlined">
+                    <RadzenTextBox @bind-Value="_name" Placeholder="e.g. Deploy to Slack" style="width:100%" />
+                </RadzenFormField>
+                <RadzenFormField Text="Category" Variant="Variant.Outlined">
+                    <RadzenTextBox @bind-Value="_category" Placeholder="e.g. notification" style="width:100%" />
+                </RadzenFormField>
+                <RadzenFormField Text="Author" Variant="Variant.Outlined">
+                    <RadzenTextBox @bind-Value="_author" Placeholder="Your name" style="width:100%" />
+                </RadzenFormField>
+                <RadzenFormField Text="Description" Variant="Variant.Outlined" class="designer-meta-full">
+                    <RadzenTextArea @bind-Value="_description" Rows="2" style="width:100%"
+                                    Placeholder="What does this step template do?" />
+                </RadzenFormField>
+            </div>
+        </RadzenFieldset>
+
+        <RadzenFieldset Text="Script">
+            <div class="designer-script-toolbar">
+                <RadzenFormField Text="Language" Variant="Variant.Outlined" style="width:200px">
+                    <RadzenDropDown TValue="string" @bind-Value="_syntax"
+                                    Data="@_syntaxOptions" TextProperty="Label" ValueProperty="Value"
+                                    Change="@OnSyntaxChanged" style="width:100%" />
+                </RadzenFormField>
+                <RadzenFormField Text="PowerShell Edition" Variant="Variant.Outlined" style="width:200px"
+                                 Visible="@(_syntax == "PowerShell")">
+                    <RadzenDropDown TValue="string" @bind-Value="_psEdition"
+                                    Data="@_psEditionOptions" TextProperty="Label" ValueProperty="Value"
+                                    style="width:100%" />
+                </RadzenFormField>
+                <RadzenFormField Text="Run on server" Variant="Variant.Outlined" style="width:140px">
+                    <RadzenCheckBox @bind-Value="_runOnServer" TValue="bool" />
+                </RadzenFormField>
+            </div>
+            <div id="monaco-container" class="designer-monaco" @ref="_editorElement"></div>
+        </RadzenFieldset>
+
+        <RadzenFieldset Text="Parameters">
+            <div class="designer-params-header">
+                <RadzenText TextStyle="TextStyle.Body1">
+                    Parameters are exposed as form fields when the step is added to a process.
+                    Reference them in the script via <code>$OctopusParameters['ParamName']</code> (PowerShell)
+                    or <code>$PARAM_NAME</code> (Bash).
+                </RadzenText>
+                <RadzenButton Icon="add" ButtonStyle="ButtonStyle.Light" Text="Add Parameter"
+                              Click="@AddParameter" Size="ButtonSize.Small" />
+            </div>
+
+            @if (_parameters.Count == 0)
+            {
+                <RadzenText TextStyle="TextStyle.Body1" class="rz-text-secondary-color" style="padding:1rem 0">
+                    No parameters defined. Click "Add Parameter" to create form fields for this template.
+                </RadzenText>
+            }
+            else
+            {
+                <div class="designer-params-list">
+                    @for (var i = 0; i < _parameters.Count; i++)
+                    {
+                        var idx = i;
+                        var p = _parameters[idx];
+                        <div class="designer-param-card" @key="p">
+                            <div class="designer-param-drag">
+                                <RadzenButton Icon="arrow_upward" ButtonStyle="ButtonStyle.Light"
+                                              Size="ButtonSize.Small" Disabled="@(idx == 0)"
+                                              Click="@(() => MoveParameter(idx, -1))" />
+                                <RadzenButton Icon="arrow_downward" ButtonStyle="ButtonStyle.Light"
+                                              Size="ButtonSize.Small" Disabled="@(idx == _parameters.Count - 1)"
+                                              Click="@(() => MoveParameter(idx, 1))" />
+                            </div>
+                            <div class="designer-param-fields">
+                                <div class="designer-param-row">
+                                    <RadzenFormField Text="Name" Variant="Variant.Outlined" style="flex:1">
+                                        <RadzenTextBox @bind-Value="p.Name" Placeholder="ParamName" style="width:100%" />
+                                    </RadzenFormField>
+                                    <RadzenFormField Text="Label" Variant="Variant.Outlined" style="flex:1">
+                                        <RadzenTextBox @bind-Value="p.Label" Placeholder="Display label" style="width:100%" />
+                                    </RadzenFormField>
+                                    <RadzenFormField Text="Control Type" Variant="Variant.Outlined" style="width:180px">
+                                        <RadzenDropDown TValue="string" @bind-Value="p.ControlType"
+                                                        Data="@_controlTypes" TextProperty="Label" ValueProperty="Value"
+                                                        style="width:100%" />
+                                    </RadzenFormField>
+                                </div>
+                                <div class="designer-param-row">
+                                    <RadzenFormField Text="Default Value" Variant="Variant.Outlined" style="flex:1">
+                                        <RadzenTextBox @bind-Value="p.DefaultValue" style="width:100%" />
+                                    </RadzenFormField>
+                                    <RadzenFormField Text="Help Text" Variant="Variant.Outlined" style="flex:2">
+                                        <RadzenTextBox @bind-Value="p.HelpText" style="width:100%" />
+                                    </RadzenFormField>
+                                </div>
+                                @if (p.ControlType == "Select")
+                                {
+                                    <div class="designer-param-row">
+                                        <RadzenFormField Text="Select Options (one per line: value|Label)" Variant="Variant.Outlined" style="flex:1">
+                                            <RadzenTextArea Value="@GetSelectOptionsText(p)"
+                                                            Change="@(v => SetSelectOptionsText(p, v?.ToString()))"
+                                                            Rows="3" style="width:100%" />
+                                        </RadzenFormField>
+                                    </div>
+                                }
+                            </div>
+                            <div class="designer-param-actions">
+                                <RadzenButton Icon="delete" ButtonStyle="ButtonStyle.Danger"
+                                              Size="ButtonSize.Small" Click="@(() => RemoveParameter(idx))" />
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+        </RadzenFieldset>
+    </div>
+
+    <div class="designer-preview">
+        <RadzenFieldset Text="Preview">
+            <RadzenText TextStyle="TextStyle.Body1" class="rz-text-secondary-color" style="margin-bottom:0.75rem">
+                This is how the form will appear when adding this step to a process.
+            </RadzenText>
+            @foreach (var p in _parameters.Where(p => !string.IsNullOrWhiteSpace(p.Name)))
+            {
+                <RadzenFormField Text="@p.Label" Variant="Variant.Outlined" style="margin-bottom:0.5rem">
+                    @switch (p.ControlType)
+                    {
+                        case "MultiLineText":
+                            <RadzenTextArea Value="@p.DefaultValue" Rows="3" Disabled="true" style="width:100%" />
+                            break;
+                        case "Sensitive":
+                            <RadzenPassword Value="@p.DefaultValue" Disabled="true" style="width:100%" />
+                            break;
+                        case "Checkbox":
+                            <RadzenCheckBox TValue="bool" Value="@(p.DefaultValue == "true" || p.DefaultValue == "True")" Disabled="true" />
+                            break;
+                        case "Select":
+                            <RadzenDropDown TValue="string" Value="@p.DefaultValue" Disabled="true"
+                                            Data="@(p.SelectOptions.Select(o => o.Split('|')[0]).ToList())"
+                                            style="width:100%" />
+                            break;
+                        default:
+                            <RadzenTextBox Value="@p.DefaultValue" Disabled="true" style="width:100%" />
+                            break;
+                    }
+                    @if (!string.IsNullOrWhiteSpace(p.HelpText))
+                    {
+                        <RadzenText TextStyle="TextStyle.Caption" class="rz-text-secondary-color">@p.HelpText</RadzenText>
+                    }
+                </RadzenFormField>
+            }
+        </RadzenFieldset>
+    </div>
+</div>
+
+@code {
+    [Parameter] public Guid? TemplateId { get; set; }
+
+    private ElementReference _editorElement;
+    private DotNetObjectReference<StepTemplateDesigner>? _dotNetRef;
+    private bool _editorReady;
+    private bool _saving;
+    private bool _isEdit;
+
+    private string _name = "";
+    private string _description = "";
+    private string _category = "";
+    private string _author = "";
+    private string _syntax = "PowerShell";
+    private string _psEdition = "Desktop";
+    private bool _runOnServer;
+    private string _scriptBody = "";
+
+    private List<ParamDesign> _parameters = [];
+
+    private static readonly (string Value, string Label)[] _syntaxOptions =
+    [
+        ("PowerShell", "PowerShell"),
+        ("Bash", "Bash"),
+        ("CSharp", "C# (dotnet-script)"),
+        ("FSharp", "F# (dotnet fsi)"),
+        ("Python", "Python"),
+    ];
+
+    private static readonly (string Value, string Label)[] _psEditionOptions =
+    [
+        ("Desktop", "Desktop (5.x)"),
+        ("Core", "Core (pwsh 7+)"),
+    ];
+
+    private static readonly (string Value, string Label)[] _controlTypes =
+    [
+        ("SingleLineText", "Text"),
+        ("MultiLineText", "Textarea"),
+        ("Sensitive", "Sensitive"),
+        ("Checkbox", "Checkbox"),
+        ("Select", "Dropdown"),
+        ("Package", "Package"),
+    ];
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _dotNetRef = DotNetObjectReference.Create(this);
+            await LoadTemplateIfExists();
+            await InitEditorAsync();
+        }
+    }
+
+    private async Task LoadTemplateIfExists()
+    {
+        if (TemplateId is null)
+        {
+            return;
+        }
+
+        var template = await TemplateSvc.GetAsync(TemplateId.Value);
+        if (template is null)
+        {
+            return;
+        }
+
+        _isEdit = true;
+        _name = template.Name;
+        _description = template.Description ?? "";
+        _category = template.Category ?? "";
+        _author = template.Author ?? "";
+
+        template.Properties.TryGetValue("Octopus.Action.Script.Syntax", out var syntax);
+        _syntax = syntax ?? "PowerShell";
+
+        template.Properties.TryGetValue("Octopus.Action.PowerShell.Edition", out var edition);
+        _psEdition = edition ?? "Desktop";
+
+        template.Properties.TryGetValue("Octopus.Action.RunOnServer", out var ros);
+        _runOnServer = ros is "true" or "True";
+
+        template.Properties.TryGetValue("Octopus.Action.Script.ScriptBody", out var body);
+        _scriptBody = body ?? "";
+
+        _parameters = template.Parameters.Select(p => new ParamDesign
+        {
+            Name = p.Name,
+            Label = p.Label,
+            HelpText = p.HelpText,
+            DefaultValue = p.DefaultValue,
+            ControlType = p.ControlType,
+            SelectOptions = [.. p.SelectOptions],
+        }).ToList();
+
+        StateHasChanged();
+    }
+
+    private async Task InitEditorAsync()
+    {
+        var lang = MapSyntaxToMonacoLanguage(_syntax);
+        await JS.InvokeVoidAsync("krakenMonaco.init", _editorElement, _dotNetRef, lang, _scriptBody);
+        _editorReady = true;
+    }
+
+    [JSInvokable]
+    public void OnContentChanged(string value)
+    {
+        _scriptBody = value;
+    }
+
+    private async Task OnSyntaxChanged(object? value)
+    {
+        _syntax = value?.ToString() ?? "PowerShell";
+        if (_editorReady)
+        {
+            await JS.InvokeVoidAsync("krakenMonaco.setLanguage", "monaco-container",
+                MapSyntaxToMonacoLanguage(_syntax));
+        }
+    }
+
+    private void AddParameter()
+    {
+        _parameters.Add(new ParamDesign
+        {
+            Name = $"Param{_parameters.Count + 1}",
+            Label = $"Parameter {_parameters.Count + 1}",
+            ControlType = "SingleLineText",
+        });
+    }
+
+    private void RemoveParameter(int index)
+    {
+        if (index >= 0 && index < _parameters.Count)
+        {
+            _parameters.RemoveAt(index);
+        }
+    }
+
+    private void MoveParameter(int index, int direction)
+    {
+        var target = index + direction;
+        if (target < 0 || target >= _parameters.Count)
+        {
+            return;
+        }
+
+        (_parameters[index], _parameters[target]) = (_parameters[target], _parameters[index]);
+    }
+
+    private static string GetSelectOptionsText(ParamDesign p)
+        => string.Join("\n", p.SelectOptions);
+
+    private static void SetSelectOptionsText(ParamDesign p, string? text)
+    {
+        p.SelectOptions = string.IsNullOrWhiteSpace(text)
+            ? []
+            : [.. text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+    }
+
+    private async Task SaveAsync()
+    {
+        var requiredPermission = _isEdit ? Permission.StepTemplateEdit : Permission.StepTemplateCreate;
+        if (!await Guard.AllowAsync(requiredPermission))
+        {
+            Notification.Notify(NotificationSeverity.Error, "Permission denied");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_name))
+        {
+            Notification.Notify(NotificationSeverity.Warning, "Name is required");
+            return;
+        }
+
+        _saving = true;
+        try
+        {
+            var properties = new Dictionary<string, string>
+            {
+                ["Octopus.Action.Script.ScriptBody"] = _scriptBody,
+                ["Octopus.Action.Script.Syntax"] = _syntax,
+                ["Octopus.Action.Script.ScriptSource"] = "Inline",
+                ["Octopus.Action.RunOnServer"] = _runOnServer ? "true" : "false",
+            };
+
+            if (_syntax == "PowerShell")
+            {
+                properties["Octopus.Action.PowerShell.Edition"] = _psEdition;
+            }
+
+            var parameters = _parameters
+                .Where(p => !string.IsNullOrWhiteSpace(p.Name))
+                .Select(p => new StepTemplateParameter
+                {
+                    Name = p.Name,
+                    Label = string.IsNullOrWhiteSpace(p.Label) ? p.Name : p.Label,
+                    HelpText = p.HelpText,
+                    DefaultValue = p.DefaultValue,
+                    ControlType = p.ControlType,
+                    SelectOptions = [.. p.SelectOptions],
+                })
+                .ToList();
+
+            if (_isEdit && TemplateId is not null)
+            {
+                var actingUser = (await AuthState.GetAuthenticationStateAsync()).User;
+                await TemplateSvc.UpdateAsync(TemplateId.Value, _name, _description, properties, parameters,
+                    caller: CallerAuthorization.ForUser(actingUser),
+                    category: _category, author: _author);
+                Notification.Notify(NotificationSeverity.Success, "Template updated", _name);
+            }
+            else
+            {
+                await TemplateSvc.CreateAsync(_name, "Octopus.Script", _description, properties, parameters,
+                    category: _category, author: _author);
+                Notification.Notify(NotificationSeverity.Success, "Template created", _name);
+            }
+
+            Nav.NavigateTo(Sp("/step-templates"));
+        }
+        catch (Exception ex)
+        {
+            Notification.Notify(NotificationSeverity.Error, "Save failed", ex.Message);
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task ExportJson()
+    {
+        var properties = new Dictionary<string, string>
+        {
+            ["Octopus.Action.Script.ScriptBody"] = _scriptBody,
+            ["Octopus.Action.Script.Syntax"] = _syntax,
+            ["Octopus.Action.Script.ScriptSource"] = "Inline",
+            ["Octopus.Action.RunOnServer"] = _runOnServer ? "true" : "false",
+        };
+
+        if (_syntax == "PowerShell")
+        {
+            properties["Octopus.Action.PowerShell.Edition"] = _psEdition;
+        }
+
+        var parameters = _parameters
+            .Where(p => !string.IsNullOrWhiteSpace(p.Name))
+            .Select(p => new StepTemplateParameter
+            {
+                Name = p.Name,
+                Label = string.IsNullOrWhiteSpace(p.Label) ? p.Name : p.Label,
+                HelpText = p.HelpText,
+                DefaultValue = p.DefaultValue,
+                ControlType = p.ControlType,
+                SelectOptions = [.. p.SelectOptions],
+            })
+            .ToList();
+
+        var template = new StepTemplate
+        {
+            Name = string.IsNullOrWhiteSpace(_name) ? "Untitled Template" : _name,
+            ActionType = "Octopus.Script",
+            Description = _description,
+            Category = _category,
+            Author = _author,
+            Properties = properties,
+            Parameters = parameters,
+            Source = StepTemplateSource.UserAuthored,
+        };
+
+        var json = OctopusLibraryExporter.Serialize(template);
+        await JS.InvokeVoidAsync("krakenDownload", $"{Slugify(_name)}.json", json);
+    }
+
+    private static string MapSyntaxToMonacoLanguage(string syntax) => syntax switch
+    {
+        "PowerShell" => "powershell",
+        "Bash" => "shell",
+        "CSharp" => "csharp",
+        "FSharp" => "fsharp",
+        "Python" => "python",
+        _ => "plaintext",
+    };
+
+    private static string Slugify(string input)
+    {
+        var slug = input.ToLowerInvariant().Trim();
+        slug = System.Text.RegularExpressions.Regex.Replace(slug, @"[^a-z0-9\s-]", "");
+        slug = System.Text.RegularExpressions.Regex.Replace(slug, @"[\s-]+", "-");
+        return slug.Trim('-');
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("krakenMonaco.dispose", "monaco-container");
+        }
+        catch
+        {
+            // JS runtime may be unavailable during circuit teardown.
+        }
+
+        _dotNetRef?.Dispose();
+    }
+
+    private sealed class ParamDesign
+    {
+        public string Name { get; set; } = "";
+        public string Label { get; set; } = "";
+        public string? HelpText { get; set; }
+        public string? DefaultValue { get; set; }
+        public string ControlType { get; set; } = "SingleLineText";
+        public List<string> SelectOptions { get; set; } = [];
+    }
+}

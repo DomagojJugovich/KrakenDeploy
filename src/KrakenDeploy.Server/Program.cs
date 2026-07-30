@@ -1970,7 +1970,7 @@ public static class Program
 
                 var template = await svc.CreateAsync(
                     req.Name, req.ActionType, req.Description,
-                    req.Properties, parameters, ct)
+                    req.Properties, parameters, ct: ct)
                     .ConfigureAwait(false);
 
                 return Results.Created($"/api/step-templates/{template.Id}", template);
@@ -1995,7 +1995,7 @@ public static class Program
                 {
                     var template = await svc.UpdateAsync(
                         id, req.Name, req.Description, req.Properties, parameters,
-                        CallerAuthorization.ForUser(user), ct)
+                        CallerAuthorization.ForUser(user), ct: ct)
                         .ConfigureAwait(false);
 
                     return template is null ? Results.NotFound() : Results.Ok(template);
