@@ -86,13 +86,20 @@
     <!-- manifest.json. We synthesise it here from the .csproj properties so
          every package gets a canonical shape — same JSON the server's
          StepPackageService verifies on upload and the agent's loader reads. -->
+    <!-- SC0: authors write "A, B" as naturally as "A,B" — normalise
+         whitespace around the separators, because a padded entry survives
+         into the DB's denormalised claim list and StepPackageResolver's
+         comma-sentinel ILIKE match then never finds the type. -->
+    <PropertyGroup>
+      <_KrakenStepTypesNormalized>$([System.Text.RegularExpressions.Regex]::Replace('$(KrakenStepPackageStepTypes)', '\s*,\s*', ',').Trim())</_KrakenStepTypesNormalized>
+    </PropertyGroup>
     <ItemGroup>
       <_KrakenManifestLines Include="{" />
       <_KrakenManifestLines Include="  &quot;id&quot;: &quot;$(KrakenStepPackageId)&quot;," />
       <_KrakenManifestLines Include="  &quot;version&quot;: &quot;$(KrakenStepPackageVersion)&quot;," />
       <_KrakenManifestLines Include="  &quot;displayName&quot;: &quot;$(KrakenStepPackageDisplayName)&quot;," />
       <_KrakenManifestLines Include="  &quot;targetFramework&quot;: &quot;$(TargetFramework)&quot;," />
-      <_KrakenManifestLines Include="  &quot;stepTypes&quot;: [ &quot;$(KrakenStepPackageStepTypes.Replace(`,`, `&quot;, &quot;`))&quot; ]," />
+      <_KrakenManifestLines Include="  &quot;stepTypes&quot;: [ &quot;$(_KrakenStepTypesNormalized.Replace(`,`, `&quot;, &quot;`))&quot; ]," />
       <_KrakenManifestLines Include="  &quot;executorAssembly&quot;: &quot;$(TargetFileName)&quot;," />
       <_KrakenManifestLines Include="  &quot;executorTypeName&quot;: &quot;$(KrakenStepPackageExecutorTypeName)&quot;," />
       <_KrakenManifestLines Include="  &quot;signedBy&quot;: &quot;kraken-project&quot;," />
@@ -103,6 +110,16 @@
                       Lines="@(_KrakenManifestLines)"
                       Overwrite="true"
                       Encoding="UTF-8" />
+
+    <!-- SC0: sweep stale archives of THIS package (older versions left in
+         bin/ by incremental builds) so the server's per-project seed
+         collection ships exactly one version per package — a dev bin dir
+         seeds the same set a clean CI checkout does. -->
+    <ItemGroup>
+      <_KrakenStaleArchives Include="$(OutputPath)$(KrakenStepPackageId)-*.kdeploy-step"
+                            Exclude="$(KrakenStepPackageArchivePath)" />
+    </ItemGroup>
+    <Delete Files="@(_KrakenStaleArchives)" Condition="'@(_KrakenStaleArchives)' != ''" />
 
     <!-- Zip the staged tree into {id}-{version}.kdeploy-step. -->
     <ZipDirectory SourceDirectory="$(KrakenStepPackageStagingDir)"

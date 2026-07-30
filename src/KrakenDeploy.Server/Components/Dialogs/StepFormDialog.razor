@@ -893,14 +893,23 @@
                 // the schema doesn't include as a field default.
                 foreach (var (k, v) in Template.Properties) { _values[k] = v; }
 
-                _schema = StepTemplateSchemaAdapter.BuildSchema(Template);
+                // A template with no parameters of its own (the bare catalog
+                // rows exist purely for picker visibility) carries no form —
+                // resolve the step type's schema instead, exactly like the
+                // Edit path does.
+                _schema = Template.Parameters.Count > 0
+                    ? StepTemplateSchemaAdapter.BuildSchema(Template)
+                    : await ResolveSchemaAsync(Template.ActionType);
 
                 // Overlay schema defaults for keys without an existing value.
-                foreach (var (key, field) in _schema.Properties)
+                if (_schema is not null)
                 {
-                    if (!_values.ContainsKey(key) && !string.IsNullOrEmpty(field.Default))
+                    foreach (var (key, field) in _schema.Properties)
                     {
-                        _values[key] = field.Default!;
+                        if (!_values.ContainsKey(key) && !string.IsNullOrEmpty(field.Default))
+                        {
+                            _values[key] = field.Default!;
+                        }
                     }
                 }
             }
