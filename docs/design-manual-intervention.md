@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 1.2 |
+| **Version** | 1.3 |
 | **Date** | 2026-07-30 |
 | **Authors** | Domagoj Jugovic, Claude (Opus 5) |
 | **Status** | Draft |
@@ -304,15 +304,6 @@ path — only the recorded outcome differs:
   window makes `RestoreFromCheckpoint` fail the run with "the approved process no
   longer matches", blaming the process for a variable edit — and that abort runs
   before the resume branch, so no `Failure`/`Always` cleanup executes.
-- **`ForEach` flatten warnings re-emit per dispatch.** A pause/resume cycle is by
-  construction a second dispatch, so a process with an unresolved non-required
-  `ForEach` group plus N gates emits its `ForEachEmpty` audit event N+1 times, and
-  an M13.B subscription notifies that many times for one deployment.
-- **An API-key response is indistinguishable from a human one.** The responder is
-  attributed correctly (the key's owning user), but nothing records that a script
-  POSTed the approval rather than a person reading the instructions. The
-  information is available — the identity's `AuthenticationType` is
-  `KrakenAuthSchemes.ApiKey` — and simply unused.
 - **`PermissionEvaluator.UserIsSystemAdminAsync` ignores the role assignment's own
   `SpaceId`**, so `AdministerSystem` granted for one Space is global. WP3's
   break-glass check passes a scope, but that only closes the call site. Pre-existing
@@ -338,6 +329,7 @@ path — only the recorded outcome differs:
 
 | Version | Date | Change |
 |---|---|---|
+| 1.3 | 2026-07-30 | Corrects §11: two entries were listed as open but had already been fixed later in the same WP3-b pass — `ForEach` flatten warnings no longer re-emit on a resume dispatch (`DeploymentWorker.isResumeDispatch`), and an API-key response is now labelled `(via API key)` in the responder display (`InterruptionService.ResponderLabel`). No code change; the section was written before those two fixes landed and not revisited. |
 | 1.2 | 2026-07-30 | **WP3-b — remediation of the max-effort review** (§5 rewritten, §7, §11). The §5 LIFETIME premise is retracted: the `interruptions` row is CASCADE-deleted with its task and retention deletes tasks, so it never was the durable change-control record — that is now the `Interruption.*` audit entry behind `ChangeControlAuditRetentionDays` (default never-purge), with `ResponsibleTeamNames` snapshotted and the resolution entry made self-contained. Instructions are masked in the variable DICTIONARY, because Octostache filters defeat redact-after-evaluate. `Cancelled` documented; approval is now an allow-list, so it (and any future status) refuses rather than proceeding. `TimeoutHours = 0` and a zero engine default are both refused — an unexpiring gate held the F1 key forever. The freeze exemption on resume is now conditional on the task having executed nothing. New §11 residuals: unsurfaced process validation, the runbook live-variable checkpoint mismatch, `ForEach` warnings re-emitting per resume, API-key responses indistinguishable from human ones, and the unscoped system-admin check. CONTRACT CHANGE: `interruptions.responsible_team_names` (`text[]`). |
 | 1.1 | 2026-07-29 | Post-review corrections. The offline-drop locked decision is retracted (§1, §9) — the builder always REFUSED `Octopus.Manual` and that is kept. §6 now names all three team-membership sources, records the Everyone-team refusal and the audited `AdministerSystem` break-glass override. §1 notes the approver field shipped as free-text GUIDs, not the multiselect. Instructions are REDACTED before storage; gate run conditions are evaluated (a gate can be Skipped); the resume guard requires an answered gate; the F1 pre-gate and the freeze gate are both exempt on resume; the checkpoint carries `InterventionRejected`; cancel closes open gates via the new `InterruptionStatus.Cancelled`. |
 | 1.0 | 2026-07-29 | Initial design for WP3. |
