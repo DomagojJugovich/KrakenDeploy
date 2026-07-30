@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 1.3 |
+| **Version** | 1.4 |
 | **Date** | 2026-07-30 |
 | **Authors** | Domagoj Jugovic, Claude (Opus 5) |
 | **Status** | Draft |
@@ -291,6 +291,11 @@ path — only the recorded outcome differs:
 
 ## 11. Known limits / follow-ups
 
+All five are TRACKED, so this section is a description and the master plan is the
+state: the `Engine:DefaultInterventionTimeout` breadcrumb is folded into the **F3**
+row, and the other four are **WP3-c** (`docs/master-plan-2026-07-18.md`). Nothing here
+is an untracked intention.
+
 - **F3 breadcrumb**: fold `Engine:DefaultInterventionTimeout` into F3's Engine
   settings document (D6).
 - **Process validation has no surface.** `ProcessService.ValidateAsync` — including
@@ -329,6 +334,7 @@ path — only the recorded outcome differs:
 
 | Version | Date | Change |
 |---|---|---|
+| 1.4 | 2026-07-30 | §11 residuals are now TRACKED rather than described: the `Engine:DefaultInterventionTimeout` breadcrumb (plus `Engine:MaxDeployReleaseGatedWaitDuration`, both positive-only) folded into the master plan's **F3** row, and the remaining four grouped as **WP3-c** "polishing". Three of those four are pre-existing defects WP3 illuminated rather than caused, which is why they are a separate WP and not a WP3 follow-up commit. |
 | 1.3 | 2026-07-30 | Corrects §11: two entries were listed as open but had already been fixed later in the same WP3-b pass — `ForEach` flatten warnings no longer re-emit on a resume dispatch (`DeploymentWorker.isResumeDispatch`), and an API-key response is now labelled `(via API key)` in the responder display (`InterruptionService.ResponderLabel`). No code change; the section was written before those two fixes landed and not revisited. |
 | 1.2 | 2026-07-30 | **WP3-b — remediation of the max-effort review** (§5 rewritten, §7, §11). The §5 LIFETIME premise is retracted: the `interruptions` row is CASCADE-deleted with its task and retention deletes tasks, so it never was the durable change-control record — that is now the `Interruption.*` audit entry behind `ChangeControlAuditRetentionDays` (default never-purge), with `ResponsibleTeamNames` snapshotted and the resolution entry made self-contained. Instructions are masked in the variable DICTIONARY, because Octostache filters defeat redact-after-evaluate. `Cancelled` documented; approval is now an allow-list, so it (and any future status) refuses rather than proceeding. `TimeoutHours = 0` and a zero engine default are both refused — an unexpiring gate held the F1 key forever. The freeze exemption on resume is now conditional on the task having executed nothing. New §11 residuals: unsurfaced process validation, the runbook live-variable checkpoint mismatch, `ForEach` warnings re-emitting per resume, API-key responses indistinguishable from human ones, and the unscoped system-admin check. CONTRACT CHANGE: `interruptions.responsible_team_names` (`text[]`). |
 | 1.1 | 2026-07-29 | Post-review corrections. The offline-drop locked decision is retracted (§1, §9) — the builder always REFUSED `Octopus.Manual` and that is kept. §6 now names all three team-membership sources, records the Everyone-team refusal and the audited `AdministerSystem` break-glass override. §1 notes the approver field shipped as free-text GUIDs, not the multiselect. Instructions are REDACTED before storage; gate run conditions are evaluated (a gate can be Skipped); the resume guard requires an answered gate; the F1 pre-gate and the freeze gate are both exempt on resume; the checkpoint carries `InterventionRejected`; cancel closes open gates via the new `InterruptionStatus.Cancelled`. |
