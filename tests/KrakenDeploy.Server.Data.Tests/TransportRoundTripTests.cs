@@ -618,7 +618,7 @@ internal sealed class RoundTripHost : IAsyncDisposable
         var loaderConfig = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["DataPath"]                        = _agentDataPath,
+                ["Agent:DataPath"]                  = _agentDataPath,
                 ["StepPackages:AllowUnsignedLoads"] = "true",
             })
             .Build();

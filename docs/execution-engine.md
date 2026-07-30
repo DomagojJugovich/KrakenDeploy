@@ -354,8 +354,12 @@ Two properties to be aware of:
   the shared task tree, which would race and delete a superseding sibling
   attempt's live staging; and the entire staging root is wiped at agent boot
   (any tree there is an orphan from a crashed prior process, reclaiming any
-  attempt dir a force-detach left behind). All sweeps are best-effort
-  (catch-and-log).
+  attempt dir a force-detach left behind). The boot sweep is guarded by a
+  `staging.lock` PID file in the agent data dir: if the lock holds a PID that
+  is still running, a second agent process on the same DataPath (misconfig /
+  restart overlap) skips the sweep instead of wiping the incumbent's live
+  staging mid-step; after a successful sweep the current PID is written to the
+  lock. All sweeps are best-effort (catch-and-log).
 
 ### Timer reference
 
