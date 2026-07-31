@@ -7,7 +7,10 @@
 
     <!-- Step-package metadata. Pack target below reads these values. -->
     <KrakenStepPackageId>octopus.manual</KrakenStepPackageId>
-    <KrakenStepPackageVersion>1.1.0</KrakenStepPackageVersion>
+    <!-- 1.2.0 (SC4): declares executionLocus=server so the registry routes
+         Octopus.Manual server-side (task-global gate) — the pre-SC4 versions
+         carry no locus and would classify as an agent step. -->
+    <KrakenStepPackageVersion>1.2.0</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>Manual Intervention</KrakenStepPackageDisplayName>
     <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.Manual.ManualInterventionStepHandler</KrakenStepPackageExecutorTypeName>
 
@@ -17,7 +20,7 @@
 
   <!-- SC1: claimed step types + per-type picker metadata → manifest stepTypes objects. -->
   <ItemGroup>
-    <KrakenStepType Include="Octopus.Manual" DisplayName="Manual Intervention" Category="other" Description="Pause the deployment until a responsible team approves or rejects." />
+    <KrakenStepType Include="Octopus.Manual" DisplayName="Manual Intervention" Category="other" Description="Pause the deployment until a responsible team approves or rejects." Locus="server" />
   </ItemGroup>
 
   <ItemGroup>

@@ -12,6 +12,7 @@
 @inject StepTemplateService TemplateSvc
 @inject StepPackageService StepPackageSvc
 @inject StepPackageResolver StepPackageRes
+@inject StepSchemaResolver SchemaResolver
 @inject NotificationService Notifications
 @* WP3-b — only for the post-save gated-child advisory; step persistence still goes
    through Host (IStepEditingHost), so this does not couple the dialog to processes. *@
@@ -29,13 +30,18 @@
     Inputs (use ONE of):
       Add a new step:
         ProjectId + Template      — schema derived from template parameters
-        ProjectId + ActionType    — schema looked up in BuiltInStepSchemas
-                                     (also the blank "Run a Script" path —
+                                     (preset); parameterless templates fall
+                                     through to StepSchemaResolver
+        ProjectId + ActionType    — schema resolved via StepSchemaResolver
+                                     (serving package's schema; also the
+                                      blank "Run a Script" path —
                                       pass "Kraken.Script")
       Edit an existing step:
-        Step                      — schema resolved from BuiltInStepSchemas
-                                     first; falls back to the matching
-                                     template by ActionType.
+        Step                      — schema resolved pin-aware via
+                                     StepSchemaResolver (pinned version →
+                                     serving latest with a notice); falls
+                                     back to the matching preset by
+                                     ActionType.
 
     Renders:
       - Common Step columns (Name, Package ID, Target Roles) as chrome.
@@ -63,7 +69,7 @@
                     No schema available for this step type.
                 </RadzenText>
                 <RadzenText TextStyle="TextStyle.Body2">
-                    @(_resolveError ?? "Step type is missing both a built-in schema and a matching step template.")
+                    @(_resolveError ?? "No installed step package serves this step type, and no step template matches it.")
                 </RadzenText>
             </RadzenAlert>
             <RadzenStack Orientation="Orientation.Horizontal"
@@ -72,6 +78,16 @@
                               Click="@(_ => Dialog.Close(false))" />
             </RadzenStack>
             return;
+        }
+
+        @* SC4 — schema provenance notice: the pin couldn't provide the form
+           (pre-schema version still installed) and we're showing the serving
+           package's newest schema instead. *@
+        @if (_resolveNotice is not null)
+        {
+            <RadzenAlert AlertStyle="AlertStyle.Info" ShowIcon="true" AllowClose="false">
+                @_resolveNotice
+            </RadzenAlert>
         }
 
         @* ── Common Step columns ─────────────────────────────────────────── *@
@@ -652,9 +668,10 @@
     [Parameter] public StepTemplate? Template { get; set; }
 
     /// <summary>
-    /// Optional. Add path without a template — the schema is looked up by
-    /// step type in <see cref="BuiltInStepSchemas"/>. Used for blank
-    /// "Run a Script" and any future built-in step type added directly.
+    /// Optional. Add path without a template — the schema is resolved by
+    /// step type via <see cref="StepSchemaResolver"/> (the serving
+    /// package's schema). Used for blank "Run a Script" and any step type
+    /// added directly.
     /// </summary>
     [Parameter] public string? ActionType { get; set; }
 
@@ -676,6 +693,7 @@
     private StepUiSchema? _schema;
     private string  _stepType      = "";
     private string? _resolveError;
+    private string? _resolveNotice; // SC4: provenance info when the pin can't provide the form
     private bool _isEdit;
     private readonly List<PackageRefRow> _referencedPackages = [];
     private List<string> _errors = [];
@@ -691,9 +709,9 @@
     /// sorted highest semver first so index 0 is "latest installed".</summary>
     private List<string> _availableVersions = [];
 
-    /// <summary>Indexed by version string so the dropdown's Change handler
-    /// can look up the picked row's UiSchemaJson without an extra DB hit.
-    /// Populated alongside <see cref="_availableVersions"/>.</summary>
+    /// <summary>Indexed by version string for changelog/metadata display in
+    /// the version dropdown (schemas come from <see cref="StepSchemaResolver"/>
+    /// per SC4). Populated alongside <see cref="_availableVersions"/>.</summary>
     private Dictionary<string, StepPackage> _versionRows =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -844,7 +862,10 @@
 
             await LoadPackageVersionsAsync(Step.StepPackageName);
 
-            _schema = await ResolveSchemaAsync(Step.StepType);
+            // SC4: pin-aware — the form shown is the form of the version the
+            // step will actually execute with.
+            _schema = await ResolveSchemaAsync(
+                Step.StepType, Step.StepPackageName, Step.StepPackageVersion);
 
             // Seed _values from existing Step.Config (overlaying schema
             // defaults where Config has no entry yet).
@@ -1200,9 +1221,10 @@
     }
 
     /// <summary>
-    /// Handles the version dropdown's Change event (Phase D-7.2). Pulls the
-    /// new version's per-version <c>UiSchemaJson</c> from the cached row
-    /// and swaps it into the dialog's schema, carrying over any field values
+    /// Handles the version dropdown's Change event (Phase D-7.2 / SC4).
+    /// Pulls the new version's per-type schema row via
+    /// <see cref="StepSchemaResolver"/> and swaps it into the dialog's
+    /// schema, carrying over any field values
     /// that exist in both the old and new schemas. Fields added in the new
     /// schema get their declared default. Fields dropped in the new schema
     /// fire a single toast naming each one — the value is lost on the next
@@ -1221,29 +1243,17 @@
         var previousValues = new Dictionary<string, string>(_values, StringComparer.Ordinal);
         var previousSchema = _schema;
 
-        // Resolve the new schema. Prefer the row's per-version UiSchemaJson —
-        // that's the canonical source for what this exact package version
-        // expects. Fall back to BuiltInStepSchemas by step type only when
-        // the row has no schema (legacy / pre-D-3 install).
+        // Resolve the new schema. SC4: the per-(version, type) schema row is
+        // canonical for what this exact package version expects; fall back to
+        // the shared resolution path only when that version ships no schema
+        // for the type (pre-SC1 install).
         StepUiSchema? newSchema = null;
-        if (_versionRows.TryGetValue(newVersion, out var row)
-            && !string.IsNullOrWhiteSpace(row.UiSchemaJson))
+        if (!string.IsNullOrWhiteSpace(_stepPackageName))
         {
-            try
-            {
-                newSchema = StepUiSchemaJson.Deserialize(row.UiSchemaJson);
-            }
-            catch (JsonException ex)
-            {
-                Notifications.Notify(NotificationSeverity.Error, "Schema parse failed",
-                    $"Could not load {row.Name} {newVersion} ui-schema.json: {ex.Message}. " +
-                    "Keeping the previous version selected.", 6000);
-                return;
-            }
+            newSchema = await SchemaResolver.GetSchemaAsync(
+                _stepPackageName, newVersion, _stepType);
         }
-
-        // Either no per-version schema or it failed to load → fall back.
-        newSchema ??= await ResolveSchemaAsync(_stepType);
+        newSchema ??= await ResolveSchemaAsync(_stepType, _stepPackageName, newVersion);
 
         // Diff the property sets so we know what to carry over and what to
         // warn about. Schemas can be null when no built-in covers the step
@@ -1293,19 +1303,29 @@
         StateHasChanged();
     }
 
-    private async Task<StepUiSchema?> ResolveSchemaAsync(string stepType)
+    private async Task<StepUiSchema?> ResolveSchemaAsync(
+        string stepType, string? pinnedName = null, string? pinnedVersion = null)
     {
-        // Built-in schemas first (covers Kraken.IIS, Kraken.Script,
-        // Octopus.IIS, Octopus.TentaclePackage, Octopus.Manual, …).
-        var built = BuiltInStepSchemas.GetForStepType(stepType);
-        if (built is not null) { return built; }
-
-        // Fall back to a community-library template's parameter schema.
+        // SC4 — one resolution path (SD-6): the pinned package version's own
+        // schema, else the serving package's newest schema (with a provenance
+        // notice), else a matching preset's parameter form, else nothing.
+        _resolveNotice = null;
         try
         {
+            var resolved = await SchemaResolver.ResolveAsync(
+                stepType, pinnedName, pinnedVersion);
+            if (resolved is not null)
+            {
+                _resolveNotice = resolved.Notice;
+                return resolved.Schema;
+            }
+
+            // Preset fallback — community/user templates render their own
+            // parameter forms for types no package serves (SD-2).
             var all = await TemplateSvc.GetAllAsync();
             var match = all.FirstOrDefault(t =>
-                t.ActionType.Equals(stepType, StringComparison.OrdinalIgnoreCase));
+                t.ActionType.Equals(stepType, StringComparison.OrdinalIgnoreCase)
+                && t.Parameters.Count > 0);
             if (match is not null)
             {
                 return StepTemplateSchemaAdapter.BuildSchema(match);
@@ -1313,12 +1333,12 @@
         }
         catch (Exception ex)
         {
-            _resolveError = $"Failed to look up step template: {ex.Message}";
+            _resolveError = $"Failed to resolve the step type's schema: {ex.Message}";
             return null;
         }
 
         _resolveError =
-            $"No built-in schema or step template matches step type '{stepType}'.";
+            $"No installed step package or step template provides a form for '{stepType}'.";
         return null;
     }
 

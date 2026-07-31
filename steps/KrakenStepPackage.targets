@@ -61,6 +61,9 @@
       <Category></Category>
       <Description></Description>
       <Featured>false</Featured>
+      <!-- "agent" (default, emitted as empty → null) or "server" for types
+           orchestrated server-side (e.g. Octopus.Manual's task-global gate). -->
+      <Locus></Locus>
     </KrakenStepType>
   </ItemDefinitionGroup>
 
@@ -139,7 +142,7 @@
       <!-- SC1: KrakenStepType items (object entries with per-type picker
            metadata) win over the legacy comma-list property (plain-string
            entries). Empty metadata strings normalise to null at parse time. -->
-      <_KrakenStepTypesJson Condition="'@(KrakenStepType)' != ''">@(KrakenStepType->'{ "id": "%(Identity)", "displayName": "%(DisplayName)", "category": "%(Category)", "description": "%(Description)", "featured": %(Featured) }', ', ')</_KrakenStepTypesJson>
+      <_KrakenStepTypesJson Condition="'@(KrakenStepType)' != ''">@(KrakenStepType->'{ "id": "%(Identity)", "displayName": "%(DisplayName)", "category": "%(Category)", "description": "%(Description)", "featured": %(Featured), "executionLocus": "%(Locus)" }', ', ')</_KrakenStepTypesJson>
       <_KrakenStepTypesJson Condition="'@(KrakenStepType)' == ''">"$(_KrakenStepTypesNormalized.Replace(`,`, `", "`))"</_KrakenStepTypesJson>
     </PropertyGroup>
     <Error Condition="'@(KrakenStepType)' == '' AND '$(_KrakenStepTypesNormalized)' == ''"

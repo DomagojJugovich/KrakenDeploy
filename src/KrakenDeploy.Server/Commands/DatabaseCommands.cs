@@ -209,6 +209,11 @@ internal static class DatabaseCommands
             await packageSeeder.SeedAsync().ConfigureAwait(false);
             Console.WriteLine("done.");
 
+            Console.Write("Rebuilding step-type registry... ");
+            var stepTypeRegistry = scope.ServiceProvider.GetRequiredService<StepTypeRegistry>();
+            await stepTypeRegistry.RebuildAsync().ConfigureAwait(false);
+            Console.WriteLine("done.");
+
             Console.WriteLine();
             Console.WriteLine("Database setup complete.");
             return 0;

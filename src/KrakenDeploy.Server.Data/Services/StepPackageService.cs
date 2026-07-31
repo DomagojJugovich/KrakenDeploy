@@ -34,8 +34,31 @@ namespace KrakenDeploy.Server.Data.Services;
 public sealed class StepPackageService(
     IDbContextFactory<KrakenDbContext> dbFactory,
     IConfiguration config,
-    ILogger<StepPackageService> logger)
+    ILogger<StepPackageService> logger,
+    StepTypeRegistry? registry = null)
 {
+    // Optional so existing construction sites (tests) keep working; DI
+    // injects the registered instance. Both paths share the same rebuild.
+    private readonly StepTypeRegistry _registry = registry ?? new StepTypeRegistry(dbFactory);
+
+    /// <summary>
+    /// SC3: refresh the step-type registry after a catalog mutation. The
+    /// mutation itself already succeeded — a rebuild failure leaves the
+    /// registry stale (healed by the next rebuild), never fails the caller.
+    /// </summary>
+    private async Task RefreshRegistryAsync(CancellationToken ct)
+    {
+        try
+        {
+            await _registry.RebuildAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogError(ex,
+                "Step-type registry rebuild failed after a catalog change; " +
+                "registry is stale until the next install/uninstall/boot.");
+        }
+    }
     /// <summary>
     /// Result of an upload — either a successful install with the persisted
     /// row, or an error message the caller surfaces to the user.
@@ -216,7 +239,6 @@ public sealed class StepPackageService(
                 Version           = manifest.Version,
                 Sha256            = sha256,
                 ManifestJson      = StepPackageManifestJson.Serialize(manifest),
-                UiSchemaJson      = uiSchemaJson,
                 ChangelogMarkdown = changelogMarkdown,
                 Source            = source,
                 // Trim each claim: a padded entry (e.g. manifest authored as
@@ -253,6 +275,8 @@ public sealed class StepPackageService(
             logger.LogInformation(
                 "Installed step package {Name} {Version} ({StepTypes}) from {Source}.",
                 row.Name, row.Version, row.StepTypes, row.Source);
+
+            await RefreshRegistryAsync(ct).ConfigureAwait(false);
 
             return new UploadResult(true, row, null);
         }
@@ -419,6 +443,8 @@ public sealed class StepPackageService(
 
         logger.LogInformation(
             "StepPackageService.UninstallAsync: removed {Name} {Version}.", name, version);
+
+        await RefreshRegistryAsync(ct).ConfigureAwait(false);
 
         return new UninstallResult(UninstallStatus.Uninstalled, null);
     }

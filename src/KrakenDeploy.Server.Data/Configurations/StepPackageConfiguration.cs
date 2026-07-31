@@ -20,7 +20,6 @@ public sealed class StepPackageConfiguration : IEntityTypeConfiguration<StepPack
         builder.Property(x => x.Sha256).IsRequired().HasMaxLength(64);
 
         builder.Property(x => x.ManifestJson).IsRequired().HasColumnType("jsonb");
-        builder.Property(x => x.UiSchemaJson).HasColumnType("jsonb");
 
         builder.Property(x => x.Source).IsRequired().HasConversion<int>();
 

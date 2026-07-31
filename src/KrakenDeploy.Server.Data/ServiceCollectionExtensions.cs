@@ -252,6 +252,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<DropBundleService>();
         services.AddScoped<OfflineResultService>();
         services.AddScoped<BuiltInStepPackageSeeder>();
+        services.AddScoped<StepTypeRegistry>();
+        services.AddScoped<StepSchemaResolver>();
         services.AddScoped<BuiltInRbacSeeder>();
         services.AddScoped<IPermissionEvaluator, PermissionEvaluator>();
         services.AddScoped<UserService>();

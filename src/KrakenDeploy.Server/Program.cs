@@ -965,6 +965,12 @@ public static class Program
             var pkgSeeder = scope.ServiceProvider.GetRequiredService<BuiltInStepPackageSeeder>();
             await pkgSeeder.SeedAsync().ConfigureAwait(false);
 
+            // SC3: recompute the step-type registry once per boot — install
+            // and uninstall keep it current at runtime; this pass heals
+            // anything older (the SC2 migration's approximation included).
+            var stepTypeRegistry = scope.ServiceProvider.GetRequiredService<StepTypeRegistry>();
+            await stepTypeRegistry.RebuildAsync().ConfigureAwait(false);
+
             await PrintFirstRunHintIfNoUsersAsync(scope.ServiceProvider, app.Logger)
                 .ConfigureAwait(false);
         }

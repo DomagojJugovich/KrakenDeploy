@@ -39,9 +39,21 @@ public sealed record StepTypeDeclaration
     /// <summary>When true the picker surfaces this type in its Featured section.</summary>
     public bool Featured { get; init; }
 
+    /// <summary>
+    /// Where steps of this type execute: <c>null</c>/"agent" (default — the
+    /// package's handler runs on the agent) or <c>"server"</c> (server-side
+    /// orchestration, e.g. <c>Octopus.Manual</c>'s task-global gate). Feeds
+    /// the registry's ExecutionLocus, which drives wave partitioning.
+    /// </summary>
+    public string? ExecutionLocus { get; init; }
+
+    /// <summary>The <see cref="ExecutionLocus"/> value marking server-side execution.</summary>
+    public const string ServerLocus = "server";
+
     /// <summary>True when the entry carries nothing beyond the id — serialised as a plain string.</summary>
     public bool IsIdOnly =>
-        DisplayName is null && Category is null && Description is null && !Featured;
+        DisplayName is null && Category is null && Description is null
+        && !Featured && ExecutionLocus is null;
 
     /// <summary>
     /// Lets pre-SC1 call sites keep writing <c>StepTypes = ["A", "B"]</c> —
@@ -81,6 +93,7 @@ public sealed class StepTypeDeclarationJsonConverter : JsonConverter<StepTypeDec
         string? displayName = null;
         string? category    = null;
         string? description = null;
+        string? locus       = null;
         var     featured    = false;
 
         while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
@@ -94,12 +107,13 @@ public sealed class StepTypeDeclarationJsonConverter : JsonConverter<StepTypeDec
             reader.Read();
             switch (prop?.ToLowerInvariant())
             {
-                case "id":          id          = reader.GetString(); break;
-                case "displayname": displayName = reader.GetString(); break;
-                case "category":    category    = reader.GetString(); break;
-                case "description": description = reader.GetString(); break;
-                case "featured":    featured    = reader.GetBoolean(); break;
-                default:            reader.Skip(); break; // forward-compat
+                case "id":             id          = reader.GetString(); break;
+                case "displayname":    displayName = reader.GetString(); break;
+                case "category":       category    = reader.GetString(); break;
+                case "description":    description = reader.GetString(); break;
+                case "featured":       featured    = reader.GetBoolean(); break;
+                case "executionlocus": locus       = reader.GetString(); break;
+                default:               reader.Skip(); break; // forward-compat
             }
         }
 
@@ -112,13 +126,22 @@ public sealed class StepTypeDeclarationJsonConverter : JsonConverter<StepTypeDec
         // target always emits every field (item-metadata defaults), so ""
         // must mean "not set" or id-only entries would stop round-tripping
         // as plain strings.
+        // "agent" is the default — normalise it (and empty) to null so such
+        // entries keep round-tripping as plain strings.
+        var normalizedLocus = NullIfWhiteSpace(locus);
+        if (string.Equals(normalizedLocus, "agent", StringComparison.OrdinalIgnoreCase))
+        {
+            normalizedLocus = null;
+        }
+
         return new StepTypeDeclaration
         {
-            Id          = id,
-            DisplayName = NullIfWhiteSpace(displayName),
-            Category    = NullIfWhiteSpace(category),
-            Description = NullIfWhiteSpace(description),
-            Featured    = featured,
+            Id             = id,
+            DisplayName    = NullIfWhiteSpace(displayName),
+            Category       = NullIfWhiteSpace(category),
+            Description    = NullIfWhiteSpace(description),
+            Featured       = featured,
+            ExecutionLocus = normalizedLocus,
         };
     }
 
@@ -136,10 +159,11 @@ public sealed class StepTypeDeclarationJsonConverter : JsonConverter<StepTypeDec
 
         writer.WriteStartObject();
         writer.WriteString("id", value.Id);
-        if (value.DisplayName is not null) { writer.WriteString("displayName", value.DisplayName); }
-        if (value.Category    is not null) { writer.WriteString("category",    value.Category); }
-        if (value.Description is not null) { writer.WriteString("description", value.Description); }
-        if (value.Featured)                { writer.WriteBoolean("featured",   true); }
+        if (value.DisplayName    is not null) { writer.WriteString("displayName",    value.DisplayName); }
+        if (value.Category       is not null) { writer.WriteString("category",       value.Category); }
+        if (value.Description    is not null) { writer.WriteString("description",    value.Description); }
+        if (value.Featured)                   { writer.WriteBoolean("featured",      true); }
+        if (value.ExecutionLocus is not null) { writer.WriteString("executionLocus", value.ExecutionLocus); }
         writer.WriteEndObject();
     }
 }

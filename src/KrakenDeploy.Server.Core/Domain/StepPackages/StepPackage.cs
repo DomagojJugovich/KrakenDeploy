@@ -41,13 +41,6 @@ public class StepPackage : AuditableEntity
     public required string ManifestJson { get; set; }
 
     /// <summary>
-    /// The package's <c>ui/ui-schema.json</c> contents as <c>jsonb</c>. The
-    /// schema-driven renderer (Phase C-4) consumes this directly — no need
-    /// to re-read the extracted file on every editor load.
-    /// </summary>
-    public string? UiSchemaJson { get; set; }
-
-    /// <summary>
     /// Optional release notes for this version, taken from the
     /// <c>CHANGELOG.md</c> file at the zip root (Phase D-12.4). Surfaced
     /// in the "Update available" dialog when a process step is pinned to
