@@ -52,7 +52,17 @@ services:
       # DOTNET_ENVIRONMENT=Production turns a missing key into a clean fail-fast
       # instead of a silent brick.
       Encryption__MasterKey: ${ENCRYPTION_KEY:?Required — base64-encoded 32 bytes}
+      # SC7: `database setup` seeds the built-in step packages, and a
+      # production server verifies every archive's signature against this
+      # public key (AllowUnsignedUploads is false in Production). The image
+      # must have been built with the matching PRIVATE key — see
+      # Dockerfile.server + deploy/onprem/README.md.
+      StepPackages__TrustedPublicKey: /etc/krakendeploy/step-signing.pub.pem
       DOTNET_ENVIRONMENT: Production
+    volumes:
+      # SC7: step-signing public key (PEM), read-only — same file the
+      # kraken-server service mounts.
+      - ${STEP_SIGNING_PUBKEY_PATH:?Required — host path to the step-signing public key PEM; see deploy/onprem/README.md}:/etc/krakendeploy/step-signing.pub.pem:ro
     entrypoint:
       - dotnet
       - KrakenDeploy.Server.dll
@@ -99,6 +109,12 @@ services:
       # generate one. (In an HA pair every node must mount the SAME cert.)
       DataProtection__CertificatePath: /etc/krakendeploy/dp-cert.pfx
       DataProtection__CertificatePassword: ${DP_CERT_PASSWORD:-}
+      # SC7: trust anchor for step-package signatures — uploads, catalog
+      # installs and the boot seeder all verify against it (the private
+      # counterpart signs archives at image build / in the publish CI).
+      # Agents installed from this server need the same key configured as
+      # StepPackages:TrustedPublicKey to load the packages they download.
+      StepPackages__TrustedPublicKey: /etc/krakendeploy/step-signing.pub.pem
       DOTNET_ENVIRONMENT: Production
       # B8: cleartext has no ALPN, so ONE plaintext port cannot serve HTTP/1.1
       # (REST/SignalR/UI via Caddy) and HTTP/2 (the agents' gRPC h2c hop that
@@ -116,6 +132,8 @@ services:
       # Operator-provided DataProtection cert, read-only. DP_CERT_PATH is a host
       # path to a PFX kept OUTSIDE the data volume (see the env note above).
       - ${DP_CERT_PATH:?Required — host path to the DataProtection PFX; see deploy/onprem/README.md}:/etc/krakendeploy/dp-cert.pfx:ro
+      # SC7: step-signing public key (PEM), read-only.
+      - ${STEP_SIGNING_PUBKEY_PATH:?Required — host path to the step-signing public key PEM; see deploy/onprem/README.md}:/etc/krakendeploy/step-signing.pub.pem:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:5080/healthz || exit 1"]
       interval: 15s

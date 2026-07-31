@@ -41,6 +41,7 @@ Internet → :80/:443 → Caddy → kraken-server:5080 → Postgres:5432
 | `KRAKEN_LICENSE_KEY` | No | License key (can also be uploaded via UI) |
 | `DP_CERT_PATH` | Yes | Host path to the DataProtection PFX (Linux key-ring encryption). See below. |
 | `DP_CERT_PASSWORD` | No | Password for the PFX (recommended) |
+| `STEP_SIGNING_PUBKEY_PATH` | Yes | Host path to the step-signing **public** key PEM. Servers verify every step-package archive (uploads, catalog installs, the boot seeder) against it. See below. |
 | `DOMAIN` | No | Public domain for auto-HTTPS (defaults to localhost) |
 | `HA_MODE` | No | Set to "Postgres" for a 2-node HA pair |
 | `SERVER_IMAGE` | No | Docker image tag (default: krakendeploy-server:latest) |
@@ -78,6 +79,45 @@ every user out (a new ring is generated), but it is not catastrophic like
 `ENCRYPTION_KEY`. In an **HA pair**, every node must mount the **same** PFX so
 they can read each other's cookies. On a **Windows** host DPAPI is used
 automatically and no cert is needed.
+
+### Step-package signing (required)
+
+Every step package — the executable plugins deployment steps run — is a
+signed archive. A production server (`AllowUnsignedUploads` is `false` outside
+Development) refuses to install or even **seed its own built-ins** unless the
+archive's RSA-SHA256 signature verifies against the configured trusted key,
+and agents apply the same check before loading a package
+(`StepPackages:AllowUnsignedLoads` is a Development-only escape hatch).
+
+One key pair per installation owner. Generate it once:
+
+```bash
+openssl genrsa -out secrets/kraken-signing.pem 3072
+openssl rsa -in secrets/kraken-signing.pem -pubout -out secrets/kraken-signing.pub.pem
+chmod 600 secrets/kraken-signing.pem
+chmod 644 secrets/kraken-signing.pub.pem
+```
+
+- The **private** key signs archives at image build. Build the production
+  image with it (BuildKit secret — the key never enters an image layer):
+
+  ```bash
+  docker build -f Dockerfile.server \
+    --secret id=kraken_signing_key,src=./secrets/kraken-signing.pem \
+    -t krakendeploy-server:latest .
+  ```
+
+  The same key belongs in the `KRAKEN_SIGNING_KEY` GitHub Actions secret so
+  the `publish-step-packages` workflow signs catalog releases with it.
+- The **public** key is what this compose file mounts: in `.env` set
+  `STEP_SIGNING_PUBKEY_PATH=./secrets/kraken-signing.pub.pem`. Agents
+  installed from this server need the same value configured as
+  `StepPackages:TrustedPublicKey` (inline PEM or a path) to load the
+  packages they download.
+
+Losing the private key is not catastrophic — generate a new pair, rebuild
+the image, redistribute the public key — but every previously signed archive
+then fails verification, so treat it like any other release-signing key.
 
 > A future guided on-prem installer is planned to offer generating this
 > certificate (and `ENCRYPTION_KEY`) during setup; until then it is a manual
