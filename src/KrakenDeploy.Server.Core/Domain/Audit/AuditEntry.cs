@@ -62,6 +62,40 @@ public class AuditEntry
     /// </summary>
     public string? AfterJson { get; set; }
 
-    /// <summary>Freeform detail string for non-EF events.</summary>
-    public string? Details { get; set; }
+    /// <summary>
+    /// Freeform detail string for non-EF events.
+    /// <para>
+    /// Capped, and enforced by a truncating SETTER rather than by a check at each call
+    /// site. This is the only string column on the entity that carries free text
+    /// originating OUTSIDE the server — a handshake header, an agent's self-reported
+    /// update outcome — and it is the one that leaves the premises: the subscription
+    /// poller forwards audit rows to the webhook and e-mail transports, and the
+    /// AI-inspect transport interpolates this exact value into an LLM prompt. Every
+    /// sibling column already had <c>HasMaxLength</c>; this one did not, so it was
+    /// Postgres <c>text</c> and one authenticated caller could push Kestrel's whole 32 KB
+    /// header limit into a row, at whatever rate it liked. A setter is the only shape that
+    /// cannot be bypassed: two call sites construct <see cref="AuditEntry"/> directly
+    /// rather than going through <c>IAuditLog.RecordAsync</c>.
+    /// </para>
+    /// <para>
+    /// EF materialisation writes the backing field, so reading a pre-cap row back is
+    /// lossless; only application writes truncate.
+    /// </para>
+    /// </summary>
+    public string? Details
+    {
+        get => _details;
+        set => _details = value is { Length: > MaxDetailsLength }
+            ? string.Concat(value.AsSpan(0, MaxDetailsLength - 1), "…")
+            : value;
+    }
+
+    private string? _details;
+
+    /// <summary>
+    /// Cap on <see cref="Details"/>, matched by <c>AuditEntryConfiguration</c>'s
+    /// <c>HasMaxLength</c> so the column and the setter cannot disagree. Generous for a
+    /// real error message; far below what an abusive caller would like.
+    /// </summary>
+    public const int MaxDetailsLength = 4096;
 }

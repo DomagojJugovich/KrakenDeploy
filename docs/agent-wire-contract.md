@@ -13,7 +13,7 @@ Production-readiness fix **B6** (audit items T2-5, T1-3): the last breaking pass
 over the agent wire before external agents exist. Everything here is a
 **CONTRACT CHANGE**; `AgentContract.CurrentVersion = 1` names the resulting
 surface. Later passes append to it — the current version and what each pass
-added are tabulated below. **The contract is at v3** (F5).
+added are tabulated below. **The contract is at v4** (F5).
 
 ## Version history
 
@@ -21,7 +21,8 @@ added are tabulated below. **The contract is at v3** (F5).
 |---|---|---|
 | 1 | B6 (this document) | `DispatchId` on plan + completion + step + log reports, `CancelDeploymentAsync` push, `AgentRegistrationResult`, `Roles` removed from registration. |
 | 2 | F2 (2026-07-25) | `DeploymentPlan.AllowParallelTaskExecution` + `AdhocScriptCommand.AllowParallelTaskExecution` (per-target machine-concurrency policy, appended + defaulted `false`); new `IAgentHubServer.ReportExecutionStartedAsync(deploymentId, dispatchId)`. |
-| 3 | F5 (2026-07-29) | **No shape change on the SignalR surface.** Both `AllowParallelTaskExecution` fields are RETAINED and re-interpreted: they now select which SIDE of the agent's reader-writer machine gate the work takes (`true` → SHARED, `false` → EXCLUSIVE) instead of whether to take it at all. `AdhocScriptCommand.AllowParallelTaskExecution` also changes provenance: per-RUN, not per-target — the AI session flow always sends `true`. Adds one REST endpoint the agent MUST consult fail-closed before a self-upgrade swap: `GET /api/agents/task-in-flight` → `AgentTaskInFlightResponse`. Adds the `swap-deferred` `AgentUpdateOutcome`. Finally, the version itself MOVED onto the handshake: the agent sends `X-KD-Contract` and the server refuses a mismatch with 426 before the connection is admitted. `AgentRegistrationRequest.ContractVersion` is retained for diagnostics and is no longer a gate. Folded into v3 rather than bumped to v4 because v3 has never shipped. |
+| 3 | F5 (2026-07-29) | **No shape change on the SignalR surface.** Both `AllowParallelTaskExecution` fields are RETAINED and re-interpreted: they now select which SIDE of the agent's reader-writer machine gate the work takes (`true` → SHARED, `false` → EXCLUSIVE) instead of whether to take it at all. `AdhocScriptCommand.AllowParallelTaskExecution` also changes provenance: per-RUN, not per-target — the AI session flow always sends `true`. Adds one REST endpoint the agent MUST consult fail-closed before a self-upgrade swap: `GET /api/agents/task-in-flight` → `AgentTaskInFlightResponse`. Adds the `swap-deferred` `AgentUpdateOutcome`. |
+| 4 | F5 round 5 (2026-07-31) | **The version itself MOVED onto the handshake.** The agent sends `X-KD-Contract` on the negotiate and the WebSocket upgrade; the server refuses a mismatch with **426** before the connection is admitted. `AgentRegistrationRequest.ContractVersion` is retained for diagnostics and is no longer a gate. Round 4 folded this into v3 on the grounds that v3 had never shipped; that made the refusal incoherent to read — an agent built against the pre-move v3 sends no header and was refused with "requires v3, presented absent" while both sides call themselves v3. A distinct number makes the diagnosis self-explanatory and is what fires the OPERATOR ACTION rule below. |
 
 **Why F2 bumps the version rather than riding v1.** Both new plan fields are
 appended and default to the safe value, so a v1 agent would deserialize them

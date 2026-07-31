@@ -28,6 +28,21 @@ using Testcontainers.PostgreSql;
 namespace KrakenDeploy.Server.Data.Tests;
 
 /// <summary>
+/// What a test agent presents in the wire-contract handshake header: the current version,
+/// a specific (skewed) version, or nothing at all. "Absent" is a distinct path in
+/// <c>AgentContractHandshakeGate</c> — an agent predating the header — and must not be
+/// simulated by sending a zero.
+/// </summary>
+public sealed record PresentedContract(int? Value)
+{
+    public static PresentedContract Current { get; } = new(AgentContract.CurrentVersion);
+
+    public static PresentedContract Absent { get; } = new((int?)null);
+
+    public static PresentedContract Version(int version) => new(version);
+}
+
+/// <summary>
 /// Spins up one PostgreSQL container and provisions TWO tenant databases
 /// (<c>kraken_acct_alpha</c>, <c>kraken_acct_beta</c>) — one per simulated SaaS
 /// business account — each migrated to the current schema (the Default Space is
@@ -163,10 +178,13 @@ public sealed class MultiAccountAgentTransportFixture : IAsyncLifetime
         var app = builder.Build();
         app.UseAuthentication();
         app.UseAuthorization();
-        // Mirrors the production pipeline order: the handshake contract gate sits after
-        // authentication (so its audit row can name the target) and before the hub.
-        app.UseMiddleware<AgentContractHandshakeGate>();
-        app.MapHub<AgentHub>("/hubs/agent");
+        // Mirrors the production pipeline order AND its wiring: the gate sits after
+        // authentication (so its audit row can name the target) and is scoped by the
+        // RequiresAgentContract metadata on the hub endpoint, not by a path string. The
+        // marker below is load-bearing — drop it and the gate never fires, which is exactly
+        // the fail-open mode a path-matched gate had whenever a route drifted.
+        app.UseAgentContractGate();
+        app.MapHub<AgentHub>("/hubs/agent").WithMetadata(new RequiresAgentContract());
         await app.StartAsync();
         return app;
     }
@@ -182,8 +200,7 @@ public sealed class MultiAccountAgentTransportFixture : IAsyncLifetime
         AccountInfo account,
         Guid tokenTargetId,
         string? hostOverride = null,
-        int? contractVersion = null,
-        bool omitContractHeader = false)
+        PresentedContract? contract = null)
     {
         var server = (TestServer)host.Services.GetRequiredService<IServer>();
         var requestHost = hostOverride ?? account.Host;
@@ -197,16 +214,15 @@ public sealed class MultiAccountAgentTransportFixture : IAsyncLifetime
                 options.AccessTokenProvider = () => Task.FromResult<string?>(token);
 
                 // The handshake contract gate refuses a connection whose declared wire
-                // version is absent or wrong, so a fixture standing in for a real agent
-                // must declare it exactly as SignalRServerLink does. `contractVersion`
-                // presents a SKEWED version; `omitContractHeader` presents none at all,
-                // which is a distinct path in the gate (a pre-header agent) and must not be
-                // simulated by sending a zero.
-                if (!omitContractHeader)
+                // version is absent or wrong, so a fixture standing in for a real agent must
+                // declare it exactly as SignalRServerLink does. One tri-state knob rather
+                // than two independent ones: "which version" and "any version at all" are
+                // not orthogonal, and expressing them separately left a fourth combination
+                // (a version AND omit it) that means nothing.
+                if ((contract ?? PresentedContract.Current).Value is { } declared)
                 {
                     options.Headers[AgentContract.VersionHeader] =
-                        (contractVersion ?? AgentContract.CurrentVersion)
-                            .ToString(CultureInfo.InvariantCulture);
+                        declared.ToString(CultureInfo.InvariantCulture);
                 }
             })
             .Build();

@@ -589,11 +589,13 @@ internal sealed class RoundTripHost : IAsyncDisposable
         var app = builder.Build();
         app.UseAuthentication();
         app.UseAuthorization();
-        // Mirrors the production pipeline order. This suite drives a REAL SignalRServerLink,
-        // so the gate is exercised end to end: the agent's own handshake header has to match
-        // or none of these tests can connect at all.
-        app.UseMiddleware<AgentContractHandshakeGate>();
-        app.MapHub<AgentHub>("/hubs/agent");
+        // Mirrors the production pipeline order AND its wiring. This suite drives a REAL
+        // SignalRServerLink over a real loopback Kestrel, so the gate is exercised end to end
+        // on BOTH endpoints the marker stamps — the negotiate POST and the WebSocket upgrade.
+        // The agent's handshake header therefore has to survive the upgrade or none of these
+        // tests can connect at all.
+        app.UseAgentContractGate();
+        app.MapHub<AgentHub>("/hubs/agent").WithMetadata(new RequiresAgentContract());
         await app.StartAsync().ConfigureAwait(false);
 
         var serverUrl = app.Services

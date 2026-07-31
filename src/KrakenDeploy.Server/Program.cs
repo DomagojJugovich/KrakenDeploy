@@ -1002,14 +1002,14 @@ public static class Program
         app.UseAuthentication();
         app.UseAuthorization();
 
-        // B6/F5 — agent wire-contract gate on the SignalR handshake. Mounted AFTER
-        // UseAuthentication/UseAuthorization on purpose: the refusal is audited against
-        // the target named by the agent JWT, and an operator needs to know WHICH agent is
-        // skewed rather than which address connected. Refusing here rather than in
-        // AgentHub.RegisterAsync is what lets "connected" mean "verified and dispatchable"
-        // — see AgentContractHandshakeGate for the family of defects the old ordering
-        // caused.
-        app.UseMiddleware<KrakenDeploy.Server.Transport.AgentContractHandshakeGate>();
+        // B6/F5 — agent wire-contract gate on the SignalR handshake. Scoped by the
+        // RequiresAgentContract metadata on the MapHub below, not by a path string, so a
+        // renamed or proxy-rewritten route cannot leave it silently admitting everything.
+        // Mounted AFTER UseAuthentication/UseAuthorization on purpose, and that ordering
+        // does two jobs: the refusal can be audited against the target named by the agent
+        // JWT, and the hub's [Authorize(AuthenticationSchemes = "AgentJwt")] is enforced
+        // first — so a browser session cannot reach the gate at all.
+        app.UseAgentContractGate();
 
         // Enforces the per-endpoint "agent-register" policy below. No global
         // limiter is configured, so this only affects endpoints that opt in.
@@ -1097,7 +1097,13 @@ public static class Program
             return Results.Empty;
         }).AllowAnonymous();
 
-        app.MapHub<AgentHub>("/hubs/agent");
+        // The marker is what AgentContractHandshakeGate keys off. MapHub produces TWO
+        // endpoints — the negotiate POST and the transport request — and the convention
+        // builder stamps both, so the gate covers the WebSocket upgrade as well as the
+        // negotiate. Removing this line disables the wire-contract gate; the endpoint is
+        // the only place that fact is expressed.
+        app.MapHub<AgentHub>("/hubs/agent")
+            .WithMetadata(new RequiresAgentContract());
         app.MapHub<UiHub>("/hubs/ui");
 
         // M11.B — MCP Streamable HTTP transport. The endpoint itself

@@ -51,22 +51,26 @@ public static class AgentContract
     ///     (<c>true</c> → SHARED, <c>false</c> → EXCLUSIVE) instead of whether to
     ///     take it at all. A v2 agent reads <c>true</c> as a full bypass — no lock
     ///     whatsoever — which is precisely the behaviour F5 removes, so the skew is
-    ///     invisible on the wire and MUST be refused at registration rather than
-    ///     negotiated. The ad-hoc dispatch path also changed which value it sends:
-    ///     the AI-session flow is now read-always. Also adds
+    ///     invisible on the wire and MUST be refused rather than negotiated. The ad-hoc
+    ///     dispatch path also changed which value it sends: the AI-session flow is now
+    ///     read-always. Also adds
     ///     <c>GET /api/agents/task-in-flight</c>, which the agent MUST consult
     ///     (fail-closed) immediately before a self-upgrade swap: the machine gate is
     ///     released at every wave boundary, so a gate-only check cannot see that a
-    ///     multi-wave deployment is still mid-flight. Finally, the version moved from
+    ///     multi-wave deployment is still mid-flight.</item>
+    ///   <item><c>4</c> — the version moved from
     ///     <see cref="AgentRegistrationRequest.ContractVersion"/> onto the handshake
-    ///     header <see cref="VersionHeader"/> so it is checked BEFORE the connection is
+    ///     header <see cref="VersionHeader"/>, so it is checked BEFORE the connection is
     ///     admitted; the request field is retained for diagnostics only and is no longer
-    ///     a gate. This is folded into v3 rather than bumped to v4 because v3 has never
-    ///     shipped — once it has, the same change costs a version bump plus a
-    ///     mixed-fleet compatibility window.</item>
+    ///     a gate. Bumped rather than folded into <c>3</c>: an agent built against the
+    ///     pre-move <c>3</c> sends no header and is refused, and describing that as
+    ///     "requires v3, presented absent" while both sides call themselves v3 reads as a
+    ///     server fault. A distinct number makes the refusal self-explanatory and is what
+    ///     triggers the OPERATOR ACTION rule to bump <c>version.json</c> alongside it
+    ///     (docs/agent-wire-contract.md §"Bumping the contract").</item>
     /// </list>
     /// </summary>
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 4;
 }
 
 /// <summary>

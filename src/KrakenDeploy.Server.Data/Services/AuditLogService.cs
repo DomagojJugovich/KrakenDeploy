@@ -60,7 +60,15 @@ public sealed class AuditLogService(
     {
         var http = httpAccessor.HttpContext;
 
-        if (userId is null && http?.User?.Identity?.IsAuthenticated == true)
+        // Ambient attribution, and ONLY when the caller supplied none. A caller that
+        // passes userDisplay is declaring who (or what) acted, so the fallback must not
+        // override it — the reachable case is a request authenticated as something other
+        // than a user. The agent wire-contract gate runs on a request whose principal is an
+        // AGENT: its NameIdentifier is a DeploymentTarget id, so the fallback would stamp
+        // UserId with a target GUID that resolves to no user and renders as "Unknown".
+        // Passing userDisplay: "System" is how such a call site opts out.
+        if (userId is null && userDisplay is null
+            && http?.User?.Identity?.IsAuthenticated == true)
         {
             var raw = http.User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (Guid.TryParse(raw, out var uid))

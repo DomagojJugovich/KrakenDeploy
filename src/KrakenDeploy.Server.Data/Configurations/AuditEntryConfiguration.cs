@@ -19,6 +19,13 @@ public class AuditEntryConfiguration : IEntityTypeConfiguration<AuditEntry>
         builder.Property(x => x.IpAddress).HasMaxLength(64);
         builder.Property(x => x.UserAgent).HasMaxLength(512);
 
+        // Details was the one uncapped string column — Postgres `text` — and it is the one
+        // that carries free text from outside the server AND leaves the premises via the
+        // subscription poller's webhook / e-mail / AI-inspect transports. The cap is
+        // enforced twice on purpose: AuditEntry's setter truncates so no write can throw,
+        // and the column stops any future writer that bypasses the entity.
+        builder.Property(x => x.Details).HasMaxLength(AuditEntry.MaxDetailsLength);
+
         // Store JSON snapshots as jsonb so they are queryable in Postgres.
         builder.Property(x => x.BeforeJson).HasColumnType("jsonb");
         builder.Property(x => x.AfterJson).HasColumnType("jsonb");
