@@ -85,6 +85,8 @@ public class KrakenDbContext(
     public DbSet<StepTemplateCatalogEntry> StepTemplateCatalog => Set<StepTemplateCatalogEntry>();
     public DbSet<StepPackage> StepPackages => Set<StepPackage>();
     public DbSet<StepPackageCatalogEntry> StepPackageCatalog => Set<StepPackageCatalogEntry>();
+    public DbSet<StepPackageSchema> StepPackageSchemas => Set<StepPackageSchema>();
+    public DbSet<StepTypeEntry> StepTypes => Set<StepTypeEntry>();
     public DbSet<AiCallLog> AiCallLogs => Set<AiCallLog>();
     public DbSet<DeploymentDiagnosis> DeploymentDiagnoses => Set<DeploymentDiagnosis>();
     public DbSet<AdhocSession> AdhocSessions => Set<AdhocSession>();

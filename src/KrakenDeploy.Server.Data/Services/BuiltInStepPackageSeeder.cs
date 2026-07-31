@@ -6,8 +6,7 @@ using Microsoft.Extensions.Logging;
 namespace KrakenDeploy.Server.Data.Services;
 
 /// <summary>
-/// Server-startup seeder for built-in step packages (Phase D-8).
-/// Mirrors <see cref="BuiltInStepTemplateSeeder"/>'s pattern: idempotent
+/// Server-startup seeder for built-in step packages (Phase D-8). Idempotent
 /// on every startup, only inserts packages that aren't already installed.
 /// <para>
 /// Source: a directory of <c>.kdeploy-step</c> archives shipped alongside

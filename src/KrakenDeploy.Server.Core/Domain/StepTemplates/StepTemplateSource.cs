@@ -10,7 +10,11 @@ public enum StepTemplateSource
     /// <summary>Author manually wrote it in the UI or via API.</summary>
     UserAuthored = 0,
 
-    /// <summary>Seeded by <c>BuiltInStepTemplateSeeder</c> at startup.</summary>
+    /// <summary>
+    /// RETIRED (SC2): built-in rows were seeded at startup pre-consolidation;
+    /// the migration deleted them and the seeder is gone. The value stays so
+    /// historical data and the wire format keep their meaning — do not reuse.
+    /// </summary>
     BuiltIn = 1,
 
     /// <summary>

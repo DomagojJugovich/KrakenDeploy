@@ -201,9 +201,12 @@ internal static class DatabaseCommands
             await rbacSeeder.SeedAsync().ConfigureAwait(false);
             Console.WriteLine("done.");
 
-            Console.Write("Seeding built-in step templates... ");
-            var templateSeeder = scope.ServiceProvider.GetRequiredService<BuiltInStepTemplateSeeder>();
-            await templateSeeder.SeedAsync().ConfigureAwait(false);
+            // SC2: template seeding retired (registry-derived picker). Step
+            // packages seed here too so `database setup` and the web-host
+            // startup produce the same catalog.
+            Console.Write("Seeding built-in step packages... ");
+            var packageSeeder = scope.ServiceProvider.GetRequiredService<BuiltInStepPackageSeeder>();
+            await packageSeeder.SeedAsync().ConfigureAwait(false);
             Console.WriteLine("done.");
 
             Console.WriteLine();

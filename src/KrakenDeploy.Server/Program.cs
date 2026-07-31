@@ -955,9 +955,9 @@ public static class Program
             var rbacSeeder = scope.ServiceProvider.GetRequiredService<BuiltInRbacSeeder>();
             await rbacSeeder.SeedAsync().ConfigureAwait(false);
 
-            // Seed built-in step templates (Kraken.IIS, etc.). Idempotent.
-            var seeder = scope.ServiceProvider.GetRequiredService<BuiltInStepTemplateSeeder>();
-            await seeder.SeedAsync().ConfigureAwait(false);
+            // SC2: built-in step TEMPLATES are no longer seeded — the picker
+            // derives built-in cards from the step-type registry (packages);
+            // step_templates holds only community/user presets now.
 
             // Seed built-in step packages (.kdeploy-step archives shipped
             // alongside the server binary). Idempotent — only installs

@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Security.Cryptography;
 using KrakenDeploy.Contracts.StepPackages;
+using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.StepPackages;
 using Microsoft.EntityFrameworkCore;
@@ -79,6 +80,7 @@ public sealed class StepPackageService(
             StepPackageManifest manifest;
             string? uiSchemaJson;
             string? changelogMarkdown;
+            var perTypeSchemas = new Dictionary<string, string>(StringComparer.Ordinal);
             try
             {
                 await using var temp = File.OpenRead(tempFile);
@@ -96,6 +98,53 @@ public sealed class StepPackageService(
                 uiSchemaJson = uiSchemaEntry is null
                     ? null
                     : await ReadAllTextAsync(uiSchemaEntry, ct).ConfigureAwait(false);
+
+                // SC2: per-step-type schemas at ui/schemas/{typeId}.json.
+                // Validated hard at upload — a stray file for an undeclared
+                // type or an unparseable schema is a broken package, and the
+                // server is the last gate before it reaches the editor.
+                var declaredTypes = manifest.StepTypeIds
+                    .Select(t => t.Trim().ToLowerInvariant())
+                    .Where(t => t.Length > 0)
+                    .ToHashSet(StringComparer.Ordinal);
+
+                foreach (var entry in zip.Entries)
+                {
+                    var name = entry.FullName.Replace('\\', '/');
+                    if (!name.StartsWith(StepPackageFiles.UiSchemasDirectory + "/",
+                            StringComparison.OrdinalIgnoreCase)
+                        || !name.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (entry.Length > 1024 * 1024)
+                    {
+                        return Fail(
+                            $"Schema file '{name}' exceeds 1 MB — refusing the archive.");
+                    }
+
+                    var typeId = Path.GetFileNameWithoutExtension(entry.Name).ToLowerInvariant();
+                    if (!declaredTypes.Contains(typeId))
+                    {
+                        return Fail(
+                            $"Schema file '{name}' has no matching stepTypes entry " +
+                            $"'{typeId}' in the manifest.");
+                    }
+
+                    var schemaJson = await ReadAllTextAsync(entry, ct).ConfigureAwait(false);
+                    try
+                    {
+                        _ = StepUiSchemaJson.Deserialize(schemaJson);
+                    }
+                    catch (Exception ex) when (
+                        ex is System.Text.Json.JsonException or InvalidOperationException)
+                    {
+                        return Fail($"Schema file '{name}' is not a valid step UI schema: {ex.Message}");
+                    }
+
+                    perTypeSchemas[typeId] = schemaJson;
+                }
 
                 // CHANGELOG.md at the zip root is optional (Phase D-12.4).
                 // The renderer treats null vs empty differently — empty means
@@ -179,6 +228,26 @@ public sealed class StepPackageService(
                         .Where(t => t.Length > 0)),
             };
             db.StepPackages.Add(row);
+
+            // SC2: persist per-type schemas alongside the package row. A
+            // claimed type without a per-type file falls back to the legacy
+            // single ui-schema.json (one schema served the whole package
+            // pre-SC1); a type with neither simply has no schema row.
+            foreach (var typeId in row.StepTypes.Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var schemaJson = perTypeSchemas.TryGetValue(typeId, out var perType)
+                    ? perType
+                    : uiSchemaJson;
+                if (schemaJson is null) { continue; }
+
+                db.StepPackageSchemas.Add(new StepPackageSchema
+                {
+                    StepPackageId = row.Id,
+                    StepType      = typeId,
+                    SchemaJson    = schemaJson,
+                });
+            }
+
             await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
             logger.LogInformation(
