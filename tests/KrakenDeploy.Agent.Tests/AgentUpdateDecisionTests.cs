@@ -3,6 +3,7 @@ using KrakenDeploy.Agent.Deployment;
 using KrakenDeploy.Agent.Services;
 using KrakenDeploy.Contracts;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace KrakenDeploy.Agent.Tests;
@@ -82,18 +83,23 @@ public sealed class AgentUpdateDecisionTests
     // ── Remote text is bounded before it is re-published ─────────────────────
 
     [Fact]
-    public void Truncate_bounds_remote_detail_and_says_so()
+    public void Truncate_bounds_remote_detail()
     {
         // The server's task-in-flight Detail is forwarded into the agent log AND back to the
         // server as an update-status detail, which lands in the audit log and is then pushed to
         // the webhook, e-mail and AI-inspect transports — the last interpolating it into an LLM
         // prompt. Bounding it where it enters the agent keeps every downstream copy bounded.
+        //
+        // The cap is now a real cap. The previous local version appended
+        // "… (truncated from N)" AFTER slicing at max, so a "512-char cap" actually returned
+        // ~534 — and it sliced by UTF-16 code unit, which could split a surrogate pair into
+        // something Npgsql refuses to persist. Both are fixed by the shared TextBudget helper.
         var trimmed = AgentUpdateService.Truncate(
             new string('x', 5_000), AgentUpdateService.MaxRemoteDetailLength)!;
 
-        trimmed.Should().StartWith(new string('x', AgentUpdateService.MaxRemoteDetailLength));
-        trimmed.Should().Contain("truncated from 5000");
-        trimmed.Length.Should().BeLessThan(AgentUpdateService.MaxRemoteDetailLength + 40);
+        trimmed.Should().HaveLength(AgentUpdateService.MaxRemoteDetailLength);
+        trimmed[^1].Should().Be(KrakenDeploy.Execution.TextBudget.Ellipsis,
+            "a reader must be able to tell the text was cut");
     }
 
     [Theory]
@@ -257,24 +263,40 @@ public sealed class AgentUpdateDecisionTests
     [InlineData("-00:00:30")]       // negative
     [InlineData("-00:00:00.001")]   // Timeout.InfiniteTimeSpan
     [InlineData("00:00:00")]        // degrades the wait to a non-blocking probe
-    public void A_malformed_SwapGateTimeout_fails_validation_even_when_updates_are_disabled(
-        string raw)
+    public void A_malformed_SwapGateTimeout_is_fatal_when_the_updater_is_ON(string raw)
     {
-        // The knob stopped being update-only: DeploymentExecutor derives its wedged-gate
-        // escalation timeout from it, on the normal deployment path, which runs regardless of
-        // Agent:Update:Enabled. Short-circuiting the whole validator on Enabled == false
-        // therefore left every one of these live on the path that matters most — a stale "5"
-        // means the escalation never fires, a negative value throws
-        // ArgumentOutOfRangeException out of every force-detach retry as a hard wave failure,
-        // and "-00:00:00.001" makes the bounded wait unbounded.
+        var result = Validate(
+        [
+            new("Agent:Update:Enabled", "true"),
+            new("Agent:Update:SwapGateTimeout", raw),
+        ]);
+
+        result.Failed.Should().BeTrue();
+        result.FailureMessage.Should().Contain(nameof(AgentUpdateConfig.SwapGateTimeout));
+    }
+
+    [Theory]
+    [InlineData("5")]
+    [InlineData("-00:00:30")]
+    [InlineData("-00:00:00.001")]
+    [InlineData("00:00:00")]
+    public void The_same_value_only_WARNS_when_the_updater_is_off(string raw)
+    {
+        // The knob is not update-only — DeploymentExecutor derives its wedged-gate escalation
+        // from it on the normal deployment path — so it cannot simply be skipped. But it must not
+        // be FATAL with the updater off either: ValidateOnStart makes every failure a boot
+        // failure, and an agent that will not start has no hub connection and no REST update
+        // path, so an existing target carrying a legacy "SwapGateTimeout": "5" would upgrade
+        // straight into a crash loop recoverable only by hand-editing appsettings.json on the
+        // box. ClampWedgedGateTimeout bounds the value instead, and the operator gets a warning.
         var result = Validate(
         [
             new("Agent:Update:Enabled", "false"),
             new("Agent:Update:SwapGateTimeout", raw),
         ]);
 
-        result.Failed.Should().BeTrue();
-        result.FailureMessage.Should().Contain(nameof(AgentUpdateConfig.SwapGateTimeout));
+        result.Succeeded.Should().BeTrue(
+            "a disabled updater must never turn a legacy value into an unreachable agent");
     }
 
     // ── The derived wedged-gate timeout is clamped ───────────────────────────
@@ -310,6 +332,8 @@ public sealed class AgentUpdateDecisionTests
         var config = new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
         var options = new AgentUpdateConfig();
         config.GetSection(AgentUpdateConfigValidator.SectionName).Bind(options);
-        return new AgentUpdateConfigValidator(config).Validate(name: null, options);
+        return new AgentUpdateConfigValidator(
+            config, NullLogger<AgentUpdateConfigValidator>.Instance)
+            .Validate(name: null, options);
     }
 }

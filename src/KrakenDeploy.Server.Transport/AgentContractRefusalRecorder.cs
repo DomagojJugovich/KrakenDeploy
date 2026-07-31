@@ -53,7 +53,6 @@ public sealed class AgentContractRefusalRecorder(
     IDbContextFactory<KrakenDbContext> dbFactory,
     TargetStatusPublisher statusPublisher,
     IAccountContext accountContext,
-    IAuditLog auditLog,
     TimeProvider timeProvider,
     ILogger<AgentContractRefusalRecorder> logger) : IAgentContractRefusalRecorder
 {
@@ -95,22 +94,38 @@ public sealed class AgentContractRefusalRecorder(
                 "sweep catches up.", targetId);
         }
 
-        await auditLog.RecordAsync(
-            AuditEventType.AgentContractVersionRejected,
-            subjectType: "DeploymentTarget",
-            subjectId:   targetId.ToString(),
-            // Restored with the lookup above. Without it the audit grid, the CSV/JSON export
-            // and the notification e-mails identify the refused agent by bare GUID.
-            subjectName: target?.Name,
-            details:     $"SentContract={presentedContract}, " +
-                         $"RequiredContract={AgentContract.CurrentVersion}",
-            // Explicit, and required for correctness: AuditLogService falls back to the ambient
-            // HTTP principal's NameIdentifier when no attribution is supplied, and on this path
-            // that principal is the AGENT — so the row would claim a user whose id is really a
-            // DeploymentTarget's, rendering as "Unknown".
-            userId:      null,
-            userDisplay: "System",
-            ct:          ct)
-            .ConfigureAwait(false);
+        // The audit row is written DIRECTLY rather than through IAuditLog.RecordAsync, and the
+        // reason is the Space stamp. RecordAsync takes SpaceId from the ambient ISpaceContext,
+        // and on an agent handshake HttpSpaceContext has nothing resolved so it falls back to
+        // WellKnown.DefaultSpaceId. For a target in any other Space that filed the refusal in
+        // the WRONG Space: AuditExportService.ApplySpaceVisibility cages reads to the row's own
+        // Space, so the target's per-entity Events tab showed nothing for the refusal that had
+        // just taken it Offline, while the Default Space's audit grid and CSV/JSON export showed
+        // that target's name — leaking a foreign Space's target into it.
+        //
+        // This is the pattern /api/agents/update-status already uses and documents for exactly
+        // the same reason, and the house rule "agent-path writes stamp SpaceId from the parent".
+        // A target we could not load has no Space to stamp, so the row is filed as a platform
+        // event (null SpaceId), visible to AdministerSystem holders — the honest answer for a
+        // refusal from a credential whose target no longer exists.
+        db.AuditEntries.Add(new AuditEntry
+        {
+            OccurredUtc = timeProvider.GetUtcNow(),
+            SpaceId     = target?.SpaceId,
+            EventType   = AuditEventType.AgentContractVersionRejected,
+            SubjectType = "DeploymentTarget",
+            SubjectId   = targetId.ToString(),
+            // Without this the audit grid, the CSV/JSON export and the notification e-mails
+            // identify the refused agent by bare GUID.
+            SubjectName = target?.Name,
+            // NOT the ambient principal: on this path it is the AGENT, whose NameIdentifier is a
+            // DeploymentTarget id, so attributing the row to it would claim a user that does not
+            // exist and render as "Unknown".
+            UserId      = null,
+            UserDisplay = "System",
+            Details     = $"SentContract={presentedContract}, " +
+                          $"RequiredContract={AgentContract.CurrentVersion}",
+        });
+        await db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 }

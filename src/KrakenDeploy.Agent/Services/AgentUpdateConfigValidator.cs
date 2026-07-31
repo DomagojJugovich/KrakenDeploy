@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace KrakenDeploy.Agent.Services;
@@ -36,7 +37,9 @@ namespace KrakenDeploy.Agent.Services;
 /// have been written on purpose.
 /// </para>
 /// </summary>
-public sealed class AgentUpdateConfigValidator(IConfiguration configuration)
+public sealed class AgentUpdateConfigValidator(
+    IConfiguration configuration,
+    ILogger<AgentUpdateConfigValidator> logger)
     : IValidateOptions<AgentUpdateConfig>
 {
     /// <summary>Configuration section <see cref="AgentUpdateConfig"/> binds to.</summary>
@@ -71,26 +74,35 @@ public sealed class AgentUpdateConfigValidator(IConfiguration configuration)
         var section = configuration.GetSection(SectionName);
         var failures = new List<string>();
 
-        // SwapGateTimeout is validated UNCONDITIONALLY — it stopped being an update-only knob.
-        // DeploymentExecutor derives its wedged-gate escalation timeout from it on the normal
-        // deployment path, which runs whether or not auto-update is enabled. Short-circuiting
-        // on Enabled == false therefore left every malformed value live on the path that
-        // matters most: a stale "5" binds as five DAYS and the wedged escalation never fires; a
-        // negative value throws ArgumentOutOfRangeException out of every force-detach retry as
-        // a hard wave failure; and "-00:00:30.001" sums to exactly Timeout.InfiniteTimeSpan,
-        // turning the bounded wait unbounded.
+        // SwapGateTimeout matters even with the updater OFF — DeploymentExecutor derives its
+        // wedged-gate escalation from it on the normal deployment path — but with the updater off
+        // it must NOT be a boot failure. `ValidateOnStart` makes every failure fatal, and an
+        // agent that will not start has no hub connection and no REST update path, so an existing
+        // target carrying a legacy `"SwapGateTimeout": "5"` would upgrade into a crash loop
+        // recoverable only by hand-editing appsettings.json on the box — across a fleet of state
+        // institutions, exactly the touch-every-machine outcome this work set out to remove.
+        //
+        // So: WARN and let DeploymentExecutor.ClampWedgedGateTimeout bound it. The agent keeps
+        // running with a sane derived value and the operator has a log line naming the key. When
+        // the updater is ON the same value IS fatal, because then it also governs a swap that
+        // blocks the whole machine, and a boot failure is the safer answer.
+        var swapWindowFailures = new List<string>();
         Check(nameof(AgentUpdateConfig.SwapGateTimeout), options.SwapGateTimeout,
-            MaxAcceptedSwapWindow);
+            MaxAcceptedSwapWindow, swapWindowFailures);
 
-        // The rest govern the updater only, and `ValidateOnStart` makes every failure a boot
-        // failure — so a legacy value must not brick an agent whose auto-update is switched off
-        // and which therefore never reads them.
         if (!options.Enabled)
         {
-            return failures.Count == 0
-                ? ValidateOptionsResult.Success
-                : ValidateOptionsResult.Fail(failures);
+            foreach (var failure in swapWindowFailures)
+            {
+                logger.LogWarning(
+                    "{Failure} Auto-update is disabled, so this is not fatal — but " +
+                    "DeploymentExecutor still derives its wedged-gate escalation from this key " +
+                    "and will use a clamped value instead of the one configured.", failure);
+            }
+            return ValidateOptionsResult.Success;
         }
+
+        failures.AddRange(swapWindowFailures);
 
         Check(nameof(AgentUpdateConfig.CheckInterval), options.CheckInterval,
             MaxAcceptedDuration);
@@ -128,12 +140,13 @@ public sealed class AgentUpdateConfigValidator(IConfiguration configuration)
             ? ValidateOptionsResult.Success
             : ValidateOptionsResult.Fail(failures);
 
-        void Check(string key, TimeSpan value, TimeSpan max)
+        void Check(string key, TimeSpan value, TimeSpan max, List<string>? into = null)
         {
+            var sink = into ?? failures;
             var raw = section[key];
             if (raw is not null && IsBareNumber(raw))
             {
-                failures.Add(
+                sink.Add(
                     $"{SectionName}:{key} is '{raw}', which TimeSpan binding reads as " +
                     $"{raw.Trim()} DAYS, not minutes or hours. Write the unit out as " +
                     "[d.]hh:mm:ss — '00:05:00' for five minutes.");
@@ -142,14 +155,14 @@ public sealed class AgentUpdateConfigValidator(IConfiguration configuration)
 
             if (value <= TimeSpan.Zero)
             {
-                failures.Add(
+                sink.Add(
                     $"{SectionName}:{key} must be a positive duration, got {value}. " +
                     "Note -00:00:00.001 is Timeout.InfiniteTimeSpan, which would make " +
                     "the wait unbounded.");
             }
             else if (value > max)
             {
-                failures.Add($"{SectionName}:{key} is {value}, above the {max} ceiling.");
+                sink.Add($"{SectionName}:{key} is {value}, above the {max} ceiling.");
             }
         }
     }

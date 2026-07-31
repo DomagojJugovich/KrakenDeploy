@@ -73,14 +73,13 @@ public sealed class AgentContractRefusalRecorderTests(PostgresFixture postgres)
     [Fact]
     public async Task The_audit_row_names_the_target_and_is_attributed_to_the_system()
     {
-        // The first DB-persisted assertion on this row. It catches what a fake cannot:
-        // AuditLogService falls back to the ambient HTTP principal's NameIdentifier when no
-        // attribution is passed, and on this path that principal is the AGENT — so UserId got a
-        // DeploymentTarget GUID and UserDisplay rendered "Unknown". The HTTP context here
-        // carries exactly such a principal, so the fallback is live for this test.
+        // The first DB-persisted assertion on this row. The row is written directly rather than
+        // through IAuditLog precisely so neither the ambient principal nor the ambient Space can
+        // stamp it: on an agent handshake the principal is the AGENT (its NameIdentifier is a
+        // DeploymentTarget id, which would render as "Unknown") and the Space is unresolved.
         var target = await SeedTargetAsync(TargetStatus.Online);
 
-        await BuildRecorder(agentPrincipalTargetId: target.Id).RecordAsync(target.Id, "absent");
+        await BuildRecorder().RecordAsync(target.Id, "absent");
 
         await using var db = postgres.CreateContext();
         var row = await db.AuditEntries.AsNoTracking()
@@ -97,6 +96,29 @@ public sealed class AgentContractRefusalRecorderTests(PostgresFixture postgres)
             .And.Contain($"RequiredContract={AgentContract.CurrentVersion}");
         row.UserId.Should().BeNull("the agent is not a user");
         row.UserDisplay.Should().Be("System");
+    }
+
+    [Fact]
+    public async Task The_audit_row_is_stamped_with_the_targets_own_Space()
+    {
+        // The row used to go through IAuditLog.RecordAsync, which takes SpaceId from the ambient
+        // ISpaceContext — and on an agent handshake HttpSpaceContext resolves nothing and falls
+        // back to the Default Space. For a target in any other Space that filed the refusal in
+        // the WRONG Space: ApplySpaceVisibility cages reads to the row's own Space, so the
+        // target's Events tab showed nothing for the refusal that had just taken it Offline,
+        // while the Default Space's grid and export showed that target's NAME.
+        var space = await SeedSpaceAsync();
+        var target = await SeedTargetAsync(TargetStatus.Online, space);
+
+        await BuildRecorder().RecordAsync(target.Id, "v3");
+
+        await using var db = postgres.CreateContext();
+        var row = await db.AuditEntries.AsNoTracking()
+            .FirstAsync(e => e.SubjectId == target.Id.ToString());
+
+        row.SpaceId.Should().Be(space,
+            "the refusal belongs on the target's own per-entity Events tab, not in Default");
+        row.SpaceId.Should().NotBe(Core.Domain.Common.WellKnown.DefaultSpaceId);
     }
 
     [Fact]
@@ -117,7 +139,7 @@ public sealed class AgentContractRefusalRecorderTests(PostgresFixture postgres)
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 
-    private async Task<DeploymentTarget> SeedTargetAsync(TargetStatus status)
+    private async Task<DeploymentTarget> SeedTargetAsync(TargetStatus status, Guid? spaceId = null)
     {
         await using var db = postgres.CreateContext();
         var target = new DeploymentTarget
@@ -127,40 +149,37 @@ public sealed class AgentContractRefusalRecorderTests(PostgresFixture postgres)
             TransportMode = TransportMode.Reverse,
             Status = status,
         };
+        if (spaceId is { } id)
+        {
+            target.SpaceId = id;
+        }
         db.DeploymentTargets.Add(target);
         await db.SaveChangesAsync();
         return target;
     }
 
-    private AgentContractRefusalRecorder BuildRecorder(
-        RecordingNotifier? notifier = null, Guid? agentPrincipalTargetId = null)
+    /// <summary>A Space that is deliberately NOT the Default one, so a row stamped from the
+    /// ambient context is distinguishable from one stamped off the target.</summary>
+    private async Task<Guid> SeedSpaceAsync()
     {
-        var http = new HttpContextAccessor();
-        if (agentPrincipalTargetId is { } id)
-        {
-            var context = new DefaultHttpContext
-            {
-                User = new System.Security.Claims.ClaimsPrincipal(
-                    new System.Security.Claims.ClaimsIdentity(
-                        [new System.Security.Claims.Claim(
-                            System.Security.Claims.ClaimTypes.NameIdentifier, id.ToString())],
-                        "AgentJwt")),
-            };
-            http.HttpContext = context;
-        }
+        await using var db = postgres.CreateContext();
+        var tag = Guid.NewGuid().ToString("N")[..8];
+        var space = new Core.Domain.Spaces.Space { Name = $"refusal-space-{tag}", Slug = $"rs-{tag}" };
+        db.Spaces.Add(space);
+        await db.SaveChangesAsync();
+        return space.Id;
+    }
 
-        return new AgentContractRefusalRecorder(
+    private AgentContractRefusalRecorder BuildRecorder(RecordingNotifier? notifier = null)
+        => new(
             postgres,
             new TargetStatusPublisher(
                 notifier ?? new RecordingNotifier(),
                 new NullUiHub(),
                 NullLogger<TargetStatusPublisher>.Instance),
             new Accounts.DisabledAccountContext(),
-            new AuditLogService(
-                postgres, http, new FixedSpaceContext(), TimeProvider.System),
             TimeProvider.System,
             NullLogger<AgentContractRefusalRecorder>.Instance);
-    }
 
     /// <summary>The external half of the status push is not what these tests are about —
     /// TargetStatusPublisher already swallows its failures — so it sinks.</summary>

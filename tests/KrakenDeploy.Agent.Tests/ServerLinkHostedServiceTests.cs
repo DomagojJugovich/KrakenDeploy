@@ -328,6 +328,38 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task A_426_met_during_automatic_reconnect_opens_the_escape_hatch()
+    {
+        // The path the previous test could NOT reach, and the one a server upgrade actually
+        // takes: every established connection drops on the restart, so the SignalR client's own
+        // automatic reconnect meets the 426 — not StartAsync. That path never raises Closed
+        // (AgentReconnectPolicy never returns null, so HubConnection retries forever), so the
+        // supervision loop stays parked and its StartAsync catch is never re-entered. Before the
+        // fix ContractRefused stayed false here and the fleet could not self-upgrade at all.
+        var service = CreateService(new RecordingDelayClock());
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await _link.WaitForRegistrationsAsync(1, TestTimeout);
+            _context.ContractRefused.Should().BeFalse("the initial connect succeeded");
+
+            _link.FireContractRefused(true);
+            _context.ContractRefused.Should().BeTrue(
+                "a 426 on a reconnect attempt must open the hatch even though StartAsync is " +
+                "never re-entered");
+
+            // And it closes again when a later attempt fails for an ordinary reason.
+            _link.FireContractRefused(false);
+            _context.ContractRefused.Should().BeFalse();
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.Unauthorized)]      // revoked token — re-enroll, not upgrade
     [InlineData(HttpStatusCode.Forbidden)]
@@ -594,6 +626,24 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
         public void OnCancelDeployment(Func<Guid, string?, Task> handler) { }
         public void OnClosed(Func<Exception?, Task> handler) => _closedHandlers.Add(handler);
         public void OnReconnected(Func<Task> handler) => _reconnectedHandlers.Add(handler);
+
+        private readonly List<Action<bool>> _contractRefusedHandlers = [];
+        public void OnContractRefused(Action<bool> handler)
+            => _contractRefusedHandlers.Add(handler);
+
+        /// <summary>
+        /// Drives the reconnect-path half of the escape hatch. In production this is raised by
+        /// AgentReconnectPolicy when a RECONNECT attempt is refused with 426 — a path that never
+        /// reaches the supervisor's StartAsync catch, because the policy never gives up so Closed
+        /// never fires.
+        /// </summary>
+        public void FireContractRefused(bool refused)
+        {
+            foreach (var handler in _contractRefusedHandlers)
+            {
+                handler(refused);
+            }
+        }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 

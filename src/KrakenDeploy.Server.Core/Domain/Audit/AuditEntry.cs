@@ -85,9 +85,11 @@ public class AuditEntry
     public string? Details
     {
         get => _details;
-        set => _details = value is { Length: > MaxDetailsLength }
-            ? string.Concat(value.AsSpan(0, MaxDetailsLength - 1), "…")
-            : value;
+        // TextBudget.Trim, not a local slice: cutting at a UTF-16 code-unit boundary can split
+        // a surrogate pair, and Npgsql's writer uses EncoderExceptionFallback — so a lone
+        // surrogate made SaveChangesAsync THROW and lost the whole row, where the uncapped
+        // `text` column had simply stored it.
+        set => _details = KrakenDeploy.Execution.TextBudget.Trim(value, MaxDetailsLength);
     }
 
     private string? _details;

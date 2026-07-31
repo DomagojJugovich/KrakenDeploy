@@ -50,9 +50,21 @@ namespace KrakenDeploy.Agent.Transport;
 /// the only loop that observes one — the supervisor's, which is where it now lives.
 /// </para>
 /// </summary>
+/// <param name="onContractRefused">
+/// Raised with <c>true</c> the first time a reconnect attempt is refused with 426, and with
+/// <c>false</c> once one is not. This is the ONLY place a 426 met during AUTOMATIC RECONNECT is
+/// observable: this policy never returns <c>null</c>, so <c>HubConnection</c> retries forever,
+/// never raises <c>Closed</c>, and the supervisor stays parked — so its <c>StartAsync</c> catch,
+/// which is where the agent used to learn about a refusal, is never re-entered. Without this
+/// callback the self-upgrade escape hatch stayed shut on the path a server upgrade actually
+/// takes: every agent's transport drops on the restart, the client's own loop gets the 426, and
+/// nothing told the updater it was allowed to swap.
+/// </param>
 public sealed class AgentReconnectPolicy(
     ILogger logger,
-    Func<double>? jitterSource = null) : IRetryPolicy
+    Func<double>? jitterSource = null,
+    TimeProvider? timeProvider = null,
+    Action<bool>? onContractRefused = null) : IRetryPolicy
 {
     /// <summary>Backoff ceiling for the first backed-off attempt.</summary>
     public static readonly TimeSpan BaseDelay = TimeSpan.FromSeconds(1);
@@ -66,8 +78,37 @@ public sealed class AgentReconnectPolicy(
     /// </summary>
     public static readonly TimeSpan OperatorActionDelay = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// A connection that lived at least this long counts as genuinely useful and resets the
+    /// episode count. Comfortably longer than a connect→drop flap and comfortably shorter than
+    /// any real working session.
+    /// </summary>
+    public static readonly TimeSpan MinUsefulConnection = TimeSpan.FromSeconds(30);
+
     private readonly Func<double> _jitter = jitterSource ?? Random.Shared.NextDouble;
+    private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
     private SlowLaneCause _slowLane;
+
+    // Consecutive reconnect EPISODES that began without a useful connection in between. Paces
+    // the flap that PreviousRetryCount cannot see: that counter restarts at 0 for every episode
+    // and attempt 0 is deliberately immediate, so a link that establishes and drops repeatedly
+    // reconnects at round-trip cadence forever on PreviousRetryCount alone.
+    //
+    // An earlier revision counted this from the Reconnecting EVENT and was doubly wrong:
+    // HubConnection computes the delay BEFORE raising Reconnecting, so the counter lagged a
+    // whole episode, and the event does not fire at all for a server-side rejection (which
+    // arrives as Closed). The correctly-ordered signal is right here — PreviousRetryCount == 0
+    // inside this method IS "a new episode just started", synchronously, on the thread that is
+    // about to use the answer.
+    private long _episodes;
+
+    // Monotonic stamp of the last successful connect; 0 means "not currently connected".
+    // A plain long behind Volatile/Interlocked rather than a DateTimeOffset? — the previous
+    // shape was a nullable DateTimeOffset written from the SignalR thread and read from the
+    // reconnect thread, which is wider than a word, so a reader could observe hasValue == true
+    // over a zeroed date and compute a two-millennia lifetime. And GetTimestamp, never
+    // GetUtcNow: a w32tm step on a domain-joined host must not disarm the pacing.
+    private long _connectedAt;
 
     /// <summary>
     /// Why the handshake is being refused in a way retrying cannot fix. Kept as an enum rather
@@ -87,6 +128,31 @@ public sealed class AgentReconnectPolicy(
         Contract,
     }
 
+    /// <summary>
+    /// Records that a connection is established. Called on the initial connect and on every
+    /// successful reconnect; a connection that then survives
+    /// <see cref="MinUsefulConnection"/> clears the episode count.
+    /// </summary>
+    public void NoteConnected() => Volatile.Write(ref _connectedAt, _clock.GetTimestamp());
+
+    /// <summary>
+    /// Raises <c>onContractRefused</c> only when the refused STATE actually changes, so a
+    /// consumer sees transitions rather than one notification per retry — and a 401 streak,
+    /// which shares the delay lane but not the remedy, does not re-assert "not refused" on
+    /// every attempt.
+    /// </summary>
+    private void ReportContractRefused(bool refused)
+    {
+        if (_reportedContractRefused == refused)
+        {
+            return;
+        }
+        _reportedContractRefused = refused;
+        onContractRefused?.Invoke(refused);
+    }
+
+    private bool _reportedContractRefused;
+
     public TimeSpan? NextRetryDelay(RetryContext retryContext)
     {
         ArgumentNullException.ThrowIfNull(retryContext);
@@ -102,19 +168,39 @@ public sealed class AgentReconnectPolicy(
                 _slowLane = cause;
                 LogSlowLane(cause);
             }
+            // Only the contract cause opens the updater's escape hatch. A credential failure
+            // needs re-enrollment, which a binary swap cannot supply.
+            ReportContractRefused(cause == SlowLaneCause.Contract);
             return OperatorActionDelay;
         }
 
         _slowLane = SlowLaneCause.None;
+        // This attempt failed for an ordinary transport reason, so the contract is not the
+        // problem and the hatch closes again.
+        ReportContractRefused(false);
 
+        // A new EPISODE has just started. Count it, unless the connection it replaced was
+        // genuinely useful — in which case this is a fresh blip and the count restarts at one.
         if (retryContext.PreviousRetryCount == 0)
+        {
+            var stamp = Volatile.Read(ref _connectedAt);
+            var lived = stamp == 0 ? TimeSpan.Zero : _clock.GetElapsedTime(stamp);
+            _episodes = lived >= MinUsefulConnection ? 1 : _episodes + 1;
+            Volatile.Write(ref _connectedAt, 0);
+        }
+
+        // Pace on whichever is higher: the attempts within THIS episode, or the run of episodes
+        // that never produced a useful connection. Episode 1 still gets attempt 0's immediate
+        // retry, so a healthy link that drops once is not penalised.
+        var attempt = Math.Max(retryContext.PreviousRetryCount, _episodes - 1);
+        if (attempt <= 0)
         {
             return TimeSpan.Zero;
         }
 
         // Exponent clamp keeps Math.Pow finite; anything ≥ 5 doublings already
         // saturates the 30 s cap.
-        var exponent = Math.Min(retryContext.PreviousRetryCount - 1, 30);
+        var exponent = Math.Min(attempt - 1, 30);
         var ceilingSeconds = Math.Min(
             MaxDelay.TotalSeconds,
             BaseDelay.TotalSeconds * Math.Pow(2, exponent));

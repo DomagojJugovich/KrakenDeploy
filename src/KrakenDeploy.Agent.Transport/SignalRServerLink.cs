@@ -13,15 +13,15 @@ namespace KrakenDeploy.Agent.Transport;
 /// the query string (<c>?access_token=…</c>) — matching what the server's
 /// <c>JwtBearerEvents.OnMessageReceived</c> expects. That is a SignalR convention for the
 /// bearer token specifically, not a limitation of the transport: custom request headers set on
-/// <c>HttpConnectionOptions</c> ride EVERY hub request, which is what the wire-contract header
-/// <c>X-KD-Contract</c> and the blue-green release pin <c>X-KD-Release</c> both rely on.
+/// <c>HttpConnectionOptions</c> DO survive the WebSocket upgrade, which is what the wire-contract
+/// header <c>X-KD-Contract</c> and the blue-green release pin <c>X-KD-Release</c> both rely on.
 /// Verified over a real loopback Kestrel by
-/// <c>TransportRoundTripTests.The_contract_header_rides_every_hub_request_on_the_negotiated_transport</c>
-/// — the gate is mounted on both hub endpoints, so a header missing from either would refuse
-/// every connection in that suite. (An earlier revision of this comment claimed the opposite,
-/// that "WebSocket upgrades cannot carry custom headers", which would have made the whole
-/// design impossible. Note also that the hub is not currently on WebSockets at all — see the
-/// residual in <c>docs/agent-wire-contract.md</c>.)
+/// <c>TransportRoundTripTests.The_contract_header_survives_the_real_WebSocket_upgrade</c>, which
+/// asserts the transport request carries <c>Upgrade: websocket</c> AND the contract header — so a
+/// header that failed to survive the upgrade would refuse every connection in that suite.
+/// <c>app.UseWebSockets()</c> is not required: SignalR installs the WebSocket feature on its own
+/// endpoint branch. (An earlier revision of this comment claimed "WebSocket upgrades cannot carry
+/// custom headers", which would have made the whole design impossible.)
 /// </para>
 /// </summary>
 public sealed class SignalRServerLink : IServerLink
@@ -40,6 +40,7 @@ public sealed class SignalRServerLink : IServerLink
     private readonly List<Func<Guid, string?, Task>> _cancelHandlers = [];
     private readonly List<Func<Exception?, Task>> _closedHandlers = [];
     private readonly List<Func<Task>> _reconnectedHandlers = [];
+    private readonly List<Action<bool>> _contractRefusedHandlers = [];
 
     // B2 — at-least-once FIFO buffer for work-result reports (logs, step /
     // deployment completions, adhoc results). Survives connection replacement:
@@ -84,11 +85,28 @@ public sealed class SignalRServerLink : IServerLink
 
         _deliberateStop = false;
 
-        // One policy instance per connection cycle. It holds only the auth-failure streak
-        // flag now — the connection lifecycle no longer feeds it anything, because a
-        // server-side REJECTION never reaches the automatic reconnect at all (it arrives as
-        // a permanent Closed; see AgentReconnectPolicy) and is paced by the supervisor.
-        var reconnectPolicy = new AgentReconnectPolicy(logger);
+        // One policy instance per connection cycle, held so the connection lifecycle can feed
+        // it. Two things flow through it that nothing else can see: the episode count that
+        // paces a link which keeps dropping moments after it is established, and a 426 met
+        // during automatic reconnect — the only place that refusal is observable, because the
+        // policy never gives up so Closed never fires and the supervisor never re-enters
+        // StartAsync.
+        var reconnectPolicy = new AgentReconnectPolicy(
+            logger,
+            onContractRefused: refused =>
+            {
+                foreach (var handler in _contractRefusedHandlers)
+                {
+                    try
+                    {
+                        handler(refused);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "Contract-refused handler failed — continuing.");
+                    }
+                }
+            });
 
         var hubUrl = $"{serverUrl.TrimEnd('/')}/hubs/agent";
 
@@ -132,6 +150,10 @@ public sealed class SignalRServerLink : IServerLink
 
         connection.Reconnected += async connectionId =>
         {
+            // Starts this connection's usefulness clock: an episode that produced a connection
+            // lasting MinUsefulConnection resets the policy's episode count, so a healthy agent
+            // that drops once is not paced like one that is flapping.
+            reconnectPolicy.NoteConnected();
             logger.LogInformation(
                 "SignalR connection re-established (connectionId={ConnectionId}).", connectionId);
             foreach (var handler in _reconnectedHandlers)
@@ -203,6 +225,10 @@ public sealed class SignalRServerLink : IServerLink
         _pumpTask ??= Task.Run(() => _outbox.PumpAsync(_pumpCts.Token), CancellationToken.None);
 
         await connection.StartAsync(ct).ConfigureAwait(false);
+
+        // Only after StartAsync returns: a handshake refusal throws out of it, and that is an
+        // initial-connect failure the supervision loop paces, not a connection that existed.
+        reconnectPolicy.NoteConnected();
     }
 
     public async Task StopAsync(CancellationToken ct)
@@ -376,6 +402,12 @@ public sealed class SignalRServerLink : IServerLink
     {
         ArgumentNullException.ThrowIfNull(handler);
         _reconnectedHandlers.Add(handler);
+    }
+
+    public void OnContractRefused(Action<bool> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+        _contractRefusedHandlers.Add(handler);
     }
 
     // ── IAsyncDisposable ───────────────────────────────────────────────────

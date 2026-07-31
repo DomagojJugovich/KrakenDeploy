@@ -301,11 +301,27 @@ public sealed class MachineExecutionGate : IDisposable
                 // Logged, not attached to `unwinding.Data`: no configured sink renders Data.
                 // The original exception is still rethrown unchanged — callers dispatch on its
                 // type — so this is the only place the accounting failure can surface.
-                Logger?.LogError(releaseFault,
-                    "Machine execution gate could not release a {Mode} lease while unwinding " +
-                    "{OriginalException}. A holder slot may have leaked, which would block " +
-                    "every deployment and ad-hoc script on this machine until the agent is " +
-                    "restarted.", mode, unwinding.GetType().Name);
+                //
+                // Wrapped in its own try because we are INSIDE a catch, one statement before
+                // `throw;`. Microsoft.Extensions.Logging collects provider failures and rethrows
+                // them as AggregateException, so a faulting sink here would REPLACE the exception
+                // the caller dispatches on — turning a clean ObjectDisposedException ("abandon
+                // quietly") into a hard wave failure. That is the same hazard AbandonAfterThrow
+                // just below was widened to Exception to avoid; leaving it open in the caller
+                // would have undone that.
+                try
+                {
+                    Logger?.LogError(releaseFault,
+                        "Machine execution gate could not release a {Mode} lease while unwinding " +
+                        "{OriginalException}. A holder slot may have leaked, which would block " +
+                        "every deployment and ad-hoc script on this machine until the agent is " +
+                        "restarted.", mode, unwinding.GetType().Name);
+                }
+                catch
+                {
+                    // Nothing useful is left to do: the sink is broken and the original
+                    // exception is the one that must reach the caller intact.
+                }
             }
             throw;
         }

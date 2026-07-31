@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Version** | 1.6 |
+| **Version** | 1.7 |
 | **Date** | 2026-07-31 |
 | **Authors** | Domagoj Jugović, Claude (Opus 4.8), Claude (Opus 5) |
 | **Status** | Approved |
@@ -22,7 +22,7 @@ added are tabulated below. **The contract is at v4** (F5).
 | 1 | B6 (this document) | `DispatchId` on plan + completion + step + log reports, `CancelDeploymentAsync` push, `AgentRegistrationResult`, `Roles` removed from registration. |
 | 2 | F2 (2026-07-25) | `DeploymentPlan.AllowParallelTaskExecution` + `AdhocScriptCommand.AllowParallelTaskExecution` (per-target machine-concurrency policy, appended + defaulted `false`); new `IAgentHubServer.ReportExecutionStartedAsync(deploymentId, dispatchId)`. |
 | 3 | F5 (2026-07-29) | **No shape change on the SignalR surface.** Both `AllowParallelTaskExecution` fields are RETAINED and re-interpreted: they now select which SIDE of the agent's reader-writer machine gate the work takes (`true` → SHARED, `false` → EXCLUSIVE) instead of whether to take it at all. `AdhocScriptCommand.AllowParallelTaskExecution` also changes provenance: per-RUN, not per-target — the AI session flow always sends `true`. Adds one REST endpoint the agent MUST consult fail-closed before a self-upgrade swap: `GET /api/agents/task-in-flight` → `AgentTaskInFlightResponse`. Adds the `swap-deferred` `AgentUpdateOutcome`. |
-| 4 | F5 round 5 (2026-07-31) | **The version itself MOVED onto the handshake.** The agent sends `X-KD-Contract` on every hub request; the server refuses a mismatch with **426** before the connection is admitted. `AgentRegistrationRequest.ContractVersion` is retained for diagnostics and is no longer a gate. Round 4 folded this into v3 on the grounds that v3 had never shipped; that made the refusal incoherent to read — an agent built against the pre-move v3 sends no header and was refused with "requires v3, presented absent" while both sides call themselves v3. A distinct number makes the diagnosis self-explanatory and is what fires the OPERATOR ACTION rule below. |
+| 4 | F5 round 5 (2026-07-31) | **The version itself MOVED onto the handshake.** The agent sends `X-KD-Contract` on the negotiate and the WebSocket upgrade; the server refuses a mismatch with **426** before the connection is admitted. `AgentRegistrationRequest.ContractVersion` is retained for diagnostics and is no longer a gate. Round 4 folded this into v3 on the grounds that v3 had never shipped; that made the refusal incoherent to read — an agent built against the pre-move v3 sends no header and was refused with "requires v3, presented absent" while both sides call themselves v3. A distinct number makes the diagnosis self-explanatory and is what fires the OPERATOR ACTION rule below. |
 
 **Why F2 bumps the version rather than riding v1.** Both new plan fields are
 appended and default to the safe value, so a v1 agent would deserialize them
@@ -100,7 +100,7 @@ one, and its log line names an **agent binary upgrade** rather than re-enrollmen
 
 **On the HANDSHAKE, before the connection is admitted.** The agent sends its version in the
 `X-KD-Contract` request header (`AgentContract.VersionHeader`), which rides both the
-negotiate request and the transport request that follows it, and persists across automatic reconnects — the
+negotiate request and the WebSocket upgrade, and persists across automatic reconnects — the
 same mechanism the blue-green release pin `X-KD-Release` already relies on.
 `AgentContractHandshakeGate`, mounted after authentication so its audit row can name the
 target, compares it and answers **426 Upgrade Required** on any mismatch. Absent and
@@ -283,20 +283,6 @@ the explicit refusal instead of a silent protocol mismatch.
   and the build version is not on the handshake, so `DeploymentTarget.AgentVersion` keeps
   advertising the version the agent rolled back FROM. Closing it costs one more handshake
   header; the target identity already tells an operator which box to touch.
-- **The agent hub is not on WebSockets.** Found while adding the transport assertion the round-5
-  review asked for; NOT a contract issue and deliberately not changed here. Neither
-  `Program.cs` nor the round-trip test host calls `app.UseWebSockets()`, so no
-  `IHttpWebSocketFeature` exists, SignalR omits WebSockets from its negotiate response, and the
-  client falls back — silently, which is exactly the degradation the review warned about.
-  MEASURED, not inferred: `HttpContext.WebSockets.IsWebSocketRequest` is false on every hub
-  request in `TransportRoundTripTests`, and adding `UseWebSockets()` flips it to true with the
-  suite still green. The wire-contract gate is unaffected either way — the header rides every
-  HTTP request on any transport, which is what
-  `The_contract_header_rides_every_hub_request_on_the_negotiated_transport` pins — but a fleet on
-  long polling pays a connection and a round trip per message where a WebSocket pays neither.
-  Enabling it is one line plus a decision about the edge (the Caddy front and the YARP router
-  both have to pass the upgrade through), which is why it is recorded rather than changed in a
-  review round.
 - **Runbook claim→hand-off race**: a cancel landing between the B1 claim and
   the agent hand-off pushes to an agent that doesn't have the task yet (no-op);
   the run then executes fully on the agent and its completion is swallowed by
@@ -316,7 +302,7 @@ The contract gate, in the order a failure would be caught:
 | `AgentContractHandshakeGateTests` | The middleware's own contract: 426 for skewed / absent / garbled / duplicated / signed values, the metadata scoping (an endpoint without the marker is never inspected), the body and its content type, that the warning always lands, the report throttle and its (target, value) key, the truncated echo, and that an already-aborted request still produces a complete refusal. |
 | `AgentContractRefusalRecorderTests` | The tenant-DB half, against real Postgres: Online → Offline plus the status push, that Disabled (retired) is not downgraded and Offline is not rewritten, and the persisted audit row — `subjectName`, and `UserId` null / `UserDisplay` "System" with a live agent principal on the `HttpContext`, which is the only way to catch the attribution fallback. |
 | `MultiAccountAgentTransportE2ETests` | A real SignalR client: both skewed shapes refused with an asserted **426** (not merely "some failure" — a 401 routes the agent to the wrong lane), the registry never touched, and that the gate is unreachable without an agent credential (`/hubs/agent/negotiate` → 401, `/hubs/agent/x` → 404). |
-| `TransportRoundTripTests` | Real loopback Kestrel with the gate on both hub endpoints, so a header that failed to reach either would refuse every test in the suite. It also pins the negotiated TRANSPORT, which surfaced the finding below. |
+| `TransportRoundTripTests` | Real loopback Kestrel over a real WebSocket, with the gate on both hub endpoints — so a header that failed to survive the upgrade would refuse every test in the suite. The transport is ASSERTED (via the `Upgrade` request header) rather than assumed, so a silent fallback to SSE or long polling turns the suite red instead of quietly weakening it. |
 | `AgentHubRegisterTests` | That the hub does NOT re-check the version; the header-strip tripwire; that a failed write leaves no dispatchable registry entry; and that the cancel re-push survives a failed machine-info write. |
 | `AgentReconnectPolicyTests`, `ServerLinkHostedServiceTests`, `ReconnectE2ETests` | The agent side: 426 takes the operator-action lane with the binary-upgrade remedy, the escape hatch opens for 426 only, unproductive cycles are paced, and the SignalR behaviours the whole pacing design rests on. |
 
@@ -332,6 +318,7 @@ about.
 
 | Version | Date | Change |
 |---|---|---|
+| 1.7 | 2026-07-31 | F5 round 5 REVIEW fixes. Retracts this document's own "the agent hub is not on WebSockets" residual, which was **wrong**: it came from reading `HttpContext.WebSockets.IsWebSocketRequest` in a middleware mounted before the endpoint, where SignalR has not yet installed `IHttpWebSocketFeature`, so a genuine upgrade read false. Re-measured via the `Upgrade` REQUEST header: the agent negotiates `upgrade: websocket` and carries `X-KD-Contract` on it, so v1.6's "correction" of the earlier commits was itself the error and their wording is restored. Also: the 426 now calls `Response.CompleteAsync()` (writing the body alone left the negotiate blocked for the whole recording — 3056 ms vs 1 ms measured — which turned a diagnosable refusal into a client timeout), and the refusal-report throttle is DELETED because it gated the Offline mark and status push, which are reconciled state rather than events. |
 | 1.6 | 2026-07-31 | F5 review round 5. Contract bumped **3 → 4**: the header move is its own version, because "requires v3, presented absent" while both sides call themselves v3 reads as a server fault, and because a non-change to `CurrentVersion` never fired the OPERATOR ACTION rule. Rewrote the reconnect-pacing section against MEASURED SignalR behaviour — a rejection inside `OnConnectedAsync` fires `Closed`, never `Reconnecting`, so round 4's "churn lane" could not observe the failure it existed for and is deleted; pacing is back in the supervision loop, keyed on an accepted registration. Added "Escaping a refusal" (the 426 deadlock and the two swap preconditions `ContractRefused` bypasses). Replaced "The contract, versioned", which described the deleted in-hub refusal, with what a refusal actually does now — including the Offline mark and status push it had silently lost, the report throttle, and the response-before-recording order. Corrected the reason `AgentVersion` is unobtainable (it is obtainable; the cost is one header) and moved it to Residuals. Struck the "Online-until-registered window" residual, which the move closed. Replaced the Tests paragraph with a table keyed on what each suite pins. |
 | 1.5 | 2026-07-31 | F5 review round 4: the wire-contract check moved from `RegisterAsync` onto the SignalR handshake (`X-KD-Contract` → 426), which deletes the connected-but-unverified state and with it `MarkRegistered`, `IsRegistered` and the liveness-vs-eligibility split. Rewrote "Dispatch eligibility" as "Where the version is checked", recorded the one thing the move costs (the audit row can no longer name the agent BUILD version), and documented that reconnect pacing lives in `AgentReconnectPolicy`'s churn lane rather than the supervision loop — round 3 had put it on a path `Context.Abort()` never wakes. |
 | 1.4 | 2026-07-30 | F5 review round 3: corrected "Dispatch eligibility" — `HasConnectionFor` answers LIVENESS and is NOT gated on registration (the earlier text described a behaviour that was reverted), and documented the two constraints on the registration-failure abort (agent-side backoff paced on ACCEPTED registration; the abort must not remove the registry entry). |

@@ -157,6 +157,14 @@ public sealed class ServerLinkHostedService(
             return Task.CompletedTask;
         });
 
+        // The reconnect-path half of the self-upgrade escape hatch. The StartAsync catch below
+        // covers an INITIAL connect refused with 426; this covers the far more common case — a
+        // server upgrade drops every established connection, so the client's own automatic
+        // reconnect meets the 426 instead. That path never raises Closed (the policy never gives
+        // up), so the supervision loop stays parked here and StartAsync is never re-entered.
+        // Without this the hatch stayed shut exactly when a contract bump needed it.
+        serverLink.OnContractRefused(context.SetContractRefused);
+
         serverLink.OnReconnected(async () =>
         {
             logger.LogInformation(

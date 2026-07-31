@@ -581,6 +581,7 @@ public sealed class MachineExecutionGateSharingTests
         public void OnCancelDeployment(Func<Guid, string?, Task> handler) { }
         public void OnClosed(Func<Exception?, Task> handler) { }
         public void OnReconnected(Func<Task> handler) { }
+        public void OnContractRefused(Action<bool> handler) { }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 

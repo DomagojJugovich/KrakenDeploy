@@ -185,42 +185,25 @@ public class AgentContractHandshakeGateTests
     }
 
     [Fact]
-    public async Task Repeat_refusals_of_the_same_skew_are_reported_once_per_window()
+    public async Task Every_refusal_reconciles_the_target_state()
     {
-        // A refusal is a per-target STATE, not an event stream. Without this, a fleet-wide
-        // skew after a server upgrade is a sustained audit-INSERT and log flood — and the
-        // subscription poller forwards every one of those rows off-premises.
-        var clock = new StubClock();
-        var h = new Harness(sentVersion: 3, targetId: Guid.NewGuid(), clock: clock);
+        // The gate used to throttle reporting to once per (target, value) per 10 minutes, and
+        // that throttle sat in FRONT of the recorder — so it also suppressed the Offline mark
+        // and the UI push, which are reconciled STATE rather than events. One recorder failure
+        // (the best-effort case this path tolerates) then left the fleet reading green for the
+        // whole window, the exact failure the recorder exists to prevent. The throttle is gone:
+        // every refusal reconciles. Rate is bounded by the agent's 5-minute operator-action
+        // lane and by the recorder's own Online-only write guard, not by state in here.
+        var h = new Harness(sentVersion: 3, targetId: Guid.NewGuid());
 
         await h.InvokeAsync();
         await h.InvokeAsync();
         await h.InvokeAsync();
 
-        h.Recorder.Events.Should().HaveCount(1);
-        h.Logger.Warnings.Should().HaveCount(1);
-        h.Refusals.Should().Be(3, "the 426 itself is never throttled — only its reporting");
-
-        clock.Advance(AgentContractHandshakeGate.RefusalReportInterval + TimeSpan.FromSeconds(1));
-        await h.InvokeAsync();
-
-        h.Recorder.Events.Should().HaveCount(2, "the window elapsed, so the state re-reports");
-    }
-
-    [Fact]
-    public async Task A_changed_skew_value_reports_immediately()
-    {
-        // Keyed on (target, presented value): an agent refused for v3 that is now refused
-        // for v2 is a NEW situation an operator needs to see, not a repeat hiding behind the
-        // previous value's window.
-        var clock = new StubClock();
-        var h = new Harness(sentVersion: 3, targetId: Guid.NewGuid(), clock: clock);
-
-        await h.InvokeAsync();
-        h.SetSentVersion(2);
-        await h.InvokeAsync();
-
-        h.Recorder.Events.Should().HaveCount(2);
+        h.Recorder.Events.Should().HaveCount(3,
+            "state reconciliation must not be gated on an event window");
+        h.Logger.Warnings.Should().HaveCount(3);
+        h.Refusals.Should().Be(3);
     }
 
     [Fact]
@@ -276,8 +259,7 @@ public class AgentContractHandshakeGateTests
             int? sentVersion = null,
             Guid? targetId = null,
             string? rawVersion = null,
-            bool withMarker = true,
-            TimeProvider? clock = null)
+            bool withMarker = true)
         {
             Context.Request.Path = "/hubs/agent/negotiate";
             Context.Response.Body = new MemoryStream();
@@ -302,18 +284,15 @@ public class AgentContractHandshakeGateTests
                     [new Claim(ClaimTypes.NameIdentifier, id.ToString())], "AgentJwt"));
             }
 
-            // ONE gate instance across a harness's invocations: the refusal-report throttle
-            // is per-middleware-instance state, exactly as it is in the real pipeline
-            // (UseMiddleware constructs the middleware once per pipeline build).
+            // ONE gate instance across a harness's invocations, mirroring the real pipeline
+            // (UseMiddleware constructs the middleware once per pipeline build). The gate now
+            // holds no per-instance state at all, which is the point — but the tests keep the
+            // shape so a reintroduced cache would be exercised across calls rather than hidden
+            // behind a fresh instance per invocation.
             _gate = new AgentContractHandshakeGate(
                 _ => { ReachedHub = true; return Task.CompletedTask; },
-                clock ?? TimeProvider.System,
                 Logger);
         }
-
-        internal void SetSentVersion(int version) =>
-            Context.Request.Headers[AgentContract.VersionHeader] =
-                version.ToString(CultureInfo.InvariantCulture);
 
         internal async Task InvokeAsync(IAgentContractRefusalRecorder? recorder = null)
         {
@@ -327,22 +306,6 @@ public class AgentContractHandshakeGateTests
 
         internal string Body =>
             System.Text.Encoding.UTF8.GetString(((MemoryStream)Context.Response.Body).ToArray());
-    }
-
-    /// <summary>
-    /// Drives the gate's throttle, which measures with <c>GetTimestamp</c> /
-    /// <c>GetElapsedTime</c> rather than <c>GetUtcNow</c> — a wall-clock window on a
-    /// domain-joined host is disarmed by a <c>w32tm</c> step.
-    /// </summary>
-    private sealed class StubClock : TimeProvider
-    {
-        private long _timestamp;
-
-        public override long GetTimestamp() => _timestamp;
-
-        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
-
-        internal void Advance(TimeSpan by) => _timestamp += by.Ticks;
     }
 
     private sealed class RecordingLogger : ILogger<AgentContractHandshakeGate>

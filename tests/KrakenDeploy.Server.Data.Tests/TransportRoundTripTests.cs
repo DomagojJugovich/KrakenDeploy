@@ -40,13 +40,10 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// REAL <see cref="AgentHub"/> (with the production AgentJwt validation chain,
 /// including the A8 atv revocation check) is hosted on loopback Kestrel, a REAL
 /// <see cref="SignalRServerLink"/> + <see cref="DeploymentExecutor"/> connects
-/// to it over the transport SignalR actually negotiates, and the REAL
-/// <see cref="DeploymentWorker"/> dispatches seeded deployments through the shared registries.
-/// <para>
-/// That transport is NOT WebSockets, and the host deliberately mirrors production in being that
-/// way — see <see cref="HandshakeRecorder"/> and the residual in
-/// <c>docs/agent-wire-contract.md</c>.
-/// </para>
+/// to it over a real WebSocket, and the REAL <see cref="DeploymentWorker"/> dispatches seeded
+/// deployments through the shared registries. The transport is asserted rather than assumed by
+/// <see cref="The_contract_header_survives_the_real_WebSocket_upgrade"/>, via
+/// <see cref="HandshakeRecorder"/>.
 /// </summary>
 [Trait("Category", "Docker")]
 [Collection("Postgres")]
@@ -56,22 +53,20 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(60);
 
     [Fact]
-    public async Task The_contract_header_rides_every_hub_request_on_the_negotiated_transport()
+    public async Task The_contract_header_survives_the_real_WebSocket_upgrade()
     {
-        // The property the wire-contract gate actually rests on, pinned rather than assumed:
-        // the header reaches BOTH hub endpoints — the negotiate POST and the transport request
-        // that follows it — because the gate is mounted on both, so a header that failed to
-        // reach either would have refused this connection with 426 before
-        // ConnectRealAgentAsync returned.
+        // The single property the whole wire-contract gate rests on, and the one only this
+        // suite can check: a custom request header set on HttpConnectionOptions rides BOTH hub
+        // requests — the negotiate POST and the WebSocket upgrade that follows it. The gate is
+        // mounted on both endpoints, so a header that failed to reach either would have refused
+        // this connection with 426 before ConnectRealAgentAsync returned.
         //
-        // It also records WHICH transport was negotiated, and that is where an unrelated
-        // finding surfaced: it is NOT WebSockets. Neither this host nor Program.cs calls
-        // app.UseWebSockets(), so no IHttpWebSocketFeature exists, SignalR omits WebSockets
-        // from the negotiate response, and the client falls back — silently, which is exactly
-        // what the review warned would let this suite degrade unnoticed. That is a production
-        // question (one line in Program.cs), not something to change from a test, so this
-        // asserts the CURRENT state explicitly: if UseWebSockets is added, this test goes red
-        // and whoever adds it decides deliberately what the suite should pin.
+        // Measured, and worth recording how the first attempt got it wrong: reading
+        // HttpContext.WebSockets.IsWebSocketRequest from this position reports false even for a
+        // genuine upgrade, because the IHttpWebSocketFeature is installed by SignalR's own
+        // endpoint branch further down the pipeline. That false negative was briefly written up
+        // as a production finding ("the hub is not on WebSockets"). The Upgrade REQUEST header
+        // is client-set and readable here, and it says `websocket`.
         await using var seeder = new OrchestratorTestHarness(postgres);
         await using var host = await RoundTripHost.StartAsync(postgres);
         var target = (await seeder.SeedTargetsAsync($"ws-{Guid.NewGuid():N}"[..18]))[0];
@@ -88,11 +83,14 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
         seen.Should().Contain(h => h.Path == "/hubs/agent/negotiate")
             .And.Contain(h => h.Path == "/hubs/agent");
 
-        seen.Should().NotContain(h => h.WebSocket,
-            "no UseWebSockets() in this host or in Program.cs means no IHttpWebSocketFeature, " +
-            "so SignalR does not offer the WebSocket transport and the client falls back. If " +
-            "this fails, WebSockets have been enabled — which is probably right, and this " +
-            "assertion should then become Contain(h => h.WebSocket)");
+        seen.Should().Contain(h => h.Upgrade.Equals("websocket", StringComparison.OrdinalIgnoreCase),
+            "the agent must negotiate a real WebSocket UPGRADE, not silently fall back to SSE " +
+            "or long polling — that fallback is exactly what would let this suite degrade while " +
+            "still passing");
+
+        seen.Where(h => h.Upgrade.Length > 0).Should().OnlyContain(h => h.Contract == expected,
+            "and the wire-contract header must SURVIVE that upgrade, which is the single " +
+            "property the whole handshake gate depends on and the one only this suite can check");
     }
 
     [Fact]
@@ -523,29 +521,33 @@ public sealed class RoundTripStepHandler : IStepHandler
 /// with this test assembly staged as the step package).
 /// </summary>
 /// <summary>
-/// What the agent's transport presented on each hub request, and whether the request was a
-/// WebSocket upgrade.
+/// What the agent's transport presented on each hub request: the path, the <c>Upgrade</c>
+/// request header, and the wire-contract header.
 /// <para>
 /// Added because the review flagged that nothing asserted the negotiated transport, and the
 /// SignalR client falls back through SSE to long polling in SILENCE — so a suite that stopped
-/// upgrading would keep passing while testing something weaker. Recording it produced a finding:
-/// this suite was never on WebSockets, because neither it nor <c>Program.cs</c> calls
-/// <c>app.UseWebSockets()</c>, so no <c>IHttpWebSocketFeature</c> exists and SignalR omits the
-/// WebSocket transport from its negotiate response. The gate is unaffected — the header rides
-/// every HTTP request on any transport, which is what the test asserts — but the transport
-/// itself is a production question, not a test one.
+/// upgrading would keep passing while testing something weaker.
+/// </para>
+/// <para>
+/// The first cut of this recorder read <c>HttpContext.WebSockets.IsWebSocketRequest</c> and
+/// concluded the hub was not on WebSockets. That was WRONG, and the mistake is recorded here
+/// because it reached the docs before it was caught: <c>IsWebSocketRequest</c> reads the
+/// <c>IHttpWebSocketFeature</c>, which SignalR's endpoint installs on its own internal branch,
+/// so from a middleware mounted BEFORE the endpoint it reads false even for a genuine upgrade.
+/// <c>app.UseWebSockets()</c> is NOT required for SignalR. The <c>Upgrade</c> REQUEST header is
+/// set by the client and is readable anywhere in the pipeline, so that is what this records.
 /// </para>
 /// </summary>
 internal sealed class HandshakeRecorder
 {
-    private readonly List<(string Path, bool WebSocket, string Contract)> _seen = [];
+    private readonly List<(string Path, string Upgrade, string Contract)> _seen = [];
 
-    internal void Record(string path, bool webSocket, string contract)
+    internal void Record(string path, string upgrade, string contract)
     {
-        lock (_seen) { _seen.Add((path, webSocket, contract)); }
+        lock (_seen) { _seen.Add((path, upgrade, contract)); }
     }
 
-    internal IReadOnlyList<(string Path, bool WebSocket, string Contract)> Seen
+    internal IReadOnlyList<(string Path, string Upgrade, string Contract)> Seen
     {
         get { lock (_seen) { return [.. _seen]; } }
     }
@@ -682,16 +684,24 @@ internal sealed class RoundTripHost : IAsyncDisposable
         // to long polling, so without this the suite would DEGRADE and still pass — and the one
         // property that only a real WebSocket can prove is that a custom request header
         // survives the upgrade, which is what the whole contract gate rests on.
-        // NOTE deliberately NO app.UseWebSockets() — Program.cs does not call it either, and
-        // this host exists to mirror production. See HandshakeRecorder.
+        // No app.UseWebSockets() — and it is NOT needed: SignalR's MapConnections installs the
+        // WebSocket feature on its own endpoint branch, so the agent upgrades regardless.
+        // Program.cs does not call it either, so this host mirrors production.
         var handshakes = app.Services.GetRequiredService<HandshakeRecorder>();
         app.Use(async (ctx, next) =>
         {
             if (ctx.Request.Path.StartsWithSegments("/hubs/agent"))
             {
+                // The UPGRADE REQUEST HEADER, not ctx.WebSockets.IsWebSocketRequest. The
+                // latter reads the IHttpWebSocketFeature, which the SignalR endpoint installs
+                // on its own internal branch — so from a middleware mounted BEFORE the
+                // endpoint it is false even for a genuine upgrade, which made the previous
+                // version of this probe report "not WebSockets" for every request and the
+                // assertion below pass vacuously. The request header is set by the client and
+                // is readable anywhere in the pipeline.
                 handshakes.Record(
                     ctx.Request.Path.Value ?? "",
-                    ctx.WebSockets.IsWebSocketRequest,
+                    ctx.Request.Headers.Upgrade.ToString(),
                     ctx.Request.Headers[AgentContract.VersionHeader].ToString());
             }
             await next(ctx).ConfigureAwait(false);

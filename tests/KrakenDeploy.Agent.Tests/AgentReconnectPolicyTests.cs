@@ -172,13 +172,106 @@ public sealed class AgentReconnectPolicyTests
             "once per streak, not once per 5-minute attempt");
     }
 
-    // The "churn lane" that used to live here — a count of consecutive short-lived
-    // connections, meant to pace a server that repeatedly rejects the agent — is gone, and so
-    // are its three tests. It could not reach the failure it was written for: a rejection
-    // inside OnConnectedAsync fires Closed rather than Reconnecting, so the event that fed the
-    // counter never raised, and for the drop it COULD see, HubConnection computes the delay
-    // before raising Reconnecting, so the counter lagged by an episode. Both facts are now
-    // pinned by execution in ReconnectE2ETests, and the pacing lives in the only loop that
-    // observes a permanent close — ServerLinkHostedService's supervision loop, covered by
-    // ServerLinkHostedServiceTests.
+    // ── Episode pacing: a link that keeps dropping moments after it connects ─────
+    //
+    // This replaces the deleted "churn lane", which counted the same thing from the
+    // Reconnecting EVENT and was wrong twice over: HubConnection computes the delay BEFORE
+    // raising Reconnecting, so the counter lagged a whole episode, and the event never fires for
+    // a server-side rejection. Counting here instead — PreviousRetryCount == 0 IS "a new episode
+    // started" — is synchronous, correctly ordered, and on the thread about to use the answer.
+
+    [Fact]
+    public void Repeated_episodes_without_a_useful_connection_escalate()
+    {
+        // The regression this closes. PreviousRetryCount restarts at 0 for every episode and
+        // attempt 0 is deliberately immediate, so on that counter alone a link that establishes
+        // and drops repeatedly reconnects at round-trip cadence FOREVER — a proxy with a short
+        // idle timeout, a slot swap mid-drain, an overloaded server closing transports.
+        var clock = new StubClock();
+        var policy = new AgentReconnectPolicy(NullLogger.Instance, () => 1.0, clock);
+
+        var delays = new List<TimeSpan>();
+        for (var i = 0; i < 4; i++)
+        {
+            policy.NoteConnected();
+            clock.Advance(TimeSpan.FromMilliseconds(20));   // dropped almost immediately
+            delays.Add(policy.NextRetryDelay(Context(0))!.Value);
+        }
+
+        // Episode 1 still gets attempt 0's immediate retry — a healthy link that drops once
+        // must not be penalised — and only a RUN of useless episodes escalates.
+        delays.Should().Equal(
+            TimeSpan.Zero,
+            TimeSpan.FromSeconds(1),
+            TimeSpan.FromSeconds(2),
+            TimeSpan.FromSeconds(4));
+    }
+
+    [Fact]
+    public void One_useful_connection_clears_the_episode_count()
+    {
+        var clock = new StubClock();
+        var policy = new AgentReconnectPolicy(NullLogger.Instance, () => 1.0, clock);
+
+        for (var i = 0; i < 3; i++)
+        {
+            policy.NoteConnected();
+            clock.Advance(TimeSpan.FromMilliseconds(20));
+            policy.NextRetryDelay(Context(0));
+        }
+
+        policy.NoteConnected();
+        clock.Advance(AgentReconnectPolicy.MinUsefulConnection + TimeSpan.FromSeconds(1));
+
+        policy.NextRetryDelay(Context(0)).Should().Be(TimeSpan.Zero,
+            "the link demonstrably worked, so the next drop is a blip again");
+    }
+
+    [Fact]
+    public void Episode_count_never_shortens_the_within_episode_backoff()
+    {
+        // The two counts combine with Math.Max, so an episode's own escalation cannot be undone
+        // by an idle episode counter. Asserted with a LITERAL rather than by referencing the
+        // constant, so a changed ceiling cannot make this pass vacuously.
+        var policy = new AgentReconnectPolicy(NullLogger.Instance, () => 1.0, new StubClock());
+
+        policy.NextRetryDelay(Context(5)).Should().Be(TimeSpan.FromSeconds(16));
+    }
+
+    [Fact]
+    public void A_426_raises_the_contract_refused_callback_and_a_401_does_not()
+    {
+        // The reconnect-path half of the self-upgrade escape hatch. This callback is the ONLY
+        // place a 426 met during automatic reconnect is observable, because the policy never
+        // returns null so HubConnection never raises Closed and the supervisor never re-enters
+        // StartAsync. A credential failure must NOT raise it: re-enrollment is not something a
+        // binary swap can supply.
+        var raised = new List<bool>();
+        var policy = new AgentReconnectPolicy(
+            NullLogger.Instance, () => 1.0, new StubClock(), raised.Add);
+
+        policy.NextRetryDelay(Context(1, new HttpRequestException(
+            "no", inner: null, statusCode: HttpStatusCode.UpgradeRequired)));
+        raised.Should().Equal([true]);
+
+        // A transport error clears it.
+        policy.NextRetryDelay(Context(1));
+        raised.Should().Equal([true, false]);
+
+        // 401 takes the same delay lane but must not open the hatch.
+        policy.NextRetryDelay(Context(1, new HttpRequestException(
+            "no", inner: null, statusCode: HttpStatusCode.Unauthorized)));
+        raised.Should().Equal([true, false], "a credential failure is not a contract refusal");
+    }
+
+    private sealed class StubClock : TimeProvider
+    {
+        private long _timestamp;
+
+        public override long GetTimestamp() => _timestamp;
+
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+        internal void Advance(TimeSpan by) => _timestamp += by.Ticks;
+    }
 }

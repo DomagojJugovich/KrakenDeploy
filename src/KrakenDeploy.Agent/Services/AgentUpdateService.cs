@@ -78,11 +78,30 @@ public sealed class AgentUpdateService(
     /// </summary>
     internal const int MaxRemoteDetailLength = 512;
 
-    /// <summary>Trims remote text to <paramref name="max"/>, marking that it was trimmed.</summary>
+    /// <summary>
+    /// Sentinel file marking a staged version whose health gate already FAILED and which was
+    /// rolled back. Lives beside the staged archive in <c>updates/&lt;version&gt;/</c> so it
+    /// survives the restart that follows a rollback.
+    /// <para>
+    /// Needed because <c>ContractRefused</c> bypasses the maintenance window, and that window was
+    /// the only bound on the swap → failed-probation → rollback → <c>Exit(70)</c> → restart
+    /// cycle: <c>AgentUpgradeMarker</c> carries <c>AttemptsUsed</c> but is DELETED on rollback, so
+    /// nothing remembered across attempts, the staged archive is still on disk so the download is
+    /// skipped, and the next check interval swapped the same broken build again. On a refused
+    /// agent that is a restart roughly every 8 minutes, 24/7, each cycle filing a RolledBack
+    /// audit row the subscription poller forwards off-premises.
+    /// </para>
+    /// </summary>
+    internal const string RolledBackSentinel = "rolled-back";
+
+    /// <summary>
+    /// Trims remote text to <paramref name="max"/>, marking that it was trimmed. Delegates to
+    /// the shared rune-safe helper: the previous local version sliced by UTF-16 code unit (so it
+    /// could split a surrogate pair, which Npgsql refuses to persist) and its marker pushed the
+    /// result PAST <paramref name="max"/>, so the "cap" did not cap.
+    /// </summary>
     internal static string? Truncate(string? value, int max)
-        => value is { } v && v.Length > max
-            ? string.Concat(v.AsSpan(0, max), $"… (truncated from {v.Length})")
-            : value;
+        => KrakenDeploy.Execution.TextBudget.Trim(value, max);
 
     /// <summary>
     /// F5 — bound on the pre-swap "does the server still have work for me?" call. Short
@@ -130,7 +149,15 @@ public sealed class AgentUpdateService(
     /// Only ever touched from the single <see cref="PeriodicTimer"/> loop, so it needs no
     /// synchronisation.
     /// </summary>
-    private (string Outcome, string Version, string Reason)? _deferralReportedFor;
+    private readonly Dictionary<(string Outcome, string Version, string Reason), long> _reported = [];
+
+    /// <summary>
+    /// Bound on <see cref="_reported"/>. Causes are drawn from a small fixed set of message
+    /// shapes, but two of them interpolate a value (an HTTP status, an exception type name), so
+    /// the set is not provably finite. On overflow it is cleared: the next tick re-reports each
+    /// live cause once, which is a bounded blip rather than unbounded memory.
+    /// </summary>
+    private const int MaxReportedCauses = 64;
 
     /// <summary>
     /// Stands in for a staged version the server did not name. A sentinel rather than
@@ -148,8 +175,6 @@ public sealed class AgentUpdateService(
     /// middle.
     /// </summary>
     private static readonly TimeSpan DeferralReminderInterval = TimeSpan.FromMinutes(30);
-
-    private long? _deferralRemindedAt;
 
     /// <summary>Outcome of evaluating an update the server offered.</summary>
     internal enum UpdateDecision
@@ -255,8 +280,7 @@ public sealed class AgentUpdateService(
             case UpdateDecision.NoUpdate:
                 // The offer is gone (withdrawn, or we already run it), so a later re-offer
                 // of the same version is a NEW situation and may report its deferral again.
-                _deferralReportedFor = null;
-                _deferralRemindedAt = null;
+                _reported.Clear();
                 return;
 
             case UpdateDecision.HashMissing:
@@ -264,7 +288,9 @@ public sealed class AgentUpdateService(
                 logger.LogError(
                     "Server offered update {Latest} without a SHA-256 hash — refusing.",
                     info.LatestVersion);
-                await ReportAsync(AgentUpdateOutcome.HashMissing,
+                // ReportOnceAsync, not ReportAsync: a manifest missing its hash stays missing
+                // until an operator fixes it, so a per-tick report is a treadmill.
+                await ReportOnceAsync(AgentUpdateOutcome.HashMissing,
                     currentVersion, info.LatestVersion, "server supplied no hash", ct)
                     .ConfigureAwait(false);
                 return;
@@ -276,7 +302,13 @@ public sealed class AgentUpdateService(
                     "Refusing update {Latest}: its wire-contract v{Target} does not match " +
                     "the server's v{Server}.",
                     info.LatestVersion, info.TargetContractVersion, info.ServerContractVersion);
-                await ReportAsync(AgentUpdateOutcome.ContractSkew,
+                // ReportOnceAsync, and this is the one that mattered most: bumping
+                // AgentContract.CurrentVersion makes ContractSkew the FLEET-WIDE steady state
+                // until an operator edits the out-of-repo version.json. Per-tick reporting meant
+                // 288 AgentUpdateFailed audit rows per target per day — and, because the
+                // subscription poller forwards audit rows off-premises, 288 webhook / e-mail /
+                // AI-inspect deliveries with them — for a state no agent action can change.
+                await ReportOnceAsync(AgentUpdateOutcome.ContractSkew,
                     currentVersion, info.LatestVersion,
                     $"contract skew target=v{info.TargetContractVersion} " +
                     $"server=v{info.ServerContractVersion}", ct)
@@ -290,6 +322,21 @@ public sealed class AgentUpdateService(
         // 2. Download the archive if it is not already staged.
         var versionDir = Path.Combine(updatesDir, info.LatestVersion ?? "unknown");
         Directory.CreateDirectory(versionDir);
+
+        // A version that already failed its health gate is not retried. The archive is still on
+        // disk and would be swapped again on the very next tick — which the maintenance window
+        // used to bound to once a night, and no longer does for a contract-refused agent. An
+        // operator publishing a corrected build gets a new version number and a fresh directory,
+        // so this never blocks a real fix.
+        if (File.Exists(Path.Combine(versionDir, RolledBackSentinel)))
+        {
+            await ReportOnceAsync(AgentUpdateOutcome.SwapFailed, currentVersion,
+                info.LatestVersion,
+                "this version already failed its health gate on this machine and was rolled " +
+                "back; publish a corrected build under a new version", ct)
+                .ConfigureAwait(false);
+            return;
+        }
 
         var ext = AgentRid.StartsWith("win", StringComparison.OrdinalIgnoreCase)
             ? ".zip" : ".tar.gz";
@@ -489,15 +536,22 @@ public sealed class AgentUpdateService(
         CancellationToken ct)
     {
         var key = (outcome, latestVersion ?? UnknownStagedVersion, reason);
-        if (_deferralReportedFor == key)
+
+        // A SET of reported causes, not a single slot. With one slot and a reason in the key, two
+        // causes that alternate between ticks each evicted the other and every tick delivered a
+        // fresh report — the flood this suppressor exists to stop. A busy box does exactly that:
+        // "machine busy for the whole swap window" on one tick, "the server still has work for
+        // this target" on the next, back again on the third.
+        if (_reported.TryGetValue(key, out var lastReminded))
         {
-            // Information rather than Debug, but throttled: the audit row is already filed
-            // and one line per check interval would be its own flood, while silence leaves
-            // an indefinitely stuck agent with no signal at all after that single row.
-            if (_deferralRemindedAt is not { } last
-                || timeProvider.GetElapsedTime(last) >= DeferralReminderInterval)
+            // Information rather than Debug, but throttled: the audit row is already filed and
+            // one line per check interval would be its own flood, while silence leaves an
+            // indefinitely stuck agent with no signal at all after that single row. The reminder
+            // stamp lives in this same dictionary rather than a parallel field, so the two
+            // cannot desync.
+            if (timeProvider.GetElapsedTime(lastReminded) >= DeferralReminderInterval)
             {
-                _deferralRemindedAt = timeProvider.GetTimestamp();
+                _reported[key] = timeProvider.GetTimestamp();
                 logger.LogInformation(
                     "Agent update {Outcome} is STILL the situation for {Version}: {Reason}. " +
                     "Already reported to the server; repeating here every {Interval} while " +
@@ -508,15 +562,21 @@ public sealed class AgentUpdateService(
             return;
         }
 
-        // Stamped only on a DELIVERED report. A failed one is retried on the next check —
-        // that is one POST per check interval, not an audit-row stream, because the row is
-        // written server-side only when the report actually lands.
-        if (await ReportAsync(outcome, currentVersion, latestVersion, reason, ct)
-                .ConfigureAwait(false))
+        if (_reported.Count >= MaxReportedCauses)
         {
-            _deferralReportedFor = key;
-            _deferralRemindedAt = timeProvider.GetTimestamp();
+            _reported.Clear();
         }
+
+        // Stamped BEFORE the call, and the earlier "stamp only on delivery" was wrong on its own
+        // premise. It claimed "the row is written server-side only when the report actually
+        // lands", but /api/agents/update-status commits the audit row and only THEN responds — so
+        // a reply lost to the agent's 10 s report timeout or a proxy 502 leaves the row written
+        // and the key unstamped, and the next tick files a duplicate. One attempt per distinct
+        // cause is the correct semantic: the report is best-effort telemetry, and re-sending it
+        // cannot be made safe without an idempotency key the endpoint does not have.
+        _reported[key] = timeProvider.GetTimestamp();
+        await ReportAsync(outcome, currentVersion, latestVersion, reason, ct)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -1018,9 +1078,16 @@ public sealed class AgentUpdateService(
             "Rolling back self-upgrade to {To}: {Reason}. Restoring {From}.",
             marker.ToVersion, reason, marker.FromVersion);
 
-        // The lease is discarded, not bound: nothing here ever releases it (see below), and
-        // a named local would only imply otherwise.
-        var (_, gateOutcome) = await AcquireSwapGateAsync(
+        // The lease IS bound now, and that is a fix rather than tidying. It used to be
+        // discarded on the reasoning that Environment.Exit in the finally was the only thing
+        // that ever ended it — true when every path exited, but two paths added later do not:
+        // the shutdown deferral below (which returns before the try) and the shutdown check
+        // inside the finally (which skips the exit). Either one left MachineExecutionGate
+        // write-held by a Releaser nothing would ever dispose — Releaser has no finaliser — so
+        // every later AcquireAsync blocked and the agent accepted no work for the rest of the
+        // process's life. That is the exact "writer held by nobody" the finally was introduced
+        // to prevent. Any path that does NOT exit must dispose it.
+        var (lease, gateOutcome) = await AcquireSwapGateAsync(
             executionGate, RollbackGateTimeout, ct).ConfigureAwait(false);
 
         if (gateOutcome == SwapGate.Stopping)
@@ -1037,6 +1104,9 @@ public sealed class AgentUpdateService(
             logger.LogWarning(
                 "Deferring rollback of {To} to the next boot — the agent is shutting down. " +
                 "The upgrade marker is retained.", marker.ToVersion);
+            // Stopping means AcquireSwapGateAsync returned no lease, so this is belt-and-braces
+            // against a future outcome that does hand one back on this path.
+            lease?.Dispose();
             return;
         }
 
@@ -1079,6 +1149,9 @@ public sealed class AgentUpdateService(
                 "Deferring rollback of {To} to the next boot — the agent began shutting down " +
                 "while the rollback waited for the machine. The upgrade marker is retained.",
                 marker.ToVersion);
+            // Not exiting, so the lease must go back — otherwise the gate stays write-held for
+            // the rest of the process's life and the shutdown drain blocks on it.
+            lease?.Dispose();
             return;
         }
 
@@ -1090,6 +1163,11 @@ public sealed class AgentUpdateService(
                 SelfUpdateFileOps.RestoreFromBackup(
                     marker.InstallDir, marker.BackupDir, marker.InstallDir + ".failed");
                 AgentUpgradeMarker.Delete(markerPath);
+                // Remember that THIS version failed its health gate, before the marker goes.
+                // Nothing else survives the restart, and without it the next check interval
+                // swaps the same broken build again — indefinitely for a contract-refused agent,
+                // which bypasses the maintenance window that used to bound the loop.
+                MarkVersionRolledBack(markerPath, marker.ToVersion);
                 logger.LogWarning(
                     "Rollback complete. Exiting so the supervisor relaunches {From}.",
                     marker.FromVersion);
@@ -1144,11 +1222,49 @@ public sealed class AgentUpdateService(
                     "leaving the exit to the host rather than reporting a failure code to the " +
                     "supervisor. The restored binary starts on the next launch.",
                     marker.FromVersion);
+                // This is the path that made binding the lease necessary: we are NOT exiting,
+                // so nothing else will ever end it, and the host's own shutdown drain is about
+                // to wait on this very gate.
+                lease?.Dispose();
             }
             else
             {
                 Environment.Exit(70); // non-zero: this run failed its health gate
             }
+        }
+    }
+
+    /// <summary>
+    /// Drops <see cref="RolledBackSentinel"/> beside the staged archive for
+    /// <paramref name="version"/>. Best-effort: a failure here costs the loop bound, not
+    /// correctness, and must not derail a rollback that is already on its way to
+    /// <see cref="Environment.Exit"/>.
+    /// </summary>
+    private void MarkVersionRolledBack(string markerPath, string? version)
+    {
+        if (string.IsNullOrEmpty(version))
+        {
+            return;
+        }
+
+        try
+        {
+            var updatesDir = Path.GetDirectoryName(markerPath);
+            if (string.IsNullOrEmpty(updatesDir))
+            {
+                return;
+            }
+            var versionDir = Path.Combine(updatesDir, version);
+            Directory.CreateDirectory(versionDir);
+            File.WriteAllText(
+                Path.Combine(versionDir, RolledBackSentinel),
+                $"Health gate failed on this machine; rolled back at {timeProvider.GetUtcNow():O}.");
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Could not record that {Version} was rolled back. The rollback itself stands, " +
+                "but this agent may retry the same failing version on its next check.", version);
         }
     }
 

@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Globalization;
 using KrakenDeploy.Contracts;
 using Microsoft.AspNetCore.Http;
@@ -39,7 +38,6 @@ namespace KrakenDeploy.Server.Transport;
 /// </summary>
 public sealed class AgentContractHandshakeGate(
     RequestDelegate next,
-    TimeProvider timeProvider,
     ILogger<AgentContractHandshakeGate> logger)
 {
     /// <summary>
@@ -52,29 +50,23 @@ public sealed class AgentContractHandshakeGate(
     /// </summary>
     internal const int MaxEchoedValueLength = 24;
 
-    /// <summary>
-    /// A refusal is a per-target STATE, not an event stream: an agent that is skewed is
-    /// skewed until an operator acts. Report each distinct (target, presented value) at
-    /// most once per window so a fleet-wide skew after a server upgrade cannot turn into
-    /// a sustained audit-INSERT and log flood — which, because the subscription poller
-    /// forwards audit rows off-premises, would also mean a sustained webhook/e-mail fan-out.
-    /// The 426 itself is NEVER throttled; only its reporting is.
-    /// </summary>
-    internal static readonly TimeSpan RefusalReportInterval = TimeSpan.FromMinutes(10);
-
-    /// <summary>
-    /// Bound on the throttle table. Keys are (target id, presented value) and the gate is
-    /// unreachable without a valid agent JWT, so real-world cardinality is the fleet size;
-    /// the cap only stops a compromised target from growing it without limit by varying
-    /// the header. On overflow the oldest-expired entries are dropped, and if none have
-    /// expired the report goes out unthrottled — losing the throttle is the safe direction.
-    /// </summary>
-    internal const int MaxThrottleEntries = 8192;
-
-    // Middleware instances are created once per pipeline build, so this state is shared
-    // across requests by design. Monotonic timestamps (never GetUtcNow) so a domain-joined
-    // host's clock step cannot disarm or freeze the throttle.
-    private readonly ConcurrentDictionary<(string Target, string Presented), long> _reported = new();
+    // NO refusal throttle here, and its removal is the fix for two defects rather than a
+    // simplification. A per-(target, value) 10-minute window sat in front of
+    // recorder.RecordAsync, so it also suppressed the target's Online→Offline transition and
+    // its UI push — reconciled STATE, not an event stream — which meant a recorder that threw
+    // once (the best-effort case this path explicitly tolerates) left the fleet reading green
+    // for the whole window, the exact failure the recorder exists to prevent. Its documented
+    // MaxThrottleEntries cap also bounded nothing: the insert ran unconditionally after a
+    // prune that only evicted expired keys, so a target varying the header grew the table
+    // without limit AND bypassed the throttle, while every refusal past the cap paid a full
+    // O(n) scan on the negotiate path.
+    //
+    // What bounds the rate instead, without any state here: the agent takes
+    // AgentReconnectPolicy's 5-minute operator-action lane on a 426, and the recorder's write
+    // is conditional on Status == Online so a repeat refusal is a no-op read rather than a
+    // write. If a hostile target ever makes this a problem, the answer is a limiter on the
+    // endpoint (UseRateLimiter is already in the pipeline), not per-middleware memory that
+    // silently gates state reconciliation.
 
     /// <summary>
     /// True when the matched endpoint declares <see cref="RequiresAgentContract"/>. Shared
@@ -164,6 +156,17 @@ public sealed class AgentContractHandshakeGate(
                 $"This server requires agent wire contract v{AgentContract.CurrentVersion}; " +
                 $"this agent presented {presented}. {remedy}",
                 CancellationToken.None).ConfigureAwait(false);
+
+            // COMPLETE the response, and this is the line that makes "answer first" true.
+            // WriteAsync alone only writes into the body; the response is not finished until
+            // the pipeline returns, so with no ContentLength (hence chunked) a client reading
+            // to completion — which HttpConnection.NegotiateAsync does — stayed blocked for the
+            // whole duration of the recording below. Measured on Kestrel: 3056 ms without this
+            // call against 1 ms with it, for a 3-second recorder. That latency is exactly what
+            // turned a diagnosable 426 into a client-side TIMEOUT on a slow tenant database —
+            // and a timeout is not an HttpRequestException with StatusCode 426, so the agent
+            // could not classify it and never opened its self-upgrade escape hatch.
+            await context.Response.CompleteAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -172,17 +175,10 @@ public sealed class AgentContractHandshakeGate(
                 "the refusal itself stands.");
         }
 
-        if (!ShouldReport(claimed, presented))
-        {
-            return;
-        }
-
         logger.LogWarning(
             "Agent handshake REFUSED for target {TargetId}: contract {Presented} != server " +
-            "v{Required}. {Remedy} Further refusals of the same value from this target are " +
-            "suppressed for {Interval}.",
-            claimed ?? "(unauthenticated)", presented, AgentContract.CurrentVersion,
-            remedy, RefusalReportInterval);
+            "v{Required}. {Remedy}",
+            claimed ?? "(unauthenticated)", presented, AgentContract.CurrentVersion, remedy);
 
         // Recorded against the target when the handshake carried a usable identity, so an
         // operator learns WHICH agent is skewed rather than which address connected.
@@ -238,50 +234,11 @@ public sealed class AgentContractHandshakeGate(
     }
 
     private static string Truncate(string? value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return "\"\"";
-        }
-        return value.Length <= MaxEchoedValueLength
-            ? $"\"{value}\""
-            : $"\"{value[..MaxEchoedValueLength]}\"… ({value.Length} chars)";
-    }
+        => string.IsNullOrEmpty(value)
+            ? "\"\""
+            // Shared, rune-safe: a header value can carry an astral character, and slicing by
+            // code unit could leave a lone surrogate that Npgsql then refuses to persist —
+            // losing the very audit row this echo exists to populate.
+            : KrakenDeploy.Execution.TextBudget.Describe(value, MaxEchoedValueLength);
 
-    /// <summary>
-    /// Whether this (target, presented value) pair is due a log line and an audit row.
-    /// Reports the first occurrence immediately, then at most once per
-    /// <see cref="RefusalReportInterval"/> — so a changed skew value reports at once
-    /// instead of hiding behind the previous one's window.
-    /// </summary>
-    private bool ShouldReport(string? targetId, string presented)
-    {
-        var key = (targetId ?? "(unauthenticated)", presented);
-        var now = timeProvider.GetTimestamp();
-
-        if (_reported.TryGetValue(key, out var last)
-            && timeProvider.GetElapsedTime(last) < RefusalReportInterval)
-        {
-            return false;
-        }
-
-        if (_reported.Count >= MaxThrottleEntries)
-        {
-            PruneExpired();
-        }
-
-        _reported[key] = now;
-        return true;
-    }
-
-    private void PruneExpired()
-    {
-        foreach (var (key, stamp) in _reported)
-        {
-            if (timeProvider.GetElapsedTime(stamp) >= RefusalReportInterval)
-            {
-                _reported.TryRemove(key, out _);
-            }
-        }
-    }
 }
