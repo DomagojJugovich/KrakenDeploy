@@ -17,6 +17,14 @@ public class StepTemplateCatalogEntry : Entity
     /// </summary>
     public required string CommunityTemplateId { get; set; }
 
+    /// <summary>
+    /// SC6: which feed the entry came from, as lower-cased <c>owner/repo</c>
+    /// (e.g. <c>octopusdeploy/library</c>). The catalog is multi-feed now;
+    /// orphan removal and SHA-diffing are scoped per feed — without this,
+    /// syncing feed A would delete every row feed B produced.
+    /// </summary>
+    public string FeedKey { get; set; } = "";
+
     /// <summary>Path relative to the repo root (e.g. <c>step-templates/aws-tag-resources.json</c>).</summary>
     public required string PathInRepo { get; set; }
 

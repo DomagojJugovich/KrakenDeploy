@@ -7,6 +7,7 @@
 @inject StepTemplateService TemplateSvc
 @inject StepTemplateCatalogService CatalogSvc
 @inject StepPackageCatalogService PackageCatalogSvc
+@inject SettingsService Settings
 @inject NotificationService Notify
 @inject DialogService Dialog
 
@@ -167,9 +168,19 @@
     @* ── Feed health strip (SD-9) ─────────────────────────────────────── *@
     <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.SpaceBetween"
                  AlignItems="AlignItems.Center" Gap="0.5rem">
-        <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-0">
-            Community templates: @FormatSync(_templateFeedSync) · Step packages: @FormatSync(_packageFeedSync)
-        </RadzenText>
+        <RadzenStack Gap="0" Style="min-width:0;">
+            <RadzenText TextStyle="TextStyle.Caption" class="rz-color-secondary rz-mb-0">
+                Community templates: @FormatSync(_templateFeedSync) · Step packages: @FormatSync(_packageFeedSync)
+            </RadzenText>
+            @if (_feedError is not null)
+            {
+                <RadzenText TextStyle="TextStyle.Caption" class="rz-color-danger rz-mb-0"
+                            Style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
+                            title="@_feedError">
+                    feed error: @_feedError
+                </RadzenText>
+            }
+        </RadzenStack>
         <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
                       Click="@(() => Dialog.Close(null))" />
     </RadzenStack>
@@ -184,6 +195,7 @@
     private List<Card> _cards = [];
     private DateTimeOffset? _templateFeedSync;
     private DateTimeOffset? _packageFeedSync;
+    private string? _feedError;
 
     private int _featuredCount;
     private int _installedCount;
@@ -213,6 +225,14 @@
         var community = await CatalogSvc.GetAllAsync();
         _templateFeedSync = await CatalogSvc.GetLastSyncAsync();
         _packageFeedSync  = await PackageCatalogSvc.GetLastSyncAsync();
+
+        // SC6 — surface the most recent feed failure, if any feed is unwell.
+        var health = await Settings.GetAsync<StepFeedHealthDocument>();
+        _feedError = health.Feeds
+            .Where(f => f.Value.LastError is not null)
+            .OrderByDescending(f => f.Value.LastAttemptUtc)
+            .Select(f => $"{f.Key}: {f.Value.LastError}")
+            .FirstOrDefault();
 
         BuildCards(types, presets, community);
         _loading = false;

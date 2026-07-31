@@ -13,6 +13,8 @@ public sealed class StepTemplateCatalogEntryConfiguration
         builder.HasKey(x => x.Id);
 
         builder.Property(x => x.CommunityTemplateId).HasMaxLength(256).IsRequired();
+        builder.Property(x => x.FeedKey).HasMaxLength(200).IsRequired();
+        builder.HasIndex(x => x.FeedKey);
         builder.Property(x => x.PathInRepo).HasMaxLength(512).IsRequired();
         builder.Property(x => x.FileSha).HasMaxLength(64).IsRequired();
         builder.Property(x => x.DownloadUrl).HasMaxLength(1024).IsRequired();
