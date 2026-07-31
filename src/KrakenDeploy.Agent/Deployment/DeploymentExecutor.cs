@@ -89,9 +89,44 @@ public sealed class DeploymentExecutor(
     /// including when an operator widens the swap window (the validator's ceiling is a
     /// full hour).
     /// </para>
+    /// <para>
+    /// CLAMPED, in addition to <c>AgentUpdateConfigValidator</c> now validating
+    /// <c>SwapGateTimeout</c> unconditionally. Belt and braces because the two failure modes
+    /// are severe and asymmetric: a value at or below zero throws
+    /// <c>ArgumentOutOfRangeException</c> out of EVERY force-detach retry as a hard wave
+    /// failure, and one summing to <see cref="Timeout.InfiniteTimeSpan"/> makes the bounded
+    /// wait unbounded — the exact wedge the bound exists to prevent. The validator is the
+    /// loud failure; this is what keeps a value that reaches here anyway (a future
+    /// configuration path, a test constructing the executor directly) merely suboptimal.
+    /// </para>
     /// </summary>
     internal TimeSpan WedgedGateAcquireTimeout { get; init; } =
-        updateConfig.Value.SwapGateTimeout + WedgedGateAcquireGrace;
+        ClampWedgedGateTimeout(updateConfig.Value.SwapGateTimeout);
+
+    /// <summary>
+    /// Bounds the derived wedged-gate wait into [<see cref="WedgedGateAcquireGrace"/>,
+    /// <see cref="MaxWedgedGateAcquireTimeout"/>]. <c>internal static</c> so the boundaries
+    /// are testable without standing up an executor.
+    /// </summary>
+    internal static TimeSpan ClampWedgedGateTimeout(TimeSpan swapGateTimeout)
+    {
+        if (swapGateTimeout <= TimeSpan.Zero)
+        {
+            return WedgedGateAcquireGrace;
+        }
+        var derived = swapGateTimeout + WedgedGateAcquireGrace;
+        return derived > MaxWedgedGateAcquireTimeout || derived <= TimeSpan.Zero
+            ? MaxWedgedGateAcquireTimeout
+            : derived;
+    }
+
+    /// <summary>
+    /// Ceiling on the derived wedged-gate wait. Matches
+    /// <c>AgentUpdateConfigValidator.MaxAcceptedSwapWindow</c>'s one hour plus the grace, so a
+    /// value the validator accepts is never clamped and only a value that bypassed it is.
+    /// </summary>
+    internal static readonly TimeSpan MaxWedgedGateAcquireTimeout =
+        TimeSpan.FromHours(1) + WedgedGateAcquireGrace;
 
     // B7/F2/F5 — the machine's execution gate. Registration in _running happens
     // BEFORE queueing, so a queued plan is still cancellable / supersedable; the

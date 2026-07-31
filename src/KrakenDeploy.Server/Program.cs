@@ -1298,31 +1298,16 @@ public static class Program
                 // Non-terminal == in flight, expressed through the SINGLE AUTHORITY for
                 // that classification rather than re-inlined here: DeploymentStatusExtensions
                 // documents itself as such precisely because the terminal set "had already
-                // diverged between call sites". IsTerminal() itself cannot be translated by
-                // EF, so the authority exposes the same set as DATA and this NEGATES it.
-                // Negation, not enumeration: listing the in-flight states is equivalent
-                // for today's seven statuses but answers a confident "idle" for any
-                // non-terminal status added later — and the agent takes "idle" as licence
-                // to replace its whole install directory and Exit(0). Fail-closed means
-                // the UNKNOWN case must count as in flight, so the closed set has to be
-                // the terminal one. (InFlightAfterClaim is deliberately NOT usable here:
-                // it is the narrower F1 slot-holding set and excludes Queued. Queued
-                // counts on purpose — an unclaimed task can be dispatched at any moment,
-                // so a swap started now would race its first wave.)
-                // IgnoreQueryFilters: this runs on an agent-authenticated request with
-                // no user or Space context, and the question is machine-scoped — a
-                // Space filter would silently answer "idle" for work in a Space the
-                // request cannot see, which is exactly the fail-OPEN we must avoid.
-                // AnyAsync, not CountAsync: only the boolean is consumed, and a target
-                // accumulates one assignment row per task that ever touched it, so
-                // counting them all scans an unbounded history to learn one bit.
-                var inFlight = await db.Set<TaskTargetAssignment>()
-                    .IgnoreQueryFilters()
-                    .AsNoTracking()
-                    .AnyAsync(
-                        a => a.TargetId == targetId
-                             && !DeploymentStatusExtensions.Terminal.Contains(a.Task.Status),
-                        ct)
+                // diverged between call sites".
+                //
+                // The predicate now lives in AgentTaskInFlightQuery, in Server.Data, for one
+                // reason: while it was inline here it had no test, and deleting the negation
+                // left the whole suite green. It is the single most consequential boolean the
+                // agent consumes — a "no" is licence to replace its install directory and
+                // exit — so it is now exercised over every DeploymentStatus against a real
+                // database. Every subtlety (why negation rather than enumeration, why
+                // IgnoreQueryFilters, why Queued counts) is documented there.
+                var inFlight = await db.AnyNonTerminalForTargetAsync(targetId, ct)
                     .ConfigureAwait(false);
 
                 return Results.Ok(new AgentTaskInFlightResponse(

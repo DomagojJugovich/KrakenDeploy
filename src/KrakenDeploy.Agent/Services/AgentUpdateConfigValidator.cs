@@ -68,19 +68,30 @@ public sealed class AgentUpdateConfigValidator(IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(options);
 
-        // Nothing here governs a disabled updater, and `ValidateOnStart` makes every
-        // failure a boot failure — so a legacy value must not brick an agent whose
-        // auto-update is switched off and which therefore never reads these knobs.
-        if (!options.Enabled)
-        {
-            return ValidateOptionsResult.Success;
-        }
-
         var section = configuration.GetSection(SectionName);
         var failures = new List<string>();
 
+        // SwapGateTimeout is validated UNCONDITIONALLY — it stopped being an update-only knob.
+        // DeploymentExecutor derives its wedged-gate escalation timeout from it on the normal
+        // deployment path, which runs whether or not auto-update is enabled. Short-circuiting
+        // on Enabled == false therefore left every malformed value live on the path that
+        // matters most: a stale "5" binds as five DAYS and the wedged escalation never fires; a
+        // negative value throws ArgumentOutOfRangeException out of every force-detach retry as
+        // a hard wave failure; and "-00:00:30.001" sums to exactly Timeout.InfiniteTimeSpan,
+        // turning the bounded wait unbounded.
         Check(nameof(AgentUpdateConfig.SwapGateTimeout), options.SwapGateTimeout,
             MaxAcceptedSwapWindow);
+
+        // The rest govern the updater only, and `ValidateOnStart` makes every failure a boot
+        // failure — so a legacy value must not brick an agent whose auto-update is switched off
+        // and which therefore never reads them.
+        if (!options.Enabled)
+        {
+            return failures.Count == 0
+                ? ValidateOptionsResult.Success
+                : ValidateOptionsResult.Fail(failures);
+        }
+
         Check(nameof(AgentUpdateConfig.CheckInterval), options.CheckInterval,
             MaxAcceptedDuration);
         Check(nameof(AgentUpdateConfig.HealthCheckTimeout), options.HealthCheckTimeout,

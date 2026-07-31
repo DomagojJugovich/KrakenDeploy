@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace KrakenDeploy.Server.Core.Domain.Deployments;
 
 /// <summary>
@@ -44,12 +46,17 @@ public static class DeploymentStatusExtensions
     /// This is NOT the complement of <see cref="InFlightAfterClaim"/>: that set is
     /// deliberately narrower (post-claim, slot-holding) and excludes <c>Queued</c>.
     /// </para>
+    /// <para>
+    /// DERIVED from <see cref="IsTerminal"/> rather than hand-listed, and
+    /// <see cref="ImmutableArray{T}"/> rather than <c>DeploymentStatus[]</c>. Both changes
+    /// close the same class of hole: this set backs a FAIL-CLOSED decision — the agent takes
+    /// "not in this set" as licence to replace its own install directory and exit — and a
+    /// public mutable array let any caller in the process rewrite that decision, while a
+    /// hand-written duplicate let it drift from <see cref="IsTerminal"/> silently. Deriving it
+    /// makes drift unrepresentable and retires the test that existed only to detect it.
+    /// EF translates <c>ImmutableArray.Contains</c> the same way it translated the array.
+    /// </para>
     /// </summary>
-    public static readonly DeploymentStatus[] Terminal =
-    [
-        DeploymentStatus.Succeeded,
-        DeploymentStatus.SucceededWithWarnings,
-        DeploymentStatus.Failed,
-        DeploymentStatus.Cancelled,
-    ];
+    public static readonly ImmutableArray<DeploymentStatus> Terminal =
+        [.. Enum.GetValues<DeploymentStatus>().Where(s => s.IsTerminal())];
 }

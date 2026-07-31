@@ -440,6 +440,75 @@ public sealed class MachineExecutionGateTests
     }
 
     [Fact]
+    public async Task The_give_up_reason_never_changes_once_it_is_settled()
+    {
+        // The_give_up_reason_is_first_writer_wins calls its two claims SEQUENTIALLY, so it pins
+        // the OUTCOME of first-writer-wins but not its ATOMICITY: a plain read-then-write
+        // ("if Reason == None then Reason = reason") passes it every time and diverges only
+        // when two threads read None before either writes.
+        //
+        // What the production consumers rely on is stronger than the outcome — both read
+        // Reason to decide whether to escalate, so a value that FLIPS after being observed
+        // means the same waiter reports an expiry to one reader and a disposal to another.
+        // Hence the invariant asserted here: once non-None, never different.
+        for (var round = 0; round < 200; round++)
+        {
+            var waiter = new MachineExecutionGate.Waiter(Mode.Shared);
+            var flipped = false;
+            var claimsDone = 0;
+
+            using var start = new Barrier(3);
+            var observer = Task.Run(() =>
+            {
+                start.SignalAndWait();
+                var settled = MachineExecutionGate.GiveUpReason.None;
+                while (Volatile.Read(ref claimsDone) < 2
+                       || settled == MachineExecutionGate.GiveUpReason.None)
+                {
+                    var seen = waiter.Reason;
+                    if (seen == MachineExecutionGate.GiveUpReason.None)
+                    {
+                        continue;
+                    }
+                    if (settled == MachineExecutionGate.GiveUpReason.None)
+                    {
+                        settled = seen;
+                    }
+                    else if (seen != settled)
+                    {
+                        flipped = true;
+                        return;
+                    }
+                }
+            });
+
+            var expiry = Task.Run(() =>
+            {
+                start.SignalAndWait();
+                waiter.ClaimGiveUpReason(MachineExecutionGate.GiveUpReason.Expired);
+                Interlocked.Increment(ref claimsDone);
+            });
+            var disposal = Task.Run(() =>
+            {
+                start.SignalAndWait();
+                waiter.ClaimGiveUpReason(MachineExecutionGate.GiveUpReason.Disposed);
+                Interlocked.Increment(ref claimsDone);
+            });
+
+            await Task.WhenAll(observer, expiry, disposal)
+                .WaitAsync(TimeSpan.FromSeconds(10));
+
+            flipped.Should().BeFalse(
+                "a reason that changes after being observed means one reader saw an expiry and " +
+                "another a disposal for the same waiter — the CompareExchange is what makes " +
+                "that unrepresentable");
+            waiter.Reason.Should().BeOneOf(
+                MachineExecutionGate.GiveUpReason.Expired,
+                MachineExecutionGate.GiveUpReason.Disposed);
+        }
+    }
+
+    [Fact]
     public async Task A_lapsed_wait_reports_expiry_not_disposal()
     {
         // The deterministic half: the wait is given time to lapse fully, so the reason is

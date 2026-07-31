@@ -54,6 +54,7 @@ public sealed class AgentUpdateService(
     IServerLink serverLink,
     IOptions<AgentConfig> agentConfig,
     IOptions<AgentUpdateConfig> updateConfig,
+    TimeProvider timeProvider,
     ILogger<AgentUpdateService> logger)
     : BackgroundService
 {
@@ -103,17 +104,52 @@ public sealed class AgentUpdateService(
     private readonly HttpClient _http = new();
 
     /// <summary>
-    /// F5 — the staged version we have already filed a <c>SwapDeferred</c> report for.
-    /// A deferral recurs on EVERY check while the cause persists, and the cause can be
-    /// indefinite (a task parked <c>Queued</c> by maintenance mode, or at
-    /// <c>PendingOfflineResult</c>). Reporting each tick filed ~24 audit rows per target
-    /// per night — and, because <c>SubscriptionMatcher</c> treats an empty pattern list
-    /// as match-anything, ~24 webhook/Slack deliveries with it. The signal an operator
-    /// needs is "this target is stuck on version X", which is worth exactly one row per
-    /// staged version. Only ever touched from the single <see cref="PeriodicTimer"/>
-    /// loop, so it needs no synchronisation.
+    /// F5 — the (staged version, reason) we have already filed a DELIVERED
+    /// <c>SwapDeferred</c> report for. A deferral recurs on EVERY check while the cause
+    /// persists, and the cause can be indefinite (a task parked <c>Queued</c> by
+    /// maintenance mode, or at <c>PendingOfflineResult</c>). Reporting each tick filed ~24
+    /// audit rows per target per night — and, because <c>SubscriptionMatcher</c> treats an
+    /// empty pattern list as match-anything, ~24 webhook/Slack deliveries with it.
+    /// <para>
+    /// Three things about this key are deliberate, because the earlier version was
+    /// fail-silent in three separate ways:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item>It includes the REASON. Keyed on version alone, a cause that changed after
+    ///     the first report was never filed — so "machine busy" reported once and the
+    ///     later, more serious "the server did not answer" never surfaced at all.</item>
+    ///   <item>An absent version maps to <see cref="UnknownStagedVersion"/> rather than
+    ///     <c>null</c>. <c>AgentUpdateInfo.LatestVersion</c> is <c>string?</c> and
+    ///     <c>EvaluateOffer</c> never checks it, so an offer with a null version compared
+    ///     equal to the initial state and suppressed its own FIRST report, forever.</item>
+    ///   <item>It is stamped only AFTER the report is delivered. Stamping first meant the
+    ///     one report was dropped precisely when the reason was "the server did not
+    ///     answer" — and deterministically so when identity was not resolved, where
+    ///     <c>ReportAsync</c> bails at its own guard before sending anything.</item>
+    /// </list>
+    /// Only ever touched from the single <see cref="PeriodicTimer"/> loop, so it needs no
+    /// synchronisation.
     /// </summary>
-    private string? _deferralReportedFor;
+    private (string Outcome, string Version, string Reason)? _deferralReportedFor;
+
+    /// <summary>
+    /// Stands in for a staged version the server did not name. A sentinel rather than
+    /// <c>null</c> so it can never compare equal to "nothing reported yet"; the space
+    /// makes it unrepresentable as a real version string.
+    /// </summary>
+    internal const string UnknownStagedVersion = "(unknown version)";
+
+    /// <summary>
+    /// How often a still-deferred swap re-states itself in the LOG (the audit row stays at
+    /// one per distinct cause). The suppressed line used to be <c>LogDebug</c>, below the
+    /// shipped <c>MinimumLevel: Information</c> — so after the single audit row an
+    /// indefinitely deferred agent produced no signal anywhere at all. A bare
+    /// <c>LogInformation</c> would swap that for a line every check interval; this is the
+    /// middle.
+    /// </summary>
+    private static readonly TimeSpan DeferralReminderInterval = TimeSpan.FromMinutes(30);
+
+    private long? _deferralRemindedAt;
 
     /// <summary>Outcome of evaluating an update the server offered.</summary>
     internal enum UpdateDecision
@@ -220,6 +256,7 @@ public sealed class AgentUpdateService(
                 // The offer is gone (withdrawn, or we already run it), so a later re-offer
                 // of the same version is a NEW situation and may report its deferral again.
                 _deferralReportedFor = null;
+                _deferralRemindedAt = null;
                 return;
 
             case UpdateDecision.HashMissing:
@@ -342,7 +379,13 @@ public sealed class AgentUpdateService(
         var installDir = ResolveInstallDir();
         if (installDir is null)
         {
-            await ReportAsync(AgentUpdateOutcome.SwapFailed, currentVersion,
+            // Reported ONCE per (outcome, version, reason), not once per tick. This condition
+            // is permanently true for every CONTAINERISED agent — Dockerfile.agent's ENTRYPOINT
+            // is a muxer launch, so IsAgentApphost can never become true there — and the
+            // per-tick version filed an AgentUpdateFailed audit row at Warning every check
+            // interval, forever, for a situation no operator action inside the container will
+            // change. Same treadmill the deferral suppressor exists for.
+            await ReportOnceAsync(AgentUpdateOutcome.SwapFailed, currentVersion,
                 info.LatestVersion, "not running as the agent apphost", ct)
                 .ConfigureAwait(false);
             return;
@@ -371,7 +414,7 @@ public sealed class AgentUpdateService(
                 // The server must be able to see a machine that keeps deferring: a gate
                 // held by a wedged step looks identical to a healthy busy agent from
                 // the outside, and without this the only signal is a local log line.
-                await ReportDeferralOnceAsync(currentVersion, info.LatestVersion,
+                await ReportOnceAsync(AgentUpdateOutcome.SwapDeferred, currentVersion, info.LatestVersion,
                     $"machine busy for the whole {cfg.SwapGateTimeout} swap window", ct)
                     .ConfigureAwait(false);
             }
@@ -430,7 +473,8 @@ public sealed class AgentUpdateService(
         // closed on a 5xx, an unparseable body, a transport error and its own timeout, and
         // an audit row claiming "a task is assigned" when the truth was "the server did
         // not answer" is worse than no row.
-        await ReportDeferralOnceAsync(currentVersion, info.LatestVersion, deferralReason, ct)
+        await ReportOnceAsync(
+            AgentUpdateOutcome.SwapDeferred, currentVersion, info.LatestVersion, deferralReason, ct)
             .ConfigureAwait(false);
     }
 
@@ -440,23 +484,39 @@ public sealed class AgentUpdateService(
     /// deferral causes are indefinite, so an unsuppressed report is an unbounded audit and
     /// notification stream rather than a signal.
     /// </summary>
-    private async Task ReportDeferralOnceAsync(
-        string currentVersion, string? latestVersion, string reason, CancellationToken ct)
+    private async Task ReportOnceAsync(
+        string outcome, string currentVersion, string? latestVersion, string reason,
+        CancellationToken ct)
     {
-        if (_deferralReportedFor == latestVersion)
+        var key = (outcome, latestVersion ?? UnknownStagedVersion, reason);
+        if (_deferralReportedFor == key)
         {
-            logger.LogDebug(
-                "Swap still deferred for {Version} ({Reason}) — already reported.",
-                latestVersion, reason);
+            // Information rather than Debug, but throttled: the audit row is already filed
+            // and one line per check interval would be its own flood, while silence leaves
+            // an indefinitely stuck agent with no signal at all after that single row.
+            if (_deferralRemindedAt is not { } last
+                || timeProvider.GetElapsedTime(last) >= DeferralReminderInterval)
+            {
+                _deferralRemindedAt = timeProvider.GetTimestamp();
+                logger.LogInformation(
+                    "Agent update {Outcome} is STILL the situation for {Version}: {Reason}. " +
+                    "Already reported to the server; repeating here every {Interval} while " +
+                    "it lasts.",
+                    outcome, latestVersion ?? UnknownStagedVersion, reason,
+                    DeferralReminderInterval);
+            }
             return;
         }
 
-        // Stamped BEFORE the call: ReportAsync is best-effort and swallows its failures,
-        // so retrying it every 5 minutes for an indefinite deferral would reproduce the
-        // stream this suppressor exists to stop. One attempt per staged version.
-        _deferralReportedFor = latestVersion;
-        await ReportAsync(AgentUpdateOutcome.SwapDeferred, currentVersion, latestVersion,
-            reason, ct).ConfigureAwait(false);
+        // Stamped only on a DELIVERED report. A failed one is retried on the next check —
+        // that is one POST per check interval, not an audit-row stream, because the row is
+        // written server-side only when the report actually lands.
+        if (await ReportAsync(outcome, currentVersion, latestVersion, reason, ct)
+                .ConfigureAwait(false))
+        {
+            _deferralReportedFor = key;
+            _deferralRemindedAt = timeProvider.GetTimestamp();
+        }
     }
 
     /// <summary>
@@ -1003,6 +1063,25 @@ public sealed class AgentUpdateService(
         // nobody — every later wave parked on it forever while the target heartbeated
         // Online. ReportAsync is fixed at the source too; this is the structural guarantee
         // that no future statement added here can reopen the same hole.
+        // Shutdown is RE-READ here, not only sampled at gate-acquisition time. The Stopping
+        // branch above is a point-in-time answer, and the acquisition it came from can have
+        // waited up to RollbackGateTimeout (30 s) — a stop that began inside that window landed
+        // on the Busy path instead, which had no shutdown check at all and ran straight through
+        // to Exit(70). Both halves of the Stopping rationale apply just as much here: an
+        // ungated restore during a stop can replace the install directory under a step that a
+        // graceful stop deliberately does not abort, and Exit(70) tells the supervisor this run
+        // FAILED, so a Windows service with FailureActions / a systemd unit with
+        // Restart=on-failure / a container with restart=on-failure relaunches the agent the
+        // operator just stopped. Deferring costs one boot; the marker is retained.
+        if (ct.IsCancellationRequested)
+        {
+            logger.LogWarning(
+                "Deferring rollback of {To} to the next boot — the agent began shutting down " +
+                "while the rollback waited for the machine. The upgrade marker is retained.",
+                marker.ToVersion);
+            return;
+        }
+
         try
         {
             string? rollbackError = null;
@@ -1031,6 +1110,17 @@ public sealed class AgentUpdateService(
                 rollbackError is null ? reason : $"rollback FAILED: {rollbackError}",
                 CancellationToken.None).ConfigureAwait(false);
         }
+        catch (Exception ex)
+        {
+            // Logged HERE rather than left to propagate, because it cannot propagate: the
+            // finally below calls Environment.Exit, which never returns, so an exception in
+            // flight is discarded silently along with the rest of the unwind. The restore has
+            // its own catch and ReportAsync swallows, so nothing is expected to reach this —
+            // which is exactly why a future statement added above would vanish without it.
+            logger.LogCritical(ex,
+                "Unexpected failure while rolling back to {From}; exiting anyway so the " +
+                "supervisor relaunches.", marker.FromVersion);
+        }
         finally
         {
             // Exit so the supervisor relaunches the (restored) previous binary. The lease
@@ -1039,7 +1129,26 @@ public sealed class AgentUpdateService(
             // nothing; the lease survives because Releaser has no finalizer and
             // Environment.Exit runs none anyway.
             await Task.Delay(500, CancellationToken.None).ConfigureAwait(false);
-            Environment.Exit(70); // non-zero: this run failed its health gate
+
+            // Last re-read of shutdown, for the 500 ms above plus however long the report
+            // took. Same reason as the pre-restore check: Exit(70) during an INTENTIONAL stop
+            // is a failure signal to the supervisor, which then relaunches the agent the
+            // operator just stopped. The binary is already restored and the marker deleted, so
+            // letting the host finish its own graceful stop reaches the same place — the next
+            // start runs the restored version — without the spurious failure exit.
+            // (No `return` — C# forbids leaving a finally block, hence the if/else.)
+            if (ct.IsCancellationRequested)
+            {
+                logger.LogWarning(
+                    "Rollback to {From} is complete, but the agent is already shutting down — " +
+                    "leaving the exit to the host rather than reporting a failure code to the " +
+                    "supervisor. The restored binary starts on the next launch.",
+                    marker.FromVersion);
+            }
+            else
+            {
+                Environment.Exit(70); // non-zero: this run failed its health gate
+            }
         }
     }
 
@@ -1120,7 +1229,13 @@ public sealed class AgentUpdateService(
     /// propagates, a stalled server never does.
     /// </para>
     /// </summary>
-    private async Task ReportAsync(
+    /// <summary>
+    /// Best-effort update-status report. Returns <c>true</c> only when the server actually
+    /// ACCEPTED it — the deferral suppressor keys off that, because a suppressor that
+    /// latches on an attempt drops the one report whose cause is "the server did not
+    /// answer". Callers that do not care may ignore the result.
+    /// </summary>
+    private async Task<bool> ReportAsync(
         string outcome, string? from, string? to, string? detail, CancellationToken ct)
     {
         // Bounded independently of HttpClient.Timeout (100 s). A report is best-effort
@@ -1135,7 +1250,7 @@ public sealed class AgentUpdateService(
             if (identity is null || string.IsNullOrEmpty(identity.ServerUrl))
             {
                 logger.LogDebug("Cannot report update outcome {Outcome} — identity not ready.", outcome);
-                return;
+                return false;
             }
 
             var url = $"{identity.ServerUrl.TrimEnd('/')}/api/agents/update-status";
@@ -1152,7 +1267,9 @@ public sealed class AgentUpdateService(
                 logger.LogWarning(
                     "Update-status report ({Outcome}) returned {Status}.",
                     outcome, (int)resp.StatusCode);
+                return false;
             }
+            return true;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -1164,6 +1281,7 @@ public sealed class AgentUpdateService(
         {
             logger.LogWarning(ex,
                 "Failed to report update outcome {Outcome} to server (best-effort).", outcome);
+            return false;
         }
     }
 

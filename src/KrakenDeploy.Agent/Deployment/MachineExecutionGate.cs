@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 namespace KrakenDeploy.Agent.Deployment;
 
 /// <summary>
@@ -46,6 +48,21 @@ namespace KrakenDeploy.Agent.Deployment;
 /// </summary>
 public sealed class MachineExecutionGate : IDisposable
 {
+    /// <summary>
+    /// Optional sink for the ONE thing the gate cannot report through its return values or
+    /// its exceptions: a holder-accounting failure while unwinding another exception. Set by
+    /// <c>MachineExecutionGateRegistration</c>, which already resolves this logger.
+    /// <para>
+    /// The fault used to be stuffed into <c>Exception.Data</c> on the exception being
+    /// rethrown, on the theory that every caller logs what it receives. It does — but
+    /// <c>{Exception}</c> renders <c>ToString()</c>, which does NOT include <c>Data</c>, so
+    /// no configured sink could ever show it and ~20 lines of machinery surfaced nothing.
+    /// A slot leaked into a gate that then blocks every deployment and ad-hoc script on the
+    /// box is exactly the thing that must not be silent.
+    /// </para>
+    /// </summary>
+    public ILogger? Logger { get; init; }
+
     /// <summary>Which side of the gate a unit of work takes.</summary>
     public enum Mode
     {
@@ -281,7 +298,14 @@ public sealed class MachineExecutionGate : IDisposable
             // caller logs the exception it receives and the gate has no logger of its own.
             if (AbandonAfterThrow(waiter, mode) is { } releaseFault)
             {
-                unwinding.Data["MachineExecutionGate.ReleaseFault"] = releaseFault.Message;
+                // Logged, not attached to `unwinding.Data`: no configured sink renders Data.
+                // The original exception is still rethrown unchanged — callers dispatch on its
+                // type — so this is the only place the accounting failure can surface.
+                Logger?.LogError(releaseFault,
+                    "Machine execution gate could not release a {Mode} lease while unwinding " +
+                    "{OriginalException}. A holder slot may have leaked, which would block " +
+                    "every deployment and ad-hoc script on this machine until the agent is " +
+                    "restarted.", mode, unwinding.GetType().Name);
             }
             throw;
         }
@@ -334,7 +358,7 @@ public sealed class MachineExecutionGate : IDisposable
     /// reported to the server as a hard task failure).
     /// </para>
     /// </summary>
-    private InvalidOperationException? AbandonAfterThrow(Waiter waiter, Mode mode)
+    private Exception? AbandonAfterThrow(Waiter waiter, Mode mode)
     {
         waiter.ClaimGiveUpReason(GiveUpReason.Abandoned);
         if (waiter.Tcs.TrySetResult(false))
@@ -363,8 +387,13 @@ public sealed class MachineExecutionGate : IDisposable
             Release(mode);
             return null;
         }
-        catch (InvalidOperationException ex)
+        catch (Exception ex)
         {
+            // Catch EVERYTHING. This runs while another exception is unwinding, and the
+            // original is the one callers dispatch on — so any throw that escapes here
+            // REPLACES it, turning (say) a cancellation into an accounting error. The narrower
+            // InvalidOperationException filter left every other exception type able to do
+            // exactly that.
             return ex;
         }
     }

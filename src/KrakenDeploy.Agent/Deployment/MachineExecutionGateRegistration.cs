@@ -34,7 +34,14 @@ internal static class MachineExecutionGateRegistration
         {
             var requested = sp.GetRequiredService<IOptions<AgentConfig>>()
                 .Value.MaxConcurrentSharedWork;
-            var gate = new MachineExecutionGate { MaxSharedHolders = requested };
+            var gate = new MachineExecutionGate
+            {
+                MaxSharedHolders = requested,
+                // The gate's one diagnostic that can ride neither a return value nor an
+                // exception: a holder-accounting failure while another exception unwinds. It
+                // used to go into Exception.Data, which no configured sink renders.
+                Logger = sp.GetRequiredService<ILogger<MachineExecutionGate>>(),
+            };
 
             if (gate.MaxSharedHolders != requested)
             {

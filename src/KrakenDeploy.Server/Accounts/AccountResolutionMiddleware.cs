@@ -110,6 +110,10 @@ public sealed class AccountResolutionMiddleware(
         || path.StartsWithSegments("/api/agents/update-info", StringComparison.OrdinalIgnoreCase)
         || path.StartsWithSegments("/api/agents/task-in-flight", StringComparison.OrdinalIgnoreCase)
         || path.StartsWithSegments("/api/agents/update-status", StringComparison.OrdinalIgnoreCase)
+        // refresh-token READS the calling target and WRITES its token version — the same
+        // rationale that put update-status on this list, and it was simply missed. Without a
+        // resolved account it reads from, and mutates, the wrong tenant's database.
+        || path.StartsWithSegments("/api/agents/refresh-token", StringComparison.OrdinalIgnoreCase)
         || (path.HasValue
             && path.Value.StartsWith("/krakendeploy.v1.", StringComparison.OrdinalIgnoreCase));
 

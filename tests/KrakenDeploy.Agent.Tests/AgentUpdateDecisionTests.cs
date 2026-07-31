@@ -1,4 +1,5 @@
 using FluentAssertions;
+using KrakenDeploy.Agent.Deployment;
 using KrakenDeploy.Agent.Services;
 using KrakenDeploy.Contracts;
 using Microsoft.Extensions.Configuration;
@@ -185,16 +186,22 @@ public sealed class AgentUpdateDecisionTests
             .Succeeded.Should().BeFalse();
 
     [Fact]
-    public void A_disabled_updater_is_not_validated()
+    public void A_disabled_updaters_update_only_knobs_are_not_validated()
     {
-        // ValidateOnStart makes every failure a BOOT failure, and an agent that will not
-        // boot cannot be reached or self-upgrade out of the problem. None of these knobs
-        // is read when the updater is off, so a legacy value must not brick that agent.
+        // ValidateOnStart makes every failure a BOOT failure, and an agent that will not boot
+        // cannot be reached or self-upgrade out of the problem. These knobs are not read when
+        // the updater is off, so a legacy value must not brick that agent.
+        //
+        // SwapGateTimeout is deliberately NOT in this list any more: it stopped being
+        // update-only when DeploymentExecutor began deriving its wedged-gate escalation from
+        // it, which happens on the normal deployment path whether or not auto-update is
+        // enabled. See
+        // A_malformed_SwapGateTimeout_fails_validation_even_when_updates_are_disabled.
         var result = Validate(new Dictionary<string, string?>
         {
             ["Agent:Update:Enabled"] = "false",
-            ["Agent:Update:SwapGateTimeout"] = "5",     // five DAYS
             ["Agent:Update:CheckInterval"] = "00:00:00",
+            ["Agent:Update:HealthCheckTimeout"] = "3",
         });
 
         result.Succeeded.Should().BeTrue();
@@ -242,6 +249,60 @@ public sealed class AgentUpdateDecisionTests
         {
             ["Agent:Update:SwapGateTimeout"] = configured,
         });
+
+    // ── SwapGateTimeout is validated even with auto-update OFF ───────────────
+
+    [Theory]
+    [InlineData("5")]               // binds as five DAYS
+    [InlineData("-00:00:30")]       // negative
+    [InlineData("-00:00:00.001")]   // Timeout.InfiniteTimeSpan
+    [InlineData("00:00:00")]        // degrades the wait to a non-blocking probe
+    public void A_malformed_SwapGateTimeout_fails_validation_even_when_updates_are_disabled(
+        string raw)
+    {
+        // The knob stopped being update-only: DeploymentExecutor derives its wedged-gate
+        // escalation timeout from it, on the normal deployment path, which runs regardless of
+        // Agent:Update:Enabled. Short-circuiting the whole validator on Enabled == false
+        // therefore left every one of these live on the path that matters most — a stale "5"
+        // means the escalation never fires, a negative value throws
+        // ArgumentOutOfRangeException out of every force-detach retry as a hard wave failure,
+        // and "-00:00:00.001" makes the bounded wait unbounded.
+        var result = Validate(
+        [
+            new("Agent:Update:Enabled", "false"),
+            new("Agent:Update:SwapGateTimeout", raw),
+        ]);
+
+        result.Failed.Should().BeTrue();
+        result.FailureMessage.Should().Contain(nameof(AgentUpdateConfig.SwapGateTimeout));
+    }
+
+    // ── The derived wedged-gate timeout is clamped ───────────────────────────
+
+    [Theory]
+    [InlineData(0, false)]        // zero -> floor
+    [InlineData(-30, false)]      // negative -> floor
+    [InlineData(60, true)]        // ordinary value -> derived
+    [InlineData(3600, true)]      // the validator's ceiling -> derived, not clamped
+    [InlineData(90_000, false)]   // beyond the ceiling -> clamped
+    public void ClampWedgedGateTimeout_stays_inside_its_bounds(int seconds, bool expectDerived)
+    {
+        // Belt and braces behind the validator. The two failure modes are severe and
+        // asymmetric: a value at or below zero throws out of EVERY force-detach retry as a
+        // hard wave failure, and one summing to Timeout.InfiniteTimeSpan makes the bounded
+        // wait unbounded — the exact wedge the bound exists to prevent.
+        var clamped = DeploymentExecutor.ClampWedgedGateTimeout(TimeSpan.FromSeconds(seconds));
+
+        clamped.Should().BeGreaterThan(TimeSpan.Zero);
+        clamped.Should().BeLessThanOrEqualTo(DeploymentExecutor.MaxWedgedGateAcquireTimeout);
+        clamped.Should().NotBe(Timeout.InfiniteTimeSpan);
+
+        if (expectDerived)
+        {
+            clamped.Should().BeGreaterThan(TimeSpan.FromSeconds(seconds),
+                "a sane value keeps its grace margin over the swap window");
+        }
+    }
 
     private static ValidateOptionsResult Validate(
         IEnumerable<KeyValuePair<string, string?>> settings)
