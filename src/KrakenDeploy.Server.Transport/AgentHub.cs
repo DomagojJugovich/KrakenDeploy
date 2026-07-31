@@ -102,17 +102,10 @@ public sealed class AgentHub(
             return;
         }
 
-        // Register only after the target is positively resolved (in the right account).
         // Record the connection's account (host-derived, pinned by AgentAccountHubFilter
         // before this runs; Guid.Empty single-instance) so dispatch can assert a target's
         // live connection belongs to the dispatching account (P3-8 Phase 5).
         var accountId = accountContext.IsResolved ? accountContext.CurrentAccountId : Guid.Empty;
-        registry.Add(
-            Context.ConnectionId,
-            targetId.Value,
-            accountId,
-            // A8/T1-12: lets a token revocation drop this live tunnel immediately.
-            Context.Abort);
 
         target.Status = TargetStatus.Online;
         target.LastSeenUtc = timeProvider.GetUtcNow();
@@ -125,6 +118,23 @@ public sealed class AgentHub(
         await statusPublisher
             .PublishAsync(targetId.Value, TargetStatus.Online, target.LastSeenUtc, accountId)
             .ConfigureAwait(false);
+
+        // REGISTER LAST, and this ordering is load-bearing rather than tidy. SignalR
+        // deliberately skips OnDisconnectedAsync when OnConnectedAsync fails, so ANYTHING that
+        // can throw after this line leaks a registry entry that nothing will ever remove — and
+        // since the entry is what makes a target dispatchable, the leak is not inert: the wave
+        // dispatches to a dead connection id (Clients.Client(deadId) is a silent no-op),
+        // HasConnectionFor reads true so B3's disconnect monitor never diagnoses it, and the
+        // wave hangs to its deadline while the fleet page shows the target green. Both writes
+        // above can throw (a saturated tenant DB; an in-process status subscriber), which is
+        // exactly the shape that produced it. Keep this the last statement, and if something
+        // must follow it, it has to remove the entry on the way out.
+        registry.Add(
+            Context.ConnectionId,
+            targetId.Value,
+            accountId,
+            // A8/T1-12: lets a token revocation drop this live tunnel immediately.
+            Context.Abort);
 
         await base.OnConnectedAsync().ConfigureAwait(false);
     }
@@ -163,29 +173,19 @@ public sealed class AgentHub(
 
     // ── IAgentHubServer implementation ─────────────────────────────────────
 
+    /// <summary>
+    /// Records the machine's self-reported details, and re-pushes cooperative cancels for
+    /// tasks that went terminal while the agent was away. Both best-effort; neither is a GATE
+    /// on anything. The wire contract is verified on the handshake and the target is resolved
+    /// in <see cref="OnConnectedAsync"/>, so a connection that reaches this method is already
+    /// dispatchable — a throw here means only "machine info was not recorded this cycle",
+    /// which the next reconnect or heartbeat corrects. No try/catch and no abort: SignalR
+    /// faults the invocation, the agent logs it, and the connection stays up and usable.
+    /// (The version that aborted the connection to force a retry was harmful twice over —
+    /// <c>Context.Abort()</c> drops the transport rather than closing it, and removing the
+    /// registry entry alongside it suppressed the target's offline mark.)
+    /// </summary>
     public async Task<AgentRegistrationResult> RegisterAsync(AgentRegistrationRequest request)
-    {
-        // No try/catch, no abort. Registration is no longer a GATE on anything: the wire
-        // contract is verified on the handshake and the target is resolved in
-        // OnConnectedAsync, so a connection that reaches this method is already
-        // dispatchable. All this method still does is record the machine's self-reported
-        // details and re-push cooperative cancels for tasks that went terminal while the
-        // agent was away — both best-effort, neither load-bearing for eligibility.
-        //
-        // A throw therefore means "we did not record machine info this cycle", which the
-        // next reconnect or heartbeat corrects. SignalR faults the invocation, the agent
-        // logs it, and the connection stays up and usable. The previous version aborted
-        // the connection to force a retry, which was necessary only because a failed
-        // registration used to leave the connection permanently undispatchable — and that
-        // abort was itself harmful: Context.Abort() drops the transport rather than
-        // closing it, so the client's automatic reconnect retried it immediately and
-        // forever, and removing the registry entry alongside it suppressed the target's
-        // offline mark entirely.
-        return await RegisterCoreAsync(request).ConfigureAwait(false);
-    }
-
-
-    private async Task<AgentRegistrationResult> RegisterCoreAsync(AgentRegistrationRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
 
@@ -252,11 +252,49 @@ public sealed class AgentHub(
         // NO contract-version gate here. It moved onto the SignalR handshake
         // (AgentContractHandshakeGate), which refuses a skewed agent with 426 before the
         // connection is admitted — so by the time any hub method runs, the version is
-        // already verified. request.ContractVersion is retained on the wire for
-        // diagnostics (it appears in the registration log below) and is deliberately NOT
-        // re-checked: a second, later gate would reintroduce the connected-but-unverified
-        // window this change exists to delete.
+        // already verified. A second, later gate would reintroduce the
+        // connected-but-unverified window that change exists to delete.
         //
+        // But the body field is still on the wire, and comparing it here is a free
+        // TRIPWIRE for the one risk the move introduced: enforcement now rides a request
+        // HEADER, and a header-whitelisting intermediary would STRIP it, at which point the
+        // gate admits every agent silently. The precedent cited for header safety
+        // (X-KD-Release) does not transfer — that header is optional, so its working has
+        // never proved the path preserves headers. If these two disagree, the header did not
+        // arrive as sent and the gate is not enforcing anything.
+        if (request.ContractVersion != AgentContract.CurrentVersion)
+        {
+            logger.LogError(
+                "Target {TargetId} registered with body contract v{Body} but the handshake gate " +
+                "admitted it as v{Required}. The {Header} header did not reach the server as " +
+                "sent — an intermediary is stripping or rewriting it, and the wire-contract " +
+                "gate is currently enforcing NOTHING. Check the proxy chain.",
+                targetId.Value, request.ContractVersion, AgentContract.CurrentVersion,
+                AgentContract.VersionHeader);
+        }
+
+        // E7 — reconcile in-flight cancellations on (re)connect, BEFORE the machine-info
+        // write. An agent offline when its task was cancelled/interrupted keeps executing
+        // that task to completion (a disconnect never aborts a running step); the original
+        // cancel push skipped it (no live connection) and nothing else reconciles on
+        // reconnect. Re-push a cooperative cancel — straight to THIS connection — for this
+        // target's terminal-but-recent tasks so the running step's process tree dies.
+        //
+        // The ORDER matters and used to be the other way round. This is the only call site,
+        // and nothing else re-runs it: HeartbeatAsync repairs machine info every 30 s but
+        // never re-invokes registration, and a healthy link produces no reconnect. So a
+        // SaveChangesAsync failure below — the shape this method is explicitly documented to
+        // tolerate — used to skip the reconcile with no retry path, and a task the operator
+        // was told is cancelled ran its step to completion on a production box. The reconcile
+        // is keyed only on (targetId, connectionId), documented idempotent, and never throws,
+        // so running it first costs nothing.
+        //
+        // Awaited (a single lookup + direct sends, no fan-out) so the push is issued before we
+        // return and no detached task lingers — safe, because the server→client cancel send
+        // does not block on the agent's pending RegisterAsync round-trip.
+        await ReconcileTerminalTasksForReconnectAsync(targetId.Value, Context.ConnectionId)
+            .ConfigureAwait(false);
+
         // T1-7 / B6: an agent reports machine capabilities only. Authorization
         // roles drive secret scoping (VariableScope.Matches resolves against the
         // target's CURRENT roles at dispatch), so they are OPERATOR-assigned via
@@ -278,20 +316,6 @@ public sealed class AgentHub(
             request.OperatingSystem,
             request.AgentVersion,
             request.ContractVersion);
-
-        // E7 — reconcile in-flight cancellations on (re)connect. An agent offline
-        // when its task was cancelled/interrupted keeps executing that task to
-        // completion (a disconnect never aborts a running step); the original
-        // cancel push skipped it (no live connection) and nothing else reconciles
-        // on reconnect. Re-push a cooperative cancel — straight to THIS connection
-        // — for this target's terminal-but-recent tasks so the running step's
-        // process tree dies. Best-effort and self-contained — it must never fail
-        // registration. Awaited (a single lookup + direct sends, no fan-out) so
-        // the push is issued before we return and no detached task lingers, which
-        // is safe: the server→client cancel send does not block on the agent's
-        // pending RegisterAsync round-trip.
-        await ReconcileTerminalTasksForReconnectAsync(targetId.Value, Context.ConnectionId)
-            .ConfigureAwait(false);
 
         return new AgentRegistrationResult(Accepted: true, AgentContract.CurrentVersion);
     }

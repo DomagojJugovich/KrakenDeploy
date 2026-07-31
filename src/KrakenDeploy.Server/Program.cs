@@ -644,6 +644,9 @@ public static class Program
         builder.Services.AddScoped<TargetDecommissioner>();
         builder.Services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
         builder.Services.AddSingleton<TargetStatusPublisher>();
+        // Scoped: it writes to the request's tenant DB. Resolved by
+        // AgentContractHandshakeGate only when a handshake is actually refused.
+        builder.Services.AddScoped<IAgentContractRefusalRecorder, AgentContractRefusalRecorder>();
         builder.Services.AddSingleton<ServerAgentUpdateService>();
         builder.Services.AddSingleton<LicenseService>();
         // ILicenseGate forwards to the same LicenseService instance — the

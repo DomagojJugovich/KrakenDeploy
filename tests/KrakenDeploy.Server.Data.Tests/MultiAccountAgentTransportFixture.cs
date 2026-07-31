@@ -137,6 +137,11 @@ public sealed class MultiAccountAgentTransportFixture : IAsyncLifetime
         builder.Services.AddSingleton<IAgentConnectionRegistry, InMemoryAgentConnectionRegistry>();
         builder.Services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
         builder.Services.AddSingleton<TargetStatusPublisher>();
+        // The gate resolves this when it refuses a handshake. Registered even though this
+        // fixture has no AccountResolutionMiddleware (so the write itself cannot succeed) —
+        // the gate's contract is that a recording failure must not change the 426, and
+        // omitting the registration would test a DI error instead.
+        builder.Services.AddScoped<IAgentContractRefusalRecorder, AgentContractRefusalRecorder>();
         builder.Services.AddSingleton<IPendingSubPlanRegistry, PendingSubPlanRegistry>();
         builder.Services.AddSingleton<IPendingAdhocRegistry, PendingAdhocRegistry>();
         builder.Services.AddSingleton<AgentAccountHubFilter>();

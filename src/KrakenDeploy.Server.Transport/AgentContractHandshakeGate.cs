@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using KrakenDeploy.Contracts;
-using KrakenDeploy.Server.Core.Domain.Audit;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
@@ -88,10 +87,10 @@ public sealed class AgentContractHandshakeGate(
         return context.GetEndpoint()?.Metadata.GetMetadata<RequiresAgentContract>() is not null;
     }
 
-    public async Task InvokeAsync(HttpContext context, IAuditLog auditLog)
+    public async Task InvokeAsync(HttpContext context, IAgentContractRefusalRecorder recorder)
     {
         ArgumentNullException.ThrowIfNull(context);
-        ArgumentNullException.ThrowIfNull(auditLog);
+        ArgumentNullException.ThrowIfNull(recorder);
 
         // Re-checked here and not only in the mount condition: the gate must be safe to
         // mount any way at all, and an endpoint that does not ask to be guarded must not be.
@@ -137,58 +136,16 @@ public sealed class AgentContractHandshakeGate(
         // is always present and always the agent's target id. Tolerating null keeps the
         // middleware safe to mount elsewhere rather than asserting a pipeline shape it
         // cannot see.
-        var targetId = context.User.FindFirst(
+        var claimed = context.User.FindFirst(
             System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
 
-        if (ShouldReport(targetId, presented))
-        {
-            logger.LogWarning(
-                "Agent handshake REFUSED for target {TargetId}: contract {Presented} != " +
-                "server v{Required}. {Remedy} Further refusals of the same value from this " +
-                "target are suppressed for {Interval}.",
-                targetId ?? "(unauthenticated)", presented, AgentContract.CurrentVersion,
-                remedy, RefusalReportInterval);
-
-            // Audited against the target when the handshake carried a usable identity, so
-            // an operator learns WHICH agent is skewed rather than which address connected.
-            //
-            // BEST-EFFORT, and that is load-bearing rather than lazy: the audit write needs
-            // a resolved tenant database. If recording fails the refusal must still be a
-            // clean, actionable 426 — letting the exception escape would turn "upgrade your
-            // agent" into an opaque 500 for the agent and a server fault for the operator,
-            // which is strictly worse than a missing row.
-            if (targetId is not null)
-            {
-                try
-                {
-                    await auditLog.RecordAsync(
-                        AuditEventType.AgentContractVersionRejected,
-                        subjectType: "DeploymentTarget",
-                        subjectId:   targetId,
-                        details:     $"SentContract={presented}, " +
-                                     $"RequiredContract={AgentContract.CurrentVersion}",
-                        // Explicit, and required for correctness rather than tidiness:
-                        // AuditLogService falls back to the ambient HTTP principal's
-                        // NameIdentifier when no attribution is supplied, and on this path
-                        // that principal is the AGENT — so the row would claim a user whose
-                        // id is really a DeploymentTarget's, and render as "Unknown".
-                        userId:      null,
-                        userDisplay: "System",
-                        // NOT context.RequestAborted: an agent that drops the transport
-                        // mid-refusal must not turn this into an OperationCanceledException
-                        // escaping into UseSerilogRequestLogging and UseExceptionHandler.
-                        ct:          CancellationToken.None)
-                        .ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex,
-                        "Could not audit the contract refusal for target {TargetId}; the " +
-                        "connection is still refused.", targetId);
-                }
-            }
-        }
-
+        // ── Answer FIRST, record after ──────────────────────────────────────────────────
+        // The refusal is written before anything that touches a database, and the order is the
+        // fix rather than a style choice: the recording half needs a resolved tenant DB, and
+        // with Npgsql's EnableRetryOnFailure a slow one can take seconds. Doing it first put
+        // that latency on the negotiate's critical path, so a struggling database turned a
+        // clean, diagnosable 426 into a client-side TIMEOUT — the agent then paces on the wrong
+        // lane and the operator is told nothing useful.
         context.Response.StatusCode = StatusCodes.Status426UpgradeRequired;
         context.Response.Headers[AgentContract.ServerVersionHeader] =
             AgentContract.CurrentVersion.ToString(CultureInfo.InvariantCulture);
@@ -196,10 +153,13 @@ public sealed class AgentContractHandshakeGate(
 
         try
         {
-            // CancellationToken.None for the same reason as the audit write above. The
-            // catch covers the residual case the token cannot: the response pipe of an
-            // already-aborted connection faults on write regardless of the token, and that
-            // must stay a completed refusal rather than becoming an unhandled fault.
+            // CancellationToken.None, not context.RequestAborted: an agent that drops the
+            // transport mid-refusal must not turn this into an OperationCanceledException
+            // escaping into UseSerilogRequestLogging (one Error per refusal) and
+            // UseExceptionHandler, which then tries to render onto an aborted response. The
+            // catch covers the residual the token cannot — an already-faulted response pipe
+            // throws regardless — and that must stay a completed refusal, not an unhandled
+            // fault.
             await context.Response.WriteAsync(
                 $"This server requires agent wire contract v{AgentContract.CurrentVersion}; " +
                 $"this agent presented {presented}. {remedy}",
@@ -210,6 +170,39 @@ public sealed class AgentContractHandshakeGate(
             logger.LogDebug(ex,
                 "Writing the 426 refusal body failed (the agent dropped the transport); " +
                 "the refusal itself stands.");
+        }
+
+        if (!ShouldReport(claimed, presented))
+        {
+            return;
+        }
+
+        logger.LogWarning(
+            "Agent handshake REFUSED for target {TargetId}: contract {Presented} != server " +
+            "v{Required}. {Remedy} Further refusals of the same value from this target are " +
+            "suppressed for {Interval}.",
+            claimed ?? "(unauthenticated)", presented, AgentContract.CurrentVersion,
+            remedy, RefusalReportInterval);
+
+        // Recorded against the target when the handshake carried a usable identity, so an
+        // operator learns WHICH agent is skewed rather than which address connected.
+        //
+        // BEST-EFFORT, and that is load-bearing rather than lazy: this needs a resolved tenant
+        // database. If it fails the refusal must still be a clean, actionable 426 — which it
+        // now is unconditionally, because the response is already written above.
+        if (Guid.TryParse(claimed, out var targetId))
+        {
+            try
+            {
+                await recorder.RecordAsync(targetId, presented, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "Could not record the contract refusal for target {TargetId}; the " +
+                    "connection is still refused and the warning above still stands.", targetId);
+            }
         }
     }
 

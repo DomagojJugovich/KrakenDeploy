@@ -3,12 +3,15 @@ using FluentAssertions;
 using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Common;
+using KrakenDeploy.Server.Core.Domain.Deployments;
 using KrakenDeploy.Server.Core.Domain.Targets;
+using KrakenDeploy.Server.Data.Tests.OrchestratorHarness;
 using KrakenDeploy.Server.Transport;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace KrakenDeploy.Server.Data.Tests;
@@ -120,20 +123,134 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
         target.Status.Should().Be(TargetStatus.Online);
     }
 
+    [Fact]
+    public async Task OnConnectedAsync_leaves_no_registry_entry_when_a_write_throws()
+    {
+        // Round-5 finding 3. registry.Add used to run BEFORE the Online write and the status
+        // push, both of which can throw — and SignalR deliberately skips OnDisconnectedAsync
+        // after an OnConnectedAsync failure, so TryRemove never ran. The leaked entry is not
+        // inert: it is exactly what makes a target dispatchable, so the wave sends to a dead
+        // connection id (Clients.Client(deadId) is a silent no-op), HasConnectionFor reads true
+        // so B3's disconnect monitor never diagnoses it, and the wave hangs to its deadline
+        // while the fleet page shows the target green.
+        //
+        // The throwing seam is the in-process status notifier: TargetStatusPublisher catches
+        // the UI-hub push but calls notifier.Publish OUTSIDE that try, because an in-process
+        // subscriber failing is a bug rather than a transport blip.
+        await using var db = postgres.CreateContext();
+        var target = new DeploymentTarget
+        {
+            Name = "hub-test-connect-throws",
+            Roles = ["web"],
+            TransportMode = TransportMode.Reverse,
+        };
+        db.DeploymentTargets.Add(target);
+        await db.SaveChangesAsync();
+
+        var registry = new InMemoryAgentConnectionRegistry();
+        var hub = BuildHub(postgres, target.Id, registry, notifier: new ThrowingStatusNotifier());
+
+        var act = async () => await hub.OnConnectedAsync();
+
+        await act.Should().ThrowAsync<InvalidOperationException>(
+            "the failure must surface so SignalR closes the connection");
+        registry.HasConnectionFor(target.Id).Should().BeFalse(
+            "a connection whose OnConnectedAsync failed must not be left dispatchable — " +
+            "nothing will ever remove it");
+        registry.GetConnectionId(target.Id).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RegisterAsync_re_pushes_cancels_even_when_the_machine_info_write_fails()
+    {
+        // Round-5 finding 6. The E7 reconcile used to run AFTER the machine-info
+        // SaveChangesAsync, and this is its only call site: HeartbeatAsync repairs machine info
+        // every 30 s but never re-invokes registration, and a healthy link produces no
+        // reconnect. So a failed write skipped the reconcile with no retry path, and a task
+        // cancelled while the agent was offline ran its step to completion on a production box
+        // the operator had been told was cancelled.
+        //
+        // The write is made to fail for real rather than mocked: machine_name is
+        // varchar(255), so an over-long value is a genuine Postgres error on save.
+        await using var harness = new OrchestratorTestHarness(postgres);
+        var tag = Guid.NewGuid().ToString("N")[..8];
+        var project = await harness.SeedProjectAsync($"reconcile-proj-{tag}");
+        var env = await harness.SeedEnvironmentAsync($"reconcile-env-{tag}");
+        var targets = await harness.SeedTargetsAsync($"reconcile-target-{tag}");
+        var release = await harness.SeedReleaseAsync(project.Id, "1.0.0");
+        var taskId = await harness.CreateDeploymentAsync(release.Id, env.Id, targets);
+
+        // The task went terminal while the agent was away — the shape the E7 reconcile exists
+        // for. A disconnect never aborts a running step, so the agent may still be executing it.
+        await using (var db = harness.CreateContext())
+        {
+            var task = await db.ServerTasks.IgnoreQueryFilters().FirstAsync(t => t.Id == taskId);
+            task.Status = DeploymentStatus.Cancelled;
+            task.CompletedUtc = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+        }
+
+        var cancels = new RecordingAgentHubContext();
+        var hub = BuildHub(
+            postgres, targets[0].Id, scopeFactory: new StubScopeFactory(cancels));
+
+        var act = async () => await hub.RegisterAsync(new AgentRegistrationRequest(
+            targets[0].Id, new string('m', 400), "Linux", "1.0.0", 0L, 0L,
+            AgentContract.CurrentVersion));
+
+        await act.Should().ThrowAsync<DbUpdateException>("the machine-info write must fail");
+        cancels.Cancelled.Should().Contain(taskId,
+            "the cooperative cancel must be re-pushed before anything that can fail — it is " +
+            "the only thing that stops the step still running on the agent, and this is its " +
+            "only call site");
+    }
+
+    [Fact]
+    public async Task RegisterAsync_logs_an_error_when_the_body_contract_disagrees_with_the_gate()
+    {
+        // The tripwire for the one risk the handshake move introduced: enforcement rides a
+        // request HEADER, so a header-whitelisting intermediary would strip it and the gate
+        // would admit every agent silently. The body field is still on the wire, so a
+        // disagreement means the header did not arrive as sent.
+        await using var db = postgres.CreateContext();
+        var target = new DeploymentTarget
+        {
+            Name = "hub-test-header-tripwire",
+            Roles = ["web"],
+            TransportMode = TransportMode.Reverse,
+        };
+        db.DeploymentTargets.Add(target);
+        await db.SaveChangesAsync();
+
+        var log = new ListLogger();
+        await BuildHub(postgres, target.Id, logger: log).RegisterAsync(
+            new AgentRegistrationRequest(target.Id, "m", "o", "v", 0L, 0L,
+                ContractVersion: AgentContract.CurrentVersion - 1));
+
+        log.Errors.Should().ContainSingle().Which.Should()
+            .Contain(AgentContract.VersionHeader)
+            .And.Contain("enforcing NOTHING");
+    }
+
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private static AgentHub BuildHub(
-        PostgresFixture postgres, Guid targetId, IAgentConnectionRegistry? registry = null)
+        PostgresFixture postgres,
+        Guid targetId,
+        IAgentConnectionRegistry? registry = null,
+        ITargetStatusNotifier? notifier = null,
+        IServiceScopeFactory? scopeFactory = null,
+        ILogger<AgentHub>? logger = null)
     {
         var publisher = new TargetStatusPublisher(
-            new InMemoryTargetStatusNotifier(),
+            notifier ?? new InMemoryTargetStatusNotifier(),
             new NullUiHubContext(),
             NullLogger<TargetStatusPublisher>.Instance);
 
         var hub = new AgentHub(
             registry ?? new InMemoryAgentConnectionRegistry(),
             postgres,
-            new NeverUsedScopeFactory(),
+            scopeFactory ?? new NeverUsedScopeFactory(),
             publisher,
             TimeProvider.System,
             new NullUiHubContext(),
@@ -142,10 +259,43 @@ public class AgentHubRegisterTests(PostgresFixture postgres) : IClassFixture<Pos
             new KrakenDeploy.Server.Data.Accounts.DisabledAccountContext(),
             TestCrypto.Service("S3Jha2VuRGVwbG95RGV2TWFzdGVyS2V5MzJCeXRlcyE="),
             new RecordingAuditLog(postgres),
-            NullLogger<AgentHub>.Instance);
+            logger ?? NullLogger<AgentHub>.Instance);
 
         hub.Context = new FakeHubCallerContext(targetId);
         return hub;
+    }
+
+    /// <summary>An in-process status subscriber that faults — the reachable way to make
+    /// <c>OnConnectedAsync</c> throw after its DB write has succeeded.</summary>
+    private sealed class ThrowingStatusNotifier : ITargetStatusNotifier
+    {
+        public event Action<Guid, TargetStatus, DateTimeOffset?>? TargetStatusChanged;
+
+        public void Publish(Guid targetId, TargetStatus status, DateTimeOffset? lastSeenUtc)
+        {
+            TargetStatusChanged?.Invoke(targetId, status, lastSeenUtc);
+            throw new InvalidOperationException("a status subscriber faulted");
+        }
+    }
+
+    private sealed class ListLogger : ILogger<AgentHub>
+    {
+        internal List<string> Errors { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            ArgumentNullException.ThrowIfNull(formatter);
+            if (logLevel >= LogLevel.Error)
+            {
+                Errors.Add(formatter(state, exception));
+            }
+        }
     }
 
     // Writes audit rows to the test DB so the role-rejection assertion can read them.
@@ -199,6 +349,71 @@ file sealed class NeverUsedScopeFactory : IServiceScopeFactory
 {
     public IServiceScope CreateScope()
         => throw new NotSupportedException("IServiceScopeFactory is not used by RegisterAsync.");
+}
+
+/// <summary>
+/// Hands the E7 reconcile a scope whose <c>IHubContext&lt;AgentHub, IAgentHubClient&gt;</c>
+/// records the cancels it pushes, so a test can assert the push happened.
+/// </summary>
+file sealed class StubScopeFactory(RecordingAgentHubContext hub) : IServiceScopeFactory
+{
+    public IServiceScope CreateScope() => new Scope(hub);
+
+    private sealed class Scope(RecordingAgentHubContext hub) : IServiceScope, IServiceProvider
+    {
+        public IServiceProvider ServiceProvider => this;
+
+        public object? GetService(Type serviceType)
+            => serviceType == typeof(IHubContext<AgentHub, IAgentHubClient>) ? hub : null;
+
+        public void Dispose() { }
+    }
+}
+
+file sealed class RecordingAgentHubContext : IHubContext<AgentHub, IAgentHubClient>
+{
+    private readonly AgentClients _clients;
+
+    internal RecordingAgentHubContext() => _clients = new AgentClients(Cancelled);
+
+    internal List<Guid> Cancelled { get; } = [];
+
+    public IHubClients<IAgentHubClient> Clients => _clients;
+
+    public IGroupManager Groups => throw new NotSupportedException();
+
+    private sealed class AgentClients(List<Guid> cancelled) : IHubClients<IAgentHubClient>
+    {
+        private readonly IAgentHubClient _sink = new Sink(cancelled);
+        public IAgentHubClient All => _sink;
+        public IAgentHubClient AllExcept(IReadOnlyList<string> excluded) => _sink;
+        public IAgentHubClient Client(string connectionId) => _sink;
+        public IAgentHubClient Clients(IReadOnlyList<string> connectionIds) => _sink;
+        public IAgentHubClient Group(string groupName) => _sink;
+        public IAgentHubClient GroupExcept(string groupName, IReadOnlyList<string> excluded) => _sink;
+        public IAgentHubClient Groups(IEnumerable<string> groupNames) => _sink;
+        public IAgentHubClient Groups(IReadOnlyList<string> groupNames) => _sink;
+        public IAgentHubClient User(string userId) => _sink;
+        public IAgentHubClient Users(IEnumerable<string> userIds) => _sink;
+        public IAgentHubClient Users(IReadOnlyList<string> userIds) => _sink;
+    }
+
+    private sealed class Sink(List<Guid> cancelled) : IAgentHubClient
+    {
+        public Task RunDeploymentAsync(KrakenDeploy.Contracts.DeploymentPlan plan)
+            => throw new NotSupportedException();
+
+        public Task RunAdhocScriptAsync(KrakenDeploy.Contracts.Adhoc.AdhocScriptCommand command)
+            => throw new NotSupportedException();
+
+        public Task PingAsync() => Task.CompletedTask;
+
+        public Task CancelDeploymentAsync(Guid taskId, string? reason)
+        {
+            lock (cancelled) { cancelled.Add(taskId); }
+            return Task.CompletedTask;
+        }
+    }
 }
 
 file sealed class NeverUsedPendingSubPlanRegistry : IPendingSubPlanRegistry

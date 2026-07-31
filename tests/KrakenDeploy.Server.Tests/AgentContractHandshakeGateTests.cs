@@ -32,7 +32,7 @@ public class AgentContractHandshakeGateTests
 
         h.ReachedHub.Should().BeTrue("a matching agent must reach the hub");
         h.Context.Response.StatusCode.Should().Be(StatusCodes.Status200OK);
-        h.Audit.Events.Should().BeEmpty("nothing was refused, so nothing is audited");
+        h.Recorder.Events.Should().BeEmpty("nothing was refused, so nothing is audited");
         h.Logger.Warnings.Should().BeEmpty();
     }
 
@@ -69,7 +69,7 @@ public class AgentContractHandshakeGateTests
         await h.InvokeAsync();
 
         h.ReachedHub.Should().BeTrue();
-        h.Audit.Events.Should().BeEmpty();
+        h.Recorder.Events.Should().BeEmpty();
         h.Logger.Warnings.Should().BeEmpty();
     }
 
@@ -93,8 +93,8 @@ public class AgentContractHandshakeGateTests
 
         h.ReachedHub.Should().BeFalse();
         h.Context.Response.StatusCode.Should().Be(StatusCodes.Status426UpgradeRequired);
-        var detail = h.Audit.Events.Should().ContainSingle().Subject.Details!;
-        detail.Should().Contain("duplicated", "the cause must be distinguishable from a skew");
+        var presented = h.Recorder.Events.Should().ContainSingle().Subject.PresentedContract;
+        presented.Should().Contain("duplicated", "the cause must be distinguishable from a skew");
         h.Body.Should().Contain("intermediary")
             .And.NotContain("Update the agent binary",
                 "the agent binary may be entirely correct — the proxy transform is the fault");
@@ -134,28 +134,38 @@ public class AgentContractHandshakeGateTests
     }
 
     [Fact]
-    public async Task A_refusal_is_audited_against_the_target_as_a_system_event()
+    public async Task A_refusal_is_recorded_against_the_target_from_the_jwt()
     {
+        // An operator needs to know WHICH agent is skewed — that is the only reason the gate is
+        // mounted after authentication rather than before it. What the recorder then DOES with
+        // the target (Offline mark, status push, audit row with subjectName and System
+        // attribution) is asserted against a real database in AgentContractRefusalRecorderTests.
         var targetId = Guid.NewGuid();
         var h = new Harness(sentVersion: 3, targetId: targetId);
 
         await h.InvokeAsync();
 
-        var entry = h.Audit.Events.Should().ContainSingle().Subject;
-        entry.EventType.Should().Be(AuditEventType.AgentContractVersionRejected);
-        entry.SubjectType.Should().Be("DeploymentTarget",
-            "the audit grid, the CSV/JSON export and the per-entity Events tab all key on it");
-        entry.SubjectId.Should().Be(targetId.ToString(),
-            "an operator needs to know WHICH agent is skewed — this is the only reason the " +
-            "gate is mounted after authentication rather than before it");
-        entry.Details.Should().Contain(
-            AgentContract.CurrentVersion.ToString(CultureInfo.InvariantCulture));
+        var recorded = h.Recorder.Events.Should().ContainSingle().Subject;
+        recorded.TargetId.Should().Be(targetId);
+        recorded.PresentedContract.Should().Be("v3");
+        recorded.Ct.Should().Be(CancellationToken.None,
+            "an agent that drops the transport mid-refusal must not cancel the recording — " +
+            "context.RequestAborted here is how the OCE used to escape into the request logger");
+    }
 
-        // The principal on this path is an AGENT: its NameIdentifier is a DeploymentTarget
-        // id. AuditLogService falls back to that when attribution is omitted, which stamps
-        // UserId with a GUID that resolves to no user and renders as "Unknown".
-        entry.UserId.Should().BeNull();
-        entry.UserDisplay.Should().Be("System");
+    [Fact]
+    public async Task An_unauthenticated_refusal_records_nothing_but_still_refuses()
+    {
+        // Unreachable in production (the hub endpoint's [Authorize] runs first, asserted in
+        // MultiAccountAgentTransportE2ETests) but the middleware must be safe to mount anywhere
+        // rather than assert a pipeline shape it cannot see.
+        var h = new Harness(sentVersion: 3, targetId: null);
+
+        await h.InvokeAsync();
+
+        h.Context.Response.StatusCode.Should().Be(StatusCodes.Status426UpgradeRequired);
+        h.Recorder.Events.Should().BeEmpty();
+        h.Logger.Warnings.Should().ContainSingle().Which.Should().Contain("(unauthenticated)");
     }
 
     [Fact]
@@ -168,9 +178,9 @@ public class AgentContractHandshakeGateTests
 
         await h.InvokeAsync();
 
-        var detail = h.Audit.Events.Should().ContainSingle().Subject.Details!;
-        detail.Length.Should().BeLessThan(200);
-        detail.Should().Contain("30000 chars", "the operator still learns it was oversized");
+        var presented = h.Recorder.Events.Should().ContainSingle().Subject.PresentedContract;
+        presented.Length.Should().BeLessThan(200);
+        presented.Should().Contain("30000 chars", "the operator still learns it was oversized");
         h.Body.Length.Should().BeLessThan(500);
     }
 
@@ -187,14 +197,14 @@ public class AgentContractHandshakeGateTests
         await h.InvokeAsync();
         await h.InvokeAsync();
 
-        h.Audit.Events.Should().HaveCount(1);
+        h.Recorder.Events.Should().HaveCount(1);
         h.Logger.Warnings.Should().HaveCount(1);
         h.Refusals.Should().Be(3, "the 426 itself is never throttled — only its reporting");
 
         clock.Advance(AgentContractHandshakeGate.RefusalReportInterval + TimeSpan.FromSeconds(1));
         await h.InvokeAsync();
 
-        h.Audit.Events.Should().HaveCount(2, "the window elapsed, so the state re-reports");
+        h.Recorder.Events.Should().HaveCount(2, "the window elapsed, so the state re-reports");
     }
 
     [Fact]
@@ -210,7 +220,7 @@ public class AgentContractHandshakeGateTests
         h.SetSentVersion(2);
         await h.InvokeAsync();
 
-        h.Audit.Events.Should().HaveCount(2);
+        h.Recorder.Events.Should().HaveCount(2);
     }
 
     [Fact]
@@ -221,7 +231,7 @@ public class AgentContractHandshakeGateTests
         // "upgrade your agent" into an opaque 500: a missing row is recoverable, an
         // unactionable response is not.
         var h = new Harness(sentVersion: 3, targetId: Guid.NewGuid());
-        var throwing = new ThrowingAuditLog();
+        var throwing = new ThrowingRecorder();
 
         await h.InvokeAsync(throwing);
 
@@ -246,7 +256,7 @@ public class AgentContractHandshakeGateTests
         await h.InvokeAsync();
 
         h.Context.Response.StatusCode.Should().Be(StatusCodes.Status426UpgradeRequired);
-        h.Audit.Events.Should().HaveCount(1, "the row must not be lost to the client's abort");
+        h.Recorder.Events.Should().HaveCount(1, "the row must not be lost to the client's abort");
         h.Body.Should().NotBeEmpty();
     }
 
@@ -255,7 +265,7 @@ public class AgentContractHandshakeGateTests
     private sealed class Harness
     {
         internal DefaultHttpContext Context { get; } = new();
-        internal RecordingAuditLog Audit { get; } = new();
+        internal RecordingRecorder Recorder { get; } = new();
         internal RecordingLogger Logger { get; } = new();
         internal bool ReachedHub { get; private set; }
         internal int Refusals { get; private set; }
@@ -305,10 +315,10 @@ public class AgentContractHandshakeGateTests
             Context.Request.Headers[AgentContract.VersionHeader] =
                 version.ToString(CultureInfo.InvariantCulture);
 
-        internal async Task InvokeAsync(IAuditLog? auditLog = null)
+        internal async Task InvokeAsync(IAgentContractRefusalRecorder? recorder = null)
         {
             Context.Response.StatusCode = StatusCodes.Status200OK;
-            await _gate.InvokeAsync(Context, auditLog ?? Audit);
+            await _gate.InvokeAsync(Context, recorder ?? Recorder);
             if (Context.Response.StatusCode == StatusCodes.Status426UpgradeRequired)
             {
                 Refusals++;
@@ -355,33 +365,34 @@ public class AgentContractHandshakeGateTests
         }
     }
 
-    private sealed class RecordingAuditLog : IAuditLog
+    /// <summary>
+    /// Captures what the gate asks the recorder to record. The recorder's OWN behaviour — the
+    /// Offline mark, the status push, the audit row's subjectName and its System attribution —
+    /// is a tenant-database concern and is covered against a real Postgres by
+    /// <c>AgentContractRefusalRecorderTests</c>; asserting it through a fake here would only
+    /// test the fake.
+    /// </summary>
+    private sealed class RecordingRecorder : IAgentContractRefusalRecorder
     {
         internal List<Recorded> Events { get; } = [];
 
         public Task RecordAsync(
-            string eventType, string? subjectType = null, string? subjectId = null,
-            string? subjectName = null, string? details = null, Guid? userId = null,
-            string? userDisplay = null, CancellationToken ct = default)
+            Guid targetId, string presentedContract, CancellationToken ct = default)
         {
-            Events.Add(new Recorded(
-                eventType, subjectType, subjectId, subjectName, details, userId, userDisplay));
+            Events.Add(new Recorded(targetId, presentedContract, ct));
             return Task.CompletedTask;
         }
 
         internal sealed record Recorded(
-            string EventType, string? SubjectType, string? SubjectId, string? SubjectName,
-            string? Details, Guid? UserId, string? UserDisplay);
+            Guid TargetId, string PresentedContract, CancellationToken Ct);
     }
 
-    private sealed class ThrowingAuditLog : IAuditLog
+    private sealed class ThrowingRecorder : IAgentContractRefusalRecorder
     {
         internal bool Attempted { get; private set; }
 
         public Task RecordAsync(
-            string eventType, string? subjectType = null, string? subjectId = null,
-            string? subjectName = null, string? details = null, Guid? userId = null,
-            string? userDisplay = null, CancellationToken ct = default)
+            Guid targetId, string presentedContract, CancellationToken ct = default)
         {
             Attempted = true;
             throw new InvalidOperationException("no tenant database resolved");

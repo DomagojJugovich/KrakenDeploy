@@ -534,6 +534,10 @@ internal sealed class RoundTripHost : IAsyncDisposable
         services.AddSingleton<IHubContext<UiHub, IUiHubClient>>(new NullUiHubContext());
         services.AddSingleton<TargetStatusPublisher>();
         services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
+        // Resolved by the contract gate only when it refuses a handshake. Every agent in this
+        // suite presents the right version, so it is never used — but omitting it would make
+        // the gate throw a DI error on the negotiate rather than pass the agent through.
+        services.AddScoped<IAgentContractRefusalRecorder, AgentContractRefusalRecorder>();
         services.AddSingleton<Core.Domain.Accounts.IAccountContext, Accounts.DisabledAccountContext>();
         services.AddSingleton<AgentJwtService>();
         // B6 — the REAL cancel pusher over the REAL hub, so an operator cancel travels
