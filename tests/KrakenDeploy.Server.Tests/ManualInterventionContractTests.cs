@@ -13,6 +13,16 @@ namespace KrakenDeploy.Server.Tests;
 /// </summary>
 public sealed class ManualInterventionContractTests
 {
+    // SC4-b: the registry-driven server-side set, exactly as the orchestrator
+    // loads it (Octopus.Manual declares executionLocus=server in its manifest;
+    // Octopus.DeployRelease is a System registry row).
+    private static readonly HashSet<string> ServerSideTypes =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            DeployReleaseStepRunner.StepType,
+            ManualInterventionConfigKeys.StepType,
+        };
+
     // ── The step type is server-only ────────────────────────────────────────
 
     [Fact]
@@ -32,7 +42,8 @@ public sealed class ManualInterventionContractTests
         var waves = WavePartitioner.Partition(
             [gate],
             triggerByIndex: _ =>
-                KrakenDeploy.Server.Core.Domain.Processes.StepStartTrigger.StartAfterPrevious);
+                KrakenDeploy.Server.Core.Domain.Processes.StepStartTrigger.StartAfterPrevious,
+            serverSideTypes: ServerSideTypes);
 
         waves.Should().ContainSingle()
             .Which.Kind.Should().Be(WavePartitioner.WaveKind.Server);
@@ -57,7 +68,8 @@ public sealed class ManualInterventionContractTests
             [gate, agentStep],
             triggerByIndex: i => i == 1
                 ? KrakenDeploy.Server.Core.Domain.Processes.StepStartTrigger.StartWithPrevious
-                : KrakenDeploy.Server.Core.Domain.Processes.StepStartTrigger.StartAfterPrevious);
+                : KrakenDeploy.Server.Core.Domain.Processes.StepStartTrigger.StartAfterPrevious,
+            serverSideTypes: ServerSideTypes);
 
         act.Should().Throw<WavePartitioner.InvalidWaveException>()
             .Which.ServerStepNames.Should().Contain("approve");

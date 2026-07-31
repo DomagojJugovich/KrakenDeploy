@@ -13,6 +13,7 @@ using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Releases;
 using KrakenDeploy.Server.Core.Domain.Runbooks;
 using KrakenDeploy.Server.Core.Domain.Spaces;
+using KrakenDeploy.Server.Core.Domain.StepPackages;
 using KrakenDeploy.Server.Core.Domain.Targets;
 using KrakenDeploy.Server.Data;
 using KrakenDeploy.Server.Data.Services;
@@ -680,6 +681,63 @@ public sealed class DeploymentWorker(
                 }
             }
 
+            // ── SC4-b: registry-driven execution facts + pre-dispatch guard ──
+            // The packages declare where their types execute; the step-type
+            // registry is the authority. A type nothing serves — or a
+            // RunOnServer flag on a type that doesn't support it — refuses
+            // here with an actionable reason instead of dying opaquely on the
+            // agent ("Unknown step type") or in ServerScriptStepRunner
+            // ("Step has no script body").
+            var planTypeIds = canonicalCtx.Steps
+                .Select(s => s.StepType.ToLowerInvariant())
+                .Distinct()
+                .ToList();
+            var registryRows = await db.StepTypes.AsNoTracking()
+                .Where(t => planTypeIds.Contains(t.TypeId))
+                .ToDictionaryAsync(t => t.TypeId, ct).ConfigureAwait(false);
+
+            var schemaResolver = scope.ServiceProvider.GetRequiredService<StepSchemaResolver>();
+            var typeFacts = new Dictionary<string, StepTypeExecutionGuard.TypeFacts>(
+                StringComparer.OrdinalIgnoreCase);
+            foreach (var typeId in planTypeIds)
+            {
+                registryRows.TryGetValue(typeId, out var row);
+                var exists     = row is not null;
+                var serverSide = row is not null
+                    && row.ExecutionLocus != StepTypeExecutionLocus.AgentPackage;
+
+                // The RunOnServer flag is only meaningful when the serving
+                // schema exposes the field — look the schema up lazily, only
+                // for types where a step actually sets the flag.
+                var supportsRunOnServer = false;
+                if (exists && !serverSide && canonicalCtx.Steps.Any(s =>
+                        s.RunOnServer && s.StepType.Equals(typeId, StringComparison.OrdinalIgnoreCase)))
+                {
+                    var resolved = await schemaResolver.ResolveAsync(typeId, ct: ct)
+                        .ConfigureAwait(false);
+                    supportsRunOnServer = resolved?.Schema.Properties
+                        .ContainsKey(KrakenScriptConfigKeys.RunOnServer) == true;
+                }
+
+                typeFacts[typeId] = new StepTypeExecutionGuard.TypeFacts(
+                    exists, serverSide, supportsRunOnServer);
+            }
+
+            var typeViolation = StepTypeExecutionGuard.FindViolation(
+                canonicalCtx.Steps, t => typeFacts[t.ToLowerInvariant()]);
+            if (typeViolation is not null)
+            {
+                await logSeq.AppendAsync(-1, null, "error", typeViolation, ct)
+                    .ConfigureAwait(false);
+                await FailAsync(db, deployment, typeViolation, ct).ConfigureAwait(false);
+                return;
+            }
+
+            var serverSideTypes = registryRows.Values
+                .Where(t => t.ExecutionLocus != StepTypeExecutionLocus.AgentPackage)
+                .Select(t => t.TypeId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
             // ── 3. Partition canonical steps into waves (M14.4) ─────────────
             // The wave structure is purely a function of the (snapshot,
             // StartTrigger) tuple — neither input varies across targets —
@@ -691,7 +749,8 @@ public sealed class DeploymentWorker(
             {
                 waves = WavePartitioner.Partition(
                     canonicalCtx.Steps,
-                    triggerByIndex: idx => canonicalCtx.SnapshotByPlanIndex[idx].StartTrigger);
+                    triggerByIndex: idx => canonicalCtx.SnapshotByPlanIndex[idx].StartTrigger,
+                    serverSideTypes: serverSideTypes);
             }
             catch (WavePartitioner.InvalidWaveException ex)
             {
@@ -722,7 +781,7 @@ public sealed class DeploymentWorker(
                                       "split into two single-side waves.",
                         startedUtc:   null,
                         completedUtc: refusedAt,
-                        isServerSide: WavePartitioner.IsServerStep(refused),
+                        isServerSide: WavePartitioner.IsServerStep(refused, serverSideTypes),
                         required:     snap.Required, ct).ConfigureAwait(false);
                 }
                 await db.SaveChangesAsync(ct).ConfigureAwait(false);

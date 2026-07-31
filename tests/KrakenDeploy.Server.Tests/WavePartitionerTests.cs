@@ -1,5 +1,6 @@
 using FluentAssertions;
 using KrakenDeploy.Contracts;
+using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Transport;
 
@@ -14,12 +15,23 @@ namespace KrakenDeploy.Server.Tests;
 /// </summary>
 public sealed class WavePartitionerTests
 {
+    // SC4-b: the registry-driven server-side set, exactly as the orchestrator
+    // loads it (Octopus.Manual declares executionLocus=server in its manifest;
+    // Octopus.DeployRelease is a System registry row).
+    private static readonly HashSet<string> ServerSideTypes =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            DeployReleaseStepRunner.StepType,
+            ManualInterventionConfigKeys.StepType,
+        };
+
     [Fact]
     public void Empty_input_yields_empty_partition()
     {
         var waves = WavePartitioner.Partition(
             steps: [],
-            triggerByIndex: _ => StepStartTrigger.StartAfterPrevious);
+            triggerByIndex: _ => StepStartTrigger.StartAfterPrevious,
+            serverSideTypes: ServerSideTypes);
 
         waves.Should().BeEmpty();
     }
@@ -31,7 +43,8 @@ public sealed class WavePartitionerTests
 
         var waves = WavePartitioner.Partition(
             steps: [step],
-            triggerByIndex: _ => StepStartTrigger.StartAfterPrevious);
+            triggerByIndex: _ => StepStartTrigger.StartAfterPrevious,
+            serverSideTypes: ServerSideTypes);
 
         waves.Should().HaveCount(1);
         waves[0].Kind.Should().Be(WavePartitioner.WaveKind.Target);
@@ -50,7 +63,8 @@ public sealed class WavePartitionerTests
 
         var waves = WavePartitioner.Partition(
             steps: [s0, s1, s2],
-            triggerByIndex: _ => StepStartTrigger.StartAfterPrevious);
+            triggerByIndex: _ => StepStartTrigger.StartAfterPrevious,
+            serverSideTypes: ServerSideTypes);
 
         waves.Should().HaveCount(3);
         waves.Select(w => w.Steps.Count).Should().Equal([1, 1, 1]);
@@ -71,7 +85,8 @@ public sealed class WavePartitionerTests
             steps: [s0, s1, s2, s3],
             triggerByIndex: idx => idx == 0
                 ? StepStartTrigger.StartAfterPrevious
-                : StepStartTrigger.StartWithPrevious);
+                : StepStartTrigger.StartWithPrevious,
+            serverSideTypes: ServerSideTypes);
 
         waves.Should().HaveCount(1);
         waves[0].Steps.Select(s => s.Name).Should().Equal(["A", "B", "C", "D"]);
@@ -96,7 +111,8 @@ public sealed class WavePartitionerTests
             _           => StepStartTrigger.StartAfterPrevious,
         };
 
-        var waves = WavePartitioner.Partition(steps, TriggerFor);
+        var waves = WavePartitioner.Partition(steps, TriggerFor,
+            serverSideTypes: ServerSideTypes);
 
         waves.Should().HaveCount(2);
         waves[0].Steps.Select(s => s.Name).Should().Equal(["A", "B"]);
@@ -113,7 +129,8 @@ public sealed class WavePartitionerTests
 
         var waves = WavePartitioner.Partition(
             steps: [s0, s1],
-            triggerByIndex: _ => StepStartTrigger.StartWithPrevious);
+            triggerByIndex: _ => StepStartTrigger.StartWithPrevious,
+            serverSideTypes: ServerSideTypes);
 
         waves.Should().HaveCount(1, "even though step 0 is asked to start " +
             "with previous, there is no previous; the wave just absorbs step 1");
@@ -130,7 +147,8 @@ public sealed class WavePartitionerTests
             steps: [s0, s1],
             triggerByIndex: idx => idx == 1
                 ? StepStartTrigger.StartWithPrevious
-                : StepStartTrigger.StartAfterPrevious);
+                : StepStartTrigger.StartAfterPrevious,
+            serverSideTypes: ServerSideTypes);
 
         waves.Should().HaveCount(1);
         waves[0].Kind.Should().Be(WavePartitioner.WaveKind.Server);
@@ -157,7 +175,8 @@ public sealed class WavePartitionerTests
             steps: [deployRelease, script],
             triggerByIndex: idx => idx == 1
                 ? StepStartTrigger.StartWithPrevious
-                : StepStartTrigger.StartAfterPrevious);
+                : StepStartTrigger.StartAfterPrevious,
+            serverSideTypes: ServerSideTypes);
 
         var ex = act.Should().Throw<WavePartitioner.InvalidWaveException>().Which;
         ex.ServerStepNames.Should().Equal(["Cascade"]);
@@ -175,7 +194,8 @@ public sealed class WavePartitionerTests
             steps: [server, target],
             triggerByIndex: idx => idx == 1
                 ? StepStartTrigger.StartWithPrevious
-                : StepStartTrigger.StartAfterPrevious);
+                : StepStartTrigger.StartAfterPrevious,
+            serverSideTypes: ServerSideTypes);
 
         var ex = act.Should().Throw<WavePartitioner.InvalidWaveException>().Which;
         ex.ServerStepNames.Should().Equal(["Notify"]);
@@ -195,7 +215,8 @@ public sealed class WavePartitionerTests
 
         var waves = WavePartitioner.Partition(
             steps: [server, target],
-            triggerByIndex: _ => StepStartTrigger.StartAfterPrevious);
+            triggerByIndex: _ => StepStartTrigger.StartAfterPrevious,
+            serverSideTypes: ServerSideTypes);
 
         waves.Should().HaveCount(2);
         waves[0].Kind.Should().Be(WavePartitioner.WaveKind.Server);
@@ -214,7 +235,8 @@ public sealed class WavePartitionerTests
 
         var waves = WavePartitioner.Partition(
             steps: [s2, s0, s1],
-            triggerByIndex: _ => StepStartTrigger.StartAfterPrevious);
+            triggerByIndex: _ => StepStartTrigger.StartAfterPrevious,
+            serverSideTypes: ServerSideTypes);
 
         waves.Select(w => w.Steps[0].Name).Should().Equal(["A", "B", "C"]);
     }
