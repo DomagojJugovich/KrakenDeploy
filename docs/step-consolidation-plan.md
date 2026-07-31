@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| **Version** | 1.0 |
-| **Date** | 2026-07-30 |
+| **Version** | 1.1 |
+| **Date** | 2026-07-31 |
 | **Authors** | Domagoj Jugović, Claude (Fable 5; grill session 2026-07-30) |
-| **Status** | Approved |
+| **Status** | Implemented (SC0–SC8; see §4 statuses) |
 | **Technologies** | .NET 10, Blazor Server, Radzen, EF Core 10, PostgreSQL, gRPC, Hangfire, MSBuild |
 | **Scope** | Step templates + step packages subsystems, picker/editor UI, catalog feeds, seeding, signing |
 
@@ -94,6 +94,18 @@ reason.
 ## 4. Work packages
 
 Sizes use master-plan conventions. SC0 goes to `main`; SC1–SC8 to `step_consolidation`.
+
+**Statuses (2026-07-31):** SC0 ✅ `6cb372c` (merged `8e72c55`) · SC1 ✅ `8b1a4af`
+· SC2 ✅ `966fbe9` · SC3+SC4-a ✅ `6b2678c` · SC4-b ✅ `bd5c310` · SC5 ✅
+`63b91e6` · SC6 ✅ `69a156e` · SC7 ✅ `eac10b5` (repo creation + secrets =
+operator actions, commands in the SC7 commit/summary) · SC8 ✅ (docs + resolver
+/ template-service tests; the REST integration-test harness for the 21 step
+endpoints is a RESIDUAL — no host-level test fixture exists repo-wide, so it
+is test-infrastructure work beyond this plan's scope; tracked for WP14/test
+debt). Implementation deviations from §4 as written: the `UiSchemaJson`
+column drop moved from SC2 to SC4 (the editor's version-switch still read it);
+the manifest gained `executionLocus` in SC4-b (Octopus.Manual = server) so
+wave routing could retire its hardcoded set — packages own the locus truth.
 
 ### SC0 — P0 fixes on main (S)
 
