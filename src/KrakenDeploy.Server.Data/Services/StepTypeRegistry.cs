@@ -40,6 +40,15 @@ public sealed class StepTypeRegistry(
              false, StepTypeExecutionLocus.ServerRunner),
         ];
 
+    /// <summary>All registry rows, for the picker and admin surfaces (SC5).</summary>
+    public async Task<List<StepTypeEntry>> GetAllAsync(CancellationToken ct = default)
+    {
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await db.StepTypes.AsNoTracking()
+            .OrderBy(t => t.DisplayName)
+            .ToListAsync(ct).ConfigureAwait(false);
+    }
+
     public async Task RebuildAsync(CancellationToken ct = default)
     {
         await Gate.WaitAsync(ct).ConfigureAwait(false);
