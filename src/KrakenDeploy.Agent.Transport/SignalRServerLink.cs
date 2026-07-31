@@ -8,10 +8,17 @@ namespace KrakenDeploy.Agent.Transport;
 
 /// <summary>
 /// SignalR implementation of <see cref="IServerLink"/>.
-/// Token is delivered via the <c>AccessTokenProvider</c> delegate so the
-/// JWT travels in the query string (<c>?access_token=…</c>) on WebSocket
-/// upgrades — matching what the server's JwtBearerEvents.OnMessageReceived
-/// expects.
+/// <para>
+/// The token is delivered via the <c>AccessTokenProvider</c> delegate, which puts the JWT in
+/// the query string (<c>?access_token=…</c>) — matching what the server's
+/// <c>JwtBearerEvents.OnMessageReceived</c> expects. That is a SignalR convention for the
+/// bearer token specifically, not a limitation of the transport: custom request headers set
+/// on <c>HttpConnectionOptions</c> DO survive the WebSocket upgrade, which is what the
+/// wire-contract header <c>X-KD-Contract</c> and the blue-green release pin
+/// <c>X-KD-Release</c> both rely on. Verified over a real loopback Kestrel by
+/// <c>TransportRoundTripTests</c>: the gate is mounted on both hub endpoints, so a header
+/// that failed to survive the upgrade would refuse every connection in that suite.
+/// </para>
 /// </summary>
 public sealed class SignalRServerLink : IServerLink
 {
@@ -73,10 +80,10 @@ public sealed class SignalRServerLink : IServerLink
 
         _deliberateStop = false;
 
-        // One policy instance per connection cycle, held so the connection lifecycle can
-        // feed its churn lane (see AgentReconnectPolicy). The automatic reconnect consults
-        // the same instance, which is what lets a run of instantly-aborted connections
-        // escalate instead of each one looking like a fresh blip.
+        // One policy instance per connection cycle. It holds only the auth-failure streak
+        // flag now — the connection lifecycle no longer feeds it anything, because a
+        // server-side REJECTION never reaches the automatic reconnect at all (it arrives as
+        // a permanent Closed; see AgentReconnectPolicy) and is paced by the supervisor.
         var reconnectPolicy = new AgentReconnectPolicy(logger);
 
         var hubUrl = $"{serverUrl.TrimEnd('/')}/hubs/agent";
@@ -115,18 +122,12 @@ public sealed class SignalRServerLink : IServerLink
 
         connection.Reconnecting += ex =>
         {
-            // Feeds the policy's churn lane. A connection the server aborts moments after
-            // accepting it (deleted or retired target) would otherwise reconnect at
-            // round-trip cadence forever, because each abort looks like a fresh blip and the
-            // policy's first attempt in an episode is deliberately immediate.
-            reconnectPolicy.NoteConnectionLost();
             logger.LogWarning(ex, "SignalR connection lost; reconnecting (unbounded retry)…");
             return Task.CompletedTask;
         };
 
         connection.Reconnected += async connectionId =>
         {
-            reconnectPolicy.NoteConnected();
             logger.LogInformation(
                 "SignalR connection re-established (connectionId={ConnectionId}).", connectionId);
             foreach (var handler in _reconnectedHandlers)
@@ -198,11 +199,6 @@ public sealed class SignalRServerLink : IServerLink
         _pumpTask ??= Task.Run(() => _outbox.PumpAsync(_pumpCts.Token), CancellationToken.None);
 
         await connection.StartAsync(ct).ConfigureAwait(false);
-
-        // Starts the churn clock for this connection. Only after StartAsync returns: a
-        // handshake refusal (426 from the contract gate) throws out of it, and that is an
-        // initial-connect failure the supervision loop paces, not a short-lived connection.
-        reconnectPolicy.NoteConnected();
     }
 
     public async Task StopAsync(CancellationToken ct)

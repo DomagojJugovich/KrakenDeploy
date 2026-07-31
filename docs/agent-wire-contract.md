@@ -99,13 +99,30 @@ the target identity. That is enough to act on ("upgrade the agent on this target
 `SignalRServerLink` lives in a different assembly from the version it would have to report, so
 adding a second header was not worth the churn.
 
-**Reconnect pacing lives in `AgentReconnectPolicy`, not in the supervision loop.**
-`RetryContext.PreviousRetryCount` restarts at zero for every reconnect episode and attempt
-zero is deliberately immediate, so a connection that keeps dying moments after it is
-established never backs off. The policy therefore also counts consecutive SHORT-LIVED
-connections and paces on whichever count is higher; one connection that lasts
-`MinUsefulConnection` clears it. This is what bounds the remaining `OnConnectedAsync` aborts
-(deleted target, retired target, missing claim), which are otherwise the same unpaced loop.
+### Reconnect pacing: which loop paces which failure
+
+Three rounds got this wrong in both directions, so the facts below are pinned by execution
+against a real hub in `ReconnectE2ETests`, not by reading framework source.
+
+| Failure | What the SignalR client does | Who paces it |
+|---|---|---|
+| Transport drop of an established link (network blip, server restart, slot swap) | `Reconnecting` fires, automatic reconnect engages, `NextRetryDelay` is consulted — and it is consulted BEFORE `Reconnecting` is raised | `AgentReconnectPolicy`, inside the connection |
+| Handshake refusal (426 from the contract gate, 401 from a revoked token) | `StartAsync` throws | `ServerLinkHostedService`'s supervision loop, connect lane |
+| Rejection from inside the hub — unknown target, retired target, missing claim, or a throw from a saturated tenant DB | `StartAsync` **succeeds** (the handshake completes before `OnConnectedAsync` runs), then **`Closed` fires**. `Reconnecting` never fires and the retry policy is never consulted — for a throw and for `Context.Abort()` alike | `ServerLinkHostedService`'s supervision loop, post-park lane |
+
+The third row is the one that has been mis-analysed repeatedly. Round 3 put a delay after the
+supervisor's park; round 4 deleted it on the premise that `Closed` never fires for a
+server-side rejection, and moved the pacing into a policy "churn lane" fed from
+`Reconnecting`. Both halves were wrong: `Closed` does fire, and `Reconnecting` does not — so
+the churn lane could not observe the failure it existed for, and the free-running park meant
+`StartAsync` succeeded again immediately, reset the counter, and repeated at round-trip
+cadence from every agent at once against a server already failing. The churn lane is deleted.
+
+What the supervision loop counts is **cycles that never produced an accepted registration**.
+An accepted registration — not a successful connect — clears it, which is what
+`RegistrationOutcome.Accepted` has always documented. A healthy link that closes after a
+normal server restart therefore still reconnects immediately, while a cycle the server
+rejects escalates through the shared jittered curve to the 30 s cap.
 
 
 ## The contract, versioned

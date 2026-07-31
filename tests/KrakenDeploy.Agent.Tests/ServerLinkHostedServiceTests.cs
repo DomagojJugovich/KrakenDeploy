@@ -36,7 +36,7 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
         try { Directory.Delete(_dataPath, recursive: true); } catch { /* best effort */ }
     }
 
-    private ServerLinkHostedService CreateService()
+    private ServerLinkHostedService CreateService(TimeProvider? clock = null)
     {
         var context = new AgentContext();
         context.SetIdentity(new AgentIdentity
@@ -78,7 +78,7 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
             new MachineInfoCollector(NullLogger<MachineInfoCollector>.Instance),
             serverOptions,
             agentConfig,
-            TimeProvider.System,
+            clock ?? TimeProvider.System,
             NullLogger<ServerLinkHostedService>.Instance);
     }
 
@@ -217,6 +217,67 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
         }
     }
 
+    // ── Pacing: what resets the backoff ────────────────────────────────────
+
+    [Fact]
+    public async Task A_cycle_that_connects_but_never_registers_is_paced()
+    {
+        // The failure this closes, and it is the one round 4 removed the pacing for. A server
+        // that rejects the agent from INSIDE the hub — unknown target, retired target, or a
+        // throw from a saturated tenant database — rejects it AFTER the handshake. Measured
+        // against a real hub (ReconnectE2ETests): StartAsync succeeds, then Closed fires and
+        // automatic reconnect is never engaged. So the supervision loop's park releases, and
+        // if a bare StartAsync success reset the counter the loop re-ran with NO delay, at
+        // round-trip cadence, from every agent at once, against a server already failing.
+        //
+        // The assertion is on the COUNT of delays requested, not their length: pre-fix it is
+        // zero for any number of cycles, post-fix it is one per cycle that closed without an
+        // accepted registration.
+        var clock = new RecordingDelayClock();
+        _link.FailRegisterAttempts = int.MaxValue;   // registration never succeeds…
+        _link.CloseImmediatelyAfterStart = true;    // …and the server drops the link at once
+        var service = CreateService(clock);
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await _link.WaitForStartAttemptsAsync(3, TestTimeout);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+
+        clock.Delays.Should().HaveCountGreaterThanOrEqualTo(2,
+            "every cycle that closed without registering must be paced — a free-running loop "
+            + "requests no delays at all");
+    }
+
+    [Fact]
+    public async Task An_accepted_registration_clears_the_backoff_so_a_server_restart_reconnects_at_once()
+    {
+        // The other half of the contract, and the reason the counter cannot simply be "cycles".
+        // A healthy agent whose server restarts must come back immediately; penalising it would
+        // turn every deploy into an outage as long as the accumulated backoff.
+        var clock = new RecordingDelayClock();
+        var service = CreateService(clock);
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await _link.WaitForRegistrationsAsync(1, TestTimeout);
+            await _link.FireClosedAsync(new IOException("server restarted"));
+            await _link.WaitForRegistrationsAsync(2, TestTimeout);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+
+        clock.Delays.Should().BeEmpty(
+            "the cycle registered successfully, so its close is a blip and not a rejection");
+    }
+
     // ── F2-followup 1: the push handler must NOT await the work ─────────────
 
     [Fact]
@@ -265,6 +326,37 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
 
     // ── Fakes ──────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Records what the supervision loop asks <c>Task.Delay</c> for, and fires the timer at
+    /// once so the test does not actually wait. Asserting on the delays REQUESTED is what
+    /// makes the pacing tests deterministic: the policy applies full jitter, so the values
+    /// themselves are random, but whether a delay was requested at all is exactly the
+    /// property under test.
+    /// </summary>
+    private sealed class RecordingDelayClock : TimeProvider
+    {
+        public ConcurrentQueue<TimeSpan> Delays { get; } = new();
+
+        public override ITimer CreateTimer(
+            TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            Delays.Enqueue(dueTime);
+            return new ImmediateTimer(callback, state);
+        }
+
+        private sealed class ImmediateTimer : ITimer
+        {
+            public ImmediateTimer(TimerCallback callback, object? state)
+                => ThreadPool.UnsafeQueueUserWorkItem(_ => callback(state), null);
+
+            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+
+            public void Dispose() { }
+
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
     private sealed class FakeServerLink : IServerLink
     {
         private readonly List<Func<Exception?, Task>> _closedHandlers = [];
@@ -277,6 +369,15 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
         public int FailStartAttempts { get; set; }
         public int FailRegisterAttempts { get; set; }
 
+        /// <summary>
+        /// Reproduces a server-side rejection from inside the hub: the handshake completes
+        /// (StartAsync returns) and the link then closes permanently, with automatic reconnect
+        /// never engaged. That is what a real hub does for an unknown or retired target, or
+        /// when OnConnectedAsync throws — pinned by
+        /// <c>ReconnectE2ETests.A_server_side_rejection_fires_Closed_and_never_reconnects</c>.
+        /// </summary>
+        public bool CloseImmediatelyAfterStart { get; set; }
+
         public int StartAttempts => Volatile.Read(ref _startAttempts);
         public int RegisterCalls => Volatile.Read(ref _registerCalls);
         public int StopCalls => Volatile.Read(ref _stopCalls);
@@ -284,7 +385,7 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
 
         public bool IsConnected { get; private set; }
 
-        public Task StartAsync(
+        public async Task StartAsync(
             string serverUrl, Func<string?> agentJwtProvider, string? releaseId, CancellationToken ct)
         {
             var attempt = Interlocked.Increment(ref _startAttempts);
@@ -293,7 +394,21 @@ public sealed class ServerLinkHostedServiceTests : IDisposable
                 throw new IOException($"connection refused (attempt {attempt})");
             }
             IsConnected = true;
-            return Task.CompletedTask;
+
+            if (CloseImmediatelyAfterStart)
+            {
+                // Fire on a detached continuation, not inline: the real Closed event arrives
+                // from SignalR's own message loop after StartAsync has returned, and firing it
+                // synchronously here would resolve the supervisor's closed signal before it
+                // has even sent its registration.
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(10, CancellationToken.None).ConfigureAwait(false);
+                    await FireClosedAsync(null).ConfigureAwait(false);
+                }, CancellationToken.None);
+            }
+
+            await Task.CompletedTask.ConfigureAwait(false);
         }
 
         public Task StopAsync(CancellationToken ct)

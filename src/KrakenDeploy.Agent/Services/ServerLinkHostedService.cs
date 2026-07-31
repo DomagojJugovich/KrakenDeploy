@@ -187,15 +187,31 @@ public sealed class ServerLinkHostedService(
         });
 
         // ── Supervision loop ──────────────────────────────────────────────
-        // Same pacing as the in-connection retry policy so operators see one
+        // Same pacing curve as the in-connection retry policy so operators see one
         // consistent backoff story (incl. the slow 401/403 re-enroll lane).
         //
-        // Paces INITIAL-CONNECT failures only — a refused handshake (426 from the contract
-        // gate), an unreachable server, a rejected token. Everything that happens to an
-        // ESTABLISHED connection is paced by the policy instance inside the link, which is
-        // the only place that observes it.
+        // What this loop paces is every cycle that FAILED TO BECOME USEFUL, which is
+        // deliberately broader than "StartAsync threw":
+        //
+        //   * StartAsync threw — unreachable server, refused handshake (426), rejected
+        //     token. WithAutomaticReconnect never covers initial start failures.
+        //   * StartAsync SUCCEEDED and the server then rejected the connection from inside
+        //     the hub. This is the case that was unpaced, and it is the common one: a
+        //     rejection in OnConnectedAsync (unknown target, retired target, missing claim,
+        //     or simply a throw from a saturated tenant database) happens AFTER the
+        //     handshake completes. Measured against a real hub, the client's automatic
+        //     reconnect is not involved at all — Reconnecting never fires, Closed does — so
+        //     the park below releases and this loop is the only thing that can pace it.
+        //     Resetting the counter on a bare StartAsync success made that loop free-running
+        //     at round-trip cadence, from every agent at once, against a server already
+        //     failing.
+        //
+        // An ACCEPTED REGISTRATION is therefore what clears the counter, not a successful
+        // connect — the same distinction RegistrationOutcome.Accepted documents. A healthy
+        // link that closes after a normal server restart has an accepted registration behind
+        // it, so it still reconnects immediately; only a cycle that never got one escalates.
         var startBackoff = new AgentReconnectPolicy(logger);
-        var failedStartAttempts = 0L;
+        var unproductiveCycles = 0L;
 
         try
         {
@@ -227,21 +243,16 @@ public sealed class ServerLinkHostedService(
                 {
                     // WithAutomaticReconnect never covers INITIAL start failures
                     // (see AgentReconnectPolicy docs) — this loop is the retry.
-                    failedStartAttempts++;
-                    var delay = startBackoff.NextRetryDelay(new RetryContext
-                    {
-                        PreviousRetryCount = failedStartAttempts - 1,
-                        ElapsedTime = TimeSpan.Zero,
-                        RetryReason = ex,
-                    }) ?? AgentReconnectPolicy.MaxDelay;
-
+                    unproductiveCycles++;
+                    var connectDelay = NextPacingDelay(startBackoff, unproductiveCycles, ex);
                     logger.LogWarning(ex,
-                        "Could not connect to server {ServerUrl} (attempt {Attempt}); " +
-                        "retrying in {Delay}.",
-                        serverUrl, failedStartAttempts, delay);
+                        "Could not connect to server {ServerUrl} (unproductive cycle " +
+                        "{Cycle}); retrying in {Delay}.",
+                        serverUrl, unproductiveCycles, connectDelay);
                     try
                     {
-                        await Task.Delay(delay, timeProvider, stoppingToken).ConfigureAwait(false);
+                        await Task.Delay(connectDelay, timeProvider, stoppingToken)
+                            .ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
                     {
@@ -250,10 +261,14 @@ public sealed class ServerLinkHostedService(
                     continue;
                 }
 
-                failedStartAttempts = 0;
                 logger.LogInformation("Connected to server {ServerUrl}.", serverUrl);
 
                 var registration = await TrySendRegistrationAsync(stoppingToken).ConfigureAwait(false);
+                if (registration == RegistrationOutcome.Accepted)
+                {
+                    unproductiveCycles = 0;
+                }
+
                 if (registration == RegistrationOutcome.Refused)
                 {
                     // A refusal is no longer expected here — the wire-contract skew that
@@ -304,16 +319,31 @@ public sealed class ServerLinkHostedService(
 
                 logger.LogWarning(closeReason,
                     "Server link closed permanently; restarting the connection cycle.");
-                // Loop immediately — StartAsync failures pace any retries, and a connection
-                // that keeps dying moments after it is established is paced by
-                // AgentReconnectPolicy's churn lane inside the link itself.
-                //
-                // A delay was added here in round 3, to pace a server that repeatedly aborts
-                // registration. It could never fire: this park is only released by the
-                // Closed event, and AgentReconnectPolicy never returns null, so
-                // HubConnection never gives up and never raises Closed for a server-side
-                // abort — it reconnects internally instead. The pacing therefore has to live
-                // where that loop actually runs, which is the policy.
+
+                // A cycle that never got an accepted registration and has now closed is the
+                // server-side-rejection loop: reconnecting with no delay would re-run it at
+                // round-trip cadence. A cycle that DID register resets the counter above, so
+                // a normal server restart still reconnects immediately.
+                if (registration != RegistrationOutcome.Accepted)
+                {
+                    unproductiveCycles++;
+                    var cycleDelay = NextPacingDelay(startBackoff, unproductiveCycles, closeReason);
+                    logger.LogWarning(
+                        "The link to {ServerUrl} closed without ever completing registration " +
+                        "(unproductive cycle {Cycle}); retrying in {Delay}. A server that " +
+                        "rejects this agent from inside the hub — unknown or retired target, " +
+                        "or a tenant database that cannot answer — looks exactly like this.",
+                        serverUrl, unproductiveCycles, cycleDelay);
+                    try
+                    {
+                        await Task.Delay(cycleDelay, timeProvider, stoppingToken)
+                            .ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
             }
         }
         // No broad catch: an unexpected supervisor crash must NOT leave the
@@ -332,6 +362,22 @@ public sealed class ServerLinkHostedService(
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The supervision loop's backoff, expressed through the same
+    /// <see cref="AgentReconnectPolicy"/> the in-connection retry uses so operators see one
+    /// curve. <paramref name="unproductiveCycles"/> is 1-based (the first failure), and the
+    /// policy's attempt 0 is deliberately immediate — so the first retry rides out a blip and
+    /// only a repeating failure escalates toward the 30 s cap.
+    /// </summary>
+    private static TimeSpan NextPacingDelay(
+        AgentReconnectPolicy backoff, long unproductiveCycles, Exception? reason)
+        => backoff.NextRetryDelay(new RetryContext
+        {
+            PreviousRetryCount = unproductiveCycles - 1,
+            ElapsedTime = TimeSpan.Zero,
+            RetryReason = reason,
+        }) ?? AgentReconnectPolicy.MaxDelay;
 
     /// <summary>
     /// Registers a detached push handler so its failure is visible and shutdown can
@@ -396,19 +442,31 @@ public sealed class ServerLinkHostedService(
     {
         /// <summary>
         /// The server accepted the registration. This — not a successful
-        /// <c>StartAsync</c> — is what makes a connection USEFUL, so it is what resets
-        /// the supervision loop's backoff. F5: the two used to be one value, which meant
-        /// a connection that connected cleanly and then failed registration reset the
-        /// backoff on every cycle, so a server that aborts registration (a tenant-DB
-        /// blip) got reconnected at RTT cadence forever, by every agent at once.
+        /// <c>StartAsync</c> — is what makes a connection USEFUL, so it is what resets the
+        /// supervision loop's backoff. The two were one value once, which meant a connection
+        /// that connected cleanly and then failed registration reset the backoff on every
+        /// cycle, so a server rejecting the agent from inside the hub (a tenant-DB blip, an
+        /// unknown or retired target) got reconnected at round-trip cadence forever, by every
+        /// agent at once. Round 4 reverted the distinction on the premise that the client's
+        /// automatic reconnect absorbed such a rejection; it does not — a rejection inside
+        /// <c>OnConnectedAsync</c> fires <c>Closed</c>, not <c>Reconnecting</c>, which is
+        /// pinned by <c>ReconnectE2ETests</c>.
         /// </summary>
         Accepted,
 
-        /// <summary>Failed transiently — re-sent on the next (re)connect.</summary>
+        /// <summary>Failed transiently — re-sent on the next (re)connect. The connection
+        /// itself is up and dispatchable (the hub registered it in
+        /// <c>OnConnectedAsync</c>), so this does not end the cycle; it only withholds the
+        /// backoff reset.</summary>
         Retryable,
 
-        /// <summary>B6: the server refused the contract version — the connection
-        /// is dispatch-dead until the agent is upgraded; pace on the slow lane.</summary>
+        /// <summary>
+        /// The server returned <c>Accepted: false</c> — a deterministic refusal that clears
+        /// only on operator action, so it paces on the slow lane. Since the wire-contract
+        /// check moved to the handshake, the reachable shapes are "unknown target" and
+        /// "retired target"; a version skew never gets this far (it is a 426 out of
+        /// <c>StartAsync</c>).
+        /// </summary>
         Refused,
     }
 
@@ -427,13 +485,17 @@ public sealed class ServerLinkHostedService(
             var result = await SendRegistrationAsync(ct).ConfigureAwait(false);
             if (result is { Accepted: false })
             {
+                // No "update the agent binary" instruction here. Since the wire-contract
+                // check moved onto the handshake, a version skew never reaches this method —
+                // it is a 426 out of StartAsync. What CAN reach it is an unknown or retired
+                // target, where both contract versions are identical and upgrading the binary
+                // fixes nothing. The server's own Message is the actionable part; naming
+                // versions alongside it only pointed the operator at the wrong remedy.
                 logger.LogError(
-                    "Server REFUSED this agent's registration: {Message} " +
-                    "(server contract v{ServerVersion}, this agent speaks v{AgentVersion}). " +
-                    "Update the agent binary; retrying on the slow lane until then.",
-                    result.Message ?? "no reason given",
-                    result.ServerContractVersion,
-                    AgentContract.CurrentVersion);
+                    "Server REFUSED this agent's registration: {Message} This clears only on " +
+                    "operator action (re-enroll the target, or un-retire it), so the agent " +
+                    "retries on the slow lane until then.",
+                    result.Message ?? "no reason given");
                 return RegistrationOutcome.Refused;
             }
 

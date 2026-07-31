@@ -117,79 +117,13 @@ public sealed class AgentReconnectPolicyTests
             .Should().Be(TimeSpan.FromSeconds(2));
     }
 
-    // ── Churn lane: connections that die before they are useful ──────────────
-
-    [Fact]
-    public void Repeatedly_aborted_connections_escalate_although_each_episode_restarts_at_zero()
-    {
-        // The defect this closes. PreviousRetryCount restarts at 0 for every reconnect
-        // EPISODE and attempt 0 is deliberately immediate, so a connection the server aborts
-        // moments after accepting it reconnects at round-trip cadence forever. The hub does
-        // exactly that for a deleted or retired target, and Context.Abort() drops the
-        // transport rather than closing it, so the client sees each abort as a fresh blip.
-        var clock = new StubClock();
-        var policy = new AgentReconnectPolicy(NullLogger.Instance, () => 1.0, clock);
-
-        var delays = new List<TimeSpan>();
-        for (var i = 0; i < 4; i++)
-        {
-            policy.NoteConnected();
-            clock.Advance(TimeSpan.FromMilliseconds(20)); // aborted almost immediately
-            policy.NoteConnectionLost();
-            delays.Add(policy.NextRetryDelay(Context(0))!.Value);
-        }
-
-        // Full exponential escalation from the first instant abort onward. A connection that
-        // died in 20 ms is not the clean drop of a healthy link, so it does NOT get attempt
-        // zero's immediate retry — that concession is reserved for a connection that actually
-        // worked (see One_useful_connection_clears_the_churn).
-        delays.Should().Equal(
-            TimeSpan.FromSeconds(1),
-            TimeSpan.FromSeconds(2),
-            TimeSpan.FromSeconds(4),
-            TimeSpan.FromSeconds(8));
-    }
-
-    [Fact]
-    public void One_useful_connection_clears_the_churn()
-    {
-        // A healthy agent that loses its link must still reconnect immediately — that is what
-        // attempt 0 being TimeSpan.Zero is for, and the churn lane must not take it away.
-        var clock = new StubClock();
-        var policy = new AgentReconnectPolicy(NullLogger.Instance, () => 1.0, clock);
-
-        for (var i = 0; i < 3; i++)
-        {
-            policy.NoteConnected();
-            clock.Advance(TimeSpan.FromMilliseconds(20));
-            policy.NoteConnectionLost();
-            policy.NextRetryDelay(Context(0));
-        }
-
-        policy.NoteConnected();
-        clock.Advance(AgentReconnectPolicy.MinUsefulConnection + TimeSpan.FromSeconds(1));
-        policy.NoteConnectionLost();
-
-        policy.NextRetryDelay(Context(0)).Should().Be(TimeSpan.Zero,
-            "the link demonstrably worked, so the next clean drop is a blip again");
-    }
-
-    [Fact]
-    public void Churn_never_shortens_the_within_episode_backoff()
-    {
-        // The two counts combine with Math.Max, so an episode's own escalation cannot be
-        // undone by an idle churn counter.
-        var policy = new AgentReconnectPolicy(NullLogger.Instance, () => 1.0, new StubClock());
-
-        policy.NextRetryDelay(Context(5)).Should().Be(TimeSpan.FromSeconds(16));
-    }
-
-    private sealed class StubClock : TimeProvider
-    {
-        private DateTimeOffset _now = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
-
-        public override DateTimeOffset GetUtcNow() => _now;
-
-        internal void Advance(TimeSpan by) => _now += by;
-    }
+    // The "churn lane" that used to live here — a count of consecutive short-lived
+    // connections, meant to pace a server that repeatedly rejects the agent — is gone, and so
+    // are its three tests. It could not reach the failure it was written for: a rejection
+    // inside OnConnectedAsync fires Closed rather than Reconnecting, so the event that fed the
+    // counter never raised, and for the drop it COULD see, HubConnection computes the delay
+    // before raising Reconnecting, so the counter lagged by an episode. Both facts are now
+    // pinned by execution in ReconnectE2ETests, and the pacing lives in the only loop that
+    // observes a permanent close — ServerLinkHostedService's supervision loop, covered by
+    // ServerLinkHostedServiceTests.
 }
