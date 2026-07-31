@@ -16,9 +16,15 @@ namespace KrakenDeploy.Server.Transport;
 
 /// <summary>
 /// SignalR hub for agent ↔ server control-plane communication.
-/// Authenticated with the "AgentJwt" bearer scheme; token is delivered
-/// via query string (<c>?access_token=…</c>) because WebSocket upgrades
-/// cannot carry custom headers.
+/// <para>
+/// Authenticated with the "AgentJwt" bearer scheme, whose token is delivered via query string
+/// (<c>?access_token=…</c>). That is SignalR's convention for the bearer token specifically, NOT
+/// because custom headers cannot ride the transport — they can, and do: the wire-contract header
+/// <c>X-KD-Contract</c> and the blue-green release pin <c>X-KD-Release</c> both reach every hub
+/// request, pinned by <c>TransportRoundTripTests</c>. The old claim in this comment, that
+/// "WebSocket upgrades cannot carry custom headers", would have made the wire-contract gate
+/// impossible.
+/// </para>
 /// </summary>
 [Authorize(AuthenticationSchemes = "AgentJwt")]
 public sealed class AgentHub(

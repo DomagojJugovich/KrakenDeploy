@@ -10,13 +10,11 @@ namespace KrakenDeploy.Contracts;
 /// <see cref="DeploymentPlan"/> — including a change to how the agent must
 /// INTERPRET an existing field, not only to the shapes themselves (see <c>3</c>).
 /// <para>
-/// The check used to live in <c>RegisterAsync</c>, a hub METHOD, which forced the
-/// server to admit a connection before it could learn the version. That created a
-/// "connected, tracked, but not yet verified" state, and dispatch then had to be gated
-/// on a separate registration flag — a split that leaked into the registry, the offline
-/// mark, the mid-wave disconnect monitor, and an abort-and-retry dance whenever
-/// registration failed. Refusing at the handshake deletes the state instead of guarding
-/// it: past the gate, connected == verified == dispatchable.
+/// Past the gate, connected == verified == dispatchable — there is no separate
+/// "has registered" state to keep in step. Why the check is on the handshake rather than in
+/// a hub method, what a refusal does, and how a refused agent escapes are documented once, in
+/// <c>docs/agent-wire-contract.md</c>; that is the single home for the narrative, which had
+/// accumulated in nine places in the tree.
 /// </para>
 /// </summary>
 public static class AgentContract
@@ -80,8 +78,15 @@ public static class AgentContract
 /// B6 CONTRACT CHANGE: <c>Roles</c> is REMOVED (T1-7 — roles are authorization,
 /// operator-assigned server-side, and were already ignored + audited when
 /// self-declared; the field no longer exists on the wire).
-/// <see cref="ContractVersion"/> is ADDED — a pre-B6 agent deserializes to the
-/// default 0 and is refused with a clear upgrade message.
+/// </para>
+/// <para>
+/// <see cref="ContractVersion"/> is no longer a GATE. Enforcement moved onto the handshake
+/// header (<see cref="AgentContract.VersionHeader"/>) in v4, so a skewed agent is refused with
+/// 426 before this payload is ever sent. The field stays on the wire for two reasons: it
+/// appears in the server's registration log line, and the hub compares it against the header
+/// as a TRIPWIRE — enforcement now rides a request header, so a header-whitelisting
+/// intermediary would strip it and the gate would admit everything silently. If the two
+/// disagree, the header did not arrive as sent.
 /// </para>
 /// </summary>
 public sealed record AgentRegistrationRequest(
@@ -94,13 +99,15 @@ public sealed record AgentRegistrationRequest(
     int ContractVersion);
 
 /// <summary>
-/// B6 — the server's verdict on a registration. <c>Accepted == false</c> means
-/// the agent must NOT expect to receive work (the server has removed the
-/// connection from its dispatch registry); the agent logs
-/// <see cref="Message"/>, drops the connection and retries on its slow lane so
-/// it self-heals after an agent upgrade. Pre-B6 agents invoked
-/// <c>RegisterAsync</c> as void and simply ignore this payload — their refusal
-/// is enforced server-side.
+/// The server's verdict on a registration. <c>Accepted == false</c> means the agent must NOT
+/// expect to receive work: it logs <see cref="Message"/>, drops the connection and retries on
+/// the 5-minute operator-action lane.
+/// <para>
+/// Since v4 the reachable refusals are "unknown target" and "retired target" — both clear only
+/// on operator action (re-enroll, or un-retire), and for both
+/// <see cref="ServerContractVersion"/> equals the agent's own, so the remedy is NOT a binary
+/// upgrade. A version skew is refused far earlier, with 426 on the handshake.
+/// </para>
 /// </summary>
 public sealed record AgentRegistrationResult(
     bool Accepted,

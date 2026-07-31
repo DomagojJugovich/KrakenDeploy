@@ -11,12 +11,20 @@ namespace KrakenDeploy.Contracts;
 public interface IAgentHubServer
 {
     /// <summary>
-    /// Called once after the SignalR connection is up to supply machine info.
-    /// B6 CONTRACT CHANGE: returns the server's verdict — a
-    /// <see cref="AgentRegistrationRequest.ContractVersion"/> mismatch is
-    /// refused (<see cref="AgentRegistrationResult.Accepted"/> = false) and the
-    /// server drops the connection from its dispatch registry; the agent must
-    /// disconnect and retry on its slow lane (self-heals after an upgrade).
+    /// Called after the SignalR connection is up to supply machine info, and re-sent on every
+    /// reconnect.
+    /// <para>
+    /// Registration is NOT a gate on anything. The wire contract is verified on the HANDSHAKE
+    /// (<see cref="AgentContract.VersionHeader"/>) and the target is resolved in the hub's
+    /// <c>OnConnectedAsync</c>, so a connection that reaches this method is already
+    /// dispatchable. <see cref="AgentRegistrationResult.Accepted"/> = false therefore means
+    /// "unknown target" or "retired target" — a refusal that clears only on operator action —
+    /// and NOT a version mismatch, which never gets this far: that is a 426 out of
+    /// <c>HubConnection.StartAsync</c>.
+    /// <see cref="AgentRegistrationRequest.ContractVersion"/> is retained for diagnostics, and
+    /// the server compares it against the header as a tripwire for an intermediary that strips
+    /// the header — if they disagree, the gate is enforcing nothing.
+    /// </para>
     /// </summary>
     Task<AgentRegistrationResult> RegisterAsync(AgentRegistrationRequest request);
 

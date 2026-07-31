@@ -113,17 +113,10 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
 
     /// <summary>
     /// The target's dispatchable connection, or <c>null</c>. Every tracked connection is
-    /// dispatchable: <c>OnConnectedAsync</c> only calls <see cref="Add"/> once the target
-    /// is positively resolved in the right account, and a wire-contract skew never reaches
-    /// the hub at all because <c>AgentContractHandshakeGate</c> refuses it with 426 during
-    /// the handshake.
-    /// <para>
-    /// This briefly carried a second predicate — a "has completed RegisterAsync" flag — to
-    /// keep work away from an agent whose version was still unknown, which was necessary
-    /// only because the version check lived in a hub method. Moving that check earlier
-    /// removed the reason for the flag, and with it a split that had to be explained to the
-    /// offline grace and the mid-wave disconnect monitor separately.
-    /// </para>
+    /// dispatchable: <see cref="Add"/> is the LAST statement of <c>OnConnectedAsync</c>, so it
+    /// runs only once the target is positively resolved in the right account and every write
+    /// that could throw has succeeded — and a wire-contract skew never reaches the hub at all
+    /// (<c>docs/agent-wire-contract.md</c>).
     /// </summary>
     public string? GetConnectionId(Guid targetId)
         => _byTarget.TryGetValue(targetId, out var connId) ? connId : null;

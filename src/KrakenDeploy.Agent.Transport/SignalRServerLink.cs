@@ -12,12 +12,16 @@ namespace KrakenDeploy.Agent.Transport;
 /// The token is delivered via the <c>AccessTokenProvider</c> delegate, which puts the JWT in
 /// the query string (<c>?access_token=…</c>) — matching what the server's
 /// <c>JwtBearerEvents.OnMessageReceived</c> expects. That is a SignalR convention for the
-/// bearer token specifically, not a limitation of the transport: custom request headers set
-/// on <c>HttpConnectionOptions</c> DO survive the WebSocket upgrade, which is what the
-/// wire-contract header <c>X-KD-Contract</c> and the blue-green release pin
-/// <c>X-KD-Release</c> both rely on. Verified over a real loopback Kestrel by
-/// <c>TransportRoundTripTests</c>: the gate is mounted on both hub endpoints, so a header
-/// that failed to survive the upgrade would refuse every connection in that suite.
+/// bearer token specifically, not a limitation of the transport: custom request headers set on
+/// <c>HttpConnectionOptions</c> ride EVERY hub request, which is what the wire-contract header
+/// <c>X-KD-Contract</c> and the blue-green release pin <c>X-KD-Release</c> both rely on.
+/// Verified over a real loopback Kestrel by
+/// <c>TransportRoundTripTests.The_contract_header_rides_every_hub_request_on_the_negotiated_transport</c>
+/// — the gate is mounted on both hub endpoints, so a header missing from either would refuse
+/// every connection in that suite. (An earlier revision of this comment claimed the opposite,
+/// that "WebSocket upgrades cannot carry custom headers", which would have made the whole
+/// design impossible. Note also that the hub is not currently on WebSockets at all — see the
+/// residual in <c>docs/agent-wire-contract.md</c>.)
 /// </para>
 /// </summary>
 public sealed class SignalRServerLink : IServerLink
