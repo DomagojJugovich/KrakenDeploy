@@ -51,12 +51,50 @@ field, not only on a change to the shapes.
 > **OPERATOR ACTION on every bump — the update manifest must be bumped with it.**
 > Nothing in the repo declares a build's contract version: the only source is the
 > operator-authored `version.json` behind `AgentRidInfo.ContractVersion`, which
-> `ServerAgentUpdateService` serves as `TargetContractVersion`. A v3 server refuses every
-> v2 agent at registration (intended), but if the manifest still says `2` the agent's own
+> `ServerAgentUpdateService` serves as `TargetContractVersion`. A v4 server refuses every
+> v3 agent on the handshake (intended), but if the manifest still says `3` the agent's own
 > `EvaluateOffer` returns `ContractSkew` and refuses to apply the upgrade — so the fleet
 > cannot self-heal out of the refusal, and every target stays Offline until an operator
-> fixes the manifest by hand. Recovery then still waits for the maintenance window.
-> Bump `version.json` in the same change as `AgentContract.CurrentVersion`.
+> fixes the manifest by hand. Bump `version.json` in the same change as
+> `AgentContract.CurrentVersion`.
+>
+> Once the manifest is right, recovery does NOT wait for the maintenance window. A refused
+> agent sets `AgentContext.ContractRefused`, and that bypasses both the window and the
+> connected check for the swap — see "Escaping a refusal" below.
+
+### Escaping a refusal
+
+A 426 refusal is a **deadlock unless the swap can happen while disconnected**, and getting
+that wrong is what made the first cut of the handshake move unshippable. The self-upgrade
+swap required `IServerLink.IsConnected`, but a 426 throws out of `StartAsync`, so the state
+is permanently `Disconnected`: `update-info` still answered, the archive downloaded and
+hash-verified on every tick, and the swap was then skipped with a `LogDebug` — below the
+shipped `MinimumLevel: Information`, so invisible. Bumping the contract on a fleet meant a
+manual reinstall on every target.
+
+What the agent can see, and it is not much: `HttpConnection.NegotiateAsync` calls
+`EnsureSuccessStatusCode()` before reading the response, so the gate's body **and** its
+`X-KD-Contract-Server` header are discarded — the agent's exception message is only
+"Response status code does not indicate success: 426 (Upgrade Required)". The status code
+survives on `HttpRequestException.StatusCode`, and that is enough to classify. The server
+log line is the only place both version numbers appear together.
+
+So `ContractRefused` bypasses exactly two swap preconditions, and each has a reason it does
+not apply:
+
+| Precondition | Why it exists | Why it does not apply to a refused agent |
+|---|---|---|
+| `IsConnected` | a swap must not strand an agent mid-conversation | there is no conversation to strand, and there never will be until the binary changes |
+| Inside the maintenance window | a restart must not disrupt work | no work can be dispatched to a refused agent, and honouring the window leaves it dark until 02:00–04:00 local — up to ~22 h after a server upgrade |
+
+Everything that actually protects running work is still enforced: `DeploymentExecutor.IsExecuting`
+(a deployment that started before the server was upgraded keeps running locally), the
+server-side `GET /api/agents/task-in-flight` probe — which answers over REST, is
+contract-agnostic, and fails **closed** on any unclear answer — and the machine execution
+gate's EXCLUSIVE side, which waits out the ad-hoc scripts the in-flight check cannot see.
+The refusal also takes the 5-minute operator-action lane rather than the 30 s exponential
+one, and its log line names an **agent binary upgrade** rather than re-enrollment (the
+401/403 remedy).
 
 ## Where the version is checked (F5)
 
@@ -94,10 +132,14 @@ row) and `MultiAccountAgentTransportE2ETests.Agent_with_a_skewed_contract_versio
 (a real SignalR client, both the skewed and absent shapes).
 
 **One thing the move costs.** The refused connection never sends a registration payload, so
-the audit row can no longer carry the agent's BUILD version — only the contract version and
-the target identity. That is enough to act on ("upgrade the agent on this target"), and
-`SignalRServerLink` lives in a different assembly from the version it would have to report, so
-adding a second header was not worth the churn.
+the audit row cannot carry the agent's BUILD version — only the contract version and the
+target identity. That is enough to act on ("upgrade the agent on this target"), which is why
+it is accepted rather than fixed. The earlier justification for accepting it was wrong and is
+recorded here so it is not repeated: the build version is NOT unobtainable from
+`Agent.Transport` — `Assembly.GetEntryAssembly()?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()`
+yields the same string `MachineInfoCollector` reports, and `ServerLinkHostedService` already
+holds the value. The cost is one more handshake header, and the reason not to spend it is that
+the target identity already tells an operator which box to touch.
 
 ### Reconnect pacing: which loop paces which failure
 

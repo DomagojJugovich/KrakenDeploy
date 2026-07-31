@@ -1,3 +1,4 @@
+using System.Net;
 using KrakenDeploy.Agent.Adhoc;
 using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.Deployment;
@@ -243,6 +244,14 @@ public sealed class ServerLinkHostedService(
                 {
                     // WithAutomaticReconnect never covers INITIAL start failures
                     // (see AgentReconnectPolicy docs) — this loop is the retry.
+                    //
+                    // A 426 from the wire-contract gate is recorded on the context, because it
+                    // is the one connect failure the agent can fix ITSELF: the self-upgrade
+                    // path runs over REST and does not need this connection, and the flag is
+                    // what tells it the maintenance window and the connected check are
+                    // protecting nothing (AgentContext.ContractRefused). It is set BEFORE the
+                    // delay so the very next updater tick can act on it.
+                    context.SetContractRefused(IsContractRefusal(ex));
                     unproductiveCycles++;
                     var connectDelay = NextPacingDelay(startBackoff, unproductiveCycles, ex);
                     logger.LogWarning(ex,
@@ -261,6 +270,9 @@ public sealed class ServerLinkHostedService(
                     continue;
                 }
 
+                // Past the gate: whatever else is wrong, the wire contract is not, so the
+                // updater's escape hatch closes again.
+                context.SetContractRefused(false);
                 logger.LogInformation("Connected to server {ServerUrl}.", serverUrl);
 
                 var registration = await TrySendRegistrationAsync(stoppingToken).ConfigureAwait(false);
@@ -292,7 +304,7 @@ public sealed class ServerLinkHostedService(
                     try
                     {
                         await Task.Delay(
-                                AgentReconnectPolicy.AuthFailureDelay, timeProvider, stoppingToken)
+                                AgentReconnectPolicy.OperatorActionDelay, timeProvider, stoppingToken)
                             .ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
@@ -370,6 +382,19 @@ public sealed class ServerLinkHostedService(
     /// policy's attempt 0 is deliberately immediate — so the first retry rides out a blip and
     /// only a repeating failure escalates toward the 30 s cap.
     /// </summary>
+    /// <summary>
+    /// Whether a failed connect was the wire-contract gate's 426.
+    /// <para>
+    /// The status code is all there is to go on, and that is deliberate rather than lazy:
+    /// <c>HttpConnection.NegotiateAsync</c> calls <c>EnsureSuccessStatusCode()</c> before
+    /// reading the response, so the gate's body and its <c>X-KD-Contract-Server</c> header are
+    /// both discarded before the agent can see them. Verified by executing a 426 negotiate
+    /// against a real client — the exception message carries nothing but the status.
+    /// </para>
+    /// </summary>
+    internal static bool IsContractRefusal(Exception? ex)
+        => ex is HttpRequestException { StatusCode: HttpStatusCode.UpgradeRequired };
+
     private static TimeSpan NextPacingDelay(
         AgentReconnectPolicy backoff, long unproductiveCycles, Exception? reason)
         => backoff.NextRetryDelay(new RetryContext

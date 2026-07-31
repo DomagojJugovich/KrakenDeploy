@@ -1,4 +1,5 @@
 using System.Net;
+using KrakenDeploy.Contracts;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Logging;
 
@@ -17,11 +18,13 @@ namespace KrakenDeploy.Agent.Transport;
 /// synchronising it.
 /// </para>
 /// <para>
-/// Auth lane: a 401/403 while reconnecting means the token was revoked (A8 <c>atv</c>) or
-/// expired past its refresh budget. Retrying at blip pace would hammer the server with doomed
-/// negotiates, so the policy switches to a fixed 5-minute cadence and logs that operator
-/// re-enrollment is required. It still never returns <c>null</c> (give up): the slow lane
-/// costs nothing and self-heals if the credential situation is repaired in place.
+/// Slow lane: a handshake that fails with a status only an operator (or a self-upgrade) can
+/// change must not be retried at blip pace, or the fleet hammers the server with doomed
+/// negotiates. Two causes qualify, and they are kept DISTINCT because the operator action
+/// differs — 401/403 means "re-enroll this agent", 426 means "upgrade the agent binary", and
+/// sending an operator to the wrong one costs an outage. Both use the same fixed 5-minute
+/// cadence and neither ever returns <c>null</c> (give up): the slow lane costs nothing and
+/// self-heals if the situation is repaired in place.
 /// </para>
 /// <para>
 /// <b>This class paces one thing only: retries of an ESTABLISHED connection that dropped at
@@ -57,32 +60,52 @@ public sealed class AgentReconnectPolicy(
     /// <summary>Ceiling the jittered exponential backoff saturates at.</summary>
     public static readonly TimeSpan MaxDelay = TimeSpan.FromSeconds(30);
 
-    /// <summary>Fixed cadence while reconnect attempts fail with 401/403.</summary>
-    public static readonly TimeSpan AuthFailureDelay = TimeSpan.FromMinutes(5);
+    /// <summary>
+    /// Fixed cadence while the handshake fails for a reason only an operator or a self-upgrade
+    /// can change (401/403, or 426 from the wire-contract gate).
+    /// </summary>
+    public static readonly TimeSpan OperatorActionDelay = TimeSpan.FromMinutes(5);
 
     private readonly Func<double> _jitter = jitterSource ?? Random.Shared.NextDouble;
-    private bool _inAuthFailureStreak;
+    private SlowLaneCause _slowLane;
+
+    /// <summary>
+    /// Why the handshake is being refused in a way retrying cannot fix. Kept as an enum rather
+    /// than a bool so the log line names the right remedy: these two are the classic pair to
+    /// confuse, and the wire-contract refusal was reaching the operator as "re-enroll this
+    /// agent" while its real fix was a binary upgrade.
+    /// </summary>
+    private enum SlowLaneCause
+    {
+        None,
+
+        /// <summary>401/403 — the token was revoked (A8 <c>atv</c>) or expired past its
+        /// refresh budget.</summary>
+        Credential,
+
+        /// <summary>426 — this agent's wire contract does not match the server's.</summary>
+        Contract,
+    }
 
     public TimeSpan? NextRetryDelay(RetryContext retryContext)
     {
         ArgumentNullException.ThrowIfNull(retryContext);
 
-        if (IsAuthFailure(retryContext.RetryReason))
+        var cause = Classify(retryContext.RetryReason);
+        if (cause != SlowLaneCause.None)
         {
-            // Log once per streak, not once per 5-minute attempt.
-            if (!_inAuthFailureStreak)
+            // Log once per streak, not once per 5-minute attempt — but DO re-log when the
+            // cause changes, because that transition is the operator's signal that their fix
+            // took effect (or that a second problem is now in front of the first).
+            if (_slowLane != cause)
             {
-                _inAuthFailureStreak = true;
-                logger.LogError(
-                    "Server rejected the agent token (401/403) while reconnecting. The token " +
-                    "has been revoked or has expired — an operator must re-enroll this agent. " +
-                    "Retrying every {Delay} in case the credential is restored.",
-                    AuthFailureDelay);
+                _slowLane = cause;
+                LogSlowLane(cause);
             }
-            return AuthFailureDelay;
+            return OperatorActionDelay;
         }
 
-        _inAuthFailureStreak = false;
+        _slowLane = SlowLaneCause.None;
 
         if (retryContext.PreviousRetryCount == 0)
         {
@@ -99,9 +122,52 @@ public sealed class AgentReconnectPolicy(
         return TimeSpan.FromSeconds(ceilingSeconds * _jitter());
     }
 
-    private static bool IsAuthFailure(Exception? reason)
-        => reason is HttpRequestException
+    /// <summary>
+    /// Whether a handshake failure is one retrying cannot fix, and which kind.
+    /// <para>
+    /// The 426 arm is what makes the wire-contract refusal diagnosable at all on the agent
+    /// side. <c>HttpConnection.NegotiateAsync</c> calls <c>EnsureSuccessStatusCode()</c> before
+    /// touching the response, so the gate's body AND its
+    /// <c>X-KD-Contract-Server</c> header are both discarded — the agent's exception message is
+    /// only "Response status code does not indicate success: 426 (Upgrade Required)." The
+    /// status code survives on <see cref="HttpRequestException.StatusCode"/>, and that is
+    /// enough: the cause is unambiguous, and the number the operator needs is on the server's
+    /// log line. Verified by executing a 426 negotiate against a real client, because the
+    /// previous revision assumed the header was readable and shipped a diagnostic nobody
+    /// could see.
+    /// </para>
+    /// </summary>
+    private static SlowLaneCause Classify(Exception? reason)
+        => reason is HttpRequestException http
+            ? http.StatusCode switch
+            {
+                HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden
+                    => SlowLaneCause.Credential,
+                HttpStatusCode.UpgradeRequired
+                    => SlowLaneCause.Contract,
+                _ => SlowLaneCause.None,
+            }
+            : SlowLaneCause.None;
+
+    private void LogSlowLane(SlowLaneCause cause)
+    {
+        if (cause == SlowLaneCause.Credential)
         {
-            StatusCode: HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden,
-        };
+            logger.LogError(
+                "Server rejected the agent token (401/403) while connecting. The token has " +
+                "been revoked or has expired — an operator must RE-ENROLL this agent. " +
+                "Retrying every {Delay} in case the credential is restored.",
+                OperatorActionDelay);
+            return;
+        }
+
+        logger.LogError(
+            "Server refused this agent's wire contract with 426 Upgrade Required. This agent " +
+            "speaks v{AgentContract}; the server requires a different version and the failed " +
+            "negotiate does not carry which — see the SERVER log, which names both. The remedy " +
+            "is an AGENT BINARY UPGRADE, not re-enrollment. The self-upgrade check runs over " +
+            "REST and does not need this connection, so an agent with auto-update enabled and " +
+            "a compatible build on offer will heal itself. Retrying every {Delay}.",
+            AgentContract.CurrentVersion, OperatorActionDelay);
+    }
 }

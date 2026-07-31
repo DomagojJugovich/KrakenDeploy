@@ -2,6 +2,7 @@ using System.Net;
 using FluentAssertions;
 using KrakenDeploy.Agent.Transport;
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace KrakenDeploy.Agent.Tests;
@@ -85,11 +86,11 @@ public sealed class AgentReconnectPolicyTests
         var authFailure = new HttpRequestException("rejected", inner: null, statusCode: status);
 
         policy.NextRetryDelay(Context(7, authFailure))
-            .Should().Be(AgentReconnectPolicy.AuthFailureDelay);
+            .Should().Be(AgentReconnectPolicy.OperatorActionDelay);
 
         // Still unbounded in the auth lane.
         policy.NextRetryDelay(Context(5_000, authFailure))
-            .Should().Be(AgentReconnectPolicy.AuthFailureDelay);
+            .Should().Be(AgentReconnectPolicy.OperatorActionDelay);
     }
 
     [Fact]
@@ -100,7 +101,7 @@ public sealed class AgentReconnectPolicyTests
             "rejected", inner: null, statusCode: HttpStatusCode.Unauthorized);
 
         policy.NextRetryDelay(Context(3, authFailure))
-            .Should().Be(AgentReconnectPolicy.AuthFailureDelay);
+            .Should().Be(AgentReconnectPolicy.OperatorActionDelay);
 
         // Next attempt fails with an ordinary transport error — normal pacing resumes.
         policy.NextRetryDelay(Context(1))
@@ -115,6 +116,60 @@ public sealed class AgentReconnectPolicyTests
 
         Policy().NextRetryDelay(Context(2, serverError))
             .Should().Be(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public void A_426_contract_refusal_takes_the_operator_action_lane()
+    {
+        // The gate's own log line used to claim the agent "will retry on the slow lane", and it
+        // was wrong: IsAuthFailure matched only 401/403, so a 426 rode the normal exponential
+        // lane capped at 30 s. On a 1 000-agent fleet that is ~33 negotiates per second,
+        // indefinitely, each one costing the server a log line and an audit row.
+        var refusal = new HttpRequestException(
+            "Response status code does not indicate success: 426 (Upgrade Required).",
+            inner: null, statusCode: HttpStatusCode.UpgradeRequired);
+
+        Policy().NextRetryDelay(Context(1, refusal))
+            .Should().Be(AgentReconnectPolicy.OperatorActionDelay);
+    }
+
+    [Fact]
+    public void The_contract_lane_and_the_credential_lane_log_separately()
+    {
+        // Same delay, DIFFERENT remedy — 401/403 means "re-enroll this agent", 426 means
+        // "upgrade the agent binary". They must not collapse into one message: sending an
+        // operator to re-enroll a fleet whose real problem is a contract bump costs an outage.
+        // Asserted through the log because the delay alone cannot tell them apart.
+        using var log = new ListLoggerProvider();
+        var policy = new AgentReconnectPolicy(log.CreateLogger("policy"), () => 1.0);
+
+        policy.NextRetryDelay(Context(1, new HttpRequestException(
+            "no", inner: null, statusCode: HttpStatusCode.Unauthorized)));
+        policy.NextRetryDelay(Context(2, new HttpRequestException(
+            "no", inner: null, statusCode: HttpStatusCode.UpgradeRequired)));
+
+        var errors = log.Entries.Where(e => e.Level >= LogLevel.Error).Select(e => e.Message).ToList();
+        errors.Should().HaveCount(2, "a change of cause must re-log — it is the operator's " +
+            "signal that their previous fix took effect, or that a second problem is now first");
+        errors[0].Should().Contain("RE-ENROLL").And.NotContain("BINARY UPGRADE");
+        errors[1].Should().Contain("BINARY UPGRADE").And.NotContain("RE-ENROLL");
+    }
+
+    [Fact]
+    public void A_repeated_cause_logs_once_per_streak()
+    {
+        using var log = new ListLoggerProvider();
+        var policy = new AgentReconnectPolicy(log.CreateLogger("policy"), () => 1.0);
+        var refusal = new HttpRequestException(
+            "no", inner: null, statusCode: HttpStatusCode.UpgradeRequired);
+
+        for (var i = 0; i < 5; i++)
+        {
+            policy.NextRetryDelay(Context(i, refusal));
+        }
+
+        log.Entries.Count(e => e.Level >= LogLevel.Error).Should().Be(1,
+            "once per streak, not once per 5-minute attempt");
     }
 
     // The "churn lane" that used to live here — a count of consecutive short-lived

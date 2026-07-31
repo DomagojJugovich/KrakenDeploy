@@ -57,13 +57,51 @@ public sealed class AgentUpdateDecisionTests
     // ── CanSwapNow ───────────────────────────────────────────────────────────
 
     [Theory]
-    [InlineData(true,  false, true,  true)]   // in window, idle, connected → swap
-    [InlineData(false, false, true,  false)]  // outside window → wait
-    [InlineData(true,  true,  true,  false)]  // deployment in flight → no swap
-    [InlineData(true,  false, false, false)]  // disconnected → no swap
+    // Normal operation: all three of window / idle / connected are required.
+    [InlineData(true,  false, true,  false, true)]   // in window, idle, connected → swap
+    [InlineData(false, false, true,  false, false)]  // outside window → wait
+    [InlineData(true,  true,  true,  false, false)]  // deployment in flight → no swap
+    [InlineData(true,  false, false, false, false)]  // disconnected → no swap
+    // Wire-contract refusal: the window and the connected term are bypassed, because both
+    // are unreachable-by-construction in that state and gating on them is a DEADLOCK — the
+    // server answers 426 on the handshake, so IsConnected can never become true, so the
+    // binary that would fix the refusal is never installed.
+    [InlineData(false, false, false, true,  true)]   // refused, idle → swap anyway
+    [InlineData(true,  false, false, true,  true)]   // refused, in window, disconnected → swap
+    // …but in-flight work is NOT bypassed. A deployment that started before the server was
+    // upgraded keeps running locally, and replacing the install directory under it is the one
+    // thing the refusal does not excuse.
+    [InlineData(false, true,  false, true,  false)]  // refused but busy → still no swap
+    [InlineData(true,  true,  true,  true,  false)]  // refused, everything else fine, busy
     public void CanSwapNow_truth_table(
-        bool inWindow, bool inFlight, bool connected, bool expected)
-        => AgentUpdateService.CanSwapNow(inWindow, inFlight, connected).Should().Be(expected);
+        bool inWindow, bool inFlight, bool connected, bool contractRefused, bool expected)
+        => AgentUpdateService.CanSwapNow(inWindow, inFlight, connected, contractRefused)
+            .Should().Be(expected);
+
+    // ── Remote text is bounded before it is re-published ─────────────────────
+
+    [Fact]
+    public void Truncate_bounds_remote_detail_and_says_so()
+    {
+        // The server's task-in-flight Detail is forwarded into the agent log AND back to the
+        // server as an update-status detail, which lands in the audit log and is then pushed to
+        // the webhook, e-mail and AI-inspect transports — the last interpolating it into an LLM
+        // prompt. Bounding it where it enters the agent keeps every downstream copy bounded.
+        var trimmed = AgentUpdateService.Truncate(
+            new string('x', 5_000), AgentUpdateService.MaxRemoteDetailLength)!;
+
+        trimmed.Should().StartWith(new string('x', AgentUpdateService.MaxRemoteDetailLength));
+        trimmed.Should().Contain("truncated from 5000");
+        trimmed.Length.Should().BeLessThan(AgentUpdateService.MaxRemoteDetailLength + 40);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("wave 2 of task 7 is still running")]
+    public void Truncate_leaves_short_or_absent_detail_alone(string? value)
+        => AgentUpdateService.Truncate(value, AgentUpdateService.MaxRemoteDetailLength)
+            .Should().Be(value);
 
     // ── AttemptsExhausted (crash-loop bound) ─────────────────────────────────
 

@@ -70,6 +70,20 @@ public sealed class AgentUpdateService(
     private static readonly TimeSpan RollbackGateTimeout = TimeSpan.FromSeconds(30);
 
     /// <summary>
+    /// Cap on free text taken from a SERVER response and re-published (into the local log, and
+    /// back to the server as an update-status detail that lands in the audit log and is
+    /// forwarded off-premises). Long enough for a real "task X wave 2 is running" explanation;
+    /// short enough that a compromised or misconfigured server cannot author audit rows.
+    /// </summary>
+    internal const int MaxRemoteDetailLength = 512;
+
+    /// <summary>Trims remote text to <paramref name="max"/>, marking that it was trimmed.</summary>
+    internal static string? Truncate(string? value, int max)
+        => value is { } v && v.Length > max
+            ? string.Concat(v.AsSpan(0, max), $"… (truncated from {v.Length})")
+            : value;
+
+    /// <summary>
     /// F5 — bound on the pre-swap "does the server still have work for me?" call. Short
     /// and deliberately not configurable: it runs while the EXCLUSIVE machine lease is
     /// HELD, so it is whole-machine blocking time, and the request is one indexed
@@ -273,22 +287,44 @@ public sealed class AgentUpdateService(
         var inWindow = InMaintenanceWindow(cfg);
         var deploymentInFlight = deploymentExecutor.IsExecuting;
         var connected = serverLink.IsConnected;
-        if (!CanSwapNow(inWindow, deploymentInFlight, connected))
+
+        // The server is refusing this agent's wire contract (426 on the handshake). That is a
+        // DEADLOCK, not a delay: IsConnected can never become true, so a swap gated on it never
+        // happens, so the binary that would fix the refusal is never installed. The refusal
+        // overrides the window and the connected check — and only those; see CanSwapNow.
+        var contractRefused = context.ContractRefused;
+        if (contractRefused)
         {
-            if (!inWindow)
+            logger.LogWarning(
+                "The server is refusing this agent's wire contract, so the maintenance window " +
+                "and the connected check are bypassed for this swap: a refused agent can be " +
+                "sent no work, and waiting for the window would leave it offline until " +
+                "{Start:HH\\:mm}–{End:HH\\:mm} local. In-flight work is still respected.",
+                cfg.MaintenanceWindowStart, cfg.MaintenanceWindowEnd);
+        }
+
+        if (!CanSwapNow(inWindow, deploymentInFlight, connected, contractRefused))
+        {
+            if (deploymentInFlight)
+            {
+                logger.LogInformation("Skipping agent update swap — a deployment is in progress.");
+            }
+            else if (!inWindow)
             {
                 logger.LogDebug(
                     "Agent update staged at {Path} — waiting for maintenance window " +
                     "({Start:HH\\:mm}–{End:HH\\:mm}).",
                     versionDir, cfg.MaintenanceWindowStart, cfg.MaintenanceWindowEnd);
             }
-            else if (deploymentInFlight)
-            {
-                logger.LogInformation("Skipping agent update swap — a deployment is in progress.");
-            }
             else
             {
-                logger.LogDebug("Skipping agent update swap — not connected to server.");
+                // Information, not Debug. The shipped MinimumLevel is Information, so a Debug
+                // line here meant an agent that could not swap said so NOWHERE — which is how
+                // the refusal deadlock stayed invisible: the archive downloaded and
+                // hash-verified on every tick, then the swap was skipped in silence, forever.
+                logger.LogInformation(
+                    "Skipping agent update swap — not connected to the server. The swap is " +
+                    "deferred rather than refused; it retries on the next check.");
             }
 
             return;
@@ -359,7 +395,10 @@ public sealed class AgentUpdateService(
             //    up to SwapGateTimeout ago, and an operator with a narrow window (02:00–
             //    02:05 is legal) would otherwise get the swap, the restart and the whole
             //    health-probation cycle outside their change window.
-            if (!InMaintenanceWindow(cfg))
+            //    The contract-refusal bypass has to apply HERE too, not only at step 4:
+            //    re-checking the window unconditionally would put the deadlock straight
+            //    back, just one gate acquisition later.
+            if (!contractRefused && !InMaintenanceWindow(cfg))
             {
                 logger.LogInformation(
                     "Skipping agent update swap — the maintenance window " +
@@ -522,11 +561,18 @@ public sealed class AgentUpdateService(
             }
             if (inFlight)
             {
+                // Detail is REMOTE text and it does not stop here: the deferral reason is
+                // POSTed back to /api/agents/update-status and written to the audit log, which
+                // the subscription poller forwards to the webhook and e-mail transports and the
+                // AI-inspect transport interpolates into an LLM prompt. The audit column caps
+                // it too, but bounding it at the point it enters the agent keeps the local log
+                // and the request body bounded as well.
+                var detail = Truncate(answer.Detail, MaxRemoteDetailLength);
                 logger.LogInformation(
                     "Deferring agent update swap — the server still has work for this " +
                     "target ({Detail}). The machine gate is per WAVE, so an idle gate " +
-                    "does not mean an idle plan.", answer.Detail ?? "no detail");
-                return answer.Detail is { Length: > 0 } detail
+                    "does not mean an idle plan.", detail ?? "no detail");
+                return detail is { Length: > 0 }
                     ? $"the server still has work for this target: {detail}"
                     : "the server still has a non-terminal task assigned to this target";
             }
@@ -632,20 +678,40 @@ public sealed class AgentUpdateService(
     }
 
     /// <summary>
-    /// C6 — a swap may proceed only inside the maintenance window, with no
-    /// deployment in flight, and while connected to the server. Pure so it is
-    /// unit-testable.
+    /// C6 — a swap may proceed only inside the maintenance window, with no deployment in
+    /// flight, and while connected to the server. Pure so it is unit-testable.
     /// <para>
-    /// F5: <paramref name="deploymentInFlight"/> is now a cheap EARLY-OUT, not the
-    /// guarantee. It stays because queueing an exclusive waiter on the machine gate
-    /// blocks new work while it waits, so there is no point paying that cost when we
-    /// already know a deployment is running. The actual mutual exclusion — over
-    /// ad-hoc scripts too, and without a check-to-swap gap — is the gate acquisition
-    /// in <see cref="CheckAndApplyUpdateAsync"/>.
+    /// F5: <paramref name="deploymentInFlight"/> is a cheap EARLY-OUT, not the guarantee. It
+    /// stays because queueing an exclusive waiter on the machine gate blocks new work while it
+    /// waits, so there is no point paying that cost when we already know a deployment is
+    /// running. The actual mutual exclusion — over ad-hoc scripts too, and without a
+    /// check-to-swap gap — is the gate acquisition in
+    /// <see cref="CheckAndApplyUpdateAsync"/>.
+    /// </para>
+    /// <para>
+    /// <paramref name="contractRefused"/> overrides the window and the connected term, and
+    /// nothing else. It is the escape hatch from a wire-contract refusal, which is otherwise a
+    /// DEADLOCK rather than a delay: the server answers 426 on the handshake, so
+    /// <c>IServerLink.IsConnected</c> can never become true, so a swap gated on it can never
+    /// happen, so the binary that would fix the refusal is never installed. Bumping the
+    /// contract on a fleet meant touching every target by hand.
+    /// </para>
+    /// <para>
+    /// Overriding both terms is deliberate, and each has a reason it does not apply here. The
+    /// connected term exists so a swap does not strand an agent mid-conversation — a refused
+    /// agent has no conversation to strand. The window exists so a restart does not disrupt
+    /// work — a refused agent cannot be sent work at all, and honouring the window would leave
+    /// it dark until 02:00–04:00 local, up to ~22 h after a server upgrade, for no protection
+    /// gained. What is NOT overridden is everything that actually protects running work:
+    /// <paramref name="deploymentInFlight"/> (a deployment that started before the server was
+    /// upgraded keeps running locally), the server-side <c>task-in-flight</c> probe, which
+    /// answers over REST independently of the contract and fails closed, and the machine gate's
+    /// EXCLUSIVE side.
     /// </para>
     /// </summary>
-    internal static bool CanSwapNow(bool inMaintenanceWindow, bool deploymentInFlight, bool connected)
-        => inMaintenanceWindow && !deploymentInFlight && connected;
+    internal static bool CanSwapNow(
+        bool inMaintenanceWindow, bool deploymentInFlight, bool connected, bool contractRefused)
+        => !deploymentInFlight && (contractRefused || (inMaintenanceWindow && connected));
 
     /// <summary>
     /// C6 — true when the new version has already been probed <paramref name="maxAttempts"/>
