@@ -136,7 +136,7 @@ public sealed class OfflineResultFailClosedTests(PostgresFixture postgres)
         new(postgres,
             new NoopArtifactStore(),
             crypto,
-            new RetentionService(postgres, new DefaultSpaceContext(), NullLogger<RetentionService>.Instance),
+            RetentionTestFactory.NewService(postgres),
             NullLogger<OfflineResultService>.Instance);
 
     private async Task<Guid> SeedPendingAsync(AesEncryptionService crypto, bool withBundleKey)

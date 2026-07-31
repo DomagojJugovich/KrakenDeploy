@@ -16,6 +16,10 @@ public class RunbookConfiguration : IEntityTypeConfiguration<Runbook>
         builder.Property(x => x.Name).IsRequired().HasMaxLength(200);
         builder.Property(x => x.Description).HasMaxLength(1000);
 
+        // WP9: per-runbook retention override (null = inherit the instance-wide
+        // PerformanceSettings.RunbookRunRetentionKeep). Nullable int column.
+        builder.Property(x => x.RetentionKeepRuns);
+
         // Composite Space FK: a runbook can only belong to a project in its Space.
         builder.HasOne(x => x.Project)
             .WithMany()

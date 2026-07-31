@@ -72,24 +72,31 @@
         </div>
 
         <RadzenRow Gap="1rem" class="rz-mb-3">
-            <RadzenColumn Size="4">
+            <RadzenColumn Size="3">
                 <RadzenFormField Text="Phase Name" style="width:100%">
                     <RadzenTextBox Value="@phase.Name"
                                    ValueChanged="@(v => phase.Name = v)"
                                    Placeholder="Development" style="width:100%" />
                 </RadzenFormField>
             </RadzenColumn>
-            <RadzenColumn Size="3">
+            <RadzenColumn Size="2">
                 <RadzenFormField Text="Min Environments (0 = all)" style="width:100%">
                     <RadzenNumeric TValue="int" Value="@phase.MinimumEnvironments"
                                    ValueChanged="@(v => phase.MinimumEnvironments = v)"
                                    Min="0" style="width:100%" />
                 </RadzenFormField>
             </RadzenColumn>
-            <RadzenColumn Size="3">
+            <RadzenColumn Size="2">
                 <RadzenFormField Text="Keep Deployments (0 = all)" style="width:100%">
                     <RadzenNumeric TValue="int" Value="@phase.RetentionKeepDeployments"
                                    ValueChanged="@(v => phase.RetentionKeepDeployments = v)"
+                                   Min="0" style="width:100%" />
+                </RadzenFormField>
+            </RadzenColumn>
+            <RadzenColumn Size="3">
+                <RadzenFormField Text="Keep Releases (0 = all)" style="width:100%">
+                    <RadzenNumeric TValue="int" Value="@phase.RetentionKeepReleases"
+                                   ValueChanged="@(v => phase.RetentionKeepReleases = v)"
                                    Min="0" style="width:100%" />
                 </RadzenFormField>
             </RadzenColumn>

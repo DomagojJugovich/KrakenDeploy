@@ -58,6 +58,11 @@
         <RadzenFormField Text="Description (optional)" class="rz-mb-3" style="width:100%">
             <RadzenTextArea @bind-Value="_editDescription" Rows="3" style="width:100%" />
         </RadzenFormField>
+        <RadzenFormField Text="Run retention — successful runs kept per environment (blank = instance default, 0 = keep all)"
+                         class="rz-mb-3" style="width:100%">
+            <RadzenNumeric TValue="int?" @bind-Value="_editRetentionKeepRuns"
+                           Min="0" style="width:100%" />
+        </RadzenFormField>
         <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
             <RadzenButton Text="Save" ButtonStyle="ButtonStyle.Primary" Click="@SaveEditRunbookAsync" />
             <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
@@ -398,12 +403,14 @@
     private bool _editOpen;
     private string _editName = "";
     private string? _editDescription;
+    private int? _editRetentionKeepRuns;
 
     private void OpenEditRunbook()
     {
         if (_runbook is null) return;
         _editName = _runbook.Name;
         _editDescription = _runbook.Description;
+        _editRetentionKeepRuns = _runbook.RetentionKeepRuns;
         _editOpen = true;
     }
 
@@ -414,22 +421,47 @@
 
         try
         {
+            var caller = await Guard.CurrentCallerAsync();
             var updated = await RunbookSvc.UpdateAsync(
-                Id, _editName.Trim(), _editDescription?.Trim(),
-                await Guard.CurrentCallerAsync());
-            if (updated is not null && _runbook is not null)
+                Id, _editName.Trim(), _editDescription?.Trim(), caller);
+            if (updated is null || _runbook is null)
             {
-                _runbook.Name = updated.Name;
-                _runbook.Description = updated.Description;
+                return;
+            }
+
+            _runbook.Name = updated.Name;
+            _runbook.Description = updated.Description;
+
+            // The retention override is a separate call (its own DbContext). If it
+            // fails, name/description already persisted — surface a partial-success
+            // warning rather than a misleading "save failed" error.
+            try
+            {
+                var withRetention = await RunbookSvc.SetRetentionOverrideAsync(
+                    Id, _editRetentionKeepRuns, caller);
+                _runbook.RetentionKeepRuns = withRetention?.RetentionKeepRuns ?? _editRetentionKeepRuns;
+            }
+            catch (Exception retentionEx) when (retentionEx is InvalidOperationException or AuthorizationException)
+            {
                 _editOpen = false;
                 Notify.Notify(new NotificationMessage
                 {
-                    Severity = NotificationSeverity.Success,
-                    Summary  = "Runbook updated",
-                    Detail   = updated.Name,
-                    Duration = 3000,
+                    Severity = NotificationSeverity.Warning,
+                    Summary  = "Runbook updated, retention override failed",
+                    Detail   = retentionEx.Message,
+                    Duration = 5000,
                 });
+                return;
             }
+
+            _editOpen = false;
+            Notify.Notify(new NotificationMessage
+            {
+                Severity = NotificationSeverity.Success,
+                Summary  = "Runbook updated",
+                Detail   = updated.Name,
+                Duration = 3000,
+            });
         }
         catch (Exception ex) when (ex is InvalidOperationException or AuthorizationException)
         {

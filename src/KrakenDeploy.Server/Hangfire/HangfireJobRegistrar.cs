@@ -115,6 +115,19 @@ public static class HangfireJobRegistrar
             job => job.ExecuteAsync(CancellationToken.None),
             Cron.Minutely(),
             new RecurringJobOptions { TimeZone = utc });
+
+        // WP9 — scheduled retention sweep: walks every Space and applies the
+        // full retention policy (deployments, releases, reference-protected
+        // packages, runbook runs, aged step logs, orphaned live logs) plus the
+        // on-disk artifact / drop-bundle cleanup the row prune cannot do. 03:30
+        // UTC daily so it follows the audit + AI-call-log purges. Ships behind
+        // the retention.sweep-dry-run flag (default ON) — dry-run logs the prune
+        // set and deletes nothing until an operator flips it off.
+        RecurringJob.AddOrUpdate<RetentionSweepJob>(
+            RetentionSweepJob.RecurringJobId,
+            job => job.ExecuteAsync(CancellationToken.None),
+            Cron.Daily(3, 30),
+            new RecurringJobOptions { TimeZone = utc });
     }
 
     /// <summary>
@@ -148,6 +161,7 @@ public static class HangfireJobRegistrar
         Fanout<StepPackageCatalogPollJob>("kraken.step-package-catalog-poll", Cron.Hourly());
         Fanout<SubscriptionPollerJob>(SubscriptionPollerJob.RecurringJobId, Cron.Minutely());
         Fanout<EmailDigestFlushJob>(EmailDigestFlushJob.RecurringJobId, Cron.Minutely());
+        Fanout<RetentionSweepJob>(RetentionSweepJob.RecurringJobId, Cron.Daily(3, 30));
 
         // Blue-green drain-watcher — PLATFORM-global, not a per-account fan-out:
         // it reads the control-plane release registry and probes slot instances

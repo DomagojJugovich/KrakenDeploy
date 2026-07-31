@@ -144,6 +144,52 @@ else
             </RadzenStack>
         </RadzenCard>
 
+        @* ── Retention sweep (WP9) ─────────────────────────────────── *@
+        <RadzenCard>
+            <RadzenStack Gap="1rem">
+                <RadzenText TextStyle="TextStyle.H6" class="rz-mb-0">
+                    Retention sweep
+                </RadzenText>
+                <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary rz-mb-0">
+                    Knobs for the scheduled retention sweep — it prunes packages,
+                    releases, runbook runs and aged log rows the event-driven prune
+                    never saw, and deletes the on-disk artifact / drop-bundle files
+                    those rows leave behind. Deployment pruning stays driven by the
+                    per-phase <em>Keep Deployments</em> on each lifecycle.
+                </RadzenText>
+                <RadzenStack Orientation="Orientation.Horizontal" Gap="1rem">
+                    <RadzenFormField Text="Package versions kept per package (0 = off)"
+                                     Variant="Variant.Outlined" Style="flex:1;">
+                        <RadzenNumeric @bind-Value="_settings.PackageRetentionKeepVersions"
+                                       Min="0" Max="10000" Step="1"
+                                       TValue="int" />
+                    </RadzenFormField>
+                    <RadzenFormField Text="Runbook runs kept per runbook+env"
+                                     Variant="Variant.Outlined" Style="flex:1;">
+                        <RadzenNumeric @bind-Value="_settings.RunbookRunRetentionKeep"
+                                       Min="0" Max="10000" Step="1"
+                                       TValue="int" />
+                    </RadzenFormField>
+                    <RadzenFormField Text="Step-log age cap (days, 0 = off)"
+                                     Variant="Variant.Outlined" Style="flex:1;">
+                        <RadzenNumeric @bind-Value="_settings.TaskLogRetentionDays"
+                                       Min="0" Max="3650" Step="30"
+                                       TValue="int" />
+                    </RadzenFormField>
+                </RadzenStack>
+                <RadzenAlert AlertStyle="AlertStyle.Warning" Variant="Variant.Flat"
+                             Shade="Shade.Lighter" AllowClose="false" Icon="shield">
+                    Package pruning never deletes a version pinned by a retained
+                    release's process snapshot or referenced by a retained deployment
+                    — the reference guard always wins over the keep count. The sweep
+                    runs in <strong>dry-run</strong> mode by default: it logs exactly
+                    what it <em>would</em> delete and deletes nothing. Turn off
+                    <code>retention.sweep-dry-run</code> on the Feature flags tab to
+                    make it apply.
+                </RadzenAlert>
+            </RadzenStack>
+        </RadzenCard>
+
         @* ── Offline drop ──────────────────────────────────────────── *@
         <RadzenCard>
             <RadzenStack Gap="1rem">
@@ -203,6 +249,9 @@ else
             || _settings.AiCallLogRetentionDays         != _baseline.AiCallLogRetentionDays
             || _settings.ChangeControlAuditRetentionDays
                    != _baseline.ChangeControlAuditRetentionDays
+            || _settings.PackageRetentionKeepVersions   != _baseline.PackageRetentionKeepVersions
+            || _settings.RunbookRunRetentionKeep        != _baseline.RunbookRunRetentionKeep
+            || _settings.TaskLogRetentionDays           != _baseline.TaskLogRetentionDays
             || _settings.EmbedOfflineRunner             != _baseline.EmbedOfflineRunner);
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
@@ -258,6 +307,9 @@ else
         AuditLogRetentionDays          = src.AuditLogRetentionDays,
         AiCallLogRetentionDays         = src.AiCallLogRetentionDays,
         ChangeControlAuditRetentionDays = src.ChangeControlAuditRetentionDays,
+        PackageRetentionKeepVersions   = src.PackageRetentionKeepVersions,
+        RunbookRunRetentionKeep        = src.RunbookRunRetentionKeep,
+        TaskLogRetentionDays           = src.TaskLogRetentionDays,
         EmbedOfflineRunner             = src.EmbedOfflineRunner,
     };
 
@@ -296,6 +348,18 @@ else
             diffs.Add(
                 $"ChangeControlAuditRetentionDays={before.ChangeControlAuditRetentionDays}" +
                 $"→{after.ChangeControlAuditRetentionDays}");
+        }
+        if (before.PackageRetentionKeepVersions != after.PackageRetentionKeepVersions)
+        {
+            diffs.Add($"PackageRetentionKeepVersions={before.PackageRetentionKeepVersions}→{after.PackageRetentionKeepVersions}");
+        }
+        if (before.RunbookRunRetentionKeep != after.RunbookRunRetentionKeep)
+        {
+            diffs.Add($"RunbookRunRetentionKeep={before.RunbookRunRetentionKeep}→{after.RunbookRunRetentionKeep}");
+        }
+        if (before.TaskLogRetentionDays != after.TaskLogRetentionDays)
+        {
+            diffs.Add($"TaskLogRetentionDays={before.TaskLogRetentionDays}→{after.TaskLogRetentionDays}");
         }
         if (before.EmbedOfflineRunner != after.EmbedOfflineRunner)
         {

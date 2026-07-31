@@ -89,6 +89,19 @@ public sealed class BuiltInFeatureCatalog : IFeatureCatalog
             "preserved) without losing the configured day count. Default ON.",
             DefaultEnabled: true),
 
+        new("retention.sweep-dry-run",
+            FeatureGroups.Retention,
+            "Retention sweep dry-run mode",
+            "When ON (the default), the scheduled retention sweep computes " +
+            "exactly what it WOULD prune — packages, releases, runbook runs, " +
+            "aged step logs, and the on-disk artifact / drop-bundle files " +
+            "behind them — and writes that to the audit log WITHOUT deleting " +
+            "anything. Flip OFF to let the sweep apply. Ships dry-run-first so " +
+            "operators can verify the prune set on their real history before " +
+            "any data is removed. The event-driven post-completion prune is " +
+            "unaffected — it always applies.",
+            DefaultEnabled: true),
+
         // ── UI ─────────────────────────────────────────────────────────
         new("ui.show-advanced-step-fields",
             FeatureGroups.Ui,

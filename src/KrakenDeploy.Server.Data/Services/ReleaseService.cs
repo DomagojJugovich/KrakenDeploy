@@ -318,9 +318,11 @@ public class ReleaseService(
     /// no separate snapshot table. Returns false if the release does not exist (or is
     /// outside the caller's Space).
     /// <para>
-    /// Release retention (WP9) prunes <em>deployments</em> by project+environment,
-    /// not releases, so there is no shared release-deletion path to coordinate with —
-    /// the RESTRICT FK is the single guard both surfaces respect.
+    /// WP9 release retention shares this exact deletion path via
+    /// <see cref="DeleteCoreAsync"/>: the retention sweep prunes a release's
+    /// deployments first, then deletes the now-unreferenced release through the same
+    /// RESTRICT-guarded core — one code path, one guard, for both the manual delete
+    /// and the scheduled sweep.
     /// </para>
     /// </summary>
     public async Task<bool> DeleteAsync(
@@ -334,6 +336,22 @@ public class ReleaseService(
         await EnsureReleaseScopeAsync(db, caller, releaseId, Permission.ReleaseDelete, ct)
             .ConfigureAwait(false);
 
+        return await DeleteCoreAsync(db, releaseId, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The shared release-deletion core (WP9). Refuses (throws
+    /// <see cref="InvalidOperationException"/>) while any deployment references the
+    /// release — the <c>server_tasks.release_id</c> RESTRICT FK is the single guard
+    /// both the manual delete (<see cref="DeleteAsync"/>) and the retention sweep
+    /// (<c>RetentionService.SweepReleasesAsync</c>) respect. Returns false when the
+    /// release does not exist. Caller owns the <see cref="KrakenDbContext"/> (and its
+    /// Space scope); no authorization is performed here — callers authorize first
+    /// (the sweep runs as a system operation under the Space scope).
+    /// </summary>
+    public static async Task<bool> DeleteCoreAsync(
+        KrakenDbContext db, Guid releaseId, CancellationToken ct = default)
+    {
         var release = await db.Releases
             .FirstOrDefaultAsync(r => r.Id == releaseId, ct)
             .ConfigureAwait(false);
