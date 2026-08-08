@@ -30,6 +30,14 @@ namespace KrakenDeploy.Agent.Services;
 /// <see cref="AgentUpgradeMarker"/>.
 /// </para>
 /// <para>
+/// F5 (locked decision P8) — the extract + swap + exit window runs under the
+/// EXCLUSIVE side of <see cref="MachineExecutionGate"/>, the same gate deployments
+/// and ad-hoc scripts take. That closes the 2026-07-25 parallel-safety audit CLASH:
+/// <see cref="DeploymentExecutor.IsExecuting"/> is blind to ad-hoc work, so a swap
+/// during an operator's diagnostic script killed it mid-run, and the gap between
+/// that check and the swap was a TOCTOU that work could start inside.
+/// </para>
+/// <para>
 /// Residual limitation (documented, out of this WP's reach): an in-process
 /// self-updater cannot recover from a hard process kill in the sub-millisecond
 /// window between two directory-content moves, nor from a new build so broken its
@@ -42,15 +50,131 @@ public sealed class AgentUpdateService(
     AgentContext context,
     MachineInfoCollector machineCollector,
     DeploymentExecutor deploymentExecutor,
+    MachineExecutionGate executionGate,
     IServerLink serverLink,
     IOptions<AgentConfig> agentConfig,
     IOptions<AgentUpdateConfig> updateConfig,
+    TimeProvider timeProvider,
     ILogger<AgentUpdateService> logger)
     : BackgroundService
 {
     private static readonly string AgentRid = RuntimeInformation.RuntimeIdentifier;
 
+    /// <summary>
+    /// F5 — how long a ROLLBACK waits for the machine execution gate. Much shorter than
+    /// the forward swap's <c>SwapGateTimeout</c> and deliberately not configurable:
+    /// unlike the forward swap, expiry does not abandon the operation — the agent is
+    /// running a binary that failed its health gate, so restoring takes precedence over
+    /// exclusivity. The wait only buys the common case where the box happens to be busy
+    /// for a moment.
+    /// </summary>
+    private static readonly TimeSpan RollbackGateTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Cap on free text taken from a SERVER response and re-published (into the local log, and
+    /// back to the server as an update-status detail that lands in the audit log and is
+    /// forwarded off-premises). Long enough for a real "task X wave 2 is running" explanation;
+    /// short enough that a compromised or misconfigured server cannot author audit rows.
+    /// </summary>
+    internal const int MaxRemoteDetailLength = 512;
+
+    /// <summary>
+    /// Sentinel file marking a staged version whose health gate already FAILED and which was
+    /// rolled back. Lives beside the staged archive in <c>updates/&lt;version&gt;/</c> so it
+    /// survives the restart that follows a rollback.
+    /// <para>
+    /// Needed because <c>ContractRefused</c> bypasses the maintenance window, and that window was
+    /// the only bound on the swap → failed-probation → rollback → <c>Exit(70)</c> → restart
+    /// cycle: <c>AgentUpgradeMarker</c> carries <c>AttemptsUsed</c> but is DELETED on rollback, so
+    /// nothing remembered across attempts, the staged archive is still on disk so the download is
+    /// skipped, and the next check interval swapped the same broken build again. On a refused
+    /// agent that is a restart roughly every 8 minutes, 24/7, each cycle filing a RolledBack
+    /// audit row the subscription poller forwards off-premises.
+    /// </para>
+    /// </summary>
+    internal const string RolledBackSentinel = "rolled-back";
+
+    /// <summary>
+    /// Trims remote text to <paramref name="max"/>, marking that it was trimmed. Delegates to
+    /// the shared rune-safe helper: the previous local version sliced by UTF-16 code unit (so it
+    /// could split a surrogate pair, which Npgsql refuses to persist) and its marker pushed the
+    /// result PAST <paramref name="max"/>, so the "cap" did not cap.
+    /// </summary>
+    internal static string? Truncate(string? value, int max)
+        => KrakenDeploy.Execution.TextBudget.Trim(value, max);
+
+    /// <summary>
+    /// F5 — bound on the pre-swap "does the server still have work for me?" call. Short
+    /// and deliberately not configurable: it runs while the EXCLUSIVE machine lease is
+    /// HELD, so it is whole-machine blocking time, and the request is one indexed
+    /// existence check against a server this agent is already connected to. Anything
+    /// slower is a sick path, and the right answer to a sick path is to defer.
+    /// </summary>
+    private static readonly TimeSpan TaskInFlightCheckTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// F5 — bound on a best-effort outcome report. See <see cref="ReportAsync"/>: the
+    /// reports either run on the way to <see cref="Environment.Exit"/> or (before this
+    /// bound existed) inside the machine lease, and <see cref="HttpClient.Timeout"/>'s
+    /// 100 s default is far too long for either.
+    /// </summary>
+    private static readonly TimeSpan ReportTimeout = TimeSpan.FromSeconds(10);
+
     private readonly HttpClient _http = new();
+
+    /// <summary>
+    /// F5 — the (staged version, reason) we have already filed a DELIVERED
+    /// <c>SwapDeferred</c> report for. A deferral recurs on EVERY check while the cause
+    /// persists, and the cause can be indefinite (a task parked <c>Queued</c> by
+    /// maintenance mode, or at <c>PendingOfflineResult</c>). Reporting each tick filed ~24
+    /// audit rows per target per night — and, because <c>SubscriptionMatcher</c> treats an
+    /// empty pattern list as match-anything, ~24 webhook/Slack deliveries with it.
+    /// <para>
+    /// Three things about this key are deliberate, because the earlier version was
+    /// fail-silent in three separate ways:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item>It includes the REASON. Keyed on version alone, a cause that changed after
+    ///     the first report was never filed — so "machine busy" reported once and the
+    ///     later, more serious "the server did not answer" never surfaced at all.</item>
+    ///   <item>An absent version maps to <see cref="UnknownStagedVersion"/> rather than
+    ///     <c>null</c>. <c>AgentUpdateInfo.LatestVersion</c> is <c>string?</c> and
+    ///     <c>EvaluateOffer</c> never checks it, so an offer with a null version compared
+    ///     equal to the initial state and suppressed its own FIRST report, forever.</item>
+    ///   <item>It is stamped only AFTER the report is delivered. Stamping first meant the
+    ///     one report was dropped precisely when the reason was "the server did not
+    ///     answer" — and deterministically so when identity was not resolved, where
+    ///     <c>ReportAsync</c> bails at its own guard before sending anything.</item>
+    /// </list>
+    /// Only ever touched from the single <see cref="PeriodicTimer"/> loop, so it needs no
+    /// synchronisation.
+    /// </summary>
+    private readonly Dictionary<(string Outcome, string Version, string Reason), long> _reported = [];
+
+    /// <summary>
+    /// Bound on <see cref="_reported"/>. Causes are drawn from a small fixed set of message
+    /// shapes, but two of them interpolate a value (an HTTP status, an exception type name), so
+    /// the set is not provably finite. On overflow it is cleared: the next tick re-reports each
+    /// live cause once, which is a bounded blip rather than unbounded memory.
+    /// </summary>
+    private const int MaxReportedCauses = 64;
+
+    /// <summary>
+    /// Stands in for a staged version the server did not name. A sentinel rather than
+    /// <c>null</c> so it can never compare equal to "nothing reported yet"; the space
+    /// makes it unrepresentable as a real version string.
+    /// </summary>
+    internal const string UnknownStagedVersion = "(unknown version)";
+
+    /// <summary>
+    /// How often a still-deferred swap re-states itself in the LOG (the audit row stays at
+    /// one per distinct cause). The suppressed line used to be <c>LogDebug</c>, below the
+    /// shipped <c>MinimumLevel: Information</c> — so after the single audit row an
+    /// indefinitely deferred agent produced no signal anywhere at all. A bare
+    /// <c>LogInformation</c> would swap that for a line every check interval; this is the
+    /// middle.
+    /// </summary>
+    private static readonly TimeSpan DeferralReminderInterval = TimeSpan.FromMinutes(30);
 
     /// <summary>Outcome of evaluating an update the server offered.</summary>
     internal enum UpdateDecision
@@ -154,6 +278,9 @@ public sealed class AgentUpdateService(
         switch (EvaluateOffer(info))
         {
             case UpdateDecision.NoUpdate:
+                // The offer is gone (withdrawn, or we already run it), so a later re-offer
+                // of the same version is a NEW situation and may report its deferral again.
+                _reported.Clear();
                 return;
 
             case UpdateDecision.HashMissing:
@@ -161,7 +288,9 @@ public sealed class AgentUpdateService(
                 logger.LogError(
                     "Server offered update {Latest} without a SHA-256 hash — refusing.",
                     info.LatestVersion);
-                await ReportAsync(AgentUpdateOutcome.HashMissing,
+                // ReportOnceAsync, not ReportAsync: a manifest missing its hash stays missing
+                // until an operator fixes it, so a per-tick report is a treadmill.
+                await ReportOnceAsync(AgentUpdateOutcome.HashMissing,
                     currentVersion, info.LatestVersion, "server supplied no hash", ct)
                     .ConfigureAwait(false);
                 return;
@@ -173,7 +302,13 @@ public sealed class AgentUpdateService(
                     "Refusing update {Latest}: its wire-contract v{Target} does not match " +
                     "the server's v{Server}.",
                     info.LatestVersion, info.TargetContractVersion, info.ServerContractVersion);
-                await ReportAsync(AgentUpdateOutcome.ContractSkew,
+                // ReportOnceAsync, and this is the one that mattered most: bumping
+                // AgentContract.CurrentVersion makes ContractSkew the FLEET-WIDE steady state
+                // until an operator edits the out-of-repo version.json. Per-tick reporting meant
+                // 288 AgentUpdateFailed audit rows per target per day — and, because the
+                // subscription poller forwards audit rows off-premises, 288 webhook / e-mail /
+                // AI-inspect deliveries with them — for a state no agent action can change.
+                await ReportOnceAsync(AgentUpdateOutcome.ContractSkew,
                     currentVersion, info.LatestVersion,
                     $"contract skew target=v{info.TargetContractVersion} " +
                     $"server=v{info.ServerContractVersion}", ct)
@@ -187,6 +322,21 @@ public sealed class AgentUpdateService(
         // 2. Download the archive if it is not already staged.
         var versionDir = Path.Combine(updatesDir, info.LatestVersion ?? "unknown");
         Directory.CreateDirectory(versionDir);
+
+        // A version that already failed its health gate is not retried. The archive is still on
+        // disk and would be swapped again on the very next tick — which the maintenance window
+        // used to bound to once a night, and no longer does for a contract-refused agent. An
+        // operator publishing a corrected build gets a new version number and a fresh directory,
+        // so this never blocks a real fix.
+        if (File.Exists(Path.Combine(versionDir, RolledBackSentinel)))
+        {
+            await ReportOnceAsync(AgentUpdateOutcome.SwapFailed, currentVersion,
+                info.LatestVersion,
+                "this version already failed its health gate on this machine and was rolled " +
+                "back; publish a corrected build under a new version", ct)
+                .ConfigureAwait(false);
+            return;
+        }
 
         var ext = AgentRid.StartsWith("win", StringComparison.OrdinalIgnoreCase)
             ? ".zip" : ".tar.gz";
@@ -213,33 +363,413 @@ public sealed class AgentUpdateService(
 
         // 4. Only swap during the maintenance window, when idle and connected.
         //    C6/E-B: DeploymentExecutor is now a real singleton, so IsExecuting
-        //    reads the LIVE in-flight registry — the swap is refused mid-deployment.
+        //    reads the LIVE in-flight registry.
+        //    F5: IsExecuting is now only a cheap PRE-check — it sees deployments and
+        //    runbook runs but never ad-hoc scripts, and it was a TOCTOU besides (work
+        //    could start between the check and the swap). The real guarantee is the
+        //    machine gate's EXCLUSIVE side, taken below.
         var inWindow = InMaintenanceWindow(cfg);
         var deploymentInFlight = deploymentExecutor.IsExecuting;
         var connected = serverLink.IsConnected;
-        if (!CanSwapNow(inWindow, deploymentInFlight, connected))
+
+        // The server is refusing this agent's wire contract (426 on the handshake). That is a
+        // DEADLOCK, not a delay: IsConnected can never become true, so a swap gated on it never
+        // happens, so the binary that would fix the refusal is never installed. The refusal
+        // overrides the window and the connected check — and only those; see CanSwapNow.
+        var contractRefused = context.ContractRefused;
+        if (contractRefused)
         {
-            if (!inWindow)
+            logger.LogWarning(
+                "The server is refusing this agent's wire contract, so the maintenance window " +
+                "and the connected check are bypassed for this swap: a refused agent can be " +
+                "sent no work, and waiting for the window would leave it offline until " +
+                "{Start:HH\\:mm}–{End:HH\\:mm} local. In-flight work is still respected.",
+                cfg.MaintenanceWindowStart, cfg.MaintenanceWindowEnd);
+        }
+
+        if (!CanSwapNow(inWindow, deploymentInFlight, connected, contractRefused))
+        {
+            if (deploymentInFlight)
+            {
+                logger.LogInformation("Skipping agent update swap — a deployment is in progress.");
+            }
+            else if (!inWindow)
             {
                 logger.LogDebug(
                     "Agent update staged at {Path} — waiting for maintenance window " +
                     "({Start:HH\\:mm}–{End:HH\\:mm}).",
                     versionDir, cfg.MaintenanceWindowStart, cfg.MaintenanceWindowEnd);
             }
-            else if (deploymentInFlight)
-            {
-                logger.LogInformation("Skipping agent update swap — a deployment is in progress.");
-            }
             else
             {
-                logger.LogDebug("Skipping agent update swap — not connected to server.");
+                // Information, not Debug. The shipped MinimumLevel is Information, so a Debug
+                // line here meant an agent that could not swap said so NOWHERE — which is how
+                // the refusal deadlock stayed invisible: the archive downloaded and
+                // hash-verified on every tick, then the swap was skipped in silence, forever.
+                logger.LogInformation(
+                    "Skipping agent update swap — not connected to the server. The swap is " +
+                    "deferred rather than refused; it retries on the next check.");
             }
 
             return;
         }
 
-        await ApplyUpdateAsync(downloadPath, ext, versionDir, markerPath, cfg,
-            currentVersion, info, ct).ConfigureAwait(false);
+        // 5. Deterministic refusals BEFORE the gate. These outcomes do not depend on
+        //    what is running, so acquiring the machine gate first would be pure harm:
+        //    a queued EXCLUSIVE writer blocks every new deployment and ad-hoc script on
+        //    this box while it waits, and an agent that can NEVER swap would otherwise
+        //    freeze the machine on every tick of every maintenance window, forever, for
+        //    an update it will always refuse. The live case is the CONTAINER image:
+        //    Dockerfile.agent's ENTRYPOINT is `dotnet KrakenDeploy.Agent.dll`, a muxer
+        //    launch, so IsAgentApphost is permanently false there. (`dotnet run` is NOT
+        //    such a case — it starts the apphost, so ProcessPath is the .exe.)
+        var installDir = ResolveInstallDir();
+        if (installDir is null)
+        {
+            // Reported ONCE per (outcome, version, reason), not once per tick. This condition
+            // is permanently true for every CONTAINERISED agent — Dockerfile.agent's ENTRYPOINT
+            // is a muxer launch, so IsAgentApphost can never become true there — and the
+            // per-tick version filed an AgentUpdateFailed audit row at Warning every check
+            // interval, forever, for a situation no operator action inside the container will
+            // change. Same treadmill the deferral suppressor exists for.
+            await ReportOnceAsync(AgentUpdateOutcome.SwapFailed, currentVersion,
+                info.LatestVersion, "not running as the agent apphost", ct)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        // 6. F5 (locked decision P8) — the swap window (extract + swap + exit) runs
+        //    under the machine gate's EXCLUSIVE side. Because the gate is writer-fair
+        //    this both WAITS for every kind of in-flight work (ad-hoc scripts
+        //    included, which IsExecuting cannot see) and BLOCKS new work from starting
+        //    while we hold it, closing the check-to-swap TOCTOU. Bounded: on expiry we
+        //    swap nothing and let the next tick retry, rather than parking a writer
+        //    that starves the agent of work indefinitely.
+        //    NOTE the lease is deliberately NOT released on the success path —
+        //    ApplyUpdateAsync ends in Environment.Exit, and holding the gate until the
+        //    process dies is exactly the guarantee wanted. Every failure path inside
+        //    returns, and the `using` releases it then.
+        var (gate, gateOutcome) = await AcquireSwapGateAsync(
+            executionGate, cfg.SwapGateTimeout, ct).ConfigureAwait(false);
+        if (gateOutcome != SwapGate.Acquired)
+        {
+            if (gateOutcome == SwapGate.Busy)
+            {
+                logger.LogInformation(
+                    "Skipping agent update swap — work on this machine did not finish " +
+                    "within {Timeout}; retrying on the next check.", cfg.SwapGateTimeout);
+                // The server must be able to see a machine that keeps deferring: a gate
+                // held by a wedged step looks identical to a healthy busy agent from
+                // the outside, and without this the only signal is a local log line.
+                await ReportOnceAsync(AgentUpdateOutcome.SwapDeferred, currentVersion, info.LatestVersion,
+                    $"machine busy for the whole {cfg.SwapGateTimeout} swap window", ct)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                logger.LogDebug("Skipping agent update swap — the agent is shutting down.");
+            }
+            return;
+        }
+
+        // Why the deferral reason is carried OUT of the lease rather than reported inside
+        // it: the report is an HTTP round trip to a server that, on this branch, has just
+        // proven slow or unhealthy — and whatever it costs would be whole-machine blocking
+        // time, which is the very cost TaskInFlightCheckTimeout exists to bound. So the
+        // lease is released first and the report goes out after it.
+        string? deferralReason;
+        using (gate)
+        {
+            // 7. Re-check the window we may have queued out of. C6's invariant is that a
+            //    swap only happens inside the operator-approved window; step 4 checked it
+            //    up to SwapGateTimeout ago, and an operator with a narrow window (02:00–
+            //    02:05 is legal) would otherwise get the swap, the restart and the whole
+            //    health-probation cycle outside their change window.
+            //    The contract-refusal bypass has to apply HERE too, not only at step 4:
+            //    re-checking the window unconditionally would put the deadlock straight
+            //    back, just one gate acquisition later.
+            if (!contractRefused && !InMaintenanceWindow(cfg))
+            {
+                logger.LogInformation(
+                    "Skipping agent update swap — the maintenance window " +
+                    "({Start:HH\\:mm}–{End:HH\\:mm}) closed while waiting for the machine.",
+                    cfg.MaintenanceWindowStart, cfg.MaintenanceWindowEnd);
+                return;
+            }
+
+            // 8. Ask the SERVER whether it still has work for us. Holding the gate is
+            //    not enough: its unit is one WAVE, so between two waves of a live
+            //    multi-wave deployment the gate is free and _running is empty, and a
+            //    server wave (manual intervention, DeployRelease cascade) can sit in
+            //    that gap for minutes or hours. Only the server sees whole plans.
+            //    Fail-closed — anything short of a clear "idle" defers the swap.
+            deferralReason = await ServerBusyReasonAsync(ct).ConfigureAwait(false);
+            if (deferralReason is null)
+            {
+                await ApplyUpdateAsync(downloadPath, installDir, ext, versionDir,
+                    markerPath, cfg, currentVersion, info, ct).ConfigureAwait(false);
+                return;
+            }
+        }
+
+        // Reported, not just logged. This is the refusal that can be PERMANENT — a task
+        // parked Queued (scheduled for later, held by maintenance mode, or deferred by F1
+        // serialization) or parked at PendingOfflineResult keeps the answer at "in flight"
+        // indefinitely — so it is the one an operator most needs to see. Agent logs are
+        // local-only. The reason comes FROM the check rather than being assumed: it fails
+        // closed on a 5xx, an unparseable body, a transport error and its own timeout, and
+        // an audit row claiming "a task is assigned" when the truth was "the server did
+        // not answer" is worse than no row.
+        await ReportOnceAsync(
+            AgentUpdateOutcome.SwapDeferred, currentVersion, info.LatestVersion, deferralReason, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// F5 — files a <c>SwapDeferred</c> report at most once per staged version. See
+    /// <see cref="_deferralReportedFor"/> for why the per-tick report had to go: the
+    /// deferral causes are indefinite, so an unsuppressed report is an unbounded audit and
+    /// notification stream rather than a signal.
+    /// </summary>
+    private async Task ReportOnceAsync(
+        string outcome, string currentVersion, string? latestVersion, string reason,
+        CancellationToken ct)
+    {
+        var key = (outcome, latestVersion ?? UnknownStagedVersion, reason);
+
+        // A SET of reported causes, not a single slot. With one slot and a reason in the key, two
+        // causes that alternate between ticks each evicted the other and every tick delivered a
+        // fresh report — the flood this suppressor exists to stop. A busy box does exactly that:
+        // "machine busy for the whole swap window" on one tick, "the server still has work for
+        // this target" on the next, back again on the third.
+        if (_reported.TryGetValue(key, out var lastReminded))
+        {
+            // Information rather than Debug, but throttled: the audit row is already filed and
+            // one line per check interval would be its own flood, while silence leaves an
+            // indefinitely stuck agent with no signal at all after that single row. The reminder
+            // stamp lives in this same dictionary rather than a parallel field, so the two
+            // cannot desync.
+            if (timeProvider.GetElapsedTime(lastReminded) >= DeferralReminderInterval)
+            {
+                _reported[key] = timeProvider.GetTimestamp();
+                logger.LogInformation(
+                    "Agent update {Outcome} is STILL the situation for {Version}: {Reason}. " +
+                    "Already reported to the server; repeating here every {Interval} while " +
+                    "it lasts.",
+                    outcome, latestVersion ?? UnknownStagedVersion, reason,
+                    DeferralReminderInterval);
+            }
+            return;
+        }
+
+        if (_reported.Count >= MaxReportedCauses)
+        {
+            _reported.Clear();
+        }
+
+        // Stamped BEFORE the call, and the earlier "stamp only on delivery" was wrong on its own
+        // premise. It claimed "the row is written server-side only when the report actually
+        // lands", but /api/agents/update-status commits the audit row and only THEN responds — so
+        // a reply lost to the agent's 10 s report timeout or a proxy 502 leaves the row written
+        // and the key unstamped, and the next tick files a duplicate. One attempt per distinct
+        // cause is the correct semantic: the report is best-effort telemetry, and re-sending it
+        // cannot be made safe without an idempotency key the endpoint does not have.
+        _reported[key] = timeProvider.GetTimestamp();
+        await ReportAsync(outcome, currentVersion, latestVersion, reason, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// C6 — the agent's own install directory, or <c>null</c> when a whole-directory
+    /// swap would target the wrong files. Hoisted out of <c>ApplyUpdateAsync</c> by F5
+    /// so this permanent refusal is decided BEFORE the machine gate is taken.
+    /// <para>
+    /// Refuses unless THIS process is the agent's own apphost: launched
+    /// framework-dependent (<c>dotnet KrakenDeploy.Agent.dll</c>),
+    /// <see cref="Environment.ProcessPath"/> is the shared dotnet muxer and the install
+    /// directory is the shared .NET runtime, so swapping it would clobber the runtime.
+    /// </para>
+    /// </summary>
+    private string? ResolveInstallDir()
+    {
+        var currentExe = Environment.ProcessPath;
+        var installDir = string.IsNullOrEmpty(currentExe) ? null : Path.GetDirectoryName(currentExe);
+        if (string.IsNullOrEmpty(installDir))
+        {
+            logger.LogError("Cannot determine the agent install directory for auto-update.");
+            return null;
+        }
+
+        if (!IsAgentApphost(currentExe))
+        {
+            logger.LogError(
+                "Refusing self-upgrade: the running process '{Exe}' is not the agent apphost " +
+                "(framework-dependent / muxer launch?). Swapping '{Dir}' would target the wrong files.",
+                currentExe, installDir);
+            return null;
+        }
+
+        return installDir;
+    }
+
+    /// <summary>
+    /// F5 — asks the server whether any non-terminal task is still assigned to this
+    /// target. Returns <c>null</c> when the server gave a clear "idle", otherwise the
+    /// reason to defer. FAIL-CLOSED by contract: any failure to get a clear "idle"
+    /// (transport error, non-success status, unparseable body, identity not ready, or this
+    /// call's own timeout) defers the swap. A deferred upgrade costs one check interval; a
+    /// swap that <c>Environment.Exit</c>s into the gap between two waves kills a live
+    /// deployment.
+    /// <para>
+    /// Returning the REASON rather than a bool is what lets the caller's audit row say
+    /// what actually happened. Four distinct causes reach the same "defer" decision, and
+    /// a row that names the wrong one sends an operator looking for a task that does not
+    /// exist.
+    /// </para>
+    /// </summary>
+    private async Task<string?> ServerBusyReasonAsync(CancellationToken ct)
+    {
+        var identity = context.Identity;
+        if (identity is null || string.IsNullOrEmpty(identity.ServerUrl))
+        {
+            logger.LogDebug("Deferring agent update swap — identity is not resolved yet.");
+            return "the agent's server identity was not resolved";
+        }
+
+        // BOUNDED, and tightly. This runs while the EXCLUSIVE machine lease is HELD, so
+        // every second here is a second in which no deployment, runbook wave or ad-hoc
+        // script can start on this box. The default HttpClient timeout is 100 s, which a
+        // server that accepts the connection and then stalls (overloaded, mid-restart, or
+        // a proxy rule that passes /agenthub but not /api/agents/*) would spend blocking
+        // the machine on every tick — a cost none of the validated knobs bound, since
+        // SwapGateTimeout bounds only the WAIT for the gate. The check cannot move before
+        // the gate without reopening the wave-boundary race it exists to close, so it is
+        // bounded instead.
+        using var callTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        callTimeout.CancelAfter(TaskInFlightCheckTimeout);
+
+        try
+        {
+            var url = $"{identity.ServerUrl.TrimEnd('/')}/api/agents/task-in-flight";
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", identity.AgentToken);
+
+            using var resp = await _http.SendAsync(req, callTimeout.Token).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode)
+            {
+                logger.LogInformation(
+                    "Deferring agent update swap — the server returned {Status} for the " +
+                    "task-in-flight check.", (int)resp.StatusCode);
+                return $"the server returned {(int)resp.StatusCode} for the task-in-flight check";
+            }
+
+            var answer = await resp.Content
+                .ReadFromJsonAsync<AgentTaskInFlightResponse>(callTimeout.Token)
+                .ConfigureAwait(false);
+
+            // A missing or null InFlight is NOT "idle". A positional record with a
+            // non-nullable bool bound an absent property to false, so a 200 from a proxy
+            // or gateway carrying {} or a JSON error envelope read as a clear "idle" and
+            // this fail-closed check failed OPEN — swapping and exiting mid-plan.
+            if (answer?.InFlight is not { } inFlight)
+            {
+                logger.LogInformation(
+                    "Deferring agent update swap — the task-in-flight check returned no " +
+                    "usable answer (empty body, or a response that did not come from this " +
+                    "server). Treating that as work in flight.");
+                return "the task-in-flight check returned no usable answer";
+            }
+            if (inFlight)
+            {
+                // Detail is REMOTE text and it does not stop here: the deferral reason is
+                // POSTed back to /api/agents/update-status and written to the audit log, which
+                // the subscription poller forwards to the webhook and e-mail transports and the
+                // AI-inspect transport interpolates into an LLM prompt. The audit column caps
+                // it too, but bounding it at the point it enters the agent keeps the local log
+                // and the request body bounded as well.
+                var detail = Truncate(answer.Detail, MaxRemoteDetailLength);
+                logger.LogInformation(
+                    "Deferring agent update swap — the server still has work for this " +
+                    "target ({Detail}). The machine gate is per WAVE, so an idle gate " +
+                    "does not mean an idle plan.", detail ?? "no detail");
+                return detail is { Length: > 0 }
+                    ? $"the server still has work for this target: {detail}"
+                    : "the server still has a non-terminal task assigned to this target";
+            }
+
+            return null;
+        }
+        catch (OperationCanceledException) when (
+            !ct.IsCancellationRequested && callTimeout.IsCancellationRequested)
+        {
+            logger.LogInformation(
+                "Deferring agent update swap — the task-in-flight check did not answer " +
+                "within {Timeout}. Refusing to swap without a clear answer.",
+                TaskInFlightCheckTimeout);
+            return $"the task-in-flight check did not answer within {TaskInFlightCheckTimeout}";
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Deferring agent update swap — the task-in-flight check failed. " +
+                "Refusing to swap without a clear answer.");
+            // Type name only: the exception message on this path can carry the server URL
+            // and, for a DNS/socket failure, the resolved address.
+            return $"the task-in-flight check failed ({ex.GetType().Name})";
+        }
+    }
+
+    /// <summary>Outcome of the F5 swap-gate acquisition.</summary>
+    internal enum SwapGate
+    {
+        /// <summary>The EXCLUSIVE side is held; the swap may proceed.</summary>
+        Acquired,
+
+        /// <summary>Other work outlasted the bounded wait — swap nothing, retry next tick.</summary>
+        Busy,
+
+        /// <summary>The gate was disposed under us: the agent is shutting down.</summary>
+        Stopping,
+    }
+
+    /// <summary>
+    /// F5 (locked decision P8) — takes the machine gate's EXCLUSIVE side for the swap
+    /// window. <c>internal static</c> for the same reason as <see cref="CanSwapNow"/>
+    /// and <see cref="EvaluateOffer"/>: the interesting behaviour is testable without
+    /// standing up the whole hosted service.
+    /// <para>
+    /// Bounded on purpose. Because the gate is writer-fair, a queued writer also stops
+    /// NEW work from starting — which is exactly the guarantee wanted while swapping,
+    /// and exactly why the wait must not be unbounded: a wedged holder would otherwise
+    /// keep the agent from accepting work for the rest of the process's life.
+    /// </para>
+    /// </summary>
+    internal static async Task<(MachineExecutionGate.Releaser? Lease, SwapGate Outcome)>
+        AcquireSwapGateAsync(MachineExecutionGate gate, TimeSpan timeout, CancellationToken ct)
+    {
+        try
+        {
+            var lease = await gate
+                .AcquireAsync(MachineExecutionGate.Mode.Exclusive, timeout, ct)
+                .ConfigureAwait(false);
+            return lease is null ? (null, SwapGate.Busy) : (lease, SwapGate.Acquired);
+        }
+        catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
+        {
+            // Both mean "no lease, and not because the machine is busy". OCE is the
+            // REACHABLE one: AcquireCoreAsync checks the token before it enqueues, so a
+            // host that is already stopping throws immediately. Returning it as a distinct
+            // outcome rather than letting it escape is what lets each caller decide: the
+            // forward swap skips this tick, and RollBackAsync defers the restore to the
+            // next boot instead of replacing the install directory with no lease. Both
+            // callers MUST branch on Stopping — treating it as "not Busy, carry on" is how
+            // an ungated restore and an Exit(70) during a graceful stop got in.
+            return (null, SwapGate.Stopping);
+        }
     }
 
     /// <summary>
@@ -268,12 +798,40 @@ public sealed class AgentUpdateService(
     }
 
     /// <summary>
-    /// C6 — a swap may proceed only inside the maintenance window, with no
-    /// deployment in flight (acceptance: no swap while a deployment runs), and
-    /// while connected to the server. Pure so the gate is unit-testable.
+    /// C6 — a swap may proceed only inside the maintenance window, with no deployment in
+    /// flight, and while connected to the server. Pure so it is unit-testable.
+    /// <para>
+    /// F5: <paramref name="deploymentInFlight"/> is a cheap EARLY-OUT, not the guarantee. It
+    /// stays because queueing an exclusive waiter on the machine gate blocks new work while it
+    /// waits, so there is no point paying that cost when we already know a deployment is
+    /// running. The actual mutual exclusion — over ad-hoc scripts too, and without a
+    /// check-to-swap gap — is the gate acquisition in
+    /// <see cref="CheckAndApplyUpdateAsync"/>.
+    /// </para>
+    /// <para>
+    /// <paramref name="contractRefused"/> overrides the window and the connected term, and
+    /// nothing else. It is the escape hatch from a wire-contract refusal, which is otherwise a
+    /// DEADLOCK rather than a delay: the server answers 426 on the handshake, so
+    /// <c>IServerLink.IsConnected</c> can never become true, so a swap gated on it can never
+    /// happen, so the binary that would fix the refusal is never installed. Bumping the
+    /// contract on a fleet meant touching every target by hand.
+    /// </para>
+    /// <para>
+    /// Overriding both terms is deliberate, and each has a reason it does not apply here. The
+    /// connected term exists so a swap does not strand an agent mid-conversation — a refused
+    /// agent has no conversation to strand. The window exists so a restart does not disrupt
+    /// work — a refused agent cannot be sent work at all, and honouring the window would leave
+    /// it dark until 02:00–04:00 local, up to ~22 h after a server upgrade, for no protection
+    /// gained. What is NOT overridden is everything that actually protects running work:
+    /// <paramref name="deploymentInFlight"/> (a deployment that started before the server was
+    /// upgraded keeps running locally), the server-side <c>task-in-flight</c> probe, which
+    /// answers over REST independently of the contract and fails closed, and the machine gate's
+    /// EXCLUSIVE side.
+    /// </para>
     /// </summary>
-    internal static bool CanSwapNow(bool inMaintenanceWindow, bool deploymentInFlight, bool connected)
-        => inMaintenanceWindow && !deploymentInFlight && connected;
+    internal static bool CanSwapNow(
+        bool inMaintenanceWindow, bool deploymentInFlight, bool connected, bool contractRefused)
+        => !deploymentInFlight && (contractRefused || (inMaintenanceWindow && connected));
 
     /// <summary>
     /// C6 — true when the new version has already been probed <paramref name="maxAttempts"/>
@@ -314,34 +872,12 @@ public sealed class AgentUpdateService(
     /// pre-exit failure leaves the current binary running (no exit).
     /// </summary>
     private async Task ApplyUpdateAsync(
-        string downloadPath, string archiveExt, string versionDir, string markerPath,
-        AgentUpdateConfig cfg, string currentVersion, AgentUpdateInfo info, CancellationToken ct)
+        string downloadPath, string installDir, string archiveExt, string versionDir,
+        string markerPath, AgentUpdateConfig cfg, string currentVersion,
+        AgentUpdateInfo info, CancellationToken ct)
     {
-        var currentExe = Environment.ProcessPath;
-        var installDir = string.IsNullOrEmpty(currentExe) ? null : Path.GetDirectoryName(currentExe);
-        if (string.IsNullOrEmpty(installDir))
-        {
-            logger.LogError("Cannot determine the agent install directory for auto-update.");
-            return;
-        }
-
-        // C6: refuse to swap unless THIS process is the agent's own apphost. When
-        // the agent is launched framework-dependent (`dotnet KrakenDeploy.Agent.dll`),
-        // Environment.ProcessPath is the dotnet muxer and installDir is the shared
-        // .NET runtime directory — a whole-directory swap would clobber the runtime.
-        // A self-contained agent (the only shape the update archive ships) always
-        // runs as its apphost, so this only blocks the unsupported muxer launch.
-        if (!IsAgentApphost(currentExe))
-        {
-            logger.LogError(
-                "Refusing self-upgrade: the running process '{Exe}' is not the agent apphost " +
-                "(framework-dependent / muxer launch?). Swapping '{Dir}' would target the wrong files.",
-                currentExe, installDir);
-            await ReportAsync(AgentUpdateOutcome.SwapFailed,
-                currentVersion, info.LatestVersion, "not running as the agent apphost", ct)
-                .ConfigureAwait(false);
-            return;
-        }
+        // installDir was resolved and validated by ResolveInstallDir BEFORE the machine
+        // gate was taken (F5) — a permanent refusal must not first freeze the box.
 
         // Extract to a fresh staging directory.
         var stagingDir = Path.Combine(versionDir, "staging");
@@ -521,6 +1057,19 @@ public sealed class AgentUpdateService(
     /// Restores the backed-up previous version over the (unhealthy) new install and
     /// exits non-zero so the supervisor relaunches the restored binary. On rollback
     /// failure the marker is retained so the next boot retries.
+    /// <para>
+    /// F5 — this is the SECOND swap window, and it runs under the machine gate's
+    /// EXCLUSIVE side for the same reason as the forward swap: it replaces the whole
+    /// install directory and ends in <c>Environment.Exit</c>. Hardening only the
+    /// forward path would have left the rollback able to pull the directory out from
+    /// under a script that started in the window between a failed health check and this
+    /// call. Best-effort by design: the gate wait is short and a timeout does NOT
+    /// abandon the rollback — an unhealthy binary must be restored even if the box is
+    /// busy, so we proceed ungated rather than leave the agent running a bad build.
+    /// A SHUTTING-DOWN host is the one exception, and it defers instead: there the lease
+    /// is guaranteed absent rather than merely contended, and the marker survives to make
+    /// the next boot retry.
+    /// </para>
     /// </summary>
     private async Task RollBackAsync(
         AgentUpgradeMarker marker, string markerPath, string reason, CancellationToken ct)
@@ -529,33 +1078,194 @@ public sealed class AgentUpdateService(
             "Rolling back self-upgrade to {To}: {Reason}. Restoring {From}.",
             marker.ToVersion, reason, marker.FromVersion);
 
-        string? rollbackError = null;
+        // The lease IS bound now, and that is a fix rather than tidying. It used to be
+        // discarded on the reasoning that Environment.Exit in the finally was the only thing
+        // that ever ended it — true when every path exited, but two paths added later do not:
+        // the shutdown deferral below (which returns before the try) and the shutdown check
+        // inside the finally (which skips the exit). Either one left MachineExecutionGate
+        // write-held by a Releaser nothing would ever dispose — Releaser has no finaliser — so
+        // every later AcquireAsync blocked and the agent accepted no work for the rest of the
+        // process's life. That is the exact "writer held by nobody" the finally was introduced
+        // to prevent. Any path that does NOT exit must dispose it.
+        var (lease, gateOutcome) = await AcquireSwapGateAsync(
+            executionGate, RollbackGateTimeout, ct).ConfigureAwait(false);
+
+        if (gateOutcome == SwapGate.Stopping)
+        {
+            // The host is shutting down. Do NOT restore here, and do NOT exit: the marker
+            // is retained, so the next boot runs the whole probation again with a live
+            // gate. Both halves matter. A restore now would replace the install directory
+            // with NO lease — a shutdown deliberately does not abort a running step, so
+            // one may still be extracting or holding an app pool — and it is the only path
+            // where the lease is guaranteed absent. And Exit(70) during an intentional
+            // stop reports failure to the supervisor, so a Windows service with
+            // FailureActions, a systemd unit with Restart=on-failure or a container with
+            // restart=on-failure relaunches the agent the operator just stopped.
+            logger.LogWarning(
+                "Deferring rollback of {To} to the next boot — the agent is shutting down. " +
+                "The upgrade marker is retained.", marker.ToVersion);
+            // Stopping means AcquireSwapGateAsync returned no lease, so this is belt-and-braces
+            // against a future outcome that does hand one back on this path.
+            lease?.Dispose();
+            return;
+        }
+
+        if (gateOutcome == SwapGate.Busy)
+        {
+            logger.LogWarning(
+                "Rolling back WITHOUT the machine execution gate — work on this machine " +
+                "did not finish within {Timeout}. Restoring an unhealthy binary takes " +
+                "precedence over waiting.", RollbackGateTimeout);
+        }
+
+        // The lease is deliberately NOT scoped to the restore alone: it is held to the
+        // process exit, exactly as the forward swap holds it. Releasing after
+        // RestoreFromBackup would hand the machine to a queued deployment or ad-hoc
+        // script that then starts extracting, stopping app pools and spawning pwsh
+        // against a directory whose assemblies have just been replaced — and be
+        // hard-killed mid-step (and its process tree orphaned) by the Exit below.
+        //
+        // That makes the exit the ONLY thing that ends the lease, so it is in a `finally`.
+        // It was not, and the lease leaked for the life of the process: ReportAsync's old
+        // catch filter let an HttpClient timeout (a TaskCanceledException, raised even on
+        // CancellationToken.None) escape past the exit, where ExecuteAsync's probation
+        // handler swallowed it as "shutting down". The gate then had a writer held by
+        // nobody — every later wave parked on it forever while the target heartbeated
+        // Online. ReportAsync is fixed at the source too; this is the structural guarantee
+        // that no future statement added here can reopen the same hole.
+        // Shutdown is RE-READ here, not only sampled at gate-acquisition time. The Stopping
+        // branch above is a point-in-time answer, and the acquisition it came from can have
+        // waited up to RollbackGateTimeout (30 s) — a stop that began inside that window landed
+        // on the Busy path instead, which had no shutdown check at all and ran straight through
+        // to Exit(70). Both halves of the Stopping rationale apply just as much here: an
+        // ungated restore during a stop can replace the install directory under a step that a
+        // graceful stop deliberately does not abort, and Exit(70) tells the supervisor this run
+        // FAILED, so a Windows service with FailureActions / a systemd unit with
+        // Restart=on-failure / a container with restart=on-failure relaunches the agent the
+        // operator just stopped. Deferring costs one boot; the marker is retained.
+        if (ct.IsCancellationRequested)
+        {
+            logger.LogWarning(
+                "Deferring rollback of {To} to the next boot — the agent began shutting down " +
+                "while the rollback waited for the machine. The upgrade marker is retained.",
+                marker.ToVersion);
+            // Not exiting, so the lease must go back — otherwise the gate stays write-held for
+            // the rest of the process's life and the shutdown drain blocks on it.
+            lease?.Dispose();
+            return;
+        }
+
         try
         {
-            SelfUpdateFileOps.RestoreFromBackup(
-                marker.InstallDir, marker.BackupDir, marker.InstallDir + ".failed");
-            AgentUpgradeMarker.Delete(markerPath);
-            logger.LogWarning(
-                "Rollback complete. Exiting so the supervisor relaunches {From}.",
-                marker.FromVersion);
+            string? rollbackError = null;
+            try
+            {
+                SelfUpdateFileOps.RestoreFromBackup(
+                    marker.InstallDir, marker.BackupDir, marker.InstallDir + ".failed");
+                AgentUpgradeMarker.Delete(markerPath);
+                // Remember that THIS version failed its health gate, before the marker goes.
+                // Nothing else survives the restart, and without it the next check interval
+                // swaps the same broken build again — indefinitely for a contract-refused agent,
+                // which bypasses the maintenance window that used to bound the loop.
+                MarkVersionRolledBack(markerPath, marker.ToVersion);
+                logger.LogWarning(
+                    "Rollback complete. Exiting so the supervisor relaunches {From}.",
+                    marker.FromVersion);
+            }
+            catch (Exception ex)
+            {
+                // Leave the marker in place so the next boot retries the rollback.
+                rollbackError = ex.Message;
+                logger.LogCritical(ex,
+                    "Rollback FAILED. Manual intervention may be required: restore '{Backup}' " +
+                    "over '{Install}'.", marker.BackupDir, marker.InstallDir);
+            }
+
+            // CancellationToken.None: the report must outlive a stopping host — a cancelled
+            // report would leave the server with no record of the rollback at all.
+            await ReportAsync(AgentUpdateOutcome.RolledBack,
+                marker.FromVersion, marker.ToVersion,
+                rollbackError is null ? reason : $"rollback FAILED: {rollbackError}",
+                CancellationToken.None).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            // Leave the marker in place so the next boot retries the rollback.
-            rollbackError = ex.Message;
+            // Logged HERE rather than left to propagate, because it cannot propagate: the
+            // finally below calls Environment.Exit, which never returns, so an exception in
+            // flight is discarded silently along with the rest of the unwind. The restore has
+            // its own catch and ReportAsync swallows, so nothing is expected to reach this —
+            // which is exactly why a future statement added above would vanish without it.
             logger.LogCritical(ex,
-                "Rollback FAILED. Manual intervention may be required: restore '{Backup}' " +
-                "over '{Install}'.", marker.BackupDir, marker.InstallDir);
+                "Unexpected failure while rolling back to {From}; exiting anyway so the " +
+                "supervisor relaunches.", marker.FromVersion);
+        }
+        finally
+        {
+            // Exit so the supervisor relaunches the (restored) previous binary. The lease
+            // (when we got one) dies with the process, undisposed by design — see above.
+            // No `_ = gate` pin: a discard of a local read emits no IL, so it pinned
+            // nothing; the lease survives because Releaser has no finalizer and
+            // Environment.Exit runs none anyway.
+            await Task.Delay(500, CancellationToken.None).ConfigureAwait(false);
+
+            // Last re-read of shutdown, for the 500 ms above plus however long the report
+            // took. Same reason as the pre-restore check: Exit(70) during an INTENTIONAL stop
+            // is a failure signal to the supervisor, which then relaunches the agent the
+            // operator just stopped. The binary is already restored and the marker deleted, so
+            // letting the host finish its own graceful stop reaches the same place — the next
+            // start runs the restored version — without the spurious failure exit.
+            // (No `return` — C# forbids leaving a finally block, hence the if/else.)
+            if (ct.IsCancellationRequested)
+            {
+                logger.LogWarning(
+                    "Rollback to {From} is complete, but the agent is already shutting down — " +
+                    "leaving the exit to the host rather than reporting a failure code to the " +
+                    "supervisor. The restored binary starts on the next launch.",
+                    marker.FromVersion);
+                // This is the path that made binding the lease necessary: we are NOT exiting,
+                // so nothing else will ever end it, and the host's own shutdown drain is about
+                // to wait on this very gate.
+                lease?.Dispose();
+            }
+            else
+            {
+                Environment.Exit(70); // non-zero: this run failed its health gate
+            }
+        }
+    }
+
+    /// <summary>
+    /// Drops <see cref="RolledBackSentinel"/> beside the staged archive for
+    /// <paramref name="version"/>. Best-effort: a failure here costs the loop bound, not
+    /// correctness, and must not derail a rollback that is already on its way to
+    /// <see cref="Environment.Exit"/>.
+    /// </summary>
+    private void MarkVersionRolledBack(string markerPath, string? version)
+    {
+        if (string.IsNullOrEmpty(version))
+        {
+            return;
         }
 
-        await ReportAsync(AgentUpdateOutcome.RolledBack,
-            marker.FromVersion, marker.ToVersion,
-            rollbackError is null ? reason : $"rollback FAILED: {rollbackError}",
-            ct).ConfigureAwait(false);
-
-        // Exit so the supervisor relaunches the (restored) previous binary.
-        await Task.Delay(500, CancellationToken.None).ConfigureAwait(false);
-        Environment.Exit(70); // non-zero: this run failed its health gate
+        try
+        {
+            var updatesDir = Path.GetDirectoryName(markerPath);
+            if (string.IsNullOrEmpty(updatesDir))
+            {
+                return;
+            }
+            var versionDir = Path.Combine(updatesDir, version);
+            Directory.CreateDirectory(versionDir);
+            File.WriteAllText(
+                Path.Combine(versionDir, RolledBackSentinel),
+                $"Health gate failed on this machine; rolled back at {timeProvider.GetUtcNow():O}.");
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex,
+                "Could not record that {Version} was rolled back. The rollback itself stands, " +
+                "but this agent may retry the same failing version on its next check.", version);
+        }
     }
 
     /// <summary>
@@ -621,18 +1331,42 @@ public sealed class AgentUpdateService(
 
     /// <summary>
     /// C6 — best-effort report of a self-upgrade outcome to the server so it is
-    /// visible as an audit entry on the target. Never throws.
+    /// visible as an audit entry on the target.
+    /// <para>
+    /// NEVER THROWS unless <paramref name="ct"/> itself is cancelled, and callers rely on
+    /// that literally: <see cref="RollBackAsync"/> reports on the way to
+    /// <c>Environment.Exit</c> while holding the machine lease. The filter used to be
+    /// <c>when (ex is not OperationCanceledException)</c>, which looked equivalent but was
+    /// not — <see cref="HttpClient"/> raises its OWN <see cref="TaskCanceledException"/>
+    /// (an OCE) when <see cref="HttpClient.Timeout"/> elapses, regardless of the token
+    /// passed, so a server that accepted the connection and then stalled made this method
+    /// throw even on <see cref="CancellationToken.None"/>. Discriminating on the CALLER's
+    /// token instead is what makes the contract true: a genuine host shutdown still
+    /// propagates, a stalled server never does.
+    /// </para>
     /// </summary>
-    private async Task ReportAsync(
+    /// <summary>
+    /// Best-effort update-status report. Returns <c>true</c> only when the server actually
+    /// ACCEPTED it — the deferral suppressor keys off that, because a suppressor that
+    /// latches on an attempt drops the one report whose cause is "the server did not
+    /// answer". Callers that do not care may ignore the result.
+    /// </summary>
+    private async Task<bool> ReportAsync(
         string outcome, string? from, string? to, string? detail, CancellationToken ct)
     {
+        // Bounded independently of HttpClient.Timeout (100 s). A report is best-effort
+        // telemetry, and every caller is either on the machine-lease path or on the way to
+        // process exit, so a stalled server must cost seconds, not a minute and a half.
+        using var callTimeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        callTimeout.CancelAfter(ReportTimeout);
+
         try
         {
             var identity = context.Identity;
             if (identity is null || string.IsNullOrEmpty(identity.ServerUrl))
             {
                 logger.LogDebug("Cannot report update outcome {Outcome} — identity not ready.", outcome);
-                return;
+                return false;
             }
 
             var url = $"{identity.ServerUrl.TrimEnd('/')}/api/agents/update-status";
@@ -643,18 +1377,27 @@ public sealed class AgentUpdateService(
             };
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", identity.AgentToken);
 
-            using var resp = await _http.SendAsync(req, ct).ConfigureAwait(false);
+            using var resp = await _http.SendAsync(req, callTimeout.Token).ConfigureAwait(false);
             if (!resp.IsSuccessStatusCode)
             {
                 logger.LogWarning(
                     "Update-status report ({Outcome}) returned {Status}.",
                     outcome, (int)resp.StatusCode);
+                return false;
             }
+            return true;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The CALLER asked to stop. Only this may escape, and only for callers that
+            // passed a real token — RollBackAsync deliberately passes None.
+            throw;
+        }
+        catch (Exception ex)
         {
             logger.LogWarning(ex,
                 "Failed to report update outcome {Outcome} to server (best-effort).", outcome);
+            return false;
         }
     }
 

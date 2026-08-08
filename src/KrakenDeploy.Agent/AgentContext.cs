@@ -37,6 +37,40 @@ public sealed class AgentContext
     /// <summary>The agent identity. Non-null after <see cref="IdentityReady"/> completes.</summary>
     public AgentIdentity? Identity { get; private set; }
 
+    private volatile bool _contractRefused;
+
+    /// <summary>
+    /// True while the server is refusing this agent's handshake with 426 — its wire contract
+    /// does not match the server's. Set by <c>ServerLinkHostedService</c> when a connect
+    /// attempt fails that way, and cleared as soon as any connect attempt gets past the gate.
+    /// <para>
+    /// This exists for exactly one consumer: <c>AgentUpdateService</c>. A refused agent has no
+    /// hub connection and never will until its binary changes, so the two swap preconditions
+    /// that protect a WORKING agent — "we are connected" and "we are inside the maintenance
+    /// window" — protect nothing here and instead deadlock the only escape route. The connected
+    /// check exists so a swap does not strand an agent mid-conversation, and a refused agent
+    /// has no conversation; the window exists so a restart does not disrupt work, and a refused
+    /// agent can be sent none. Leaving both in place meant a contract bump required a manual
+    /// reinstall on every target, or at best left every agent dark until its next window
+    /// (default 02:00–04:00 local, so up to ~22 h).
+    /// </para>
+    /// <para>
+    /// What still guards a swap in this state, and why it is enough: the in-flight deployment
+    /// check, the server-side <c>GET /api/agents/task-in-flight</c> probe (which answers over
+    /// REST, is contract-agnostic, and fails CLOSED on any unclear answer), and the machine
+    /// execution gate's EXCLUSIVE side, which waits out the ad-hoc scripts the in-flight check
+    /// cannot see.
+    /// </para>
+    /// </summary>
+    public bool ContractRefused => _contractRefused;
+
+    /// <summary>
+    /// Records whether the server is currently refusing this agent's wire contract. Called on
+    /// every connect outcome so the flag tracks the live situation rather than latching — an
+    /// agent that upgrades, connects, and is later refused again must be able to escape twice.
+    /// </summary>
+    internal void SetContractRefused(bool refused) => _contractRefused = refused;
+
     /// <summary>
     /// Transport mode assigned by the server during registration.
     /// Defaults to <c>Reverse</c> for existing identities that predate this field.

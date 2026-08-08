@@ -1,8 +1,11 @@
 using System.IdentityModel.Tokens.Jwt;
+using System.Net;
 using System.Security.Claims;
 using System.Text;
 using FluentAssertions;
+using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Core.Domain.Accounts;
+using KrakenDeploy.Server.Core.Domain.Audit;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using KrakenDeploy.Server.Core.Domain.Targets;
@@ -79,8 +82,18 @@ public sealed class MultiAccountAgentTransportE2ETests(MultiAccountAgentTranspor
         // The host-derived account is recorded on the registry — this is exactly the
         // value the cross-account dispatch guard (DeploymentWorker / AdhocDispatcher)
         // compares the dispatch account against.
-        registry.HasConnectionFor(targetId).Should().BeTrue();
         registry.GetAccountForTarget(targetId).Should().Be(fixture.Alpha.AccountId);
+
+        // CONNECTED (liveness) — the hub accepted the socket and tracked it.
+        registry.HasConnectionFor(targetId).Should().BeTrue();
+
+        // ...and therefore dispatchable, with nothing further required. The hub only Adds a
+        // connection whose target resolved in this account, and the wire-contract version was
+        // already verified on the handshake, so there is no second step and no window in
+        // which a tracked connection is not yet eligible.
+        registry.GetConnectionId(targetId).Should().NotBeNull(
+            "the handshake contract gate ran before the connection was admitted, so a " +
+            "tracked connection is a dispatchable one");
     }
 
     [Fact]
@@ -109,6 +122,54 @@ public sealed class MultiAccountAgentTransportE2ETests(MultiAccountAgentTranspor
         registry.GetAccountForTarget(betaTarget).Should().Be(fixture.Beta.AccountId);
     }
 
+    [Theory]
+    [InlineData(true)]   // declares an older wire version
+    [InlineData(false)]  // declares nothing at all
+    public async Task Agent_with_a_skewed_contract_version_is_refused(bool declaresAVersion)
+    {
+        // The property that justifies deleting the registration gate: a version-skewed
+        // agent never becomes a connection. Both shapes must be refused — an older
+        // declared version AND an absent header, because an agent old enough to predate
+        // the header is exactly the case that must not be read as compatible.
+        //
+        // Refusing on the handshake rather than in RegisterAsync is what makes "tracked"
+        // mean "dispatchable". While the check lived in a hub method the server had to
+        // admit a connection it could not yet trust, and a v2 agent reads v3's
+        // AllowParallelTaskExecution = true as "skip the machine gate entirely" — so any
+        // window at all meant an approved script could run with no lock while the server
+        // believed the gate was honoured.
+        var target = await fixture.Alpha.SeedTargetAsync();
+
+        await using var host = await fixture.BuildHostAsync();
+        var registry = host.Services.GetRequiredService<IAgentConnectionRegistry>();
+
+        await using var connection = fixture.BuildConnection(
+            host, fixture.Alpha, target,
+            contract: declaresAVersion
+                ? PresentedContract.Version(AgentContract.CurrentVersion - 1)
+                : PresentedContract.Absent);
+
+        await AssertConnectionRejectedAsync(
+            connection, expectedHandshakeStatus: HttpStatusCode.UpgradeRequired);
+
+        registry.HasConnectionFor(target).Should().BeFalse(
+            "a skewed agent must never enter the registry — the refusal precedes OnConnectedAsync");
+        registry.GetConnectionId(target).Should().BeNull();
+
+        // And it never looked healthy: OnConnectedAsync is what writes Online, and it did
+        // not run. The seeded target keeps the status it was created with.
+        await using var db = fixture.Alpha.OpenContext();
+        (await db.DeploymentTargets.IgnoreQueryFilters().FirstAsync(t => t.Id == target))
+            .Status.Should().NotBe(TargetStatus.Online);
+
+        // The audit row is asserted in AgentContractHandshakeGateTests instead, not here:
+        // this fixture has no AccountResolutionMiddleware, so no tenant database is resolved
+        // at gate time and the (best-effort) audit write cannot succeed. That is a property
+        // of the fixture, not of production — AccountResolutionMiddleware whitelists
+        // /hubs/agent, so the account is pinned from the host before the gate runs. Asserting
+        // the row here would only ever have tested the fixture's wiring.
+    }
+
     [Fact]
     public async Task Agent_presenting_a_foreign_accounts_target_id_is_rejected()
     {
@@ -125,7 +186,15 @@ public sealed class MultiAccountAgentTransportE2ETests(MultiAccountAgentTranspor
 
         await AssertConnectionRejectedAsync(connection);
 
-        registry.HasConnectionFor(betaTarget).Should().BeFalse("a foreign target must not be registered");
+        // `Add` writes the target mapping AND the account side-table together, so if the hub
+        // ever admitted a foreign account's target to the registry (adding before the account
+        // check), these two catch it. HasConnectionFor and GetConnectionId now answer the same
+        // question — the registration flag they used to differ over is gone with the
+        // registration gate — so either is a real guard here; both are asserted because the
+        // pair is what dispatch actually consults.
+        registry.HasConnectionFor(betaTarget).Should().BeFalse(
+            "a foreign account's target must never enter the registry at all");
+        registry.GetConnectionId(betaTarget).Should().BeNull();
         registry.GetAccountForTarget(betaTarget).Should().BeNull();
 
         // Beta's own target was never touched (its agent never reached beta's account).
@@ -163,14 +232,55 @@ public sealed class MultiAccountAgentTransportE2ETests(MultiAccountAgentTranspor
             .Status.Should().Be(TargetStatus.Offline, "the hub never ran, so nothing was marked online");
     }
 
+    [Theory]
+    // The real negotiate, unauthenticated: the hub endpoint's
+    // [Authorize(AuthenticationSchemes = "AgentJwt")] must be enforced BEFORE the gate.
+    [InlineData("/hubs/agent/negotiate", HttpStatusCode.Unauthorized)]
+    // A sub-path that matches NO endpoint: routing has nothing to authorize and the gate
+    // must not fire either. Under the old path-matched gate this reached the refusal branch
+    // with whatever principal happened to be present, and wrote an audit row.
+    [InlineData("/hubs/agent/x", HttpStatusCode.NotFound)]
+    public async Task The_gate_is_unreachable_without_a_valid_agent_credential(
+        string path, HttpStatusCode expected)
+    {
+        // Finding 4: the gate reads NameIdentifier off context.User with no scheme check, so
+        // whether it can be reached by a non-agent principal is the whole question. Scoping
+        // it to the hub ENDPOINT answers it structurally — the endpoint carries the authorize
+        // metadata, so UseAuthorization short-circuits first, and a path that matches no
+        // endpoint carries no marker so the gate never runs.
+        await using var host = await fixture.BuildHostAsync();
+        var server = (TestServer)host.Services.GetRequiredService<IServer>();
+        using var client = server.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"http://{fixture.Alpha.Host}{path}");
+        // A skewed contract header, so a gate that DID run would answer 426 and this test
+        // would fail with a concrete diagnosis rather than a vague one.
+        request.Headers.Add(AgentContract.VersionHeader, "1");
+
+        using var response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(expected,
+            "426 here would mean the wire-contract gate ran on a request that carried no " +
+            "agent credential");
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     /// <summary>
     /// Asserts the server rejects the connection: either <c>StartAsync</c> throws
-    /// (abort during the handshake), or the connection is closed by the server
-    /// shortly after connecting (abort inside the hub's <c>OnConnectedAsync</c>).
+    /// (refused during the handshake), or the connection is closed by the server shortly
+    /// after connecting (aborted inside the hub's <c>OnConnectedAsync</c> or a hub filter).
+    /// <para>
+    /// Pass <paramref name="expectedHandshakeStatus"/> whenever the rejection is supposed
+    /// to be a specific status. Without it this helper cannot tell one failure from another
+    /// — a bare <c>try { … } catch { return; }</c> passes for a 500 and for a 401, and 401
+    /// is the one that matters: it routes the agent's reconnect policy to the auth lane,
+    /// whose operator instruction is "re-enroll this agent", which is the wrong action for
+    /// a version skew and the right one for a revoked token.
+    /// </para>
     /// </summary>
-    private static async Task AssertConnectionRejectedAsync(HubConnection connection)
+    private static async Task AssertConnectionRejectedAsync(
+        HubConnection connection, HttpStatusCode? expectedHandshakeStatus = null)
     {
         var closed = new TaskCompletionSource();
         connection.Closed += _ => { closed.TrySetResult(); return Task.CompletedTask; };
@@ -179,10 +289,19 @@ public sealed class MultiAccountAgentTransportE2ETests(MultiAccountAgentTranspor
         {
             await connection.StartAsync();
         }
-        catch
+        catch (Exception ex)
         {
+            if (expectedHandshakeStatus is { } status)
+            {
+                ex.Should().BeOfType<HttpRequestException>(
+                    "a handshake refusal must surface as an HTTP failure the agent can route on");
+                ((HttpRequestException)ex).StatusCode.Should().Be(status);
+            }
             return; // rejected during the handshake — that is the rejection.
         }
+
+        expectedHandshakeStatus.Should().BeNull(
+            "the refusal was supposed to happen during the handshake, but StartAsync succeeded");
 
         // Transport connected; the server must abort it from within the pipeline.
         var completed = await Task.WhenAny(closed.Task, Task.Delay(TimeSpan.FromSeconds(15)));

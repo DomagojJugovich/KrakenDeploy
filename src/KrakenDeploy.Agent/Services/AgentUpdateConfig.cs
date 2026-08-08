@@ -35,4 +35,35 @@ public sealed class AgentUpdateConfig
     /// never trip the timeout). Default 3.
     /// </summary>
     public int MaxHealthAttempts { get; set; } = 3;
+
+    /// <summary>
+    /// F5 (locked decision P8) — how long the swap may wait for the machine
+    /// execution gate's EXCLUSIVE side before giving up and retrying next tick.
+    /// <para>
+    /// The gate is writer-fair, so queueing here also BLOCKS new work from starting.
+    /// That is the point — the swap must not begin while anything is running, and the
+    /// old <c>IsExecuting</c> pre-check was both blind to ad-hoc work and a TOCTOU —
+    /// but it is why the wait must be BOUNDED: an unbounded one would let a wedged
+    /// holder stop the agent from accepting work for the rest of the process's life.
+    /// On expiry nothing is swapped, the queued writer leaves, work resumes, and the
+    /// next tick tries again.
+    /// </para>
+    /// <para>
+    /// Default 2 minutes, and it must stay comfortably below TWO other durations —
+    /// <see cref="AgentUpdateConfigValidator"/> enforces the first and documents the
+    /// second:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><see cref="CheckInterval"/>. At equal values (the shipped 5/5 pair, now
+    ///     corrected) <see cref="PeriodicTimer"/> has a coalesced tick waiting the
+    ///     instant the wait expires, so the updater re-queues a machine-blocking writer
+    ///     back-to-back and blocks work for essentially the whole maintenance window
+    ///     without ever completing a swap.</item>
+    ///   <item><c>Adhoc:MaxTotalDuration</c> (also 5 min). An ad-hoc script's budget
+    ///     spans its queue wait, so a swap window as long as that budget guarantees any
+    ///     script arriving behind the queued writer is refused on its own deadline —
+    ///     and refused with a message blaming a holder that never existed.</item>
+    /// </list>
+    /// </summary>
+    public TimeSpan SwapGateTimeout { get; set; } = TimeSpan.FromMinutes(2);
 }

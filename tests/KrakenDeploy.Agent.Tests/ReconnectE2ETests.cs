@@ -6,6 +6,7 @@ using KrakenDeploy.Contracts.Adhoc;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -191,6 +192,137 @@ public sealed class ReconnectE2ETests
             // ShutdownTimeout and the test takes a silent extra minute.
             await link.DisposeAsync();
             await StopHostAsync(host);
+        }
+    }
+
+    // ── Framework behaviour these designs rest on ──────────────────────────
+    //
+    // Both tests below assert what SignalR DOES, not what KrakenDeploy does. They exist
+    // because three consecutive review rounds of this work package shipped fixes whose
+    // premise about this exact behaviour was wrong, in both directions — a pacing delay put
+    // where nothing could wake it, then that delay deleted on the grounds that nothing could
+    // wake it either. If a framework upgrade changes either answer, the pacing design in
+    // ServerLinkHostedService and AgentReconnectPolicy needs revisiting, and these are what
+    // will say so.
+
+    [Theory]
+    [InlineData(true)]   // OnConnectedAsync throws (e.g. a saturated tenant database)
+    [InlineData(false)]  // OnConnectedAsync calls Context.Abort() (unknown / retired target)
+    public async Task A_server_side_rejection_fires_Closed_and_never_reconnects(bool byThrowing)
+    {
+        // The load-bearing facts, in order:
+        //   1. StartAsync SUCCEEDS. The handshake completes before the hub's
+        //      OnConnectedAsync runs, so a rejection there is not an initial-connect failure
+        //      and the supervisor's connect-lane pacing never sees it.
+        //   2. Closed FIRES — so the supervision loop's park DOES release, which is what
+        //      makes the loop the right place to pace this.
+        //   3. Reconnecting NEVER fires and the retry policy is NEVER consulted — so a
+        //      counter fed from the Reconnecting event (the deleted "churn lane") could not
+        //      observe this failure at all, in either the throw or the Abort shape.
+        var recorder = new HubCallRecorder();
+        var events = new ConcurrentQueue<string>();
+        var policyConsulted = 0;
+
+        var builder = WebApplication.CreateSlimBuilder();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Logging.ClearProviders();
+        builder.Services.AddSingleton(recorder);
+        builder.Services.AddSingleton(new RejectionMode(byThrowing));
+        builder.Services.AddSignalR();
+        var host = builder.Build();
+        host.MapHub<RejectingHub>("/hubs/agent");
+        await host.StartAsync();
+
+        var connection = new HubConnectionBuilder()
+            .WithUrl($"http://127.0.0.1:{BoundPort(host)}/hubs/agent")
+            .WithAutomaticReconnect(new CountingRetryPolicy(() => Interlocked.Increment(ref policyConsulted)))
+            .Build();
+        connection.Reconnecting += _ => { events.Enqueue("Reconnecting"); return Task.CompletedTask; };
+        connection.Closed += _ => { events.Enqueue("Closed"); return Task.CompletedTask; };
+
+        try
+        {
+            await connection.StartAsync();
+            connection.State.Should().Be(HubConnectionState.Connected,
+                "the handshake completes before OnConnectedAsync runs, so a rejection there " +
+                "cannot present as an initial-connect failure");
+
+            await WaitUntilAsync(() => events.Contains("Closed"), TestTimeout,
+                "a server-side rejection must surface as a permanent close");
+
+            events.Should().NotContain("Reconnecting",
+                "automatic reconnect is never engaged, so nothing fed from that event can " +
+                "pace this failure");
+            policyConsulted.Should().Be(0, "the retry policy is never consulted either");
+            connection.State.Should().Be(HubConnectionState.Disconnected);
+        }
+        finally
+        {
+            await connection.DisposeAsync();
+            await StopHostAsync(host);
+        }
+    }
+
+    [Fact]
+    public async Task A_transport_drop_computes_the_retry_delay_before_raising_Reconnecting()
+    {
+        // The second half of why the churn lane went. For the drop it COULD observe,
+        // HubConnection.ReconnectAsync calls GetNextRetryDelay(...) and only then raises
+        // Reconnecting (fire-and-forget). A counter incremented from that event therefore
+        // lagged the delay it was meant to pace by a whole episode: the first attempt read
+        // zero and returned TimeSpan.Zero, so production emitted 0, 1s, 2s, 4s while the
+        // test asserted 1s, 2s, 4s, 8s.
+        var recorder = new HubCallRecorder();
+        var order = new ConcurrentQueue<string>();
+
+        var host = await StartHubHostAsync(port: 0, recorder);
+        var connection = new HubConnectionBuilder()
+            .WithUrl($"http://127.0.0.1:{BoundPort(host)}/hubs/agent")
+            .WithAutomaticReconnect(new CountingRetryPolicy(
+                () => order.Enqueue("NextRetryDelay"), TimeSpan.FromMilliseconds(200)))
+            .Build();
+        connection.Reconnecting += _ => { order.Enqueue("Reconnecting"); return Task.CompletedTask; };
+
+        try
+        {
+            await connection.StartAsync();
+            await StopHostAsync(host);   // a genuine transport drop, not a rejection
+
+            await WaitUntilAsync(() => order.Count >= 2, TestTimeout,
+                "the client must both consult the policy and raise Reconnecting");
+
+            order.Take(2).Should().Equal(["NextRetryDelay", "Reconnecting"],
+                "the delay is computed BEFORE the event that would have updated the counter");
+        }
+        finally
+        {
+            await connection.DisposeAsync();
+        }
+    }
+
+    /// <summary>Which shape of server-side rejection <see cref="RejectingHub"/> performs.</summary>
+    public sealed record RejectionMode(bool ByThrowing);
+
+    public sealed class RejectingHub(RejectionMode mode) : Hub
+    {
+        public override Task OnConnectedAsync()
+        {
+            if (mode.ByThrowing)
+            {
+                throw new InvalidOperationException("tenant database unavailable");
+            }
+            Context.Abort();
+            return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>Records that the client consulted the retry policy, and when.</summary>
+    private sealed class CountingRetryPolicy(Action onConsulted, TimeSpan? delay = null) : IRetryPolicy
+    {
+        public TimeSpan? NextRetryDelay(RetryContext retryContext)
+        {
+            onConsulted();
+            return delay ?? TimeSpan.FromMilliseconds(200);
         }
     }
 

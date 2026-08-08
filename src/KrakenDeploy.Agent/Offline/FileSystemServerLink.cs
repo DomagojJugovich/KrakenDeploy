@@ -64,6 +64,10 @@ public sealed class FileSystemServerLink(
     public void OnClosed(Func<Exception?, Task> handler) { }
     public void OnReconnected(Func<Task> handler) { }
 
+    // No handshake, so no wire-contract refusal to report: an offline drop bundle carries its
+    // own plan and never negotiates with a server.
+    public void OnContractRefused(Action<bool> handler) { }
+
     public Task AppendLogAsync(
         Guid deploymentId, Guid dispatchId, int stepIndex, string level, string message,
         CancellationToken ct)

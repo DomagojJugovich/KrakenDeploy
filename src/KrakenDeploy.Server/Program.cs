@@ -655,6 +655,9 @@ public static class Program
         builder.Services.AddScoped<TargetDecommissioner>();
         builder.Services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
         builder.Services.AddSingleton<TargetStatusPublisher>();
+        // Scoped: it writes to the request's tenant DB. Resolved by
+        // AgentContractHandshakeGate only when a handshake is actually refused.
+        builder.Services.AddScoped<IAgentContractRefusalRecorder, AgentContractRefusalRecorder>();
         builder.Services.AddSingleton<ServerAgentUpdateService>();
         builder.Services.AddSingleton<LicenseService>();
         // ILicenseGate forwards to the same LicenseService instance — the
@@ -1032,6 +1035,15 @@ public static class Program
         app.UseAuthentication();
         app.UseAuthorization();
 
+        // B6/F5 — agent wire-contract gate on the SignalR handshake. Scoped by the
+        // RequiresAgentContract metadata on the MapHub below, not by a path string, so a
+        // renamed or proxy-rewritten route cannot leave it silently admitting everything.
+        // Mounted AFTER UseAuthentication/UseAuthorization on purpose, and that ordering
+        // does two jobs: the refusal can be audited against the target named by the agent
+        // JWT, and the hub's [Authorize(AuthenticationSchemes = "AgentJwt")] is enforced
+        // first — so a browser session cannot reach the gate at all.
+        app.UseAgentContractGate();
+
         // Enforces the per-endpoint "agent-register" policy below. No global
         // limiter is configured, so this only affects endpoints that opt in.
         app.UseRateLimiter();
@@ -1118,7 +1130,13 @@ public static class Program
             return Results.Empty;
         }).AllowAnonymous();
 
-        app.MapHub<AgentHub>("/hubs/agent");
+        // The marker is what AgentContractHandshakeGate keys off. MapHub produces TWO
+        // endpoints — the negotiate POST and the transport request — and the convention
+        // builder stamps both, so the gate covers the WebSocket upgrade as well as the
+        // negotiate. Removing this line disables the wire-contract gate; the endpoint is
+        // the only place that fact is expressed.
+        app.MapHub<AgentHub>("/hubs/agent")
+            .WithMetadata(new RequiresAgentContract());
         app.MapHub<UiHub>("/hubs/ui");
 
         // M11.B — MCP Streamable HTTP transport. The endpoint itself
@@ -1242,8 +1260,18 @@ public static class Program
                 }
 
                 var db = http.RequestServices.GetRequiredService<KrakenDbContext>();
+                // IgnoreQueryFilters, and therefore a query rather than FindAsync:
+                // DeploymentTarget is ISpaceScoped, an untracked FindAsync APPLIES the
+                // global Space filter, and on an agent-authenticated request no page has
+                // resolved a Space so HttpSpaceContext falls back to the Default one. Every
+                // target outside that Space therefore resolved to null and this endpoint
+                // answered a confident "no update available" — self-upgrade was silently
+                // dead for the whole install, with no error anywhere, and the operator's
+                // per-target AutoUpdateEnabled switch had no effect.
                 var target = await db.DeploymentTargets
-                    .FindAsync(new object[] { targetId }, ct)
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(t => t.Id == targetId, ct)
                     .ConfigureAwait(false);
 
                 if (target is null || !target.AutoUpdateEnabled)
@@ -1255,6 +1283,66 @@ public static class Program
                 // mandatory server-computed SHA-256 and both contract versions
                 // when an update is available.
                 return Results.Ok(updateSvc.GetUpdateInfo(rid, currentVersion));
+            }).RequireAuthorization(agentUpdateAuthPolicy);
+
+        // F5 — "does the server still have work for me?", asked by the agent
+        // immediately before a self-upgrade swap. The agent's machine gate is released
+        // at every WAVE boundary, so local state cannot see that a multi-wave
+        // deployment is still mid-plan; only the server sees whole plans. The target id
+        // comes from the agent JWT, never a parameter, so an agent can only ask about
+        // itself, and the answer carries no project/environment/variable detail.
+        // Deliberately says IN FLIGHT when the target cannot be resolved: this is
+        // consumed fail-closed, and refusing to swap is always the safe answer.
+        app.MapGet("/api/agents/task-in-flight",
+            async (HttpContext http, CancellationToken ct) =>
+            {
+                var targetIdClaim = http.User.FindFirst(
+                    System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+                if (targetIdClaim is null || !Guid.TryParse(targetIdClaim, out var targetId))
+                {
+                    return Results.Ok(new AgentTaskInFlightResponse(
+                        true, "the agent identity could not be resolved"));
+                }
+
+                var db = http.RequestServices.GetRequiredService<KrakenDbContext>();
+
+                // The agent JWT signing key is platform-global and the ACCOUNT is
+                // resolved from the request Host, so the two are not bound to each other
+                // on the REST surface (the filter that reconciles them is hub-only). An
+                // agent enrolled in account A that reaches account B's subdomain — a
+                // re-pointed Server:Url, a Host rewrite, a shared CNAME — would otherwise
+                // find 0 rows in B's database and be told a confident "idle" about a
+                // target whose plan is live in A. Confirm the target exists HERE first,
+                // and treat an unresolvable one as in flight.
+                var targetExists = await db.DeploymentTargets
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .AnyAsync(t => t.Id == targetId, ct)
+                    .ConfigureAwait(false);
+                if (!targetExists)
+                {
+                    return Results.Ok(new AgentTaskInFlightResponse(
+                        true, "this target is not known to the account serving this request"));
+                }
+
+                // Non-terminal == in flight, expressed through the SINGLE AUTHORITY for
+                // that classification rather than re-inlined here: DeploymentStatusExtensions
+                // documents itself as such precisely because the terminal set "had already
+                // diverged between call sites".
+                //
+                // The predicate now lives in AgentTaskInFlightQuery, in Server.Data, for one
+                // reason: while it was inline here it had no test, and deleting the negation
+                // left the whole suite green. It is the single most consequential boolean the
+                // agent consumes — a "no" is licence to replace its install directory and
+                // exit — so it is now exercised over every DeploymentStatus against a real
+                // database. Every subtlety (why negation rather than enumeration, why
+                // IgnoreQueryFilters, why Queued counts) is documented there.
+                var inFlight = await db.AnyNonTerminalForTargetAsync(targetId, ct)
+                    .ConfigureAwait(false);
+
+                return Results.Ok(new AgentTaskInFlightResponse(
+                    inFlight,
+                    inFlight ? "a non-terminal task is assigned to this target" : null));
             }).RequireAuthorization(agentUpdateAuthPolicy);
 
         // C6 — agent self-upgrade outcome report. The agent POSTs the result of
@@ -1277,8 +1365,19 @@ public static class Program
                 }
 
                 var db = http.RequestServices.GetRequiredService<KrakenDbContext>();
+                // IgnoreQueryFilters, and therefore a query rather than FindAsync — same
+                // reason as update-info above: an untracked FindAsync on an ISpaceScoped
+                // entity applies the global Space filter, which on an agent request is the
+                // Default Space, so every target outside it answered 404 and the whole
+                // self-upgrade audit trail (applied / rolled back / failed / deferred) was
+                // discarded for multi-Space installs. The row's Space is stamped explicitly
+                // below from the target itself, so reading past the filter does not change
+                // where it lands. AsNoTracking: only SpaceId and Name are read, and the
+                // audit row is Added explicitly rather than derived from the tracker.
                 var target = await db.DeploymentTargets
-                    .FindAsync(new object[] { targetId }, ct)
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(t => t.Id == targetId, ct)
                     .ConfigureAwait(false);
                 if (target is null)
                 {
@@ -1287,9 +1386,14 @@ public static class Program
 
                 var eventType = report.Outcome switch
                 {
-                    AgentUpdateOutcome.Succeeded  => AuditEventType.AgentUpdateApplied,
-                    AgentUpdateOutcome.RolledBack => AuditEventType.AgentUpdateRolledBack,
-                    _                             => AuditEventType.AgentUpdateFailed,
+                    AgentUpdateOutcome.Succeeded    => AuditEventType.AgentUpdateApplied,
+                    AgentUpdateOutcome.RolledBack   => AuditEventType.AgentUpdateRolledBack,
+                    // F5 — a deferral is NOT a failure: nothing was touched and the next
+                    // check retries. It recurs once per check interval on a busy box, so
+                    // the default arm filed up to ~24 bogus "update failed" audit rows,
+                    // Warning logs and subscription deliveries per target per night.
+                    AgentUpdateOutcome.SwapDeferred => AuditEventType.AgentUpdateDeferred,
+                    _                               => AuditEventType.AgentUpdateFailed,
                 };
 
                 var detail =
@@ -1317,7 +1421,11 @@ public static class Program
                 await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
                 loggerFactory.CreateLogger("AgentUpdate").Log(
+                    // A deferral is routine on a busy box and recurs per check interval,
+                    // so it logs at Information alongside success; only real refusals and
+                    // rollbacks warrant Warning.
                     report.Outcome is AgentUpdateOutcome.Succeeded
+                                   or AgentUpdateOutcome.SwapDeferred
                         ? LogLevel.Information : LogLevel.Warning,
                     "Agent {TargetId} ({Name}) reported self-upgrade outcome {Outcome} " +
                     "({From} -> {To}).",

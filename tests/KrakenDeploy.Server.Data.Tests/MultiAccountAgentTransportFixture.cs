@@ -1,6 +1,8 @@
+using System.Globalization;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using KrakenDeploy.Contracts;
 using KrakenDeploy.Server.Core.Domain.Accounts;
 using KrakenDeploy.Server.Core.Domain.Common;
 using KrakenDeploy.Server.Core.Domain.Targets;
@@ -24,6 +26,21 @@ using Npgsql;
 using Testcontainers.PostgreSql;
 
 namespace KrakenDeploy.Server.Data.Tests;
+
+/// <summary>
+/// What a test agent presents in the wire-contract handshake header: the current version,
+/// a specific (skewed) version, or nothing at all. "Absent" is a distinct path in
+/// <c>AgentContractHandshakeGate</c> — an agent predating the header — and must not be
+/// simulated by sending a zero.
+/// </summary>
+public sealed record PresentedContract(int? Value)
+{
+    public static PresentedContract Current { get; } = new(AgentContract.CurrentVersion);
+
+    public static PresentedContract Absent { get; } = new((int?)null);
+
+    public static PresentedContract Version(int version) => new(version);
+}
 
 /// <summary>
 /// Spins up one PostgreSQL container and provisions TWO tenant databases
@@ -120,6 +137,11 @@ public sealed class MultiAccountAgentTransportFixture : IAsyncLifetime
         builder.Services.AddSingleton<IAgentConnectionRegistry, InMemoryAgentConnectionRegistry>();
         builder.Services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
         builder.Services.AddSingleton<TargetStatusPublisher>();
+        // The gate resolves this when it refuses a handshake. Registered even though this
+        // fixture has no AccountResolutionMiddleware (so the write itself cannot succeed) —
+        // the gate's contract is that a recording failure must not change the 426, and
+        // omitting the registration would test a DI error instead.
+        builder.Services.AddScoped<IAgentContractRefusalRecorder, AgentContractRefusalRecorder>();
         builder.Services.AddSingleton<IPendingSubPlanRegistry, PendingSubPlanRegistry>();
         builder.Services.AddSingleton<IPendingAdhocRegistry, PendingAdhocRegistry>();
         builder.Services.AddSingleton<AgentAccountHubFilter>();
@@ -161,7 +183,13 @@ public sealed class MultiAccountAgentTransportFixture : IAsyncLifetime
         var app = builder.Build();
         app.UseAuthentication();
         app.UseAuthorization();
-        app.MapHub<AgentHub>("/hubs/agent");
+        // Mirrors the production pipeline order AND its wiring: the gate sits after
+        // authentication (so its audit row can name the target) and is scoped by the
+        // RequiresAgentContract metadata on the hub endpoint, not by a path string. The
+        // marker below is load-bearing — drop it and the gate never fires, which is exactly
+        // the fail-open mode a path-matched gate had whenever a route drifted.
+        app.UseAgentContractGate();
+        app.MapHub<AgentHub>("/hubs/agent").WithMetadata(new RequiresAgentContract());
         await app.StartAsync();
         return app;
     }
@@ -173,7 +201,11 @@ public sealed class MultiAccountAgentTransportFixture : IAsyncLifetime
     /// the connection routes through the TestServer's in-memory handler.
     /// </summary>
     public HubConnection BuildConnection(
-        WebApplication host, AccountInfo account, Guid tokenTargetId, string? hostOverride = null)
+        WebApplication host,
+        AccountInfo account,
+        Guid tokenTargetId,
+        string? hostOverride = null,
+        PresentedContract? contract = null)
     {
         var server = (TestServer)host.Services.GetRequiredService<IServer>();
         var requestHost = hostOverride ?? account.Host;
@@ -185,6 +217,18 @@ public sealed class MultiAccountAgentTransportFixture : IAsyncLifetime
                 options.Transports = HttpTransportType.LongPolling;
                 options.HttpMessageHandlerFactory = _ => server.CreateHandler();
                 options.AccessTokenProvider = () => Task.FromResult<string?>(token);
+
+                // The handshake contract gate refuses a connection whose declared wire
+                // version is absent or wrong, so a fixture standing in for a real agent must
+                // declare it exactly as SignalRServerLink does. One tri-state knob rather
+                // than two independent ones: "which version" and "any version at all" are
+                // not orthogonal, and expressing them separately left a fourth combination
+                // (a version AND omit it) that means nothing.
+                if ((contract ?? PresentedContract.Current).Value is { } declared)
+                {
+                    options.Headers[AgentContract.VersionHeader] =
+                        declared.ToString(CultureInfo.InvariantCulture);
+                }
             })
             .Build();
     }

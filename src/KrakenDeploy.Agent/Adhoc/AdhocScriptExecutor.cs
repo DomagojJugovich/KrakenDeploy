@@ -20,10 +20,12 @@ namespace KrakenDeploy.Agent.Adhoc;
 ///   <item>Verifies <see cref="AdhocScriptCommand.Signature"/> against the
 ///         command's <c>(SessionId, IterNumber, Script)</c> binding via
 ///         <see cref="AdhocScriptSigner.Verify"/>. Mismatch → REFUSE.</item>
-///   <item>F2 — takes the machine execution gate (unless the target sets
-///         <see cref="AdhocScriptCommand.AllowParallelTaskExecution"/>) so the
-///         script waits its turn behind a running deployment / runbook run
-///         instead of interleaving with its file / IIS / service operations.</item>
+///   <item>F2/F5 — ALWAYS takes the machine execution gate, so the script waits
+///         its turn behind a running deployment / runbook run instead of
+///         interleaving with its file / IIS / service operations.
+///         <see cref="AdhocScriptCommand.AllowParallelTaskExecution"/> chooses the
+///         SIDE, not whether to take it: <c>true</c> → SHARED (co-runs with other
+///         shared work), <c>false</c> (the default) → EXCLUSIVE.</item>
 ///   <item>F2-followup 3 — ONE budget (<see cref="MaxTotalDuration"/>) from receipt
 ///         covers the queue wait AND the run, so the script can never still be
 ///         executing after the server's dispatcher has reported it timed out.
@@ -206,11 +208,12 @@ public sealed class AdhocScriptExecutor(
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(hostStopping);
         deadline.CancelAfter(budget);
 
-        // Step 3 (F2): take the machine execution slot unless the target allows
-        // parallel task execution. Pre-F2 ad-hoc scripts bypassed the gate outright,
-        // so a diagnostic script could run straight into a deployment's file / IIS /
-        // service operations on the same box. Bounded so a long-running deployment
-        // cannot pin an interactive script indefinitely.
+        // Step 3 (F2/F5): take the machine execution gate — ALWAYS, on the side the
+        // command's AllowParallelTaskExecution selects. Pre-F2 ad-hoc scripts skipped
+        // the gate outright, so a diagnostic script could run straight into a
+        // deployment's file / IIS / service operations on the same box; pre-F5 the
+        // per-target flag reintroduced exactly that hole. Bounded by the total budget
+        // so a long-running deployment cannot pin an interactive script indefinitely.
         var slot = await AcquireMachineSlotAsync(command, budget, deadline.Token)
             .ConfigureAwait(false);
         if (slot.Refused)
@@ -218,8 +221,7 @@ public sealed class AdhocScriptExecutor(
             return; // AcquireMachineSlotAsync already reported the refusal.
         }
 
-        // Disposing the lease hands the machine to the next queued task; a
-        // bypassing script holds none, and disposing null is a no-op.
+        // Disposing the lease hands the machine to the next queued task.
         using (slot.Lease)
         {
             await RunAndReportAsync(command, budget, deadline.Token).ConfigureAwait(false);
@@ -235,28 +237,37 @@ public sealed class AdhocScriptExecutor(
         MachineExecutionGate.Releaser? Lease, bool Refused);
 
     /// <summary>
-    /// F2 — takes the machine execution slot for an ad-hoc script, bounded by the
+    /// F5 — which side of the machine gate an ad-hoc command takes. The AI-session
+    /// dispatch path always sends <c>true</c> (locked decision P5: gated AI scripts
+    /// are read-always); the WP16 script console will map its per-run "allow running
+    /// concurrently" checkbox onto the same field, unchecked → <c>false</c> →
+    /// EXCLUSIVE. Either way the gate IS taken — the flag never buys a bypass.
+    /// <para>
+    /// NOTE there is no longer any per-target fallback on this path: F5 deleted the
+    /// dispatcher's target lookup, so a frozen target that has since been deleted or
+    /// fallen outside query-filter scope gets whatever the RUN chose, not a
+    /// conservative EXCLUSIVE default. Do not read a fail-safe into it.
+    /// </para>
+    /// </summary>
+    private static MachineExecutionGate.Mode ModeFor(AdhocScriptCommand command)
+        => command.AllowParallelTaskExecution
+            ? MachineExecutionGate.Mode.Shared
+            : MachineExecutionGate.Mode.Exclusive;
+
+    /// <summary>
+    /// F2/F5 — takes the machine execution gate for an ad-hoc script, bounded by the
     /// remaining total budget (<paramref name="deadlineToken"/>). Refuses (and
-    /// reports) rather than running late when the slot stays held: a script the
+    /// reports) rather than running late when the gate stays held: a script the
     /// server's dispatcher has already resolved as timed out must not execute
-    /// afterwards. Bypasses the gate entirely when the target sets
-    /// <see cref="AdhocScriptCommand.AllowParallelTaskExecution"/>.
+    /// afterwards.
     /// </summary>
     private async Task<AdhocMachineSlot> AcquireMachineSlotAsync(
         AdhocScriptCommand command, TimeSpan budget, CancellationToken deadlineToken)
     {
-        if (command.AllowParallelTaskExecution)
-        {
-            logger.LogInformation(
-                "Adhoc session {SessionId} iter {Iter} bypasses the machine execution gate: " +
-                "the target allows parallel task execution.",
-                command.SessionId, command.IterNumber);
-            return new AdhocMachineSlot(null, false);
-        }
-
+        var mode = ModeFor(command);
         try
         {
-            if (await executionGate.TryAcquireNowAsync(deadlineToken)
+            if (await executionGate.TryAcquireNowAsync(mode, deadlineToken)
                     .ConfigureAwait(false) is { } uncontended)
             {
                 return new AdhocMachineSlot(uncontended, false);
@@ -264,36 +275,52 @@ public sealed class AdhocScriptExecutor(
 
             logger.LogInformation(
                 "Adhoc session {SessionId} iter {Iter} is waiting for the machine execution " +
-                "slot (another task is running on this machine); its total budget is {Budget}.",
-                command.SessionId, command.IterNumber, budget);
+                "gate ({Mode}); its total budget is {Budget}.",
+                command.SessionId, command.IterNumber, mode, budget);
 
             // The whole remaining budget is available for queueing — but every second
             // spent here is a second the script does NOT get, which is the point: the
             // pair can never exceed the budget the dispatcher is timing against.
-            if (await executionGate.AcquireAsync(Timeout.InfiniteTimeSpan, deadlineToken)
-                    .ConfigureAwait(false) is { } queued)
-            {
-                return new AdhocMachineSlot(queued, false);
-            }
-
-            // Unreachable: an infinite wait either acquires or throws on the token.
-            throw new InvalidOperationException(
-                "Unbounded gate acquisition returned without a lease.");
+            var queued = await executionGate.AcquireAsync(mode, deadlineToken)
+                .ConfigureAwait(false);
+            return new AdhocMachineSlot(queued, false);
         }
-        catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
+        catch (Exception ex)
         {
-            // Either the total budget expired while QUEUED, or the host is shutting
-            // down (the token is linked to both), or DI disposed the gate first. All
-            // three mean the script was NOT executed — report rather than let it
-            // escape, because the dispatcher's slot is waiting and this class's
-            // contract is that every path closes it.
-            logger.LogWarning(
+            // Catch-ALL, deliberately. The expected shapes are a budget that expired
+            // while QUEUED, a host shutdown (the token is linked to both) or DI
+            // disposing the gate — but the filter used to name only those two types,
+            // and anything else (the gate's own invariant guards throw
+            // InvalidOperationException and ArgumentOutOfRangeException) escaped
+            // HandleAsync entirely. That breaks this class's stated contract: the
+            // handler is invoked as a detached Task, so an escaping exception is
+            // unobserved, ReportFailureAsync never runs, and the dispatcher's TCS is
+            // never completed — the operator's session hangs for the full server-side
+            // timeout with no error text at all. Every path must close the slot.
+            logger.LogWarning(ex,
                 "Adhoc session {SessionId} iter {Iter} refused: never acquired the machine " +
-                "execution slot within its {Budget} budget (or the agent is stopping).",
-                command.SessionId, command.IterNumber, budget);
-            await ReportFailureAsync(command,
-                $"Another task held this machine for the whole {budget} budget (or the agent " +
-                "is stopping); the script was NOT executed. Re-run it once the machine is free.")
+                "execution gate ({Mode}) within its {Budget} budget (or the agent is stopping).",
+                command.SessionId, command.IterNumber, mode, budget);
+            // Two distinct stories, and conflating them was actively harmful: the busy
+            // narrative told the operator to re-run, which walks straight back into a
+            // corrupted gate. Expected shapes (budget expired while queued, host
+            // stopping, gate disposed) get the busy message; anything else is an agent
+            // fault that a re-run cannot clear.
+            var expected = ex is OperationCanceledException or ObjectDisposedException;
+            await ReportFailureAsync(command, expected
+                // Deliberately does NOT claim another task "held" the machine. The gate is
+                // writer-fair, so an acquisition also waits behind a merely QUEUED writer
+                // — including the agent's own self-upgrade — with no holder present at
+                // all, and it waits behind the shared-holder cap. Blaming a holder sent
+                // operators looking for a task that was never there.
+                ? $"This machine did not become available within the script's {budget} " +
+                  "budget (other work was running or queued here, this machine's " +
+                  "concurrent-script limit was reached, or the agent is stopping); the " +
+                  "script was NOT executed. Check the target's task history, then re-run it."
+                : "The agent could not acquire its machine execution slot because of an " +
+                  $"internal fault ({ex.GetType().Name}); the script was NOT executed. " +
+                  "Re-running is unlikely to help — this agent probably needs restarting. " +
+                  "See the agent's local log for details.")
                 .ConfigureAwait(false);
             return new AdhocMachineSlot(null, true);
         }

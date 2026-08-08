@@ -62,6 +62,42 @@ public class AuditEntry
     /// </summary>
     public string? AfterJson { get; set; }
 
-    /// <summary>Freeform detail string for non-EF events.</summary>
-    public string? Details { get; set; }
+    /// <summary>
+    /// Freeform detail string for non-EF events.
+    /// <para>
+    /// Capped, and enforced by a truncating SETTER rather than by a check at each call
+    /// site. This is the only string column on the entity that carries free text
+    /// originating OUTSIDE the server — a handshake header, an agent's self-reported
+    /// update outcome — and it is the one that leaves the premises: the subscription
+    /// poller forwards audit rows to the webhook and e-mail transports, and the
+    /// AI-inspect transport interpolates this exact value into an LLM prompt. Every
+    /// sibling column already had <c>HasMaxLength</c>; this one did not, so it was
+    /// Postgres <c>text</c> and one authenticated caller could push Kestrel's whole 32 KB
+    /// header limit into a row, at whatever rate it liked. A setter is the only shape that
+    /// cannot be bypassed: two call sites construct <see cref="AuditEntry"/> directly
+    /// rather than going through <c>IAuditLog.RecordAsync</c>.
+    /// </para>
+    /// <para>
+    /// EF materialisation writes the backing field, so reading a pre-cap row back is
+    /// lossless; only application writes truncate.
+    /// </para>
+    /// </summary>
+    public string? Details
+    {
+        get => _details;
+        // TextBudget.Trim, not a local slice: cutting at a UTF-16 code-unit boundary can split
+        // a surrogate pair, and Npgsql's writer uses EncoderExceptionFallback — so a lone
+        // surrogate made SaveChangesAsync THROW and lost the whole row, where the uncapped
+        // `text` column had simply stored it.
+        set => _details = KrakenDeploy.Execution.TextBudget.Trim(value, MaxDetailsLength);
+    }
+
+    private string? _details;
+
+    /// <summary>
+    /// Cap on <see cref="Details"/>, matched by <c>AuditEntryConfiguration</c>'s
+    /// <c>HasMaxLength</c> so the column and the setter cannot disagree. Generous for a
+    /// real error message; far below what an abusive caller would like.
+    /// </summary>
+    public const int MaxDetailsLength = 4096;
 }

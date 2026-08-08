@@ -27,6 +27,11 @@
          orchestrator E2E tests deterministic. The internal seam is one
          method (DispatchForTestAsync) so the surface stays narrow. -->
     <InternalsVisibleTo Include="KrakenDeploy.Server.Data.Tests" />
+
+    <!-- AgentContractHandshakeGateTests reference the gate's internal knobs (the
+         refusal-report window, the echo cap) rather than duplicating their values, so
+         changing a knob cannot leave the tests asserting the old behaviour. -->
+    <InternalsVisibleTo Include="KrakenDeploy.Server.Tests" />
   </ItemGroup>
 
 </Project>

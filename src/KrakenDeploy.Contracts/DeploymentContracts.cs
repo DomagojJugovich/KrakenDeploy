@@ -48,13 +48,19 @@ public sealed record DeploymentPlan(
     /// </summary>
     Guid DispatchId = default,
     /// <summary>
-    /// F2 CONTRACT CHANGE — the dispatch target's
+    /// F5 CONTRACT CHANGE (v2 → v3; was F2) — the dispatch target's
     /// <c>DeploymentTarget.AllowParallelTaskExecution</c>, stamped at plan-build
-    /// time (Octopus "Allow parallel task execution" parity). <c>false</c> (the
-    /// default) means the agent runs this plan through its machine-wide execution
-    /// gate: one task at a time on that box, FIFO. <c>true</c> means the plan
-    /// bypasses the gate, so it may interleave with OTHER tasks already running on
-    /// the same machine.
+    /// time (Octopus "Allow parallel task execution" parity). It selects which SIDE
+    /// of the agent's reader-writer machine execution gate this sub-plan takes:
+    /// <c>false</c> (the default) → EXCLUSIVE, one unit of work at a time on that
+    /// box; <c>true</c> → SHARED, co-running with other shared work only.
+    /// <para>
+    /// It is NOT a bypass — consent is MUTUAL (locked decision P2). A shared sub-plan
+    /// still queues behind an exclusive holder, so opting one target in cannot let it
+    /// interleave with a task that did not opt in. Under F2 <c>true</c> DID mean
+    /// "skip the gate entirely", and a v2 agent still reads it that way, which is why
+    /// the wire contract bumped without any shape change.
+    /// </para>
     /// <para>
     /// This never relaxes the F1 (project, environment, tenant) deployment
     /// serialization — that is enforced server-side at claim time and is

@@ -487,6 +487,9 @@ public sealed class OrchestratorTestHarness : IAsyncDisposable
         var connectionId = $"fake-conn-{Interlocked.Increment(ref _connectionCounter)}";
         var agent = new FakeAgent { TargetId = target.Id, ConnectionId = connectionId };
         _agentsByTargetId[target.Id] = agent;
+        // Add alone makes the connection dispatchable — there is no second "has registered"
+        // predicate any more, because the wire contract is verified on the handshake rather
+        // than in a hub method. A fake agent never calls RegisterAsync and does not need to.
         _connectionRegistry.Add(connectionId, target.Id);
         return agent;
     }

@@ -148,13 +148,16 @@ else
                         </div>
                     </div>
 
-                    @* F2 — per-target concurrency. Off by default: the agent runs one
-                       task at a time on this machine. *@
+                    @* F2/F5 — per-target concurrency. Off by default: work on this
+                       machine takes the agent gate's exclusive side. Enabling it moves
+                       this target's DEPLOYMENTS to the shared side — a downgrade, not a
+                       bypass: they still wait behind anything exclusive. *@
                     <div class="kraken-def">
                         <div class="kraken-def-label">Allow parallel task execution
                             <div class="kraken-def-sub">
-                                By default this machine runs one task at a time — deployments,
-                                runbook runs and ad-hoc scripts queue behind each other.
+                                By default this machine runs one <em>deployment or runbook
+                                run</em> at a time — they queue behind each other, and
+                                behind any script already running here.
                             </div>
                         </div>
                         <div class="kraken-def-value">
@@ -163,7 +166,7 @@ else
                                                 Name="allowParallel"
                                                 aria-label="Allow parallel task execution" />
                                 <RadzenLabel Component="allowParallel"
-                                             Text="Run multiple tasks on this machine at the same time" />
+                                             Text="Run multiple deployments on this machine at the same time" />
                             </RadzenStack>
                             @if (_allowParallelTaskExecution)
                             {
@@ -179,11 +182,25 @@ else
                                 </div>
                             }
                             <div class="kraken-def-sub rz-mt-2">
-                                This never bypasses deployment serialization: two deployments of the
-                                same project, environment and tenant still run one after the other,
-                                whatever this setting says. It only affects how <em>different</em>
-                                tasks share this machine. Changes apply to the next dispatch, not to
-                                work already queued on the agent.
+                                This setting covers <strong>deployments and runbook runs only</strong>.
+                                It also never bypasses deployment serialization: two deployments of
+                                the same project, environment and tenant still run one after the
+                                other. Changes apply to the next dispatch, not to work already
+                                queued on the agent.
+                            </div>
+                            <div class="kraken-health kraken-health--warn kraken-health--inline rz-mt-2">
+                                <RadzenIcon Icon="info" />
+                                <div>
+                                    Ad-hoc scripts are <strong>not</strong> covered by this setting,
+                                    whichever way it is set. Approved AI actions run
+                                    <strong>concurrently with each other</strong> on this machine —
+                                    including state-changing ones — so two of them can touch the same
+                                    service or file at the same time. How many may co-run is capped by
+                                    <code>Agent:MaxConcurrentSharedWork</code> in the agent's own
+                                    configuration (default 8); beyond that they queue. Setting it to
+                                    <code>1</code> serializes them, at the cost of making every
+                                    approved action wait for the one before it.
+                                </div>
                             </div>
                         </div>
                     </div>
