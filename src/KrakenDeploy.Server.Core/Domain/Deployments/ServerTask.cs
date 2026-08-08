@@ -89,6 +89,27 @@ public abstract class ServerTask : AuditableEntity, ISpaceScoped
     /// prompted variables land.</summary>
     public string? FormValues { get; set; }
 
+    /// <summary>
+    /// WP3 — the orchestration state a <see cref="DeploymentStatus.Paused"/> task
+    /// must resume from: the wave to restart at, the failure/alive/dropped/
+    /// soft-failed bookkeeping, and the accumulated output-variable bags. Written
+    /// when the task pauses at a manual-intervention gate, consumed and CLEARED on
+    /// resume (and on any terminal status).
+    /// <para>
+    /// Encrypted (AES-GCM, DEK) because the output bags carry captured SENSITIVE
+    /// values — the same treatment <see cref="TaskOutputVariable"/> gives them. The
+    /// <c>Encrypted</c> suffix is load-bearing: the DEK-rotation completeness test
+    /// reflects over <c>*Encrypted</c> members, and <c>DekRotationWalk</c> re-encrypts
+    /// this column.
+    /// </para>
+    /// <para>
+    /// Non-null ONLY while paused. A resumed or terminal task carries <c>null</c>;
+    /// a paused task carrying <c>null</c> is a violated invariant and fails the task
+    /// rather than resuming with silently-empty state.
+    /// </para>
+    /// </summary>
+    public string? PauseCheckpointEncrypted { get; set; }
+
     // ── Provenance (schema-hardening fix 6) ──────────────────────────────────
 
     /// <summary>Acting user who created the task, when attributable. Stored as a
@@ -126,4 +147,8 @@ public abstract class ServerTask : AuditableEntity, ISpaceScoped
 
     /// <summary>Terminal per-step outcomes surfaced on the detail Steps tab.</summary>
     public ICollection<TaskStepOutcome> StepOutcomes { get; set; } = [];
+
+    /// <summary>WP3 — manual-intervention gates this task hit, at most one per
+    /// gating step. The change-control trail for who approved or rejected.</summary>
+    public ICollection<Interruption> Interruptions { get; set; } = [];
 }

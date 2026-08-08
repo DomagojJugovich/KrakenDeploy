@@ -312,6 +312,27 @@ public sealed class PermissionEvaluator(
 
     // ── Team membership resolution ────────────────────────────────────────────
 
+    /// <summary>
+    /// Public entry point over the same resolver RBAC uses (see
+    /// <see cref="IPermissionEvaluator.GetUserTeamIdsAsync"/>). Deliberately NOT cached:
+    /// its only caller is WP3's manual-intervention response path, which is an
+    /// execution-time authorization decision — the same reason the UI action guard
+    /// passes <c>bypassCache: true</c>. Removing a user from a responsible team must take
+    /// effect immediately, not within <see cref="CacheTtl"/>.
+    /// </summary>
+    public async Task<IReadOnlySet<Guid>> GetUserTeamIdsAsync(
+        ClaimsPrincipal user, CancellationToken ct = default)
+    {
+        var userId = TryGetUserId(user);
+        if (userId is null)
+        {
+            return new HashSet<Guid>();
+        }
+
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await GetUserTeamIdsAsync(db, userId.Value, ct).ConfigureAwait(false);
+    }
+
     private static async Task<HashSet<Guid>> GetUserTeamIdsAsync(
         KrakenDbContext db, Guid userId, CancellationToken ct)
     {
@@ -438,11 +459,11 @@ public sealed class PermissionEvaluator(
     private bool IsFresh(DateTimeOffset cachedAtUtc) =>
         timeProvider.GetUtcNow() - cachedAtUtc < CacheTtl;
 
+    /// <summary>WP3-b — the shared extraction (Core <c>ClaimsPrincipalExtensions</c>).
+    /// <c>UserIdClaim</c> IS <c>ClaimTypes.NameIdentifier</c>, so this reads the same
+    /// claim; keeping a private copy is how five of them drifted apart.</summary>
     private static Guid? TryGetUserId(ClaimsPrincipal user)
-    {
-        var idClaim = user.FindFirst(UserIdClaim)?.Value;
-        return Guid.TryParse(idClaim, out var id) ? id : null;
-    }
+        => user.ResolveUserId();
 
     private readonly record struct CacheEntry<T>(T Value, DateTimeOffset CachedAtUtc);
 

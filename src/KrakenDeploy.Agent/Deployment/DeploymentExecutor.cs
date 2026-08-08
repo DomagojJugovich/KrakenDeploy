@@ -1564,23 +1564,80 @@ public sealed class DeploymentExecutor(
     /// opens. NOT called on the offline-runner path — an offline run may share the
     /// box with a live agent, and per-step / per-deployment cleanup already covers
     /// a single offline invocation.
+    /// <para>
+    /// F7/3 — a PID lock file (<c>staging.lock</c> in the data dir) guards against
+    /// a second agent process on the same DataPath wiping the incumbent's live
+    /// staging mid-step. If the lock file holds a PID that is still running, the
+    /// sweep is skipped with a warning. After a successful sweep (or when no lock
+    /// exists), the current PID is written to the lock file.
+    /// </para>
     /// </summary>
     public void SweepOrphanedStagingOnBoot()
     {
-        var root = StagingRoot(agentConfig.Value.ResolvedDataPath);
-        if (!Directory.Exists(root))
+        var dataPath = agentConfig.Value.ResolvedDataPath;
+        var root = StagingRoot(dataPath);
+        var lockFile = Path.Combine(dataPath, "staging.lock");
+
+        if (File.Exists(lockFile))
         {
-            return;
+            int incumbentPid;
+            try
+            {
+                incumbentPid = int.Parse(File.ReadAllText(lockFile).Trim(),
+                    System.Globalization.CultureInfo.InvariantCulture);
+            }
+            catch
+            {
+                incumbentPid = -1;
+            }
+
+            if (incumbentPid > 0 && IsProcessAlive(incumbentPid))
+            {
+                logger.LogWarning(
+                    "Boot sweep skipped: staging lock file {LockFile} holds PID {Pid} which is " +
+                    "still running — another agent process owns this DataPath.",
+                    lockFile, incumbentPid);
+                return;
+            }
         }
+
+        if (Directory.Exists(root))
+        {
+            try
+            {
+                Directory.Delete(root, recursive: true);
+                logger.LogInformation("Swept orphaned agent staging root {Root} on boot.", root);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "Boot sweep of the staging root {Root} failed (non-fatal).", root);
+            }
+        }
+
         try
         {
-            Directory.Delete(root, recursive: true);
-            logger.LogInformation("Swept orphaned agent staging root {Root} on boot.", root);
+            Directory.CreateDirectory(dataPath);
+            File.WriteAllText(lockFile,
+                Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         catch (Exception ex)
         {
             logger.LogWarning(ex,
-                "Boot sweep of the staging root {Root} failed (non-fatal).", root);
+                "Failed to write the staging lock file {LockFile} (non-fatal).", lockFile);
+        }
+    }
+
+    private static bool IsProcessAlive(int pid)
+    {
+        try
+        {
+            using var _ = System.Diagnostics.Process.GetProcessById(pid);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
         }
     }
 }

@@ -76,6 +76,8 @@ public class KrakenDbContext(
     public DbSet<TaskOutputVariable> TaskOutputVariables => Set<TaskOutputVariable>();
     public DbSet<TaskStepOutcome> TaskStepOutcomes => Set<TaskStepOutcome>();
     public DbSet<TaskTargetAssignment> TaskTargetAssignments => Set<TaskTargetAssignment>();
+    // WP3 — manual-intervention gates (one per gating step per task).
+    public DbSet<Interruption> Interruptions => Set<Interruption>();
     public DbSet<VariableSet> VariableSets => Set<VariableSet>();
     public DbSet<Variable> Variables => Set<Variable>();
     public DbSet<ProjectVariableSetLink> ProjectVariableSetLinks => Set<ProjectVariableSetLink>();

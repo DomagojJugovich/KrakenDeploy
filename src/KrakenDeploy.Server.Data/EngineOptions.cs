@@ -103,6 +103,53 @@ public sealed class EngineOptions
     /// shipped default.
     /// </summary>
     public TimeSpan MaxDeployReleaseWaitDuration { get; set; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// WP3 — how long a manual-intervention gate waits for a human before it
+    /// auto-fails, when the step itself does not set
+    /// <c>Kraken.Action.Manual.TimeoutHours</c>. Three days by default: long enough
+    /// to span a weekend plus a public holiday, which is the realistic worst case for
+    /// a state-sector change-approval board, and short enough that a forgotten gate
+    /// does not hold its <c>(project, environment, tenant)</c> slot indefinitely
+    /// (a <c>Paused</c> task is in-flight for F1 — see
+    /// <c>DeploymentStatusExtensions.InFlightAfterClaim</c>).
+    /// <para>
+    /// Expiry fails the task exactly like a rejection, cleanup steps included.
+    /// Must be POSITIVE — <c>TimeSpan.Zero</c> is refused at startup (WP3-b). It used
+    /// to disable the default so gates waited forever, which is unsafe: a gate with no
+    /// expiry is skipped by the timeout sweeper while its task keeps holding the F1
+    /// <c>(project, environment, tenant)</c> key, so one unanswered gate blocks every
+    /// later release of that project + environment. Rejecting a per-step <c>0</c> but
+    /// accepting a server-wide one would only move the denial-of-release into a config
+    /// file. Raise the value instead of disabling it.
+    /// </para>
+    /// <para>
+    /// <b>F3 breadcrumb:</b> this ships as a config-file knob because F3 (the Engine
+    /// settings document) has not landed yet — the same route <c>MaxTargetQueueWait</c>
+    /// took in F2. Fold it into that document when F3 lands; house rule 11.
+    /// </para>
+    /// </summary>
+    public TimeSpan DefaultInterventionTimeout { get; set; } = TimeSpan.FromHours(72);
+
+    /// <summary>
+    /// WP3-b — the HARD backstop for an <c>Octopus.DeployRelease</c> step whose child
+    /// deployment parks at a manual-intervention gate. Default 7 days.
+    /// <para>
+    /// <see cref="MaxDeployReleaseWaitDuration"/> (1 h) stays the bound on how long the
+    /// parent waits for a child that is actually <em>working</em>, and
+    /// <c>WaitForChildAsync</c> now charges only NON-paused time against it — so a child
+    /// waiting on a human no longer burns the parent's budget, while a genuinely hung
+    /// child still fails in an hour. This value bounds the total anyway, so a child that
+    /// pauses repeatedly cannot pin the parent's <c>NodeTaskGate</c> slot indefinitely.
+    /// </para>
+    /// <para>
+    /// It must comfortably exceed <see cref="DefaultInterventionTimeout"/>: a gate that
+    /// runs its full window and then continues is legitimate, and a backstop shorter than
+    /// the approval window would fail the parent while the child was still answerable —
+    /// the original defect (a 1 h parent ceiling against a 72 h gate).
+    /// </para>
+    /// </summary>
+    public TimeSpan MaxDeployReleaseGatedWaitDuration { get; set; } = TimeSpan.FromDays(7);
 }
 
 /// <summary>
@@ -153,6 +200,14 @@ public sealed class EngineOptionsValidator(IConfiguration configuration)
             allowZero: true);
         Check(nameof(EngineOptions.MaxDeployReleaseWaitDuration),
             options.MaxDeployReleaseWaitDuration);
+        Check(nameof(EngineOptions.MaxDeployReleaseGatedWaitDuration),
+            options.MaxDeployReleaseGatedWaitDuration);
+        // WP3-b: NOT allowZero. A zero default means gates never expire, and an
+        // unexpiring gate parks its task on the F1 (project, environment, tenant) key
+        // forever. Refusing the per-step 0 while accepting a server-wide one would just
+        // move the denial-of-release into a config file.
+        Check(nameof(EngineOptions.DefaultInterventionTimeout),
+            options.DefaultInterventionTimeout);
 
         if (options.MaxConcurrentTasks <= 0)
         {

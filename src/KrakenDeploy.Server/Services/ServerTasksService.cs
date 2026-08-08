@@ -31,6 +31,11 @@ public enum ServerTaskState
     Failed,
     Cancelled,
     PendingOfflineResult,
+
+    /// <summary>WP3 — parked at a manual-intervention gate awaiting a human
+    /// approve/reject. Non-terminal and operator-actionable.</summary>
+    Paused,
+
     Unknown,
 }
 
@@ -61,6 +66,14 @@ public sealed record ServerTaskRow
     public DateTimeOffset? StartedUtc { get; init; }
     public DateTimeOffset? CompletedUtc { get; init; }
     public DateTimeOffset? QueuedUtc { get; init; }
+
+    /// <summary>
+    /// The underlying <c>server_tasks</c> id for a DB-backed row (deployment or runbook
+    /// run); <c>null</c> for a Hangfire system-job row, which has no task. Lets the page
+    /// probe for pending manual-intervention gates without re-parsing
+    /// <see cref="Key"/>.
+    /// </summary>
+    public Guid? TaskId { get; init; }
 
     /// <summary>In-app route (deployment / runbook) or Hangfire dashboard URL; null = not navigable.</summary>
     public string? DetailUrl { get; init; }
@@ -105,6 +118,7 @@ public sealed class ServerTasksService(
         ["AgentLastSeenOfflineJob"] = "Mark stale agents offline",
         ["RegistrationTokenExpiryJob"] = "Expire registration tokens",
         ["ScheduledDeploymentDispatchJob"] = "Dispatch scheduled deployments",
+        ["InterruptionTimeoutJob"] = "Expire manual-intervention gates",
         ["StepTemplateCatalogPollJob"] = "Poll step-template catalog",
         ["StepPackageCatalogPollJob"] = "Poll step-package catalog",
         ["SubscriptionPollerJob"] = "Process subscriptions",
@@ -163,6 +177,7 @@ public sealed class ServerTasksService(
         return new ServerTaskRow
         {
             Key = $"dep:{d.Id}",
+            TaskId = d.Id,
             Kind = ServerTaskKind.Deployment,
             State = MapStatus(d.Status),
             Title = sb.ToString(),
@@ -196,6 +211,7 @@ public sealed class ServerTasksService(
         return new ServerTaskRow
         {
             Key = $"run:{r.Id}",
+            TaskId = r.Id,
             Kind = ServerTaskKind.RunbookRun,
             State = MapStatus(r.Status),
             Title = sb.ToString(),
@@ -223,6 +239,7 @@ public sealed class ServerTasksService(
         DeploymentStatus.Failed => ServerTaskState.Failed,
         DeploymentStatus.Cancelled => ServerTaskState.Cancelled,
         DeploymentStatus.PendingOfflineResult => ServerTaskState.PendingOfflineResult,
+        DeploymentStatus.Paused => ServerTaskState.Paused,
         _ => ServerTaskState.Unknown,
     };
 

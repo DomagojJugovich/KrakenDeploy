@@ -10,6 +10,8 @@
 @inject NotificationService Notify
 @inject IAuditLog Audit
 @inject MaintenanceModeService MaintenanceSvc
+@inject InterruptionService Interruptions
+@inject ISpaceContext SpaceCtx
 
 <PageTitle>Deployments - KrakenDeploy</PageTitle>
 
@@ -58,6 +60,16 @@
         <RadzenDataGridColumn TItem="Deployment" Property="Status" Title="Status" Width="160px">
             <Template Context="d">
                 <StatusPill Deployment="d.Status" />
+                @* WP3 — an unanswered approval gate. Gated on InterruptionView (the
+                   service returns an empty set without it), so the chip only appears
+                   for users who may actually look at interventions. *@
+                @if (_awaitingApproval.Contains(d.Id))
+                {
+                    <div style="margin-top:3px;">
+                        <RadzenBadge BadgeStyle="BadgeStyle.Warning" Variant="Variant.Flat"
+                                     Text="Approval pending" />
+                    </div>
+                }
                 @if (QueueWaitReason(d) is { } reason)
                 {
                     <div class="cell-muted" style="font-size:11px; line-height:1.3; margin-top:3px;">@reason</div>
@@ -105,7 +117,12 @@
 
         <RadzenDataGridColumn TItem="Deployment" UniqueID="actions" Title="" Width="52px" Sortable="false" TextAlign="TextAlign.Center">
             <Template Context="d">
-                @if (d.Status is DeploymentStatus.Queued or DeploymentStatus.Running)
+                @* WP3 — Paused is non-terminal and HOLDS the (project, environment,
+                   tenant) slot for up to the approval timeout, so an operator with
+                   TaskCancel must be able to release it. ServerTaskCanceller already
+                   accepted it; only the UI gate was missing. *@
+                @if (d.Status is DeploymentStatus.Queued or DeploymentStatus.Running
+                              or DeploymentStatus.Paused)
                 {
                     @* stopPropagation: the row's RowClick navigates to detail — the
                        button must not also trigger it (VariableSets.razor pattern). *@
@@ -144,11 +161,17 @@
         ("Failed", DeploymentStatus.Failed),
         ("Succeeded", DeploymentStatus.Succeeded),
         ("Queued", DeploymentStatus.Queued),
+        ("Awaiting approval", DeploymentStatus.Paused),
     ];
 
     // Non-null while instance-wide maintenance is on: the claim gate refuses EVERY
     // task, so it outranks the per-key serialization rule as the queue-wait reason.
     private MaintenanceState? _maintenanceHold;
+
+    // WP3 — task ids with an unanswered manual-intervention gate. One query for the
+    // whole page rather than a per-row probe; empty when the user lacks
+    // InterruptionView.
+    private HashSet<Guid> _awaitingApproval = [];
 
     protected override async Task OnInitializedAsync()
     {
@@ -159,6 +182,15 @@
         // environment must still filter and colour-map correctly.
         _envs = await EnvironmentSvc.GetAllOrderedAsync(includeArchived: true);
         _envColor = _envs.Select((e, i) => (e.Id, i)).ToDictionary(x => x.Id, x => x.i);
+
+        // Only Paused rows can carry a pending gate, so scope the probe to them.
+        var pausedIds = _all
+            .Where(d => d.Status == DeploymentStatus.Paused)
+            .Select(d => d.Id)
+            .ToList();
+        _awaitingApproval = await Interruptions.FindTasksAwaitingResponseAsync(
+            pausedIds, SpaceCtx.CurrentSpaceId, await Guard.CurrentCallerAsync());
+
         ApplyFilters();
     }
 
@@ -171,11 +203,22 @@
         if (!await Guard.AllowAsync(Permission.TaskCancel)) return;
 
         var running = d.Status == DeploymentStatus.Running;
+        // WP3-b — Paused needs its own wording. The button's visibility gate gained Paused
+        // but this ternary did not, so cancelling a PART-DEPLOYED release parked at an
+        // approval gate asked "before it starts?" and then reported "the queued deployment
+        // was cancelled" — for a task whose earlier waves had already run against
+        // production targets.
+        var paused = d.Status == DeploymentStatus.Paused;
         var confirmed = await Dialog.Confirm(
             running
                 ? "Cancel this running deployment? The abort is pushed to the agent, which " +
                   "stops the running step; no further steps will start."
-                : "Cancel this queued deployment before it starts?",
+                : paused
+                    ? "Cancel this deployment? It is waiting for a manual-intervention " +
+                      "approval, and earlier steps may already have run against its " +
+                      "targets. Cancelling also closes the unanswered approval and frees " +
+                      "the project + environment for other deployments."
+                    : "Cancel this queued deployment before it starts?",
             "Cancel deployment",
             new ConfirmOptions { OkButtonText = "Cancel deployment", CancelButtonText = "Keep running" });
         if (confirmed != true)
@@ -196,6 +239,10 @@
                     row.Status       = updated.Status;
                     row.CompletedUtc = updated.CompletedUtc;
                 }
+                // The cancel closed any unanswered gate (ServerTaskCanceller), so drop the
+                // "Approval pending" chip too — otherwise the row rendered Cancelled AND
+                // advertised an outstanding approval until a full page reload.
+                _awaitingApproval.Remove(d.Id);
                 ApplyFilters();
                 Notify.Notify(new NotificationMessage
                 {
@@ -203,7 +250,9 @@
                     Summary  = "Cancelled",
                     Detail   = running
                         ? "The abort was pushed to the agent."
-                        : "The queued deployment was cancelled.",
+                        : paused
+                            ? "The deployment was cancelled and its unanswered approval closed."
+                            : "The queued deployment was cancelled.",
                     Duration = 4000,
                 });
             }

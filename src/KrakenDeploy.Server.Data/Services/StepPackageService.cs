@@ -170,8 +170,13 @@ public sealed class StepPackageService(
                 UiSchemaJson      = uiSchemaJson,
                 ChangelogMarkdown = changelogMarkdown,
                 Source            = source,
+                // Trim each claim: a padded entry (e.g. manifest authored as
+                // "A, B") would otherwise be stored verbatim and never match
+                // StepPackageResolver's ",{type}," sentinel lookup.
                 StepTypes         = string.Join(',',
-                    manifest.StepTypes.Select(t => t.ToLowerInvariant())),
+                    manifest.StepTypes
+                        .Select(t => t.Trim().ToLowerInvariant())
+                        .Where(t => t.Length > 0)),
             };
             db.StepPackages.Add(row);
             await db.SaveChangesAsync(ct).ConfigureAwait(false);

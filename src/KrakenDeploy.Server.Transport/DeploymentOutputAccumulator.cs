@@ -138,7 +138,143 @@ internal sealed class DeploymentOutputAccumulator
         }
     }
 
+    // ── WP3 pause/resume ────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Flattens the accumulated bags for the pause checkpoint. Only the per-target
+    /// and server bags plus their sensitive key sets are exported —
+    /// <see cref="ServerConditionVarDict"/> and the per-target
+    /// <c>VarDict</c> stamps are pure functions of them and are replayed by
+    /// <see cref="RestoreFrom"/>.
+    /// </summary>
+    public (List<CheckpointOutputBag> TargetOutputs, List<CheckpointOutputBag> ServerOutputs) Export()
+    {
+        var targetOutputs = new List<CheckpointOutputBag>();
+        foreach (var (targetId, bag) in _bagByTarget)
+        {
+            var sensitive = _sensitiveByTarget[targetId];
+            foreach (var (stepKey, values) in bag)
+            {
+                targetOutputs.Add(new CheckpointOutputBag(
+                    targetId, stepKey,
+                    new Dictionary<string, string>(values, StringComparer.OrdinalIgnoreCase),
+                    [.. values.Keys.Select(n => MergedKey(stepKey, n)).Where(sensitive.Contains)]));
+            }
+        }
+
+        var serverOutputs = new List<CheckpointOutputBag>();
+        foreach (var (stepKey, values) in _serverBag)
+        {
+            serverOutputs.Add(new CheckpointOutputBag(
+                TargetId: null, stepKey,
+                new Dictionary<string, string>(values, StringComparer.OrdinalIgnoreCase),
+                [.. values.Keys.Select(n => MergedKey(stepKey, n)).Where(_serverSensitiveKeys.Contains)]));
+        }
+
+        return (targetOutputs, serverOutputs);
+    }
+
+    /// <summary>
+    /// Re-seeds the bags from a pause checkpoint and replays everything derived from
+    /// them, so a resumed run's later waves see prior outputs exactly as an
+    /// uninterrupted run would: the per-target and server run-condition
+    /// dictionaries, and the server-side <see cref="SecretRedactor"/> (a later
+    /// server step's environment carries sensitive values in plaintext, so a log
+    /// line echoing one must still mask after a resume).
+    /// <para>
+    /// Bags for a target that is no longer in <c>contexts</c> are DROPPED, not
+    /// resurrected — the caller has already reconciled the checkpoint's alive set
+    /// against the task's current assignments.
+    /// </para>
+    /// </summary>
+    public void RestoreFrom(
+        IEnumerable<CheckpointOutputBag> targetOutputs,
+        IEnumerable<CheckpointOutputBag> serverOutputs)
+    {
+        ArgumentNullException.ThrowIfNull(targetOutputs);
+        ArgumentNullException.ThrowIfNull(serverOutputs);
+
+        foreach (var entry in targetOutputs)
+        {
+            if (entry.TargetId is not { } targetId
+                || !_bagByTarget.TryGetValue(targetId, out var bag))
+            {
+                continue;
+            }
+            FoldIntoBag(bag, entry.StepKey, entry.Values);
+            StampVarDict(_contexts[targetId].VarDict, entry.StepKey, entry.Values);
+            RestoreSensitive(entry, _sensitiveByTarget[targetId]);
+        }
+
+        foreach (var entry in serverOutputs)
+        {
+            FoldIntoBag(_serverBag, entry.StepKey, entry.Values);
+            StampVarDict(ServerConditionVarDict, entry.StepKey, entry.Values);
+            RestoreSensitive(entry, extraSet: null);
+        }
+    }
+
+    /// <summary>Re-registers a checkpointed bag's sensitive merged keys and folds
+    /// their VALUES back into the server redactor.</summary>
+    private void RestoreSensitive(CheckpointOutputBag entry, HashSet<string>? extraSet)
+    {
+        foreach (var mergedKey in entry.SensitiveMergedKeys)
+        {
+            extraSet?.Add(mergedKey);
+            _serverSensitiveKeys.Add(mergedKey);
+        }
+        if (entry.SensitiveMergedKeys.Length == 0)
+        {
+            return;
+        }
+        var sensitive = new HashSet<string>(entry.SensitiveMergedKeys, StringComparer.OrdinalIgnoreCase);
+        foreach (var (name, value) in entry.Values)
+        {
+            if (sensitive.Contains(MergedKey(entry.StepKey, name)) && !string.IsNullOrEmpty(value))
+            {
+                _serverRedactor.Add([value]);
+            }
+        }
+    }
+
     // ── Views ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// WP3-b — a clone of <see cref="ServerConditionVarDict"/> in which every SENSITIVE
+    /// value is replaced by <see cref="SecretRedactor.Mask"/>, for rendering text that
+    /// gets PERSISTED and shown to a wider audience than the variable itself (today:
+    /// a manual-intervention gate's instructions).
+    /// <para>
+    /// Masking the value rather than redacting the rendered output is the only correct
+    /// order. Redaction is an ordinal substring match on the raw secret, so any
+    /// Octostache filter defeats it — <c>#{Db.Password | ToBase64}</c>, <c>| ToUpper</c>
+    /// and <c>| Md5</c> all produce a string the redactor cannot recognise, and the
+    /// transformed secret lands in cleartext. Filters cannot launder what was never in
+    /// the dictionary, and this also covers indexed refs and indirection
+    /// (<c>#{#{NameHolder}}</c>) that a token-text rewrite would miss.
+    /// </para>
+    /// <para>
+    /// Both sources of sensitivity are covered: <paramref name="planSensitiveNames"/>
+    /// (the canonical plan's declared sensitive variables) and the sensitive OUTPUT
+    /// keys folded into the server bag during this run.
+    /// </para>
+    /// </summary>
+    public VariableDictionary MaskedServerConditionVarDict(
+        IReadOnlyCollection<string> planSensitiveNames)
+    {
+        ArgumentNullException.ThrowIfNull(planSensitiveNames);
+        var sensitive = new HashSet<string>(planSensitiveNames, StringComparer.OrdinalIgnoreCase);
+        sensitive.UnionWith(_serverSensitiveKeys);
+
+        var masked = new VariableDictionary();
+        foreach (var name in ServerConditionVarDict.GetNames())
+        {
+            masked[name] = sensitive.Contains(name)
+                ? SecretRedactor.Mask
+                : ServerConditionVarDict[name];
+        }
+        return masked;
+    }
 
     /// <summary>Returns <paramref name="plan"/> with this target's accumulated
     /// outputs merged into <see cref="DeploymentPlan.Variables"/> (shared key

@@ -63,7 +63,7 @@ public sealed class OfflineRunner(ILoggerFactory loggerFactory)
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["DataPath"] = workDir,
+                ["Agent:DataPath"] = workDir,
                 // Step-package archives are sourced from the server's verified
                 // install store and embedded in a bundle that is itself
                 // integrity-protected (manifest HMAC + AES-GCM plan), so the

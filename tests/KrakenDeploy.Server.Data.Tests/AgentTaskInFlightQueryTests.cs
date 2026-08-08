@@ -32,6 +32,9 @@ public sealed class AgentTaskInFlightQueryTests(PostgresFixture postgres)
     [InlineData(DeploymentStatus.Queued, true)]
     [InlineData(DeploymentStatus.Running, true)]
     [InlineData(DeploymentStatus.PendingOfflineResult, true)]
+    // WP3's manual-intervention gate: the task is parked awaiting a human approve/reject, so
+    // the agent may still be mid-plan and must not replace its own binary underneath it.
+    [InlineData(DeploymentStatus.Paused, true)]
     public async Task Every_status_is_classified(DeploymentStatus status, bool expectInFlight)
     {
         var (targetId, taskId) = await SeedAsync();
@@ -52,7 +55,11 @@ public sealed class AgentTaskInFlightQueryTests(PostgresFixture postgres)
     {
         // The theory above is a hand-written list, and the risk this whole class exists for is
         // a NEW status nobody classified. If one is added, this fails until the list grows.
-        Enum.GetValues<DeploymentStatus>().Should().HaveCount(7,
+        // This guard has already earned its keep once: WP3 added Paused on main while F5 was in
+        // flight, and merging the two turned this test red until Paused was classified
+        // deliberately (non-terminal — a task parked at an approval gate may still be mid-plan
+        // on the agent).
+        Enum.GetValues<DeploymentStatus>().Should().HaveCount(8,
             "add the new DeploymentStatus to Every_status_is_classified and decide, " +
             "deliberately, whether an agent may replace its own binary while a task is in " +
             "that state");

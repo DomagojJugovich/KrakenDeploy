@@ -8,6 +8,9 @@
 @inject NotificationService Notify
 @inject DialogService DialogService
 @inject UiActionGuard Guard
+@* Required for DisposeAsync to actually run - without it the poll timer's CTS
+   outlives the circuit. *@
+@implements IAsyncDisposable
 
 @* D1 Phase 2 — the runbook-run detail page: the run analogue of
    DeploymentDetail, built from the shared task components (status banner, log
@@ -61,7 +64,14 @@ else
                       DefaultFailedMessage="Runbook run failed."
                       FinishedDuration="@FormatDuration()"
                       QueuedMessage="@ScheduledMessage()"
+                      PausedMessage="Paused for manual intervention — see the approval card below."
                       HasRun="@(Run.StartedUtc is not null)" />
+
+    @* ── WP3 manual intervention: pending gate + approval history ──
+       Post-D1 both kinds run the same orchestrator, so a runbook run pauses at an
+       Octopus.Manual step exactly like a deployment (design doc D5). *@
+    <InterventionPanel @ref="_interventions" TaskId="Id" TaskNoun="runbook run"
+                       OnResponded="ReloadAsync" />
 
     @* ── Summary grid ── *@
     <div class="kr-card kr-card-pad rz-mb-4">
@@ -131,15 +141,119 @@ else
     private bool _cancelling;
 
     // Cancel is meaningful only before the run reaches a terminal state.
+    // WP3: Paused counts — non-terminal, and the only escape when a gate cannot be
+    // answered. See DeploymentDetail.CanCancel.
     private bool CanCancel =>
-        Run?.Status is DeploymentStatus.Queued or DeploymentStatus.Running;
+        Run?.Status is DeploymentStatus.Queued or DeploymentStatus.Running
+                    or DeploymentStatus.Paused;
 
-    private string CancelTooltip => Run?.Status == DeploymentStatus.Running
-        ? "Cancel this run. The abort is pushed to the agent (the running " +
-          "step's process is stopped); no further steps start."
-        : "Cancel this run before it starts.";
+    // WP3-b — Paused needs its own arm, the way DeploymentDetail.CancelTooltip already has
+    // one. CanCancel gained Paused but this expression did not, so a paused run showed
+    // "Cancel this run before it starts" — wrong on both counts (it HAS started, and
+    // cancelling also closes the gate) and it hid the one fact the operator needs: this is
+    // the escape hatch when the responsible team cannot be reached.
+    private string CancelTooltip => Run?.Status switch
+    {
+        DeploymentStatus.Running => "Cancel this run. The abort is pushed to the agent (the " +
+                                    "running step's process is stopped); no further steps start.",
+        DeploymentStatus.Paused  => "Cancel this run. It is waiting for a manual-intervention " +
+                                    "approval — cancelling also closes the unanswered gate and " +
+                                    "frees the project + environment.",
+        _                        => "Cancel this run before it starts.",
+    };
 
-    protected override async Task OnInitializedAsync()
+    private InterventionPanel? _interventions;
+    private readonly CancellationTokenSource _pollCts = new();
+    private Task? _pollLoop;
+
+    protected override Task OnInitializedAsync() => ReloadAsync();
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender && _pollLoop is null)
+        {
+            _pollLoop = PollWhileLiveAsync();
+        }
+    }
+
+    /// <summary>WP3 — refresh while the run is non-terminal, so a gate answered by
+    /// another user (or expired by the sweeper) is reflected here. See
+    /// DeploymentDetail.PollWhileLiveAsync for the rationale.</summary>
+    private async Task PollWhileLiveAsync()
+    {
+        // Token captured once, and "not loaded" CONTINUES rather than breaking — see the
+        // rationale on DeploymentDetail.PollWhileLiveAsync.
+        var token = _pollCts.Token;
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+            while (await timer.WaitForNextTickAsync(token))
+            {
+                if (Run is null)
+                {
+                    continue;
+                }
+                if (Run.Status.IsTerminal())
+                {
+                    break;
+                }
+                // WP3-b — cheap tick while PAUSED: only the run row and the gate panel can
+                // change while the task waits for a human, and the window defaults to 72 h.
+                // See DeploymentDetail.PollWhileLiveAsync for the full rationale.
+                var wasPaused = Run.Status == DeploymentStatus.Paused;
+                await InvokeAsync(async () =>
+                {
+                    if (wasPaused)
+                    {
+                        Run = await RunbookSvc.GetRunAsync(Id);
+                        if (_interventions is not null)
+                        {
+                            await _interventions.RefreshAsync();
+                        }
+                        if (Run?.Status == DeploymentStatus.Paused)
+                        {
+                            StateHasChanged();
+                            return;
+                        }
+                    }
+                    await ReloadAsync();
+                    if (_interventions is not null)
+                    {
+                        await _interventions.RefreshAsync();
+                    }
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Circuit tearing down — expected.
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _pollCts.CancelAsync();
+        if (_pollLoop is not null)
+        {
+            try
+            {
+                await _pollLoop;
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected on teardown.
+            }
+        }
+        _pollCts.Dispose();
+    }
+
+    /// <summary>
+    /// Re-reads the run and every tab's data. Also invoked after a manual-intervention
+    /// decision (WP3): approving flips the status off Paused and adds log +
+    /// step-outcome rows.
+    /// </summary>
+    private async Task ReloadAsync()
     {
         Run = await RunbookSvc.GetRunAsync(Id);
         if (Run is not null)

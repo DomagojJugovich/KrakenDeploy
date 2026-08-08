@@ -6,9 +6,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
 
     <KrakenStepPackageId>octopus.tentaclepackage</KrakenStepPackageId>
-    <KrakenStepPackageVersion>1.0.0</KrakenStepPackageVersion>
+    <KrakenStepPackageVersion>1.0.1</KrakenStepPackageVersion>
     <KrakenStepPackageDisplayName>Deploy a Package</KrakenStepPackageDisplayName>
-    <KrakenStepPackageStepTypes>Octopus.TentaclePackage</KrakenStepPackageStepTypes>
+    <!-- 1.0.1 (SC0): the 1.0.0 row on existing installs was seeded from a
+         manifest that predates the Kraken.DeployPackage alias (and the
+         seeder skips an already-installed (name, version)), so the claim
+         fix has to arrive as a new version. -->
+    <KrakenStepPackageStepTypes>Octopus.TentaclePackage,Kraken.DeployPackage</KrakenStepPackageStepTypes>
     <KrakenStepPackageExecutorTypeName>KrakenDeploy.Steps.OctopusTentaclePackage.OctopusTentaclePackageStepHandler</KrakenStepPackageExecutorTypeName>
 
     <IsPackable>false</IsPackable>

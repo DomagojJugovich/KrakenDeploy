@@ -1,3 +1,4 @@
+using KrakenDeploy.Contracts.Steps;
 using KrakenDeploy.Server.Core.Domain.Processes;
 using KrakenDeploy.Server.Core.Domain.Security;
 using Microsoft.EntityFrameworkCore;
@@ -155,6 +156,45 @@ public class ProcessService(
     // ── Steps ──────────────────────────────────────────────────────────────
 
     /// <summary>
+    /// WP3-b — refuses a manual-intervention step whose configuration would be unusable
+    /// at run time, for a caller holding a PROJECT id rather than a Space id (approver
+    /// visibility is Space-scoped, so the Space has to be resolved first).
+    /// <para>
+    /// The rules themselves live in <see cref="ResponsibleTeamResolver"/> and are shared
+    /// with the orchestrator's gate, so save-time and run-time cannot drift. The gate
+    /// stays the fail-closed backstop; this is only about WHEN the operator finds out,
+    /// which used to be "when a deployment failed with somebody waiting on an approval".
+    /// </para>
+    /// <para>
+    /// The Space id is read as <c>Guid?</c> deliberately: a missing project must refuse,
+    /// not fall through as <c>Guid.Empty</c>, which matches only system teams and would
+    /// report a legitimate Space-scoped approver as unresolvable.
+    /// </para>
+    /// </summary>
+    private static async Task EnsureManualGateConfigForProjectAsync(
+        KrakenDbContext db,
+        Guid projectId,
+        string stepType,
+        string name,
+        IReadOnlyDictionary<string, string> config,
+        CancellationToken ct)
+    {
+        // Skip the extra read entirely for the overwhelming majority of steps.
+        if (!ResponsibleTeamResolver.IsGateStep(stepType))
+        {
+            return;
+        }
+        var spaceId = await db.Projects.IgnoreQueryFilters()
+            .Where(pr => pr.Id == projectId)
+            .Select(pr => (Guid?)pr.SpaceId)
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false);
+        await ResponsibleTeamResolver
+            .EnsureStepConfigValidAsync(db, spaceId, stepType, name, config, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Appends a new step to the end of the process. See D-6 pinning semantics on
     /// <paramref name="stepPackageName"/> / <paramref name="stepPackageVersion"/>.
     /// </summary>
@@ -175,6 +215,8 @@ public class ProcessService(
         ArgumentNullException.ThrowIfNull(caller);
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         await EnsureProjectScopeAsync(db, caller, projectId, ct).ConfigureAwait(false);
+        await EnsureManualGateConfigForProjectAsync(
+            db, projectId, stepType, name, config, ct).ConfigureAwait(false);
         var process = await GetOrCreateCoreAsync(db, projectId, ct).ConfigureAwait(false);
 
         // M15 — SortOrder is scoped to siblings (per-parent).
@@ -255,6 +297,8 @@ public class ProcessService(
         // T1-8: authorize against the step's REAL owning project (IDOR: the route
         // parent id is not trusted). Runs before any mutation.
         await EnsureStepScopeAsync(db, caller, step, ct).ConfigureAwait(false);
+        await ResponsibleTeamResolver.EnsureStepConfigValidAsync(
+            db, step.SpaceId, step.StepType, name, config, ct).ConfigureAwait(false);
 
         step.Name        = name;
         step.PackageId   = packageId;
@@ -467,10 +511,57 @@ public class ProcessService(
 
         await db.SaveChangesAsync(ct).ConfigureAwait(false);
 
+        // WP3-b — report unusable manual-intervention gates as WARNINGS rather than
+        // refusing the import. This path is deliberately not the throwing guard the
+        // editor uses: an Octopus process ALWAYS carries Octopus team ids
+        // ("teams-123"), which never resolve to Kraken teams, so throwing would make
+        // importing any process containing an approval step impossible — the exact
+        // workflow the importer exists for. The orchestrator's gate remains the
+        // fail-closed backstop; what was missing was any signal at all at import time,
+        // so the operator only found out when a deployment hard-failed with somebody
+        // waiting on an approval.
+        var warnings = new List<ImportDeploymentProcessWarning>(parsed.Warnings);
+        var spaceId = await db.Projects.IgnoreQueryFilters()
+            .Where(pr => pr.Id == projectId)
+            .Select(pr => (Guid?)pr.SpaceId)
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false);
+        foreach (var gate in FlattenParsed(parsed.Steps)
+                     .Where(p => ResponsibleTeamResolver.IsGateStep(p.StepType)))
+        {
+            var error = spaceId is { } sid && sid != Guid.Empty
+                ? await ResponsibleTeamResolver
+                    .ValidateStepConfigAsync(db, sid, gate.StepType, gate.Name, gate.Config, ct)
+                    .ConfigureAwait(false)
+                : $"Manual intervention step '{gate.Name}' could not be validated: the " +
+                  "project's Space could not be resolved.";
+            if (error is not null)
+            {
+                warnings.Add(new ImportDeploymentProcessWarning(gate.Name, error));
+            }
+        }
+
         return new ImportDeploymentProcessResult(
             Imported: importedCount,
             ReplacedExisting: replaced,
-            Warnings: parsed.Warnings);
+            Warnings: warnings);
+    }
+
+    /// <summary>Depth-first flatten of a parsed step tree, so a gate nested inside a
+    /// rolling/ForEach parent is validated too.</summary>
+    private static IEnumerable<ParsedStep> FlattenParsed(IEnumerable<ParsedStep> steps)
+    {
+        foreach (var s in steps)
+        {
+            yield return s;
+            if (s.Children is { Count: > 0 } kids)
+            {
+                foreach (var child in FlattenParsed(kids))
+                {
+                    yield return child;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -550,7 +641,111 @@ public class ProcessService(
             return ProcessValidator.Result.Ok;
         }
 
-        return ProcessValidator.Validate(process.Steps);
+        var result = ProcessValidator.Validate(process.Steps);
+        var warnings = await GatedChildWarningsAsync(db, process.Steps, ct)
+            .ConfigureAwait(false);
+        return warnings.Count == 0 ? result : result with { Warnings = warnings };
+    }
+
+    /// <summary>
+    /// WP3-b — advisory note for each <c>Octopus.DeployRelease</c> step whose CHILD
+    /// project's process contains a manual-intervention gate.
+    /// <para>
+    /// The parent step waits on the child, so such a composite deployment will sit until a
+    /// human answers the child's gate. That is now correct behaviour —
+    /// <c>WaitForChildAsync</c> charges only non-paused time against
+    /// <c>Engine:MaxDeployReleaseWaitDuration</c>, so the parent no longer fails at one
+    /// hour against a 72 h approval window — but it is still surprising enough to say out
+    /// loud: the operator who queues the parent is not necessarily the person who can
+    /// approve the child, and nothing else on the parent's process hints that it depends
+    /// on somebody's decision.
+    /// </para>
+    /// <para>
+    /// A WARNING, not an error: the combination is legitimate.
+    /// </para>
+    /// </summary>
+    private static async Task<List<string>> GatedChildWarningsAsync(
+        KrakenDbContext db, IEnumerable<ProcessStep> steps, CancellationToken ct)
+    {
+        var warnings = new List<string>();
+        foreach (var step in steps.Where(s => s.StepType.Equals(
+                     DeployReleaseConfigKeys.StepType, StringComparison.OrdinalIgnoreCase)))
+        {
+            var warning = await GatedChildWarningAsync(db, step.Name, step.Config, ct)
+                .ConfigureAwait(false);
+            if (warning is not null)
+            {
+                warnings.Add(warning);
+            }
+        }
+        return warnings;
+    }
+
+    /// <summary>
+    /// The advisory for ONE <c>Octopus.DeployRelease</c> step, or <c>null</c> when its
+    /// child project has no gate (and when the config names no resolvable project — the
+    /// runner also accepts a slug or name, and re-implementing that resolution here would
+    /// be a second source of truth for it).
+    /// <para>
+    /// Public so the step editor can show it immediately after a save: <c>ValidateAsync</c>
+    /// is the aggregate view, but nothing in the product calls it yet, and an advisory
+    /// nobody sees is not worth computing.
+    /// </para>
+    /// </summary>
+    public async Task<string?> DescribeGatedChildAsync(
+        string stepName,
+        string stepType,
+        IReadOnlyDictionary<string, string> config,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+        if (!stepType.Equals(DeployReleaseConfigKeys.StepType, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+        await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+        return await GatedChildWarningAsync(db, stepName, config, ct).ConfigureAwait(false);
+    }
+
+    private static async Task<string?> GatedChildWarningAsync(
+        KrakenDbContext db,
+        string stepName,
+        IReadOnlyDictionary<string, string> config,
+        CancellationToken ct)
+    {
+        var raw = ManualInterventionConfigKeys.Read(config, DeployReleaseConfigKeys.ProjectId);
+        if (!Guid.TryParse(raw, out var childProjectId))
+        {
+            return null;
+        }
+
+        var gateNames = await db.Processes
+            .IgnoreQueryFilters()
+            .Where(p => p.OwnerKind == ProcessOwnerKind.Project && p.OwnerId == childProjectId)
+            .SelectMany(p => p.Steps)
+            // ILike keeps the comparison case-insensitive IN POSTGRES — a client-side
+            // OrdinalIgnoreCase would pull the whole step set into memory, and StepType is
+            // stored verbatim as the caller supplied it.
+            .Where(s => EF.Functions.ILike(s.StepType, ManualInterventionConfigKeys.StepType))
+            .Select(s => s.Name)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        if (gateNames.Count == 0)
+        {
+            return null;
+        }
+
+        var childName = await db.Projects.IgnoreQueryFilters()
+            .Where(p => p.Id == childProjectId)
+            .Select(p => p.Name)
+            .FirstOrDefaultAsync(ct)
+            .ConfigureAwait(false) ?? childProjectId.ToString();
+
+        return $"Step '{stepName}' deploys project '{childName}', whose process contains " +
+               $"manual-intervention gate(s): {string.Join(", ", gateNames)}. This deployment " +
+               "will PAUSE until somebody approves the child. The wait no longer counts " +
+               "against this step's timeout, but whoever runs the parent needs to know an " +
+               "approval is required.";
     }
 
     // ── Private helpers ────────────────────────────────────────────────────

@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 [assembly: InternalsVisibleTo("KrakenDeploy.Agent.Tests")]
+[assembly: InternalsVisibleTo("KrakenDeploy.Steps.Script.Tests")]
 
 namespace KrakenDeploy.Steps.Common;
 
@@ -70,7 +71,7 @@ public sealed class ScriptRunner
         CancellationToken ct,
         string? powerShellEdition = null)
     {
-        var scriptFile = WriteScriptFile(scriptBody, syntax);
+        var scriptFile = WriteScriptFile(scriptBody, syntax, workingDirectory);
         try
         {
             return await ExecuteAsync(scriptFile, syntax, powerShellEdition, workingDirectory,
@@ -101,7 +102,7 @@ public sealed class ScriptRunner
     private static bool IsPowerShell(string syntax) =>
         syntax.ToLowerInvariant() is not ("bash" or "csharp" or "fsharp" or "python");
 
-    private static string WriteScriptFile(string body, string syntax)
+    internal static string WriteScriptFile(string body, string syntax, string directory)
     {
         var ext = syntax.ToLowerInvariant() switch
         {
@@ -111,7 +112,7 @@ public sealed class ScriptRunner
             "python" => ".py",
             _        => ".ps1",
         };
-        var path = Path.Combine(Path.GetTempPath(), $"kraken-{Guid.NewGuid():N}{ext}");
+        var path = Path.Combine(directory, $"kraken-{Guid.NewGuid():N}{ext}");
         File.WriteAllText(path, body, EncodingForSyntax(syntax));
         return path;
     }

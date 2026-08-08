@@ -40,6 +40,36 @@ public class EngineOptionsValidatorTests
     }
 
     [Fact]
+    public void DefaultInterventionTimeout_refuses_zero()
+        // WP3-b reversal. Zero used to be the documented "gates wait forever" switch and
+        // was explicitly allowed here. It is now refused at startup, because an
+        // unexpiring gate is skipped by the timeout sweeper while its task keeps holding
+        // the F1 (project, environment, tenant) key — so one unanswered gate blocks every
+        // later release of that project + environment. Rejecting the per-step 0 while
+        // still accepting a server-wide one would only move the denial-of-release into a
+        // config file.
+        => FluentActions
+            .Invoking(() => Resolve(("DefaultInterventionTimeout", "00:00:00")))
+            .Should().Throw<OptionsValidationException>()
+            .WithMessage("*DefaultInterventionTimeout*");
+
+    [Fact]
+    public void DefaultInterventionTimeout_refuses_a_bare_number()
+        // "3" binds as three DAYS, not three hours — the same trap the other Engine
+        // durations are validated for.
+        => FluentActions
+            .Invoking(() => Resolve(("DefaultInterventionTimeout", "3")))
+            .Should().Throw<OptionsValidationException>()
+            .WithMessage("*DefaultInterventionTimeout*");
+
+    [Fact]
+    public void DefaultInterventionTimeout_refuses_a_negative_duration()
+        => FluentActions
+            .Invoking(() => Resolve(("DefaultInterventionTimeout", "-01:00:00")))
+            .Should().Throw<OptionsValidationException>()
+            .WithMessage("*DefaultInterventionTimeout*");
+
+    [Fact]
     public void No_Engine_section_leaves_the_shipped_defaults_valid()
     {
         var options = Resolve();

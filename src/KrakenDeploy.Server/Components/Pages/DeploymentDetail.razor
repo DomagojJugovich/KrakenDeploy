@@ -17,6 +17,7 @@
 @inject IAuditLog Audit
 @inject IServiceProvider Services
 @inject MaintenanceModeService MaintenanceSvc
+@implements IAsyncDisposable
 
 <PageTitle>Deployment @(Deployment?.Id.ToString()[..8]) - KrakenDeploy</PageTitle>
 
@@ -72,7 +73,12 @@ else
                       DefaultFailedMessage="Deployment failed."
                       FinishedDuration="@FormatDuration()"
                       QueuedMessage="@QueuedMessage()"
+                      PausedMessage="@PausedMessage()"
                       HasRun="@(Deployment.StartedUtc is not null)" />
+
+    @* ── WP3 manual intervention: pending gate + approval history ── *@
+    <InterventionPanel @ref="_interventions" TaskId="Id" TaskNoun="deployment"
+                       OnResponded="ReloadAsync" />
 
     @* ── Summary grid ── *@
     <div class="kr-card kr-card-pad rz-mb-4">
@@ -279,8 +285,14 @@ else
     private MaintenanceState? _maintenanceHold;
 
     // Cancel is meaningful only before a deployment reaches a terminal state.
+    // WP3: Paused counts. It is non-terminal AND holds the F1 (project, environment,
+    // tenant) slot for up to the approval timeout (72 h by default), so if the
+    // responsible team is unavailable an operator MUST be able to release it — a user
+    // holding TaskCancel but not the respond permission otherwise had no escape at all.
+    // ServerTaskCanceller already accepted a paused task; only this gate was missing.
     private bool CanCancel =>
-        Deployment?.Status is DeploymentStatus.Queued or DeploymentStatus.Running;
+        Deployment?.Status is DeploymentStatus.Queued or DeploymentStatus.Running
+                           or DeploymentStatus.Paused;
 
     // Redeploy re-runs a finished deployment.
     private bool CanRedeploy =>
@@ -289,12 +301,134 @@ else
             or DeploymentStatus.Failed
             or DeploymentStatus.Cancelled;
 
-    private string CancelTooltip => Deployment?.Status == DeploymentStatus.Running
-        ? "Cancel this deployment. The abort is pushed to the agent (the running " +
-          "step's process is stopped); no further steps start."
-        : "Cancel this deployment before it starts.";
+    private string CancelTooltip => Deployment?.Status switch
+    {
+        DeploymentStatus.Running =>
+            "Cancel this deployment. The abort is pushed to the agent (the running " +
+            "step's process is stopped); no further steps start.",
+        DeploymentStatus.Paused =>
+            "Cancel this deployment instead of answering its approval gate. This also " +
+            "closes the gate and frees the project + environment for other deployments.",
+        _ => "Cancel this deployment before it starts.",
+    };
 
-    protected override async Task OnInitializedAsync()
+    private InterventionPanel? _interventions;
+    private readonly CancellationTokenSource _pollCts = new();
+    private Task? _pollLoop;
+
+    protected override Task OnInitializedAsync() => ReloadAsync();
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (firstRender && _pollLoop is null)
+        {
+            _pollLoop = PollWhileLiveAsync();
+        }
+    }
+
+    /// <summary>
+    /// WP3 — refresh while the deployment is NOT terminal. Before the approval gate
+    /// existed a detail page needed no timer: Running to terminal is fast and the
+    /// operator's own action drove every transition. Paused broke both assumptions —
+    /// it is a state a page can legitimately sit in for 72 h, and its exit is triggered
+    /// by a DIFFERENT user (or the timeout sweeper). Without this the banner, the pill
+    /// and the approval card all stay frozen at "awaiting approval" long after the
+    /// deployment finished, and the post-approve render is self-contradictory (the card
+    /// vanishes while the status still reads Paused, because the resume is asynchronous).
+    /// </summary>
+    private async Task PollWhileLiveAsync()
+    {
+        // Capture the token ONCE. Re-reading _pollCts.Token on each loop iteration threw
+        // ObjectDisposedException — not an OCE, so it escaped the catch below into an
+        // unobserved Task — whenever DisposeAsync disposed the source while a tick's
+        // ReloadAsync was still in flight.
+        var token = _pollCts.Token;
+        try
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+            while (await timer.WaitForNextTickAsync(token))
+            {
+                if (Deployment is null)
+                {
+                    // Not loaded YET — keep waiting. OnAfterRender starts this loop on the
+                    // first render, which happens BEFORE the awaited OnInitializedAsync
+                    // completes, so an initial load slower than one tick used to land here
+                    // and `break` permanently: _pollLoop stayed non-null, nothing restarted
+                    // it, and the page then sat frozen at "awaiting approval" for the whole
+                    // 72 h window — exactly what this timer exists to prevent.
+                    continue;
+                }
+                if (Deployment.Status.IsTerminal())
+                {
+                    // Terminal — nothing else will change it.
+                    break;
+                }
+                // WP3-b — while PAUSED, refresh only what can actually change: the task row
+                // and the gate panel. The full ReloadAsync issues seven service calls (logs,
+                // steps, output variables, artifacts, diagnosis, queue reason), and none of
+                // those can move while the task is parked waiting for a human — but the
+                // window defaults to 72 h, so a tab left open on a paused deployment was
+                // issuing on the order of half a million pointless queries. The first
+                // non-Paused tick does the full reload, which is what picks up everything
+                // the resume then produces.
+                var wasPaused = Deployment.Status == DeploymentStatus.Paused;
+                await InvokeAsync(async () =>
+                {
+                    if (wasPaused)
+                    {
+                        Deployment = await DeploymentSvc.GetAsync(Id);
+                        if (_interventions is not null)
+                        {
+                            await _interventions.RefreshAsync();
+                        }
+                        // Status moved off Paused — fall through to a full reload next tick.
+                        if (Deployment?.Status == DeploymentStatus.Paused)
+                        {
+                            StateHasChanged();
+                            return;
+                        }
+                    }
+                    await ReloadAsync();
+                    if (_interventions is not null)
+                    {
+                        await _interventions.RefreshAsync();
+                    }
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Circuit tearing down — expected.
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _pollCts.CancelAsync();
+        // Await the loop BEFORE disposing the source, so an in-flight tick finishes (or
+        // observes the cancel) rather than racing the dispose.
+        if (_pollLoop is not null)
+        {
+            try
+            {
+                await _pollLoop;
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected on teardown.
+            }
+        }
+        _pollCts.Dispose();
+    }
+
+    /// <summary>
+    /// Re-reads the deployment and every tab's data. Also invoked after a
+    /// manual-intervention decision (WP3): approving flips the status off Paused and
+    /// adds log + step-outcome rows, so the page must not keep showing the pre-decision
+    /// state.
+    /// </summary>
+    private async Task ReloadAsync()
     {
         Deployment = await DeploymentSvc.GetAsync(Id);
         if (Deployment is not null)
@@ -308,6 +442,13 @@ else
             await RefreshQueueReasonAsync();
         }
     }
+
+    /// <summary>Banner text while paused at a manual-intervention gate. The step name,
+    /// instructions and the Approve/Reject affordance live in
+    /// <c>InterventionPanel</c> immediately below, so the banner only points at it —
+    /// restating the step name here would drift from the panel's own read.</summary>
+    private static string PausedMessage()
+        => "Paused for manual intervention — see the approval card below.";
 
     private async Task LoadDiagnosisAsync()
     {

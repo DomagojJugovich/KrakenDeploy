@@ -37,17 +37,24 @@ public sealed class ScriptRunnerKillTests
         try
         {
             var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
-            while (!File.Exists(pidFile))
+            string pidContent;
+            while (true)
             {
                 if (DateTime.UtcNow > deadline)
                 {
                     throw new TimeoutException("script never published its PID");
                 }
+                if (File.Exists(pidFile))
+                {
+                    pidContent = (await File.ReadAllTextAsync(pidFile)).Trim();
+                    if (pidContent.Length > 0)
+                    {
+                        break;
+                    }
+                }
                 await Task.Delay(50);
             }
-            var pid = int.Parse(
-                (await File.ReadAllTextAsync(pidFile)).Trim(),
-                System.Globalization.CultureInfo.InvariantCulture);
+            var pid = int.Parse(pidContent, System.Globalization.CultureInfo.InvariantCulture);
 
             cts.Cancel();
             await FluentActions

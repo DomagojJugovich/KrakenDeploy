@@ -13,8 +13,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace KrakenDeploy.Server.Data.Migrations
 {
     [DbContext(typeof(KrakenDbContext))]
-    [Migration("20260731091823_CapAuditDetailsLength")]
-    partial class CapAuditDetailsLength
+    [Migration("20260730214050_TrimStepPackageStepTypes")]
+    partial class TrimStepPackageStepTypes
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -419,8 +419,7 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnName("before_json");
 
                     b.Property<string>("Details")
-                        .HasMaxLength(4096)
-                        .HasColumnType("character varying(4096)")
+                        .HasColumnType("text")
                         .HasColumnName("details");
 
                     b.Property<string>("EventType")
@@ -664,6 +663,95 @@ namespace KrakenDeploy.Server.Data.Migrations
                     b.ToTable("dashboard_layouts", (string)null);
                 });
 
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Deployments.Interruption", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ActedByDisplay")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("acted_by_display");
+
+                    b.Property<Guid?>("ActedByUserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("acted_by_user_id");
+
+                    b.Property<DateTimeOffset?>("ActedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("acted_utc");
+
+                    b.Property<DateTimeOffset>("CreatedUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_utc");
+
+                    b.Property<DateTimeOffset?>("ExpiresUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("expires_utc");
+
+                    b.Property<string>("Instructions")
+                        .HasColumnType("text")
+                        .HasColumnName("instructions");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)")
+                        .HasColumnName("notes");
+
+                    b.PrimitiveCollection<Guid[]>("ResponsibleTeamIds")
+                        .IsRequired()
+                        .HasColumnType("uuid[]")
+                        .HasColumnName("responsible_team_ids");
+
+                    b.PrimitiveCollection<string[]>("ResponsibleTeamNames")
+                        .IsRequired()
+                        .HasColumnType("text[]")
+                        .HasColumnName("responsible_team_names");
+
+                    b.Property<Guid>("SpaceId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("space_id");
+
+                    b.Property<int>("Status")
+                        .HasColumnType("integer")
+                        .HasColumnName("status");
+
+                    b.Property<int>("StepIndex")
+                        .HasColumnType("integer")
+                        .HasColumnName("step_index");
+
+                    b.Property<string>("StepName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("step_name");
+
+                    b.Property<Guid>("TaskId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("task_id");
+
+                    b.HasKey("Id")
+                        .HasName("pk_interruptions");
+
+                    b.HasIndex("ActedByUserId")
+                        .HasDatabaseName("ix_interruptions_acted_by_user_id");
+
+                    b.HasIndex("ExpiresUtc")
+                        .HasDatabaseName("ix_interruptions_pending_expiry")
+                        .HasFilter("status = 0 AND expires_utc IS NOT NULL");
+
+                    b.HasIndex("SpaceId", "TaskId")
+                        .HasDatabaseName("ix_interruptions_space_id_task_id");
+
+                    b.HasIndex("TaskId", "StepIndex")
+                        .IsUnique()
+                        .HasDatabaseName("ix_interruptions_task_id_step_index");
+
+                    b.ToTable("interruptions", (string)null);
+                });
+
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Deployments.ServerTask", b =>
                 {
                     b.Property<Guid>("Id")
@@ -740,6 +828,10 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("parent_task_id");
 
+                    b.Property<string>("PauseCheckpointEncrypted")
+                        .HasColumnType("text")
+                        .HasColumnName("pause_checkpoint_encrypted");
+
                     b.Property<Guid>("ProjectId")
                         .HasColumnType("uuid")
                         .HasColumnName("project_id");
@@ -808,7 +900,7 @@ namespace KrakenDeploy.Server.Data.Migrations
 
                     b.HasIndex("ProjectId", "EnvironmentId", "TenantId")
                         .HasDatabaseName("ix_server_tasks_running_deployment_peer")
-                        .HasFilter("status IN (1, 5) AND kind = 0");
+                        .HasFilter("status IN (1, 5, 7) AND kind = 0");
 
                     b.ToTable("server_tasks", null, t =>
                         {
@@ -3902,6 +3994,25 @@ namespace KrakenDeploy.Server.Data.Migrations
                         .HasConstraintName("fk_dashboard_layouts_users_user_id");
                 });
 
+            modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Deployments.Interruption", b =>
+                {
+                    b.HasOne("KrakenDeploy.Server.Data.Identity.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("ActedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull)
+                        .HasConstraintName("fk_interruptions_users_acted_by_user_id");
+
+                    b.HasOne("KrakenDeploy.Server.Core.Domain.Deployments.ServerTask", "Task")
+                        .WithMany("Interruptions")
+                        .HasForeignKey("SpaceId", "TaskId")
+                        .HasPrincipalKey("SpaceId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_interruptions_server_tasks_space_id_task_id");
+
+                    b.Navigation("Task");
+                });
+
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Deployments.ServerTask", b =>
                 {
                     b.HasOne("KrakenDeploy.Server.Data.Identity.ApplicationUser", null)
@@ -4614,6 +4725,8 @@ namespace KrakenDeploy.Server.Data.Migrations
             modelBuilder.Entity("KrakenDeploy.Server.Core.Domain.Deployments.ServerTask", b =>
                 {
                     b.Navigation("Artifacts");
+
+                    b.Navigation("Interruptions");
 
                     b.Navigation("OutputVariables");
 

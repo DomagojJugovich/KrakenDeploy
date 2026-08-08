@@ -215,7 +215,11 @@ public sealed class StepPackageLoader(
         }
 
         var loaded = new LoadedPackage(manifest, handlerType, alc);
-        _cache.TryAdd((name, version), loaded);
+        if (!_cache.TryAdd((name, version), loaded))
+        {
+            alc.Unload();
+            return _cache[(name, version)];
+        }
         logger.LogInformation(
             "StepPackageLoader: loaded {Name} {Version} (executor {TypeName}).",
             name, version, manifest.ExecutorTypeName);
@@ -261,7 +265,7 @@ public sealed class StepPackageLoader(
 
     private string ResolveCacheDir(string name, string version)
     {
-        var root = config["DataPath"] ?? "data";
+        var root = config["Agent:DataPath"] ?? "data";
         return Path.Combine(root, "step-packages-cache",
             SanitisePathSegment(name), SanitisePathSegment(version));
     }

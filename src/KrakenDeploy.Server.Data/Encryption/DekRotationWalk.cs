@@ -122,6 +122,23 @@ public static class DekRotationWalk
             if (!string.IsNullOrEmpty(o.Value)) { o.Value = Re(oldDek, newDek, o.Value); c.OutputVariables++; }
         }
 
+        // 7. WP3 — paused tasks' resume checkpoints (scalar column). Non-null only
+        //    while a task sits Paused at a manual-intervention gate, but the payload
+        //    embeds captured SENSITIVE output values, so a rotation that skipped it
+        //    would make every in-flight approval un-resumable (the decrypt under the
+        //    new DEK would throw and the task would fail on approve).
+        //    WP3-b — excludes the empty string too, matching every sibling step above.
+        //    An empty checkpoint from any future writer would otherwise reach
+        //    AesGcmCipher.Decrypt("") and abort the entire rotation.
+        var paused = await db.ServerTasks.IgnoreQueryFilters()
+            .Where(t => t.PauseCheckpointEncrypted != null && t.PauseCheckpointEncrypted != "")
+            .ToListAsync(ct).ConfigureAwait(false);
+        foreach (var t in paused)
+        {
+            t.PauseCheckpointEncrypted = Re(oldDek, newDek, t.PauseCheckpointEncrypted!);
+            c.PauseCheckpoints++;
+        }
+
         return c;
     }
 }
@@ -144,11 +161,17 @@ public sealed class DekReEncryptCounts
     /// <summary>Sensitive task output variables (T0-6) re-encrypted.</summary>
     public int OutputVariables { get; set; }
 
+    /// <summary>WP3 — resume checkpoints of tasks paused at a manual-intervention
+    /// gate. Normally 0; non-zero only when a rotation runs while approvals are
+    /// outstanding.</summary>
+    public int PauseCheckpoints { get; set; }
+
     public int Total => Variables + SnapshotEntries + Settings + IdentityProviders
-                        + OfflineDropFields + OutputVariables;
+                        + OfflineDropFields + OutputVariables + PauseCheckpoints;
 
     public string Summary =>
         $"{Variables} variables, {SnapshotEntries} snapshot entries across {Releases} releases, " +
         $"{Settings} settings secrets, {IdentityProviders} OIDC secrets, " +
-        $"{OfflineDropFields} offline-drop targets, {OutputVariables} output variables";
+        $"{OfflineDropFields} offline-drop targets, {OutputVariables} output variables, " +
+        $"{PauseCheckpoints} pause checkpoints";
 }

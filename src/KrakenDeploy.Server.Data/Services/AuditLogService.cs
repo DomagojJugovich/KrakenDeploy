@@ -1,8 +1,11 @@
 using System.Security.Claims;
 using KrakenDeploy.Server.Core.Domain.Audit;
+using KrakenDeploy.Server.Core.Domain.Deployments;
+using KrakenDeploy.Server.Core.Domain.Performance;
 using KrakenDeploy.Server.Core.Domain.Spaces;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using KrakenDeploy.Server.Core.Domain.Security;
 
 namespace KrakenDeploy.Server.Data.Services;
 
@@ -58,30 +61,20 @@ public sealed class AuditLogService(
         string? userDisplay  = null,
         CancellationToken ct = default)
     {
+        // WP3-b — one shared extraction (Core ClaimsPrincipalExtensions), not a private
+        // chain. This was one of five copies whose sentinels disagreed.
         var http = httpAccessor.HttpContext;
-
-        // Ambient attribution, and ONLY when the caller supplied none. A caller that
-        // passes userDisplay is declaring who (or what) acted, so the fallback must not
-        // override it — the reachable case is a request authenticated as something other
-        // than a user. The agent wire-contract gate runs on a request whose principal is an
-        // AGENT: its NameIdentifier is a DeploymentTarget id, so the fallback would stamp
-        // UserId with a target GUID that resolves to no user and renders as "Unknown".
-        // Passing userDisplay: "System" is how such a call site opts out.
-        if (userId is null && userDisplay is null
-            && http?.User?.Identity?.IsAuthenticated == true)
+        if (userId is null && http is not null)
         {
-            var raw = http.User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (Guid.TryParse(raw, out var uid))
+            var (resolvedId, resolvedDisplay) = http.User.ResolveProvenance();
+            userId = resolvedId;
+            if (resolvedId is not null)
             {
-                userId = uid;
+                userDisplay ??= resolvedDisplay;
             }
-
-            userDisplay ??= http.User.Identity?.Name
-                         ?? http.User.FindFirstValue(ClaimTypes.Email)
-                         ?? "Unknown";
         }
 
-        userDisplay ??= "System";
+        userDisplay ??= ClaimsPrincipalExtensions.SystemLabel;
 
         var entry = new AuditEntry
         {
@@ -106,20 +99,44 @@ public sealed class AuditLogService(
     /// <summary>
     /// Deletes audit entries older than <paramref name="retentionDays"/> days.
     /// Called by the Hangfire retention sweep (Slice I).
+    /// <para>
+    /// CHANGE-CONTROL entries (<c>InterruptionAuditEvents.ChangeControlEventTypes</c> —
+    /// who approved or refused a production change) are held to their own, longer window
+    /// instead: <paramref name="changeControlRetentionDays"/>, where zero or negative
+    /// means keep indefinitely (WP3-b). They need it because they are the LAST copy of
+    /// the approval — the <c>interruptions</c> row is CASCADE-deleted with its task and
+    /// <c>RetentionService</c> hard-deletes tasks — and RH state-sector change-control
+    /// obligations routinely exceed the ordinary 365-day audit window.
+    /// </para>
     /// </summary>
     public async Task<int> PurgeOldEntriesAsync(
         int retentionDays = 365,
+        int changeControlRetentionDays = PerformanceSettings.DefaultChangeControlAuditRetentionDays,
         CancellationToken ct = default)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
-        var cutoff = time.GetUtcNow().AddDays(-retentionDays);
+        var now = time.GetUtcNow();
+        var cutoff = now.AddDays(-retentionDays);
+        var changeControl = InterruptionAuditEvents.ChangeControlEventTypes;
+
         // Deliberately NOT routed through the audit Space-visibility choke
         // point: this is the system-wide retention sweep — it deletes by age
         // across every Space and returns no row content to any caller.
-        return await db.AuditEntries
-            .Where(e => e.OccurredUtc < cutoff)
+        var deleted = await db.AuditEntries
+            .Where(e => e.OccurredUtc < cutoff && !changeControl.Contains(e.EventType))
             .ExecuteDeleteAsync(ct)
             .ConfigureAwait(false);
+
+        if (changeControlRetentionDays > 0)
+        {
+            var ccCutoff = now.AddDays(-changeControlRetentionDays);
+            deleted += await db.AuditEntries
+                .Where(e => e.OccurredUtc < ccCutoff && changeControl.Contains(e.EventType))
+                .ExecuteDeleteAsync(ct)
+                .ConfigureAwait(false);
+        }
+
+        return deleted;
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

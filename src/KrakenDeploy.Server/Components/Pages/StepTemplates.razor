@@ -37,6 +37,11 @@
                           Click="@ShowImportDialog" />
         </RequirePermission>
         <RequirePermission Permission="Permission.StepTemplateCreate">
+            <RadzenButton Icon="draw" ButtonStyle="ButtonStyle.Light"
+                          Text="Design Template"
+                          Click="@(() => Nav.NavigateTo(Sp("/step-templates/designer")))" />
+        </RequirePermission>
+        <RequirePermission Permission="Permission.StepTemplateCreate">
             <RadzenButton Icon="add_circle_outline" ButtonStyle="ButtonStyle.Primary"
                           Text="New Template"
                           Click="@ShowCreateDialog" />
@@ -89,12 +94,16 @@
                 }
             </Template>
         </RadzenDataGridColumn>
-        <RadzenDataGridColumn TItem="StepTemplate" Sortable="false" Filterable="false" Width="180px" TextAlign="TextAlign.End">
+        <RadzenDataGridColumn TItem="StepTemplate" Sortable="false" Filterable="false" Width="220px" TextAlign="TextAlign.End">
             <Template Context="t">
                 <RadzenButton Icon="download" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
                               Variant="Variant.Flat" class="rz-mr-1"
                               Click="@(() => Nav.NavigateTo($"/api/step-templates/{t.Id}/export", forceLoad: true))"
                               title="Export as Octopus Library JSON" />
+                <RadzenButton Icon="draw" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
+                              Variant="Variant.Flat" class="rz-mr-1"
+                              Click="@(() => Nav.NavigateTo(Sp($"/step-templates/designer/{t.Id}")))"
+                              title="Open in designer" />
                 <RequirePermission Permission="Permission.StepTemplateEdit">
                     <RadzenButton Icon="edit" ButtonStyle="ButtonStyle.Light" Size="ButtonSize.Small"
                                   Variant="Variant.Flat" class="rz-mr-1"

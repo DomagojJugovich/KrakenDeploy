@@ -312,7 +312,10 @@
                     </RadzenDataGridColumn>
                     <RadzenDataGridColumn TItem="RunbookRun" Title="" Width="52px" Sortable="false" TextAlign="TextAlign.Center">
                         <Template Context="r">
-                            @if (r.Status is DeploymentStatus.Queued or DeploymentStatus.Running)
+                            @* WP3 — Paused is non-terminal and HOLDS the F1 slot, so it must be
+                           cancellable; the server has always allowed it. *@
+                        @if (r.Status is DeploymentStatus.Queued or DeploymentStatus.Running
+                                      or DeploymentStatus.Paused)
                             {
                                 @* B6 — cancel a queued/running run. stopPropagation: the
                                    row's RowClick toggles the log viewer (Deployments.razor
@@ -656,7 +659,7 @@
                 Id,
                 _triggerEnvId.Value,
                 targetIds[0],
-                initiator: TaskInitiator.Manual(actingUser.GetUserId(), actingUser.GetDisplayName()),
+                initiator: TaskInitiator.Manual(actingUser.ResolveUserId(), actingUser.ResolveDisplayName()),
                 caller: CallerAuthorization.ForUser(actingUser),
                 scheduledFor: scheduled,
                 additionalTargetIds: targetIds.Count > 1 ? targetIds.Skip(1).ToList() : null,
@@ -767,6 +770,9 @@
 
     private static BadgeStyle RunStatusStyle(DeploymentStatus status) => status switch
     {
+        // WP3 — an actionable state, so it gets the attention colour rather than the
+        // muted grey default (matching StatusPill and the Tasks grid).
+        DeploymentStatus.Paused => BadgeStyle.Warning,
         DeploymentStatus.Succeeded             => BadgeStyle.Success,
         DeploymentStatus.SucceededWithWarnings => BadgeStyle.Warning,
         DeploymentStatus.Failed                => BadgeStyle.Danger,

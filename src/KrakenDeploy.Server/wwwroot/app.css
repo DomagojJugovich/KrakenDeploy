@@ -596,6 +596,23 @@ html, body {
 .muted-3 { color: var(--text-3); }
 .kr-empty { text-align: center; color: var(--text-3); padding: 36px 16px; font-size: 13.5px; }
 
+/* Author-supplied prose rendered as TEXT (never markup) — manual-intervention
+   instructions. Wraps long lines and scrolls rather than stretching the page. */
+.kr-pre-wrap {
+    margin: 0;
+    padding: 10px 12px;
+    background: var(--surface-2);
+    border: 1px solid var(--surface-3);
+    border-radius: 4px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 320px;
+    overflow-y: auto;
+    font-family: inherit;
+    font-size: 13.5px;
+    color: var(--text);
+}
+
 /* ── Stat cards ── */
 .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--gap); }
 @media (max-width: 1100px) { .stat-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -2132,4 +2149,118 @@ a.kraken-back-link .rzi { font-size: 16px; }
     border-radius: 50%;
     display: inline-block;
     flex-shrink: 0;
+}
+
+/* ── Step Template Designer ───────────────────────────────────────────── */
+
+.designer-layout {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    gap: 1.25rem;
+    align-items: start;
+}
+
+.designer-main {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+    min-width: 0;
+}
+
+.designer-preview {
+    position: sticky;
+    top: 1rem;
+}
+
+.designer-meta-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 0.75rem;
+}
+
+.designer-meta-full {
+    grid-column: 1 / -1;
+}
+
+.designer-script-toolbar {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-end;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.designer-monaco {
+    height: 380px;
+    border: 1px solid var(--border, var(--rz-base-300));
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.designer-params-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+}
+
+.designer-params-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.designer-param-card {
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-start;
+    padding: 0.75rem;
+    border: 1px solid var(--border, var(--rz-base-300));
+    border-radius: 6px;
+    background: var(--surface-2, var(--rz-base-100));
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.designer-param-card:hover {
+    border-color: var(--rz-primary, #4340d2);
+    box-shadow: 0 1px 4px rgb(0 0 0 / 0.08);
+}
+
+.designer-param-drag {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-top: 0.25rem;
+}
+
+.designer-param-fields {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.designer-param-row {
+    display: flex;
+    gap: 0.6rem;
+}
+
+.designer-param-actions {
+    padding-top: 0.25rem;
+}
+
+@media (max-width: 1100px) {
+    .designer-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .designer-preview {
+        position: static;
+    }
+
+    .designer-meta-grid {
+        grid-template-columns: 1fr;
+    }
 }

@@ -102,6 +102,8 @@ public sealed class AdhocSessionService(
                 nameof(targetIds));
         }
 
+        var deduped = targetIds.Distinct().ToList();
+
         await using var db = await dbFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
         var maxIterations = await ReadMaxIterationsAsync(db, ct).ConfigureAwait(false);
 
@@ -110,7 +112,7 @@ public sealed class AdhocSessionService(
             Prompt              = prompt,
             Mode                = mode,
             Status              = AdhocSessionStatus.Active,
-            FrozenTargetSetJson = JsonSerializer.Serialize(targetIds),
+            FrozenTargetSetJson = JsonSerializer.Serialize(deduped),
             CreatedByUserId     = createdByUserId,
             CreatedByDisplay    = createdByDisplay,
             MaxIterations       = maxIterations,
@@ -121,7 +123,7 @@ public sealed class AdhocSessionService(
         logger.LogInformation(
             "Adhoc session {SessionId} created by {User} ({TargetCount} targets, mode={Mode}, " +
             "maxIterations={Max}).",
-            session.Id, createdByDisplay, targetIds.Count, mode, maxIterations);
+            session.Id, createdByDisplay, deduped.Count, mode, maxIterations);
 
         return session.Id;
     }

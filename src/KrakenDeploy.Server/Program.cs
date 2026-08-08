@@ -45,6 +45,7 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using OpenTelemetry.Exporter;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -167,25 +168,35 @@ public static class Program
         // ReadFrom.Configuration picks up the "Serilog" section in appsettings
         // (level overrides, minimum level, etc.).  ReadFrom.Services enables
         // enrichers/sinks that need services from the DI container.
-        builder.Host.UseSerilog((context, services, lc) => lc
-            .ReadFrom.Configuration(context.Configuration)
-            .ReadFrom.Services(services)
-            .Enrich.FromLogContext()
-            .Enrich.WithMachineName()
-            .Enrich.WithThreadId()
-            .WriteTo.Console(
-                outputTemplate:
-                    "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext}{NewLine}" +
-                    "{Message:lj}{NewLine}{Exception}",
-                formatProvider: CultureInfo.InvariantCulture)
-            .WriteTo.File(
-                "logs/server-.log",
-                rollingInterval: RollingInterval.Day,
-                retainedFileCountLimit: 30,
-                outputTemplate:
-                    "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} {Level:u3}] " +
-                    "{SourceContext}{NewLine}{Message:lj}{NewLine}{Exception}",
-                formatProvider: CultureInfo.InvariantCulture));
+        // Seq sink is config-gated (Otel:SeqServerUrl) — unset → no sink, no cost.
+        builder.Host.UseSerilog((context, services, lc) =>
+        {
+            lc.ReadFrom.Configuration(context.Configuration)
+                .ReadFrom.Services(services)
+                .Enrich.FromLogContext()
+                .Enrich.WithMachineName()
+                .Enrich.WithThreadId()
+                .WriteTo.Console(
+                    outputTemplate:
+                        "[{Timestamp:HH:mm:ss} {Level:u3}] {SourceContext}{NewLine}" +
+                        "{Message:lj}{NewLine}{Exception}",
+                    formatProvider: CultureInfo.InvariantCulture)
+                .WriteTo.File(
+                    "logs/server-.log",
+                    rollingInterval: RollingInterval.Day,
+                    retainedFileCountLimit: 30,
+                    outputTemplate:
+                        "[{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} {Level:u3}] " +
+                        "{SourceContext}{NewLine}{Message:lj}{NewLine}{Exception}",
+                    formatProvider: CultureInfo.InvariantCulture);
+
+            var seqServerUrl = context.Configuration["Otel:SeqServerUrl"];
+            var otelOn = context.Configuration.GetValue("Otel:Enabled", false);
+            if (otelOn && !string.IsNullOrWhiteSpace(seqServerUrl))
+            {
+                lc.WriteTo.Seq(seqServerUrl);
+            }
+        });
 
         // ── Data & identity ─────────────────────────────────────────────────
         var connectionString = builder.Configuration.GetConnectionString("KrakenDb")
@@ -768,16 +779,25 @@ public static class Program
         builder.Services.AddScoped<UiActionGuard>();
 
         // ── OpenTelemetry ────────────────────────────────────────────────────
-        // Tracing and metrics are wired; console exporter is enabled in
-        // Development only.  Production exporters (Jaeger, Prometheus, OTLP)
-        // are added in a later phase.
+        // Tracing and metrics are wired; the console exporter is enabled in
+        // Development only. Production export goes over OTLP and is config-gated
+        // (Otel:Enabled + Otel:OtlpEndpoint) — disabled is a true no-op: no
+        // exporter is registered, so there is zero startup/export cost and the
+        // behavior is exactly what it was before this phase.
         var serviceVersion =
             typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "0.0.0";
 
+        var otelEnabled = builder.Configuration.GetValue("Otel:Enabled", false);
+        var otlpEndpoint = builder.Configuration["Otel:OtlpEndpoint"];
+        var otelActive = otelEnabled && !string.IsNullOrWhiteSpace(otlpEndpoint);
+
         builder.Services
             .AddOpenTelemetry()
-            .ConfigureResource(rb => rb
-                .AddService(serviceName: "KrakenDeploy.Server", serviceVersion: serviceVersion))
+            .ConfigureResource(rb =>
+            {
+                rb.AddService(serviceName: "KrakenDeploy.Server", serviceVersion: serviceVersion);
+                rb.AddAttributes(BuildResourceAttributes(builder.Configuration));
+            })
             .WithTracing(tracing =>
             {
                 tracing
@@ -787,6 +807,11 @@ public static class Program
                 if (builder.Environment.IsDevelopment())
                 {
                     tracing.AddConsoleExporter();
+                }
+
+                if (otelActive)
+                {
+                    tracing.AddOtlpExporter(o => ConfigureOtlp(o, builder.Configuration));
                 }
             })
             .WithMetrics(metrics =>
@@ -798,6 +823,11 @@ public static class Program
                 if (builder.Environment.IsDevelopment())
                 {
                     metrics.AddConsoleExporter();
+                }
+
+                if (otelActive)
+                {
+                    metrics.AddOtlpExporter(o => ConfigureOtlp(o, builder.Configuration));
                 }
             });
 
@@ -2048,7 +2078,7 @@ public static class Program
 
                 var template = await svc.CreateAsync(
                     req.Name, req.ActionType, req.Description,
-                    req.Properties, parameters, ct)
+                    req.Properties, parameters, ct: ct)
                     .ConfigureAwait(false);
 
                 return Results.Created($"/api/step-templates/{template.Id}", template);
@@ -2073,7 +2103,7 @@ public static class Program
                 {
                     var template = await svc.UpdateAsync(
                         id, req.Name, req.Description, req.Properties, parameters,
-                        CallerAuthorization.ForUser(user), ct)
+                        CallerAuthorization.ForUser(user), ct: ct)
                         .ConfigureAwait(false);
 
                     return template is null ? Results.NotFound() : Results.Ok(template);
@@ -2510,8 +2540,8 @@ public static class Program
                         http.Request.Headers[KrakenHttpHeaders.ClientKind],
                         KrakenHttpHeaders.ClientKindCli, StringComparison.OrdinalIgnoreCase);
                     var initiator = isCli
-                        ? TaskInitiator.Cli(user.GetUserId(), user.GetDisplayName())
-                        : TaskInitiator.Api(user.GetUserId(), user.GetDisplayName());
+                        ? TaskInitiator.Cli(user.ResolveUserId(), user.ResolveDisplayName())
+                        : TaskInitiator.Api(user.ResolveUserId(), user.ResolveDisplayName());
                     var deployment = await deploymentSvc
                         .CreateAsync(
                             releaseId:     req.ReleaseId,
@@ -3440,8 +3470,8 @@ public static class Program
                         http.Request.Headers[KrakenHttpHeaders.ClientKind],
                         KrakenHttpHeaders.ClientKindCli, StringComparison.OrdinalIgnoreCase);
                     var initiator = isCli
-                        ? TaskInitiator.Cli(user.GetUserId(), user.GetDisplayName())
-                        : TaskInitiator.Api(user.GetUserId(), user.GetDisplayName());
+                        ? TaskInitiator.Cli(user.ResolveUserId(), user.ResolveDisplayName())
+                        : TaskInitiator.Api(user.ResolveUserId(), user.ResolveDisplayName());
                     var run = await runbookSvc.TriggerAsync(
                         runbookId, req.EnvironmentId, req.TargetId,
                         initiator: initiator, caller: CallerAuthorization.ForUser(user),
@@ -3491,6 +3521,103 @@ public static class Program
             async (Guid runId, RunbookService runbookSvc, CancellationToken ct) =>
                 Results.Ok(await runbookSvc.GetRunStepOutcomesAsync(runId, ct).ConfigureAwait(false)))
             .RequirePermission(Permission.RunbookRunView);
+
+        // ── WP3: manual-intervention gates (both task kinds) ────────────────
+        // Kind-agnostic by design: post-D1 both a deployment and a runbook run pause at
+        // an Octopus.Manual step, so one route pair serves both rather than duplicating
+        // under /api/deployments and /api/runbook-runs. InterruptionService does the
+        // authoritative per-task scope check (and, on respond, the responsible-team
+        // check the permission system cannot express) — the RequirePermission filter
+        // here is the coarse gate.
+        app.MapGet("/api/tasks/{taskId:guid}/interruptions",
+            async (Guid taskId, InterruptionService interruptions,
+                ClaimsPrincipal user, CancellationToken ct) =>
+            {
+                try
+                {
+                    var gates = await interruptions
+                        .ListForTaskAsync(taskId, CallerAuthorization.ForUser(user), ct)
+                        .ConfigureAwait(false);
+                    return Results.Ok(gates.Select(i => new
+                    {
+                        i.Id, i.TaskId, i.StepIndex, i.StepName, i.Instructions,
+                        i.ResponsibleTeamIds,
+                        // Enum NAME on the wire (the CLI/REST/MCP convention).
+                        Status = i.Status.ToString(),
+                        i.ExpiresUtc, i.ActedByDisplay, i.Notes, i.CreatedUtc, i.ActedUtc,
+                    }));
+                }
+                catch (AuthorizationException ex)
+                {
+                    // AuthorizationException is `sealed : Exception`, NOT a
+                    // UnauthorizedAccessException, and there is no global mapper — so
+                    // without this a cross-Space scope denial returned 500 plus the
+                    // Blazor HTML error page instead of a 403 JSON body, and a client
+                    // could not tell "not authorized" from "server broken". Every
+                    // sibling endpoint in this file hand-catches it the same way.
+                    return Results.Json(
+                        new { error = ex.Message },
+                        statusCode: StatusCodes.Status403Forbidden);
+                }
+            }).RequirePermission(Permission.InterruptionView);
+
+        app.MapPost("/api/interruptions/{interruptionId:guid}/respond",
+            async (Guid interruptionId, RespondToInterruptionRequest req,
+                InterruptionService interruptions, ClaimsPrincipal user, CancellationToken ct) =>
+            {
+                var caller = CallerAuthorization.ForUser(user);
+                try
+                {
+                    var gate = req.Approve
+                        ? await interruptions
+                            .ApproveAsync(interruptionId, req.Notes, caller, ct).ConfigureAwait(false)
+                        : await interruptions
+                            .RejectAsync(interruptionId, req.Notes ?? "", caller, ct).ConfigureAwait(false);
+                    return Results.Ok(new
+                    {
+                        gate.Id,
+                        Status = gate.Status.ToString(),
+                        gate.ActedByDisplay,
+                        gate.ActedUtc,
+                    });
+                }
+                catch (ArgumentException ex)
+                {
+                    // Missing rejection notes, or notes over the column limit.
+                    return Results.BadRequest(new { error = ex.Message });
+                }
+                catch (AuthorizationException ex)
+                {
+                    // Scope denial (wrong Space / project / environment). Distinct type
+                    // from the team-membership refusal below, and not a
+                    // UnauthorizedAccessException, so it needs its own arm — see the
+                    // GET above.
+                    return Results.Json(
+                        new { error = ex.Message },
+                        statusCode: StatusCodes.Status403Forbidden);
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    // Holds the permission but is not on a responsible team.
+                    return Results.Json(
+                        new { error = ex.Message },
+                        statusCode: StatusCodes.Status403Forbidden);
+                }
+                catch (InterruptionNotFoundException)
+                {
+                    // 404, and deliberately AFTER the authz arms above: throwing this
+                    // before any check made the endpoint an existence oracle, letting a
+                    // Space-A caller tell "no such gate" (409 then) from "gate exists in
+                    // a Space you cannot reach" (500 then).
+                    return Results.NotFound();
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // Already answered — a human or the timeout sweeper won the race —
+                    // or the task itself is already terminal.
+                    return Results.Conflict(new { error = ex.Message });
+                }
+            }).RequirePermission(Permission.InterruptionViewSubmitResponsible);
 
         app.MapGet("/api/runbook-runs/{runId:guid}/output-variables",
             async (Guid runId, RunbookService runbookSvc, CancellationToken ct) =>
@@ -3909,5 +4036,85 @@ public static class Program
             // hardcoded default preserves previous behaviour.
             return KrakenDeploy.Server.Core.Domain.Performance.PerformanceSettings.DefaultHangfireWorkerCount;
         }
+    }
+
+    /// <summary>
+    /// Extra OTel resource attributes beyond service.name/version. Node identity
+    /// (service.instance.id = machine name) is always useful for multi-node HA
+    /// pairs; the blue-green slot identity (Release:Id / Release:SlotNo, stamped
+    /// per slot instance at deploy time — see docs/blue-green-slot-deployment.md)
+    /// is added only when the instance actually runs a slotted release.
+    /// </summary>
+    private static IEnumerable<KeyValuePair<string, object>> BuildResourceAttributes(
+        ConfigurationManager configuration)
+    {
+        yield return new KeyValuePair<string, object>(
+            "service.instance.id", Environment.MachineName);
+
+        var releaseId = configuration["Release:Id"];
+        if (!string.IsNullOrWhiteSpace(releaseId))
+        {
+            yield return new KeyValuePair<string, object>("kraken.release.id", releaseId);
+        }
+
+        var slotNo = configuration["Release:SlotNo"];
+        if (!string.IsNullOrWhiteSpace(slotNo))
+        {
+            yield return new KeyValuePair<string, object>("kraken.release.slot", slotNo);
+        }
+    }
+
+    /// <summary>
+    /// Shared OTLP exporter configuration for both the tracing and metrics
+    /// pipelines. Endpoint and (optional) headers come from the Otel config
+    /// section; the protocol defaults to gRPC and accepts only "grpc" or
+    /// "http/protobuf" (anything else is a config error). Called only when
+    /// Otel:Enabled and Otel:OtlpEndpoint are both set, so a disabled deployment
+    /// never constructs an exporter. A malformed endpoint or unknown protocol
+    /// throws a descriptive error rather than failing obscurely at export time.
+    /// </summary>
+    private static void ConfigureOtlp(
+        OpenTelemetry.Exporter.OtlpExporterOptions options, ConfigurationManager configuration)
+    {
+        var endpoint = configuration["Otel:OtlpEndpoint"]!;
+        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri))
+        {
+            throw new InvalidOperationException(
+                $"Otel:OtlpEndpoint '{endpoint}' is not a valid absolute URI. " +
+                "Set e.g. 'http://otel-collector:4317'.");
+        }
+
+        options.Endpoint = uri;
+        options.Protocol = ResolveOtlpProtocol(configuration["Otel:Protocol"]);
+
+        var headers = configuration["Otel:Headers"];
+        if (!string.IsNullOrWhiteSpace(headers))
+        {
+            options.Headers = headers;
+        }
+    }
+
+    /// <summary>
+    /// Parses the OTLP wire protocol from config. Empty/unset defaults to gRPC;
+    /// "grpc" and "http/protobuf" (case-insensitive) are the only accepted
+    /// values — a typo throws instead of silently falling back to gRPC, which
+    /// would otherwise present as "exporter connects but the collector sees
+    /// nothing on the expected protocol".
+    /// </summary>
+    private static OtlpExportProtocol ResolveOtlpProtocol(string? protocol)
+    {
+        if (string.IsNullOrWhiteSpace(protocol) ||
+            string.Equals(protocol, "grpc", StringComparison.OrdinalIgnoreCase))
+        {
+            return OtlpExportProtocol.Grpc;
+        }
+
+        if (string.Equals(protocol, "http/protobuf", StringComparison.OrdinalIgnoreCase))
+        {
+            return OtlpExportProtocol.HttpProtobuf;
+        }
+
+        throw new InvalidOperationException(
+            $"Otel:Protocol '{protocol}' is not supported. Use 'grpc' or 'http/protobuf'.");
     }
 }

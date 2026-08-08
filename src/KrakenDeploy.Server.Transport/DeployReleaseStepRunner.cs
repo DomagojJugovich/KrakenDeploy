@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace KrakenDeploy.Server.Transport;
 
@@ -34,7 +35,7 @@ public static class OctopusDeployReleaseConfigKeys
     /// Octopus-style "Projects-NN" id which the user must remap when
     /// importing.
     /// </summary>
-    public const string ProjectId = Prefix + "ProjectId";
+    public const string ProjectId = KrakenDeploy.Contracts.Steps.DeployReleaseConfigKeys.ProjectId;
 
     /// <summary>
     /// Optional, default <c>Always</c>. Controls when the child deployment
@@ -74,12 +75,13 @@ public sealed class DeployReleaseStepRunner(
     IServiceScopeFactory scopeFactory,
     IHubContext<UiHub, IUiHubClient> uiHub,
     TimeProvider timeProvider,
+    IOptions<EngineOptions> engineOptions,
     ILogger<DeployReleaseStepRunner> logger)
 {
     /// <summary>
     /// Step type the worker dispatches to this runner.
     /// </summary>
-    public const string StepType = "Octopus.DeployRelease";
+    public const string StepType = KrakenDeploy.Contracts.Steps.DeployReleaseConfigKeys.StepType;
 
     /// <summary>
     /// Polling interval for the child-log mirror loop. Half-second cadence
@@ -293,10 +295,40 @@ public sealed class DeployReleaseStepRunner(
 
     // ── Helpers ────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Mirrors the child's log into the parent's and waits for the child to reach a
+    /// terminal state. Returns <c>true</c> only on <c>Succeeded</c>.
+    /// <para>
+    /// WP3-b — the working budget (<c>Engine:MaxDeployReleaseWaitDuration</c>, 1 h) is
+    /// charged only for time the child is NOT parked at a manual-intervention gate.
+    /// <c>Paused</c> is not progress the parent should be billed for: the child is waiting
+    /// on a human, whose own deadline is <c>Engine:DefaultInterventionTimeout</c> (72 h).
+    /// Billing it meant every gated child failed its parent at one hour, and when the
+    /// approval eventually landed the child resumed and deployed for real AFTER the parent
+    /// had reported failure. A genuinely hung child — one that never pauses — still fails
+    /// in an hour, which simply raising the ceiling would have given up.
+    /// </para>
+    /// <para>
+    /// The absolute bound is still <c>StepRetryRunner</c>'s per-attempt token, armed from
+    /// <c>Engine:MaxDeployReleaseGatedWaitDuration</c> (7 d), so a child that pauses
+    /// repeatedly cannot pin the parent's node slot forever.
+    /// </para>
+    /// </summary>
     private async Task<bool> WaitForChildAsync(
         Guid childId, Guid parentId, string stepName, Guid spaceId, CancellationToken ct)
     {
         var lastSequence = -1;
+        var workingBudget = engineOptions.Value.MaxDeployReleaseWaitDuration;
+        var workingWaited = TimeSpan.Zero;
+        var announcedPause = false;
+        // The inner working budget is armed only ONCE A PAUSE HAS BEEN OBSERVED. For a
+        // child that never pauses, StepRetryRunner's own per-attempt token is still the
+        // authority and still classifies the step TimedOut at exactly the same moment as
+        // before — enforcing the budget here too would pre-empt it and downgrade a genuine
+        // timeout to a plain failure. Once the child HAS paused, the outer token has been
+        // armed from the far larger gated backstop, so this becomes the thing that still
+        // catches a gated child that hangs while actually running.
+        var everPaused = false;
         // A per-attempt timeout (StepRetryRunner's linked CancelAfter) or a
         // deployment-level cancel must SURFACE as an OperationCanceledException so
         // StepRetryRunner can classify it (TimedOut / cancel). Returning false on a
@@ -356,8 +388,40 @@ public sealed class DeployReleaseStepRunner(
                         $"Octopus.DeployRelease: child deployment {childId.ToString("N")[..8]} was cancelled.",
                         ct).ConfigureAwait(false);
                     return false;
+                case DeploymentStatus.Paused:
+                    // Parked at a manual-intervention gate: keep polling, but do NOT
+                    // charge this tick against the working budget. Announced once so the
+                    // parent's log explains why it is sitting there — otherwise the
+                    // operator sees a DeployRelease step apparently hung.
+                    everPaused = true;
+                    if (!announcedPause)
+                    {
+                        announcedPause = true;
+                        await AppendLogAsync(parentId, "info",
+                            $"Octopus.DeployRelease: child deployment " +
+                            $"{childId.ToString("N")[..8]} is awaiting a manual-intervention " +
+                            "approval. Waiting without consuming this step's timeout.", ct)
+                            .ConfigureAwait(false);
+                    }
+                    break;
+
                 default:
-                    // Queued / Running — keep polling.
+                    // Queued / Running — real waiting, charged against the budget.
+                    announcedPause = false;
+                    workingWaited += PollInterval;
+                    if (everPaused
+                        && workingBudget > TimeSpan.Zero
+                        && workingWaited >= workingBudget)
+                    {
+                        await AppendLogAsync(parentId, "error",
+                            $"Octopus.DeployRelease: child deployment " +
+                            $"{childId.ToString("N")[..8]} did not finish within " +
+                            $"{workingBudget} of ACTIVE execution " +
+                            "(Engine:MaxDeployReleaseWaitDuration); time it spent awaiting a " +
+                            "manual-intervention approval is excluded.", ct)
+                            .ConfigureAwait(false);
+                        return false;
+                    }
                     break;
             }
 

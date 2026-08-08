@@ -248,6 +248,25 @@ internal static class EncryptionCommands
                     "must match the key the data was written under. Restore from backup if unsure.");
                 return 1;
             }
+            catch (DbUpdateConcurrencyException)
+            {
+                // WP3-b — `server_tasks` is one of only two entities carrying an xmin
+                // row-version, and the walk loads paused rows TRACKED to re-encrypt their
+                // checkpoints. A human approving a gate (or the timeout sweeper, or the
+                // reconciler) bumps that token via TryResumeAsync between the walk's read
+                // and this save, so the UPDATE matches zero rows. Data is safe — the
+                // transaction rolls back — but this used to escape the filter above and
+                // print a raw stack trace AFTER the backup and the destructive-confirm had
+                // already run, which reads like corruption rather than "try again".
+                await tx.RollbackAsync().ConfigureAwait(false);
+                Console.Error.WriteLine(
+                    "Rotation ABORTED — a task changed while the rotation was running (most " +
+                    "likely a manual-intervention gate was answered, resuming a paused " +
+                    "deployment). No data was changed (transaction rolled back). Re-run " +
+                    "rotate-dek; consider enabling maintenance mode first so nothing is " +
+                    "in flight.");
+                return 1;
+            }
 
             Console.WriteLine();
             Console.WriteLine($"DEK rotated. Re-encrypted {counts.Total} secrets under the new key:");

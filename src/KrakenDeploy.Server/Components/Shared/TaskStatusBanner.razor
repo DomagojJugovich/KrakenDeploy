@@ -23,6 +23,13 @@
         {
             <span class="banner-msg">Awaiting offline result from an air-gapped target.</span>
         }
+        else if (Status == DeploymentStatus.Paused)
+        {
+            @* WP3 — the banner states the state; the approve/reject affordance and
+               the instructions live in InterventionPanel, rendered below it by the
+               detail page (this component is shared and permission-free). *@
+            <span class="banner-msg">@(PausedMessage ?? "Paused for manual intervention.")</span>
+        }
         else if (Status == DeploymentStatus.Queued)
         {
             @* Phase 2 makes Queued a long-lived, directly-navigable state
@@ -62,6 +69,10 @@
     /// <summary>Shown while Queued (e.g. "Scheduled for 2026-07-23 10:00").
     /// Falls back to "Waiting to start.".</summary>
     [Parameter] public string? QueuedMessage { get; set; }
+
+    /// <summary>Shown while Paused at a manual-intervention gate (e.g. the step
+    /// name). Falls back to "Paused for manual intervention.".</summary>
+    [Parameter] public string? PausedMessage { get; set; }
 
     /// <summary>Whether the task actually started (StartedUtc set) — drives the
     /// Cancelled branch wording ("after 2m" vs "before it started").</summary>

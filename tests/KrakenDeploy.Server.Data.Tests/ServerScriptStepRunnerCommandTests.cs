@@ -34,4 +34,33 @@ public sealed class ServerScriptStepRunnerCommandTests
         string? edition, bool isWindows, string expectedExe)
         => ServerScriptStepRunner.BuildCommand("s.ps1", "PowerShell", edition, isWindows).exe
             .Should().Be(expectedExe);
+
+    [Fact]
+    public void WriteScriptFile_creates_an_isolated_per_dispatch_subdirectory()
+    {
+        var pathA = ServerScriptStepRunner.WriteScriptFile("Write-Host 'a'", "PowerShell");
+        var pathB = ServerScriptStepRunner.WriteScriptFile("Write-Host 'b'", "PowerShell");
+        try
+        {
+            File.Exists(pathA).Should().BeTrue();
+            File.Exists(pathB).Should().BeTrue();
+
+            var dirA = Path.GetDirectoryName(pathA)!;
+            var dirB = Path.GetDirectoryName(pathB)!;
+            dirA.Should().NotBe(dirB,
+                "each dispatch must get its own subdirectory, not the shared temp root");
+            dirA.Should().NotBe(Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar),
+                "the script must not land directly in the shared temp root");
+        }
+        finally
+        {
+            TryDeleteDir(Path.GetDirectoryName(pathA)!);
+            TryDeleteDir(Path.GetDirectoryName(pathB)!);
+        }
+    }
+
+    private static void TryDeleteDir(string path)
+    {
+        try { Directory.Delete(path, recursive: true); } catch { }
+    }
 }

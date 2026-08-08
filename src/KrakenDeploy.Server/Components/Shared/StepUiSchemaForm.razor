@@ -1,4 +1,15 @@
 @using KrakenDeploy.Contracts.Steps
+@using KrakenDeploy.Server.Core.Domain.Security
+@using KrakenDeploy.Server.Core.Domain.Spaces
+@using KrakenDeploy.Server.Data.Services
+
+@* WP3 — the responsible-teams multiselect is the first widget in this form backed by
+   server data, so this is the first service dependency here. Kept to one narrowly
+   scoped case: no other widget's behaviour changes, and no general options-provider
+   mechanism is introduced (that is a design call for whoever implements the remaining
+   declared-but-unimplemented pickers). *@
+@inject TeamService Teams
+@inject ISpaceContext SpaceCtx
 
 @*
     Pure-body schema renderer. Renders a StepUiSchema's groups + fields as a
@@ -211,6 +222,63 @@
                 builder.CloseComponent();
                 break;
 
+            case StepUiWidgets.ResponsibleTeams:
+                // Multi-select over the Space's visible teams, serialised back to the
+                // config as a comma-separated GUID list — the same shape the gate reads,
+                // so an imported process keeps round-tripping. Replaces a free-text GUID
+                // field where a typo was indistinguishable from "no restriction" until a
+                // deployment actually reached the gate.
+                builder.OpenComponent<RadzenDropDown<IEnumerable<Guid>>>(0);
+                builder.AddAttribute(1, "Value", ParseTeamIds(value));
+                builder.AddAttribute(2, "Data", _selectableTeams);
+                builder.AddAttribute(3, "TextProperty", nameof(ApproverTeamOption.Name));
+                builder.AddAttribute(4, "ValueProperty", nameof(ApproverTeamOption.Id));
+                builder.AddAttribute(5, "Multiple", true);
+                builder.AddAttribute(6, "Chips", true);
+                builder.AddAttribute(7, "AllowClear", true);
+                builder.AddAttribute(8, "Style", "width:100%;");
+                builder.AddAttribute(9, "Placeholder",
+                    "Anyone with the approve permission");
+                builder.AddAttribute(10, "ValueChanged",
+                    // `value` is captured as the PREVIOUS raw string so tokens the picker
+                    // cannot represent are carried through — see UnrepresentableTokens.
+                    Microsoft.AspNetCore.Components.EventCallback.Factory
+                        .Create<IEnumerable<Guid>>(this, async ids =>
+                            await SetValueAsync(key, FormatTeamIds(ids, value))));
+                builder.CloseComponent();
+
+                // Name what the picker is holding on to but cannot show. Without this the
+                // operator sees a partially-filled control with no hint that the config
+                // still carries an id nothing resolves — and the save refusal that follows
+                // names teams they cannot see in the form.
+                var stranded = UnrepresentableTokens(value);
+                if (stranded.Count > 0)
+                {
+                    builder.OpenElement(11, "div");
+                    builder.AddAttribute(12, "class", "rz-mt-2");
+                    builder.OpenComponent<RadzenAlert>(13);
+                    builder.AddAttribute(14, "AlertStyle", AlertStyle.Warning);
+                    builder.AddAttribute(15, "Variant", Variant.Flat);
+                    builder.AddAttribute(16, "Shade", Shade.Lighter);
+                    builder.AddAttribute(17, "AllowClose", false);
+                    builder.AddAttribute(18, "Size", AlertSize.Small);
+                    builder.AddAttribute(19, "ChildContent",
+                        (RenderFragment)(inner =>
+                        {
+                            inner.AddContent(0,
+                                $"Kept but unusable: {string.Join(", ", stranded)}. " +
+                                "These do not name a team visible in this Space — most " +
+                                "likely Octopus ids from an import, or a deleted team. " +
+                                "They are preserved on purpose: dropping them would turn " +
+                                "\"only these teams\" into \"anyone with the approve " +
+                                "permission\". Pick the real teams and remove them, or the " +
+                                "step will not save.");
+                        }));
+                    builder.CloseComponent();
+                    builder.CloseElement();
+                }
+                break;
+
             case StepUiWidgets.Checkbox:
                 builder.OpenComponent<RadzenCheckBox<bool>>(0);
                 builder.AddAttribute(1, "Value",
@@ -252,6 +320,80 @@
                 builder.CloseComponent();
                 break;
         }
+    }
+
+    /// <summary>
+    /// Teams offerable as approvers: visible in the active Space, and NOT an "Everyone"
+    /// team. Everyone is excluded at the source rather than merely rejected on save,
+    /// because offering it would invite an operator to pick a "restriction" that
+    /// restricts nobody — every authenticated user belongs to it.
+    /// </summary>
+    private List<ApproverTeamOption> _selectableTeams = [];
+
+    private bool _teamsLoaded;
+
+    /// <summary>
+    /// Loads the team list in <c>OnParametersSetAsync</c>, not <c>OnInitializedAsync</c>
+    /// (WP3-b). <c>StepFormDialog</c> assigns a new <c>Schema</c> in place on the same
+    /// component instance when the step-package version changes, and the child has no
+    /// <c>@key</c> — so it is never re-created and <c>OnInitializedAsync</c> never re-runs.
+    /// A schema swap that introduced the widget therefore rendered a permanently EMPTY
+    /// picker whose placeholder reads "Anyone with the approve permission", i.e. it
+    /// displayed the unrestricted semantics over a value that was still restricting.
+    /// </summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        // Only pay for the read when the rendered schema actually has the widget, and only
+        // once — parameters are set on every render.
+        if (_teamsLoaded
+            || !Schema.Properties.Any(pr => pr.Value.Widget == StepUiWidgets.ResponsibleTeams))
+        {
+            return;
+        }
+        _teamsLoaded = true;
+        // No ConfigureAwait(false) — component lifecycle must resume on the Dispatcher.
+        // Projected (Id, Name) read — GetAllAsync pulls the whole RBAC graph (members,
+        // external groups, role assignments and their scopes), which any process-editor
+        // can trigger. Everyone-teams are excluded server-side.
+        _selectableTeams = await Teams.GetSelectableApproverTeamsAsync(SpaceCtx.CurrentSpaceId);
+    }
+
+    /// <summary>Reads the stored CSV/semicolon list (the Octopus serialiser uses either
+    /// separator), keeping only the tokens this picker can actually represent — a GUID
+    /// naming a team in <see cref="_selectableTeams"/>. Everything else is preserved
+    /// separately by <see cref="UnrepresentableTokens"/> rather than dropped.</summary>
+    private IEnumerable<Guid> ParseTeamIds(string? raw)
+        => ManualInterventionConfigKeys.ParseTeamTokens(raw)
+            .Select(t => Guid.TryParse(t, out var id) ? id : (Guid?)null)
+            .Where(id => id is not null && _selectableTeams.Any(t => t.Id == id.Value))
+            .Select(id => id!.Value)
+            .ToList();
+
+    /// <summary>
+    /// Tokens the dropdown cannot show: non-GUIDs (an Octopus import carries
+    /// <c>"teams-123"</c>) and GUIDs that name no team visible in this Space — a deleted
+    /// team, or one belonging to another Space.
+    /// <para>
+    /// These MUST survive an edit. Dropping them was a fail-OPEN bug: the picker can only
+    /// write back what it holds, so any interaction with the control — even selecting a
+    /// team and clearing it again — rewrote an unresolvable list to EMPTY, and empty means
+    /// "anyone holding the approve permission". That silently WIDENED the approver set and
+    /// defeated the save-time refusal, which is the one thing keeping an imported gate
+    /// fail-closed. Preserving them keeps the save refused until an operator deals with
+    /// them deliberately.
+    /// </para>
+    /// </summary>
+    private List<string> UnrepresentableTokens(string? raw)
+        => [.. ManualInterventionConfigKeys.ParseTeamTokens(raw)
+            .Where(t => !Guid.TryParse(t, out var id)
+                        || !_selectableTeams.Any(team => team.Id == id))];
+
+    /// <summary>Re-serialises the picker's selection, re-appending anything it could not
+    /// represent so an edit never widens the approver set.</summary>
+    private string FormatTeamIds(IEnumerable<Guid>? ids, string? previousRaw)
+    {
+        var selected = ids?.Select(id => id.ToString()) ?? [];
+        return string.Join(", ", selected.Concat(UnrepresentableTokens(previousRaw)));
     }
 
     private async Task SetValueAsync(string key, string value)

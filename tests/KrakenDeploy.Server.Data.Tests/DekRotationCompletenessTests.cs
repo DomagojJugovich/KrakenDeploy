@@ -32,6 +32,11 @@ public sealed class DekRotationCompletenessTests
         "OfflineDropConfig.SmtpPasswordEncrypted",
         "OfflineDropConfig.WebhookSecretEncrypted",
         "OfflineDropConfig.FileSharePasswordEncrypted",
+        // WP3 — a paused task's resume checkpoint. Non-null only while a task waits at
+        // a manual-intervention gate, but it embeds captured SENSITIVE output values,
+        // so a rotation that skipped it would leave every outstanding approval
+        // un-resumable (the decrypt under the new DEK would throw on approve).
+        "ServerTask.PauseCheckpointEncrypted",
     ];
 
     [Fact]

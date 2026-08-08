@@ -1,0 +1,150 @@
+@using KrakenDeploy.Server.Core.Domain.Deployments
+
+@inject InterruptionService Interruptions
+@inject DialogService Dialog
+@inject NotificationService Notify
+@inject UiActionGuard Guard
+
+@*
+    WP3 — approve / reject a manual-intervention gate.
+
+    Notes are MANDATORY on reject and optional on approve: "why was this change
+    refused" is the line a change-control reviewer actually reads. The dialog only
+    disables the button; InterruptionService.RejectAsync re-enforces it, so a REST or
+    CLI caller cannot skip it either.
+
+    Both handlers re-check the permission server-side via UiActionGuard before calling
+    the service (house rule 2) — the <RequirePermission> gate that revealed the button
+    is rendered once and cached for the circuit. The service then performs the
+    authoritative check AGAIN, including responsible-team membership, which the guard
+    cannot express.
+*@
+
+<RadzenStack Gap="1rem" Style="min-width: 620px;">
+    <RadzenAlert AlertStyle="AlertStyle.Warning" Shade="Shade.Lighter" AllowClose="false">
+        <RadzenStack Gap="0.25rem">
+            <RadzenText TextStyle="TextStyle.Body2">
+                <strong>Step:</strong> @Interruption.StepName
+            </RadzenText>
+            @if (Interruption.ExpiresUtc is { } expiry)
+            {
+                <RadzenText TextStyle="TextStyle.Body2">
+                    <strong>Auto-fails:</strong>
+                    <span class="mono">@expiry.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</span>
+                    — if nobody responds by then the task fails as if rejected.
+                </RadzenText>
+            }
+            else
+            {
+                <RadzenText TextStyle="TextStyle.Body2">
+                    <strong>Auto-fails:</strong> never — this gate waits indefinitely.
+                </RadzenText>
+            }
+        </RadzenStack>
+    </RadzenAlert>
+
+    @if (!string.IsNullOrWhiteSpace(Interruption.Instructions))
+    {
+        <div>
+            <RadzenText TextStyle="TextStyle.Subtitle2" class="rz-mb-1">Instructions</RadzenText>
+            @* Rendered as pre-wrapped TEXT, not markup: the instructions come from a
+               process author and are shown to a different user, so treating them as
+               HTML would be a stored-XSS vector. *@
+            <pre class="kr-pre-wrap">@Interruption.Instructions</pre>
+        </div>
+    }
+    else
+    {
+        <RadzenText TextStyle="TextStyle.Body2" class="rz-color-secondary">
+            The step author left no instructions.
+        </RadzenText>
+    }
+
+    <RadzenFormField Text="@(HasNotes ? "Notes / reason" : "Notes (required to reject)")"
+                     Variant="Variant.Outlined">
+        <RadzenTextArea @bind-Value="_notes" Rows="4" MaxLength="InterruptionService.MaxNotesLength"
+                        Style="width:100%;" aria-label="Response notes" />
+    </RadzenFormField>
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <RadzenAlert AlertStyle="AlertStyle.Danger" Shade="Shade.Lighter" AllowClose="false">
+            @_error
+        </RadzenAlert>
+    }
+
+    <RadzenStack Orientation="Orientation.Horizontal" JustifyContent="JustifyContent.SpaceBetween" Gap="0.5rem">
+        <RadzenButton Text="Reject" ButtonStyle="ButtonStyle.Danger" Icon="block"
+                      Click="RejectAsync" IsBusy="@_busy"
+                      Disabled="@(_busy || !HasNotes)"
+                      title="@(HasNotes
+                                   ? "Fail the task; its Failure/Always cleanup steps still run."
+                                   : "Enter a reason before rejecting.")" />
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+            <RadzenButton Text="Cancel" ButtonStyle="ButtonStyle.Light"
+                          Click="@(() => Dialog.Close(false))" Disabled="@_busy" />
+            <RadzenButton Text="Approve" ButtonStyle="ButtonStyle.Primary" Icon="check_circle"
+                          Click="ApproveAsync" IsBusy="@_busy" Disabled="@_busy"
+                          title="Resume the task from where it paused." />
+        </RadzenStack>
+    </RadzenStack>
+</RadzenStack>
+
+@code {
+    [Parameter, EditorRequired] public Interruption Interruption { get; set; } = default!;
+
+    private string _notes = string.Empty;
+    private string? _error;
+    private bool _busy;
+
+    /// <summary>Drives the field label and the Reject button's enabled state — notes
+    /// are optional on approve but required to reject.</summary>
+    private bool HasNotes => !string.IsNullOrWhiteSpace(_notes);
+
+    private Task ApproveAsync() => RespondAsync(approve: true);
+
+    private Task RejectAsync() => RespondAsync(approve: false);
+
+    private async Task RespondAsync(bool approve)
+    {
+        // Execution-time re-check with bypassCache — the UI gate is cosmetic.
+        if (!await Guard.AllowAsync(Permission.InterruptionViewSubmitResponsible))
+        {
+            return;
+        }
+
+        _error = null;
+        _busy = true;
+        try
+        {
+            var caller = await Guard.CurrentCallerAsync();
+            var notes = string.IsNullOrWhiteSpace(_notes) ? null : _notes.Trim();
+
+            if (approve)
+            {
+                await Interruptions.ApproveAsync(Interruption.Id, notes, caller);
+                Notify.Notify(NotificationSeverity.Success, "Approved",
+                    "The task is resuming from where it paused.", 5000);
+            }
+            else
+            {
+                await Interruptions.RejectAsync(Interruption.Id, notes!, caller);
+                Notify.Notify(NotificationSeverity.Info, "Rejected",
+                    "The task will fail after running its cleanup steps.", 6000);
+            }
+            Dialog.Close(true);
+        }
+        catch (Exception ex)
+        {
+            // Covers the losing side of a concurrent response, an expired gate the
+            // sweeper already claimed, and a failed team-membership check.
+            _error = ex.Message;
+            Notify.Notify(NotificationSeverity.Error,
+                approve ? "Approve failed" : "Reject failed", ex.Message, 8000);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

@@ -68,6 +68,34 @@ public static class AuditEventType
     /// expiry.</summary>
     public const string DeploymentInterrupted = "Deployment.Interrupted";
 
+    // ── Manual intervention (WP3) ────────────────────────────────────────────
+    // The change-control trail for an approval gate. These are the events an
+    // M13.B subscription routes to notify approvers ("a deployment is waiting for
+    // you") and reviewers ("who approved release 2.3.0"), so each carries the
+    // interruption id + step name in its details.
+
+    /// <summary>WP3 — the deployment PAUSED at a manual-intervention step and is
+    /// waiting for a human approve/reject. Subscribe to this to notify the
+    /// responsible team(s). Details: interruption id, step name, responsible team
+    /// ids, expiry.</summary>
+    public const string DeploymentPaused = "Deployment.Paused";
+
+    /// <summary>WP3 — an authorized user APPROVED a manual-intervention gate; the
+    /// deployment resumed. Details: interruption id, step name, responder, notes.</summary>
+    public const string DeploymentInterventionApproved = "Deployment.InterventionApproved";
+
+    /// <summary>WP3 — an authorized user REJECTED a manual-intervention gate. The
+    /// deployment fails, running its <c>Failure</c>/<c>Always</c> cleanup steps
+    /// first. Details: interruption id, step name, responder, notes (mandatory on
+    /// reject).</summary>
+    public const string DeploymentInterventionRejected = "Deployment.InterventionRejected";
+
+    /// <summary>WP3 — nobody answered a manual-intervention gate before its
+    /// auto-fail timeout. Behaves exactly like a rejection; this distinct event
+    /// exists because "no one responded" and "someone said no" call for different
+    /// operational follow-up. Details: interruption id, step name, expiry.</summary>
+    public const string DeploymentInterventionTimedOut = "Deployment.InterventionTimedOut";
+
     // ── Runbook lifecycle ─────────────────────────────────────────────────────
     public const string RunbookRunStarted   = "RunbookRun.Started";
     public const string RunbookRunSucceeded = "RunbookRun.Succeeded";
@@ -132,6 +160,14 @@ public static class AuditEventType
     public const string RunbookRunTargetDropped           = "RunbookRun.TargetDropped";
     /// <summary>Runbook analogue of <see cref="DeploymentTargetSlow"/>.</summary>
     public const string RunbookRunTargetSlow              = "RunbookRun.TargetSlow";
+    /// <summary>WP3 — runbook analogue of <see cref="DeploymentPaused"/>.</summary>
+    public const string RunbookRunPaused                  = "RunbookRun.Paused";
+    /// <summary>WP3 — runbook analogue of <see cref="DeploymentInterventionApproved"/>.</summary>
+    public const string RunbookRunInterventionApproved    = "RunbookRun.InterventionApproved";
+    /// <summary>WP3 — runbook analogue of <see cref="DeploymentInterventionRejected"/>.</summary>
+    public const string RunbookRunInterventionRejected    = "RunbookRun.InterventionRejected";
+    /// <summary>WP3 — runbook analogue of <see cref="DeploymentInterventionTimedOut"/>.</summary>
+    public const string RunbookRunInterventionTimedOut    = "RunbookRun.InterventionTimedOut";
 
     /// <summary>B6 — an agent registered with a wire-contract version this
     /// server does not speak. The registration was refused, the connection
