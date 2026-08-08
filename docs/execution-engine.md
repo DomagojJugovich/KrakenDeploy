@@ -2,8 +2,8 @@
 
 | | |
 |---|---|
-| **Version** | 1.13 |
-| **Date** | 2026-07-30 |
+| **Version** | 1.19 |
+| **Date** | 2026-07-31 |
 | **Authors** | Domagoj Jugovic, Claude (Fable 5), Claude (Opus 4.8), Claude (Opus 5) |
 | **Status** | Draft |
 | **Technologies** | .NET 10, EF Core 10, PostgreSQL, SignalR, Octostache, Hangfire |
@@ -291,15 +291,27 @@ Two properties to be aware of:
   loop (`ServerLinkHostedService`) has no broad catch — an unexpected
   supervisor crash stops the host so service-manager recovery restarts the
   agent (a visible crash-loop beats a silent zombie).
-- **Machine execution gate** (`MachineExecutionGate`, F2): one dispatched sub-plan
-  (i.e. one WAVE) at a time per agent PROCESS — deployments, runbook runs and (F2)
-  ad-hoc scripts share the same slot, FIFO. It is only reachable because the agent's
-  push handlers are detached (F2-followup 1); returning the work task made the
-  SignalR client serialize every server→agent push, so the transport rather than the
-  gate did the serializing. `DeploymentTarget.AllowParallelTaskExecution`
-  (default off, stamped into the plan / adhoc command at dispatch) opts a target
-  out; it never relaxes F1's `(project, environment, tenant)` serialization,
-  which is server-side. Ad-hoc gets ONE bound covering queue wait AND execution
+- **Machine execution gate** (`MachineExecutionGate`, F2/F5): a fair async
+  READER-WRITER lock per agent PROCESS. Deployments, runbook runs, ad-hoc scripts (F2)
+  and the self-upgrade swap window (F5) all take the same gate. Lease scope differs by
+  holder: a dispatched sub-plan holds it for one WAVE (see §9), an ad-hoc script for one
+  script run bounded by `Adhoc:MaxTotalDuration`, and the self-upgrade holds it until the
+  process exits — on the paths that DO exit (the forward swap's success path and the
+  rollback), where the exit sits in a `finally` precisely because it is the only thing
+  that ends the lease; a forward swap that fails a pre-exit check releases it and the
+  agent keeps running, and a rollback on a shutting-down host defers to the next boot
+  rather than exiting at all. EXCLUSIVE is the default; SHARED when the work
+  declares `AllowParallelTaskExecution`, and co-running requires that no writer is
+  present in either direction — so consent is MUTUAL and the flag is a downgrade, not
+  a bypass (Octopus `ScriptIsolationMutex` parity: their `NoIsolation` takes the READ
+  side of the same lock). Writers are never starved: acquisition does not barge past a
+  queued waiter. It is only reachable because the agent's push handlers are detached
+  (F2-followup 1); returning the work task made the SignalR client serialize every
+  server→agent push, so the transport rather than the gate did the serializing.
+  `DeploymentTarget.AllowParallelTaskExecution` (default off, stamped into the plan at
+  plan-build time) picks a deployment's side; for ad-hoc the same wire field is
+  per-RUN (F5). Neither ever relaxes F1's `(project, environment, tenant)`
+  serialization, which is server-side. Ad-hoc gets ONE bound covering queue wait AND execution
   (`Adhoc:MaxTotalDuration`, default 5 min, matching the server's per-target
   ad-hoc wait): REFUSE if it expires while queued, kill the process tree if it
   expires while running. A script the dispatcher already gave up on must not run
@@ -380,7 +392,7 @@ Two properties to be aware of:
 | Auth-failure reconnect lane | 5 min | `AgentReconnectPolicy.AuthFailureDelay` |
 | Outbox log cap / log-line poison threshold | 5 000 lines / 5 sends | `ServerLinkOutbox` (verdicts never dropped) |
 | Supersede unwind | 30 s | `DeploymentExecutor.SupersedeUnwindTimeout` |
-| Wedged-gate acquire (post force-detach) | 30 s | `DeploymentExecutor.WedgedGateAcquireTimeout` |
+| Wedged-gate acquire (post force-detach) | `Agent:Update:SwapGateTimeout` + 30 s (default **2 m 30 s**, operator-scalable to 1 h 30 s) | `DeploymentExecutor.WedgedGateAcquireTimeout` |
 | Cancel process-tree reap | 10 s | agent `ScriptRunner` |
 | Manual-intervention auto-fail (default; must be positive) | 72 h | `Engine:DefaultInterventionTimeout` |
 | Intervention timeout sweep | minutely | Hangfire `kraken.interruption-timeout` |
@@ -467,14 +479,20 @@ FKs keep even unfiltered joins intra-Space by construction
   `BlockConcurrentDeployments` on the manual-intervention step remains
   informational only. The only other concurrency guards are the per-task claim
   and xmin.
-- **Per-machine serialization — F2.** Orthogonal to F1 and enforced
-  **agent-side**: `MachineExecutionGate` gives each box one execution slot, so
-  different tasks (including ad-hoc scripts) landing on the same machine
-  serialize FIFO. `DeploymentTarget.AllowParallelTaskExecution` (default off)
-  opts a target out. The two rules compose and neither substitutes for the
-  other: F1 stops two deployments of one `(project, environment, tenant)` from
-  overlapping ANYWHERE; F2's gate stops two unrelated tasks from interleaving on
-  ONE box. Turning the flag on cannot loosen F1.
+- **Per-machine serialization — F2/F5.** Orthogonal to F1 and enforced
+  **agent-side**: `MachineExecutionGate` is each box's reader-writer gate, so
+  different tasks (including ad-hoc scripts and the agent's own self-upgrade)
+  landing on the same machine either serialize or co-run by MUTUAL consent.
+  `DeploymentTarget.AllowParallelTaskExecution` (default off) moves a target's
+  deployments to the SHARED side; F5 made that a downgrade rather than a bypass, so
+  a shared plan still queues behind any exclusive holder — under F2 the same flag
+  removed same-machine protection outright, including against tasks that had not
+  opted in. The two rules compose and neither substitutes for the other: F1 stops
+  two deployments of one `(project, environment, tenant)` from overlapping
+  ANYWHERE; the machine gate stops two unrelated units of work from interleaving on
+  ONE box. Turning the flag on cannot loosen F1. What the gate still does NOT give
+  you is whole-plan exclusion — its unit is one WAVE, because the server dispatches
+  per wave (see §9); **F6** closes that server-side at claim time.
 
 ## 8. The deployment/runbook unification (D1 — execution-deep)
 
@@ -580,6 +598,25 @@ runbook block, behavior-identical).
   of the same release to the same targets and stretching the parent's slot
   hold to `(MaxRetries+1)×` the ceiling. The child deployment carries its own
   retry/failure semantics; the parent step does not re-drive it.
+- The machine gate's unit is **one WAVE**, not one plan: the server dispatches per
+  wave, so the agent releases and re-takes its lease at every wave boundary and other
+  work (notably an ad-hoc script) can still slot into the gap against a half-applied
+  box. F5 deliberately did NOT fix this in `MachineExecutionGate` — holding an
+  agent-side lease across a server round-trip means holding it with no dispatch
+  guaranteed to follow, so a cancelled or failed wave would strand it until process
+  restart. **F6** closes it server-side at claim time, where whole plans are visible.
+  The ad-hoc wave-gap specifically is an ACCEPTED risk (locked decision P5).
+  The one participant for which the gap was NOT acceptable is the agent's own
+  self-upgrade, because it ends in `Environment.Exit` rather than merely interleaving —
+  a swap landing between two waves kills the plan. Note a SERVER wave (manual
+  intervention, `DeployRelease` cascade) can occupy that gap for minutes or hours, and
+  writer fairness makes a queued updater win the boundary deterministically. F5 closes
+  that case specifically, by asking the server: `GET /api/agents/task-in-flight`,
+  consumed fail-closed. That is agent-scoped, not general — it does not help any other
+  gate participant, and it is not a substitute for F6.
+- The machine gate is per agent PROCESS, not per physical machine: two targets
+  modelled on one box are two processes, two gates, and no serialization between
+  them. Nothing enforces `MachineName` uniqueness.
 - Rolling `MaxParallelism` never short-circuits (§4) — not a canary.
 - Wave retries re-run whole sub-plans — step idempotency is on the author.
 - `ServerTask.FormValues` is inert (reserved for prompted variables).
@@ -727,6 +764,12 @@ changed in the engine:
 
 | Version | Date | Change |
 |---|---|---|
+| 1.19 | 2026-07-31 | **F5 round 6 — review remediation** (§6, §9). The agent's reconnect pacing regained an EPISODE count, which round 5 had deleted with the churn lane: `Reconnecting` does fire for a transport drop, so a link that establishes and drops repeatedly had no backoff at all. It is counted where the signal is correctly ordered (`PreviousRetryCount == 0` inside `NextRetryDelay`) rather than from the event, which lagged an episode. A 426 met during AUTOMATIC RECONNECT now opens the self-upgrade escape hatch — that path never raises `Closed`, so the supervisor's `StartAsync` catch never saw it and a contract bump could not self-heal. `RollBackAsync` disposes its EXCLUSIVE lease on the two shutdown paths that skip `Environment.Exit` (they had reintroduced the 1.16 'writer held by nobody'). `Agent:Update:SwapGateTimeout` warns and clamps instead of failing the boot when the updater is off. A rolled-back version is remembered beside its staged archive, so the maintenance-window bypass cannot turn a bad build into an ~8-minute restart loop. |
+| 1.18 | 2026-07-31 | **F5 review round 5** (§6, §9). Corrects the 1.17 row below, whose premise was measured and found false: a server-side rejection inside `OnConnectedAsync` — a throw OR `Context.Abort()` — lets `StartAsync` SUCCEED and then fires **`Closed`**, never `Reconnecting`, so automatic reconnect is not engaged at all and the retry policy is never consulted. Round 4's `AgentReconnectPolicy` "churn lane" therefore could not observe the failure it existed for, and (for the transport drop it could) `HubConnection` computes the delay *before* raising `Reconnecting`, so the counter lagged an episode. The churn lane is DELETED; pacing is back in `ServerLinkHostedService`'s supervision loop, which the `Closed` event does wake, counting cycles that never produced an ACCEPTED registration. Pinned by execution in `ReconnectE2ETests`. Contract bumped **3 → 4** (the handshake header move gets its own number). The refusal regained the Offline mark and status push it had silently lost, via `IAgentContractRefusalRecorder`. `registry.Add` moved to the END of `OnConnectedAsync` — SignalR skips `OnDisconnectedAsync` after an `OnConnectedAsync` failure, so an earlier `Add` leaked a fully dispatchable dead connection. The E7 cancel re-push moved BEFORE the machine-info write, its only call site, so a failed write no longer drops it. `Agent:Update:SwapGateTimeout` is now validated unconditionally and the derived wedged-gate wait is clamped — `DeploymentExecutor` reads it on the normal deployment path, so `Update:Enabled == false` was no excuse to skip it. |
+| 1.17 | 2026-07-31 | **F5 review round 4** (§6, §9). The agent wire-contract check moved from `AgentHub.RegisterAsync` onto the SignalR HANDSHAKE (`AgentContractHandshakeGate`, 426 Upgrade Required), so a skewed agent is refused before the connection is admitted. That deletes the connected-but-unverified state outright: `MarkRegistered`/`IsRegistered` and the liveness-vs-eligibility split are gone, a tracked connection IS a dispatchable one, and `RegisterAsync` no longer aborts the connection when it throws (it only records machine info and re-pushes cancels). Reconnect pacing moved into `AgentReconnectPolicy` as a CHURN lane over consecutive short-lived connections — the round-3 pacing sat on the supervision loop, which a `Context.Abort()` never wakes, because the abort drops the transport and the policy never gives up. Also fixes this table, which still advertised the deleted flat 30 s. |
+| 1.16 | 2026-07-30 | **F5 review round 3** (§6, §9). The self-upgrade rollback holds its EXCLUSIVE lease to `Environment.Exit`, so the exit moved into a `finally`: the outcome report could throw an `HttpClient` timeout (a `TaskCanceledException`, raised even on `CancellationToken.None`), skip the exit, and leave the gate write-held by nobody for the life of the process. A rollback on a SHUTTING-DOWN host now defers to the next boot instead of replacing the install directory with no lease and exiting 70 into a restart-on-failure supervisor. The deferral report moved out of the lease, carries the real reason from the check, and is filed once per staged version rather than once per check interval. `DeploymentExecutor`'s wedged-gate wait is DERIVED from `Agent:Update:SwapGateTimeout` — a flat 30 s was shorter than the default 2-minute swap window, so a writer-fair queue could make a healthy box report "the agent is wedged" and fail the deployment — and the escalation now states what was observed instead of diagnosing a stuck predecessor. `AgentHub`'s registration-failure abort no longer removes the registry entry (that suppressed `OnDisconnectedAsync`'s offline mark entirely), and the agent paces those reconnect cycles because only an ACCEPTED registration resets its backoff. `update-info` and `update-status` read past the Space query filter — an untracked `FindAsync` on an `ISpaceScoped` entity applied it, so self-upgrade was silently dead outside the Default Space. The agent in-flight predicate is a NEGATED terminal set, so a future non-terminal `DeploymentStatus` fails CLOSED. |
+| 1.15 | 2026-07-29 | **F5 review follow-up** (§6, §9). Shared co-running is now BOUNDED (`Agent:MaxConcurrentSharedWork`, default 8) — the rework had dropped the old one-at-a-time cap with nothing in its place. The self-upgrade no longer trusts local state alone: it asks `GET /api/agents/task-in-flight` (fail-closed) before extracting, because the gate's per-wave unit means an idle gate does not mean an idle plan and a SERVER wave can hold that gap for hours; it also decides permanent refusals before taking the gate, re-checks the maintenance window after queueing, reports `swap-deferred`, and puts the ROLLBACK swap under the same lock. A gate unwind at shutdown no longer reports a never-executed wave as a hard deployment failure. The force-detach refusal now keys on the PAIR of modes rather than the successor's alone. `AgentHub` marks a connection dispatchable only after `RegisterAsync` passes, so a version-skewed agent cannot be handed work in the connect→register window. |
+| 1.14 | 2026-07-29 | **F5 — machine gate reader-writer rework + updater participation** (§6, §7, §9). `MachineExecutionGate` is now a fair async reader-writer lock instead of a `SemaphoreSlim(1,1)`: EXCLUSIVE is the default plan mode, SHARED when the work declares `AllowParallelTaskExecution`, and co-running requires no writer in either direction — so the flag is a DOWNGRADE to shared, never a bypass (Octopus `ScriptIsolationMutex` parity, verified from Tentacle source: `NoIsolation` takes the READ side of the same lock). Under F2 that flag removed same-machine protection outright, including against tasks that had not opted in. Writers cannot be starved: acquisition never barges past a queued waiter, and the primitive is hand-built because `ReaderWriterLockSlim` has no async surface while the `SemaphoreSlim` recipes either barge or need a second lock. `AgentUpdateService`'s extract+swap+`Environment.Exit` window now takes the EXCLUSIVE side (locked decision P8), fixing the 2026-07-25 audit CLASH — `IsExecuting` was blind to ad-hoc work so a swap killed running scripts, and the check-to-swap gap was a TOCTOU; the wait is bounded by the new `Agent:Update:SwapGateTimeout` (default 5 min) because a queued writer also blocks new work. Ad-hoc gate mode became per-RUN, not per-target: the AI session flow dispatches `true` unconditionally (locked decision P5), and `AdhocDispatcher.DispatchAsync` takes a single `bool` in place of the per-target map. CONTRACT CHANGE: `AgentContract.CurrentVersion` 2 → 3 with NO shape change — a v2 agent reads `true` as a full bypass, which on the new read-always AI path would leave every approved script ungated, so the skew is refused at registration. Still DEFERRED: the gate's unit is one WAVE (F6 closes whole-plan exclusion server-side). Branch `feat/eng-machine-gate-rw`. |
 | 1.13 | 2026-07-30 | **WP3-b — review remediation** (new §10 subsection, §2 step 5, §7 freeze bullet, timer table). Gate ordering is now refusal → condition/role → approval, and approval is an ALLOW-LIST (`Cancelled` and future variants refuse instead of proceeding). Condition-excluded gates and refusal-abandoned companions always record `Skipped`. The freeze gate is re-checked on resume and blocks only a task that has executed nothing (`StartedUtc != null` discriminator). Instruction secrets are masked in the variable DICTIONARY, because Octostache filters defeat redact-after-evaluate. `TimeoutHours = 0` and a zero `Engine:DefaultInterventionTimeout` are both refused — an unexpiring gate holds the F1 key forever. `DeployRelease` gained a gate-aware budget: non-gated children keep the 1 h ceiling and its `TimedOut` classification, gated children get the new `Engine:MaxDeployReleaseGatedWaitDuration` (7 d) while non-`Paused` polling alone charges the working budget. Cancel closes the gate in the same transaction. Save validation covers `RunbookService` too (import warns instead of throwing). The `Interruption.*` audit events became the durable change-control record behind `PerformanceSettings.ChangeControlAuditRetentionDays` (default never-purge), with responsible-team NAMES snapshotted. Also fixed: the offline-drop refusal compared step types case-SENSITIVELY, so `octopus.manual` shipped in a bundle and the air-gapped handler passed it with no approval record (`OfflineDropBundleBuilder.IsOnlineOnlyStepType`). CONTRACT CHANGE: EF schema — `interruptions.responsible_team_names` (`text[]`, migration `AddInterruptionResponsibleTeamNames`). No agent wire change. |
 | 1.12 | 2026-07-30 | New §6 subsection **Background jobs and Space scoping**: background paths sweep ALL Spaces via `IgnoreQueryFilters()` (per-account fanout is the only fan-out axis); documents the per-statement (not per-source) semantics of parameterless `IgnoreQueryFilters()` in EF Core 10 (`ToQueryString`-verified) and the rule that it never composes into caller-facing queryables. Code: clarifying comments on the redundant inner calls (`ScheduledDeploymentDispatchJob`, `ServerTaskLease.TryResumeAsync`); removed a no-op `IgnoreQueryFilters()` on `db.Teams` in `ResponsibleTeamResolver` (`Team` has no global filter). No behaviour change. |
 | 1.11 | 2026-07-29 | **WP3 — real manual intervention** (new §10, §9, timer table). `Octopus.Manual` joins `ServerOnlyStepTypes`; new non-terminal `DeploymentStatus.Paused` parks the task before the gated wave, freeing the `NodeTaskGate` slot and CLEARING the lease, with an encrypted resume checkpoint on `server_tasks`. `Paused` joins `InFlightAfterClaim` (holds the F1 key, so a newer release cannot land underneath a pending approval) — the `ix_server_tasks_running_deployment_peer` filter becomes `status IN (1, 5, 7)`. Resume via `ServerTaskLease.TryResumeAsync` (no F1 re-check); new reconciler arm 3 re-signals answered-but-unresumed paused tasks. Rejection/timeout resume only to run `Failure`/`Always` cleanup, then resolve `Failed` via a new `interventionRejected` resolver input. Offline drop keeps REFUSING `Octopus.Manual` (stronger than auto-approving). CONTRACT CHANGE: EF schema only — new `interruptions` table + `server_tasks.pause_checkpoint_encrypted`; `DeploymentStatus` gains `Paused = 7` and `StepOutcomeKind` gains 4-6. No agent wire change. Branch `feat/manual-intervention`. |

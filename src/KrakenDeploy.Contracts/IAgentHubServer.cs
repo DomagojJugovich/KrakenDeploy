@@ -11,12 +11,20 @@ namespace KrakenDeploy.Contracts;
 public interface IAgentHubServer
 {
     /// <summary>
-    /// Called once after the SignalR connection is up to supply machine info.
-    /// B6 CONTRACT CHANGE: returns the server's verdict — a
-    /// <see cref="AgentRegistrationRequest.ContractVersion"/> mismatch is
-    /// refused (<see cref="AgentRegistrationResult.Accepted"/> = false) and the
-    /// server drops the connection from its dispatch registry; the agent must
-    /// disconnect and retry on its slow lane (self-heals after an upgrade).
+    /// Called after the SignalR connection is up to supply machine info, and re-sent on every
+    /// reconnect.
+    /// <para>
+    /// Registration is NOT a gate on anything. The wire contract is verified on the HANDSHAKE
+    /// (<see cref="AgentContract.VersionHeader"/>) and the target is resolved in the hub's
+    /// <c>OnConnectedAsync</c>, so a connection that reaches this method is already
+    /// dispatchable. <see cref="AgentRegistrationResult.Accepted"/> = false therefore means
+    /// "unknown target" or "retired target" — a refusal that clears only on operator action —
+    /// and NOT a version mismatch, which never gets this far: that is a 426 out of
+    /// <c>HubConnection.StartAsync</c>.
+    /// <see cref="AgentRegistrationRequest.ContractVersion"/> is retained for diagnostics, and
+    /// the server compares it against the header as a tripwire for an intermediary that strips
+    /// the header — if they disagree, the gate is enforcing nothing.
+    /// </para>
     /// </summary>
     Task<AgentRegistrationResult> RegisterAsync(AgentRegistrationRequest request);
 
@@ -63,9 +71,12 @@ public interface IAgentHubServer
     /// <summary>
     /// F2 CONTRACT CHANGE — reports that the dispatched sub-plan has ACQUIRED the
     /// agent's machine execution gate and is now executing. Sent exactly once per
-    /// dispatch attempt, immediately before the first step runs; for a target with
-    /// <see cref="DeploymentPlan.AllowParallelTaskExecution"/> the gate is bypassed
-    /// and the report goes out immediately on receipt.
+    /// dispatch attempt, immediately before the first step runs. F5: a target with
+    /// <see cref="DeploymentPlan.AllowParallelTaskExecution"/> no longer bypasses the
+    /// gate — it takes the SHARED side — so such a plan reports once its shared lease
+    /// is granted. That is usually immediate, but NOT guaranteed: the gate is
+    /// writer-fair, so a shared plan is also delayed by a merely QUEUED writer (another
+    /// deployment, or the agent's own self-upgrade) even when no holder is present.
     /// <para>
     /// The server arms the wave deadline from THIS point instead of from dispatch,
     /// so a sub-plan queued behind a long-running task on the same machine does not

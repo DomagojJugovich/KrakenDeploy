@@ -1,17 +1,37 @@
 namespace KrakenDeploy.Contracts;
 
 /// <summary>
-/// The agent wire-contract version this assembly speaks. Sent by the agent in
-/// <see cref="AgentRegistrationRequest.ContractVersion"/> and enforced by the
-/// server at registration: a mismatch is REFUSED with an explicit
-/// <see cref="AgentRegistrationResult"/> instead of the pre-B6 failure mode
-/// (silently dropped log/step reports after an unnegotiated signature change).
+/// The agent wire-contract version this assembly speaks, carried on the SignalR
+/// HANDSHAKE in the <see cref="VersionHeader"/> request header and enforced before the
+/// connection exists: a mismatch is refused with HTTP 426 by the server's handshake
+/// gate, so a skewed agent never becomes a tracked connection at all.
 /// Bump on every breaking change to the SignalR agent surface
 /// (<see cref="IAgentHubServer"/> / <see cref="IAgentHubClient"/>) or to
-/// <see cref="DeploymentPlan"/>.
+/// <see cref="DeploymentPlan"/> — including a change to how the agent must
+/// INTERPRET an existing field, not only to the shapes themselves (see <c>3</c>).
+/// <para>
+/// Past the gate, connected == verified == dispatchable — there is no separate
+/// "has registered" state to keep in step. Why the check is on the handshake rather than in
+/// a hub method, what a refusal does, and how a refused agent escapes are documented once, in
+/// <c>docs/agent-wire-contract.md</c>; that is the single home for the narrative, which had
+/// accumulated in nine places in the tree.
+/// </para>
 /// </summary>
 public static class AgentContract
 {
+    /// <summary>
+    /// Request header carrying <see cref="CurrentVersion"/> on the SignalR handshake.
+    /// Rides both the negotiate request and the WebSocket upgrade, and persists across
+    /// automatic reconnects — the same mechanism the blue-green release pin
+    /// (<c>X-KD-Release</c>) already depends on.
+    /// </summary>
+    public const string VersionHeader = "X-KD-Contract";
+
+    /// <summary>
+    /// Response header on a 426 refusal, naming the version the server requires, so an
+    /// operator reading the agent log learns both numbers rather than only its own.
+    /// </summary>
+    public const string ServerVersionHeader = "X-KD-Contract-Server";
     /// <summary>
     /// Version history:
     /// <list type="bullet">
@@ -23,22 +43,46 @@ public static class AgentContract
     ///     the new <see cref="IAgentHubServer.ReportExecutionStartedAsync"/> report
     ///     (the server arms the wave deadline from it, so a v1 agent would leave
     ///     every wave on the dispatch-time backstop).</item>
-    ///   <item><c>3</c> — SC1: step-package <c>manifest.json</c> <c>stepTypes</c>
-    ///     entries may be OBJECTS carrying per-type metadata, not just strings. A
-    ///     pre-SC1 agent's <c>StepPackageManifest.StepTypes</c> is
-    ///     <c>IReadOnlyList&lt;string&gt;</c>, so its <c>StepPackageLoader</c> throws
-    ///     <c>JsonException</c> on every SC1 archive and logs "failed to parse
-    ///     manifest" — leaving the type unhandled. Not gateable by
-    ///     <c>MinKrakenAgent</c>: reading that field requires parsing the manifest
-    ///     that fails. And SD-11 makes the encounter unavoidable — the seeder bumps
-    ///     every built-in version, re-pins live steps to it, then sweeps the old
-    ///     version, so there is no pre-SC1 archive left to fall back to. Bumping the
-    ///     contract turns an opaque per-step failure at first dispatch into the
-    ///     registration-time refusal <c>AgentHub</c> already implements ("Update the
-    ///     agent binary").</item>
+    ///   <item><c>3</c> — F5: no shape change, a MEANING change. Both
+    ///     <c>AllowParallelTaskExecution</c> fields are retained but now select which
+    ///     SIDE of the agent's reader-writer machine gate the work takes
+    ///     (<c>true</c> → SHARED, <c>false</c> → EXCLUSIVE) instead of whether to
+    ///     take it at all. A v2 agent reads <c>true</c> as a full bypass — no lock
+    ///     whatsoever — which is precisely the behaviour F5 removes, so the skew is
+    ///     invisible on the wire and MUST be refused rather than negotiated. The ad-hoc
+    ///     dispatch path also changed which value it sends: the AI-session flow is now
+    ///     read-always. Also adds
+    ///     <c>GET /api/agents/task-in-flight</c>, which the agent MUST consult
+    ///     (fail-closed) immediately before a self-upgrade swap: the machine gate is
+    ///     released at every wave boundary, so a gate-only check cannot see that a
+    ///     multi-wave deployment is still mid-flight.</item>
+    ///   <item><c>4</c> — the version moved from
+    ///     <see cref="AgentRegistrationRequest.ContractVersion"/> onto the handshake
+    ///     header <see cref="VersionHeader"/>, so it is checked BEFORE the connection is
+    ///     admitted; the request field is retained for diagnostics only and is no longer
+    ///     a gate. Bumped rather than folded into <c>3</c>: an agent built against the
+    ///     pre-move <c>3</c> sends no header and is refused, and describing that as
+    ///     "requires v3, presented absent" while both sides call themselves v3 reads as a
+    ///     server fault. A distinct number makes the refusal self-explanatory and is what
+    ///     triggers the OPERATOR ACTION rule to bump <c>version.json</c> alongside it
+    ///     (docs/agent-wire-contract.md §"Bumping the contract").</item>
     /// </list>
+    /// <para>
+    /// The gate also covers the step-package ARCHIVE format, which is not on the
+    /// SignalR surface. SC1 made <c>manifest.json</c>'s <c>stepTypes</c> entries
+    /// objects rather than plain strings; a pre-SC1 agent deserializes them into
+    /// <c>IReadOnlyList&lt;string&gt;</c> and its <c>StepPackageLoader</c> throws
+    /// <c>JsonException</c> on every SC1 archive ("failed to parse manifest"),
+    /// leaving the type unhandled — and SD-11's seeder sweeps the old versions, so
+    /// there is no pre-SC1 archive left to fall back to. No separate bump was
+    /// needed: <see cref="AgentContract"/> and <c>StepPackageManifest</c> ship in
+    /// the SAME assembly, so an agent that presents v4 necessarily carries the
+    /// SC1-capable parser, and anything older is already refused at the handshake.
+    /// Keep that coupling in mind when changing the archive format alone — it is
+    /// the contract version that protects it.
+    /// </para>
     /// </summary>
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 4;
 }
 
 /// <summary>
@@ -48,8 +92,15 @@ public static class AgentContract
 /// B6 CONTRACT CHANGE: <c>Roles</c> is REMOVED (T1-7 — roles are authorization,
 /// operator-assigned server-side, and were already ignored + audited when
 /// self-declared; the field no longer exists on the wire).
-/// <see cref="ContractVersion"/> is ADDED — a pre-B6 agent deserializes to the
-/// default 0 and is refused with a clear upgrade message.
+/// </para>
+/// <para>
+/// <see cref="ContractVersion"/> is no longer a GATE. Enforcement moved onto the handshake
+/// header (<see cref="AgentContract.VersionHeader"/>) in v4, so a skewed agent is refused with
+/// 426 before this payload is ever sent. The field stays on the wire for two reasons: it
+/// appears in the server's registration log line, and the hub compares it against the header
+/// as a TRIPWIRE — enforcement now rides a request header, so a header-whitelisting
+/// intermediary would strip it and the gate would admit everything silently. If the two
+/// disagree, the header did not arrive as sent.
 /// </para>
 /// </summary>
 public sealed record AgentRegistrationRequest(
@@ -62,13 +113,15 @@ public sealed record AgentRegistrationRequest(
     int ContractVersion);
 
 /// <summary>
-/// B6 — the server's verdict on a registration. <c>Accepted == false</c> means
-/// the agent must NOT expect to receive work (the server has removed the
-/// connection from its dispatch registry); the agent logs
-/// <see cref="Message"/>, drops the connection and retries on its slow lane so
-/// it self-heals after an agent upgrade. Pre-B6 agents invoked
-/// <c>RegisterAsync</c> as void and simply ignore this payload — their refusal
-/// is enforced server-side.
+/// The server's verdict on a registration. <c>Accepted == false</c> means the agent must NOT
+/// expect to receive work: it logs <see cref="Message"/>, drops the connection and retries on
+/// the 5-minute operator-action lane.
+/// <para>
+/// Since v4 the reachable refusals are "unknown target" and "retired target" — both clear only
+/// on operator action (re-enroll, or un-retire), and for both
+/// <see cref="ServerContractVersion"/> equals the agent's own, so the remedy is NOT a binary
+/// upgrade. A version skew is refused far earlier, with 426 on the handshake.
+/// </para>
 /// </summary>
 public sealed record AgentRegistrationResult(
     bool Accepted,
@@ -123,6 +176,47 @@ public sealed record AgentUpdateStatusReport(
     string? Detail);
 
 /// <summary>
+/// F5 — response of <c>GET /api/agents/task-in-flight</c>. Answers the one question
+/// the agent cannot answer locally: does the SERVER still have a non-terminal task
+/// assigned to this target?
+/// <para>
+/// The agent's machine execution gate is released and re-taken at every WAVE
+/// boundary (the server dispatches per wave), so between two waves of a live
+/// multi-wave deployment the gate is free and the in-flight registry is empty. A
+/// self-upgrade that trusted only local state would pass its checks there, swap the
+/// binaries and <c>Environment.Exit</c>, killing the deployment mid-plan — and the
+/// window is not small, because a SERVER wave (a manual intervention, a
+/// <c>DeployRelease</c> cascade) can sit between two target waves for minutes or
+/// hours. Only the server sees whole plans, so only the server can answer.
+/// </para>
+/// <para>
+/// The target id comes from the agent JWT, never a parameter, so an agent can only
+/// ask about itself. Consumed fail-closed: an unreachable or unparseable answer
+/// means "assume in flight" and defer the swap.
+/// </para>
+/// </summary>
+/// <param name="InFlight">
+/// <c>true</c> when at least one non-terminal <c>ServerTask</c> (deployment or
+/// runbook run, of any wave) is assigned to this target. <c>Queued</c> counts:
+/// a task that has not been claimed yet can be dispatched here at any moment, and
+/// a swap started now would race its first wave.
+/// <para>
+/// NULLABLE on purpose. As a non-nullable <c>bool</c> on a positional record, an
+/// absent <c>inFlight</c> property bound to <c>default</c> — so any HTTP 200 whose
+/// body did not come from this server (a reverse proxy or auth gateway returning
+/// <c>{}</c> or a JSON error envelope) deserialized to "idle" and the agent's
+/// fail-CLOSED check silently failed OPEN, swapping mid-plan. <c>null</c> now means
+/// "no answer", which the agent treats as in-flight.
+/// </para>
+/// </param>
+/// <param name="Detail">
+/// Short, non-sensitive description for the agent's log (e.g. a task count). Never
+/// carries project, environment, tenant or variable data — an agent is not
+/// authorized to learn about work it has not been dispatched.
+/// </param>
+public sealed record AgentTaskInFlightResponse(bool? InFlight, string? Detail);
+
+/// <summary>
 /// C6 — the discrete outcomes an agent reports for a self-upgrade attempt.
 /// String constants (not an enum) so the wire form is unambiguous regardless of
 /// the server's JSON enum-serialisation settings.
@@ -152,6 +246,15 @@ public static class AgentUpdateOutcome
     /// <summary>The swap itself failed and was rolled back in-process (the agent
     /// keeps running the previous binary).</summary>
     public const string SwapFailed = "swap-failed";
+
+    /// <summary>
+    /// F5 — the swap was DEFERRED (not failed): the machine stayed busy for the whole
+    /// swap window, so nothing was touched and the next check will retry. Reported so
+    /// a machine that keeps deferring is visible server-side; a gate held by a wedged
+    /// step is otherwise indistinguishable from a healthy busy agent, and the agent's
+    /// own logs are local-only.
+    /// </summary>
+    public const string SwapDeferred = "swap-deferred";
 }
 
 /// <summary>Body for POST /api/deployments/{id}/logs.</summary>

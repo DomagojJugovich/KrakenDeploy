@@ -157,4 +157,18 @@ public interface IServerLink : IAsyncDisposable
     /// this hook lets the agent re-send registration and flush buffered reports.
     /// </summary>
     void OnReconnected(Func<Task> handler);
+
+    /// <summary>
+    /// Registers a handler told whether the server is currently refusing this agent's wire
+    /// contract with 426. Raised with <c>true</c> when a reconnect attempt is refused that way
+    /// and with <c>false</c> once one is not.
+    /// <para>
+    /// Exists because a 426 met during AUTOMATIC RECONNECT is invisible everywhere else: the
+    /// retry policy never gives up, so <see cref="OnClosed"/> never fires and the supervisor's
+    /// own <see cref="StartAsync"/> catch — the other place a refusal is detected — is never
+    /// re-entered. That is the path a server upgrade takes for every already-connected agent,
+    /// so without this the self-upgrade escape hatch never opened when it was most needed.
+    /// </para>
+    /// </summary>
+    void OnContractRefused(Action<bool> handler);
 }

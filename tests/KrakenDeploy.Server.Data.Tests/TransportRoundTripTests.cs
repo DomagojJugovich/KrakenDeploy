@@ -3,6 +3,7 @@ using System.Threading.Channels;
 using FluentAssertions;
 using KrakenDeploy.Agent.Config;
 using KrakenDeploy.Agent.Deployment;
+using KrakenDeploy.Agent.Services;
 using KrakenDeploy.Agent.StepPackages;
 using KrakenDeploy.Agent.Transport;
 using KrakenDeploy.Contracts;
@@ -39,8 +40,10 @@ namespace KrakenDeploy.Server.Data.Tests;
 /// REAL <see cref="AgentHub"/> (with the production AgentJwt validation chain,
 /// including the A8 atv revocation check) is hosted on loopback Kestrel, a REAL
 /// <see cref="SignalRServerLink"/> + <see cref="DeploymentExecutor"/> connects
-/// to it over WebSocket, and the REAL <see cref="DeploymentWorker"/> dispatches
-/// seeded deployments through the shared registries.
+/// to it over a real WebSocket, and the REAL <see cref="DeploymentWorker"/> dispatches seeded
+/// deployments through the shared registries. The transport is asserted rather than assumed by
+/// <see cref="The_contract_header_survives_the_real_WebSocket_upgrade"/>, via
+/// <see cref="HandshakeRecorder"/>.
 /// </summary>
 [Trait("Category", "Docker")]
 [Collection("Postgres")]
@@ -48,6 +51,47 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
     : IClassFixture<PostgresFixture>
 {
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(60);
+
+    [Fact]
+    public async Task The_contract_header_survives_the_real_WebSocket_upgrade()
+    {
+        // The single property the whole wire-contract gate rests on, and the one only this
+        // suite can check: a custom request header set on HttpConnectionOptions rides BOTH hub
+        // requests — the negotiate POST and the WebSocket upgrade that follows it. The gate is
+        // mounted on both endpoints, so a header that failed to reach either would have refused
+        // this connection with 426 before ConnectRealAgentAsync returned.
+        //
+        // Measured, and worth recording how the first attempt got it wrong: reading
+        // HttpContext.WebSockets.IsWebSocketRequest from this position reports false even for a
+        // genuine upgrade, because the IHttpWebSocketFeature is installed by SignalR's own
+        // endpoint branch further down the pipeline. That false negative was briefly written up
+        // as a production finding ("the hub is not on WebSockets"). The Upgrade REQUEST header
+        // is client-set and readable here, and it says `websocket`.
+        await using var seeder = new OrchestratorTestHarness(postgres);
+        await using var host = await RoundTripHost.StartAsync(postgres);
+        var target = (await seeder.SeedTargetsAsync($"ws-{Guid.NewGuid():N}"[..18]))[0];
+
+        await host.ConnectRealAgentAsync(target);
+
+        var seen = host.Handshakes.Seen;
+        var expected = AgentContract.CurrentVersion.ToString(
+            System.Globalization.CultureInfo.InvariantCulture);
+
+        seen.Should().NotBeEmpty("the agent must have reached the hub path");
+        seen.Should().OnlyContain(h => h.Contract == expected,
+            "the contract header must ride EVERY hub request, not only the negotiate");
+        seen.Should().Contain(h => h.Path == "/hubs/agent/negotiate")
+            .And.Contain(h => h.Path == "/hubs/agent");
+
+        seen.Should().Contain(h => h.Upgrade.Equals("websocket", StringComparison.OrdinalIgnoreCase),
+            "the agent must negotiate a real WebSocket UPGRADE, not silently fall back to SSE " +
+            "or long polling — that fallback is exactly what would let this suite degrade while " +
+            "still passing");
+
+        seen.Where(h => h.Upgrade.Length > 0).Should().OnlyContain(h => h.Contract == expected,
+            "and the wire-contract header must SURVIVE that upgrade, which is the single " +
+            "property the whole handshake gate depends on and the one only this suite can check");
+    }
 
     [Fact]
     public async Task Deployment_round_trips_over_real_SignalR()
@@ -217,7 +261,7 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
             await using var db = seeder.CreateContext();
             var quickLog = await TaskLogService.ReadAllAsync(db, quick);
             quickLog.Should().Contain(
-                l => l.Message.Contains("Waiting for another task to finish on this machine"),
+                l => l.Message.Contains("Waiting for other work to finish on this machine"),
                 "the second plan must have been DELIVERED and queued on the machine gate — "
                 + "pre-fix it was never dispatched to the agent at all");
         }
@@ -229,7 +273,7 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
     }
 
     [Fact]
-    public async Task Parallel_flag_lets_a_second_deployment_run_while_the_first_blocks()
+    public async Task Parallel_flag_lets_a_second_deployment_co_run_while_the_first_blocks()
     {
         await using var seeder = new OrchestratorTestHarness(postgres);
         await using var host = await RoundTripHost.StartAsync(postgres, new EngineOptions
@@ -248,19 +292,27 @@ public sealed class TransportRoundTripTests(PostgresFixture postgres)
         {
             await WaitUntilAsync(() => agent.Executor.IsExecuting,
                 "the blocking deployment must be executing");
+            await WaitUntilAsync(() => agent.Gate.ReaderCount == 1,
+                "F5 — the flag takes the SHARED side of the gate, it does not skip it");
 
-            // With the flag the second plan bypasses the gate, so it completes WHILE
-            // the first is still blocked mid-step. This is F2's headline behaviour and
-            // it is impossible unless the agent accepts a second push concurrently.
+            // Both plans hit a target that opted in, so both hold SHARED leases and the
+            // second completes WHILE the first is still blocked mid-step. Impossible
+            // unless the agent accepts a second push concurrently (F2-followup 1).
             await host.RunDeploymentAsync(quick).WaitAsync(TestTimeout);
 
             (await seeder.GetDeploymentAsync(quick)).Status
                 .Should().Be(DeploymentStatus.Succeeded);
             blockingRun.IsCompleted.Should().BeFalse(
-                "the first deployment is still blocked — the second overtook it");
-            agent.Gate.IsHeld.Should().BeFalse(
-                "a bypassing plan must not have taken the slot, and must not have "
-                + "released one it never held");
+                "the first deployment is still blocked — the second co-ran past it");
+
+            // F5 — pre-F5 this asserted IsHeld == false, because a flagged plan took no
+            // lease at all. It now holds a real reader, and the co-runner's release must
+            // have decremented to exactly that one rather than zeroing the count.
+            agent.Gate.ReaderCount.Should().Be(1,
+                "the blocking plan still holds its shared lease; the co-runner released "
+                + "only its own");
+            agent.Gate.IsWriteHeld.Should().BeFalse(
+                "neither plan is exclusive, so no writer may be recorded");
         }
         finally
         {
@@ -468,6 +520,39 @@ public sealed class RoundTripStepHandler : IStepHandler
 /// REAL agents (<see cref="SignalRServerLink"/> + <see cref="DeploymentExecutor"/>
 /// with this test assembly staged as the step package).
 /// </summary>
+/// <summary>
+/// What the agent's transport presented on each hub request: the path, the <c>Upgrade</c>
+/// request header, and the wire-contract header.
+/// <para>
+/// Added because the review flagged that nothing asserted the negotiated transport, and the
+/// SignalR client falls back through SSE to long polling in SILENCE — so a suite that stopped
+/// upgrading would keep passing while testing something weaker.
+/// </para>
+/// <para>
+/// The first cut of this recorder read <c>HttpContext.WebSockets.IsWebSocketRequest</c> and
+/// concluded the hub was not on WebSockets. That was WRONG, and the mistake is recorded here
+/// because it reached the docs before it was caught: <c>IsWebSocketRequest</c> reads the
+/// <c>IHttpWebSocketFeature</c>, which SignalR's endpoint installs on its own internal branch,
+/// so from a middleware mounted BEFORE the endpoint it reads false even for a genuine upgrade.
+/// <c>app.UseWebSockets()</c> is NOT required for SignalR. The <c>Upgrade</c> REQUEST header is
+/// set by the client and is readable anywhere in the pipeline, so that is what this records.
+/// </para>
+/// </summary>
+internal sealed class HandshakeRecorder
+{
+    private readonly List<(string Path, string Upgrade, string Contract)> _seen = [];
+
+    internal void Record(string path, string upgrade, string contract)
+    {
+        lock (_seen) { _seen.Add((path, upgrade, contract)); }
+    }
+
+    internal IReadOnlyList<(string Path, string Upgrade, string Contract)> Seen
+    {
+        get { lock (_seen) { return [.. _seen]; } }
+    }
+}
+
 internal sealed class RoundTripHost : IAsyncDisposable
 {
     private const string JwtSigningKey = "roundtrip-test-signing-key-0123456789AB"; // ≥32 bytes
@@ -500,6 +585,10 @@ internal sealed class RoundTripHost : IAsyncDisposable
         _serverUrl = serverUrl;
     }
 
+    /// <summary>What the agent's transport actually did on the way in. See
+    /// <see cref="HandshakeRecorder"/>.</summary>
+    public HandshakeRecorder Handshakes => _app.Services.GetRequiredService<HandshakeRecorder>();
+
     public static async Task<RoundTripHost> StartAsync(
         PostgresFixture postgres, EngineOptions? engineOptions = null)
     {
@@ -525,6 +614,11 @@ internal sealed class RoundTripHost : IAsyncDisposable
         services.AddSingleton<IHubContext<UiHub, IUiHubClient>>(new NullUiHubContext());
         services.AddSingleton<TargetStatusPublisher>();
         services.AddSingleton<ITargetStatusNotifier, InMemoryTargetStatusNotifier>();
+        services.AddSingleton<HandshakeRecorder>();
+        // Resolved by the contract gate only when it refuses a handshake. Every agent in this
+        // suite presents the right version, so it is never used — but omitting it would make
+        // the gate throw a DI error on the negotiate rather than pass the agent through.
+        services.AddScoped<IAgentContractRefusalRecorder, AgentContractRefusalRecorder>();
         services.AddSingleton<Core.Domain.Accounts.IAccountContext, Accounts.DisabledAccountContext>();
         services.AddSingleton<AgentJwtService>();
         // B6 — the REAL cancel pusher over the REAL hub, so an operator cancel travels
@@ -580,7 +674,40 @@ internal sealed class RoundTripHost : IAsyncDisposable
         var app = builder.Build();
         app.UseAuthentication();
         app.UseAuthorization();
-        app.MapHub<AgentHub>("/hubs/agent");
+        // Mirrors the production pipeline order AND its wiring. This suite drives a REAL
+        // SignalRServerLink over a real loopback Kestrel, so the gate is exercised end to end
+        // on BOTH endpoints the marker stamps — the negotiate POST and the WebSocket upgrade.
+        // The agent's handshake header therefore has to survive the upgrade or none of these
+        // tests can connect at all.
+        // Records what the agent's transport actually negotiated, and what it presented on the
+        // way. Asserted by Handshakes below: the SignalR client silently falls back through SSE
+        // to long polling, so without this the suite would DEGRADE and still pass — and the one
+        // property that only a real WebSocket can prove is that a custom request header
+        // survives the upgrade, which is what the whole contract gate rests on.
+        // No app.UseWebSockets() — and it is NOT needed: SignalR's MapConnections installs the
+        // WebSocket feature on its own endpoint branch, so the agent upgrades regardless.
+        // Program.cs does not call it either, so this host mirrors production.
+        var handshakes = app.Services.GetRequiredService<HandshakeRecorder>();
+        app.Use(async (ctx, next) =>
+        {
+            if (ctx.Request.Path.StartsWithSegments("/hubs/agent"))
+            {
+                // The UPGRADE REQUEST HEADER, not ctx.WebSockets.IsWebSocketRequest. The
+                // latter reads the IHttpWebSocketFeature, which the SignalR endpoint installs
+                // on its own internal branch — so from a middleware mounted BEFORE the
+                // endpoint it is false even for a genuine upgrade, which made the previous
+                // version of this probe report "not WebSockets" for every request and the
+                // assertion below pass vacuously. The request header is set by the client and
+                // is readable anywhere in the pipeline.
+                handshakes.Record(
+                    ctx.Request.Path.Value ?? "",
+                    ctx.Request.Headers.Upgrade.ToString(),
+                    ctx.Request.Headers[AgentContract.VersionHeader].ToString());
+            }
+            await next(ctx).ConfigureAwait(false);
+        });
+        app.UseAgentContractGate();
+        app.MapHub<AgentHub>("/hubs/agent").WithMetadata(new RequiresAgentContract());
         await app.StartAsync().ConfigureAwait(false);
 
         var serverUrl = app.Services
@@ -639,6 +766,7 @@ internal sealed class RoundTripHost : IAsyncDisposable
             // UnauthorizedAccessException on ubuntu-latest while passing on Windows
             // (path resolves onto C:\) and in a root container.
             Options.Create(new AgentConfig { DataPath = _agentDataPath }),
+            Options.Create(new AgentUpdateConfig()),
             NullLogger<DeploymentExecutor>.Instance);
 
         // Mirrors ServerLinkHostedService's wiring EXACTLY, including the thing that
@@ -664,20 +792,11 @@ internal sealed class RoundTripHost : IAsyncDisposable
         await link.StartAsync(_serverUrl, () => token, releaseId: null, CancellationToken.None)
             .ConfigureAwait(false);
 
-        // The hub's OnConnectedAsync must have registered the connection before
-        // any dispatch can route to it.
-        var registry = _app.Services.GetRequiredService<IAgentConnectionRegistry>();
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
-        while (registry.GetConnectionId(target.Id) is null)
-        {
-            if (DateTime.UtcNow > deadline)
-            {
-                throw new TimeoutException("agent connection never registered with the hub");
-            }
-            await Task.Delay(25).ConfigureAwait(false);
-        }
-
-        // Exercise the real B6 registration leg too — must be accepted.
+        // Exercise the real registration leg — must be accepted. It no longer GATES dispatch
+        // (the wire contract is verified on the handshake and the target is resolved in
+        // OnConnectedAsync, so a tracked connection is already dispatchable), but a refusal
+        // here would still mean the hub rejected this target, and failing loudly on it beats
+        // debugging a wave that silently never dispatches.
         var registration = await link.RegisterAsync(
             new AgentRegistrationRequest(
                 target.Id, "roundtrip-machine", "TestOS", "0.0-test", 0L, 0L,
@@ -687,6 +806,24 @@ internal sealed class RoundTripHost : IAsyncDisposable
         {
             throw new InvalidOperationException(
                 $"Real registration refused: {registration?.Message ?? "null result"}");
+        }
+
+        // The connection must be DISPATCHABLE, which now means simply "tracked" — registry.Add
+        // is the last statement of OnConnectedAsync and there is no second predicate. Still
+        // POLLED rather than asserted once: the client's StartAsync can return before the
+        // server-side OnConnectedAsync has finished, so this is a race with the hub's own
+        // progress, not with a separate eligibility flag.
+        var registry = _app.Services.GetRequiredService<IAgentConnectionRegistry>();
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
+        while (registry.GetConnectionId(target.Id) is null)
+        {
+            if (DateTime.UtcNow > deadline)
+            {
+                throw new TimeoutException(
+                    "agent connection never became dispatchable — OnConnectedAsync should " +
+                    "make a tracked connection immediately eligible");
+            }
+            await Task.Delay(25).ConfigureAwait(false);
         }
 
         var agent = new RealAgent(link, executor, executionGate);

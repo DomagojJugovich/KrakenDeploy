@@ -89,6 +89,12 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
         return false;
     }
 
+    /// <summary>
+    /// Whether the target has a live connection. Since the wire-contract check moved onto
+    /// the handshake there is no longer a second, narrower notion of "eligible": a tracked
+    /// connection IS a dispatchable one, so this and <see cref="GetConnectionId"/> answer
+    /// the same question and cannot drift apart.
+    /// </summary>
     public bool HasConnectionFor(Guid targetId) => _byTarget.ContainsKey(targetId);
 
     public bool AbortConnectionFor(Guid targetId)
@@ -105,6 +111,13 @@ public sealed class InMemoryAgentConnectionRegistry : IAgentConnectionRegistry
     public Guid? GetTargetId(string connectionId)
         => _byConnection.TryGetValue(connectionId, out var id) ? id : null;
 
+    /// <summary>
+    /// The target's dispatchable connection, or <c>null</c>. Every tracked connection is
+    /// dispatchable: <see cref="Add"/> is the LAST statement of <c>OnConnectedAsync</c>, so it
+    /// runs only once the target is positively resolved in the right account and every write
+    /// that could throw has succeeded — and a wire-contract skew never reaches the hub at all
+    /// (<c>docs/agent-wire-contract.md</c>).
+    /// </summary>
     public string? GetConnectionId(Guid targetId)
         => _byTarget.TryGetValue(targetId, out var connId) ? connId : null;
 

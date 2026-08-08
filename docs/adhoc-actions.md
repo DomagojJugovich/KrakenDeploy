@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Status** | Approved |
-| **Version** | 1.5 (M11.E + F2 + followups) |
-| **Last updated** | 2026-07-25 |
+| **Version** | 1.8 (M11.E + F2 + followups + F5) |
+| **Last updated** | 2026-07-30 |
 | **Applies to** | KrakenDeploy server `/adhoc` page + `/mcp` `run_adhoc_action` tool, agent verify-then-run pipeline |
 | **Technologies** | .NET 10, `System.Management.Automation` 7.6 (PowerShell AST parser), `RSA-SHA256` signing, SignalR control plane, Radzen Blazor UI |
 | **Projects** | `KrakenDeploy.Contracts.Adhoc`, `KrakenDeploy.Server.Data.Services.Ai.Adhoc`, `KrakenDeploy.Server.Transport` (`AdhocDispatcher`, `AdhocSessionService`), `KrakenDeploy.Agent.Adhoc`, `KrakenDeploy.Mcp.Tools.AdhocTools` |
@@ -48,9 +48,11 @@ operator prompt
       ↓ load Adhoc:TrustedPublicKey
       ↓ AdhocScriptSigner.Verify           ← FAIL-CLOSED on mismatch
       ↓ (valid)
-      ↓ MachineExecutionGate               ← F2: queue behind this box's running
-      ↓                                      task. Skipped when the target sets
-      ↓                                      AllowParallelTaskExecution.
+      ↓ MachineExecutionGate               ← F5: ALWAYS taken, never skipped. The
+      ↓                                      command's AllowParallelTaskExecution
+      ↓                                      picks the side: true → SHARED (the AI
+      ↓                                      flow, always — incl. Mutating, see the
+      ↓                                      ACCEPTED RISK in §2), false → EXCLUSIVE.
       ↓ ScriptRunner.RunAndReturnExitCodeAsync (pwsh, captured stdout/stderr)
                                            ← ONE Adhoc:MaxTotalDuration budget
                                              spans the gate wait AND the run:
@@ -100,6 +102,44 @@ not "policies we hope to follow". Each row maps to where the invariant lives.
 | **Iteration cap** — per-Space (default 5, bounded 1–20); auto-closes with `Status = CapReached` and a "manual intervention required" log entry. | Stops a runaway loop if the LLM keeps proposing broken scripts; SaaS-tunable so each Space bounds its own blast radius + AI spend. | `AdhocSession.MaxIterations` is frozen at session creation from the current Space's `SpaceAiSettings.AdhocMaxIterations` (fallback `Ai:Adhoc:MaxIterationsPerSession`, then 5). `AdhocSessionService.AdvanceAfterVerdictAsync` checks before opening iter N+1. M11.E.14. |
 | **Agent fail-closed verification** — missing public key, malformed PEM, signature mismatch, dynamic command invocation → refuse, report `AgentError`, do NOT execute. | The gate is the script's first filter; the signature is the script's last. The agent is the last line of defence. | `AdhocScriptExecutor.HandleAsync` — three explicit fail-closed branches, each reports back so the dispatcher's TCS resolves. |
 
+### ACCEPTED RISK — two Mutating sessions can co-run on one machine (F5)
+
+Decided 2026-07-29, keeping locked decision P5 literal. Flagged here because it is the
+one place F5 made same-machine isolation **weaker**, and nothing in the product warns
+about it.
+
+Since F5 the AI session flow dispatches `AllowParallelTaskExecution = true`
+unconditionally, so every approved script takes the **SHARED** side of the agent's
+machine gate. `session.Mode` is not consulted. `AdhocMode.Mutating` is
+operator-selectable and its gate is a *blocklist* that permits `Stop-Service`,
+`Restart-Service`, `Set-Content`, `Copy-Item`, `New-Item` — so two Mutating sessions
+approved against the same box now interleave where F2 serialized them:
+
+> Operator A approves `Stop-Service W3SVC; Copy-Item …; Start-Service W3SVC`.
+> Operator B approves `Set-Content …\web.config`. Both hold READ leases. B can rewrite
+> config into a site A is mid-restart on.
+
+Two things make this narrower than it first looks, and one makes it sharper:
+
+- The gate is per agent PROCESS and a process serves exactly ONE target, so every
+  deployment through a given gate carries the same target flag. **Ad-hoc ∥ ad-hoc is
+  therefore the only new co-running pair F5 creates on a default box** — but it is
+  precisely the pair that includes mutating ∥ mutating.
+- Concurrency is bounded: `Agent:MaxConcurrentSharedWork` (default 8) caps co-running
+  shared holders, so this is interleaving, not unbounded fan-out.
+- There is no PER-RUN operator control until WP16: `DeploymentTarget.AllowParallelTaskExecution`
+  no longer governs ad-hoc, and the per-run choice does not exist yet. There is, however,
+  a whole-agent one — `Agent:MaxConcurrentSharedWork = 1` clamps the cap to a single shared
+  holder, which serializes ad-hoc against ad-hoc on that box. It is blunt (it applies to
+  every approved action on the agent, and a queued script's `Adhoc:MaxTotalDuration` budget
+  spans the wait) but it is the available mitigation for a fragile box today.
+
+**Rider for WP16:** its per-run "allow running concurrently" checkbox (unchecked →
+EXCLUSIVE) is the intended fix, and it should apply to AI sessions too — either by
+deriving the mode from `AdhocMode` (Readonly → SHARED, Mutating → EXCLUSIVE) or by
+surfacing the same checkbox on the approval dialog. Until then, `MaxConcurrentSharedWork = 1`
+on the agents that need it is the per-machine substitute.
+
 ### What the gate explicitly does NOT guarantee
 
 Honesty up front. The AST gate is one layer of defence, not the only one.
@@ -130,17 +170,19 @@ Honesty up front. The AST gate is one layer of defence, not the only one.
    sense. But if an operator approves a script that *depends on external
    state*, that state can change between approval and execution. Treat
    it like any other script.
-4. **`AllowParallelTaskExecution` rides OUTSIDE the signature (F2).** The
+4. **`AllowParallelTaskExecution` rides OUTSIDE the signature (F2/F5).** The
    signature binds the (`SessionId`, `IterNumber`, script bytes) triple; the
-   per-target concurrency flag is not part of it, so an attacker with write
-   access to the transport could flip it. That is deliberate and bounded: the
-   flag decides only whether the script waits for the machine's execution slot,
-   so flipping it changes *interleaving*, never *what runs* or *whether the
+   concurrency flag is not part of it, so an attacker with write access to the
+   transport could flip it. That is deliberate and bounded: the flag decides only
+   which SIDE of the agent's machine execution gate the script takes, so flipping
+   it changes *what the script may co-run with*, never *what runs* or *whether the
    operator approved it*. The flag is an execution-serialization hint, not an
-   authorization input, and putting it under the signature would mean re-signing
-   per target for a property the operator sets on the target, not on the script.
-   **Mitigation:** the transport is mutually authenticated (agent JWT, A8) over
-   TLS; a flip requires already owning the channel.
+   authorization input. **Mitigation:** the transport is mutually authenticated
+   (agent JWT, A8) over TLS; a flip requires already owning the channel.
+   <br>Note the F5 blast radius is now strictly smaller than F2's. Under F2 a flip
+   to `true` meant *no lock at all* — the script ran straight into whatever the box
+   was doing. Under F5 the worst a flip can buy is the SHARED side, which still
+   queues behind any exclusive holder; and a flip to `false` merely over-serializes.
 
 ---
 
@@ -156,7 +198,7 @@ Honesty up front. The AST gate is one layer of defence, not the only one.
 | `SpaceAiSettings.AdhocTwoPersonApproval` | per-Space row in `space_ai_settings` (UI: **Configuration → AI Settings**) | bool | Off by default. When on, high-risk iterations (Mutating OR a Production target) require a second, distinct approver before sign+dispatch. |
 | `DeploymentTarget.RiskLevel` | per-target column `deployment_targets.risk_level` (UI: **target detail page**, MachineEdit) | `{Development,Staging,Production}` | Operator-set; **default Production** (fail-safe, backfilled). Drives the louder approval banner + the two-person trigger (session risk = MAX over the frozen set). |
 | `Adhoc:MaxTotalDuration` | agent `appsettings.json` | `TimeSpan` string (e.g. `00:05:00`) — a BARE NUMBER means DAYS | **F2.** ONE budget covering queue wait **plus** execution, measured from receipt of the command. On expiry while queued the agent REFUSES and reports an `AgentError`; on expiry while running it KILLS the process tree and reports the timeout. Default 5 min, matching the server's per-target wait (`AdhocDispatcher.DefaultTimeout`) — a single bound is what actually stops a script outliving the dispatcher's verdict, which separate wait/run bounds did not (queue 3:59 + run 5:00 still beat a 5 min dispatcher). Unparseable, non-positive, or above 24 h → warn + default. |
-| `DeploymentTarget.AllowParallelTaskExecution` | per-target column `deployment_targets.allow_parallel_task_execution` (UI: **target detail → Settings**, MachineEdit) | bool | **F2.** Off by default. When off the script queues behind any deployment / runbook run on that machine; when on it bypasses the slot and may interleave with them. Stamped per target onto each dispatched command. |
+| `AdhocScriptCommand.AllowParallelTaskExecution` | per-RUN wire field on each dispatched command (no configuration knob) | bool | **F5.** Selects the side of the agent's reader-writer machine gate: `true` → SHARED (co-runs with other shared work), `false` → EXCLUSIVE. The AI session flow always sends `true` (locked decision P5: an approved, gate-checked script is read-always and never excludes); WP16's script console will map its per-run "allow running concurrently" checkbox onto it, unchecked → `false`. F2 stamped `DeploymentTarget.AllowParallelTaskExecution` here instead — correct while the flag meant "bypass", but once it means "which side" a serial target would have promoted a read-only diagnostic into an exclusive holder blocking live deployments. The target column still governs DEPLOYMENTS (see `docs/node-concurrency-and-cache.md`). |
 | `KrakenAiFeature.Adhoc` budget bucket | implicit | — | Every LLM call (generation + verdict) attributes to this bucket via the M11.A wrapper; budget overflow → `BudgetExceeded` typed exception → 503 to the UI / MCP caller. |
 
 ### Key generation example (operator runbook)
@@ -312,3 +354,6 @@ behind STOP-AND-ASK.
 | 1.0 | 2026-05-29 | Initial release (M11.E commits 1–7). |
 | 1.4 | 2026-07-25 | **F2** — ad-hoc scripts now take the agent's machine execution slot instead of bypassing it (an approved diagnostic could previously run straight into a deployment's file / IIS / service operations). Per-target opt-out via `DeploymentTarget.AllowParallelTaskExecution`, stamped onto each command. CONTRACT CHANGE: `AdhocScriptCommand` gains `AllowParallelTaskExecution` (outside the signature binding — it is an execution-serialization hint, not an authorization input); `AgentContract.CurrentVersion` 1 → 2. |
 | 1.5 | 2026-07-25 | **F2-followup 3** — the gate wait and the run share ONE `Adhoc:MaxTotalDuration` budget measured from receipt, replacing the queue-only `Adhoc:MaxQueueWait`. Separate bounds did not deliver the property they claimed: a 3:59 queue plus a 5:00 run still outlived the dispatcher's 5 min verdict, so a script could execute — and mutate a box — after the operator had been told it timed out. Expiry while queued REFUSES; expiry while running kills the process tree. |
+| 1.6 | 2026-07-29 | **F5** — the machine gate is now a reader-writer lock and ad-hoc scripts ALWAYS take it; `AllowParallelTaskExecution` selects the side rather than granting a bypass, and becomes per-RUN instead of per-target. The AI session flow dispatches `true` unconditionally (locked decision P5 — read-always, so two approved diagnostics on one box co-run, and neither blocks a deployment's wave any more than the F2 queue did). `AdhocDispatcher.DispatchAsync` takes a single `bool allowParallelTaskExecution` in place of the per-target map, and `AdhocSessionService` no longer queries `deployment_targets` for it. Budget semantics unchanged. CONTRACT CHANGE: `AgentContract.CurrentVersion` 2 → 3 — no shape change, but a v2 agent reads `true` as a full bypass, which on the new read-always AI path would leave EVERY approved script ungated. See `docs/agent-wire-contract.md`. |
+| 1.7 | 2026-07-29 | **F5 review follow-up.** Documented the ACCEPTED RISK that two `AdhocMode.Mutating` sessions now co-run on one box (P5 kept literal; WP16 rider recorded). Shared co-running is now BOUNDED by `Agent:MaxConcurrentSharedWork` (default 8) — the reader-writer rework had removed the old `SemaphoreSlim(1,1)` cap with nothing in its place, so N approvals could spawn N PowerShell processes. The gate-refusal message no longer claims "another task held this machine": writer fairness means a merely QUEUED writer blocks acquisition with no holder present. Corrected the `ModeFor` doc, which described a per-target fail-safe this WP deleted. |
+| 1.8 | 2026-07-30 | **F5 review round 3.** Corrected the ACCEPTED RISK section: it said there was "no operator control" over ad-hoc co-running, but `Agent:MaxConcurrentSharedWork = 1` serializes it per agent — blunt, but available today, and the target page had been claiming no such setting exists. The clamp on that key now logs the effective cap instead of substituting it silently. |

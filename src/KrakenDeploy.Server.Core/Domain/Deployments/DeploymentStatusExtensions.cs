@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace KrakenDeploy.Server.Core.Domain.Deployments;
 
 /// <summary>
@@ -54,4 +56,30 @@ public static class DeploymentStatusExtensions
         DeploymentStatus.PendingOfflineResult,
         DeploymentStatus.Paused,
     ];
+
+    /// <summary>
+    /// <see cref="IsTerminal"/> as data, for the query provider. EF cannot translate the
+    /// method, so a fail-CLOSED predicate ("anything not finished counts") must be
+    /// expressed as <c>!Terminal.Contains(status)</c> rather than by enumerating the
+    /// non-terminal states — the two are equivalent today and diverge the moment a
+    /// non-terminal status is added, in the dangerous direction. F5's swap gate is the
+    /// motivating case: an enumeration answered "idle" for a status it had never heard
+    /// of, and the agent takes "idle" as licence to replace its own binary and exit.
+    /// <para>
+    /// This is NOT the complement of <see cref="InFlightAfterClaim"/>: that set is
+    /// deliberately narrower (post-claim, slot-holding) and excludes <c>Queued</c>.
+    /// </para>
+    /// <para>
+    /// DERIVED from <see cref="IsTerminal"/> rather than hand-listed, and
+    /// <see cref="ImmutableArray{T}"/> rather than <c>DeploymentStatus[]</c>. Both changes
+    /// close the same class of hole: this set backs a FAIL-CLOSED decision — the agent takes
+    /// "not in this set" as licence to replace its own install directory and exit — and a
+    /// public mutable array let any caller in the process rewrite that decision, while a
+    /// hand-written duplicate let it drift from <see cref="IsTerminal"/> silently. Deriving it
+    /// makes drift unrepresentable and retires the test that existed only to detect it.
+    /// EF translates <c>ImmutableArray.Contains</c> the same way it translated the array.
+    /// </para>
+    /// </summary>
+    public static readonly ImmutableArray<DeploymentStatus> Terminal =
+        [.. Enum.GetValues<DeploymentStatus>().Where(s => s.IsTerminal())];
 }

@@ -149,19 +149,25 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
         session.MaxIterations.Should().Be(2);
     }
 
-    // ── F2: per-target machine concurrency reaches the dispatcher ───────────
+    // ── F5: the AI ad-hoc flow is READ-always ───────────────────────────────
 
     /// <summary>
-    /// F2-followup 8 — the service resolves <c>AllowParallelTaskExecution</c> for the
-    /// frozen set on its OWN DbContext (the one that just approved the iteration) and
-    /// hands the map to the dispatcher. Before the followup this lived behind an
-    /// <c>ITargetConcurrencyPolicy</c> singleton that opened a second scope and a
-    /// second connection to read rows this context already had — and which had to be
-    /// registered over <c>IServiceScopeFactory</c> to dodge a captive dependency.
+    /// F5 / locked decision P5 — the AI session flow ALWAYS dispatches with
+    /// <c>AllowParallelTaskExecution = true</c>, so the script takes the SHARED side of
+    /// every agent's machine gate: it co-runs with other shared work and never excludes
+    /// anything. Notably this ignores each target's own
+    /// <c>DeploymentTarget.AllowParallelTaskExecution</c>, which F2 used to stamp
+    /// per-target. That mapping was correct while the flag meant "bypass the gate" (a
+    /// machine-local policy) but inverts the intent once it means "which SIDE": a
+    /// serial target would turn an LLM-generated, gate-checked, operator-approved
+    /// read-only diagnostic into an EXCLUSIVE holder that blocks live deployments.
+    /// WP16's script console is where a per-run operator choice flows in instead.
     /// </summary>
     [Fact]
-    public async Task Dispatch_receives_the_per_target_parallel_flag_from_the_database()
+    public async Task Dispatch_of_an_ai_session_always_takes_the_shared_gate_side()
     {
+        // One target opts into parallel execution, one does not — the AI flow must
+        // send the same read-always mode regardless.
         var serial = await SeedTargetAsync("web-serial");
         var parallel = await SeedTargetAsync("web-parallel", allowParallelTaskExecution: true);
         var harness = NewHarness(
@@ -175,38 +181,9 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
         await harness.Service.ApproveIterationAsync(
             sessionId, iterId, Guid.NewGuid(), "ops", null, default);
 
-        harness.Dispatcher.LastAllowParallel.Should().NotBeNull();
-        harness.Dispatcher.LastAllowParallel!.Should().BeEquivalentTo(
-            new Dictionary<Guid, bool> { [serial.Id] = false, [parallel.Id] = true });
-    }
-
-    /// <summary>A target deleted between freeze and dispatch is simply absent from
-    /// the map; the dispatcher reads that as "take the machine gate" — fail safe, not
-    /// fail open, matching how the risk computation treats an unresolvable target.</summary>
-    [Fact]
-    public async Task A_target_deleted_after_freezing_is_absent_from_the_flag_map()
-    {
-        var kept = await SeedTargetAsync("web-kept", allowParallelTaskExecution: true);
-        var doomed = await SeedTargetAsync("web-doomed", allowParallelTaskExecution: true);
-        var harness = NewHarness(
-            generation: CannedGeneration("Get-Date"),
-            verdict:    CannedVerdict("AllSucceeded"));
-
-        var sessionId = await harness.Service.CreateSessionAsync(
-            "what's the date", AdhocMode.Readonly,
-            [kept.Id, doomed.Id], Guid.NewGuid(), "ops", default);
-        var iterId = await harness.Service.GenerateFirstIterationAsync(sessionId, default);
-
-        await using (var db = postgres.CreateContext())
-        {
-            await db.DeploymentTargets.Where(t => t.Id == doomed.Id).ExecuteDeleteAsync();
-        }
-
-        await harness.Service.ApproveIterationAsync(
-            sessionId, iterId, Guid.NewGuid(), "ops", null, default);
-
-        harness.Dispatcher.LastAllowParallel!.Should().BeEquivalentTo(
-            new Dictionary<Guid, bool> { [kept.Id] = true });
+        harness.Dispatcher.LastAllowParallel.Should().BeTrue(
+            "an approved AI ad-hoc script is read-always — the serial target's own " +
+            "flag must not promote it to an exclusive holder");
     }
 
     // ── Gate invariants (M11.E.15) ──────────────────────────────────────────
@@ -684,16 +661,16 @@ public sealed class AdhocSessionServiceTests(PostgresFixture postgres)
     /// verdict + state-machine without hitting a real agent.</summary>
     private sealed class FakeAdhocDispatcher : IAdhocDispatcher
     {
-        /// <summary>F2 — the flag map the service resolved for the last dispatch, so a
-        /// test can assert the per-target lookup without a live agent.</summary>
-        public IReadOnlyDictionary<Guid, bool>? LastAllowParallel { get; private set; }
+        /// <summary>F5 — the gate mode the service asked for on the last dispatch, so a
+        /// test can assert the AI flow's read-always rule without a live agent.</summary>
+        public bool? LastAllowParallel { get; private set; }
 
         public Task<IReadOnlyList<AdhocPerTargetResult>> DispatchAsync(
             AdhocSession session, AdhocIteration iteration, Guid dispatchAccountId,
-            IReadOnlyDictionary<Guid, bool> allowParallelByTarget,
+            bool allowParallelTaskExecution,
             CancellationToken ct, TimeSpan? timeout = null)
         {
-            LastAllowParallel = allowParallelByTarget;
+            LastAllowParallel = allowParallelTaskExecution;
             var ids = JsonSerializer.Deserialize<List<Guid>>(session.FrozenTargetSetJson) ?? [];
             var results = ids
                 .Select(id => new AdhocPerTargetResult(id, new AdhocScriptResult(

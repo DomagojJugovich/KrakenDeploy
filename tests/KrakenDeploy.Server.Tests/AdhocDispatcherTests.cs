@@ -51,7 +51,7 @@ public sealed class AdhocDispatcherTests
         var iteration = SignedIteration();
         iteration.ScriptSignature = null;
 
-        var act = async () => await dispatcher.DispatchAsync(session, iteration, Guid.Empty, NoParallelTargets, CancellationToken.None);
+        var act = async () => await dispatcher.DispatchAsync(session, iteration, Guid.Empty, Exclusive, CancellationToken.None);
         await act.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*no signature*");
     }
@@ -66,7 +66,7 @@ public sealed class AdhocDispatcherTests
             NullLogger<AdhocDispatcher>.Instance);
 
         var results = await dispatcher.DispatchAsync(
-            SessionWithTargets(), SignedIteration(), Guid.Empty, NoParallelTargets, CancellationToken.None);
+            SessionWithTargets(), SignedIteration(), Guid.Empty, Exclusive, CancellationToken.None);
 
         results.Should().BeEmpty();
     }
@@ -93,7 +93,7 @@ public sealed class AdhocDispatcherTests
             NullLogger<AdhocDispatcher>.Instance);
 
         var results = await dispatcher.DispatchAsync(
-            SessionWithTargets(inSetA, inSetB), SignedIteration(), Guid.Empty, NoParallelTargets, CancellationToken.None);
+            SessionWithTargets(inSetA, inSetB), SignedIteration(), Guid.Empty, Exclusive, CancellationToken.None);
 
         results.Should().HaveCount(2);
         var expectedConnections = ExpectedConnAB;
@@ -117,7 +117,7 @@ public sealed class AdhocDispatcherTests
             NullLogger<AdhocDispatcher>.Instance);
 
         var results = await dispatcher.DispatchAsync(
-            SessionWithTargets(online, offline), SignedIteration(), Guid.Empty, NoParallelTargets, CancellationToken.None);
+            SessionWithTargets(online, offline), SignedIteration(), Guid.Empty, Exclusive, CancellationToken.None);
 
         results.Should().HaveCount(2);
         results.Where(r => r.Result.AgentError is not null).Should().ContainSingle(
@@ -146,7 +146,7 @@ public sealed class AdhocDispatcherTests
         var session = SessionWithTargets(a, b);
         var iteration = SignedIteration(script: "Get-Date", sig: "sig-xyz");
 
-        var results = await dispatcher.DispatchAsync(session, iteration, Guid.Empty, NoParallelTargets, CancellationToken.None);
+        var results = await dispatcher.DispatchAsync(session, iteration, Guid.Empty, Exclusive, CancellationToken.None);
 
         results.Should().HaveCount(2);
         results.Should().AllSatisfy(r =>
@@ -170,7 +170,7 @@ public sealed class AdhocDispatcherTests
             NullLogger<AdhocDispatcher>.Instance);
 
         var results = await dispatcher.DispatchAsync(
-            SessionWithTargets(t), SignedIteration(), Guid.Empty, NoParallelTargets, CancellationToken.None);
+            SessionWithTargets(t), SignedIteration(), Guid.Empty, Exclusive, CancellationToken.None);
 
         results.Should().ContainSingle();
         results[0].TargetId.Should().Be(t);
@@ -195,7 +195,7 @@ public sealed class AdhocDispatcherTests
         };
 
         var act = async () => await dispatcher.DispatchAsync(
-            session, SignedIteration(), Guid.Empty, NoParallelTargets, CancellationToken.None);
+            session, SignedIteration(), Guid.Empty, Exclusive, CancellationToken.None);
 
         await act.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*FrozenTargetSetJson*");
@@ -219,7 +219,7 @@ public sealed class AdhocDispatcherTests
             NullLogger<AdhocDispatcher>.Instance);
 
         var results = await dispatcher.DispatchAsync(
-            SessionWithTargets(target), SignedIteration(), accountB, NoParallelTargets, CancellationToken.None);
+            SessionWithTargets(target), SignedIteration(), accountB, Exclusive, CancellationToken.None);
 
         results.Should().ContainSingle();
         results[0].TargetId.Should().Be(target);
@@ -243,7 +243,7 @@ public sealed class AdhocDispatcherTests
             NullLogger<AdhocDispatcher>.Instance);
 
         var results = await dispatcher.DispatchAsync(
-            SessionWithTargets(target), SignedIteration(), account, NoParallelTargets, CancellationToken.None);
+            SessionWithTargets(target), SignedIteration(), account, Exclusive, CancellationToken.None);
 
         results.Should().ContainSingle();
         results[0].Result.AgentError.Should().BeNull();
@@ -253,47 +253,58 @@ public sealed class AdhocDispatcherTests
     // ── F2: per-target "Allow parallel task execution" ──────────────────────
 
     [Fact]
-    public async Task Dispatch_stamps_the_parallel_flag_per_target()
+    public async Task Dispatch_stamps_the_run_wide_gate_mode_on_every_target()
     {
-        // The signed script text is shared across the frozen set, but the machine
-        // concurrency policy is PER TARGET — a single shared command would let one
-        // target's opt-in leak onto every other machine in the set.
-        var serialTarget = Guid.NewGuid();
-        var parallelTarget = Guid.NewGuid();
-        var deletedTarget = Guid.NewGuid();
+        // F5 — the gate mode is per RUN, not per target. F2 stamped each target's own
+        // DeploymentTarget.AllowParallelTaskExecution, which was right while the flag
+        // meant "bypass the gate" (a machine-local policy) and wrong once it means
+        // "which SIDE of the gate": the choice belongs to whoever authored the script,
+        // and the whole frozen set must agree or a read-only diagnostic would exclude
+        // live work on exactly the boxes configured to serialize.
+        var targetA = Guid.NewGuid();
+        var targetB = Guid.NewGuid();
 
         var connections = new InMemoryAgentConnectionRegistry();
-        connections.Add("conn-serial", serialTarget);
-        connections.Add("conn-parallel", parallelTarget);
-        connections.Add("conn-deleted", deletedTarget);
+        connections.Add("conn-a", targetA);
+        connections.Add("conn-b", targetB);
 
         var pending = new PendingAdhocRegistry();
         var pusher = new RecordingPusher(connections, pending);
-        var allowParallel = new Dictionary<Guid, bool>
-        {
-            [serialTarget] = false,
-            [parallelTarget] = true,
-            // deletedTarget is deliberately ABSENT (removed since the set was frozen,
-            // or filtered out of the caller's query scope) — it must fall back to the
-            // safe serialized default.
-        };
-
         var dispatcher = new AdhocDispatcher(connections, pending, pusher,
             NullLogger<AdhocDispatcher>.Instance);
 
         await dispatcher.DispatchAsync(
-            SessionWithTargets(serialTarget, parallelTarget, deletedTarget),
-            SignedIteration(), Guid.Empty, allowParallel, CancellationToken.None);
+            SessionWithTargets(targetA, targetB),
+            SignedIteration(), Guid.Empty, Shared, CancellationToken.None);
 
-        pusher.CommandsByTarget[serialTarget].AllowParallelTaskExecution.Should().BeFalse();
-        pusher.CommandsByTarget[parallelTarget].AllowParallelTaskExecution.Should().BeTrue();
-        pusher.CommandsByTarget[deletedTarget].AllowParallelTaskExecution.Should().BeFalse(
-            "an unknown target must take the machine gate — fail safe, not fail open");
+        pusher.CommandsByTarget[targetA].AllowParallelTaskExecution.Should().BeTrue();
+        pusher.CommandsByTarget[targetB].AllowParallelTaskExecution.Should().BeTrue();
 
         // The flag rides OUTSIDE the signature binding, so every target still gets
         // the identical signed (session, iteration, script) triple.
         pusher.CommandsByTarget.Values.Select(c => c.Signature).Distinct()
             .Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Dispatch_defaults_to_the_exclusive_gate_side()
+    {
+        // The safe default: false → EXCLUSIVE. WP16's console leaves its per-run
+        // "allow running concurrently" checkbox unchecked by default and lands here.
+        var target = Guid.NewGuid();
+        var connections = new InMemoryAgentConnectionRegistry();
+        connections.Add("conn", target);
+
+        var pending = new PendingAdhocRegistry();
+        var pusher = new RecordingPusher(connections, pending);
+        var dispatcher = new AdhocDispatcher(connections, pending, pusher,
+            NullLogger<AdhocDispatcher>.Instance);
+
+        await dispatcher.DispatchAsync(
+            SessionWithTargets(target), SignedIteration(), Guid.Empty,
+            Exclusive, CancellationToken.None);
+
+        pusher.CommandsByTarget[target].AllowParallelTaskExecution.Should().BeFalse();
     }
 
     [Fact]
@@ -318,7 +329,7 @@ public sealed class AdhocDispatcherTests
         };
 
         var results = await dispatcher.DispatchAsync(
-            session, SignedIteration(), Guid.Empty, NoParallelTargets, CancellationToken.None);
+            session, SignedIteration(), Guid.Empty, Exclusive, CancellationToken.None);
 
         results.Should().ContainSingle(
             "duplicate target ids in the frozen set must be collapsed to one dispatch");
@@ -327,12 +338,14 @@ public sealed class AdhocDispatcherTests
 
     // ── Fakes ───────────────────────────────────────────────────────────────
 
-    /// <summary>F2 — the default flag map: nothing opts into parallel execution, so
-    /// every target takes its machine gate. Empty rather than fully populated on
-    /// purpose — "absent means take the gate" is the contract, and the tests that do
-    /// not care about the flag should exercise that path.</summary>
-    private static readonly IReadOnlyDictionary<Guid, bool> NoParallelTargets =
-        new Dictionary<Guid, bool>();
+    /// <summary>F5 — the safe default gate mode for tests that do not care about it:
+    /// the script takes the EXCLUSIVE side of every agent's machine gate. Named so the
+    /// call sites read as a mode rather than an anonymous <c>false</c>.</summary>
+    private const bool Exclusive = false;
+
+    /// <summary>F5 — the SHARED side: the script co-runs with other shared work.
+    /// What the AI ad-hoc flow always sends (locked decision P5).</summary>
+    private const bool Shared = true;
 
     /// <summary>
     /// Records every push the dispatcher makes and resolves the matching
@@ -351,8 +364,8 @@ public sealed class AdhocDispatcherTests
 
         public IReadOnlyCollection<string> PushedConnections => _pushed.ToArray();
 
-        /// <summary>F2 — the exact command each target received; the
-        /// AllowParallelTaskExecution stamp is PER TARGET.</summary>
+        /// <summary>The exact command each target received. F5 — the
+        /// AllowParallelTaskExecution stamp is run-wide, so every entry must agree.</summary>
         public IReadOnlyDictionary<Guid, AdhocScriptCommand> CommandsByTarget => _commandsByTarget;
 
         public Task PushAsync(string connectionId, AdhocScriptCommand command, CancellationToken ct)
